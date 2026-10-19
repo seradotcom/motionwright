@@ -7,6 +7,16 @@ on:
         description: Exact product checkout; selection inputs must match the reviewed contract
         type: string
         required: true
+      verification_profile:
+        description: Explicit case scope; full89 remains mandatory for a release candidate
+        type: string
+        default: full89
+        required: false
+      release_candidate:
+        description: Require the complete candidate scope; the five-case portable and sidecar profile is refused
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -20,6 +30,8 @@ jobs:
     timeout-minutes: 45
     env:
       MW_SOURCE_SHA: ${{ inputs.source_sha }}
+      MW_STUDIO_PROFILE: ${{ inputs.verification_profile }}
+      MW_STUDIO_CANDIDATE: ${{ inputs.release_candidate }}
       # Materialize both checkouts with the same LF profile used by the
       # isolated source guard, which deliberately ignores global Git config.
       GIT_CONFIG_COUNT: "1"
@@ -35,6 +47,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:MW_SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'An exact lowercase source commit is required' }
+          if ($env:MW_STUDIO_PROFILE -cnotin @('full89', 'portable-export-4-plus-sidecar-control')) { throw 'Unknown verification profile' }
+          if ($env:MW_STUDIO_CANDIDATE -cnotin @('true', 'false')) { throw 'An explicit candidate boolean is required' }
+          if ($env:MW_STUDIO_CANDIDATE -ceq 'true' -and $env:MW_STUDIO_PROFILE -cne 'full89') { throw 'A release candidate requires full89' }
           $root = Join-Path $env:RUNNER_TEMP 'studio-real-service'
           if (Test-Path -LiteralPath $root) { throw 'Output already exists; execution must not be replayed' }
           foreach ($name in @('', 'evidence', 'temp', 'cargo', 'rustup', 'target', 'npm-cache', 'browsers')) {
@@ -80,11 +95,14 @@ jobs:
           $code = $LASTEXITCODE
           if ($code -ne 0) { exit $code }
       - name: Freeze product source and reviewed browser selection
+        id: source_freeze
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $profileArgs = @('--profile', $env:MW_STUDIO_PROFILE)
+          if ($env:MW_STUDIO_CANDIDATE -ceq 'true') { $profileArgs += '--candidate' }
           python -I -B -S verifier/tooling/studio_service_ci.py freeze --repo product `
-            --source-sha $env:MW_SOURCE_SHA --contract verifier/tooling/studio_service_contracts.json `
+            --source-sha $env:MW_SOURCE_SHA --contract verifier/tooling/studio_service_contracts.json @profileArgs `
             --output "$env:MW_STUDIO_EVIDENCE/source-freeze.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item -LiteralPath verifier/tooling/studio_service_contracts.json -Destination "$env:MW_STUDIO_EVIDENCE/selection-contract.json"
@@ -147,8 +165,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $profileArgs = @('--profile', $env:MW_STUDIO_PROFILE)
+          if ($env:MW_STUDIO_CANDIDATE -ceq 'true') { $profileArgs += '--candidate' }
           python -I -B -S verifier/tooling/studio_service_ci.py browser --listing `
-            --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" --contract verifier/tooling/studio_service_contracts.json `
+            --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" --contract verifier/tooling/studio_service_contracts.json @profileArgs `
             --runner-record "$env:MW_STUDIO_EVIDENCE/runner-identity.json" `
             --record "$env:MW_STUDIO_EVIDENCE/browser-list.json" --report "$env:MW_STUDIO_EVIDENCE/browser-list-report.json" `
             --output-dir "$env:MW_STUDIO_ROOT/list-artifacts" --service-tmpdir "$env:MW_STUDIO_ROOT/list-stores"
@@ -164,26 +184,52 @@ jobs:
             -- node "$env:GITHUB_WORKSPACE/product/apps/studio/node_modules/@playwright/test/cli.js" install chromium
           exit $LASTEXITCODE
       - name: Execute the selected real service cases once
+        id: browser_run
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $profileArgs = @('--profile', $env:MW_STUDIO_PROFILE)
+          if ($env:MW_STUDIO_CANDIDATE -ceq 'true') { $profileArgs += '--candidate' }
           python -I -B -S verifier/tooling/studio_service_ci.py browser `
-            --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" --contract verifier/tooling/studio_service_contracts.json `
+            --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" --contract verifier/tooling/studio_service_contracts.json @profileArgs `
             --runner-record "$env:MW_STUDIO_EVIDENCE/runner-identity.json" `
             --record "$env:MW_STUDIO_EVIDENCE/browser-run.json" --report "$env:MW_STUDIO_EVIDENCE/browser-report.json" `
             --output-dir "$env:MW_STUDIO_EVIDENCE/browser-artifacts" --service-tmpdir "$env:MW_STUDIO_ROOT/live-stores"
           exit $LASTEXITCODE
+      - name: Preserve original failure evidence and compare source identities without reopening stores
+        id: post_execution
+        if: always()
+        shell: pwsh
+        env:
+          OBSERVED_JOB_STATUS: ${{ job.status }}
+          OBSERVED_BROWSER_STEP_OUTCOME: ${{ steps.browser_run.outcome }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $profileArgs = @('--profile', $env:MW_STUDIO_PROFILE)
+          if ($env:MW_STUDIO_CANDIDATE -ceq 'true') { $profileArgs += '--candidate' }
+          python -I -B -S verifier/tooling/studio_service_ci.py finalize --repo product --source-sha $env:MW_SOURCE_SHA `
+            --contract verifier/tooling/studio_service_contracts.json @profileArgs --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" `
+            --runner-record "$env:MW_STUDIO_EVIDENCE/runner-identity.json" --report "$env:MW_STUDIO_EVIDENCE/browser-report.json" `
+            --stage "$env:MW_STUDIO_EVIDENCE/browser-run.json" --list-report "$env:MW_STUDIO_EVIDENCE/browser-list-report.json" `
+            --list-stage "$env:MW_STUDIO_EVIDENCE/browser-list.json" --browser-artifacts "$env:MW_STUDIO_EVIDENCE/browser-artifacts" `
+            --output "$env:MW_STUDIO_EVIDENCE/post-execution"
+          $code = $LASTEXITCODE
+          exit $code
       - name: Verify unchanged source, build and complete original browser outcomes
+        id: service_verify
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $profileArgs = @('--profile', $env:MW_STUDIO_PROFILE)
+          if ($env:MW_STUDIO_CANDIDATE -ceq 'true') { $profileArgs += '--candidate' }
           python -I -B -S verifier/tooling/studio_service_ci.py verify --repo product --source-sha $env:MW_SOURCE_SHA `
-            --contract verifier/tooling/studio_service_contracts.json --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" `
+            --contract verifier/tooling/studio_service_contracts.json @profileArgs --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" `
             --runner-record "$env:MW_STUDIO_EVIDENCE/runner-identity.json" --report "$env:MW_STUDIO_EVIDENCE/browser-report.json" `
             --stage "$env:MW_STUDIO_EVIDENCE/browser-run.json" --list-report "$env:MW_STUDIO_EVIDENCE/browser-list-report.json" `
             --list-stage "$env:MW_STUDIO_EVIDENCE/browser-list.json" --output "$env:MW_STUDIO_EVIDENCE/service-gate.json"
           exit $LASTEXITCODE
       - name: Archive closed stores and reopen fresh copies through the same real runner
+        if: ${{ success() && steps.browser_run.outcome == 'success' && steps.post_execution.outcome == 'success' && steps.service_verify.outcome == 'success' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -201,12 +247,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if (!$env:MW_STUDIO_EVIDENCE) { throw 'No original evidence directory was allocated' }
-          python -I -B -S -c "import hashlib,json,os,pathlib,datetime; p=pathlib.Path(os.environ['MW_STUDIO_EVIDENCE']); files=[{'path':str(q.relative_to(p)).replace(chr(92),'/'),'bytes':q.stat().st_size,'sha256':hashlib.sha256(q.read_bytes()).hexdigest()} for q in sorted(p.rglob('*')) if q.is_file()]; r={'schema':'motionwright.studio-service-job/1','at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'source_sha':os.environ['MW_SOURCE_SHA'],'verifier_sha':os.environ['GITHUB_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'observed_job_status':os.environ['OBSERVED_JOB_STATUS'],'original_files':files,'formal_verdict':None,'installed_tauri':False,'native_rendering':False,'human_acceptance':False,'automatic_retry':False}; f=(p/'job-status.json').open('x',encoding='utf-8'); f.write(json.dumps(r,indent=2)+'\n'); f.close()"
+          python -I -B -S -c "import importlib.util,json,os,pathlib,datetime,sys; p=pathlib.Path(os.environ['MW_STUDIO_EVIDENCE']); s=importlib.util.spec_from_file_location('studio_ci_status',pathlib.Path(os.environ['GITHUB_WORKSPACE'])/'verifier/tooling/studio_service_ci.py'); ci=importlib.util.module_from_spec(s); sys.modules[s.name]=ci; s.loader.exec_module(ci); observed=ci.custody_tree(p); files=[{'path':name,'bytes':row['bytes'],'sha256':row['sha256']} for name,row in sorted(observed.items()) if row['kind']=='file']; r={'schema':'motionwright.studio-service-job/1','at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'source_sha':os.environ['MW_SOURCE_SHA'],'verification_profile':os.environ['MW_STUDIO_PROFILE'],'release_candidate_requested':os.environ['MW_STUDIO_CANDIDATE']=='true','verifier_sha':os.environ['GITHUB_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'observed_job_status':os.environ['OBSERVED_JOB_STATUS'],'original_files':files,'formal_verdict':None,'installed_tauri':False,'native_rendering':False,'human_acceptance':False,'automatic_retry':False}; ci.save(p/'job-status.json',r)"
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: studio-service-windows-${{ inputs.source_sha }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          name: studio-service-windows-${{ inputs.verification_profile }}-${{ inputs.source_sha }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: ${{ env.MW_STUDIO_EVIDENCE }}
           if-no-files-found: error
           retention-days: 14

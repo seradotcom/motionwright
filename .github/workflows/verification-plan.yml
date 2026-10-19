@@ -12,7 +12,7 @@ on:
         required: false
         default: ""
       candidate:
-        description: Include every observed workflow in the candidate plan (no dispatch)
+        description: Plan all workflows and require full Studio scope when requested (no automatic matrix dispatch)
         type: boolean
         required: false
         default: true
@@ -21,6 +21,14 @@ on:
         type: string
         required: false
         default: ""
+      studio_service_profile:
+        description: Exact real-service case scope; a candidate requires full89
+        type: choice
+        required: false
+        default: full89
+        options:
+          - full89
+          - portable-export-4-plus-sidecar-control
       audit_source_currency:
         description: Run the strict source-currency audit; historical or insufficient evidence keeps exit 2
         type: boolean
@@ -443,3 +451,5 @@ jobs:
     uses: ./.github/workflows/studio-service-contracts.yml
     with:
       source_sha: ${{ inputs.studio_service_source_sha }}
+      verification_profile: ${{ inputs.studio_service_profile }}
+      release_candidate: ${{ inputs.candidate }}

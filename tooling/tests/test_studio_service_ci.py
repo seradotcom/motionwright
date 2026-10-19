@@ -7,17 +7,21 @@ Disposable Git repositories and Python children test source/receipt boundaries.
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import redirect_stdout
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import zipfile
 
 
 TOOLING = Path(__file__).resolve().parents[1]
@@ -44,7 +48,7 @@ def report_fixture(contract, *, listing=False):
         })
         suite["specs"].append({
             "file": case["file"], "line": case["line"], "column": 1,
-            "title": case["title"], "id": f"synthetic-test-{index}", "ok": True,
+            "title": case["title"], "id": case.get("test_id", f"synthetic-test-{index}"), "ok": True,
             "tests": [{
                 "projectName": "chromium", "expectedStatus": "passed",
                 "status": "expected", "annotations": [],
@@ -616,6 +620,438 @@ class ValidatorChainTests(IsolatedGitFixture):
             write_json(path, changed)
             with self.subTest(name=name), self.assertRaises(ValueError):
                 self.validate_browser_fixture(path)
+
+
+class VerificationProfileTests(unittest.TestCase):
+    def setUp(self):
+        self.parent, self.identity = ci.load_contract(CONTRACT)
+
+    def test_default_full89_and_export4_plus_independent_sidecar_are_distinct_intents(self):
+        complete, full = ci.select_profile(self.parent, self.identity)
+        selected, five = ci.select_profile(self.parent, self.identity, ci.PORTABLE_PROFILE)
+        self.assertEqual((complete["expected_cases"], selected["expected_cases"]), (89, 5))
+        self.assertTrue(full["full89_gate_eligible"])
+        self.assertFalse(five["full89_gate_eligible"])
+        self.assertNotEqual(full["sha256"], five["sha256"])
+        self.assertFalse(five["sidecar_control_is_portable_bundle_coverage"])
+        self.assertEqual(len(five["case_roles"]["portable_bundle_regressions"]), 4)
+        self.assertEqual(five["case_roles"]["independent_sidecar_export_readback_control"],
+                         ["c25c07c562db8d2ac502-da730b2ff45c1efaba2f"])
+        self.assertEqual(selected["selectors"], [
+            "tests/caption-continuity-service.spec.ts:93", "tests/delivery-recipe.spec.ts:734",
+            "tests/file-import-service.spec.ts:474", "tests/project-mutation.spec.ts:1166",
+            "tests/caption-continuity-service.spec.ts:211",
+        ])
+        self.assertEqual([row["test_id"] for row in selected["cases"]], [
+            "c25c07c562db8d2ac502-9eb153e4266f93df4c73", "19534942201d15d9fb0b-3e8548fda1c25d2b82ef",
+            "7fbebdc31e5e1220fc77-6fa44ff08d8f268a3707", "b9f6819a5b6c063d7e21-0c607f199e62357c0c62",
+            "c25c07c562db8d2ac502-da730b2ff45c1efaba2f",
+        ])
+        listed, executed = report_fixture(selected, listing=True), report_fixture(selected)
+        self.assertEqual(ci.validate_report(executed, selected)["case_count"], 5)
+        ci.validate_report(listed, selected, listing=True)
+        ci.same_listed_cases(listed, executed)
+        self.assertEqual(selected["source_files"], complete["source_files"])
+
+    def test_subset_cannot_be_candidate_other_contract_or_full89_result(self):
+        with self.assertRaisesRegex(ValueError, "release candidate"):
+            ci.select_profile(self.parent, self.identity, ci.PORTABLE_PROFILE, candidate=True)
+        with self.assertRaises(ValueError):
+            ci.select_profile(self.parent, {**self.identity, "sha256": "0" * 64}, ci.PORTABLE_PROFILE)
+        with self.assertRaises(ValueError):
+            ci.select_profile(self.parent, self.identity, "unknown")
+        five, descriptor = ci.select_profile(self.parent, self.identity, ci.PORTABLE_PROFILE)
+        with self.assertRaises(ValueError):
+            ci.validate_report(report_fixture(five), self.parent)
+        with self.assertRaises(ValueError):
+            ci.validate_report(report_fixture(self.parent), five)
+        with self.assertRaises(ValueError):
+            ci.require_profile({"selection_profile": descriptor, "candidate_requested": False}, descriptor, True)
+        changed = {**descriptor, "sha256": "0" * 64}
+        with self.assertRaises(ValueError):
+            ci.require_profile({"selection_profile": changed, "candidate_requested": False}, descriptor, False)
+
+    def test_profile_case_id_line_and_listing_identity_are_exact(self):
+        five, _ = ci.select_profile(self.parent, self.identity, ci.PORTABLE_PROFILE)
+        for name in ("id", "line", "duplicate-id", "wrong-project"):
+            report = report_fixture(five)
+            spec_row = report["suites"][0]["specs"][0]
+            if name == "id":
+                spec_row["id"] = "unrelated-observed-case"
+            elif name == "line":
+                spec_row["line"] += 1
+            elif name == "duplicate-id":
+                report["suites"][1]["specs"][0]["id"] = spec_row["id"]
+            else:
+                first_test(report)["projectName"] = "firefox"
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                ci.validate_report(report, five)
+        listing, report = report_fixture(self.parent, listing=True), report_fixture(self.parent)
+        report["suites"][0]["specs"][0]["id"] = "a-different-listed-identity"
+        with self.assertRaises(ValueError):
+            ci.same_listed_cases(listing, report)
+
+    def test_duplicate_json_nonfinite_and_boolean_counts_are_not_complete_pass(self):
+        for raw in (b'{"state":"FAIL","state":"PASS"}', b'{"result":NaN}', b'{"result":Infinity}'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                ci.parse_json(raw)
+        report = report_fixture(self.parent)
+        report["stats"]["skipped"] = False
+        with self.assertRaises(ValueError):
+            ci.validate_report(report, self.parent)
+
+
+class RawCustodyTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="studio-custody-fixture-", dir=os.environ.get("MOTIONWRIGHT_STUDIO_CI_TEST_ROOT"))
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.artifacts = self.root / "artifacts"
+        self.artifacts.mkdir()
+        (self.artifacts / "empty-directory").mkdir()
+        self.raw = self.artifacts / "uninterpreted-studio.sqlite3"
+        self.raw.write_bytes(b"Synthetic bytes, not SQLite: \r\n\xff\x80\x00\r\n")
+        self.receipt = self.root / "original.json"
+        self.receipt.write_bytes(b'{"process_status":"FAIL","exit_code":1}\r\n')
+
+    def archive(self, name="archive", inputs=None):
+        with patch.object(ci, "run_command", side_effect=AssertionError("Custody must not execute a process")), \
+                patch("sqlite3.connect", side_effect=AssertionError("Custody must not open SQLite")):
+            return ci.archive_raw_inputs(inputs or {"receipt.json": self.receipt}, self.artifacts, self.root / name)
+
+    def test_file_growth_after_stat_is_read_with_a_hard_limit_before_rejection(self):
+        self.raw.write_bytes(b"12345678")
+        self.assertEqual(ci.read(self.raw, limit=8), b"12345678")
+        original_open = Path.open
+        reads = []
+        target = self.raw
+
+        class ObservedReader:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.stream.close()
+
+            def read(self, size=-1):
+                raw = self.stream.read(size)
+                reads.append((size, len(raw)))
+                return raw
+
+        def grow_before_open(path, mode="r", *args, **kwargs):
+            if path == target and mode == "rb":
+                with original_open(path, "ab") as writer:
+                    writer.write(b"x" * 64)
+                return ObservedReader(original_open(path, mode, *args, **kwargs))
+            return original_open(path, mode, *args, **kwargs)
+
+        with patch.object(Path, "open", grow_before_open), self.assertRaisesRegex(ValueError, "exceeds budget during read"):
+            ci.read(self.raw, limit=8)
+        self.assertEqual(reads, [(9, 9)])
+        self.assertEqual(self.raw.stat().st_size, 72)
+
+    def test_byte_custody_preserves_crlf_invalid_utf8_and_empty_directories_without_semantic_pass(self):
+        original = self.raw.read_bytes()
+        result = self.archive()
+        self.assertEqual(result["status"], "RAW_BYTES_PRESERVED")
+        self.assertTrue(result["originals_unchanged"])
+        self.assertFalse(result["test_pass_asserted"])
+        self.assertFalse(result["semantic_store_admission"])
+        self.assertFalse(result["sqlite_opened"])
+        self.assertFalse(result["service_started"])
+        with zipfile.ZipFile(result["archive"]["path"]) as bundle:
+            self.assertIsNone(bundle.testzip())
+            self.assertEqual(bundle.read("browser-artifacts/uninterpreted-studio.sqlite3"), original)
+            self.assertEqual(bundle.read("receipt.json"), self.receipt.read_bytes())
+            self.assertIn("browser-artifacts/empty-directory/", bundle.namelist())
+        self.assertEqual(self.raw.read_bytes(), original)
+
+    def test_absent_input_is_explicitly_incomplete_and_existing_bytes_remain(self):
+        result = self.archive(inputs={"receipt.json": self.receipt, "missing.json": self.root / "absent.json"})
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertFalse(result["originals_unchanged"])
+        self.assertIn("missing.json", {row["input"] for row in result["missing_or_unstable_inputs"]})
+        with zipfile.ZipFile(result["archive"]["path"]) as bundle:
+            self.assertEqual(bundle.read("receipt.json"), self.receipt.read_bytes())
+
+    def test_reparse_artifact_is_not_followed_or_admitted(self):
+        original_lstat = Path.lstat
+        path = self.raw
+
+        def lstat(current):
+            observed = original_lstat(current)
+            if current == path:
+                return SimpleNamespace(st_mode=observed.st_mode, st_file_attributes=0x400)
+            return observed
+
+        with patch.object(Path, "lstat", lstat):
+            result = self.archive()
+        self.assertEqual(result["status"], "INCOMPLETE")
+        with zipfile.ZipFile(result["archive"]["path"]) as bundle:
+            self.assertNotIn("browser-artifacts/uninterpreted-studio.sqlite3", bundle.namelist())
+        with self.assertRaises(ValueError):
+            self.archive(name="unsafe-label", inputs={"../outside": self.receipt})
+
+    def test_input_mutation_between_observation_and_archive_never_receives_complete_custody(self):
+        original_read = ci.read
+        reads = 0
+
+        def mutate(path, *args, **kwargs):
+            nonlocal reads
+            if Path(path) == self.receipt:
+                reads += 1
+                if reads == 2:
+                    self.receipt.write_bytes(b"changed after initial observation\n")
+            return original_read(path, *args, **kwargs)
+
+        with patch.object(ci, "read", side_effect=mutate):
+            result = self.archive()
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertTrue(result["missing_or_unstable_inputs"])
+
+    def test_added_artifact_and_combined_byte_budget_are_not_silent_omissions(self):
+        original_tree = ci.custody_tree
+        reads = 0
+
+        def mutate(root):
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                (self.artifacts / "late-file.txt").write_bytes(b"late original mutation\n")
+            return original_tree(root)
+
+        with patch.object(ci, "custody_tree", side_effect=mutate):
+            changed = self.archive()
+        self.assertEqual(changed["status"], "INCOMPLETE")
+        with patch.object(ci, "CUSTODY_LIMIT", 1):
+            bounded = self.archive(name="bounded")
+        self.assertEqual(bounded["status"], "INCOMPLETE")
+        self.assertFalse(bounded["originals_unchanged"])
+
+
+class FinalizationFixture(IsolatedGitFixture):
+    """Declarative receipts and data-only tool bytes; no product tool executes."""
+    def setUp(self):
+        super().setUp()
+        self.initial = self.freeze()
+        self.target = self.root / "target"
+        self.binary = self.target / "debug/examples" / ("studio_review_session.exe" if os.name == "nt" else "studio_review_session")
+        self.binary.parent.mkdir(parents=True)
+        self.binary.write_bytes(b"Synthetic runner identity data; never execute.\n")
+        (self.evidence / "studio_review_session.exe").write_bytes(self.binary.read_bytes())
+        (self.evidence / "Cargo.lock").write_bytes((self.repo / "Cargo.lock").read_bytes())
+        self.cargo = self.root / ("cargo.exe" if os.name == "nt" else "cargo")
+        self.node = self.root / ("node.exe" if os.name == "nt" else "node")
+        self.cargo.write_bytes(b"Synthetic Cargo identity data; never execute.\n")
+        self.node.write_bytes(b"Synthetic Node identity data; never execute.\n")
+        self.playwright = self.repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        self.playwright.parent.mkdir(parents=True)
+        self.playwright.write_bytes(b"Synthetic CLI identity data; never execute.\n")
+        self.artifacts = self.evidence / "browser-artifacts"
+        self.artifacts.mkdir()
+        self.attachment = self.artifacts / "case-one" / "uninterpreted-studio.sqlite3"
+        self.attachment.parent.mkdir()
+        self.attachment.write_bytes(b"Data-only snapshot, not a SQLite database.\r\n\xff\x00")
+        self.report = self.evidence / "browser-report.json"
+        self.list_report = self.evidence / "browser-list-report.json"
+        report = report_fixture(self.contract)
+        first_test(report)["results"][0]["attachments"] = [{"name": "data-fixture", "path": str(self.attachment)}]
+        write_json(self.report, report)
+        write_json(self.list_report, report_fixture(self.contract, listing=True))
+        self.build = self.evidence / "cargo-build.json"
+        self.runner = self.evidence / "runner-identity.json"
+        self.stage = self.evidence / "browser-run.json"
+        self.list_stage = self.evidence / "browser-list.json"
+        for path in (self.build, self.stage, self.list_stage):
+            path.with_suffix(".stdout.log").write_bytes(b"Synthetic original stdout; no product execution.\r\n")
+            path.with_suffix(".stderr.log").write_bytes(b"")
+
+        def common(path):
+            return {"schema": "motionwright.studio-service-process/1", "source_freeze": ci.file_record(self.initial),
+                    "execution_context": ci.execution_context(), "process_status": "PASS", "exit_code": 0,
+                    "reason": None, "automatic_retry": False, "stdout": ci.file_record(path.with_suffix(".stdout.log")),
+                    "stderr": ci.file_record(path.with_suffix(".stderr.log")),
+                    "dependency_lock_before": ci.file_record(self.repo / "Cargo.lock"),
+                    "dependency_lock_after": ci.file_record(self.repo / "Cargo.lock")}
+
+        write_json(self.build, {**common(self.build), "purpose": "build", "cwd": str(self.repo),
+                               "argv": [str(self.cargo), "build", "--locked", "-p", "motionwright-service",
+                                        "--example", "studio_review_session"], "executable": ci.file_record(self.cargo),
+                               "environment": {"CARGO_TARGET_DIR": str(self.target)}})
+        write_json(self.runner, {"schema": "motionwright.studio-service-runner/1", "source_freeze": ci.file_record(self.initial),
+                                "binary": ci.file_record(self.binary), "build_stage": ci.file_record(self.build),
+                                "dependency_lock": ci.file_record(self.repo / "Cargo.lock"),
+                                "source_execution_scope": "TEST_JSONL_SERVICE_ONLY"})
+        for listing, path, report_path, artifacts in (
+                (False, self.stage, self.report, self.artifacts),
+                (True, self.list_stage, self.list_report, self.root / "list-artifacts")):
+            with patch.object(ci.shutil, "which", return_value=str(self.node)):
+                argv = ci.browser_argv(self.repo, self.contract, artifacts, listing)
+            service_tmp = self.root / ("list-stores" if listing else "live-stores")
+            write_json(path, {**common(path), "purpose": "browser-list" if listing else "browser-test",
+                              "cwd": str(self.repo / "apps/studio"), "argv": argv, "executable": ci.file_record(self.node),
+                              "browser_report": ci.file_record(report_path),
+                              "environment": {"MOTIONWRIGHT_SERVICE_TEST_BIN": str(self.binary),
+                                              "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": str(service_tmp),
+                                              "PLAYWRIGHT_JSON_OUTPUT_NAME": str(report_path)},
+                              "bindings": {"runner_record": ci.file_record(self.runner), "runner_binary": ci.file_record(self.binary),
+                                           "playwright_cli": ci.file_record(self.playwright), "output_directory": str(artifacts),
+                                           "service_tmpdir": str(service_tmp)}})
+
+    def replace_report(self, value, *, process_status="PASS", exit_code=0, reason=None):
+        write_json(self.report, value)
+        stage = json.loads(self.stage.read_bytes())
+        stage.update(browser_report=ci.file_record(self.report), process_status=process_status, exit_code=exit_code, reason=reason,
+                     child_tree_quiescence_after_budget_kill="NOT_PROVED" if process_status == "UNKNOWN" else "NOT_APPLICABLE")
+        write_json(self.stage, stage)
+
+    def finalize(self, label="final", *, job="success", browser="success", **changes):
+        args = SimpleNamespace(output=self.evidence / label, repo=self.repo, source_sha=self.source_sha,
+                               contract=self.contract_path, profile="full89", candidate=False,
+                               initial=self.initial, runner_record=self.runner, stage=self.stage, report=self.report,
+                               list_report=self.list_report, list_stage=self.list_stage, browser_artifacts=self.artifacts)
+        for key, value in changes.items():
+            setattr(args, key, value)
+        original_run = subprocess.run
+        commands = []
+
+        def git_only(argv, *args, **kwargs):
+            self.assertEqual(argv[0], "git", "Finalization attempted a non-Git process")
+            commands.append(argv)
+            return original_run(argv, *args, **kwargs)
+
+        with patch.dict(os.environ, {"OBSERVED_JOB_STATUS": job, "OBSERVED_BROWSER_STEP_OUTCOME": browser}), \
+                patch.object(ci.shutil, "which", return_value=str(self.node)), \
+                patch.object(ci.subprocess, "run", side_effect=git_only), \
+                patch.object(ci, "run_command", side_effect=AssertionError("A browser/service operation was attempted")), \
+                patch("sqlite3.connect", side_effect=AssertionError("Finalization opened SQLite")), redirect_stdout(io.StringIO()):
+            code = ci.finalize_observation(args)
+        self.assertTrue(commands)
+        return code, json.loads((args.output / "post-execution.json").read_bytes())
+
+
+class FailureFinalizationTests(FinalizationFixture):
+    def test_85_passed_and_four_failed_keep_exit1_and_complete_raw_custody_without_reopen(self):
+        report = json.loads(self.report.read_bytes())
+        targets = {(row[0], row[1]) for row in ci.EXPORT_CASES}
+        for suite in report["suites"]:
+            for spec_row in suite["specs"]:
+                if (spec_row["file"], spec_row["line"]) in targets:
+                    test = spec_row["tests"][0]
+                    test["status"] = "unexpected"
+                    test["results"][0].update(status="failed", error={"message": "Synthetic portable failure control"})
+        report["stats"].update(expected=85, unexpected=4)
+        self.replace_report(report, process_status="FAIL", exit_code=1)
+        original_stage = self.stage.read_bytes()
+        code, result = self.finalize(job="failure", browser="failure")
+        self.assertEqual((code, result["state"]), (1, "ORIGINAL_EXECUTION_FAILED"))
+        self.assertEqual(result["browser_observation"]["observed_counts"],
+                         {"passed": 85, "failed": 4, "skipped": 0, "timedOut": 0, "interrupted": 0, "unknown": 0})
+        self.assertTrue(result["identity_and_custody_checks_complete"], result["checks"])
+        self.assertTrue(result["source_comparison"]["unchanged"])
+        self.assertEqual(result["custody"]["status"], "RAW_BYTES_PRESERVED")
+        self.assertFalse(result["full89_gate_satisfied"])
+        self.assertFalse(result["reopen_authorized_by_this_receipt"])
+        self.assertFalse(result["service_started"])
+        self.assertFalse(result["sqlite_opened"])
+        self.assertEqual(self.stage.read_bytes(), original_stage)
+        with self.assertRaises(ValueError):
+            ci.validate_report(report, self.contract)
+
+    def test_successful_observation_is_separate_from_strict_verification_and_reopen(self):
+        code, result = self.finalize()
+        self.assertEqual((code, result["state"]), (0, "OBSERVATION_COMPLETE"), result["checks"])
+        self.assertTrue(result["strict_verification_required"])
+        self.assertTrue(result["selection_profile"]["full89_gate_eligible"])
+        self.assertFalse(result["full89_gate_satisfied"])
+        self.assertFalse(result["reopen_authorized_by_this_receipt"])
+
+    def test_unknown_and_cancelled_are_not_rescued_by_green_case_rows(self):
+        report = json.loads(self.report.read_bytes())
+        self.replace_report(report, process_status="UNKNOWN", exit_code=None, reason="synthetic transport budget")
+        code, unknown = self.finalize("unknown", job="failure", browser="failure")
+        self.assertEqual((code, unknown["state"]), (124, "UNKNOWN"))
+        self.assertEqual(unknown["original_process"]["child_tree_quiescence"], "NOT_PROVED")
+        self.assertFalse(unknown["reopen_authorized_by_this_receipt"])
+        self.replace_report(report)
+        code, cancelled = self.finalize("cancelled", job="cancelled", browser="success")
+        self.assertEqual((code, cancelled["state"]), (2, "NOT_ADMITTED"))
+
+    def test_old_attempt_wrong_source_and_crossed_candidate_profile_are_not_admitted(self):
+        original = json.loads(self.stage.read_bytes())
+        stale = copy.deepcopy(original)
+        stale["execution_context"]["GITHUB_RUN_ATTEMPT"] = "2"
+        write_json(self.stage, stale)
+        code, result = self.finalize("stale-attempt")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(result["checks"]["browser_process"]["status"], "NOT_ADMITTED")
+        write_json(self.stage, original)
+        code, result = self.finalize("wrong-source", source_sha="0" * 40)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(result["checks"]["source_after"]["status"], "NOT_ADMITTED")
+        code, result = self.finalize("crossed-candidate", candidate=True)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(result["checks"]["frozen_profile"]["status"], "NOT_ADMITTED")
+
+    def test_source_log_and_attachment_changes_cannot_become_a_complete_observation(self):
+        path = self.repo / "apps/studio/tests/brief-service.spec.ts"
+        original = path.read_bytes()
+        path.write_bytes(original + b"real fixture mutation after source freeze\n")
+        code, changed = self.finalize("changed-source")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(changed["checks"]["source_after"]["status"], "NOT_ADMITTED")
+        with zipfile.ZipFile(changed["custody"]["archive"]["path"]) as bundle:
+            self.assertEqual(bundle.read("source-after/apps/studio/tests/brief-service.spec.ts"), path.read_bytes())
+        path.write_bytes(original)
+        log = self.stage.with_suffix(".stdout.log")
+        original = log.read_bytes()
+        log.write_bytes(b"substituted stdout\n")
+        code, changed = self.finalize("changed-log")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(changed["checks"]["browser_process"]["status"], "NOT_ADMITTED")
+        log.write_bytes(original)
+        self.attachment.unlink()
+        code, missing = self.finalize("missing-attachment")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(missing["checks"]["original_attachments"]["status"], "NOT_ADMITTED")
+
+    def test_skipped_missing_and_retried_case_results_remain_omissions(self):
+        original = json.loads(self.report.read_bytes())
+        for name in ("skipped", "missing", "retried"):
+            report = copy.deepcopy(original)
+            case = first_test(report)
+            if name == "skipped":
+                case["status"] = "skipped"
+                case["results"] = [{"status": "skipped", "retry": 0}]
+                report["stats"].update(expected=88, skipped=1)
+            elif name == "missing":
+                case["results"] = []
+            else:
+                case["status"] = "flaky"
+                case["results"] = [{"status": "failed", "retry": 0}, {"status": "passed", "retry": 1}]
+            self.replace_report(report)
+            code, result = self.finalize(name, job="failure", browser="failure")
+            with self.subTest(name=name):
+                self.assertNotEqual(code, 0)
+                self.assertFalse(result["browser_observation"]["strict_complete_pass"])
+                self.assertFalse(result["full89_gate_satisfied"])
+                self.assertFalse(result["reopen_authorized_by_this_receipt"])
+
+    def test_absent_or_malformed_original_report_still_leaves_an_explicit_nonpassing_receipt(self):
+        self.report.write_bytes(b'{"suites":null,"stats":NaN}\r\n')
+        code, malformed = self.finalize("malformed-report")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(malformed["checks"]["report_read"]["status"], "NOT_ADMITTED")
+        self.assertIsNone(malformed["browser_observation"])
+        self.stage.unlink()
+        code, absent = self.finalize("absent-stage")
+        self.assertNotEqual(code, 0)
+        self.assertIsNone(absent["original_process"])
+        self.assertEqual(absent["custody"]["status"], "INCOMPLETE")
+        self.assertFalse(absent["reopen_authorized_by_this_receipt"])
 
 
 if __name__ == "__main__":
