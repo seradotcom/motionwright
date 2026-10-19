@@ -473,6 +473,311 @@ def receipt_fixture():
     return plan, {**envelope, "runs": [wanted]}, {**envelope, "runs": [got]}
 
 
+class WorkflowReviewTests(unittest.TestCase):
+    """Exact Git fixtures for the optional trust-input route, not product evidence."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-workflow-review-")
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Repo(Path(self.temp.name))
+
+    def modify(self, *names):
+        for name in names:
+            path = self.repo.root / name
+            self.repo.write(name, path.read_text(encoding="utf-8") + "# revised definition\n")
+        return self.repo.commit("workflow definition fixture")
+
+    def review(self, **kwargs):
+        plan = self.repo.plan(**kwargs)
+        views = []
+        for graph in plan["dependency_graphs"]:
+            tree = impact.Tree(self.repo.root, graph["source_sha"])
+            nodes = {}
+            for workflow in sorted(tree.workflows()):
+                raw = tree.read(workflow)
+                nodes[workflow] = {
+                    "sha256": impact.hashlib.sha256(raw).hexdigest(),
+                    "depends_on": sorted(other for other in tree.workflows()
+                                         if other != workflow and other.encode() in raw),
+                    "basis": "OFFLINE FIXTURE: controlled source, no external execution or evidence",
+                }
+            views.append({"source_sha": tree.sha, "tree_sha": tree.tree_sha,
+                          "workflows": nodes, "unresolved_dependencies": []})
+        return {
+            "schema_version": 1, "kind": "motionwright-reviewed-workflow-impact",
+            "mode": "shadow", "status": "REVIEWED",
+            "review_id": "OFFLINE_UNIT_FIXTURE_NOT_PRODUCT_EVIDENCE",
+            "source": {key: plan["source"][key] for key in
+                       ("repository", "event", "base_sha", "head_sha", "checkout_sha")},
+            "changed_paths": plan["changed_paths"], "workflow_graphs": views,
+        }
+
+    def selected(self, plan):
+        return {item["workflow"] for item in plan["selected_workflows"]}
+
+    def assert_broad(self, review, **kwargs):
+        plan = self.repo.plan(workflow_impact_review=review, **kwargs)
+        self.assertEqual(plan["workflow_impact_review"]["status"], "NOT_APPLIED")
+        self.assertIn("workflow-impact-review-not-applicable", plan["expansion_reasons"])
+        self.assertEqual(self.selected(plan), set(plan["workflow_inventory_sha256"]))
+        self.assertEqual(plan["accounting"]["executions_avoided"], 0)
+        return plan
+
+    def test_exact_review_narrows_two_workflows_and_keeps_g0(self):
+        first_use = ".github/workflows/runtime-first-use.yml"
+        self.modify(first_use, impact.PLANNER)
+        plan = self.repo.plan(workflow_impact_review=self.review())
+        self.assertEqual(self.selected(plan), {impact.CI, impact.PLANNER, first_use})
+        self.assertEqual(plan["workflow_impact_review"]["status"], "APPLIED")
+        self.assertFalse(plan["expansion_reasons"])
+        self.assertFalse(plan["blockers"])
+        self.assertEqual(plan["accounting"]["executions_avoided"], 0)
+        self.assertEqual(plan["evidence_claim"], "selection-only-no-product-test-or-release-verdict")
+        for item in plan["selected_workflows"]:
+            if item["workflow"] in (impact.CI, impact.PLANNER):
+                self.assertIn("G0", item["stages"])
+
+    def test_no_review_preserves_original_broad_workflow_rule(self):
+        self.modify(".github/workflows/runtime-first-use.yml")
+        plan = self.repo.plan()
+        self.assertEqual(plan["workflow_impact_review"], {"status": "NOT_SUPPLIED"})
+        self.assertEqual(self.selected(plan), set(plan["workflow_inventory_sha256"]))
+        self.assertIn("dependency-or-workflow-boundary:.github/workflows/runtime-first-use.yml",
+                      plan["expansion_reasons"])
+
+    def test_private_review_identity_and_narrative_do_not_enter_public_plan(self):
+        self.modify(".github/workflows/runtime-first-use.yml")
+        review = self.review()
+        review["review_id"] = "OFFLINE_PRIVATE_COORDINATION_ID_CANARY"
+        for view in review["workflow_graphs"]:
+            for node in view["workflows"].values():
+                node["basis"] = "OFFLINE PRIVATE NARRATIVE CANARY; synthetic review content"
+        plan = self.repo.plan(workflow_impact_review=review)
+        encoded = json.dumps(plan)
+        self.assertNotIn(review["review_id"], encoded)
+        self.assertNotIn("OFFLINE PRIVATE NARRATIVE CANARY", encoded)
+        self.assertEqual(plan["workflow_impact_review"]["review_sha256"], impact.digest(review))
+        self.assertEqual(plan["workflow_impact_review"]["review_id_sha256"],
+                         impact.hashlib.sha256(review["review_id"].encode()).hexdigest())
+        self.assertTrue(plan["workflow_impact_review"]["workflow_graphs"])
+
+    def test_reverse_consumers_include_removed_old_edges_and_transitive_edges(self):
+        producer = ".github/workflows/runtime-first-use.yml"
+        consumer = ".github/workflows/package-candidate.yml"
+        transitive = ".github/workflows/native-production.yml"
+        self.repo.write(consumer, f"name: Consumer\n# reads {producer}\n")
+        self.repo.write(transitive, f"name: Downstream\n# reads {consumer}\n")
+        self.repo.baseline = self.repo.commit("old explicit dependency fixture")
+        self.repo.write(consumer, "name: Consumer\n# input removed in new definition\n")
+        self.modify(producer)
+        plan = self.repo.plan(workflow_impact_review=self.review())
+        self.assertEqual(self.selected(plan), {impact.CI, impact.PLANNER, producer, consumer, transitive})
+        self.assertEqual(plan["workflow_impact_review"]["status"], "APPLIED")
+
+    def test_stale_commit_with_identical_tree_is_not_a_review_of_new_commit(self):
+        self.modify(".github/workflows/runtime-first-use.yml")
+        review = self.review()
+        before_tree = self.repo.call("rev-parse", "HEAD^{tree}")
+        self.repo.call("commit", "--allow-empty", "-m", "new source identity")
+        self.assertEqual(self.repo.call("rev-parse", "HEAD^{tree}"), before_tree)
+        plan = self.assert_broad(review)
+        self.assertIn("stale or unrelated", plan["workflow_impact_review"]["reason"])
+
+    def test_old_reviewed_semantic_consumer_cannot_disappear_from_union(self):
+        producer = ".github/workflows/runtime-first-use.yml"
+        consumer = ".github/workflows/package-candidate.yml"
+        transitive = ".github/workflows/native-production.yml"
+        self.modify(producer)
+        review = self.review()
+        for view in review["workflow_graphs"]:
+            if view["source_sha"] == self.repo.baseline:
+                view["workflows"][consumer]["depends_on"] = [producer]
+                view["workflows"][transitive]["depends_on"] = [consumer]
+        plan = self.repo.plan(workflow_impact_review=review)
+        self.assertEqual(plan["changed_paths"], [producer])
+        self.assertEqual(self.selected(plan), {impact.CI, impact.PLANNER, producer, consumer, transitive})
+
+    def test_review_source_fields_are_exact_and_complete(self):
+        self.modify(".github/workflows/runtime-first-use.yml")
+        review = self.review()
+        for key in review["source"]:
+            with self.subTest(key=key):
+                broken = copy.deepcopy(review)
+                broken["source"][key] = "unrelated"
+                self.assert_broad(broken)
+        broken = copy.deepcopy(review)
+        broken["source"]["claimed_same_tree_reuse"] = True
+        self.assert_broad(broken)
+
+    def test_draft_missing_and_unsupported_review_fields_cannot_narrow(self):
+        self.modify(".github/workflows/runtime-first-use.yml")
+        review = self.review()
+        edits = (("status", "PROPOSED"), ("schema_version", True), ("mode", "enforcing"),
+                 ("review_id", ""), ("review_id", "unsafe\nlabel"))
+        for key, value in edits:
+            with self.subTest(key=key, value=value):
+                broken = copy.deepcopy(review)
+                broken[key] = value
+                self.assert_broad(broken)
+        broken = copy.deepcopy(review)
+        del broken["workflow_graphs"]
+        self.assert_broad(broken)
+        broken = copy.deepcopy(review)
+        broken["automatic_acceptance"] = True
+        self.assert_broad(broken)
+
+    def test_all_source_views_definitions_and_hashes_are_required(self):
+        self.modify(".github/workflows/runtime-first-use.yml")
+        review = self.review()
+        variants = []
+        broken = copy.deepcopy(review)
+        broken["workflow_graphs"].pop()
+        variants.append(broken)
+        broken = copy.deepcopy(review)
+        broken["workflow_graphs"].append(copy.deepcopy(broken["workflow_graphs"][0]))
+        variants.append(broken)
+        broken = copy.deepcopy(review)
+        broken["workflow_graphs"][0]["tree_sha"] = "a" * 40
+        variants.append(broken)
+        broken = copy.deepcopy(review)
+        del broken["workflow_graphs"][0]["workflows"][impact.CI]
+        variants.append(broken)
+        broken = copy.deepcopy(review)
+        broken["workflow_graphs"][0]["workflows"][impact.CI]["sha256"] = "b" * 64
+        variants.append(broken)
+        for index, broken in enumerate(variants):
+            with self.subTest(index=index):
+                self.assert_broad(broken)
+
+    def test_dependency_omissions_and_unresolved_edges_broaden(self):
+        producer = ".github/workflows/runtime-first-use.yml"
+        consumer = ".github/workflows/package-candidate.yml"
+        self.repo.write(consumer, f"name: Consumer\n# refers to {producer}\n")
+        self.repo.baseline = self.repo.commit("consumer fixture")
+        self.modify(producer)
+        review = self.review()
+        for view in review["workflow_graphs"]:
+            view["workflows"][consumer]["depends_on"] = []
+        plan = self.assert_broad(review)
+        self.assertIn("omits a literal", plan["workflow_impact_review"]["reason"])
+        review = self.review()
+        review["workflow_graphs"][0]["unresolved_dependencies"] = ["indirect artifact source"]
+        self.assert_broad(review)
+
+    def test_unsafe_duplicate_or_unreviewed_dependency_records_broaden(self):
+        self.modify(".github/workflows/runtime-first-use.yml")
+        review = self.review()
+        for dependencies in (["../escape.yml"], [impact.PLANNER, impact.PLANNER],
+                             [impact.CI], [True], "not a list"):
+            with self.subTest(dependencies=dependencies):
+                broken = copy.deepcopy(review)
+                broken["workflow_graphs"][0]["workflows"][impact.CI]["depends_on"] = dependencies
+                self.assert_broad(broken)
+        broken = copy.deepcopy(review)
+        broken["workflow_graphs"][0]["workflows"][impact.CI]["basis"] = ""
+        self.assert_broad(broken)
+
+    def test_unreviewed_activation_and_reusable_contracts_stay_broad(self):
+        path = ".github/workflows/native-production.yml"
+        for relationship in ("workflow_run", "workflow_call", "repository_dispatch"):
+            with self.subTest(relationship=relationship):
+                self.repo.write(path, f"name: Fixture\non: [{relationship}]\n")
+                self.repo.commit("relationship needs a wider event contract")
+                plan = self.assert_broad(self.review())
+                self.assertIn("wider contract", plan["workflow_impact_review"]["reason"])
+
+    def test_mixed_product_shared_action_lock_or_unlisted_path_never_narrows(self):
+        workflow = ".github/workflows/runtime-first-use.yml"
+        start = self.modify(workflow)
+        for path in ("Cargo.lock", ".github/actions/shared/action.yml", "tooling/unknown.py",
+                     "crates/domain/src/lib.rs"):
+            with self.subTest(path=path):
+                self.repo.write(path, "changed shared or unreviewed input\n")
+                self.repo.commit("non-workflow input")
+                review = self.review()
+                self.assert_broad(review)
+                review["changed_paths"] = [workflow]
+                self.assert_broad(review)
+                self.repo.call("reset", "--hard", start)
+
+    def test_new_renamed_deleted_workflows_keep_full_disposition(self):
+        path = ".github/workflows/native-manim-e2e.yml"
+        self.repo.write(".github/workflows/new.yml", "name: New\n")
+        self.repo.commit("new workflow")
+        self.assert_broad(self.review())
+        self.repo.call("mv", path, ".github/workflows/renamed.yml")
+        self.repo.commit("rename workflow")
+        plan = self.assert_broad(self.review())
+        self.assertIn("removed-workflow:" + path, plan["blockers"])
+        self.repo.call("rm", ".github/workflows/runtime-first-use.yml")
+        self.repo.commit("remove workflow")
+        plan = self.assert_broad(self.review())
+        self.assertIn("removed-workflow:.github/workflows/runtime-first-use.yml", plan["blockers"])
+
+    def test_candidate_and_incomplete_graph_take_precedence(self):
+        self.modify(".github/workflows/runtime-first-use.yml")
+        plan = self.assert_broad(self.review(), candidate=True)
+        self.assertTrue(all("G3" in item["stages"] for item in plan["selected_workflows"]))
+        self.repo.write("Cargo.toml", "[workspace]\nmembers=['crates/missing']\n")
+        self.repo.commit("incomplete dependency graph")
+        plan = self.assert_broad(self.review())
+        self.assertIn("incomplete-dependency-graph", plan["expansion_reasons"])
+
+    def test_complete_pr_comparison_and_exact_ordered_merge_are_preserved(self):
+        base = self.repo.baseline
+        self.repo.call("checkout", "-b", "topic")
+        self.modify(".github/workflows/runtime-first-use.yml")
+        head = self.modify(impact.PLANNER)
+        self.repo.call("checkout", "main")
+        self.repo.call("merge", "--no-ff", "topic", "-m", "exact ordered merge")
+        checkout = self.repo.call("rev-parse", "HEAD")
+        inputs = dict(base=base, head=head, checkout=checkout, event="pull_request")
+        review = self.review(**inputs)
+        self.assertEqual(len(review["workflow_graphs"]), 3)
+        plan = self.repo.plan(**inputs, workflow_impact_review=review)
+        self.assertEqual(plan["source"]["checkout_parents"], [base, head])
+        self.assertEqual(self.selected(plan), {impact.CI, impact.PLANNER,
+                                             ".github/workflows/runtime-first-use.yml"})
+        self.assertEqual(plan["source"]["scope"], "pr-merge")
+        self.assertEqual(plan["change_ranges"][0]["before"], base)
+        with self.assertRaises(impact.PlanError):
+            self.repo.plan(**dict(inputs, head=base), workflow_impact_review=review)
+
+    def test_advanced_base_cannot_be_narrowed_by_a_matching_review(self):
+        event_base = self.repo.baseline
+        self.repo.call("checkout", "-b", "topic")
+        head = self.modify(".github/workflows/runtime-first-use.yml")
+        self.repo.call("checkout", "main")
+        self.modify(impact.PLANNER)
+        self.repo.call("merge", "--no-ff", "topic", "-m", "advanced base merge")
+        checkout = self.repo.call("rev-parse", "HEAD")
+        inputs = dict(base=event_base, head=head, checkout=checkout, event="pull_request",
+                      allow_advanced_pr_base=True)
+        plan = self.assert_broad(self.review(**inputs), **inputs)
+        self.assertIn("advanced-pr-base-requires-full-shadow-inventory", plan["expansion_reasons"])
+        self.assertTrue(plan["source"]["pr_base_reconciliation"]["advanced"])
+
+    def test_cli_accepts_only_external_review_and_preserves_original_exit(self):
+        self.modify(".github/workflows/runtime-first-use.yml")
+        review = self.review()
+        with tempfile.TemporaryDirectory(prefix="mw-external-workflow-review-") as external:
+            review_path = Path(external) / "review.json"
+            review_path.write_text(json.dumps(review), encoding="utf-8")
+            command = [sys.executable, "-B", str(MODULE), "plan", "--repo", str(self.repo.root)]
+            for name, value in review["source"].items():
+                command.extend(["--" + name.removesuffix("_sha"), value])
+            result = subprocess.run(command + ["--reviewed-workflow-impact", str(review_path)],
+                                    capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["workflow_impact_review"]["status"], "APPLIED")
+            internal = self.repo.root / "review.json"
+            internal.write_text(json.dumps(review), encoding="utf-8")
+            result = subprocess.run(command + ["--reviewed-workflow-impact", str(internal)],
+                                    capture_output=True, check=False)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(b"outside source checkout", result.stderr)
+
+
 class AggregateTests(unittest.TestCase):
     def setUp(self):
         self.plan, self.expected, self.observed = receipt_fixture()
