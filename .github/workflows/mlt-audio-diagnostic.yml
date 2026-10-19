@@ -316,7 +316,7 @@ jobs:
           original=pathlib.Path(os.environ["MW_MLT_SOURCE"])/"src/modules/avformat/consumer_avformat.c"
           combined=source/"src/modules/avformat/consumer_avformat.c"
           assert hashlib.sha256(original.read_bytes()).hexdigest()=="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-          assert hashlib.sha256(combined.read_bytes()).hexdigest()=="202df78821983fccfebf31a57db6c47e25abd871247f1352ceac9d7b7237ed31"
+          assert hashlib.sha256(combined.read_bytes()).hexdigest()=="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
           modules=re.findall(r"^option\((MOD_[A-Z0-9_]+) ",(source/"CMakeLists.txt").read_text(),re.M)
           assert "MOD_AVFORMAT" in modules
           args=["cmake","-S",str(source),"-B",str(work/"build/mlt"),
@@ -334,7 +334,7 @@ jobs:
           work=pathlib.Path(os.environ["MW_DIAG_WORK"])
           source=pathlib.Path(os.environ["MW_MLT_COMBINED_SOURCE"])
           consumer=(source/"src/modules/avformat/consumer_avformat.c").resolve(strict=True)
-          assert hashlib.sha256(consumer.read_bytes()).hexdigest()=="202df78821983fccfebf31a57db6c47e25abd871247f1352ceac9d7b7237ed31"
+          assert hashlib.sha256(consumer.read_bytes()).hexdigest()=="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
           compile_rows=json.loads((work/"build/mlt/compile_commands.json").read_text())
           def compiled_file(row):
               path=pathlib.Path(row["file"])
@@ -380,12 +380,12 @@ jobs:
           assert prepared["source_inputs_sha256"]==sha(public/"source-inputs.json")
           assert prepared["sources"]==inputs["sources"] and prepared["source_blob_oids"]==inputs["source_blob_oids"]
           assert prepared["C_layout_checks"]==prepared["full_consumer_compile"]==prepared["physical_runtime"]=="NOT_RUN"
-          assert prepared["outputs"]["consumer_avformat.c"]=="202df78821983fccfebf31a57db6c47e25abd871247f1352ceac9d7b7237ed31"
-          assert prepared["outputs"]["planar-helper-under-test.h"]=="fa56e6635f8731f62c9fca1305ee1b916e752526bbeeaaa4404addb24e327013"
+          assert prepared["outputs"]["consumer_avformat.c"]=="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+          assert prepared["outputs"]["planar-helper-under-test.h"]=="d90db74a261da8053a7f8258f1b9975e692ab54888408cd0a2818ee26e720bf9"
           for name in ("provider_compiled","provider_admitted","native_dispatched",
                        "master_audio_tail_corrected","production_master_accepted","release_authorized"):
               assert prepared[name] is False
-          for name,expected in (("composition-contracts.json",19),("repair-contracts.json",11)):
+          for name,expected in (("composition-contracts.json",19),("repair-contracts.json",13)):
               result=json_file(name)
               assert result=={"tests_run":expected,"failures":0,"errors":0,"skipped":0,
                               "expected_failures":0,"unexpected_successes":0,"complete":True}

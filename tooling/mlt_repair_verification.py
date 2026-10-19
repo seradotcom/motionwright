@@ -19,10 +19,10 @@ import stat
 import sys
 
 ORIGINAL_SHA256 = "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-REPAIRED_SHA256 = "47bbce12e1cceb1a5aeb7149f7844522dd8c3f4c5e9b004af57c35cac254d41b"
+REPAIRED_SHA256 = "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"
 INSTRUMENTED_SHA256 = "9190366bf2cddfd8214497fa9ec42fa2ef55dfbed5f8248c69b7aaae7854cabb"
-COMBINED_SHA256 = "202df78821983fccfebf31a57db6c47e25abd871247f1352ceac9d7b7237ed31"
-HELPER_SHA256 = "fa56e6635f8731f62c9fca1305ee1b916e752526bbeeaaa4404addb24e327013"
+COMBINED_SHA256 = "579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+HELPER_SHA256 = "d90db74a261da8053a7f8258f1b9975e692ab54888408cd0a2818ee26e720bf9"
 MAX_SOURCE_BYTES = 256 * 1024
 DIAGNOSTIC_FOLDER = "tooling/mlt-audio-diagnostic"
 VERIFIER_PATH = "tooling/mlt_repair_verification.py"
@@ -31,10 +31,10 @@ DIAGNOSTIC_DIGESTS = {
     "README.md": "ce82e3ce647603385ca3233b1bdebc1c25cf732a6ad9758a7d0a8fad7ec51e1d",
     "audio_tap.h": "06bd150f81728aa0339ac70f9f4d19f29100f4a7902144cd092643f48b7e9d2c",
     "instrument_consumer.py": "b211aedb430412bb36f7e5e86d708d9dd4b11c0287a31ba85f183380223f2576",
-    "repair_planar_source.py": "709cff5e40e306762d203c61135769926e49d5d6dbbd2e2c4b9e0e06597c2c29",
+    "repair_planar_source.py": "028d1f6e7e2a034aeb60b0e40dfc5154af401691f960483c3d0b77fe09bde87d",
     "test_audio_tap.c": "4d19fdfdf37d8380d318b731269fe08a835db89de8b671dbb60fe9e61b1f3c1b",
-    "test_planar_padding.c": "b57b6366adca3fad5aa66049641dc878a5c37f76622a13da981c2754a36d2679",
-    "test_repair_planar_source.py": "19df5a30ea6bf8bc779d62f8becb5578b699e2b8a134b5d86d829b91969e2615",
+    "test_planar_padding.c": "ab44f0a12a583d878cfbbb0272a209c8526446128cef660b505053d9463e5b9b",
+    "test_repair_planar_source.py": "33753a745e38f77b11ca29d875e47d39a291badc57dc10cb90fb58a1fc149ae4",
     "test_verify_trace.py": "ffd144a932604e2beb9681a9608dc449b360623717be4d90c74cdc7475bbc261",
     "verify_trace.py": "7d2c809c0beea42ebf2e1183fc13bb16871032892a8b6f12fa6ff926ee854ed6",
 }
