@@ -53,6 +53,209 @@ def tiny_child(runner, root, script, *, timeout=5):
         root, timeout)
 
 
+def readonly_link_fixture(root):
+    """Synthetic Cargo records and bytes; no compiler or SDK is executed."""
+    source = root / "sdk"
+    cargo = root / "cargo"
+    target = root / "target"
+    deps = target / "debug" / "deps"
+    deps.mkdir(parents=True)
+    rows = []
+    registry = "registry+https://github.com/rust-lang/crates.io-index#"
+    for name in sorted(set(sdk.READONLY_SDK_LIBRARIES)
+                       | set(sdk.READONLY_REGISTRY_LIBRARIES)):
+        if name in sdk.READONLY_SDK_LIBRARIES:
+            folder = source / "crates" / sdk.READONLY_SDK_LIBRARIES[name]
+            package = ("path+" + folder.as_uri() + "#"
+                       + name.replace("_", "-") + "@1.0.0")
+            entry = folder / "src" / "lib.rs"
+        else:
+            crate, version = sdk.READONLY_REGISTRY_LIBRARIES[name]
+            package = registry + crate + "@" + version
+            entry = (cargo / "registry" / "src" / "synthetic-index"
+                     / (crate + "-" + version) / "src" / "lib.rs")
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.write_bytes(b"// synthetic original source\n")
+        artifact = deps / ("lib" + name + "-0123456789abcdef.rlib")
+        artifact.write_bytes(("synthetic artifact: " + name).encode())
+        rows.append({
+            "reason": "compiler-artifact", "package_id": package,
+            "target": {"name": name, "kind": ["lib"], "crate_types": ["lib"],
+                       "src_path": str(entry)},
+            "profile": {"test": False}, "features": [], "fresh": False,
+            "filenames": [str(artifact)], "executable": None,
+        })
+    native = target / "debug" / "build" / "libsqlite3-sys-synthetic" / "out"
+    native.mkdir(parents=True)
+    (native / "libsqlite3.a").write_bytes(b"synthetic static archive")
+    rows.append({
+        "reason": "build-script-executed",
+        "package_id": registry + "libsqlite3-sys@0.38.2", "out_dir": str(native),
+        "linked_paths": ["native=" + str(native)], "linked_libs": ["static=sqlite3"],
+    })
+    rows.append({"reason": "build-finished", "success": True})
+    return rows, target, source, cargo
+
+
+def cargo_json(rows):
+    return ("\n".join(json.dumps(row) for row in rows) + "\n").encode()
+
+
+def readonly_observation_fixture(root):
+    """Synthetic serialized Host report; no SDK, Host, renderer or process runs."""
+    source, output, work = root / "sdk", root / "evidence", root / "private"
+    pins, expected, observed, inputs = [], {}, {}, []
+    counter = 0
+    def sealed(path, data):
+        nonlocal counter
+        counter += 1
+        token = {"device": 1, "inode": counter, "size": len(data), "mode": 0o100600,
+                 "uid": 1000, "gid": 1000, "nlink": 1, "mtime_seconds": 1,
+                 "mtime_nanoseconds": 0, "ctime_seconds": 1, "ctime_nanoseconds": 0}
+        record = {"path": str(path), "bytes": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest(), "identity": token}
+        external = {**record, "identity": [1, counter, len(data), 1000000000, 1000000000]}
+        return record, external
+    for key, path in (
+        ("sdk_lock", source / "Cargo.lock"), ("driver", root / "driver"),
+        ("sandbox", root / "sandbox"), ("new_fixture_source", root / "fixture.rs"),
+        ("new_fixture_harness", root / "fixture-test"),
+    ):
+        observed[key], expected[key] = sealed(path, ("synthetic:" + key).encode())
+    for original in sdk.READONLY_INPUTS:
+        pin = dict(original)
+        value = {"id": pin["project_id"], "generation": pin["generation"], "revision": 1,
+                 "assets": [], "audio": [], "scenes": []}
+        raw = json.dumps(value).encode()
+        record, external = sealed(source / pin["path"], raw)
+        pin.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        pins.append(pin)
+        expected[pin["label"]] = external
+        inputs.append({"label": pin["label"], "relative_source_path": pin["path"],
+                       "record": record, "original_utf8": raw.decode(),
+                       "project_identity_before": {key: value[key] for key in (
+                           "id", "generation", "revision")}})
+    def serialized(value, name):
+        text = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        return {name + "_utf8": text, name + "_bytes": len(text.encode()),
+                name + "_sha256": hashlib.sha256(text.encode()).hexdigest()}
+    names = sorted({name for _, name in sdk.READONLY_CALLS})
+    names += ["synthetic.unselected." + str(i) for i in range(33 - len(names))]
+    caps = [{"descriptor": {"name": name, "risk": "read_only", "idempotency": "read_only"},
+             "aliases": [], "tags": [], "object_types": []} for name in names]
+    catalog = {"capabilities": caps, "original_sdk_digest": sdk.READONLY_CATALOG_DIGEST,
+               **serialized(caps, "serialized_value")}
+    hosts = []
+    for pin in pins:
+        folder = work / pin["label"]
+        copied_file = json.loads(json.dumps(next(x for x in inputs
+                                                 if x["label"] == pin["label"])["record"]))
+        copied_file["path"] = str(folder / "project/semwright-motion.json")
+        copied_driver = json.loads(json.dumps(observed["driver"]))
+        copied_driver["path"] = str(folder / "bin/semwright-motion-canvas-driver")
+        copied_driver["identity"]["mode"] = 0o100700
+        project = {"directory": str(folder / "project"),
+                   "directory_identity": {"mode": 0o40700}, "file": copied_file}
+        manifest = {
+            "executable": copied_driver["path"], "sha256": copied_driver["sha256"],
+            "network": False, "tools": [], "secrets": [],
+            "mounts": [{"root": "project", "read_only": True, "execute": False}],
+        }
+        identity = {"id": "driver:motion-canvas", "kind": "driver", "version": "1.0.0",
+                    "namespace": "driver.motion-canvas.", "application": None,
+                    "origin": "driver-manifest:motionwright-ci-fixture"}
+        hosts.append({
+            "label": pin["label"], "state": "COMPLETED", "manifest": manifest,
+            "grants": [{"name": "project", "path": str(folder / "project"),
+                        "read": True, "write": False}],
+            "network_opt_in": False, "project_before": project, "project_after": project,
+            "driver_before": copied_driver, "driver_after": copied_driver,
+            "host_state_directory": str(folder / "host-state"),
+            "shutdown": {"state": "COMPLETED", "closed_token_cancelled": True},
+            "identity_before": identity, "identity_after": identity,
+            "catalog_before": catalog, "catalog_after": catalog,
+            "project_identity_after": {
+                "id": pin["project_id"], "generation": pin["generation"], "revision": 1,
+                "fingerprint": pin["sha256"], "derived_from_unchanged_original_bytes": True},
+        })
+    calls = []
+    args = [{}, {}, {"kind": "polygon"}, {},
+            {"node_ref": "synthetic-node-reference", "property": "sides"},
+            {"profile": {"first_frame": 0, "end_frame_exclusive": 2, "scale": "full",
+                         "transparent": False, "timeout_ms": 10000}},
+            {}, {}, {}, {"scene_ref": "synthetic-scene-reference"}, {}]
+    for ordinal, ((label, name), arg) in enumerate(zip(sdk.READONLY_CALLS, args), 1):
+        response = {"synthetic": True}
+        if ordinal == 4:
+            response = {"items": [{"id": "polygon", "reference": "synthetic-node-reference"}]}
+        if ordinal == 9:
+            response = {"items": [{"id": "cue-scene", "reference": "synthetic-scene-reference"}]}
+        descriptor = next(x["descriptor"] for x in caps if x["descriptor"]["name"] == name)
+        calls.append({
+            "ordinal": ordinal, "host": label, "command": name, "args": arg,
+            "session": "motionwright-sdk-readonly-" + label,
+            "request_id": "synthetic-request-" + str(ordinal), "descriptor": descriptor,
+            "descriptor_digest": "d" * 64, "state": "RETURNED", "response": response,
+            **serialized(response, "response_value"),
+        })
+    watched = [*observed.values(), *(x["record"] for x in inputs)]
+    report = {
+        "schema": "motionwright.motion-canvas-readonly-host.v1",
+        "started_unix_ms": 1000, "ended_unix_ms": 2000, "elapsed_millis": 1000,
+        "terminal": "PASSED", "sdk_source_expected": {
+            "commit": sdk.SDK_SHA, "tree": sdk.SDK_TREE,
+            "complete_checkout_binding": "REQUIRED_FROM_CALLER"},
+        "fixture_source_role": "NEW_SEPARATE_LIBTEST", "source_root": str(source),
+        "output_directory": str(output), "private_work_root": str(work),
+        "private_work_upload_allowed": False, "inputs": inputs, "hosts": hosts,
+        "calls": calls, "events": [], "observed_files": observed,
+        "input_postcheck": [{"path": r["path"], "before": r, "after": r, "unchanged": True}
+                            for r in watched],
+        "scope": dict(sdk.READONLY_SCOPE),
+        "counts_expected": {"provider_connections": 2, "provider_shutdowns": 2,
+                            "execute_calls": 11, "libtest_methods": 1, "original_fixture_files": 2},
+        "counts": {"provider_connections_attempted": 2, "provider_connections_completed": 2,
+                   "provider_shutdowns_completed": 2, "execute_calls_attempted": 11,
+                   "execute_calls_completed": 11},
+    }
+    def event(kind, data):
+        report["events"].append({"kind": kind, "data": data, "unix_ms": 1001,
+                                 "elapsed_millis": len(report["events"])})
+    event("fixture_preflight_complete", {
+        "state": "SOURCE_INPUTS_PINNED", "sdk_source_expected": sdk.SDK_SHA,
+        "complete_checkout_binding": "REQUIRED_FROM_CALLER",
+        "original_inputs": inputs, "observed_files": observed})
+    for host in hosts:
+        label = host["label"]
+        event("connect_intent", {"host": label, "state": "UNKNOWN_UNTIL_OUTCOME",
+                                 "manifest": host["manifest"], "grants": host["grants"]})
+        event("connect_outcome", {"host": label, "state": "CONNECTED",
+                                  "identity": host["identity_before"]})
+        event("catalog_intent", {"host": label, "state": "UNKNOWN_UNTIL_OUTCOME"})
+        event("catalog_outcome", {"host": label, "state": "RETURNED", "count": 33,
+                                  "original_sdk_digest": sdk.READONLY_CATALOG_DIGEST})
+        for call in [x for x in calls if x["host"] == label]:
+            intent = {k: v for k, v in call.items()
+                      if k != "response" and not k.startswith("response_value_")}
+            intent["state"] = "UNKNOWN_UNTIL_OUTCOME"
+            event("execute_intent", intent)
+            event("execute_outcome", call)
+        event("catalog_intent", {"host": label, "state": "UNKNOWN_UNTIL_OUTCOME"})
+        event("catalog_outcome", {"host": label, "state": "RETURNED", "count": 33,
+                                  "original_sdk_digest": sdk.READONLY_CATALOG_DIGEST})
+        event("shutdown_intent", {"host": label, "state": "UNKNOWN_UNTIL_OUTCOME",
+                                   "cleanup_after_error": False})
+        event("shutdown_outcome", {"host": label, "state": "COMPLETED"})
+    payload = json.dumps(report).encode()
+    observation, external_report = sealed(output / "readonly-host-observation.json", payload)
+    terminal = {"state": "PASSED", "observation": observation,
+                "readonly_fixture_complete": True, "native_render_calls": 0,
+                "node_tool_calls": 0, "formal_acceptance": False}
+    stdout = ("\n".join("MW_SDK_READONLY_EVENT " + json.dumps(x) for x in report["events"])
+              + "\nMW_SDK_READONLY_TERMINAL " + json.dumps(terminal) + "\n").encode()
+    return report, source, output, work, expected, stdout, external_report, pins
+
+
 class SdkG1Controls(unittest.TestCase):
     def test_rust_footer_and_exact_id_positive(self):
         for host, ids, filtered in (
@@ -412,6 +615,127 @@ class SdkG1Controls(unittest.TestCase):
                 sdk.execute_original_harness(
                     runner, "mutated-case", records, key, arguments, source)
             self.assertEqual(runner.command.call_count, 2)
+
+    def test_readonly_link_selects_exact_versions_and_seals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            rows, target, source, cargo = readonly_link_fixture(root)
+            other_sha2 = json.loads(json.dumps(
+                next(row for row in rows if row.get("target", {}).get("name") == "sha2")))
+            other_sha2["package_id"] = (
+                "registry+https://github.com/rust-lang/crates.io-index#sha2@0.10.9")
+            rows.insert(0, other_sha2)
+            result = sdk.readonly_link_inputs(cargo_json(rows), target, source, cargo)
+            self.assertEqual(result["direct_library_count"], 11)
+            self.assertTrue(result["externs"]["sha2"]["package_id"].endswith("sha2@0.11.0"))
+            self.assertEqual(set(result["externs"]), {
+                "semwright_backend_api", "semwright_driver_host", "semwright_driver_sdk",
+                "semwright_driver_motion_canvas", "semwright_policy", "semwright_types",
+                "serde_json", "tokio", "tokio_util", "sha2", "hex",
+            })
+            snapshot = sdk.readonly_dependency_snapshot(target)
+            sdk.check_readonly_link_seals(result, snapshot)
+            # A changed transitive search input invalidates the seal even if
+            # all eleven selected direct rlibs retain their original bytes.
+            extra = target / "debug" / "deps" / "libunselected-added.rlib"
+            extra.write_bytes(b"new transitive input")
+            with self.assertRaises(sdk.Refused):
+                sdk.check_readonly_link_seals(result, snapshot)
+
+    def test_readonly_link_rejects_unbound_or_incomplete_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            rows, target, source, cargo = readonly_link_fixture(root)
+            cases = {}
+            cases["missing_library"] = rows[1:]
+            cases["duplicate_library"] = [rows[0], *rows]
+            cases["uncompleted"] = rows[:-1]
+            for name, change in (
+                    ("outside_artifact", lambda value: value[0].update(
+                        filenames=[str(root / "foreign.rlib")])),
+                    ("different_sdk_package", lambda value: next(
+                        row for row in value if row.get("target", {}).get("name")
+                        == "semwright_backend_api").update(
+                        package_id="path+file:///foreign#semwright-backend-api@1.0.0")),
+                    ("foreign_source", lambda value: next(
+                        row for row in value if row.get("target", {}).get("name")
+                        == "semwright_backend_api")["target"].update(
+                        src_path=str(root / "foreign.rs"))),
+                    ("registry_escape", lambda value: next(
+                        row for row in value if row.get("target", {}).get("name")
+                        == "serde_json")["target"].update(src_path=str(root / "foreign.rs"))),
+                    ("wrong_sha2_version", lambda value: next(
+                        row for row in value if row.get("target", {}).get("name")
+                        == "sha2").update(package_id=
+                            "registry+https://github.com/rust-lang/crates.io-index#sha2@0.10.9")),
+                    ("dynamic_sqlite", lambda value: value[-2].update(
+                        linked_libs=["dylib=sqlite3"])),
+                    ("numeric_success", lambda value: value[-1].update(success=1)),
+                    ("failed_build", lambda value: value[-1].update(success=False))):
+                altered = json.loads(json.dumps(rows))
+                change(altered)
+                cases[name] = altered
+            for name, values in cases.items():
+                with self.subTest(name=name), self.assertRaises(sdk.Refused):
+                    sdk.readonly_link_inputs(cargo_json(values), target, source, cargo)
+
+    def test_readonly_observation_requires_complete_original_custody(self):
+        with tempfile.TemporaryDirectory() as directory:
+            values = readonly_observation_fixture(Path(directory).resolve())
+            report, source, output, work, expected, stdout, report_file, pins = values
+            with mock.patch.object(sdk, "READONLY_INPUTS", tuple(pins)), \
+                    mock.patch.object(sdk, "SDK_LOCK", expected["sdk_lock"]["sha256"]):
+                def validate(value=report, external=expected, captured=stdout, record=report_file):
+                    return sdk.validate_readonly_observation(
+                        value, source, output, work, external, captured, record)
+                result = validate()
+                self.assertEqual(result["execute_calls"], 11)
+                self.assertEqual(result["captured_intent_outcome_events"], 39)
+                self.assertFalse(result["physical_native_render"])
+                self.assertFalse(result["human_acceptance"])
+                changes = (
+                    ("unknown_terminal", lambda v: v.update(terminal="UNKNOWN")),
+                    ("numeric_completion", lambda v: v["scope"].update(readonly_fixture_complete=1)),
+                    ("unreviewed_pass_field", lambda v: v.update(release_pass=True)),
+                    ("different_source", lambda v: v["sdk_source_expected"].update(commit="a" * 40)),
+                    ("missing_host", lambda v: v["hosts"].pop()),
+                    ("replayed_query", lambda v: v["calls"][1].update(
+                        request_id=v["calls"][0]["request_id"])),
+                    ("omitted_query", lambda v: v["calls"].pop()),
+                    ("unfinished_query", lambda v: v["calls"][0].update(state="UNKNOWN")),
+                    ("unbound_serialized_bytes", lambda v: v["calls"][0].update(
+                        response_value_utf8='{"synthetic":false}')),
+                    ("missing_utf8", lambda v: v["inputs"][0].pop("original_utf8")),
+                    ("changed_original", lambda v: v["inputs"][0].update(original_utf8="{}")),
+                    ("missing_postcheck", lambda v: v["input_postcheck"].pop()),
+                    ("changed_identity", lambda v: v["input_postcheck"][0]["after"]["identity"].update(
+                        inode=99999)),
+                    ("unknown_shutdown", lambda v: v["hosts"][0]["shutdown"].update(state="UNKNOWN")),
+                    ("changed_provider", lambda v: v["hosts"][0]["identity_after"].update(
+                        origin="different-provider")),
+                    ("write_granted", lambda v: v["hosts"][0]["grants"][0].update(write=True)),
+                    ("private_upload", lambda v: v.update(private_work_upload_allowed=True)),
+                    ("different_library_driver", lambda v: v["observed_files"]["driver"].update(
+                        sha256="a" * 64)),
+                    ("missing_catalog", lambda v: v["hosts"][0]["catalog_before"]["capabilities"].pop()),
+                    ("missing_event", lambda v: v["events"].pop()),
+                    ("human_promotion", lambda v: v["scope"].update(human_evaluation=True)),
+                )
+                for name, mutate in changes:
+                    with self.subTest(name=name), self.assertRaises(sdk.Refused):
+                        altered = json.loads(json.dumps(report))
+                        mutate(altered)
+                        validate(altered)
+                external = json.loads(json.dumps(expected))
+                external["new_fixture_harness"]["sha256"] = "b" * 64
+                with self.assertRaises(sdk.Refused):
+                    validate(external=external)
+                for captured in (b"", stdout + stdout, stdout.replace(
+                        b"MW_SDK_READONLY_EVENT ", b"omitted ", 1)):
+                    with self.subTest(capture=captured[:30]), self.assertRaises(sdk.Refused):
+                        validate(captured=captured)
+                with self.assertRaises(sdk.Refused):
+                    validate(record={**report_file, "sha256": "f" * 64})
 
     def test_unittest_zero_skip_and_exact_method_inventory(self):
         module = "tooling.tests.test_motion_canvas_sdk_g1"

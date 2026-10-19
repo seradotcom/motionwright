@@ -37,6 +37,66 @@ WORKFLOW = ".github/workflows/native-sdk.yml"
 CALLEE = ".github/workflows/motion-canvas-sdk-contracts.yml"
 SELF_PATH = "tooling/motion_canvas_sdk_g1.py"
 TEST_PATH = "tooling/tests/test_motion_canvas_sdk_g1.py"
+READONLY_PATH = "tooling/motion_canvas_host_readonly.rs"
+READONLY_CASE_ID = "readonly_host_queries_preserve_original_fixtures"
+READONLY_SDK_LIBRARIES = {
+    "semwright_backend_api": "backend-api",
+    "semwright_driver_host": "driver-host",
+    "semwright_driver_sdk": "driver-sdk",
+    "semwright_driver_motion_canvas": "driver-motion-canvas",
+    "semwright_policy": "policy",
+    "semwright_types": "types",
+}
+READONLY_REGISTRY_LIBRARIES = {
+    "serde_json": ("serde_json", "1.0.151"),
+    "tokio": ("tokio", "1.53.1"),
+    "tokio_util": ("tokio-util", "0.7.19"),
+    "sha2": ("sha2", "0.11.0"),
+    "hex": ("hex", "0.4.3"),
+}
+READONLY_CATALOG_DIGEST = "d7a1bc53c1cc25bfb839edbb99b81c03bf720441f050e86144fd6c9aa672a5a5"
+READONLY_INPUTS = (
+    {
+        "label": "semantic",
+        "path": "fixtures/motion-canvas/semantic-complete/semwright-motion.json",
+        "bytes": 9643,
+        "sha256": "3e98c414762f8187463b3dd0bc4ebed13fdea8f2879e63d0db015ec6efad2059",
+        "project_id": "semantic-complete",
+        "generation": "11111111111111111111111111111111",
+    },
+    {
+        "label": "cues",
+        "path": "fixtures/motion-canvas/audio-cues/semwright-motion.json",
+        "bytes": 1760,
+        "sha256": "3815bf836331dd8f5aae01d4f463d699329b20568310cd5005fa16138e944cc5",
+        "project_id": "audio-cues",
+        "generation": "617564696f2d63756573000000000000",
+    },
+)
+READONLY_CALLS = (
+    ("semantic", "driver.motion-canvas.doctor"),
+    ("semantic", "driver.motion-canvas.semantic.types"),
+    ("semantic", "driver.motion-canvas.semantic.describe"),
+    ("semantic", "driver.motion-canvas.node.list"),
+    ("semantic", "driver.motion-canvas.node.property.get"),
+    ("semantic", "driver.motion-canvas.render.plan"),
+    ("semantic", "driver.motion-canvas.doctor"),
+    ("cues", "driver.motion-canvas.doctor"),
+    ("cues", "driver.motion-canvas.scene.list"),
+    ("cues", "driver.motion-canvas.cue.list"),
+    ("cues", "driver.motion-canvas.doctor"),
+)
+READONLY_SCOPE = {
+    "api_values_are_original_responses": True, "raw_json_rpc_wire_bytes": False,
+    "render_calls": 0, "node_tool_calls": 0, "mutation_capability_calls": 0,
+    "pixel_or_audio_verification": False, "seek_runtime_verification": False,
+    "four_phase_production": False, "installed_product": False,
+    "human_evaluation": False, "formal_acceptance": False, "release_acceptance": False,
+    "full_runtime_dependency_attestation": False,
+    "admission_requires_harness_exit_zero_and_caller_source_binding": True,
+    "readonly_fixture_complete": True,
+}
+
 RUST_VERSION = "1.98.1"
 UNIT_IDS = (
     "driver::tests::capability_catalog_and_manifest_are_stable_goldens",
@@ -70,6 +130,9 @@ QA_METHODS = (
     "test_source_and_tool_mutation_prevents_pass",
     "test_build_seal_uses_final_test_profile_driver",
     "test_direct_harness_preserves_seals_and_package_directory",
+    "test_readonly_link_selects_exact_versions_and_seals",
+    "test_readonly_link_rejects_unbound_or_incomplete_inputs",
+    "test_readonly_observation_requires_complete_original_custody",
     "test_unittest_zero_skip_and_exact_method_inventory",
 )
 CONTEXT_KEYS = (
@@ -352,6 +415,134 @@ def compiler_artifacts(data, target_root, expected, source_root):
             and len(records) == len(expected),
             "Cargo did not finish every selected build target")
     return records
+
+
+def readonly_link_inputs(data, target_root, sdk_root, cargo_home):
+    """Select this build's exact direct libraries; never glob an old executable."""
+    target_root = plain(target_root, directory=True)
+    sdk_root = plain(sdk_root, directory=True)
+    cargo_home = plain(cargo_home, directory=True)
+    expected = set(READONLY_SDK_LIBRARIES) | set(READONLY_REGISTRY_LIBRARIES)
+    registry = "registry+https://github.com/rust-lang/crates.io-index#"
+    records = {}
+    native = []
+    finished = []
+    for line in data.decode("utf-8", "strict").splitlines():
+        if not line:
+            continue
+        obj = json.loads(line)
+        require(isinstance(obj, dict), "Cargo link input is not an object")
+        reason = obj.get("reason")
+        if reason == "build-finished":
+            finished.append(obj.get("success"))
+        if reason == "build-script-executed" and (
+                obj.get("linked_paths") or obj.get("linked_libs")):
+            require(obj.get("package_id") == registry + "libsqlite3-sys@0.38.2",
+                    "unselected native dependency appeared in Cargo link inputs")
+            directory = Path(obj.get("out_dir", ""))
+            require(directory.is_absolute()
+                    and directory.is_relative_to(target_root / "debug" / "build")
+                    and directory.name == "out",
+                    "native library is outside this build")
+            plain(directory, directory=True)
+            require(obj.get("linked_paths") == ["native=" + str(directory)]
+                    and obj.get("linked_libs") == ["static=sqlite3"],
+                    "readonly fixture requires the original static SQLite link")
+            native.append({
+                "package_id": obj["package_id"], "directory": str(directory),
+                "archive": file_record(directory / "libsqlite3.a"),
+            })
+        if reason != "compiler-artifact":
+            continue
+        target = obj.get("target", {})
+        profile = obj.get("profile", {})
+        require(isinstance(target, dict) and isinstance(profile, dict),
+                "Cargo target or profile is not an object")
+        name = target.get("name")
+        if name not in expected or profile.get("test") is not False:
+            continue
+        if name in READONLY_SDK_LIBRARIES:
+            folder = sdk_root / "crates" / READONLY_SDK_LIBRARIES[name]
+            package_id = ("path+" + folder.as_uri() + "#"
+                          + name.replace("_", "-") + "@1.0.0")
+            source = folder / "src" / "lib.rs"
+        else:
+            crate, version = READONLY_REGISTRY_LIBRARIES[name]
+            package_id = registry + crate + "@" + version
+            source = Path(target.get("src_path", ""))
+            if obj.get("package_id") != package_id:
+                # SDK54 also builds sha2 0.10; it is not this fixture's dependency.
+                continue
+            registry_root = cargo_home / "registry" / "src"
+            require(source.is_absolute() and source.is_relative_to(registry_root),
+                    "registry entrypoint is outside the isolated Cargo home")
+            relative = source.relative_to(registry_root)
+            require(len(relative.parts) == 4
+                    and relative.parts[1:] == (crate + "-" + version, "src", "lib.rs"),
+                    "registry entrypoint is outside this isolated package")
+        require(obj.get("package_id") == package_id,
+                "readonly SDK library package identity differs")
+        require(target.get("kind") == ["lib"]
+                and target.get("crate_types") == ["lib"]
+                and target.get("src_path") == str(source)
+                and obj.get("executable") is None,
+                "readonly dependency is not the original library target")
+        require(name not in records, "duplicate selected readonly Cargo library")
+        filenames = obj.get("filenames")
+        require(isinstance(filenames, list)
+                and all(isinstance(value, str) for value in filenames),
+                "Cargo library filenames are malformed")
+        libraries = [Path(value) for value in filenames if value.endswith(".rlib")]
+        require(len(libraries) == 1, "Cargo did not identify exactly one direct rlib")
+        library = libraries[0]
+        require(library.is_absolute()
+                and library.parent == target_root / "debug" / "deps"
+                and library.name.startswith("lib" + name + "-"),
+                "direct rlib is outside this build or belongs to another target")
+        records[name] = {
+            "package_id": package_id, "entrypoint": file_record(source, SOURCE_FILE_CAP),
+            "artifact": file_record(library), "features": obj.get("features"),
+            "profile": profile, "fresh": obj.get("fresh"),
+        }
+    require(len(finished) == 1 and finished[0] is True
+            and set(records) == expected and len(native) == 1,
+            "Cargo did not complete all eleven direct libraries and static SQLite")
+    return {
+        "cargo_json_sha256": hashlib.sha256(data).hexdigest(),
+        "externs": records, "native": native[0],
+        "direct_library_count": len(records),
+        "library_bytes_retained": False,
+        "binary_hashes_are_observations_not_independent_authentication": True,
+    }
+
+
+def readonly_dependency_snapshot(target_root):
+    """Seal all files exposed to rustc through its dependency search directory."""
+    directory = plain(target_root / "debug" / "deps", directory=True)
+    entries = sorted(directory.iterdir())
+    require(0 < len(entries) <= 4096, "dependency directory exceeds entry budget")
+    records = {}
+    total = 0
+    for path in entries:
+        record = file_record(path)
+        total += record["bytes"]
+        require(total <= 4 * 1024 * 1024 * 1024,
+                "dependency directory exceeds byte budget")
+        records[path.name] = record
+    return records
+
+
+def check_readonly_link_seals(inputs, dependency_records):
+    for name, value in inputs["externs"].items():
+        for key in ("artifact", "entrypoint"):
+            record = value[key]
+            same_file(record, file_record(Path(record["path"])),
+                      "readonly " + name + " " + key)
+    archive = inputs["native"]["archive"]
+    same_file(archive, file_record(Path(archive["path"])), "readonly static SQLite")
+    target_root = Path(next(iter(dependency_records.values()))["path"]).parents[2]
+    require(readonly_dependency_snapshot(target_root) == dependency_records,
+            "readonly dependency search files changed")
 
 
 def stop_process(process):
@@ -754,6 +945,440 @@ def execute_original_harness(runner, label, records, target, arguments, sdk,
     return result
 
 
+def readonly_json(text):
+    require(type(text) is str, "original serialized JSON must be UTF8 text")
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            require(key not in result, "duplicate original JSON member")
+            result[key] = value
+        return result
+    return json.loads(text, object_pairs_hook=pairs,
+                      parse_constant=lambda _: (_ for _ in ()).throw(
+                          Refused("nonfinite original JSON number")))
+
+
+def readonly_same_json(left, right, label):
+    # Compare JSON value types as well as contents (Python True == 1 is unsafe).
+    encode = lambda value: json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                      allow_nan=False, separators=(",", ":"))
+    require(encode(left) == encode(right), label + " differs")
+
+
+def readonly_serialized(record, value_key, prefix):
+    raw = record[prefix + "_utf8"].encode("utf-8")
+    require(0 < len(raw) <= 4 * 1024 * 1024
+            and type(record[prefix + "_bytes"]) is int
+            and len(raw) == record[prefix + "_bytes"]
+            and hashlib.sha256(raw).hexdigest() == record[prefix + "_sha256"],
+            "original serialized API value bytes or digest differ")
+    readonly_same_json(readonly_json(raw.decode("utf-8")), record[value_key],
+                       "serialized API value")
+    return record[value_key]
+
+
+def readonly_file_join(record, expected):
+    require(set(record) == {"path", "bytes", "sha256", "identity"},
+            "readonly file observation has an unexpected shape")
+    require(record["path"] == expected["path"]
+            and type(record["bytes"]) is int
+            and record["bytes"] == expected["bytes"]
+            and record["sha256"] == expected["sha256"],
+            "readonly file is not the externally sealed input")
+    identity = record["identity"]
+    require(set(identity) == {
+        "device", "inode", "size", "mode", "uid", "gid", "nlink",
+        "mtime_seconds", "mtime_nanoseconds", "ctime_seconds", "ctime_nanoseconds"},
+        "incomplete readonly file identity")
+    require(all(type(value) is int for value in identity.values())
+            and identity["size"] == record["bytes"]
+            and identity["nlink"] > 0 and stat.S_ISREG(identity["mode"])
+            and 0 <= identity["mtime_nanoseconds"] < 1000000000
+            and 0 <= identity["ctime_nanoseconds"] < 1000000000,
+            "invalid readonly regular-file identity")
+    observed = [
+        identity["device"], identity["inode"], identity["size"],
+        identity["mtime_seconds"] * 1000000000 + identity["mtime_nanoseconds"],
+        identity["ctime_seconds"] * 1000000000 + identity["ctime_nanoseconds"],
+    ]
+    require(observed == expected["identity"],
+            "readonly input identity differs from the caller's seal")
+
+
+def _validate_readonly_observation(report, sdk_root, output, private_work,
+                                   expected_files, original_stdout, report_record):
+    require(type(report) is dict and set(report) == {
+        "schema", "started_unix_ms", "terminal", "sdk_source_expected",
+        "fixture_source_role", "output_directory", "inputs", "hosts", "calls",
+        "events", "input_postcheck", "scope", "private_work_root",
+        "private_work_upload_allowed", "observed_files", "source_root",
+        "counts_expected", "ended_unix_ms", "elapsed_millis", "counts"},
+        "readonly report is incomplete or has an unreviewed field")
+    require(report["schema"] == "motionwright.motion-canvas-readonly-host.v1"
+            and report["terminal"] == "PASSED"
+            and report["fixture_source_role"] == "NEW_SEPARATE_LIBTEST",
+            "readonly fixture did not reach its required terminal")
+    readonly_same_json(report["sdk_source_expected"], {
+        "commit": SDK_SHA, "tree": SDK_TREE,
+        "complete_checkout_binding": "REQUIRED_FROM_CALLER"}, "SDK source identity")
+    require(report["source_root"] == str(sdk_root)
+            and report["output_directory"] == str(output)
+            and report["private_work_root"] == str(private_work)
+            and report["private_work_upload_allowed"] is False,
+            "readonly resource roots or upload boundary differ")
+    for root in (sdk_root, output):
+        require(not private_work.is_relative_to(root)
+                and not root.is_relative_to(private_work),
+                "readonly private binaries overlap source or evidence")
+    readonly_same_json(report["scope"], READONLY_SCOPE, "readonly scope")
+    readonly_same_json(report["counts_expected"], {
+        "provider_connections": 2, "provider_shutdowns": 2, "execute_calls": 11,
+        "libtest_methods": 1, "original_fixture_files": 2}, "declared fixture counts")
+    readonly_same_json(report["counts"], {
+        "provider_connections_attempted": 2, "provider_connections_completed": 2,
+        "provider_shutdowns_completed": 2, "execute_calls_attempted": 11,
+        "execute_calls_completed": 11}, "actual fixture counts")
+    labels = [item["label"] for item in READONLY_INPUTS]
+    observed_keys = {"sdk_lock", "driver", "sandbox",
+                     "new_fixture_source", "new_fixture_harness"}
+    require(set(expected_files) == observed_keys | set(labels)
+            and set(report["observed_files"]) == observed_keys,
+            "readonly external input set is not closed")
+    for label, record in report["observed_files"].items():
+        readonly_file_join(record, expected_files[label])
+    require(expected_files["sdk_lock"]["sha256"] == SDK_LOCK,
+            "readonly SDK lock has a different source")
+    require(type(report["inputs"]) is list and len(report["inputs"]) == 2,
+            "original readonly inputs are omitted or duplicated")
+    watched = dict(report["observed_files"])
+    for item, pin in zip(report["inputs"], READONLY_INPUTS):
+        label = pin["label"]
+        require(set(item) == {"label", "relative_source_path", "record",
+                              "original_utf8", "project_identity_before"}
+                and item["label"] == label and item["relative_source_path"] == pin["path"],
+                "readonly source fixture order or path differs")
+        expected = expected_files[label]
+        require(expected["path"] == str(sdk_root / pin["path"])
+                and expected["sha256"] == pin["sha256"]
+                and expected["bytes"] == pin["bytes"], "readonly fixture pin differs")
+        readonly_file_join(item["record"], expected)
+        raw = item["original_utf8"].encode("utf-8")
+        require(len(raw) == pin["bytes"]
+                and hashlib.sha256(raw).hexdigest() == pin["sha256"],
+                "original fixture UTF8 was changed or omitted")
+        identity = {"id": pin["project_id"], "generation": pin["generation"], "revision": 1}
+        readonly_same_json(item["project_identity_before"], identity,
+                           "original project identity")
+        project = readonly_json(item["original_utf8"])
+        readonly_same_json({key: project[key] for key in identity}, identity,
+                           "original project bytes and identity")
+        require(project["assets"] == [] and project["audio"] == [],
+                "readonly fixture unexpectedly includes media")
+        watched[label] = item["record"]
+    post = report["input_postcheck"]
+    require(type(post) is list and len(post) == 7
+            and len({row["path"] for row in post}) == 7,
+            "readonly watched input observations are missing or duplicated")
+    by_path = {row["path"]: row for row in watched.values()}
+    require(set(by_path) == {row["path"] for row in post}, "readonly postcheck set differs")
+    for row in post:
+        require(set(row) == {"path", "before", "after", "unchanged"}
+                and row["unchanged"] is True, "readonly input mutation or unknown result")
+        readonly_same_json(row["before"], by_path[row["path"]], "watched original")
+        readonly_same_json(row["after"], row["before"], "watched after-state")
+
+    hosts = report["hosts"]
+    require(type(hosts) is list and len(hosts) == 2
+            and [row["label"] for row in hosts] == labels, "readonly Host set differs")
+    host_by_label = {}
+    for host, pin in zip(hosts, READONLY_INPUTS):
+        require(set(host) == {
+            "label", "state", "manifest", "grants", "network_opt_in",
+            "project_before", "driver_before", "host_state_directory", "shutdown",
+            "identity_before", "identity_after", "catalog_before", "catalog_after",
+            "project_after", "driver_after", "project_identity_after"}
+            and host["state"] == "COMPLETED" and host["network_opt_in"] is False,
+            "readonly Host lifecycle is incomplete")
+        root = private_work / host["label"]
+        require(host["host_state_directory"] == str(root / "host-state"),
+                "Host state escaped its private root")
+        readonly_same_json(host["grants"], [{
+            "name": "project", "path": str(root / "project"), "read": True, "write": False}],
+            "readonly grants")
+        readonly_same_json(host["shutdown"], {
+            "state": "COMPLETED", "closed_token_cancelled": True}, "Host shutdown")
+        readonly_same_json(host["identity_before"], {
+            "id": "driver:motion-canvas", "kind": "driver", "version": "1.0.0",
+            "namespace": "driver.motion-canvas.", "application": None,
+            "origin": "driver-manifest:motionwright-ci-fixture"}, "original provider identity")
+        readonly_same_json(host["identity_after"], host["identity_before"], "Host identity")
+        before = host["project_before"]
+        require(set(before) == {"directory", "directory_identity", "file"}
+                and before["directory"] == str(root / "project")
+                and before["file"]["path"] == str(root / "project/semwright-motion.json")
+                and before["file"]["sha256"] == pin["sha256"]
+                and before["file"]["bytes"] == pin["bytes"]
+                and before["file"]["identity"]["nlink"] == 1
+                and before["directory_identity"]["mode"] & 0o077 == 0,
+                "private project copy identity or content differs")
+        readonly_same_json(host["project_after"], before, "private project after-state")
+        readonly_same_json(host["project_identity_after"], {
+            "id": pin["project_id"], "generation": pin["generation"], "revision": 1,
+            "fingerprint": pin["sha256"], "derived_from_unchanged_original_bytes": True},
+            "private project revision")
+        driver = host["driver_before"]
+        require(driver["path"] == str(root / "bin/semwright-motion-canvas-driver")
+                and driver["sha256"] == expected_files["driver"]["sha256"]
+                and driver["bytes"] == expected_files["driver"]["bytes"]
+                and driver["identity"]["nlink"] == 1
+                and driver["identity"]["mode"] & 0o077 == 0,
+                "private executable differs from the sealed original driver")
+        readonly_same_json(host["driver_after"], driver, "private executable after-state")
+        manifest = host["manifest"]
+        require(manifest["executable"] == driver["path"]
+                and manifest["sha256"] == driver["sha256"]
+                and manifest["network"] is False
+                and manifest["tools"] == [] and manifest["secrets"] == [],
+                "readonly Host manifest changes authority or executable")
+        readonly_same_json(manifest["mounts"], [
+            {"root": "project", "read_only": True, "execute": False}],
+            "readonly mount authority")
+        catalog = host["catalog_before"]
+        require(catalog["original_sdk_digest"] == READONLY_CATALOG_DIGEST,
+                "original SDK catalog digest differs")
+        capabilities = readonly_serialized(catalog, "capabilities", "serialized_value")
+        require(type(capabilities) is list and len(capabilities) == 33
+                and len({row["descriptor"]["name"] for row in capabilities}) == 33,
+                "original SDK capability set is missing or ambiguous")
+        readonly_same_json(host["catalog_after"], catalog, "Host capability after-state")
+        host_by_label[host["label"]] = host
+
+    calls = report["calls"]
+    require(type(calls) is list and len(calls) == 11
+            and len({row["request_id"] for row in calls}) == 11,
+            "readonly query outcomes are missing, duplicated or replayed")
+    for index, (call, (label, name)) in enumerate(zip(calls, READONLY_CALLS), 1):
+        require(set(call) == {
+            "ordinal", "host", "command", "args", "session", "request_id",
+            "descriptor", "descriptor_digest", "state", "response",
+            "response_value_sha256", "response_value_bytes", "response_value_utf8"}
+            and type(call["ordinal"]) is int and call["ordinal"] == index
+            and (call["host"], call["command"]) == (label, name)
+            and call["session"] == "motionwright-sdk-readonly-" + label
+            and type(call["request_id"]) is str and call["request_id"]
+            and call["state"] == "RETURNED", "readonly query identity or terminal differs")
+        caps = host_by_label[label]["catalog_before"]["capabilities"]
+        selected = [row["descriptor"] for row in caps if row["descriptor"]["name"] == name]
+        require(len(selected) == 1, "readonly descriptor is not in the original catalog")
+        readonly_same_json(call["descriptor"], selected[0], "executed original descriptor")
+        require(call["descriptor"]["risk"] == "read_only"
+                and call["descriptor"]["idempotency"] == "read_only"
+                and re.fullmatch(r"[0-9a-f]{64}", call["descriptor_digest"]) is not None,
+                "query is not a digest-bound readonly descriptor")
+        require(type(readonly_serialized(call, "response", "response_value")) is dict,
+                "readonly response Value is missing")
+    node = [row for row in calls[3]["response"]["items"] if row["id"] == "polygon"]
+    scene = [row for row in calls[8]["response"]["items"] if row["id"] == "cue-scene"]
+    require(len(node) == len(scene) == 1, "readonly original selection is ambiguous")
+    args = [{}, {}, {"kind": "polygon"}, {},
+            {"node_ref": node[0]["reference"], "property": "sides"},
+            {"profile": {"first_frame": 0, "end_frame_exclusive": 2, "scale": "full",
+                         "transparent": False, "timeout_ms": 10000}},
+            {}, {}, {}, {"scene_ref": scene[0]["reference"]}, {}]
+    for call, wanted in zip(calls, args):
+        readonly_same_json(call["args"], wanted, "executed readonly arguments")
+
+    expected_events = [("fixture_preflight_complete", {
+        "state": "SOURCE_INPUTS_PINNED", "sdk_source_expected": SDK_SHA,
+        "complete_checkout_binding": "REQUIRED_FROM_CALLER",
+        "original_inputs": report["inputs"], "observed_files": report["observed_files"]})]
+    for host in hosts:
+        label = host["label"]
+        expected_events.extend([
+            ("connect_intent", {"host": label, "state": "UNKNOWN_UNTIL_OUTCOME",
+                                "manifest": host["manifest"], "grants": host["grants"]}),
+            ("connect_outcome", {"host": label, "state": "CONNECTED",
+                                 "identity": host["identity_before"]}),
+            ("catalog_intent", {"host": label, "state": "UNKNOWN_UNTIL_OUTCOME"}),
+            ("catalog_outcome", {"host": label, "state": "RETURNED", "count": 33,
+                                 "original_sdk_digest": READONLY_CATALOG_DIGEST}),
+        ])
+        for call in [row for row in calls if row["host"] == label]:
+            intent = {key: value for key, value in call.items()
+                      if key != "response" and not key.startswith("response_value_")}
+            intent["state"] = "UNKNOWN_UNTIL_OUTCOME"
+            expected_events.extend([("execute_intent", intent), ("execute_outcome", call)])
+        expected_events.extend([
+            ("catalog_intent", {"host": label, "state": "UNKNOWN_UNTIL_OUTCOME"}),
+            ("catalog_outcome", {"host": label, "state": "RETURNED", "count": 33,
+                                 "original_sdk_digest": READONLY_CATALOG_DIGEST}),
+            ("shutdown_intent", {"host": label, "state": "UNKNOWN_UNTIL_OUTCOME",
+                                 "cleanup_after_error": False}),
+            ("shutdown_outcome", {"host": label, "state": "COMPLETED"}),
+        ])
+    events = report["events"]
+    require(type(events) is list and len(events) == len(expected_events) == 39,
+            "readonly attempted/completed event sequence is incomplete")
+    require(all(type(report[key]) is int and report[key] >= 0 for key in (
+        "started_unix_ms", "ended_unix_ms", "elapsed_millis"))
+        and report["ended_unix_ms"] >= report["started_unix_ms"],
+        "readonly observation timing is invalid")
+    elapsed = 0
+    for event, (kind, data) in zip(events, expected_events):
+        require(set(event) == {"kind", "unix_ms", "elapsed_millis", "data"}
+                and event["kind"] == kind
+                and type(event["unix_ms"]) is int
+                and type(event["elapsed_millis"]) is int
+                and elapsed <= event["elapsed_millis"] <= report["elapsed_millis"],
+                "readonly event order or timing differs")
+        readonly_same_json(event["data"], data, "readonly intent/outcome data")
+        elapsed = event["elapsed_millis"]
+    require(type(original_stdout) is bytes, "original libtest stdout is required")
+    lines = original_stdout.decode("utf-8").splitlines()
+    captured = [readonly_json(line[len("MW_SDK_READONLY_EVENT "):])
+                for line in lines if line.startswith("MW_SDK_READONLY_EVENT ")]
+    readonly_same_json(captured, events, "original captured lifecycle events")
+    terminals = [readonly_json(line[len("MW_SDK_READONLY_TERMINAL "):])
+                 for line in lines if line.startswith("MW_SDK_READONLY_TERMINAL ")]
+    require(len(terminals) == 1, "original readonly terminal is missing or duplicated")
+    terminal = terminals[0]
+    require(set(terminal) == {
+        "state", "observation", "readonly_fixture_complete", "native_render_calls",
+        "node_tool_calls", "formal_acceptance"}, "readonly captured terminal shape differs")
+    readonly_same_json({key: terminal[key] for key in terminal if key != "observation"}, {
+        "state": "PASSED", "readonly_fixture_complete": True, "native_render_calls": 0,
+        "node_tool_calls": 0, "formal_acceptance": False}, "captured terminal scope")
+    readonly_file_join(terminal["observation"], report_record)
+    return {
+        "state": "READONLY_HOST_FIXTURE_COMPLETE", "provider_lifecycles": 2,
+        "execute_calls": 11, "selected_libtest_methods": 1, "watched_input_files": 7,
+        "captured_intent_outcome_events": 39, "original_serialized_values_retained": True,
+        "raw_json_rpc_wire_bytes": False, "physical_native_render": False,
+        "semantic_oracles": "Exact compiled Rust fixture assertions; caller also requires exit0",
+        "human_acceptance": False, "formal_criteria_closed": 0, "release_ready": False,
+    }
+
+
+def validate_readonly_observation(report, sdk_root, output, private_work,
+                                  expected_files, original_stdout, report_record):
+    try:
+        return _validate_readonly_observation(
+            report, sdk_root, output, private_work, expected_files,
+            original_stdout, report_record)
+    except (KeyError, TypeError, AttributeError, UnicodeError, ValueError) as exc:
+        if isinstance(exc, Refused):
+            raise
+        raise Refused("malformed readonly observation: " + str(exc)) from exc
+
+
+def execute_readonly_host_fixture(args, runner, rust_tools, executables, build):
+    source = file_record(args.motionwright / READONLY_PATH, SOURCE_FILE_CAP)
+    target = Path(runner.env["CARGO_TARGET_DIR"])
+    links = readonly_link_inputs(
+        runner.bytes(build["test_harness_preparation"]), target, args.sdk,
+        Path(runner.env["CARGO_HOME"]),
+    )
+    dependencies = readonly_dependency_snapshot(target)
+    original_driver = executables[("semwright-motion-canvas-driver", False)]
+    original_sandbox = executables[("semwright-sandbox", False)]
+    build_inputs = {
+        "kind": "new_a6_readonly_host_fixture_preparation",
+        "verifier_source_sha": args.source_sha, "sdk_source_sha": SDK_SHA,
+        "fixture_source": source, "link_inputs": links,
+        "dependency_search_files": dependencies,
+        "original_driver": original_driver, "original_sandbox": original_sandbox,
+        "prepared_test_cases_executed": 0,
+    }
+    write_json_new(runner.root / "readonly-fixture-build-inputs.json", build_inputs)
+    formatted = runner.command(
+        "fmt-readonly-fixture",
+        [rust_tools["rustfmt"]["path"], "--edition", "2024", "--check", source["path"]],
+        args.work, 60,
+    )
+    binary_path = args.work / "readonly-host-fixture"
+    require(not binary_path.exists(), "readonly executable path already exists")
+    argv = [
+        rust_tools["rustc"]["path"], "--edition=2024", "--test",
+        "--crate-name", "motion_canvas_host_readonly", source["path"],
+        "-C", "debuginfo=0", "-L", "dependency=" + str(target / "debug" / "deps"),
+        "-L", "native=" + links["native"]["directory"],
+    ]
+    for name, record in sorted(links["externs"].items()):
+        argv.extend(("--extern", name + "=" + record["artifact"]["path"]))
+    argv.extend(("-o", str(binary_path)))
+    record_binaries(executables)
+    check_readonly_link_seals(links, dependencies)
+    compiled = runner.command("compile-readonly-fixture", argv, args.work, 180)
+    record_binaries(executables)
+    check_readonly_link_seals(links, dependencies)
+    same_file(source, file_record(args.motionwright / READONLY_PATH),
+              "readonly fixture source")
+    binary = file_record(binary_path)
+    build_result = {
+        **build_inputs, "format_command": formatted, "compile_command": compiled,
+        "compiled_executable": binary, "original_and_link_inputs_unchanged": True,
+        "compiled_executable_bytes_retained": False,
+        "binary_hash_is_observed_not_independently_authenticated": True,
+    }
+    write_json_new(runner.root / "readonly-fixture-build.json", build_result)
+    output = runner.root / "readonly-host"
+    output.mkdir()
+    private_work = args.work / "readonly-host.private-work"
+    assert_outside_roots(private_work, (args.output, args.motionwright, args.sdk))
+    require(not private_work.exists(), "readonly private work path already exists")
+    expected_files = {
+        "sdk_lock": file_record(args.sdk / "Cargo.lock"),
+        "driver": original_driver, "sandbox": original_sandbox,
+        "new_fixture_source": source, "new_fixture_harness": binary,
+        **{pin["label"]: file_record(args.sdk / pin["path"]) for pin in READONLY_INPUTS},
+    }
+    environment = dict(runner.env)
+    environment.update(
+        MW_SDK_READONLY_SOURCE=str(args.sdk),
+        MW_SDK_READONLY_DRIVER=original_driver["path"],
+        MW_SDK_READONLY_SANDBOX=original_sandbox["path"],
+        MW_SDK_READONLY_OUTPUT=str(output),
+        MW_SDK_READONLY_WORK=str(private_work),
+    )
+    record_binaries(executables)
+    same_file(binary, file_record(binary_path), "readonly executable")
+    executed = runner.command(
+        "readonly-host-single",
+        [str(binary_path), READONLY_CASE_ID, "--exact", "--nocapture"],
+        args.work, 180, env=environment,
+    )
+    parsed = parse_rust_result(runner.bytes(executed), (READONLY_CASE_ID,), host=True)
+    report_record, report = read_json_record(
+        output / "readonly-host-observation.json", 64 * 1024 * 1024)
+    checked = validate_readonly_observation(
+        report, args.sdk, output, private_work, expected_files,
+        runner.bytes(executed), report_record)
+    record_binaries(executables)
+    check_readonly_link_seals(links, dependencies)
+    same_file(binary, file_record(binary_path), "readonly executable")
+    same_file(source, file_record(args.motionwright / READONLY_PATH),
+              "readonly fixture source")
+    same_file(report_record, file_record(Path(report_record["path"])),
+              "readonly fixture observation")
+    observation = {
+        "kind": "new_a6_real_sdk_host_readonly_fixture", "sdk_source_sha": SDK_SHA,
+        "verifier_source_sha": args.source_sha, "build": build_result,
+        "command": executed, "result": parsed, "original_observation": report_record,
+        "validated_observation": checked,
+        "required_environment": {
+            key: environment[key] for key in (
+                "MW_SDK_READONLY_SOURCE", "MW_SDK_READONLY_DRIVER",
+                "MW_SDK_READONLY_SANDBOX", "MW_SDK_READONLY_OUTPUT",
+                "MW_SDK_READONLY_WORK")},
+        "original_sdk8_and_host2_are_separate_results": True,
+        "broker": False, "node": False, "physical_native_render": False,
+        "native_four_phase": False, "human_acceptance": False,
+        "formal_criteria_closed": 0, "release_ready": False,
+    }
+    write_json_new(runner.root / "readonly-host-single.json", observation)
+    return observation
+
+
 def assert_outside_roots(path, roots):
     require(path.is_absolute(), "owned resource path must be absolute")
     for root in roots:
@@ -771,6 +1396,8 @@ def phase_g0(args, runner, python, git_exe, observations):
     verify_source_lock(args.motionwright)
     test_file = test_catalog(args.motionwright / TEST_PATH)
     observations["test_source"] = test_file
+    observations["readonly_fixture_source"] = file_record(
+        args.motionwright / READONLY_PATH, SOURCE_FILE_CAP)
     observations["source_lock"] = file_record(args.motionwright / "SOURCE_LOCK.json")
     observations["g0_checks"] = []
     for name, relative in (("source-policy", "tooling/source_policy.py"),
@@ -951,6 +1578,8 @@ def phase_g1(args, runner, python, git_exe, observations):
     }
     write_json_new(runner.root / "original-driver-host-two.json",
                    observations["host_result"])
+    observations["readonly_host_fixture"] = execute_readonly_host_fixture(
+        args, runner, rust_tools, all_executables, observations["build"])
     mw_after = source_snapshot(runner, git_exe, args.motionwright,
                                args.source_sha, "mw-after")
     sdk_after = source_snapshot(runner, git_exe, args.sdk,
@@ -971,6 +1600,8 @@ def phase_g1(args, runner, python, git_exe, observations):
     observations["source_unchanged"] = True
     observations["selected_counts"] = {
         "rust_library_cases": 8, "original_host_cases": 2, "failed": 0,
+        "new_readonly_host_cases": 1, "readonly_provider_connections": 2,
+        "readonly_user_queries": 11,
         "ignored": 0, "measured": 0, "host_filtered": 0,
         "nonselected_library_filtered_counts": [
             row["result"]["counts"]["filtered"]

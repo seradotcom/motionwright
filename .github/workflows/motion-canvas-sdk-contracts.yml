@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   sdk-contracts:
-    name: Original SDK Rust and Driver Host contracts
+    name: SDK Rust, Driver Host and readonly query fixture
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     defaults:
@@ -90,7 +90,7 @@ jobs:
         with:
           toolchain: 1.98.1
           components: rustfmt
-      - name: Compile once and execute the closed eight plus two original SDK cases
+      - name: Run the original SDK eight and Host two, then the readonly Host fixture
         id: g1
         env:
           EXPECTED_SOURCE: ${{ inputs.source_sha }}

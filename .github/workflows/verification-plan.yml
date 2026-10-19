@@ -49,6 +49,7 @@ jobs:
           python tooling/ci_test_runner.py --repo . \
             --test-directory tooling/tests \
             --pattern test_ci_impact_plan.py \
+            --pattern test_motion_canvas_sdk_g1.py \
             --pattern test_conformance_policy.py \
             --pattern test_acceptance_policy.py \
             --pattern test_acceptance_session.py \
