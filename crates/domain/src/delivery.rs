@@ -1853,4 +1853,25 @@ mod tests {
             "failed update must preserve the previously accepted profile"
         );
     }
+    #[test]
+    fn localized_implicit_parent_with_divergent_audio_and_captions_requires_selection() {
+        let mut project = fixture(AlignmentEvidence::Manual);
+        let transcript_voice = project.audio.voice_tracks[0].id;
+        let active_voice = add_localized_voice(&mut project, 5);
+        project.audio.active_voice_track_id = Some(active_voice);
+        for timing_locked in [true, false] {
+            let before = project.clone();
+            let mut profile = localized_profile(&project, Some(transcript_voice));
+            profile.timing_locked = timing_locked;
+            let error = project
+                .apply_change(&Change::UpsertDeliverable { profile })
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("explicit parent voice selection")
+            );
+            assert_eq!(project, before);
+        }
+    }
 }
