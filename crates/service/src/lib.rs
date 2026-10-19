@@ -47,7 +47,7 @@ use parking_lot::Mutex;
 use std::{
     fs,
     fs::File,
-    io::Read,
+    io::{Read, Seek},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -61,12 +61,117 @@ fn invalid_import(message: impl Into<String>) -> StorageError {
 }
 
 fn source_looks_like_svg(source: &Path) -> StorageResult<bool> {
+    // An XML/SVG document can be encoded as UTF-16/UTF-32, including without
+    // a BOM when its initial characters are ASCII XML/whitespace. Treating its
+    // NUL-containing header as ordinary raster bytes would let a caller
+    // mislabel active SVG as image/png and bypass the SVG admission guard.
+    let mut input = File::open(source)?;
+    let mut header = [0_u8; 4];
+    let header_size = input.read(&mut header)?;
+    let first = &header[..header_size];
+    // (code-unit bytes, little endian, BOM byte count)
+    let encoded = if first.starts_with(&[0xff, 0xfe, 0, 0]) {
+        Some((4_usize, true, 4_usize))
+    } else if first.starts_with(&[0, 0, 0xfe, 0xff]) {
+        Some((4, false, 4))
+    } else if first.starts_with(&[0xff, 0xfe]) {
+        Some((2, true, 2))
+    } else if first.starts_with(&[0xfe, 0xff]) {
+        Some((2, false, 2))
+    } else if header_size == 4
+        && header[1..] == [0, 0, 0]
+        && (header[0] == b'<' || header[0].is_ascii_whitespace())
+    {
+        Some((4, true, 0))
+    } else if header_size == 4
+        && header[..3] == [0, 0, 0]
+        && (header[3] == b'<' || header[3].is_ascii_whitespace())
+    {
+        Some((4, false, 0))
+    } else if header_size == 4
+        && header[1] == 0
+        && header[3] == 0
+        && (header[0] == b'<' || header[0].is_ascii_whitespace())
+    {
+        Some((2, true, 0))
+    } else if header_size == 4
+        && header[0] == 0
+        && header[2] == 0
+        && (header[1] == b'<' || header[1].is_ascii_whitespace())
+    {
+        Some((2, false, 0))
+    } else {
+        None
+    };
+
+    if let Some((unit_bytes, little_endian, bom_bytes)) = encoded {
+        // Decode at most the existing SVG import budget. This deliberately
+        // preserves ordinary UTF-16 text without SVG while failing closed
+        // for malformed or oversized potentially executable XML.
+        let size = input.metadata()?.len();
+        if size > MAX_SVG_IMPORT_BYTES {
+            return Err(StorageError::BlobTooLarge {
+                size,
+                limit: MAX_SVG_IMPORT_BYTES,
+            });
+        }
+        // Keep reading the same private staged file handle inspected above.
+        // Reopening by pathname would introduce a replacement race in sniffing.
+        input.rewind()?;
+        let mut encoded_bytes = Vec::new();
+        input
+            .take(MAX_SVG_IMPORT_BYTES.saturating_add(1))
+            .read_to_end(&mut encoded_bytes)?;
+        if encoded_bytes.len() as u64 > MAX_SVG_IMPORT_BYTES {
+            return Err(StorageError::BlobTooLarge {
+                size: encoded_bytes.len() as u64,
+                limit: MAX_SVG_IMPORT_BYTES,
+            });
+        }
+        let body = encoded_bytes
+            .get(bom_bytes..)
+            .ok_or_else(|| invalid_import("encoded media has an incomplete XML prefix"))?;
+        if !body.len().is_multiple_of(unit_bytes) {
+            return Err(invalid_import(
+                "encoded XML-like media contains a partial code unit",
+            ));
+        }
+        let decoded = if unit_bytes == 2 {
+            let mut units = Vec::with_capacity(body.len() / 2);
+            for pair in body.chunks_exact(2) {
+                let bytes = [pair[0], pair[1]];
+                units.push(if little_endian {
+                    u16::from_le_bytes(bytes)
+                } else {
+                    u16::from_be_bytes(bytes)
+                });
+            }
+            String::from_utf16(&units)
+                .map_err(|_| invalid_import("encoded XML-like media is not valid UTF-16"))?
+        } else {
+            let mut result = String::with_capacity(body.len() / 4);
+            for quad in body.chunks_exact(4) {
+                let bytes = [quad[0], quad[1], quad[2], quad[3]];
+                let codepoint = if little_endian {
+                    u32::from_le_bytes(bytes)
+                } else {
+                    u32::from_be_bytes(bytes)
+                };
+                let character = char::from_u32(codepoint)
+                    .ok_or_else(|| invalid_import("encoded XML-like media is not valid UTF-32"))?;
+                result.push(character);
+            }
+            result
+        };
+        return Ok(decoded.to_ascii_lowercase().contains("<svg"));
+    }
+
     // Search the actual staged bytes, not only their first 16 KiB. A legal
     // XML document may have arbitrarily long leading whitespace/comments;
     // an active SVG following that prolog must not become a raster asset.
     // Typical binary media return immediately on their first non-whitespace
     // byte, preserving large-file fast paths without a second full scan.
-    let mut input = File::open(source)?;
+    input.rewind()?;
     let mut chunk = [0_u8; SVG_SNIFF_BYTES];
     let mut first_chunk = true;
     let mut xml_like = false;
