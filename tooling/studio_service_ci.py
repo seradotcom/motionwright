@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import time
+from types import ModuleType, SimpleNamespace
 import zipfile
 
 
@@ -29,6 +30,16 @@ CUSTODY_LIMIT = 512 * 1024 * 1024
 CUSTODY_ENTRIES = 100_000
 PROFILE_CONTRACT_SHA256 = "4055efa3a9a7900ae5081fb665be7c74f980dcadc8997aca277a1ec87d8b9f6f"
 PORTABLE_PROFILE = "portable-export-4-plus-sidecar-control"
+NEGATIVE_PROFILE = "damaged-project-row-negative-2"
+CUSTODY_READER_SHA256 = "51de8b1359b254e3695118ab9d3aa7de754d50360d0a29e8f9ae6b1aef39751b"
+NEGATIVE_CASES = (
+    ("scoped-change-capture.spec.ts", 87,
+     "a foreign_identity project row cannot redirect reads or mutations and healthy projects remain usable",
+     "05cff8f8e731e16f0d11-95804f5db76655326842"),
+    ("scoped-change-capture.spec.ts", 87,
+     "a invalid_json project row cannot redirect reads or mutations and healthy projects remain usable",
+     "05cff8f8e731e16f0d11-c8986f34b5312abe709e"),
+)
 EXPORT_CASES = (
     ("caption-continuity-service.spec.ts", 93,
      "fourteen authored revisions retain multi-frame caption spans, output variants and exact sidecars through portable reopen",
@@ -187,7 +198,7 @@ def load_contract(path):
 
 def select_profile(contract, contract_record, name="full89", *, candidate=False):
     """A closed selection intent; this descriptor is never an execution result."""
-    require(name in ("full89", PORTABLE_PROFILE), "Unknown verification profile")
+    require(name in ("full89", PORTABLE_PROFILE, NEGATIVE_PROFILE), "Unknown verification profile")
     require(type(candidate) is bool and (not candidate or name == "full89"),
             "The release candidate requires the complete full89 profile")
     require(contract["expected_cases"] == 89 and len(contract["cases"]) == 89,
@@ -203,6 +214,16 @@ def select_profile(contract, contract_record, name="full89", *, candidate=False)
                              for file, line, title, test_id in scoped_cases]
         selected["selectors"] = [f"tests/{file}:{line}" for file, line, _, _ in scoped_cases]
         selected["expected_cases"] = 5
+    elif name == NEGATIVE_PROFILE:
+        require(contract_record["sha256"] == PROFILE_CONTRACT_SHA256,
+                "The damaged-row profile requires review of the exact parent contract")
+        keys = {(case["file"], case["line"], case["title"]) for case in contract["cases"]}
+        require(all(row[:3] in keys for row in NEGATIVE_CASES), "An original damaged-row control is absent")
+        selected["cases"] = [{"file": file, "line": line, "title": title, "test_id": test_id}
+                             for file, line, title, test_id in NEGATIVE_CASES]
+        # One parameterized source location declares both exact case identities.
+        selected["selectors"] = ["tests/scoped-change-capture.spec.ts:87"]
+        selected["expected_cases"] = 2
     descriptor = {"schema": "motionwright.studio-service-profile/1", "id": name,
                   "parent_contract_sha256": contract_record["sha256"],
                   "expected_cases": selected["expected_cases"], "cases": selected["cases"],
@@ -212,6 +233,11 @@ def select_profile(contract, contract_record, name="full89", *, candidate=False)
         descriptor["case_roles"] = {"portable_bundle_regressions": [row[3] for row in EXPORT_CASES],
                                     "independent_sidecar_export_readback_control": [SIDECAR_CONTROL[3]]}
         descriptor["sidecar_control_is_portable_bundle_coverage"] = False
+    elif name == NEGATIVE_PROFILE:
+        descriptor.update({"verification_tier": "G1_REAL_SERVICE_NEGATIVE_CONTROLS",
+                           "expected_healthy_captures": 2, "expected_project_oracles": 0,
+                           "post_execution_operation": "CUSTODY_SEAL_ONLY",
+                           "readback_processes": 0, "g2_readback_eligible": False})
     descriptor["sha256"] = digest(json.dumps(descriptor, sort_keys=True, separators=(",", ":"),
                                              ensure_ascii=False, allow_nan=False).encode())
     return selected, descriptor
@@ -783,15 +809,203 @@ def finalize_observation(args):
     return 0 if result["state"] == "OBSERVATION_COMPLETE" else 2
 
 
+def load_custody_reader():
+    """Load the reviewed seal implementation; do not invoke its CLI or readback."""
+    path = Path(__file__).absolute().with_name("studio_closed_store_readback.py")
+    raw = read(path, 4 * 1024 * 1024)
+    canonical = raw.replace(b"\r\n", b"\n")
+    if digest(raw) == CUSTODY_READER_SHA256:
+        representation = "EXACT_REVIEWED_BYTES"
+    else:
+        require(os.name == "nt" and digest(canonical) == CUSTODY_READER_SHA256
+                and raw == canonical.replace(b"\n", b"\r\n"), "Custody reader requires source review")
+        representation = "EXPLICIT_REVIEWED_LF_TO_WORKTREE_CRLF"
+    module = ModuleType("studio_negative_custody_reader")
+    module.__file__ = str(path)
+    exec(compile(raw, str(path), "exec"), module.__dict__)
+    return module, {**file_record(path), "reviewed_sha256": CUSTODY_READER_SHA256,
+                    "representation": representation}
+
+
+def require_negative_capture_index(index):
+    """The two healthy originals are custody controls, never Project oracles."""
+    category = "healthy_control_for_deliberately_damaged_copy"
+    require(type(index.get("closed_stores")) is int and index["closed_stores"] == 2
+            and type(index.get("oracle_present")) is int and index["oracle_present"] == 0
+            and index.get("category_counts") == {category: 2}
+            and index.get("declared_capture_inventory_equal") is True,
+            "The damaged-row profile requires exactly two declared healthy captures and no oracles")
+    records = index.get("records")
+    require(isinstance(records, list) and len(records) == 2, "A healthy capture is missing or duplicated")
+    expected = {(row[3], "chromium"): row for row in NEGATIVE_CASES}
+    seen = set()
+    for record in records:
+        test = record["test"]
+        key = (test["test_id"], test["project_id"])
+        require(key in expected and key not in seen, "Healthy capture case identity differs")
+        seen.add(key)
+        row = expected[key]
+        require((test["file"], test["line"], test["title"]) == row[:3]
+                and test.get("result") == "passed" and test.get("transport") == "real_jsonl"
+                and record.get("category") == category and record.get("oracle_present") is False,
+                "Capture is outside the selected G1 negative-control scope")
+        require(record["negative_scope"].get("damage") == ("foreign_identity" if key[0] == NEGATIVE_CASES[0][3] else "invalid_json")
+                and record["negative_scope"].get("fixture") == "deliberately_damaged_project_row_in_separate_sqlite_copy",
+                "Capture damage declaration differs from its exact browser case")
+
+
+def negative_custody(args):
+    """Seal successful scoped controls. This operation never opens a store."""
+    require(args.profile == NEGATIVE_PROFILE and args.candidate is False,
+            "Custody-only sealing is available only to the non-candidate damaged-row profile")
+    input_paths = (args.repo, args.contract, args.initial, args.runner_record, args.report, args.stage,
+                   args.list_report, args.list_stage, args.post_execution, args.service_gate, args.browser_artifacts)
+    for path in (*input_paths, args.output):
+        require(path.is_absolute(), "Scoped custody requires absolute input and output paths")
+        require_plain_ancestors(path)
+    output = args.output.resolve()
+    require(not output.exists(), "Scoped custody output exists; do not replay or overwrite")
+    for path in input_paths:
+        source = path.resolve(strict=True)
+        require(source != output and output not in source.parents
+                and (not source.is_dir() or source not in output.parents), "Scoped custody output overlaps an input")
+    output.mkdir(parents=True)
+    result = {"schema": "motionwright.studio-damaged-row-g1-custody/1", "created_at_utc": now(),
+              "execution_context": execution_context(), "source_sha": args.source_sha,
+              "profile": args.profile, "state": "NOT_ADMITTED", "all_scoped_checks_passed": False,
+              "candidate_eligible": False, "full89_gate_satisfied": False, "g2_readback_passed": False,
+              "readback_state": "NOT_RUN", "readback_not_applicable_reason": "Healthy pre-damage controls have no complete Project/history oracle",
+              "stores_reopened": 0, "readback_processes": 0, "full_project_equal": None, "full_journal_equal": None,
+              "sqlite_opened": False, "service_started": False, "browser_rerun_performed": False,
+              "reopen_authorized_by_this_receipt": False, "automatic_retry": False,
+              "installed_tauri": False, "native_rendering": False, "human_acceptance": False,
+              "formal_acceptance": False, "release_admission": False}
+    save(output / "start.json", result)
+    try:
+        require(all(os.environ.get(key) == "success" for key in (
+            "OBSERVED_JOB_STATUS", "OBSERVED_BROWSER_STEP_OUTCOME", "OBSERVED_POST_EXECUTION_STEP_OUTCOME",
+            "OBSERVED_SERVICE_VERIFY_STEP_OUTCOME")), "A prerequisite was cancelled, omitted or unsuccessful")
+        parent, contract_record = load_contract(args.contract)
+        contract, profile = select_profile(parent, contract_record, args.profile, candidate=args.candidate)
+        initial = load_initial(args.initial)
+        require_profile(initial, profile, False)
+        snapshot = source_snapshot(args.repo, args.source_sha, contract, prepared=True)
+        require(initial["repository"] == str(args.repo.resolve())
+                and initial["product_source"]["sha"] == args.source_sha
+                and initial["product_source"]["tree"] == snapshot["tree"]
+                and initial["product_source"]["source_inputs"] == snapshot["source_inputs"]
+                and initial["selection_contract"] == contract_record, "Frozen source or selection differs")
+        runner = validate_runner(args.runner_record, args.initial)
+        validate_browser_stage(args.list_stage, initial=args.initial, contract=contract,
+                               runner_path=args.runner_record, report=args.list_report, listing=True)
+        executed = validate_browser_stage(args.stage, initial=args.initial, contract=contract,
+                                          runner_path=args.runner_record, report=args.report, listing=False)
+        parsed_report = parse_json(read(args.report))
+        same_listed_cases(parse_json(read(args.list_report)), parsed_report)
+        original_process = observe_browser_stage(args.stage, initial=args.initial, contract=contract,
+            runner_path=args.runner_record, report=args.report, artifacts=args.browser_artifacts)
+        gate = parse_json(read(args.service_gate))
+        context = execution_context()
+        require(gate.get("schema") == "motionwright.studio-service-gate/1" and gate.get("status") == "PASS"
+                and gate.get("execution_context") == context and gate.get("product_source") == snapshot
+                and gate.get("repository") == str(args.repo.resolve())
+                and all(gate.get(key) == context[environment_key] for key, environment_key in (
+                    ("verifier_sha", "GITHUB_SHA"), ("run_id", "GITHUB_RUN_ID"),
+                    ("run_attempt", "GITHUB_RUN_ATTEMPT"), ("job_key", "GITHUB_JOB")))
+                and gate.get("selection_profile") == profile and gate.get("selection_contract") == contract_record
+                and gate.get("candidate_requested") is False and gate.get("runner") == runner
+                and gate.get("initial_freeze") == file_record(args.initial)
+                and gate.get("original_report") == file_record(args.report)
+                and gate.get("full89_browser_case_scope_passed") is False and gate.get("full89_gate_satisfied") is False
+                and gate.get("closed_store_archive_reopen") == "SCOPED_G1_CUSTODY_SEAL_ONLY_REQUIRED"
+                and all(gate.get(key) is False for key in ("g2_readback_passed", "human_acceptance", "installed_tauri", "native_rendering"))
+                and all(gate.get(key) == value for key, value in executed.items()), "Successful service gate differs")
+        post = parse_json(read(args.post_execution))
+        required_checks = {"selection_contract", "selection_profile", "initial_source", "source_after", "frozen_profile",
+                           "frozen_source_comparison", "runner", "retained_binary", "listing", "browser_process",
+                           "report_read", "case_observation", "listing_case_identity", "raw_custody",
+                           "custody_completeness", "original_attachments"}
+        require(post.get("schema") == "motionwright.studio-service-post-execution/1"
+                and post.get("state") == "OBSERVATION_COMPLETE" and post.get("identity_and_custody_checks_complete") is True
+                and post.get("execution_context") == execution_context() and post.get("requested_source_sha") == args.source_sha
+                and post.get("requested_profile") == args.profile and post.get("selection_profile") == profile
+                and post.get("candidate_requested") is False
+                and post.get("observed_job_status") == "success" and post.get("observed_browser_step_outcome") == "success"
+                and set(post.get("checks", {})) == required_checks
+                and all(row == {"status": "OBSERVED"} for row in post["checks"].values())
+                and post.get("original_process") == original_process
+                and post.get("browser_observation") == observe_report(parsed_report, contract)
+                and post.get("source_comparison") == {"after": snapshot, "unchanged": True}
+                and all(post.get(key) is False for key in ("full89_gate_satisfied", "reopen_authorized_by_this_receipt",
+                                                          "automatic_retry", "sqlite_opened", "service_started", "formal_acceptance")),
+                "Finalization was incomplete, from another execution, failed or uncertain")
+        custody = post["custody"]
+        require(custody.get("schema") == "motionwright.raw-studio-custody-result/1"
+                and custody.get("status") == "RAW_BYTES_PRESERVED" and custody.get("originals_unchanged") is True
+                and custody.get("missing_or_unstable_inputs") == []
+                and custody.get("zip_crc_and_all_member_hashes_verified") is True
+                and all(custody.get(key) is False for key in ("semantic_store_admission", "sqlite_opened", "service_started", "test_pass_asserted")),
+                "Original raw custody is incomplete or claims semantic admission")
+        raw_archive = args.post_execution.parent / "custody/original-bytes.zip"
+        require(custody.get("archive") == file_record(raw_archive), "Original raw custody archive changed")
+        originals = {"receipts/source-freeze.json": args.initial, "receipts/selection-contract.json": args.contract,
+                     "receipts/runner-identity.json": args.runner_record, "receipts/browser-list.json": args.list_stage,
+                     "receipts/browser-list-report.json": args.list_report, "receipts/browser-run.json": args.stage,
+                     "receipts/browser-report.json": args.report}
+        for label, stage in (("browser-list", args.list_stage), ("browser-run", args.stage)):
+            for stream in ("stdout", "stderr"):
+                originals[f"receipts/{label}.{stream}.log"] = stage.with_suffix(f".{stream}.log")
+        for name in ("cargo-build.json", "cargo-build.stdout.log", "cargo-build.stderr.log", "Cargo.lock", "studio_review_session.exe"):
+            originals["retained/" + name] = args.initial.parent / name
+        for name in contract["source_files"]:
+            originals["source-after/" + name] = args.repo / name
+        original_records = {label: file_record(path) for label, path in originals.items()}
+        artifact_before = custody_tree(args.browser_artifacts)
+        expected_manifest = {label: {"kind": "file", "bytes": row["bytes"], "sha256": row["sha256"]}
+                             for label, row in original_records.items()}
+        expected_manifest.update({"browser-artifacts" + ("/" + name if name else ""): row
+                                  for name, row in artifact_before.items()})
+        require(custody.get("files_and_directories") == expected_manifest, "Original inputs differ from complete raw custody")
+        observe_attachments(parsed_report, args.browser_artifacts, custody)
+        reader, reader_record = load_custody_reader()
+        reader.tree(args.browser_artifacts)  # Preserve the strict CLI's per-file, path and total input budgets.
+        require(file_record(args.report)["bytes"] <= reader.MAX_INPUT_FILE_BYTES, "Browser report byte budget exceeded")
+        bound_receipts = {name: file_record(path) for name, path in (
+            ("post_execution", args.post_execution), ("service_gate", args.service_gate), ("raw_archive", raw_archive))}
+        archive, seal_receipt, index = reader.seal(SimpleNamespace(
+            source=args.browser_artifacts, browser_report=args.report, output=output / "custody", source_commit=args.source_sha))
+        require_negative_capture_index(index)
+        require(custody_tree(args.browser_artifacts) == artifact_before
+                and {label: file_record(path) for label, path in originals.items()} == original_records,
+                "Original bytes changed during scoped sealing")
+        require({name: file_record(path) for name, path in (
+            ("post_execution", args.post_execution), ("service_gate", args.service_gate), ("raw_archive", raw_archive))} == bound_receipts
+                and file_record(Path(reader_record["path"])) == {key: reader_record[key] for key in ("path", "bytes", "sha256")}
+                and source_snapshot(args.repo, args.source_sha, contract, prepared=True) == snapshot,
+                "A prerequisite or source changed during scoped sealing")
+        result.update({"state": "PASS_SCOPED_G1_NEGATIVE_CONTROLS", "all_scoped_checks_passed": True,
+                       "product_source": snapshot, "selection_profile": profile, "selection_contract": contract_record,
+                       "browser_cases": executed, "healthy_captures_preserved": 2, "project_oracles": 0,
+                       "prerequisite_receipts": bound_receipts, "reader": reader_record,
+                       "archive": file_record(archive), "seal_verification": seal_receipt,
+                       "capture_inventory": file_record(output / "custody/capture-inventory.json"),
+                       "all_original_inputs_unchanged": True})
+    except Exception as error:
+        result.update({"error_type": type(error).__name__, "error": str(error)})
+    saved = save(output / "receipt.json", result)
+    print(json.dumps({"receipt": saved, "state": result["state"], "stores_reopened": 0, "automatic_retry": False}))
+    return 0 if result["all_scoped_checks_passed"] else 2
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="operation", required=True)
-    for name in ("freeze", "verify", "finalize"):
+    for name in ("freeze", "verify", "finalize", "negative-custody"):
         p = sub.add_parser(name)
         p.add_argument("--repo", type=Path, required=True)
         p.add_argument("--source-sha", required=True)
         p.add_argument("--contract", type=Path, required=True)
-        p.add_argument("--profile", choices=("full89", PORTABLE_PROFILE), default="full89")
+        p.add_argument("--profile", choices=("full89", PORTABLE_PROFILE, NEGATIVE_PROFILE), default="full89")
         p.add_argument("--candidate", action="store_true")
         p.add_argument("--output", type=Path, required=True)
         if name != "freeze":
@@ -801,8 +1015,11 @@ def main(argv=None):
             p.add_argument("--stage", type=Path, required=True)
             p.add_argument("--list-report", type=Path, required=True)
             p.add_argument("--list-stage", type=Path, required=True)
-        if name == "finalize":
+        if name in ("finalize", "negative-custody"):
             p.add_argument("--browser-artifacts", type=Path, required=True)
+        if name == "negative-custody":
+            p.add_argument("--post-execution", type=Path, required=True)
+            p.add_argument("--service-gate", type=Path, required=True)
     p = sub.add_parser("run")
     p.add_argument("--initial", type=Path, required=True)
     p.add_argument("--purpose", choices=("build", "dependencies", "browser-install"), required=True)
@@ -820,7 +1037,7 @@ def main(argv=None):
     p = sub.add_parser("report")
     p.add_argument("--initial", type=Path, required=True)
     p.add_argument("--contract", type=Path, required=True)
-    p.add_argument("--profile", choices=("full89", PORTABLE_PROFILE), default="full89")
+    p.add_argument("--profile", choices=("full89", PORTABLE_PROFILE, NEGATIVE_PROFILE), default="full89")
     p.add_argument("--candidate", action="store_true")
     p.add_argument("--report", type=Path, required=True)
     p.add_argument("--stage", type=Path, required=True)
@@ -828,7 +1045,7 @@ def main(argv=None):
     p = sub.add_parser("browser")
     p.add_argument("--initial", type=Path, required=True)
     p.add_argument("--contract", type=Path, required=True)
-    p.add_argument("--profile", choices=("full89", PORTABLE_PROFILE), default="full89")
+    p.add_argument("--profile", choices=("full89", PORTABLE_PROFILE, NEGATIVE_PROFILE), default="full89")
     p.add_argument("--candidate", action="store_true")
     p.add_argument("--runner-record", type=Path, required=True)
     p.add_argument("--record", type=Path, required=True)
@@ -838,6 +1055,9 @@ def main(argv=None):
     p.add_argument("--listing", action="store_true")
     args = parser.parse_args(argv)
     require(sys.flags.isolated and sys.dont_write_bytecode, "Invoke with python -I -B")
+    if args.operation == "negative-custody":
+        require(sys.flags.no_site, "Invoke scoped custody with python -I -B -S")
+        return negative_custody(args)
     if args.operation == "finalize":
         return finalize_observation(args)
     if args.operation == "run":
@@ -921,6 +1141,9 @@ def main(argv=None):
         result["original_report"] = file_record(args.report)
         result["initial_freeze"] = file_record(args.initial)
         result["closed_store_archive_reopen"] = "SEPARATE_GATE_REQUIRED"
+        if profile["id"] == NEGATIVE_PROFILE:
+            result["closed_store_archive_reopen"] = "SCOPED_G1_CUSTODY_SEAL_ONLY_REQUIRED"
+            result["g2_readback_passed"] = False
     print(json.dumps(save(args.output, result)))
     return 0
 

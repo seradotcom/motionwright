@@ -29,6 +29,12 @@ on:
         options:
           - full89
           - portable-export-4-plus-sidecar-control
+          - damaged-project-row-negative-2
+      package_link_source_sha:
+        description: 'Optional exact reviewed source for four Linux package-link controls; empty leaves this job unselected'
+        type: string
+        required: false
+        default: ''
       audit_source_currency:
         description: Run the strict source-currency audit; historical or insufficient evidence keeps exit 2
         type: boolean
@@ -39,10 +45,10 @@ permissions:
   contents: read
 
 # Ordinary planning may supersede older cheap planning. An explicitly requested
-# real-service gate retains its original run; it is never automatically retried.
+# service or package-link gate retains its original run; it is never automatically retried.
 concurrency:
-  group: verification-plan-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.studio_service_source_sha != '' && github.run_id || 'planning' }}
-  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.studio_service_source_sha != '') }}
+  group: verification-plan-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && (inputs.studio_service_source_sha != '' || inputs.package_link_source_sha != '') && github.run_id || 'planning' }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.studio_service_source_sha != '' || inputs.package_link_source_sha != '')) }}
 
 jobs:
   plan-and-contracts:
@@ -453,3 +459,278 @@ jobs:
       source_sha: ${{ inputs.studio_service_source_sha }}
       verification_profile: ${{ inputs.studio_service_profile }}
       release_candidate: ${{ inputs.candidate }}
+
+  package-link-contracts:
+    name: Four original Linux package-link contracts
+    needs: [g0-complete]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.package_link_source_sha != '' && needs['g0-complete'].result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_LINK_SOURCE_SHA: ${{ inputs.package_link_source_sha }}
+      MW_LINK_VERIFIER: ${{ github.workspace }}/link-verifier
+      MW_LINK_SOURCE: ${{ github.workspace }}/link-source
+      MW_LINK_OUTPUT: ${{ runner.temp }}/package-link-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Require the reviewed source before checkout
+        shell: bash
+        run: |
+          test "$MW_LINK_SOURCE_SHA" = fa9503bd46e41598b54a8343d69e6a6150be1850
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: link-verifier
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.package_link_source_sha }}
+          path: link-source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: Execute the four reviewed original unittest IDs once
+        shell: bash
+        run: |
+          python -B -I -S - <<'PY'
+          """Execute only the reviewed Linux package-link controls on their original source."""
+          import sys
+          if not (sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode):
+              raise SystemExit("Use Python -B -I -S")
+          import hashlib
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          from datetime import datetime, timezone
+
+          REVIEWED_SOURCE = "fa9503bd46e41598b54a8343d69e6a6150be1850"
+          REVIEWED_TREE = "e09a821440fa789723060d495d363edb767fd40c"
+          FROZEN_INPUTS = {
+              "tooling/tests/test_candidate_smoke.py": "4727101162ef882ebde26d7203fe232d6c09cc3132f751d1000ee573cff6ac17",
+              "tooling/candidate_smoke.py": "053bb9a38cde20c7df6a15c6916e0faddf44a6bed6c10127bba88dfbe71bf339",
+              "tooling/tests/test_linux_cold_start.py": "8a9c3b9ed306b7267fcd0d1d4d22014bf4551f347f09e860f43b6d459b52933d",
+              "tooling/linux_cold_start.py": "c8dd5e73b9deea491877cff0b2d7e3a617e3bbcde1c994a013a4122348918ab9",
+              "tooling/linux_gui_probe.py": "e572c604d8d2e33e0904797c28e4252c0158393e60e6c2ece7158112d5e8eaa8",
+              "tooling/ci_test_runner.py": "b7d39ad4c94be70abcac75880f92d00cf3c8d49eb0198b404a962ce5ab1a712f",
+          }
+          DATA_INPUTS = ("SOURCE_LOCK.json", "Cargo.toml", "Cargo.lock", "apps/desktop/src-tauri/tauri.conf.json")
+          CASE_IDS = (
+              "tooling.tests.test_candidate_smoke.CandidateSmokeTests.test_appimage_internal_desktop_symlink_is_allowed_but_escape_is_not",
+              "tooling.tests.test_candidate_smoke.CandidateSmokeTests.test_symlink_substitution_is_rejected",
+              "tooling.tests.test_linux_cold_start.InstalledColdStartEvidenceTests.test_unsafe_or_missing_database_rejected_before_inspection",
+              "tooling.tests.test_linux_cold_start.InstalledColdStartEvidenceTests.test_nested_directory_symlink_is_never_followed",
+          )
+
+          def require(value, message):
+              if not value:
+                  raise ValueError(message)
+
+          def now():
+              return datetime.now(timezone.utc).isoformat()
+
+          def digest(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+          def identity(path):
+              raw = path.read_bytes()
+              return {"bytes": len(raw), "sha256": digest(raw)}
+
+          def write_new(path, value):
+              with path.open("x", encoding="utf-8", newline="\n") as handle:
+                  json.dump(value, handle, indent=2, sort_keys=True)
+                  handle.write("\n")
+
+          context = {key: os.environ.get(key, "") for key in (
+              "GITHUB_REPOSITORY", "GITHUB_EVENT_NAME", "GITHUB_SHA", "GITHUB_WORKFLOW_SHA",
+              "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}
+          source = Path(os.environ["MW_LINK_SOURCE"]).resolve(strict=True)
+          verifier = Path(os.environ["MW_LINK_VERIFIER"]).resolve(strict=True)
+          output = Path(os.environ["MW_LINK_OUTPUT"]).absolute()
+          require(not output.exists(), "Output must be new; no replay or overwrite")
+          require(output not in (source, verifier) and source not in output.parents
+                  and verifier not in output.parents, "Result output must stay outside both checkouts")
+          output.mkdir(parents=True, exist_ok=False)
+          receipt = {"schema": "motionwright.linux-package-link-contracts/1", "status": "STARTED",
+                     "started_at_utc": now(), "github": context,
+                     "requested_source_sha": os.environ.get("MW_LINK_SOURCE_SHA"),
+                     "reviewed_source_sha": REVIEWED_SOURCE, "test_ids": list(CASE_IDS),
+                     "tests_expected": 4, "process_attempted": False, "process_started": None, "retry_attempted": False,
+                     "scope": "Synthetic package and SQLite-path confinement with real Linux symbolic links",
+                     "database_seeding": False, "installed_application_execution": False,
+                     "native_renderer_execution": False, "formal_acceptance": False, "release_verdict": False,
+                     "counts": None, "exit_code": None,
+                     "capture_limit": "120-second subprocess timeout; no hard stream byte-cap claim"}
+          write_new(output / "start.json", receipt)
+          exit_code = 1
+          try:
+              require(sys.platform == "linux", "These controls require an actual Linux interpreter")
+              require(context["GITHUB_REPOSITORY"] == "seradotcom/motionwright"
+                      and context["GITHUB_EVENT_NAME"] == "workflow_dispatch", "Manual repository scope required")
+              require(all(context.values()), "Missing workflow/run/job context")
+              require(context["GITHUB_JOB"] == "package-link-contracts", "Wrong workflow job")
+              require(os.environ["MW_LINK_SOURCE_SHA"] == REVIEWED_SOURCE,
+                      "This frozen four-case profile needs source review before another SHA")
+              require(re.fullmatch(r"[0-9a-f]{40}", context["GITHUB_SHA"])
+                      and context["GITHUB_WORKFLOW_SHA"] == context["GITHUB_SHA"], "Verifier workflow source differs")
+              git_path = Path(shutil.which("git") or "").resolve(strict=True)
+              require(git_path.is_file() and source not in git_path.parents and verifier not in git_path.parents,
+                      "Git must be a runner tool outside both checkouts")
+              clean_env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+              clean_env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull, GIT_NO_LAZY_FETCH="1",
+                               GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_OPTIONAL_LOCKS="0",
+                               PYTHONDONTWRITEBYTECODE="1")
+              os.environ.clear()
+              os.environ.update(clean_env)
+              def git(root, *args):
+                  process = subprocess.run([str(git_path), "--no-replace-objects", "-c", "core.fsmonitor=false",
+                                            "-C", str(root), *args], capture_output=True, timeout=30, env=clean_env)
+                  require(type(process.returncode) is int and process.returncode == 0, "Git source read failed")
+                  return process.stdout
+              require(git(source, "rev-parse", "HEAD").decode().strip() == REVIEWED_SOURCE,
+                      "Actual tested checkout is not the reviewed source")
+              require(git(verifier, "rev-parse", "HEAD").decode().strip() == context["GITHUB_SHA"],
+                      "Actual verifier checkout differs from this workflow")
+              for root in (source, verifier):
+                  require(not git(root, "status", "--porcelain", "--untracked-files=all", "--ignored=matching"),
+                          "Source and verifier must be clean before execution")
+              commit = git(source, "cat-file", "commit", REVIEWED_SOURCE)
+              require(hashlib.sha1(b"commit " + str(len(commit)).encode() + b"\0" + commit).hexdigest() == REVIEWED_SOURCE,
+                      "Source commit object identity differs")
+              tree = commit.split(b"\n", 1)[0].decode().removeprefix("tree ")
+              require(tree == REVIEWED_TREE, "Source tree differs from reviewed original")
+              source_inputs = {}
+              for relative in (*FROZEN_INPUTS, *DATA_INPUTS):
+                  path = source / relative
+                  require(path.is_file() and not path.is_symlink(), "Source dependency is not a regular file")
+                  raw = path.read_bytes()
+                  require(len(raw) <= 1024 * 1024 and raw == git(source, "show", REVIEWED_SOURCE + ":" + relative),
+                          "Physical source dependency differs from its original Git blob")
+                  if relative in FROZEN_INPUTS:
+                      require(digest(raw) == FROZEN_INPUTS[relative], "Reviewed source dependency changed")
+                  source_inputs[relative] = {"bytes": len(raw), "sha256": digest(raw)}
+              workflow_path = verifier / ".github/workflows/verification-plan.yml"
+              require(workflow_path.read_bytes() == git(verifier, "show", context["GITHUB_SHA"] + ":.github/workflows/verification-plan.yml"),
+                      "Physical verifier workflow differs from Git")
+              spec = importlib.util.spec_from_file_location("original_ci_test_runner", source / "tooling/ci_test_runner.py")
+              require(spec is not None and spec.loader is not None, "Original unittest runner cannot be loaded")
+              original = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(original)
+              before = original.source_state(source, REVIEWED_SOURCE)
+              require(before["tree_sha"] == tree, "Original runner source observation differs")
+              receipt.update(executed_source_sha=REVIEWED_SOURCE, tree_sha=tree,
+                             verifier_source_sha=context["GITHUB_SHA"],
+                             verifier_tree_sha=git(verifier, "rev-parse", "HEAD^{tree}").decode().strip(),
+                             verifier_workflow=identity(workflow_path), source_inputs=source_inputs,
+                             original_runner_sha256=identity(source / "tooling/ci_test_runner.py")["sha256"],
+                             python=sys.version, python_executable=identity(Path(sys.executable)), git_executable=identity(git_path))
+              temporary = output / "fixtures"
+              temporary.mkdir(exist_ok=False)
+              child_env = dict(clean_env, TMPDIR=str(temporary), TEMP=str(temporary), TMP=str(temporary))
+              command = [sys.executable, "-B", "-E", "-s", "-m", "unittest", *CASE_IDS, "-v"]
+              receipt.update(command=command, process_attempted=True, process_attempted_at_utc=now())
+              process_binding = {
+                  "github": context, "command": command, "cwd": str(source),
+                  "fixture_directory": str(temporary), "test_ids": list(CASE_IDS), "timeout_seconds": 120,
+                  "source_sha": receipt["executed_source_sha"], "source_tree": receipt["tree_sha"],
+                  "source_inputs": source_inputs, "verifier_sha": receipt["verifier_source_sha"],
+                  "verifier_tree": receipt["verifier_tree_sha"], "verifier_workflow": receipt["verifier_workflow"],
+                  "python": receipt["python"], "python_executable": receipt["python_executable"],
+                  "git_executable": receipt["git_executable"], "retry_attempted": False,
+                  "installed_application_execution": False, "formal_acceptance": False, "release_verdict": False,
+              }
+              write_new(output / "process-intent.json", {
+                  **process_binding, "schema": "motionwright.linux-package-link-process-intent/1",
+                  "state": "UNKNOWN_UNTIL_OUTCOME", "at_utc": receipt["process_attempted_at_utc"],
+                  "process_attempted": True, "process_started": None,
+                  "outcome_journal": "process-outcome.json", "semantic_result_admitted": False,
+              })
+              timed_out = False
+              try:
+                  completed = subprocess.run(command, cwd=source, env=child_env, capture_output=True, timeout=120)
+                  stdout, stderr, returncode = completed.stdout, completed.stderr, completed.returncode
+              except subprocess.TimeoutExpired as error:
+                  stdout, stderr, returncode = error.stdout or b"", error.stderr or b"", 124
+                  timed_out = True
+              write_new(output / "process-outcome.json", {
+                  **process_binding, "schema": "motionwright.linux-package-link-process-outcome/1",
+                  "state": "TIMED_OUT_UNKNOWN" if timed_out else "PROCESS_RETURN_OBSERVED_UNASSESSED",
+                  "at_utc": now(), "process_started": True, "timed_out": timed_out,
+                  "original_exit_code": None if timed_out else returncode,
+                  "wrapper_timeout_exit_code": 124 if timed_out else None,
+                  "logs": {
+                      "stdout": {"file": "stdout.log", "captured_bytes": len(stdout), "written": False},
+                      "stderr": {"file": "stderr.log", "captured_bytes": len(stderr), "written": False},
+                  },
+                  "log_custody_recorded_later_in": "receipt.json", "semantic_result_admitted": False,
+              })
+              receipt.update(process_started=True, process_completed_at_utc=now(), process_timed_out=timed_out, exit_code=returncode)
+              for stream, data in (("stdout", stdout), ("stderr", stderr)):
+                  log = output / (stream + ".log")
+                  with log.open("xb") as handle:
+                      handle.write(data)
+                  receipt[stream] = {"file": log.name, "bytes": len(data), "sha256": digest(data)}
+              try:
+                  counts = original.parse_unittest_summary(stderr.decode("utf-8", "strict"))
+                  receipt["counts"] = counts
+              except (ValueError, UnicodeError) as error:
+                  counts = None
+                  receipt["summary_error"] = type(error).__name__ + ": " + str(error)
+              try:
+                  require(original.source_state(source, REVIEWED_SOURCE) == before, "Tested source changed during execution")
+                  require(all(identity(source / name) == value for name, value in source_inputs.items()),
+                          "A source dependency changed during execution")
+                  require(not git(verifier, "status", "--porcelain", "--untracked-files=all", "--ignored=matching")
+                          and identity(workflow_path) == receipt["verifier_workflow"], "Verifier source changed during execution")
+                  receipt["source_and_verifier_unchanged"] = True
+              except BaseException as error:
+                  receipt["source_postcheck_error"] = type(error).__name__ + ": " + str(error)
+              if timed_out:
+                  receipt["status"] = "UNKNOWN"
+                  raise TimeoutError("Original unittest process timed out; no replay")
+              require(type(returncode) is int and returncode == 0, "Selected original unittest process failed")
+              require(counts is not None, "Original unittest summary is incomplete")
+              require(receipt.get("source_and_verifier_unchanged") is True, "Source postcheck did not complete")
+              require(counts["terminal_status"] == "OK"
+                      and type(counts["tests_run"]) is int and counts["tests_run"] == 4
+                      and type(counts["passed"]) is int and counts["passed"] == 4
+                      and all(type(counts[key]) is int and counts[key] == 0 for key in
+                              ("errors", "failures", "skipped", "expected_failures", "unexpected_successes")),
+                      "Four original controls must finish with zero omissions")
+              parsed_view = stderr.decode("utf-8", "strict").replace("\r\n", "\n").replace("\r", "\n")
+              observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
+              require(len(observed) == 4 and set(observed) == set(CASE_IDS), "Verbose original case IDs differ")
+              receipt.update(status="PASS_SELECTED_LINUX_LINK_CONTRACTS", original_case_ids=observed,
+                             source_and_verifier_unchanged=True, unique_source_controls=4, new_product_cases=0)
+              exit_code = 0
+          except BaseException as error:
+              if isinstance(error, (KeyboardInterrupt, SystemExit)) and receipt["process_attempted"]:
+                  receipt["status"] = "UNKNOWN"
+              elif receipt["status"] != "UNKNOWN":
+                  receipt["status"] = "FAIL"
+              receipt["error"] = type(error).__name__ + ": " + str(error)
+              exit_code = 124 if receipt["status"] == "UNKNOWN" else 1
+          receipt["completed_at_utc"] = now()
+          receipt["wrapper_exit_code"] = exit_code
+          write_new(output / "receipt.json", receipt)
+          print(json.dumps({"status": receipt["status"], "source_sha": receipt.get("executed_source_sha"),
+                            "verifier_sha": receipt.get("verifier_source_sha"), "counts": receipt["counts"],
+                            "installed_application_execution": False, "formal_acceptance": False}))
+          raise SystemExit(exit_code)
+          PY
+      - name: Preserve original Linux link-contract results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verification-package-link-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/package-link-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 30

@@ -1075,5 +1075,387 @@ class FailureFinalizationTests(FinalizationFixture):
         self.assertFalse(absent["reopen_authorized_by_this_receipt"])
 
 
+class DamagedRowProfileTests(unittest.TestCase):
+    def setUp(self):
+        self.parent, self.identity = ci.load_contract(CONTRACT)
+
+    def test_two_original_ids_share_one_selector_and_cannot_satisfy_full89(self):
+        selected, profile = ci.select_profile(self.parent, self.identity, ci.NEGATIVE_PROFILE)
+        self.assertEqual(selected["expected_cases"], 2)
+        self.assertEqual(selected["selectors"], ["tests/scoped-change-capture.spec.ts:87"])
+        self.assertEqual([case["test_id"] for case in selected["cases"]], [
+            "05cff8f8e731e16f0d11-95804f5db76655326842", "05cff8f8e731e16f0d11-c8986f34b5312abe709e"])
+        self.assertEqual(selected["source_files"], self.parent["source_files"])
+        self.assertEqual((profile["expected_healthy_captures"], profile["expected_project_oracles"], profile["readback_processes"]), (2, 0, 0))
+        self.assertFalse(profile["full89_gate_eligible"])
+        self.assertFalse(profile["g2_readback_eligible"])
+        listed, executed = report_fixture(selected, listing=True), report_fixture(selected)
+        ci.same_listed_cases(listed, executed)
+        self.assertEqual(ci.validate_report(executed, selected)["case_count"], 2)
+        with self.assertRaises(ValueError):
+            ci.validate_report(executed, self.parent)
+
+    def test_candidate_changed_parent_and_missing_original_case_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "release candidate"):
+            ci.select_profile(self.parent, self.identity, ci.NEGATIVE_PROFILE, candidate=True)
+        with self.assertRaisesRegex(ValueError, "exact parent contract"):
+            ci.select_profile(self.parent, {**self.identity, "sha256": "0" * 64}, ci.NEGATIVE_PROFILE)
+        changed = copy.deepcopy(self.parent)
+        selected_title = ci.NEGATIVE_CASES[0][2]
+        next(case for case in changed["cases"] if case["title"] == selected_title)["line"] += 1
+        with self.assertRaisesRegex(ValueError, "original damaged-row control"):
+            ci.select_profile(changed, self.identity, ci.NEGATIVE_PROFILE)
+
+    def test_two_case_report_rejects_omissions_wrong_identity_retries_and_bool_counts(self):
+        selected, _ = ci.select_profile(self.parent, self.identity, ci.NEGATIVE_PROFILE)
+        for defect in ("missing", "identity", "line", "skip", "retry", "error", "bool"):
+            report = report_fixture(selected)
+            case = report["suites"][0]["specs"][0]
+            test = first_test(report)
+            if defect == "missing":
+                report["suites"][0]["specs"].pop()
+            elif defect == "identity":
+                case["id"] = ci.SIDECAR_CONTROL[3]
+            elif defect == "line":
+                case["line"] = 88
+            elif defect == "skip":
+                test["results"][0]["status"] = "skipped"
+            elif defect == "retry":
+                test["results"].append({"status": "passed", "retry": 1})
+            elif defect == "error":
+                test["results"][0]["error"] = {"message": "Synthetic failure"}
+            else:
+                report["stats"]["skipped"] = False
+            with self.subTest(defect=defect), self.assertRaises(ValueError):
+                ci.validate_report(report, selected)
+
+    def test_reader_pin_rejects_changed_code_before_executing_it(self):
+        reader, identity = ci.load_custody_reader()
+        self.assertEqual(identity["reviewed_sha256"], ci.CUSTODY_READER_SHA256)
+        self.assertTrue(callable(reader.seal))
+        with tempfile.TemporaryDirectory(dir=os.environ.get("MOTIONWRIGHT_STUDIO_CI_TEST_ROOT")) as name:
+            root = Path(name)
+            marker = root / "must-not-exist"
+            (root / "studio_closed_store_readback.py").write_bytes(
+                ("from pathlib import Path\nPath(" + repr(str(marker)) + ").write_text('executed')\n").encode())
+            with patch.object(ci, "__file__", str(root / "studio_service_ci.py")), self.assertRaisesRegex(ValueError, "source review"):
+                ci.load_custody_reader()
+            self.assertFalse(marker.exists())
+
+
+class DamagedRowCustodyTests(unittest.TestCase):
+    """Original seal over physical synthetic files; upstream receipts are declarative.
+
+    Existing real-Git tests own source_snapshot. These new controls stub only
+    that unchanged source query and tool lookup, forbid every child process and
+    SQLite connection, and exercise the actual receipt, manifest and ZIP gates.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="studio-negative-g1-", dir=os.environ.get("MOTIONWRIGHT_STUDIO_CI_TEST_ROOT"))
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.repo, self.evidence = self.root / "source", self.root / "evidence"
+        self.repo.mkdir()
+        self.evidence.mkdir()
+        parent = json.loads(CONTRACT.read_bytes())
+        source_inputs = []
+        for name in parent["source_files"]:
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            raw = ("Declarative G1 source fixture; never compiled: " + name + "\n").encode()
+            path.write_bytes(raw)
+            parent["source_files"][name] = ci.digest(raw)
+            source_inputs.append({"path": name, "git_sha256": ci.digest(raw), "worktree_sha256": ci.digest(raw),
+                                  "worktree_bytes": len(raw), "representation": "EXACT_GIT_BYTES"})
+        self.contract_path = self.evidence / "selection.json"
+        write_json(self.contract_path, parent)
+        identity = ci.file_record(self.contract_path)
+        self.start_patch(patch.object(ci, "PROFILE_CONTRACT_SHA256", identity["sha256"]))
+        self.contract, self.profile = ci.select_profile(parent, identity, ci.NEGATIVE_PROFILE)
+        self.source_sha = "1" * 40
+        self.start_patch(patch.dict(os.environ, {"GITHUB_SHA": "2" * 40, "GITHUB_RUN_ID": "4242", "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_JOB": "synthetic_studio_negative_custody", "GITHUB_WORKFLOW_SHA": "2" * 40,
+            "GITHUB_WORKFLOW_REF": "seradotcom/motionwright/.github/workflows/verification-plan.yml@refs/heads/synthetic"}))
+        self.snapshot = {"sha": self.source_sha, "tree": "3" * 40, "raw_commit_sha256": "4" * 64,
+                         "parents": [], "source_inputs": source_inputs, "permitted_generated_paths": []}
+
+        def source_query(repo, expected, contract, *, prepared=False):
+            self.assertEqual((Path(repo), expected, contract, prepared), (self.repo, self.source_sha, self.contract, True))
+            return copy.deepcopy(self.snapshot)
+
+        self.start_patch(patch.object(ci, "source_snapshot", side_effect=source_query))
+        self.start_patch(patch.object(ci.subprocess, "Popen", side_effect=AssertionError("A child process was attempted")))
+        self.start_patch(patch.object(ci, "run_command", side_effect=AssertionError("A browser/service execution was attempted")))
+        self.start_patch(patch("sqlite3.connect", side_effect=AssertionError("SQLite was opened during G1 custody")))
+        self.initial = self.evidence / "source-freeze.json"
+        write_json(self.initial, {"schema": "motionwright.studio-service-gate/1", "status": "SOURCE_FROZEN_NO_EXECUTION",
+            "repository": str(self.repo), "execution_context": ci.execution_context(), "product_source": self.snapshot,
+            "selection_contract": identity, "selection_profile": self.profile, "candidate_requested": False})
+        self.target = self.root / "target"
+        self.binary = self.target / "debug/examples" / ("studio_review_session.exe" if os.name == "nt" else "studio_review_session")
+        self.binary.parent.mkdir(parents=True)
+        self.binary.write_bytes(b"Data-only runner identity; never execute.\r\n")
+        (self.evidence / "studio_review_session.exe").write_bytes(self.binary.read_bytes())
+        (self.evidence / "Cargo.lock").write_bytes((self.repo / "Cargo.lock").read_bytes())
+        self.cargo, self.node = self.root / "cargo", self.root / "node"
+        self.cargo.write_bytes(b"Data-only Cargo identity; never execute.\n")
+        self.node.write_bytes(b"Data-only Node identity; never execute.\n")
+        self.start_patch(patch.object(ci.shutil, "which", return_value=str(self.node)))
+        self.playwright = self.repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        self.playwright.parent.mkdir(parents=True)
+        self.playwright.write_bytes(b"Data-only Playwright identity; never execute.\n")
+        self.artifacts = self.evidence / "browser-artifacts"
+        self.artifacts.mkdir()
+        self.captures = []
+        report = report_fixture(self.contract)
+        report["stats"]["duration"] = 1.25
+        for position, spec in enumerate(report["suites"][0]["specs"]):
+            damage = "foreign_identity" if position == 0 else "invalid_json"
+            case = self.artifacts / ("case-" + damage)
+            capture, store = case / "original-closed-store", case / "original-closed-store/store"
+            store.mkdir(parents=True)
+            database = store / "studio.sqlite3"
+            database.write_bytes(b"Unopened synthetic store metadata, not a product database.\r\n\xff\x00")
+            (store / "empty-directory").mkdir()
+            entries = [{"path": "", "kind": "directory"}]
+            for path in sorted(store.rglob("*")):
+                entry = {"path": path.relative_to(store).as_posix(), "kind": "directory" if path.is_dir() else "file"}
+                if path.is_file():
+                    entry.update(sizeBytes=path.stat().st_size, sha256=ci.digest(path.read_bytes()))
+                entries.append(entry)
+            tree_hash = ci.digest(json.dumps(entries, ensure_ascii=False, separators=(",", ":")).encode())
+            original_store = case / "original-service"
+            manifest = {"schemaVersion": 1, "capturedAt": "2026-01-01T00:00:01Z", "sourceDirectory": str(original_store),
+                "snapshotDirectory": str(store), "databaseRelativePath": "studio.sqlite3", "entries": entries,
+                "sourceBeforeSha256": tree_hash, "sourceAfterSha256": tree_hash, "snapshotSha256": tree_hash,
+                "lifecycle": [{"databasePath": str(original_store / "studio.sqlite3"), "taints": [], "exits": [
+                    {"processId": 123 + position, "code": 0, "signal": None, "observedAt": "2026-01-01T00:00:00Z"}]}]}
+            write_json(capture / "manifest.json", manifest)
+            attachment = case / "capture-lifecycle-negative.json"
+            write_json(attachment, {"observed": {"fixture": "deliberately_damaged_project_row_in_separate_sqlite_copy", "damage": damage},
+                                    "services": [{"transcript": "Synthetic control only; not semantic evidence."}]})
+            spec["tests"][0]["projectId"] = "chromium"
+            spec["tests"][0]["results"][0]["attachments"] = [{"path": str(attachment)}]
+            self.captures.append(capture)
+        self.report, self.list_report = self.evidence / "browser-report.json", self.evidence / "browser-list-report.json"
+        write_json(self.report, report)
+        write_json(self.list_report, report_fixture(self.contract, listing=True))
+        self.build, self.runner = self.evidence / "cargo-build.json", self.evidence / "runner-identity.json"
+        self.stage, self.list_stage = self.evidence / "browser-run.json", self.evidence / "browser-list.json"
+        for path in (self.build, self.stage, self.list_stage):
+            path.with_suffix(".stdout.log").write_bytes(b"Declarative upstream receipt; no command ran.\r\n")
+            path.with_suffix(".stderr.log").write_bytes(b"")
+
+        def common(path):
+            return {"schema": "motionwright.studio-service-process/1", "source_freeze": ci.file_record(self.initial),
+                "execution_context": ci.execution_context(), "process_status": "PASS", "exit_code": 0, "reason": None,
+                "automatic_retry": False, "stdout": ci.file_record(path.with_suffix(".stdout.log")),
+                "stderr": ci.file_record(path.with_suffix(".stderr.log")), "dependency_lock_before": ci.file_record(self.repo / "Cargo.lock"),
+                "dependency_lock_after": ci.file_record(self.repo / "Cargo.lock")}
+
+        write_json(self.build, {**common(self.build), "purpose": "build", "cwd": str(self.repo),
+            "argv": [str(self.cargo), "build", "--locked", "-p", "motionwright-service", "--example", "studio_review_session"],
+            "executable": ci.file_record(self.cargo), "environment": {"CARGO_TARGET_DIR": str(self.target)}})
+        write_json(self.runner, {"schema": "motionwright.studio-service-runner/1", "source_freeze": ci.file_record(self.initial),
+            "binary": ci.file_record(self.binary), "build_stage": ci.file_record(self.build), "dependency_lock": ci.file_record(self.repo / "Cargo.lock"),
+            "source_execution_scope": "TEST_JSONL_SERVICE_ONLY"})
+        for listing, path, report_path, artifacts in ((False, self.stage, self.report, self.artifacts),
+                (True, self.list_stage, self.list_report, self.root / "list-artifacts")):
+            service_tmp = self.root / ("list-stores" if listing else "live-stores")
+            write_json(path, {**common(path), "purpose": "browser-list" if listing else "browser-test", "cwd": str(self.repo / "apps/studio"),
+                "argv": ci.browser_argv(self.repo, self.contract, artifacts, listing), "executable": ci.file_record(self.node),
+                "browser_report": ci.file_record(report_path), "environment": {"MOTIONWRIGHT_SERVICE_TEST_BIN": str(self.binary),
+                    "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": str(service_tmp), "PLAYWRIGHT_JSON_OUTPUT_NAME": str(report_path)},
+                "bindings": {"runner_record": ci.file_record(self.runner), "runner_binary": ci.file_record(self.binary),
+                    "playwright_cli": ci.file_record(self.playwright), "output_directory": str(artifacts), "service_tmpdir": str(service_tmp)}})
+        self.service_gate = self.evidence / "service-gate.json"
+        write_json(self.service_gate, {"schema": "motionwright.studio-service-gate/1", "execution_context": ci.execution_context(),
+            "repository": str(self.repo), "verifier_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+            "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "job_key": os.environ["GITHUB_JOB"],
+            "product_source": self.snapshot, "selection_contract": identity, "selection_profile": self.profile,
+            "candidate_requested": False, "runner": ci.parse_json(ci.read(self.runner)), "initial_freeze": ci.file_record(self.initial),
+            "original_report": ci.file_record(self.report), "full89_browser_case_scope_passed": False, "full89_gate_satisfied": False,
+            "closed_store_archive_reopen": "SCOPED_G1_CUSTODY_SEAL_ONLY_REQUIRED", "g2_readback_passed": False,
+            "human_acceptance": False, "installed_tauri": False, "native_rendering": False,
+            **ci.validate_report(report, self.contract)})
+        self.reader, self.reader_record = ci.load_custody_reader()
+        self.start_patch(patch.object(ci, "load_custody_reader", return_value=(self.reader, self.reader_record)))
+        self.start_patch(patch.object(self.reader, "readback", side_effect=AssertionError("Readback was attempted")))
+        self.start_patch(patch.object(self.reader, "run_jsonl", side_effect=AssertionError("A service readback process was attempted")))
+
+    def start_patch(self, value):
+        mocked = value.start()
+        self.addCleanup(value.stop)
+        return mocked
+
+    def arguments(self, output):
+        return SimpleNamespace(output=self.evidence / output, repo=self.repo, source_sha=self.source_sha,
+            contract=self.contract_path, profile=ci.NEGATIVE_PROFILE, candidate=False, initial=self.initial,
+            runner_record=self.runner, stage=self.stage, report=self.report, list_report=self.list_report,
+            list_stage=self.list_stage, browser_artifacts=self.artifacts, service_gate=self.service_gate,
+            post_execution=getattr(self, "post_execution", self.evidence / "not-yet-finalized.json"))
+
+    def finalize(self, label="finalization"):
+        args = self.arguments(label)
+        with patch.dict(os.environ, {"OBSERVED_JOB_STATUS": "success", "OBSERVED_BROWSER_STEP_OUTCOME": "success"}), redirect_stdout(io.StringIO()):
+            code = ci.finalize_observation(args)
+        self.post_execution = args.output / "post-execution.json"
+        result = ci.parse_json(ci.read(self.post_execution))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["state"], "OBSERVATION_COMPLETE")
+        return result
+
+    def scoped(self, label="scoped", *, env=None, **changes):
+        args = self.arguments(label)
+        for key, value in changes.items():
+            setattr(args, key, value)
+        observed = {key: "success" for key in ("OBSERVED_JOB_STATUS", "OBSERVED_BROWSER_STEP_OUTCOME",
+                    "OBSERVED_POST_EXECUTION_STEP_OUTCOME", "OBSERVED_SERVICE_VERIFY_STEP_OUTCOME")}
+        observed.update(env or {})
+        with patch.dict(os.environ, observed), patch.object(self.reader, "seal", wraps=self.reader.seal) as seal, redirect_stdout(io.StringIO()):
+            code = ci.negative_custody(args)
+        result = ci.parse_json(ci.read(args.output / "receipt.json"))
+        return code, result, seal.call_count
+
+    def test_two_physical_healthy_controls_seal_without_opening_sqlite_or_a_child_process(self):
+        self.finalize()
+        before = ci.custody_tree(self.artifacts)
+        code, result, calls = self.scoped()
+        self.assertEqual((code, result["state"], calls), (0, "PASS_SCOPED_G1_NEGATIVE_CONTROLS", 1), result)
+        self.assertEqual((result["healthy_captures_preserved"], result["project_oracles"], result["stores_reopened"], result["readback_processes"]), (2, 0, 0, 0))
+        self.assertEqual(result["readback_state"], "NOT_RUN")
+        self.assertIsNone(result["full_project_equal"])
+        self.assertIsNone(result["full_journal_equal"])
+        self.assertEqual(ci.custody_tree(self.artifacts), before)
+        for key in ("candidate_eligible", "full89_gate_satisfied", "g2_readback_passed", "sqlite_opened", "service_started",
+                    "browser_rerun_performed", "reopen_authorized_by_this_receipt", "formal_acceptance", "human_acceptance"):
+            self.assertIs(result[key], False, key)
+
+    def test_missing_and_zero_captures_fail_even_when_raw_finalization_is_complete(self):
+        for position, capture in enumerate(self.captures):
+            ci.shutil.rmtree(capture)
+            post = self.finalize("removed-capture-final-" + str(position))
+            self.assertEqual(post["custody"]["status"], "RAW_BYTES_PRESERVED")
+            code, result, calls = self.scoped("removed-capture-scope-" + str(position))
+            self.assertEqual((code, calls), (2, 1))
+            self.assertFalse(result["all_scoped_checks_passed"])
+            self.assertEqual(result["stores_reopened"], 0)
+
+    def test_oracle_taint_and_unclean_exit_cannot_be_sealed_as_healthy_controls(self):
+        capture = self.captures[0]
+        manifest_path = capture / "manifest.json"
+        original = ci.read(manifest_path)
+        for defect in ("oracle", "taint", "unclean-exit"):
+            if defect == "oracle":
+                write_json(capture / "oracle.json", {"synthetic": "An added oracle cannot upgrade a healthy control"})
+            else:
+                manifest = ci.parse_json(original)
+                if defect == "taint":
+                    manifest["lifecycle"][0]["taints"] = ["synthetic-uncertain-shutdown"]
+                else:
+                    manifest["lifecycle"][0]["exits"][0]["code"] = 1
+                write_json(manifest_path, manifest)
+            self.finalize(defect + "-final")
+            code, result, calls = self.scoped(defect + "-scope")
+            self.assertEqual((code, calls), (2, 1))
+            self.assertFalse(result["all_scoped_checks_passed"])
+            manifest_path.write_bytes(original)
+            if (capture / "oracle.json").exists():
+                (capture / "oracle.json").unlink()
+
+    def test_failure_unknown_cancel_and_omitted_prerequisites_never_enter_seal(self):
+        post = self.finalize()
+        for state in ("ORIGINAL_EXECUTION_FAILED", "UNKNOWN", "NOT_ADMITTED"):
+            changed = {**post, "state": state}
+            write_json(self.post_execution, changed)
+            code, result, calls = self.scoped("state-" + state)
+            self.assertEqual((code, calls), (2, 0))
+            self.assertFalse(result["all_scoped_checks_passed"])
+        write_json(self.post_execution, post)
+        for key in ("OBSERVED_JOB_STATUS", "OBSERVED_BROWSER_STEP_OUTCOME", "OBSERVED_POST_EXECUTION_STEP_OUTCOME", "OBSERVED_SERVICE_VERIFY_STEP_OUTCOME"):
+            for state in ("cancelled", "skipped"):
+                code, result, calls = self.scoped(key + "-" + state, env={key: state})
+                self.assertEqual((code, calls), (2, 0))
+                self.assertFalse(result["all_scoped_checks_passed"])
+
+    def test_post_check_omissions_wrong_attempt_and_wrong_profile_are_rejected(self):
+        post = self.finalize()
+        for defect in ("missing-check", "false-complete", "other-attempt", "other-source", "other-profile"):
+            changed = copy.deepcopy(post)
+            if defect == "missing-check":
+                del changed["checks"]["original_attachments"]
+            elif defect == "false-complete":
+                changed["identity_and_custody_checks_complete"] = 1
+            elif defect == "other-attempt":
+                changed["execution_context"]["GITHUB_RUN_ATTEMPT"] = "2"
+            elif defect == "other-source":
+                changed["requested_source_sha"] = "5" * 40
+            else:
+                changed["requested_profile"] = "full89"
+            write_json(self.post_execution, changed)
+            code, result, calls = self.scoped(defect)
+            self.assertEqual((code, calls), (2, 0))
+            self.assertFalse(result["all_scoped_checks_passed"])
+
+    def test_service_gate_cannot_contradict_run_source_or_its_partial_scope(self):
+        self.finalize()
+        gate = ci.parse_json(ci.read(self.service_gate))
+        variants = {"verifier_sha": "5" * 40, "run_id": "4243", "run_attempt": "2", "job_key": "another_job",
+                    "repository": str(self.root / "other-source"), "case_count": 1,
+                    "closed_store_archive_reopen": "SEPARATE_GATE_REQUIRED", "g2_readback_passed": True,
+                    "full89_gate_satisfied": True, "human_acceptance": True}
+        for key, value in variants.items():
+            write_json(self.service_gate, {**gate, key: value})
+            code, result, calls = self.scoped("gate-" + key)
+            self.assertEqual((code, calls), (2, 0))
+            self.assertFalse(result["all_scoped_checks_passed"])
+
+    def test_source_receipts_runner_and_raw_artifact_mutations_are_rejected_before_seal(self):
+        self.finalize()
+        paths = (self.repo / next(iter(self.contract["source_files"])), self.report, self.binary,
+                 self.captures[0] / "store/studio.sqlite3", self.stage.with_suffix(".stdout.log"),
+                 self.post_execution.parent / "custody/original-bytes.zip")
+        for position, path in enumerate(paths):
+            original = ci.read(path)
+            path.write_bytes(original + b"Changed original input after finalization.\r\n")
+            code, result, calls = self.scoped("changed-" + str(position))
+            self.assertEqual((code, calls), (2, 0))
+            self.assertFalse(result["all_scoped_checks_passed"])
+            path.write_bytes(original)
+
+    def test_wrong_capture_id_damage_and_boolean_oracle_count_are_rejected(self):
+        self.finalize()
+        code, result, _ = self.scoped("valid-index")
+        self.assertEqual(code, 0, result)
+        index = ci.parse_json(ci.read(Path(result["capture_inventory"]["path"])))
+        for defect in ("id", "duplicate", "damage", "oracle-count"):
+            changed = copy.deepcopy(index)
+            if defect == "id":
+                changed["records"][0]["test"]["test_id"] = ci.SIDECAR_CONTROL[3]
+            elif defect == "duplicate":
+                changed["records"][1] = copy.deepcopy(changed["records"][0])
+            elif defect == "damage":
+                changed["records"][0]["negative_scope"]["damage"] = "all"
+            else:
+                changed["oracle_present"] = False
+            with self.subTest(defect=defect), self.assertRaises(ValueError):
+                ci.require_negative_capture_index(changed)
+
+    def test_other_profiles_candidate_output_overlap_and_replay_are_rejected(self):
+        self.finalize()
+        for changes in ({"profile": "full89"}, {"profile": ci.PORTABLE_PROFILE}, {"candidate": True},
+                        {"output": self.artifacts / "overlapping-output"}):
+            args = self.arguments("not-created")
+            for key, value in changes.items():
+                setattr(args, key, value)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                ci.negative_custody(args)
+            self.assertFalse(args.output.exists())
+        self.scoped("once")
+        with self.assertRaisesRegex(ValueError, "replay or overwrite"):
+            self.scoped("once")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

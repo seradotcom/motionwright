@@ -13,7 +13,7 @@ on:
         default: full89
         required: false
       release_candidate:
-        description: Require the complete candidate scope; the five-case portable and sidecar profile is refused
+        description: Require the complete candidate scope; partial profiles are refused
         type: boolean
         default: false
         required: false
@@ -47,7 +47,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:MW_SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'An exact lowercase source commit is required' }
-          if ($env:MW_STUDIO_PROFILE -cnotin @('full89', 'portable-export-4-plus-sidecar-control')) { throw 'Unknown verification profile' }
+          if ($env:MW_STUDIO_PROFILE -cnotin @('full89', 'portable-export-4-plus-sidecar-control', 'damaged-project-row-negative-2')) { throw 'Unknown verification profile' }
           if ($env:MW_STUDIO_CANDIDATE -cnotin @('true', 'false')) { throw 'An explicit candidate boolean is required' }
           if ($env:MW_STUDIO_CANDIDATE -ceq 'true' -and $env:MW_STUDIO_PROFILE -cne 'full89') { throw 'A release candidate requires full89' }
           $root = Join-Path $env:RUNNER_TEMP 'studio-real-service'
@@ -229,7 +229,7 @@ jobs:
             --list-stage "$env:MW_STUDIO_EVIDENCE/browser-list.json" --output "$env:MW_STUDIO_EVIDENCE/service-gate.json"
           exit $LASTEXITCODE
       - name: Archive closed stores and reopen fresh copies through the same real runner
-        if: ${{ success() && steps.browser_run.outcome == 'success' && steps.post_execution.outcome == 'success' && steps.service_verify.outcome == 'success' }}
+        if: ${{ success() && inputs.verification_profile != 'damaged-project-row-negative-2' && steps.browser_run.outcome == 'success' && steps.post_execution.outcome == 'success' && steps.service_verify.outcome == 'success' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -238,6 +238,27 @@ jobs:
             --browser-artifacts "$env:MW_STUDIO_EVIDENCE/browser-artifacts" --browser-report "$env:MW_STUDIO_EVIDENCE/browser-report.json" `
             --runner $identity.binary.path --expected-runner-sha256 $identity.binary.sha256 --source-commit $env:MW_SOURCE_SHA `
             --output "$env:MW_STUDIO_EVIDENCE/closed-store-readback"
+          exit $LASTEXITCODE
+      - name: Seal both healthy originals for the scoped G1 damaged-row controls
+        id: negative_custody
+        if: ${{ success() && inputs.verification_profile == 'damaged-project-row-negative-2' && steps.browser_run.outcome == 'success' && steps.post_execution.outcome == 'success' && steps.service_verify.outcome == 'success' }}
+        shell: pwsh
+        env:
+          OBSERVED_JOB_STATUS: ${{ job.status }}
+          OBSERVED_BROWSER_STEP_OUTCOME: ${{ steps.browser_run.outcome }}
+          OBSERVED_POST_EXECUTION_STEP_OUTCOME: ${{ steps.post_execution.outcome }}
+          OBSERVED_SERVICE_VERIFY_STEP_OUTCOME: ${{ steps.service_verify.outcome }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -I -B -S verifier/tooling/studio_service_ci.py negative-custody `
+            --repo "$env:GITHUB_WORKSPACE/product" --source-sha $env:MW_SOURCE_SHA `
+            --contract "$env:GITHUB_WORKSPACE/verifier/tooling/studio_service_contracts.json" --profile $env:MW_STUDIO_PROFILE `
+            --initial "$env:MW_STUDIO_EVIDENCE/source-freeze.json" --runner-record "$env:MW_STUDIO_EVIDENCE/runner-identity.json" `
+            --report "$env:MW_STUDIO_EVIDENCE/browser-report.json" --stage "$env:MW_STUDIO_EVIDENCE/browser-run.json" `
+            --list-report "$env:MW_STUDIO_EVIDENCE/browser-list-report.json" --list-stage "$env:MW_STUDIO_EVIDENCE/browser-list.json" `
+            --post-execution "$env:MW_STUDIO_EVIDENCE/post-execution/post-execution.json" `
+            --service-gate "$env:MW_STUDIO_EVIDENCE/service-gate.json" --browser-artifacts "$env:MW_STUDIO_EVIDENCE/browser-artifacts" `
+            --output "$env:MW_STUDIO_EVIDENCE/damaged-row-g1-custody"
           exit $LASTEXITCODE
       - name: Retain an explicit final job status and original generated lock
         if: always()
