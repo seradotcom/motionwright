@@ -41,7 +41,7 @@ jobs:
           echo "MW_DIAG_VERIFY=$MW_DIAG_VERIFY" >> "$GITHUB_ENV"
           echo "MW_DIAG_CHECK=$MW_DIAG_CHECK" >> "$GITHUB_ENV"
           cat > "$MW_DIAG_CHECK" <<'PY'
-          import hashlib,json,os,pathlib,re,shutil,stat,subprocess,sys
+          import ast,hashlib,json,os,pathlib,re,shutil,stat,subprocess,sys
 
           def require(ok,message):
               if not ok: raise SystemExit(message)
@@ -100,6 +100,60 @@ jobs:
               originals[path]=data
               oids[path]=oid.decode("ascii")
           require(set(originals)==source_paths|{workflow_path},"missing source blob")
+          # G0: all 3 G1 suites must remain bound to the exact committed tests.
+          # Reuse authenticated Git blobs; execute BEFORE FFmpeg package installation
+          # or the upstream MLT download. Do not replace any later result guards.
+          def static_test_count(path,minimum):
+              module=ast.parse(originals[path].decode("utf-8"))
+              require(not any(isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef))
+                              and node.name=="load_tests" for node in ast.walk(module)),
+                      "dynamic MLT unittest loading cannot authorize G1")
+              classes=[cls for cls in module.body if isinstance(cls,ast.ClassDef)
+                       and any(isinstance(parent,ast.Attribute)
+                               and isinstance(parent.value,ast.Name)
+                               and parent.value.id=="unittest" and parent.attr=="TestCase"
+                               for parent in cls.bases)]
+              cases=[(cls.name,method.name) for cls in classes for method in cls.body
+                     if isinstance(method,ast.FunctionDef) and method.name.startswith("test_")]
+              all_cases=[(cls.name,method.name) for cls in module.body if isinstance(cls,ast.ClassDef)
+                         for method in cls.body if isinstance(method,ast.FunctionDef)
+                         and method.name.startswith("test_")]
+              require(len(cases)>=minimum and len(cases)==len(all_cases)
+                      and len(set(cases))==len(cases),
+                      "MLT source test inventory incomplete or ambiguous")
+              return len(cases)
+          workflow=originals[workflow_path].decode("utf-8")
+          def required_step(label):
+              marker="\n      - name: "+label+"\n        run: |"
+              require(workflow.count(marker)==1,"MLT G1 step missing or ambiguous")
+              return workflow.split(marker,1)[1].split("\n      - name:",1)[0]
+          inventories=(
+              ("tooling/tests/test_mlt_repair_verification.py",26,
+               "Verify source composition and identity contracts",
+               ((r'suite\.countTestCases\(\)!=(\d+)',"step"),
+                (r'result\.testsRun==(\d+) and result\.wasSuccessful\(\)',"step"),
+                (r'\("composition-contracts\.json",(\d+)\)',"workflow"),
+                (r'"source_composition":(\d+)',"workflow"))),
+              ("tooling/mlt-audio-diagnostic/test_verify_trace.py",32,
+               "Independently decode constructor traces",
+               ((r'suite\.countTestCases\(\)!=(\d+)',"step"),
+                (r'result\.testsRun!=(\d+)',"step"),
+                (r'Ran (\d+) tests in ',"step"),
+                (r'"original_observer":(\d+)',"workflow"))),
+              ("tooling/mlt-audio-diagnostic/test_repair_planar_source.py",13,
+               "Verify the pinned planar repair source",
+               ((r'suite\.countTestCases\(\)!=(\d+)',"step"),
+                (r'result\.testsRun==(\d+) and result\.wasSuccessful\(\)',"step"),
+                (r'\("repair-contracts\.json",(\d+)\)',"workflow"),
+                (r'"planar_repair":(\d+)',"workflow")))
+          )
+          for test_path,minimum,step_name,checks in inventories:
+              case_count=static_test_count(test_path,minimum)
+              step=required_step(step_name)
+              for pattern,scope in checks:
+                  matches=re.findall(pattern,step if scope=="step" else workflow)
+                  require(len(matches)==1 and int(matches[0])==case_count,
+                          "MLT G1 count differs from exact committed test inventory")
           require(len(sys.argv)==2 and sys.argv[1] in ("export","verify"),"expected export or verify")
           if sys.argv[1]=="export":
               export.mkdir(exist_ok=False)
