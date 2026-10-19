@@ -2,6 +2,16 @@ name: Native reader contracts
 
 on:
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Reader controls only; all PRs retain the complete reader lane
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - mlt
+          - motion_canvas
   pull_request:
     paths:
       - '.github/workflows/native-reader-contracts.yml'
@@ -20,6 +30,8 @@ on:
       - 'tooling/tests/test_native_motion_canvas_roundtrip.py'
       - 'tooling/tests/test_native_mlt_ci_audio.py'
       - 'tooling/tests/test_native_mlt_ci_pcm_envelope.py'
+      - 'tooling/tests/test_native_mlt_public_artifact.py'
+      - '.github/workflows/native-mlt-sequence-e2e.yml'
 
 permissions:
   contents: read
@@ -34,6 +46,7 @@ defaults:
 
 env:
   PYTHONDONTWRITEBYTECODE: '1'
+  NATIVE_READER_REQUESTED_SCOPE: ${{ inputs.verification_scope || 'all' }}
 
 jobs:
   native-reader-contracts:
@@ -43,20 +56,508 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
 
-      - name: Prepare isolated reader evidence and exact source
+      - name: Prepare isolated evidence, source and explicit reader selection
+        id: prepare
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          evidence="$RUNNER_TEMP/native-reader-evidence/$GITHUB_SHA"
-          test ! -e "$evidence"
-          mkdir -p "$evidence" "$RUNNER_TEMP/native-reader-tmp"
-          echo "NATIVE_READER_EVIDENCE=$evidence" >> "$GITHUB_ENV"
-          echo "TMPDIR=$RUNNER_TEMP/native-reader-tmp" >> "$GITHUB_ENV"
+          export NATIVE_READER_EVIDENCE="$RUNNER_TEMP/native-reader-evidence/$GITHUB_SHA"
+          test ! -e "$NATIVE_READER_EVIDENCE"
+          mkdir -p "$NATIVE_READER_EVIDENCE" "$RUNNER_TEMP/native-reader-tmp"
+          export TMPDIR="$RUNNER_TEMP/native-reader-tmp"
+          echo "NATIVE_READER_EVIDENCE=$NATIVE_READER_EVIDENCE" >> "$GITHUB_ENV"
+          echo "TMPDIR=$TMPDIR" >> "$GITHUB_ENV"
+          cat > "$NATIVE_READER_EVIDENCE/receipt-helper.py" <<'PY'
+          # NATIVE_READER_HARNESS_BEGIN
+          """Workflow-owned receipt helper; no native producer or test module is imported."""
+          import ast
+          from datetime import datetime, timezone
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import stat
+          import subprocess
+          import sys
+
+          WORKFLOW = '.github/workflows/native-reader-contracts.yml'
+          CONTEXT_KEYS = ('GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_WORKFLOW_SHA',
+                          'GITHUB_WORKFLOW_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB')
+          GROUPS = {
+              'motion_canvas': {'mode': 'discovery', 'suites': {
+                  'test_native_motion_canvas_roundtrip.py': 26}},
+              'mlt': {'mode': 'both', 'suites': {
+                  'test_native_mlt_ci_pcm_envelope.py': 9,
+                  'test_native_mlt_ci_audio.py': 46,
+                  'test_native_mlt_public_artifact.py': 21}},
+          }
+          REQUIRED_CLASS_COUNTS = {
+              'test_native_motion_canvas_roundtrip.py': {'PureRoundtripContractTests': 6,
+                                                       'RealSourceAndFrameInspection': 20},
+              'test_native_mlt_ci_audio.py': {'NativeAvStereoContentTests': 3, 'NativeSourceWavCustodyTests': 8,
+                                             'NativeRetainedAudioReadbackTests': 13, 'BoundedReadbackCaptureTests': 5,
+                                             'RealSyntheticAacReadbackControl': 1, 'NativeTechnicalCustodyTests': 16},
+          }
+          ROOT = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+          EVIDENCE = Path(os.environ['NATIVE_READER_EVIDENCE']).resolve(strict=True)
+
+
+          def require(ok, message):
+              if not ok:
+                  raise ValueError(message)
+
+
+          def now():
+              return datetime.now(timezone.utc).isoformat()
+
+
+          def strict_json(raw):
+              def pairs(values):
+                  result = {}
+                  for key, value in values:
+                      require(key not in result, 'Duplicate JSON key')
+                      result[key] = value
+                  return result
+              def invalid(value):
+                  raise ValueError('Nonfinite JSON value: ' + value)
+              return json.loads(raw, object_pairs_hook=pairs, parse_constant=invalid)
+
+
+          def file_record(path, limit=256 * 1024 * 1024):
+              path = Path(path).absolute()
+              for component in (path, *path.parents):
+                  info = component.lstat()
+                  require(not stat.S_ISLNK(info.st_mode)
+                          and not getattr(info, 'st_file_attributes', 0) & 0x400, 'Linked evidence/source')
+              initial = path.stat()
+              require(stat.S_ISREG(initial.st_mode) and 0 <= initial.st_size <= limit, 'Invalid file budget/type')
+              with path.open('rb') as stream:
+                  opened = os.fstat(stream.fileno())
+                  raw = stream.read(initial.st_size + 1)
+                  final = os.fstat(stream.fileno())
+              signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+              require(signature(initial) == signature(opened) == signature(final) == signature(path.stat())
+                      and len(raw) == initial.st_size, 'File changed during bounded read')
+              return {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}, raw
+
+
+          def write_new(name, value):
+              raw = (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + '\n').encode()
+              with (EVIDENCE / name).open('xb') as stream:
+                  stream.write(raw)
+                  stream.flush()
+                  os.fsync(stream.fileno())
+              return file_record(EVIDENCE / name)[0]
+
+
+          def safe_env():
+              result = {key: value for key, value in os.environ.items() if not key.upper().startswith('GIT_')}
+              result.update(GIT_NO_REPLACE_OBJECTS='1', GIT_GRAFT_FILE=os.devnull, GIT_NO_LAZY_FETCH='1',
+                            GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_OPTIONAL_LOCKS='0',
+                            GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='core.fsmonitor', GIT_CONFIG_VALUE_0='false',
+                            PYTHONDONTWRITEBYTECODE='1')
+              return result
+
+
+          def git(*args):
+              process = subprocess.run(['git', '--no-replace-objects', '-c', 'core.fsmonitor=false',
+                                        '-C', str(ROOT), *args], env=safe_env(), capture_output=True, timeout=30)
+              require(process.returncode == 0, 'Original Git read failed: ' + ' '.join(args))
+              return process.stdout
+
+
+          def context():
+              value = {name: os.environ.get(name, '') for name in CONTEXT_KEYS}
+              require(value['GITHUB_REPOSITORY'] == 'seradotcom/motionwright', 'Unexpected repository')
+              for name in ('GITHUB_SHA', 'GITHUB_WORKFLOW_SHA'):
+                  require(re.fullmatch('[0-9a-f]{40}', value[name]) is not None, 'Missing exact SHA')
+              for name in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'):
+                  require(re.fullmatch('[1-9][0-9]*', value[name]) is not None, 'Missing execution identity')
+              require(value['GITHUB_JOB'] == 'native-reader-contracts', 'Unexpected job')
+              require(value['GITHUB_WORKFLOW_REF'].startswith(value['GITHUB_REPOSITORY'] + '/' + WORKFLOW + '@'),
+                      'Unexpected workflow reference')
+              return value
+
+
+          def select_groups(event, scope):
+              if event == 'workflow_dispatch':
+                  require(scope in ('all', 'mlt', 'motion_canvas'), 'Unknown manual verification scope')
+                  return ['motion_canvas', 'mlt'] if scope == 'all' else [scope]
+              require(event == 'pull_request', 'Unsupported trigger')
+              return ['motion_canvas', 'mlt']  # No PR impact exclusion is introduced here.
+
+
+          def source_snapshot():
+              ctx = context()
+              sha = ctx['GITHUB_SHA']
+              require(git('rev-parse', 'HEAD').decode().strip() == sha, 'Actual checkout differs from source SHA')
+              raw_commit = git('cat-file', 'commit', sha)
+              require(hashlib.sha1(b'commit ' + str(len(raw_commit)).encode() + b'\0' + raw_commit).hexdigest() == sha,
+                      'Original commit identity differs')
+              tree = raw_commit.split(b'\n', 1)[0].removeprefix(b'tree ').decode()
+              require(re.fullmatch('[0-9a-f]{40}', tree) is not None, 'Malformed commit tree')
+              raw_tree = git('cat-file', 'tree', tree)
+              require(hashlib.sha1(b'tree ' + str(len(raw_tree)).encode() + b'\0' + raw_tree).hexdigest() == tree,
+                      'Original root tree identity differs')
+              require(not git('status', '--porcelain', '--untracked-files=no'), 'Tracked source is dirty')
+              for options in (('--others', '--exclude-standard'), ('--others', '--ignored', '--exclude-standard')):
+                  require(not git('ls-files', '-z', *options), 'Untracked or ignored input is outside the source')
+              inventory = {}
+              for entry in git('ls-tree', '-r', '-z', '--full-tree', sha).split(b'\0'):
+                  if not entry:
+                      continue
+                  header, name = entry.split(b'\t', 1)
+                  mode, kind, oid = header.decode().split()
+                  relative = name.decode('utf-8', 'strict')
+                  require(kind == 'blob' and mode in ('100644', '100755') and relative not in inventory,
+                          'Unsupported or duplicate tracked input')
+                  require(not Path(relative).is_absolute() and '..' not in Path(relative).parts,
+                          'Unsafe tracked source path')
+                  identity, raw = file_record(ROOT / relative)
+                  require(hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == oid,
+                          'Physical input differs from the original Git blob: ' + relative)
+                  inventory[relative] = {'git_blob': oid, 'mode': mode, **identity}
+              require(inventory, 'Empty source inventory')
+              workflow = file_record(ROOT / WORKFLOW)[1]
+              require(git('cat-file', 'blob', ctx['GITHUB_WORKFLOW_SHA'] + ':' + WORKFLOW) == workflow,
+                      'Executing workflow definition differs from the tested checkout')
+              return {'source_sha': sha, 'tree_sha': tree,
+                      'parents': [line[7:].decode() for line in raw_commit.split(b'\n\n', 1)[0].splitlines()
+                                  if line.startswith(b'parent ')],
+                      'execution_context': ctx, 'tracked_inputs': inventory}
+
+
+          def suite_catalog(filename, minimum):
+              tree = ast.parse((ROOT / 'tooling/tests' / filename).read_bytes())
+              require(not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == 'load_tests'
+                              for node in tree.body), 'Dynamic unittest discovery needs separate review')
+              ids = []
+              for node in tree.body:
+                  if not isinstance(node, ast.ClassDef):
+                      continue
+                  methods = [method.name for method in node.body
+                             if isinstance(method, ast.FunctionDef) and method.name.startswith('test_')]
+                  if methods:
+                      require(len(node.bases) == 1 and isinstance(node.bases[0], ast.Attribute)
+                              and isinstance(node.bases[0].value, ast.Name) and node.bases[0].value.id == 'unittest'
+                              and node.bases[0].attr == 'TestCase', 'Unreviewed inherited unittest cases')
+                      ids += [node.name + '.' + method for method in methods]
+              require(len(ids) == len(set(ids)) and len(ids) >= minimum, 'Declared test inventory is incomplete')
+              for class_name, count in REQUIRED_CLASS_COUNTS.get(filename, {}).items():
+                  require(sum(identity.startswith(class_name + '.') for identity in ids) >= count,
+                          'A required reader control class is incomplete: ' + class_name)
+              if filename == 'test_native_mlt_ci_audio.py':
+                  require('RealSyntheticAacReadbackControl.test_real_decoder_retains_full_pcm_and_original_clock' in ids,
+                          'Required real synthetic AAC decoder control is absent')
+              return sorted(ids)
+
+
+          def prepare():
+              require(ROOT not in (EVIDENCE, *EVIDENCE.parents), 'Evidence must be outside checkout')
+              selected = select_groups(os.environ['GITHUB_EVENT_NAME'], os.environ.get('NATIVE_READER_REQUESTED_SCOPE', ''))
+              source = source_snapshot()
+              helper_identity, helper_bytes = file_record(Path(__file__))
+              workflow = (ROOT / WORKFLOW).read_bytes()
+              lines = workflow.splitlines(keepends=True)
+              start = [i for i, line in enumerate(lines) if line == b'          # NATIVE_READER_HARNESS_BEGIN\n']
+              end = [i for i, line in enumerate(lines) if line == b'          # NATIVE_READER_HARNESS_END\n']
+              require(len(start) == len(end) == 1 and start[0] < end[0], 'Missing original embedded receipt helper')
+              require(b''.join(line[10:] for line in lines[start[0]:end[0] + 1]) == helper_bytes,
+                      'Prepared helper differs from the original workflow')
+              groups = {name: {'mode': GROUPS[name]['mode'], 'suites': {
+                  filename: {'minimum': minimum, 'ids': suite_catalog(filename, minimum)}
+                  for filename, minimum in GROUPS[name]['suites'].items()}} for name in selected}
+              result = {'schema': 'motionwright.native-reader-selection/2', 'state': 'SOURCE_FROZEN_NO_EXECUTION',
+                        'created_utc': now(), 'source': source, 'helper': helper_identity,
+                        'selected_order': selected,
+                        'selected_groups': groups,
+                        'not_selected_groups': {name: 'NOT_SELECTED_MANUAL_SCOPE' for name in GROUPS if name not in selected},
+                        'scope': 'Synthetic reader, publication and media-decoder controls; no native producer or acceptance',
+                        'formal_acceptance': False, 'release_eligible': False}
+              write_new('selection.json', result)
+
+
+          def load_selection():
+              value = strict_json(file_record(EVIDENCE / 'selection.json')[1])
+              require(value['schema'] == 'motionwright.native-reader-selection/2'
+                      and value['state'] == 'SOURCE_FROZEN_NO_EXECUTION', 'Invalid selection receipt')
+              require(file_record(Path(__file__))[0] == value['helper'], 'Receipt helper changed')
+              require(source_snapshot() == value['source'], 'Source or execution context changed')
+              selected = select_groups(os.environ['GITHUB_EVENT_NAME'], os.environ.get('NATIVE_READER_REQUESTED_SCOPE', ''))
+              groups = {name: {'mode': GROUPS[name]['mode'], 'suites': {
+                  filename: {'minimum': minimum, 'ids': suite_catalog(filename, minimum)}
+                  for filename, minimum in GROUPS[name]['suites'].items()}} for name in selected}
+              require(value['selected_order'] == selected and value['selected_groups'] == groups
+                      and value['not_selected_groups'] == {name: 'NOT_SELECTED_MANUAL_SCOPE'
+                                                          for name in GROUPS if name not in selected},
+                      'Selection differs from the current event, workflow or exact test definitions')
+              return value
+
+
+          def execute_command(name, argv):
+              write_new(name + '-intent.json', {'schema': 'motionwright.native-reader-command/1',
+                        'state': 'NOT_COMPLETED', 'argv': argv, 'cwd': str(ROOT), 'started_utc': now(),
+                        'execution_context': context(), 'selection': file_record(EVIDENCE / 'selection.json')[0],
+                        'retry_attempted': False})
+              process, code, error = None, None, None
+              try:
+                  with (EVIDENCE / (name + '-stdout.log')).open('xb') as stdout, \
+                          (EVIDENCE / (name + '-stderr.log')).open('xb') as stderr:
+                      process = subprocess.Popen(argv, cwd=ROOT, env=safe_env(), stdout=stdout, stderr=stderr)
+                      code = process.wait()
+              except (OSError, KeyboardInterrupt, subprocess.SubprocessError) as exc:
+                  error = type(exc).__name__ + ': ' + str(exc)
+              state = 'COMPLETED' if type(code) is int else ('UNKNOWN' if process is not None else 'NOT_STARTED')
+              outcome = {'schema': 'motionwright.native-reader-command/1', 'state': state,
+                         'original_exit_code': code, 'error': error, 'argv': argv, 'cwd': str(ROOT),
+                         'execution_context': context(), 'selection': file_record(EVIDENCE / 'selection.json')[0],
+                         'completed_utc': now(), 'retry_attempted': False}
+              # Preserve the original outcome before hashing streams that could still be growing after UNKNOWN.
+              write_new(name + '-outcome.json', outcome)
+              streams, errors = {}, []
+              for stream in ('stdout', 'stderr'):
+                  relative = name + '-' + stream + '.log'
+                  try:
+                      streams[stream] = {'file': relative, **file_record(EVIDENCE / relative)[0]}
+                  except (OSError, ValueError) as exc:
+                      errors.append(type(exc).__name__ + ': ' + str(exc))
+              write_new(name + '-custody.json', {'schema': 'motionwright.native-reader-command-custody/1',
+                        'intent': file_record(EVIDENCE / (name + '-intent.json'))[0],
+                        'outcome': file_record(EVIDENCE / (name + '-outcome.json'))[0],
+                        'streams': streams, 'custody_errors': errors, 'retry_attempted': False})
+              return outcome
+
+
+          def validate_command(name, argv):
+              expected = {'argv': argv, 'cwd': str(ROOT), 'execution_context': context(),
+                          'selection': file_record(EVIDENCE / 'selection.json')[0], 'retry_attempted': False}
+              intent_identity, raw = file_record(EVIDENCE / (name + '-intent.json'))
+              intent = strict_json(raw)
+              outcome_identity, raw = file_record(EVIDENCE / (name + '-outcome.json'))
+              outcome = strict_json(raw)
+              for value in (intent, outcome):
+                  require(value['schema'] == 'motionwright.native-reader-command/1'
+                          and all(value[key] == wanted for key, wanted in expected.items()), 'Original command binding differs')
+              require(intent['state'] == 'NOT_COMPLETED', 'Original intent state differs')
+              require(outcome['state'] == 'COMPLETED' and type(outcome['original_exit_code']) is int
+                      and outcome['original_exit_code'] == 0 and outcome['error'] is None, 'Original command did not pass')
+              custody = strict_json(file_record(EVIDENCE / (name + '-custody.json'))[1])
+              require(custody['schema'] == 'motionwright.native-reader-command-custody/1'
+                      and custody['intent'] == intent_identity and custody['outcome'] == outcome_identity
+                      and custody['custody_errors'] == [] and set(custody['streams']) == {'stdout', 'stderr'}
+                      and custody['retry_attempted'] is False, 'Command custody is incomplete or different')
+              for stream in ('stdout', 'stderr'):
+                  relative = name + '-' + stream + '.log'
+                  require(custody['streams'][stream] == {'file': relative, **file_record(EVIDENCE / relative)[0]},
+                          'Original command stream differs')
+              return custody
+
+
+          def g0():
+              load_selection()
+              outcomes = []
+              for name in ('source_policy', 'acceptance_policy'):
+                  outcome = execute_command(name, [sys.executable, '-B', '-E', '-s', 'tooling/' + name + '.py'])
+                  outcomes.append(outcome)
+                  if outcome['state'] != 'COMPLETED':
+                      break
+              write_new('g0.json', {'schema': 'motionwright.native-reader-g0/1', 'outcomes': outcomes,
+                                   'formal_acceptance': False})
+              require(len(outcomes) == 2 and all(item['state'] == 'COMPLETED' and type(item['original_exit_code']) is int
+                                               and item['original_exit_code'] == 0 for item in outcomes), 'G0 did not pass')
+              for name in ('source_policy', 'acceptance_policy'):
+                  validate_command(name, [sys.executable, '-B', '-E', '-s', 'tooling/' + name + '.py'])
+
+
+          def runtime():
+              load_selection()
+              tools = {}
+              for name in ('python', 'git', 'ffmpeg', 'ffprobe'):
+                  path = Path(sys.executable if name == 'python' else shutil.which(name) or '').resolve(strict=True)
+                  require(path.is_file(), 'Required runtime tool absent: ' + name)
+                  argv = [str(path), '--version' if name in ('python', 'git') else '-version']
+                  outcome = execute_command('runtime-' + name, argv)
+                  require(outcome['state'] == 'COMPLETED' and outcome['original_exit_code'] == 0, 'Runtime version failed')
+                  tools[name] = {'resolved_path': str(path), **file_record(path)[0], 'version_outcome': outcome}
+              write_new('runtime.json', {'schema': 'motionwright.native-reader-runtime/2',
+                        'execution_context': context(), 'tools': tools,
+                        'scope': 'Observed versions and bytes; no independent global runtime attestation'})
+
+
+          def run_suites():
+              selection = load_selection()
+              outcomes = {}
+              uncertain = False
+              for name in selection['selected_order']:
+                  group = selection['selected_groups'][name]
+                  if uncertain:
+                      outcomes[name] = {'state': 'NOT_RUN', 'reason': 'Prior reader command UNKNOWN; no retry'}
+                      continue
+                  argv = [sys.executable, '-B', '-I', 'tooling/ci_test_runner.py', '--repo', str(ROOT),
+                          '--expected-source', os.environ['GITHUB_SHA'], '--test-directory', 'tooling/tests',
+                          '--mode', group['mode'], '--require-complete', '--timeout', '180',
+                          '--report', str(EVIDENCE / (name + '.json'))]
+                  for filename in group['suites']:
+                      argv += ['--pattern', filename]
+                  outcomes[name] = execute_command('reader-' + name, argv)
+                  uncertain = outcomes[name]['state'] != 'COMPLETED'
+                  receipt = EVIDENCE / (name + '.json')
+                  if receipt.is_file():
+                      uncertain |= strict_json(file_record(receipt)[1]).get('status') == 'UNKNOWN'
+              write_new('reader-commands.json', {'schema': 'motionwright.native-reader-commands/1', 'groups': outcomes})
+              require(all(item['state'] == 'COMPLETED' and type(item['original_exit_code']) is int
+                          and item['original_exit_code'] == 0 for item in outcomes.values()), 'Reader command did not pass')
+
+
+          def verify():
+              selection = load_selection()
+              ctx = context()
+              source = selection['source']
+              policy_custody = {name: validate_command(name, [sys.executable, '-B', '-E', '-s', 'tooling/' + name + '.py'])
+                               for name in ('source_policy', 'acceptance_policy')}
+              runtime_value = strict_json(file_record(EVIDENCE / 'runtime.json')[1])
+              require(runtime_value['schema'] == 'motionwright.native-reader-runtime/2'
+                      and runtime_value['execution_context'] == ctx
+                      and set(runtime_value['tools']) == {'python', 'git', 'ffmpeg', 'ffprobe'}, 'Runtime execution identity differs')
+              for name, recorded in runtime_value['tools'].items():
+                  actual = Path(sys.executable if name == 'python' else shutil.which(name) or '').resolve(strict=True)
+                  require(str(actual) == recorded['resolved_path'] and file_record(actual)[0]
+                          == {key: recorded[key] for key in ('bytes', 'sha256')}, 'Runtime tool changed')
+                  validate_command('runtime-' + name, [str(actual), '--version' if name in ('python', 'git') else '-version'])
+              runner_tree = ast.parse((ROOT / 'tooling/ci_test_runner.py').read_bytes())
+              parsers = [node for node in runner_tree.body if isinstance(node, ast.FunctionDef)
+                         and node.name == 'parse_unittest_summary']
+              require(len(parsers) == 1, 'Original unittest footer parser absent')
+              namespace = {'re': re}
+              exec(compile(ast.Module(body=parsers, type_ignores=[]), 'source-bound-unittest-parser', 'exec'), namespace)
+              parse_summary = namespace['parse_unittest_summary']
+              coverage = {}
+              for group_name, group in selection['selected_groups'].items():
+                  argv = [sys.executable, '-B', '-I', 'tooling/ci_test_runner.py', '--repo', str(ROOT),
+                          '--expected-source', os.environ['GITHUB_SHA'], '--test-directory', 'tooling/tests',
+                          '--mode', group['mode'], '--require-complete', '--timeout', '180',
+                          '--report', str(EVIDENCE / (group_name + '.json'))]
+                  for filename in group['suites']:
+                      argv += ['--pattern', filename]
+                  validate_command('reader-' + group_name, argv)
+                  report_identity, raw = file_record(EVIDENCE / (group_name + '.json'))
+                  report = strict_json(raw)
+                  require(report['schema'] == 'motionwright.unittest-execution/1'
+                          and report['status'] == 'PASS' and type(report['exit_code']) is int and report['exit_code'] == 0
+                          and report['require_complete'] is True and 'source_postcheck_error' not in report,
+                          'Unittest receipt is not complete PASS')
+                  require(report['executed_source_sha'] == source['source_sha'] and report['tree_sha'] == source['tree_sha'],
+                          'Unittest source identity differs')
+                  require(set(report['github']) == {'GITHUB_SHA', 'GITHUB_WORKFLOW_REF', 'GITHUB_RUN_ID',
+                                                   'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'}
+                          and all(report['github'][key] == ctx[key] for key in report['github']), 'Unittest run identity differs')
+                  require(report['runner_sha256'] == source['tracked_inputs']['tooling/ci_test_runner.py']['sha256'],
+                          'Unittest runner differs')
+                  require(report['python_executable_sha256'] == runtime_value['tools']['python']['sha256'],
+                          'Unittest interpreter differs')
+                  expected_locks = {name: source['tracked_inputs'][name]['sha256']
+                                    for name in ('Cargo.lock', 'SOURCE_LOCK.json', 'apps/studio/package-lock.json')
+                                    if name in source['tracked_inputs']}
+                  require(report['source_locks'] == expected_locks, 'Unittest consumed lock identities differ')
+                  expected_defs = {'tooling/tests/' + filename: source['tracked_inputs']['tooling/tests/' + filename]['sha256']
+                                   for filename in group['suites']}
+                  require(report['test_definition_sha256'] == expected_defs, 'Selected definition identity differs')
+                  expected_steps = {}
+                  for filename, suite in group['suites'].items():
+                      if group['mode'] in ('discovery', 'both'):
+                          expected_steps['discovery:' + filename] = (filename[:-3], suite['ids'],
+                              [sys.executable, '-B', '-E', '-s', '-m', 'unittest', 'discover',
+                               '-s', 'tooling/tests', '-p', filename, '-v'])
+                      if group['mode'] in ('dotted', 'both'):
+                          module = 'tooling.tests.' + filename[:-3]
+                          expected_steps['dotted:' + module] = (module, suite['ids'],
+                              [sys.executable, '-B', '-E', '-s', '-m', 'unittest', module, '-v'])
+                  steps = {step['entry_point']: step for step in report['steps']}
+                  require(len(steps) == len(report['steps']) and set(steps) == set(expected_steps), 'Missing or duplicate entry point')
+                  admitted = {}
+                  for label, (module, expected_ids, command) in expected_steps.items():
+                      step = steps[label]
+                      require(step['status'] == 'PASS' and type(step['exit_code']) is int and step['exit_code'] == 0,
+                              'Entry point failed, omitted or UNKNOWN')
+                      require(step['command'] == command, 'Original unittest invocation differs')
+                      originals = {}
+                      for stream_name in ('stdout', 'stderr'):
+                          relative = step[stream_name]['file']
+                          require(Path(relative).name == relative and '/' not in relative and '\\' not in relative,
+                                  'Unsafe original log reference')
+                          identity, data = file_record(EVIDENCE / relative)
+                          require(identity['sha256'] == step[stream_name]['sha256'], 'Original stream digest differs')
+                          originals[stream_name] = {'file': relative, **identity}
+                          if stream_name == 'stderr':
+                              text = data.decode('utf-8', 'replace').replace('\r\n', '\n').replace('\r', '\n')
+                      counts = parse_summary(text)
+                      require(counts == step['counts'] and counts['terminal_status'] == 'OK'
+                              and counts['tests_run'] == counts['passed'] == len(expected_ids)
+                              and all(counts[key] == 0 for key in ('failures', 'errors', 'skipped', 'expected_failures',
+                                                                 'unexpected_successes')), 'Observed footer differs or has omissions')
+                      observed = re.findall(r'(?m)^(test_\w+) \(([^\n]+)\) \.\.\. ok$', text)
+                      qualified = [identity for method, identity in observed if identity.rsplit('.', 1)[-1] == method]
+                      require(len(qualified) == len(expected_ids) and len(set(qualified)) == len(qualified)
+                              and set(qualified) == {module + '.' + identity for identity in expected_ids},
+                              'Observed exact test IDs differ from source inventory')
+                      ffmpeg_ids = [identity for identity in expected_ids if identity.startswith('RealSourceAndFrameInspection.')]
+                      if group_name == 'motion_canvas':
+                          require(len(ffmpeg_ids) >= 20, 'Motion Canvas real-reader control count regressed')
+                      admitted[label] = {'counts': counts, 'observed_test_ids': qualified, 'original_streams': originals,
+                                         'motion_canvas_ffmpeg_enabled_ids': ffmpeg_ids}
+                  coverage[group_name] = {'state': 'PASS_SELECTED_CONTROLS', 'result': report_identity, 'entry_points': admitted}
+              write_new('coverage.json', {'schema': 'motionwright.native-reader-coverage/2',
+                        'execution_context': ctx, 'source_sha': source['source_sha'], 'tree_sha': source['tree_sha'],
+                        'selection': file_record(EVIDENCE / 'selection.json')[0],
+                        'runtime': file_record(EVIDENCE / 'runtime.json')[0], 'groups': coverage,
+                        'g0_original_custody': policy_custody,
+                        'not_selected_groups': selection['not_selected_groups'], 'omissions_admitted': 0,
+                        'scope': 'Only named synthetic reader/publication controls and independent decoder fixtures',
+                        'native_producer_requested_by_workflow': False, 'native_g2_coverage_admitted': False,
+                        'formal_acceptance': False, 'release_eligible': False})
+
+
+          if __name__ == '__main__':
+              try:
+                  require(sys.flags.isolated and sys.dont_write_bytecode, 'Use Python -I -B')
+                  {'prepare': prepare, 'g0': g0, 'runtime': runtime, 'suites': run_suites, 'verify': verify}[sys.argv[1]]()
+              except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+                  print(json.dumps({'state': 'NOT_ADMITTED', 'stage': sys.argv[1],
+                                    'error': type(error).__name__ + ': ' + str(error),
+                                    'formal_acceptance': False, 'retry_attempted': False}), file=sys.stderr)
+                  raise SystemExit(2)
+          # NATIVE_READER_HARNESS_END
+          PY
+          set +e
+          python3 -B -I "$NATIVE_READER_EVIDENCE/receipt-helper.py" prepare \
+            > "$NATIVE_READER_EVIDENCE/harness-prepare-stdout.log" \
+            2> "$NATIVE_READER_EVIDENCE/harness-prepare-stderr.log"
+          code=$?
+          printf '%s\n' "$code" > "$NATIVE_READER_EVIDENCE/harness-prepare-exit.txt"
+          cat "$NATIVE_READER_EVIDENCE/harness-prepare-stdout.log"
+          cat "$NATIVE_READER_EVIDENCE/harness-prepare-stderr.log" >&2
+          exit "$code"
+
+      - name: G0 source and acceptance policy with original logs
+        id: g0
+        run: |
+          set -euo pipefail
+          set +e
+          python3 -B -I "$NATIVE_READER_EVIDENCE/receipt-helper.py" g0 \
+            > "$NATIVE_READER_EVIDENCE/harness-g0-stdout.log" \
+            2> "$NATIVE_READER_EVIDENCE/harness-g0-stderr.log"
+          code=$?
+          printf '%s\n' "$code" > "$NATIVE_READER_EVIDENCE/harness-g0-exit.txt"
+          cat "$NATIVE_READER_EVIDENCE/harness-g0-stdout.log"
+          cat "$NATIVE_READER_EVIDENCE/harness-g0-stderr.log" >&2
+          exit "$code"
 
       - name: Install independent media reader
         run: |
@@ -64,119 +565,46 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y ffmpeg
 
-      - name: Record source dependencies and actual runtime identities
+      - name: Record actual runtime versions and binary identities
         run: |
           set -euo pipefail
-          python3 -B - <<'PY'
-          import hashlib, json, os, pathlib, shutil, subprocess, sys
-          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
-          evidence = pathlib.Path(os.environ['NATIVE_READER_EVIDENCE'])
-          paths = [
-              'SOURCE_LOCK.json', 'tooling/ci_test_runner.py',
-              'tooling/native_motion_canvas_roundtrip.py',
-              'tooling/native_direct_mediated_parity.py',
-              'tooling/native_render_stage_cost.py',
-              'tooling/native_mlt_sequence_e2e.py',
-              'tooling/native_mlt_ci_pcm_envelope.py',
-              'tooling/native_mlt_public_artifact.py',
-              'tooling/cross_app_public_artifact.py',
-              'tooling/native_av_failure_guard.py',
-              'tooling/native_mlt_caption_pixels.py',
-              'tooling/mlt_failure_diagnostic.py',
-              'tooling/tests/test_native_motion_canvas_roundtrip.py',
-              'tooling/tests/test_native_mlt_ci_audio.py',
-              'tooling/tests/test_native_mlt_ci_pcm_envelope.py',
-              '.github/workflows/native-reader-contracts.yml',
-          ]
-          def digest(path):
-              return hashlib.sha256(path.read_bytes()).hexdigest()
-          runtime = {}
-          for name in ('ffmpeg', 'ffprobe'):
-              path = shutil.which(name)
-              if path is None:
-                  raise SystemExit('Required media reader absent: ' + name)
-              binary = pathlib.Path(path).resolve(strict=True)
-              version = subprocess.run([path, '-version'], check=True,
-                                       capture_output=True, timeout=10)
-              runtime[name] = {'path': str(binary), 'sha256': digest(binary),
-                               'version': version.stdout.decode('utf-8', errors='replace')}
-          value = {
-              'schema': 'motionwright.native-reader-runtime/1',
-              'executed_source_sha': os.environ['GITHUB_SHA'],
-              'github': {key: os.environ.get(key, '') for key in (
-                  'GITHUB_WORKFLOW_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB')},
-              'python': sys.version, 'tools': runtime,
-              'source_dependency_sha256': {path: digest(root / path) for path in paths},
-              'scope': 'Reader contracts with synthetic fixtures; no native or human acceptance',
-          }
-          with (evidence / 'runtime.json').open('x', encoding='utf-8') as output:
-              json.dump(value, output, indent=2, sort_keys=True)
-              output.write('\n')
-          PY
+          set +e
+          python3 -B -I "$NATIVE_READER_EVIDENCE/receipt-helper.py" runtime \
+            > "$NATIVE_READER_EVIDENCE/harness-runtime-stdout.log" \
+            2> "$NATIVE_READER_EVIDENCE/harness-runtime-stderr.log"
+          code=$?
+          printf '%s\n' "$code" > "$NATIVE_READER_EVIDENCE/harness-runtime-exit.txt"
+          cat "$NATIVE_READER_EVIDENCE/harness-runtime-stdout.log"
+          cat "$NATIVE_READER_EVIDENCE/harness-runtime-stderr.log" >&2
+          exit "$code"
 
-      - name: Execute selected reader suites with zero omissions
+      - name: Execute explicitly selected reader groups with zero omissions
+        id: readers
         run: |
           set -euo pipefail
-          python3 -B tooling/ci_test_runner.py \
-            --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" \
-            --test-directory tooling/tests --mode discovery --require-complete \
-            --pattern test_native_motion_canvas_roundtrip.py \
-            --pattern test_native_mlt_ci_pcm_envelope.py \
-            --pattern test_native_mlt_ci_audio.py \
-            --timeout 180 --report "$NATIVE_READER_EVIDENCE/result.json"
+          set +e
+          python3 -B -I "$NATIVE_READER_EVIDENCE/receipt-helper.py" suites \
+            > "$NATIVE_READER_EVIDENCE/harness-suites-stdout.log" \
+            2> "$NATIVE_READER_EVIDENCE/harness-suites-stderr.log"
+          code=$?
+          printf '%s\n' "$code" > "$NATIVE_READER_EVIDENCE/harness-suites-exit.txt"
+          cat "$NATIVE_READER_EVIDENCE/harness-suites-stdout.log"
+          cat "$NATIVE_READER_EVIDENCE/harness-suites-stderr.log" >&2
+          exit "$code"
 
-      - name: Verify the observed reader coverage and runtime binding
+      - name: Verify original IDs, footers, commands, source and runtime bindings
+        if: ${{ always() && steps.prepare.outcome == 'success' }}
         run: |
           set -euo pipefail
-          python3 -B - <<'PY'
-          import hashlib, json, os, pathlib, re, shutil
-          root = pathlib.Path(os.environ['NATIVE_READER_EVIDENCE'])
-          report_bytes = (root / 'result.json').read_bytes()
-          report = json.loads(report_bytes)
-          runtime_bytes = (root / 'runtime.json').read_bytes()
-          runtime = json.loads(runtime_bytes)
-          for name, recorded in runtime['tools'].items():
-              actual = pathlib.Path(shutil.which(name)).resolve(strict=True)
-              assert str(actual) == recorded['path']
-              assert hashlib.sha256(actual.read_bytes()).hexdigest() == recorded['sha256']
-          for relative, digest in runtime['source_dependency_sha256'].items():
-              actual = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / relative
-              assert hashlib.sha256(actual.read_bytes()).hexdigest() == digest
-          assert report['status'] == 'PASS' and report['exit_code'] == 0
-          assert report['executed_source_sha'] == runtime['executed_source_sha'] == os.environ['GITHUB_SHA']
-          for key in ('GITHUB_WORKFLOW_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'):
-              assert report['github'][key] == runtime['github'][key] == os.environ[key]
-          expected = {'test_native_motion_canvas_roundtrip.py': 26,
-                      'test_native_mlt_ci_pcm_envelope.py': 9,
-                      'test_native_mlt_ci_audio.py': 11}
-          steps = {step['entry_point']: step for step in report['steps']}
-          assert set(steps) == {'discovery:' + name for name in expected}
-          for name, minimum in expected.items():
-              step = steps['discovery:' + name]
-              assert step['status'] == 'PASS' and step['exit_code'] == 0
-              assert step['counts']['tests_run'] >= minimum
-              assert step['counts']['passed'] == step['counts']['tests_run']
-          mc = steps['discovery:test_native_motion_canvas_roundtrip.py']
-          log = (root / mc['stderr']['file']).read_bytes()
-          assert hashlib.sha256(log).hexdigest() == mc['stderr']['sha256']
-          ffmpeg_cases = re.findall(
-              r'(?m)^test_[^\r\n]*\(test_native_motion_canvas_roundtrip\.RealSourceAndFrameInspection\.[^)]+\) \.\.\. ok$',
-              log.decode('utf-8', errors='replace'))
-          assert len(ffmpeg_cases) >= 20
-          value = {
-              'schema': 'motionwright.native-reader-coverage/1',
-              'executed_source_sha': os.environ['GITHUB_SHA'],
-              'result_sha256': hashlib.sha256(report_bytes).hexdigest(),
-              'runtime_sha256': hashlib.sha256(runtime_bytes).hexdigest(),
-              'motion_canvas_ffmpeg_enabled_cases_passed': len(ffmpeg_cases),
-              'suite_counts': {name: step['counts'] for name, step in steps.items()},
-              'scope': 'Synthetic reader controls, including pre-decode negatives; not native four-phase proof',
-          }
-          with (root / 'coverage.json').open('x', encoding='utf-8') as output:
-              json.dump(value, output, indent=2, sort_keys=True)
-              output.write('\n')
-          print(json.dumps(value, sort_keys=True))
-          PY
+          set +e
+          python3 -B -I "$NATIVE_READER_EVIDENCE/receipt-helper.py" verify \
+            > "$NATIVE_READER_EVIDENCE/harness-verify-stdout.log" \
+            2> "$NATIVE_READER_EVIDENCE/harness-verify-stderr.log"
+          code=$?
+          printf '%s\n' "$code" > "$NATIVE_READER_EVIDENCE/harness-verify-exit.txt"
+          cat "$NATIVE_READER_EVIDENCE/harness-verify-stdout.log"
+          cat "$NATIVE_READER_EVIDENCE/harness-verify-stderr.log" >&2
+          exit "$code"
 
       - name: Preserve original source-bound reader results
         if: always()
