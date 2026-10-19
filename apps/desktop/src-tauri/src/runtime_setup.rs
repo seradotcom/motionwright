@@ -102,7 +102,7 @@ impl RuntimeConnectionRegistry {
         let bytes = match fs::symlink_metadata(&destination) {
             Ok(metadata) => {
                 if !metadata.is_file()
-                    || metadata.file_type().is_symlink()
+                    || is_link_or_reparse(&metadata)
                     || metadata.len() == 0
                     || metadata.len() > MAX_CONFIG_BYTES
                 {
@@ -168,10 +168,28 @@ impl RuntimeConnectionRegistry {
         }
         let destination = self.destination(project_id);
         match fs::symlink_metadata(&destination) {
-            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            Ok(metadata) if !metadata.is_file() || is_link_or_reparse(&metadata) => {
                 return Err("Previous Semwright connection reference is not a regular file".into());
             }
-            Ok(_) => {}
+            Ok(metadata) => {
+                if metadata.len() > MAX_CONFIG_BYTES {
+                    return Err("Previous Semwright connection reference is oversized".into());
+                }
+                let existing = fs::read(&destination)
+                    .map_err(|_| "Previous Semwright connection reference cannot be inspected")?;
+                if existing.len() as u64 > MAX_CONFIG_BYTES {
+                    return Err("Previous Semwright connection reference is oversized".into());
+                }
+                // A malformed legacy selection may be replaced deliberately,
+                // but an identifiable selection belonging to another project
+                // must never be overwritten merely because its filename matches.
+                if let Ok(saved) = serde_json::from_slice::<serde_json::Value>(&existing)
+                    && let Some(owner) = saved.get("project_id")
+                    && owner.as_str().and_then(|id| Uuid::parse_str(id).ok()) != Some(project_id)
+                {
+                    return Err("Previous Semwright connection belongs to another project".into());
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => {
                 return Err("Previous Semwright connection reference cannot be inspected".into());
@@ -216,7 +234,7 @@ impl RuntimeConnectionRegistry {
         self.validate_root()?;
         let destination = self.destination(project_id);
         match fs::symlink_metadata(&destination) {
-            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            Ok(metadata) if !metadata.is_file() || is_link_or_reparse(&metadata) => {
                 Err("Saved Semwright reference is not a regular file".into())
             }
             Ok(metadata) => {
@@ -402,6 +420,62 @@ mod tests {
         forged["project_id"] = serde_json::json!(Uuid::now_v7());
         fs::write(&path, serde_json::to_vec(&forged).unwrap()).unwrap();
         assert!(registry.resolve(project_id, generation).is_err());
+    }
+
+    #[test]
+    fn selecting_new_connection_never_overwrites_foreign_project_record() {
+        let tmp = TempDir::new().unwrap();
+        let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+        let project = Uuid::now_v7();
+        let other_project = Uuid::now_v7();
+        let generation = Uuid::now_v7();
+        let first = tmp.path().join("owner-selected.json");
+        let replacement = tmp.path().join("replacement-selected.json");
+        registry
+            .remember_verified(project, generation, &first)
+            .unwrap();
+        let path = registry.destination(project);
+        let legitimate = fs::read(&path).unwrap();
+
+        // Two different foreign records. The second is intentionally not a
+        // valid SavedConnectionReference, but still declares a distinct owner.
+        // Neither may be replaced just because the filename names our project.
+        for case in ["complete_foreign", "partial_foreign"] {
+            let foreign = if case == "complete_foreign" {
+                let mut payload: serde_json::Value = serde_json::from_slice(&legitimate).unwrap();
+                payload["project_id"] = serde_json::json!(other_project);
+                serde_json::to_vec(&payload).unwrap()
+            } else {
+                format!("{{\"project_id\":\"{other_project}\",\"foreign\":true}}").into_bytes()
+            };
+            fs::write(&path, &foreign).unwrap();
+            let outcome = registry.remember_verified(project, generation, &replacement);
+            assert!(outcome.is_err(), "foreign record was overwritten: {case}");
+            assert_eq!(fs::read(&path).unwrap(), foreign, "case={case}");
+            let mut entries: Vec<_> = fs::read_dir(&registry.root)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            entries.sort();
+            assert_eq!(
+                entries,
+                vec![path.file_name().unwrap().to_os_string()],
+                "foreign replacement left private temporary files: {case}"
+            );
+        }
+
+        // A legitimate record is still replaceable, including after an
+        // independently authorized project-generation rotation.
+        fs::write(&path, legitimate).unwrap();
+        let next_generation = Uuid::now_v7();
+        registry
+            .remember_verified(project, next_generation, &replacement)
+            .unwrap();
+        assert_eq!(
+            registry.resolve(project, next_generation).unwrap(),
+            Some(replacement)
+        );
+        assert!(registry.resolve(project, generation).is_err());
     }
 
     #[test]
