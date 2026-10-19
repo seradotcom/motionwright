@@ -60,14 +60,24 @@ fn invalid_import(message: impl Into<String>) -> StorageError {
     DomainError::Invalid(message.into()).into()
 }
 
-fn source_looks_like_svg(source: &Path) -> StorageResult<bool> {
+fn source_looks_like_svg(source: &Path, media_type: &str) -> StorageResult<bool> {
     // An XML/SVG document can be encoded as UTF-16/UTF-32, including without
     // a BOM when its initial characters are ASCII XML/whitespace. Treating its
     // NUL-containing header as ordinary raster bytes would let a caller
     // mislabel active SVG as image/png and bypass the SVG admission guard.
     let mut input = File::open(source)?;
     let mut header = [0_u8; 4];
-    let header_size = input.read(&mut header)?;
+    // A regular-file read is permitted to return fewer than four bytes.
+    // Finish the short header read before classifying BOM-less UTF-16/32;
+    // otherwise an ASCII space followed by NUL may masquerade as a raster.
+    let mut header_size = 0;
+    while header_size < header.len() {
+        let count = input.read(&mut header[header_size..])?;
+        if count == 0 {
+            break;
+        }
+        header_size += count;
+    }
     let first = &header[..header_size];
     // (code-unit bytes, little endian, BOM byte count)
     let encoded = if first.starts_with(&[0xff, 0xfe, 0, 0]) {
@@ -105,6 +115,15 @@ fn source_looks_like_svg(source: &Path) -> StorageResult<bool> {
     };
 
     if let Some((unit_bytes, little_endian, bom_bytes)) = encoded {
+        // Multibyte XML-looking bytes cannot be admitted as a raster just
+        // because the caller chose an image MIME and omitted the BOM.
+        // Explicit text media still use the bounded decoder below, so
+        // ordinary UTF-16 text without SVG is not rejected.
+        if bom_bytes == 0 && !media_type.starts_with("text/") {
+            return Err(invalid_import(
+                "XML-like UTF-16/32 bytes cannot be admitted as opaque or raster media",
+            ));
+        }
         // Decode at most the existing SVG import budget. This deliberately
         // preserves ordinary UTF-16 text without SVG while failing closed
         // for malformed or oversized potentially executable XML.
@@ -284,7 +303,7 @@ fn validate_importable_asset(
     }
 
     let declared_svg = media_type.eq_ignore_ascii_case("image/svg+xml") || original_svg_extension;
-    if !declared_svg && !source_looks_like_svg(source)? {
+    if !declared_svg && !source_looks_like_svg(source, media_type)? {
         return Ok(());
     }
     if metadata.len() > MAX_SVG_IMPORT_BYTES {
