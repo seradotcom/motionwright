@@ -415,6 +415,89 @@ fn load_project_from_row(conn: &Connection, id: Uuid) -> Result<Project> {
     .into_project()
 }
 
+/// A version number alone cannot establish that an existing SQLite file
+/// is a Motionwright project database. Reject unknown and incomplete layouts
+/// before running the WAL-mode or schema-creation pragmas. This recognizes
+/// source layout, not the application's owner or an external authorization.
+fn validate_existing_project_store_layout(conn: &Connection, version: u32) -> Result<()> {
+    let mut statement =
+        conn.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")?;
+    let tables = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<BTreeSet<String>>>()?;
+    drop(statement);
+
+    if tables.is_empty() {
+        return if version == 0 {
+            Ok(()) // A genuinely fresh, empty SQLite database.
+        } else {
+            Err(StorageError::InvalidBackup(
+                "an existing versioned SQLite database has no Motionwright tables".into(),
+            ))
+        };
+    }
+
+    // These are the mandatory common columns in the original v1 source and
+    // every supported later schema. Additional third-party tables are not
+    // touched: requiring the entire exact table set would reject existing
+    // projects with harmless extensions.
+    const REQUIRED: [(&str, &[&str]); 3] = [
+        (
+            "projects",
+            &[
+                "id",
+                "generation",
+                "revision",
+                "title",
+                "document_json",
+                "updated_at",
+            ],
+        ),
+        (
+            "receipts",
+            &[
+                "project_id",
+                "request_id",
+                "request_sha256",
+                "result_json",
+                "created_at",
+            ],
+        ),
+        (
+            "events",
+            &[
+                "event_id",
+                "project_id",
+                "revision",
+                "kind",
+                "payload_json",
+                "created_at",
+            ],
+        ),
+    ];
+    for (name, required_columns) in REQUIRED {
+        if !tables.contains(name) {
+            return Err(StorageError::InvalidBackup(
+                "existing SQLite file is not a recognized complete Motionwright store".into(),
+            ));
+        }
+        // Names are fixed internal identifiers, never input-derived SQL.
+        let mut statement = conn.prepare(&format!("PRAGMA table_info({name})"))?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<BTreeSet<String>>>()?;
+        if required_columns
+            .iter()
+            .any(|column| !columns.contains(*column))
+        {
+            return Err(StorageError::InvalidBackup(
+                "existing SQLite file has an unrecognized project table layout".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
@@ -447,6 +530,7 @@ impl Store {
                 supported: STORAGE_SCHEMA_VERSION,
             });
         }
+        validate_existing_project_store_layout(&conn, observed_schema)?;
         // Connection pragmas must execute outside a transaction. All
         // schema DDL and its authoritative user_version stamp are committed
         // together under one SQLite IMMEDIATE writer lock.
@@ -464,6 +548,8 @@ impl Store {
                 supported: STORAGE_SCHEMA_VERSION,
             });
         }
+        // Another opener may have changed the schema before this writer lock.
+        validate_existing_project_store_layout(&schema_tx, locked_schema)?;
         schema_tx.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS projects(
