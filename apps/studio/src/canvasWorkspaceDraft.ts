@@ -302,15 +302,11 @@ export function writeCanvasRecovery(storage: CanvasDraftStorage, value: CanvasRe
   const latest = stored.reduce((at, item) => item.value?.scope === value.scope ? Math.max(at, item.value.updatedAt) : at, -1);
   value = { ...value, updatedAt: Math.max(value.updatedAt, latest + 1) };
   raw = JSON.stringify(decodeCanvasRecovery(JSON.stringify(value), value.scope, value.writerId));
-  const clean = new Map<string, typeof stored[number]>();
-  for (const item of stored) if (item.value?.draft === null) {
-    const newer = clean.get(item.value.scope);
-    if (!newer || newer.value!.updatedAt < item.value.updatedAt) clean.set(item.value.scope, item);
-  }
+  // Only remove obsolete clean checkpoints after replacement bytes are
+  // persisted and read back. Quota failures must preserve every prior copy.
   const removeClean = (item: typeof stored[number]) => {
     if (storage.getItem(item.key) === item.raw) storage.removeItem(item.key);
   };
-  for (const item of stored) if (item.key !== key && item.value?.draft === null && clean.get(item.value.scope) !== item) removeClean(item);
   const fits = () => {
     let count = 1, total = bytes(key) + bytes(raw);
     for (let index = 0; index < storage.length; index++) {
@@ -320,17 +316,15 @@ export function writeCanvasRecovery(storage: CanvasDraftStorage, value: CanvasRe
     }
     return count <= CANVAS_COPY_LIMIT && total <= CANVAS_TOTAL_BYTES;
   };
-  if (!fits() && !stored.some(item => item.scope === null)) for (const item of clean.values()) {
-    if (fits()) break;
-    if (item.key !== key && !stored.some(other => other.scope === item.scope && (!other.value || other.value.draft !== null))) removeClean(item);
-  }
   if (!fits()) throw new Error("Canvas recovery is full (128 copies / 4 MiB). Inputs and unreadable copies were kept; discard only copies you no longer need.");
   if (storage.getItem(key) !== previous) throw new Error("This Canvas recovery copy changed in another window. Its contents were kept.");
   storage.setItem(key, raw);
   if (storage.getItem(key) !== raw) throw new Error("The latest Canvas recovery write could not be verified.");
-  // Never remove the previous final checkpoint until its replacement is durable.
-  const previousClean = clean.get(value.scope);
-  if (value.draft === null && previousClean && previousClean.key !== key) removeClean(previousClean);
+  // A verified clean checkpoint may supersede older clean copies only for
+  // the same object scope. Other projects and unreadable copies remain intact.
+  if (value.draft === null) for (const item of stored) {
+    if (item.key !== key && item.scope === value.scope && item.value?.draft === null) removeClean(item);
+  }
   return raw;
 }
 export function discardCanvasRecovery(storage: CanvasDraftStorage, key: string, expectedRaw: string): void {
