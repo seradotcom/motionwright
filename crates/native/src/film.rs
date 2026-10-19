@@ -1,7 +1,7 @@
 #[path = "film_captions.rs"]
 mod film_captions;
 
-use crate::component_text::fixed_component_text;
+use crate::component_text::{fixed_canvas_text, fixed_component_text};
 use crate::expressive::{entry_motion, responsive_scene};
 use motionwright_domain::{
     BlendMode, CameraReframe, CanvasNode, CoordinateSpace, DeliverableProfile, FramingStrategy,
@@ -629,6 +629,17 @@ struct SubjectProjectionContext<'a> {
     font_family: &'a str,
 }
 
+// The native authoring runtime applies editorial.stroke to every outlined
+// shape. A zero-width Canvas stroke must therefore be absent in the native
+// subject, or it would inherit another subject's nonzero segment-wide width.
+fn projected_shape_stroke(node: &CanvasNode) -> Option<String> {
+    if node.style.stroke_width == 0.0 {
+        None
+    } else {
+        node.style.stroke.clone()
+    }
+}
+
 fn subject(
     node: &CanvasNode,
     layer_names: &BTreeMap<i32, String>,
@@ -695,14 +706,14 @@ fn subject(
             fill: node.style.fill.clone().ok_or_else(|| {
                 invalid(format!("Shape node {} requires an explicit fill", node.id))
             })?,
-            stroke: node.style.stroke.clone(),
+            stroke: projected_shape_stroke(node),
             radius: 0.0,
         },
         "circle" => SubjectContent::Circle {
             fill: node.style.fill.clone().ok_or_else(|| {
                 invalid(format!("Circle node {} requires an explicit fill", node.id))
             })?,
-            stroke: node.style.stroke.clone(),
+            stroke: projected_shape_stroke(node),
         },
         "group" => SubjectContent::Group,
         other => {
@@ -914,9 +925,25 @@ fn projected_shot(
     for node in &scene.nodes {
         let (mapped, mut node_constraints) =
             subject(node, &layer_names, &subject_context, identity.beat_scope)?;
-        if node.kind == "text" && context.component_texts.contains(&node.id) {
-            let (mut lines, mut constraints) =
-                fixed_component_text(node, mapped, projection.object_scale)?;
+        // A saved deliverable may add hard line breaks via text_overrides.
+        // Preserve single-line lowering: changing its native hierarchy would
+        // alter existing saved projects without any authored line advance.
+        let has_hard_lines = matches!(
+            &mapped.content,
+            SubjectContent::Text { runs, .. }
+                if runs.len() == 1 && runs[0].text.contains('\n')
+        );
+        if node.kind == "text" && (context.component_texts.contains(&node.id) || has_hard_lines) {
+            let (mut lines, mut constraints) = if context.component_texts.contains(&node.id) {
+                fixed_component_text(node, mapped, projection.object_scale)?
+            } else {
+                fixed_canvas_text(
+                    node,
+                    mapped,
+                    projection.object_scale,
+                    512usize.saturating_sub(subjects.len()),
+                )?
+            };
             subjects.append(&mut lines);
             visual_constraints.append(&mut constraints);
         } else {
@@ -1697,6 +1724,139 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    fn stroke_projection_fixture(
+        kind: &str,
+        first_width: f64,
+        second_width: f64,
+    ) -> (Project, Uuid, FilmBuildOptions) {
+        let mut project = Project::new("Native stroke projection fixture").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Two independently authored outlines".into(),
+                objective: "Preserve inactive and visible strokes".into(),
+                duration_seconds: 2,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let mut first = node(kind, None);
+        first.style.stroke_width = first_width;
+        first.style.stroke = Some("#FF8800".into());
+        let mut second = node("rectangle", None);
+        second.x = 960.0;
+        second.y = 540.0;
+        second.style.stroke_width = second_width;
+        second.style.stroke = Some("#2080E0".into());
+        for shape in [first, second] {
+            project
+                .apply_change(&Change::AddCanvasNode {
+                    scene_id,
+                    node: shape,
+                })
+                .unwrap();
+        }
+        let profile_id = project
+            .deliverables
+            .iter()
+            .find(|profile| profile.name == "Master 16:9")
+            .unwrap()
+            .id;
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: vec![SceneFilmIntent {
+                scene_id,
+                role: NarrativeRole::Mechanism,
+                archetype: Archetype::Statement,
+            }],
+        };
+        (project, profile_id, options)
+    }
+
+    fn native_subject_stroke(subject: &Subject) -> Option<&str> {
+        match &subject.content {
+            SubjectContent::Rectangle { stroke, .. } | SubjectContent::Circle { stroke, .. } => {
+                stroke.as_deref()
+            }
+            other => panic!("Expected an authored shape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zero_width_strokes_do_not_inherit_another_subjects_width() {
+        // Real Film projection only. No browser, generated observation or native
+        // receipt is used; the provider and decoded-pixel gate remain separate.
+        for kind in ["shape", "rectangle", "circle"] {
+            let (project, profile_id, options) = stroke_projection_fixture(kind, 0.0, 8.0);
+            let original = serde_json::to_value(&project).unwrap();
+            let segments = build_motion_canvas_segments(&project, profile_id, &options).unwrap();
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0].frame_count, 60);
+            assert_eq!(segments[0].film.editorial.stroke, 8.0);
+            let subjects = &segments[0].film.sequences[0].beats[0].shots[0].subjects;
+            assert_eq!(
+                subjects[0].id,
+                subject_id(project.scenes[0].nodes[0].id, None)
+            );
+            assert_eq!(
+                native_subject_stroke(&subjects[0]),
+                None,
+                "inactive {kind} outline must stay invisible"
+            );
+            assert_eq!(native_subject_stroke(&subjects[1]), Some("#2080E0"));
+            assert_eq!(
+                serde_json::to_value(&project).unwrap(),
+                original,
+                "authored inactive color and width must remain editable in Canvas"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_width_strokes_remain_absent_when_all_shapes_are_unoutlined() {
+        let (project, profile_id, options) = stroke_projection_fixture("circle", 0.0, 0.0);
+        let segments = build_motion_canvas_segments(&project, profile_id, &options).unwrap();
+        assert_eq!(segments[0].film.editorial.stroke, 0.0);
+        for subject in &segments[0].film.sequences[0].beats[0].shots[0].subjects {
+            assert_eq!(native_subject_stroke(subject), None);
+        }
+    }
+
+    #[test]
+    fn visible_stroke_color_and_profile_scaling_are_preserved() {
+        let (mut project, profile_id, options) = stroke_projection_fixture("circle", 8.0, 8.0);
+        let profile = project
+            .deliverables
+            .iter_mut()
+            .find(|profile| profile.id == profile_id)
+            .unwrap();
+        profile.width = 960;
+        profile.height = 540;
+        let segments = build_motion_canvas_segments(&project, profile_id, &options).unwrap();
+        assert_eq!(segments[0].film.editorial.stroke, 4.0);
+        let subjects = &segments[0].film.sequences[0].beats[0].shots[0].subjects;
+        assert_eq!(native_subject_stroke(&subjects[0]), Some("#FF8800"));
+        assert_eq!(native_subject_stroke(&subjects[1]), Some("#2080E0"));
+    }
+
+    #[test]
+    fn absent_stroke_color_does_not_become_visible() {
+        let (mut project, profile_id, options) = stroke_projection_fixture("rectangle", 8.0, 8.0);
+        project.scenes[0].nodes[0].style.stroke = None;
+        let segments = build_motion_canvas_segments(&project, profile_id, &options).unwrap();
+        let subjects = &segments[0].film.sequences[0].beats[0].shots[0].subjects;
+        assert_eq!(native_subject_stroke(&subjects[0]), None);
+        assert_eq!(native_subject_stroke(&subjects[1]), Some("#2080E0"));
+    }
+
+    #[test]
+    fn distinct_nonzero_stroke_widths_remain_unsupported() {
+        let (project, profile_id, options) = stroke_projection_fixture("rectangle", 4.0, 8.0);
+        let error = build_motion_canvas_segments(&project, profile_id, &options).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("one shared nonzero stroke width"));
     }
 
     #[test]
@@ -2663,7 +2823,18 @@ mod tests {
                 .collect(),
         };
         let segments = build_motion_canvas_segments(&project, vertical_id, &options).unwrap();
-        let subject = &segments[0].film.sequences[0].beats[0].shots[0].subjects[0];
+        let root_id = subject_id(text_node, None);
+        let subjects = &segments[0].film.sequences[0].beats[0].shots[0].subjects;
+        let root = subjects
+            .iter()
+            .find(|subject| subject.id == root_id)
+            .unwrap();
+        assert!(matches!(&root.content, SubjectContent::Group));
+        let subject = subjects
+            .iter()
+            .find(|subject| subject.id == format!("{root_id}-line-0"))
+            .unwrap();
+        assert_eq!(subject.parent.as_deref(), Some(root_id.as_str()));
         match &subject.content {
             SubjectContent::Text { runs, language, .. } => {
                 assert_eq!(runs[0].text, "Movimiento editable");
