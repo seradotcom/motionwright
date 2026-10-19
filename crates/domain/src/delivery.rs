@@ -1864,7 +1864,7 @@ mod tests {
             let mut profile = localized_profile(&project, Some(transcript_voice));
             profile.timing_locked = timing_locked;
             let error = project
-                .apply_change(&Change::UpsertDeliverable { profile })
+                .apply_change(&crate::Change::UpsertDeliverable { profile })
                 .unwrap_err();
             assert!(
                 error
