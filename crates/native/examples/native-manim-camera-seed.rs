@@ -152,7 +152,6 @@ fn seed(database: &Path) -> FixtureResult<Project> {
     delivery.color_space = OutputColorSpace::Rec709;
     delivery.captions = false;
     delivery.burn_in_captions = false;
-    let deliverable_id = delivery.id;
     apply(
         &service,
         &mut project,
