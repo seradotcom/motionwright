@@ -23,13 +23,36 @@ SELF = "tooling/ci_browser_evidence.py"
 PLANNER = "tooling/ci_job_plan.py"
 SOURCE_INPUTS = ("apps/studio/package.json", "apps/studio/package-lock.json",
                  "apps/studio/playwright.config.ts")
-RUNTIME_INPUTS = ("apps/studio/node_modules/@playwright/test/package.json",
-                  "apps/studio/node_modules/@playwright/test/cli.js",
-                  "apps/studio/node_modules/playwright/package.json",
-                  "apps/studio/node_modules/playwright/lib/reporters/json.js")
+# Constructed from the complete npm archives after independently checking their
+# lockfile SHA-512 SRI. Inventory SHA-256 uses sorted {path, bytes, sha256} rows,
+# compact JSON with sorted keys and ASCII escaping. No package JavaScript runs
+# to establish identity. Playwright 1.63 bundles JSONReporter in lib/runner/index.js.
+REVIEWED_RUNTIME_PACKAGES = {
+    "@playwright/test": {
+        "version": "1.63.0",
+        "resolved": "https://registry.npmjs.org/@playwright/test/-/test-1.63.0.tgz",
+        "integrity": "sha512-oxMK4vllB9RK5NQ2l1pq1IfOf2AvnEuj/vYGDj0H2nMtmtZpKtCwt/l00GEO6xjGfpBNAvjovvYdCm50dRQkpQ==",
+        "dependencies": {"playwright": "1.63.0"},
+        "member_count": 11,
+        "directory_count": 0,
+        "total_bytes": 28544,
+        "inventory_sha256": "02b5d21ad25a04bd0158d8204e94586a7439e866d5f1c0ae2aad7c604ab08c2f",
+    },
+    "playwright": {
+        "version": "1.63.0",
+        "resolved": "https://registry.npmjs.org/playwright/-/playwright-1.63.0.tgz",
+        "integrity": "sha512-+7ziBLidS4NaNCdt57SUDT+wYmmd5fmiQejUic/kb+YsYSCPyOOE9sebzMjNmQrsnNpDJqd4WHvV/8lfKfUDUg==",
+        "dependencies": {"playwright-core": "1.63.0"},
+        "member_count": 62,
+        "directory_count": 12,
+        "total_bytes": 5094512,
+        "inventory_sha256": "10ff9cf8859188519296f697170a366234a09aedfd6914e4c39618fc4ac5116e",
+    },
+}
 CONTEXT_KEYS = ("GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
                 "GITHUB_JOB", "GITHUB_WORKFLOW_SHA", "GITHUB_WORKFLOW_REF")
 MAX_HASH_BYTES = 256 * 1024 * 1024
+MAX_RUNTIME_PACKAGE_BYTES = 8 * 1024 * 1024
 
 
 def now():
@@ -114,9 +137,91 @@ def source_module(repo):
     return module
 
 
+def package_inventory(root, expected):
+    """Authenticate one closed package tree, with finite reads even after UNKNOWN."""
+    root = Path(root).absolute()
+    for component in (root, *root.parents):
+        info = component.lstat()
+        require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                and not getattr(info, "st_file_attributes", 0) & 0x400, "Linked runtime package directory")
+    count, dirs, budget = (expected[key] for key in ("member_count", "directory_count", "total_bytes"))
+    require(type(count) is int and 1 <= count <= 128 and type(dirs) is int and 0 <= dirs <= 64
+            and type(budget) is int and 0 < budget <= MAX_RUNTIME_PACKAGE_BYTES, "Invalid runtime inventory budget")
+    rows, directories, signatures, seen, pending, total = [], set(), {}, set(), [root], 0
+    signature = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_mtime_ns, value.st_ctime_ns)
+    while pending:
+        folder = pending.pop()
+        before = folder.lstat()
+        require(stat.S_ISDIR(before.st_mode) and not stat.S_ISLNK(before.st_mode)
+                and not getattr(before, "st_file_attributes", 0) & 0x400, "Linked runtime package directory")
+        signatures[folder] = signature(before)
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                path = folder / entry.name
+                relative = path.relative_to(root).as_posix()
+                require(entry.name.isascii() and entry.name not in (".", "..")
+                        and not any(char in entry.name for char in "\\/:\0")
+                        and relative.casefold() not in seen, "Unsafe or colliding runtime member")
+                seen.add(relative.casefold())
+                require(len(seen) <= count + dirs, "Runtime package has additional members")
+                info = path.lstat()
+                require(not stat.S_ISLNK(info.st_mode)
+                        and not getattr(info, "st_file_attributes", 0) & 0x400, "Linked runtime package member")
+                if stat.S_ISDIR(info.st_mode):
+                    directories.add(relative)
+                    require(len(directories) <= dirs, "Runtime package has additional directories")
+                    pending.append(path)
+                else:
+                    require(stat.S_ISREG(info.st_mode) and len(rows) < count,
+                            "Unexpected runtime package member")
+                    identity = file_record(path, max_bytes=budget - total)
+                    total += identity["bytes"]
+                    rows.append({"path": relative, **identity})
+    for folder, original in signatures.items():
+        require(signature(folder.lstat()) == original, "Runtime package directory changed during inventory")
+    required_dirs = {"/".join(row["path"].split("/")[:i]) for row in rows
+                     for i in range(1, len(row["path"].split("/")))}
+    require(len(rows) == count and len(directories) == dirs and directories == required_dirs
+            and total == budget, "Runtime package inventory is incomplete or changed")
+    rows.sort(key=lambda row: row["path"])
+    raw = json.dumps(rows, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    require(hashlib.sha256(raw).hexdigest() == expected["inventory_sha256"],
+            "Runtime package differs from its reviewed npm archive")
+    return rows
+
+
+def runtime_inputs(observer, repo, lock_identity):
+    lock_path = repo / "apps/studio/package-lock.json"
+    require(lock_identity["bytes"] <= MAX_RUNTIME_PACKAGE_BYTES, "Runtime lock exceeds parsing budget")
+    with lock_path.open("rb") as stream:
+        raw = stream.read(lock_identity["bytes"] + 1)
+    require(len(raw) == lock_identity["bytes"]
+            and hashlib.sha256(raw).hexdigest() == lock_identity["sha256"], "Runtime lock changed after hashing")
+    lock = observer.strict_json(raw)
+    require(isinstance(lock, dict) and type(lock.get("lockfileVersion")) is int
+            and lock["lockfileVersion"] == 3 and isinstance(lock.get("packages"), dict), "Unsupported runtime lock")
+    inputs = {}
+    for package, expected in REVIEWED_RUNTIME_PACKAGES.items():
+        entry = lock["packages"].get("node_modules/" + package)
+        require(isinstance(entry, dict) and not entry.get("link")
+                and all(entry.get(key) == expected[key] for key in ("version", "resolved", "integrity", "dependencies")),
+                "Runtime lock is outside the reviewed package profile")
+        prefix = "apps/studio/node_modules/" + package + "/"
+        for row in package_inventory(repo / prefix, expected):
+            inputs[prefix + row["path"]] = {"bytes": row["bytes"], "sha256": row["sha256"]}
+    return inputs
+
+
 def snapshot(observer, repo, context, executable_paths):
-    return {"source": observer.source(repo, context),
-            "inputs": {name: file_record(repo / name) for name in (SELF, *SOURCE_INPUTS, *RUNTIME_INPUTS)},
+    source = observer.source(repo, context)
+    inputs = {name: file_record(repo / name) for name in (SELF, *SOURCE_INPUTS)}
+    inputs.update(runtime_inputs(observer, repo, inputs["apps/studio/package-lock.json"]))
+    return {"source": source, "inputs": inputs,
+            "runtime_profile": {"schema": "motionwright.reviewed-playwright-npm-inputs/1",
+                                "packages": REVIEWED_RUNTIME_PACKAGES,
+                                "installed_inventories_match_reviewed_archives": True,
+                                "archive_sri_recomputed_during_execution": False,
+                                "entire_dependency_graph_authenticated": False},
             "executables": {name: {"resolved_path": str(Path(path).resolve(strict=True)),
                                     **file_record(Path(path).resolve(strict=True))}
                             for name, path in executable_paths.items()}}
