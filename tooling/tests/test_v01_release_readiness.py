@@ -446,6 +446,35 @@ class ReadinessGateTests(unittest.TestCase):
         self.assertNotIn(str(self.root), stderr.getvalue())
         self.assertFalse(target.exists())
 
+    def test_append_only_ledger_within_explicit_new_budget_is_bounded(self):
+        for document, key in (
+            (self.requirements, "requirements"),
+            (self.acceptance, "cases"),
+        ):
+            document[key][0]["assessment_history"] = [
+                {"synthetic_prior": "a" * 3_050_000}
+            ]
+        self.store()
+        for relative in (
+            "docs/acceptance/requirements-status.json",
+            "docs/acceptance/acceptance-status.json",
+        ):
+            size = (self.root / relative).stat().st_size
+            self.assertGreater(size, gate.MAX_READINESS_JSON_BYTES)
+            self.assertLess(size, gate.MAX_CONFORMANCE_LEDGER_BYTES)
+        report = gate.summarize(self.root, SHA)
+        self.assertEqual(report["status"], "BLOCKED_PENDING_EXTERNAL_EVIDENCE")
+        self.assertEqual(report["requirements"]["fully_verified"], 0)
+
+    def test_source_ledger_exceeding_new_ceiling_remains_rejected(self):
+        self.requirements["requirements"][0]["assessment_history"] = [
+            {"synthetic_prior": "b" * gate.MAX_CONFORMANCE_LEDGER_BYTES}
+        ]
+        self.store()
+        with self.assertRaises(gate.ReadinessError) as raised:
+            gate.summarize(self.root, SHA)
+        self.assertEqual(raised.exception.code, "requirements_invalid")
+
     def test_cli_bad_input_emits_stable_code_never_private_json(self):
         stderr = io.StringIO()
         with patch.object(gate, "ROOT", self.root):

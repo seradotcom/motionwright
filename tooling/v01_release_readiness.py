@@ -135,11 +135,19 @@ def verify_local_checkout(root: Path, expected_sha: str) -> None:
               "HEAD", "--")
 
 
-def source_json(path: Path, code: str) -> dict:
+# Bound authentic, append-only predecessor snapshots in the two public ledgers
+# without lifting the original ceiling for unrelated readiness source metadata.
+MAX_READINESS_JSON_BYTES = 3_000_000
+MAX_CONFORMANCE_LEDGER_BYTES = 5_000_000
+
+
+def source_json(
+    path: Path, code: str, *, max_bytes: int = MAX_READINESS_JSON_BYTES
+) -> dict:
     try:
         # Every expected source file is first-party checked-in metadata.
         # Cap parser input size to avoid accepting arbitrary CI evidence blobs.
-        need(path.stat().st_size <= 3_000_000, code)
+        need(path.stat().st_size <= max_bytes, code)
         data = json.loads(path.read_text(encoding="utf-8"),
                           object_pairs_hook=no_duplicate_keys)
     except (OSError, UnicodeError, ValueError, TypeError) as exc:
@@ -198,10 +206,14 @@ def summarize(root: Path, tested_source_sha: str) -> dict:
          and sdk.get("package") == "semwright-native-sdk",
          "native_sdk_pin_mismatch")
 
-    requirements = source_json(root / "docs/acceptance/requirements-status.json",
-                               "requirements_invalid")
-    acceptance = source_json(root / "docs/acceptance/acceptance-status.json",
-                             "acceptance_invalid")
+    requirements = source_json(
+        root / "docs/acceptance/requirements-status.json",
+        "requirements_invalid", max_bytes=MAX_CONFORMANCE_LEDGER_BYTES,
+    )
+    acceptance = source_json(
+        root / "docs/acceptance/acceptance-status.json",
+        "acceptance_invalid", max_bytes=MAX_CONFORMANCE_LEDGER_BYTES,
+    )
     required = exact_ids(requirements.get("requirements"), REQUIREMENT_IDS,
                          "requirements_invalid")
     cases = exact_ids(acceptance.get("cases"), ACCEPTANCE_IDS,
