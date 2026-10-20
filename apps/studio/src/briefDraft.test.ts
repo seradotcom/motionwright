@@ -5,7 +5,7 @@ import {
   acknowledgeBriefSubmission, BRIEF_DRAFT_STORAGE_PREFIX, briefDraftConflicts, briefDraftHasWork,
   briefDraftScope, briefDraftStorageKey, briefGroupHasChanges, briefSubmissionMatches, createBriefDraft,
   decodeBriefRecovery, editBriefField, encodeBriefRecovery, MAX_BRIEF_DRAFT_BYTES, MAX_BRIEF_RECOVERY_BYTES, MAX_BRIEF_RECOVERY_COPIES,
-  prepareBriefSubmission, readBriefRecoveries, reconcileBriefDraft, resolveBriefField, retainBriefSubmissionIntent, writeBriefRecovery,
+  prepareBriefSubmission, readBriefRecoveries, reconcileBriefDraft, resolveBriefField, retainBriefSubmissionIntent, writeBriefRecovery, writeBriefSessionPointer,
 } from "./briefDraft";
 import type { BriefDraft, BriefRecovery, BriefSubmission, DraftStorage } from "./briefDraft";
 
@@ -362,14 +362,21 @@ describe("bounded local recovery without project authority", () => {
     expect(readBriefRecoveries(storage, clean.scope).entries[0].value.draft?.fields.objective.raw).toBe("New input");
   });
 
-  it("reclaims clean-only scopes under pressure while preserving unrelated storage", () => {
+  it("requires explicit cleanup when unrelated projects have filled the brief recovery namespace", () => {
     const source = project(), storage = new MemoryStorage();
     storage.setItem("unrelated-theme", "dark");
     for (let i = 0; i < MAX_BRIEF_RECOVERY_COPIES; i++) {
       const other = project(); other.id = "completed-project-" + i;
       writeBriefRecovery(storage, recovery(null, other));
     }
+    const before = new Map(storage.data);
     const next = recovery(editBriefField(createBriefDraft(source), "audience", "New pending audience"), source);
+    expect(() => writeBriefRecovery(storage, next)).toThrow(/budget is full/);
+    expect(storage.data).toEqual(before);
+    // Only the author can choose an unrelated clean copy for removal. That
+    // explicit action makes enough capacity for the newly authored draft.
+    const other = project(); other.id = "completed-project-0";
+    storage.removeItem(briefDraftStorageKey(briefDraftScope(other), "session-a"));
     writeBriefRecovery(storage, next);
     expect(readBriefRecoveries(storage, next.scope).entries[0].value.draft?.fields.audience.raw).toBe("New pending audience");
     expect(storage.getItem("unrelated-theme")).toBe("dark");
@@ -445,5 +452,115 @@ describe("bounded local recovery without project authority", () => {
     const next = recovery(editBriefField(createBriefDraft(source), "audience", "Keep in memory"), source);
     expect(() => writeBriefRecovery(storage, next)).toThrow(/budget is full/);
     expect([...storage.data]).toEqual(before);
+  });
+});
+
+
+describe("brief author-copy write-before-prune admission", () => {
+  const seeded = () => {
+    const source = project(), storage = new MemoryStorage();
+    const older = recovery(null, source, "clean-older", 10);
+    const newer = recovery(null, source, "clean-newer", 11);
+    // External previously persisted copies; intentionally keep BOTH until the
+    // proposed replacement is atomically confirmed.
+    storage.setItem(briefDraftStorageKey(older.scope, older.sessionId), JSON.stringify(older));
+    storage.setItem(briefDraftStorageKey(newer.scope, newer.sessionId), JSON.stringify(newer));
+    return { source, storage, older, newer };
+  };
+
+  it("does not prune earlier clean bytes before a quota-rejected new author copy", () => {
+    const { source, storage } = seeded();
+    const input = recovery(editBriefField(createBriefDraft(source), "title", "Kept original author intent"),
+      source, "new-author", 12);
+    const before = new Map(storage.data);
+    storage.failWrites = true;
+    expect(() => writeBriefRecovery(storage, input)).toThrow(/QuotaExceededError/);
+    expect(storage.data).toEqual(before);
+    expect(input.draft!.fields.title.raw).toBe("Kept original author intent");
+  });
+
+  it("does not silently report a new copy as durable if a browser ignores setItem", () => {
+    const { source, storage } = seeded();
+    const input = recovery(editBriefField(createBriefDraft(source), "objective", "Unsaved work"),
+      source, "silent-writer", 12);
+    const key = briefDraftStorageKey(input.scope, input.sessionId);
+    const originalSet = storage.setItem.bind(storage);
+    const before = new Map(storage.data);
+    storage.setItem = (candidate, bytes) => {
+      if (candidate !== key) originalSet(candidate, bytes);
+    };
+    expect(() => writeBriefRecovery(storage, input)).toThrow(/not confirmed/i);
+    expect(storage.data).toEqual(before);
+  });
+
+  it("checks the replacement exists BEFORE pruning only clean copies in the exact scope", () => {
+    const { source, storage, older, newer } = seeded();
+    const unrelated = project(); unrelated.id += "-foreign";
+    const other = recovery(editBriefField(createBriefDraft(unrelated), "objective", "Another project"),
+      unrelated, "other-writer", 12);
+    const otherKey = briefDraftStorageKey(other.scope, other.sessionId);
+    storage.setItem(otherKey, JSON.stringify(other));
+    const next = recovery(null, source, "verified-clean", 13);
+    const key = briefDraftStorageKey(next.scope, next.sessionId);
+    const savedOther = storage.getItem(otherKey);
+    const originalSet = storage.setItem.bind(storage);
+    storage.setItem = (candidate, raw) => {
+      if (candidate === key) {
+        expect(storage.getItem(briefDraftStorageKey(older.scope, older.sessionId))).not.toBeNull();
+        expect(storage.getItem(briefDraftStorageKey(newer.scope, newer.sessionId))).not.toBeNull();
+      }
+      originalSet(candidate, raw);
+    };
+    writeBriefRecovery(storage, next);
+    expect(readBriefRecoveries(storage, next.scope).entries.map(item => item.value.sessionId))
+      .toEqual(["verified-clean"]);
+    expect(storage.getItem(otherKey)).toBe(savedOther);
+  });
+
+  it("requires explicit clean-only scope cleanup instead of silently evicting another project's checkpoint", () => {
+    const { source } = seeded(), storage = new MemoryStorage();
+    for (let i = 0; i < MAX_BRIEF_RECOVERY_COPIES; i++) {
+      const other = project(); other.id += "-clean-only-" + i;
+      const clean = recovery(null, other, "writer-" + i, i);
+      storage.setItem(briefDraftStorageKey(clean.scope, clean.sessionId), JSON.stringify(clean));
+    }
+    const before = new Map(storage.data);
+    const input = recovery(editBriefField(createBriefDraft(source), "audience", "Another author"),
+      source, "must-not-evict-foreign", 75);
+    expect(() => writeBriefRecovery(storage, input)).toThrow(/budget is full/);
+    expect(storage.data).toEqual(before);
+  });
+});
+
+
+describe("brief session writer readback is required for automatic recovery", () => {
+  it("accepts only a verified tab writer and rejects silent, thrown or mismatched pointers", () => {
+    const values = new Map<string, string>();
+    const read = (key: string) => values.get(key) ?? null;
+    const working = {
+      getItem: read, setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    writeBriefSessionPointer(working, "brief-session:scoped", "writer-A");
+    expect(read("brief-session:scoped")).toBe("writer-A");
+    expect(() => writeBriefSessionPointer({
+      getItem: read, setItem: () => {},
+    }, "brief-session:scoped", "writer-B")).toThrow(/not confirmed/);
+    expect(read("brief-session:scoped")).toBe("writer-A");
+    expect(() => writeBriefSessionPointer({
+      getItem: read, setItem: () => { throw new Error("denied"); },
+    }, "brief-session:scoped", "writer-B")).toThrow(/denied/);
+    expect(read("brief-session:scoped")).toBe("writer-A");
+  });
+
+  it("does not replace a clean checkpoint when the storage response is silent", () => {
+    const source = project(), storage = new MemoryStorage();
+    const copy = recovery(null, source, "completed-clean", 1);
+    const key = briefDraftStorageKey(copy.scope, copy.sessionId);
+    const originalSet = storage.setItem.bind(storage);
+    storage.setItem = (target, raw) => {
+      if (target !== key) originalSet(target, raw);
+    };
+    expect(() => writeBriefRecovery(storage, copy)).toThrow(/not confirmed/i);
+    expect(storage.getItem(key)).toBeNull();
   });
 });

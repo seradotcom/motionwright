@@ -163,6 +163,18 @@ export function acknowledgeBriefSubmission(draft: BriefDraft, project: Project, 
 }
 
 // Local editor recovery only. No effect grants, Changes or acknowledgements are stored.
+/** A durable brief copy is automatically attributable after reload ONLY
+ * if this tab's writer pointer is verified. A failed/silent session write is
+ * an explicit recovery workflow, not permission to submit a Project change. */
+export function writeBriefSessionPointer(
+  storage: Pick<Storage, "getItem" | "setItem">, key: string, writerId: string,
+): void {
+  storage.setItem(key, writerId);
+  if (storage.getItem(key) !== writerId) {
+    throw new Error("Brief recovery writer pointer was not confirmed.");
+  }
+}
+
 export const BRIEF_DRAFT_STORAGE_PREFIX = "motionwright.brief-draft.v1:";
 export const MAX_BRIEF_DRAFT_BYTES = 1024 * 1024;
 export const MAX_BRIEF_RECOVERY_BYTES = 4 * 1024 * 1024;
@@ -285,22 +297,12 @@ export function writeBriefRecovery(storage: DraftStorage, value: BriefRecovery):
     ? Math.max(latest, item.value.updatedAt) : latest, -1);
   value = { ...value, updatedAt: Math.max(value.updatedAt, latestTime + 1) };
   raw = encodeBriefRecovery(value);
-  const latestClean = new Map<string, Stored>();
-  for (const item of stored) {
-    if (!item.value || item.value.draft !== null) continue;
-    const latest = latestClean.get(item.value.scope);
-    if (!latest || item.value.updatedAt > latest.value!.updatedAt
-      || (item.value.updatedAt === latest.value!.updatedAt && item.key.localeCompare(latest.key) < 0)) {
-      latestClean.set(item.value.scope, item);
-    }
-  }
+  // Never remove another author's durable checkpoint while attempting a
+  // replacement. The browser can reject writes (including silently) and a
+  // full namespace has no transactional spare slot. Refuse such admission
+  // without side effects; deliberate cleanup is a separate user action.
   function removeClean(item: Stored) {
-    // Never discard a dirty or unreadable record, even if storage was changed
-    // outside this editor after inspection.
     if (storage.getItem(item.key) === item.raw) storage.removeItem(item.key);
-  }
-  for (const item of stored) {
-    if (item.key !== key && item.value?.draft === null && latestClean.get(item.value.scope) !== item) removeClean(item);
   }
   function budget() {
     let total = bytes(key) + bytes(raw), count = 1;
@@ -312,29 +314,22 @@ export function writeBriefRecovery(storage: DraftStorage, value: BriefRecovery):
     return total <= MAX_BRIEF_RECOVERY_BYTES && count <= MAX_BRIEF_RECOVERY_COPIES;
   }
   if (!budget()) {
-    // A scope with no retained input has nothing an absent checkpoint could
-    // resurrect. Its final clean marker can also yield space under pressure.
-    const hasUnreadableIdentity = stored.some(item => item.scope === null);
-    if (!hasUnreadableIdentity) for (const item of latestClean.values()) {
-      if (budget()) break;
-      if (item.key !== key && !stored.some(other => other.scope === item.scope && (!other.value || other.value.draft !== null))) {
-        removeClean(item);
-      }
-    }
-  }
-  if (!budget()) {
     throw new Error("The brief recovery budget is full (64 copies / 4 MiB across projects). Copies with input were kept; remove only copies you no longer need, including in other projects if needed.");
   }
-  storage.setItem(key, raw);
-  // Only a successfully written clean marker can replace the previous final
-  // marker for a scope that still has older drafts. A failed write cannot make
-  // an old draft become the newest automatic recovery candidate again.
-  if (value.draft === null) {
-    const previousClean = latestClean.get(value.scope);
-    if (previousClean && previousClean.key !== key
-      && (value.updatedAt > previousClean.value!.updatedAt
-        || (value.updatedAt === previousClean.value!.updatedAt && key.localeCompare(previousClean.key) < 0))) {
-      removeClean(previousClean);
-    }
+  // A peer window may have changed our own key since enumeration. A stale
+  // writer is never allowed to overwrite its distinct, newer author input.
+  if (storage.getItem(key) !== previous) {
+    throw new Error("The brief recovery copy changed before save. Review the current local copy.");
   }
+  storage.setItem(key, raw);
+  if (storage.getItem(key) !== raw) {
+    throw new Error("Brief recovery write was not confirmed. Earlier bytes were kept.");
+  }
+  // Only after an independently verified NEW clean marker may superseded
+  // clean markers from this exact editing scope be discarded. Dirty, foreign
+  // and unreadable copies are never compacted as a side effect of a failure.
+  if (value.draft === null) for (const item of stored) {
+    if (item.key !== key && item.scope === value.scope && item.value?.draft === null) removeClean(item);
+  }
+
 }

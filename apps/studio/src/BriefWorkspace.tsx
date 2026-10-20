@@ -6,6 +6,7 @@ import {
   briefDraftScope, briefDraftStorageKey, briefFieldHasInput, briefGroupFields, briefGroupHasChanges, briefSubmissionMatches,
   createBriefDraft, decodeBriefRecovery, editBriefField, fieldText, prepareBriefSubmission, readBriefRecoveries,
   reconcileBriefDraft, resolveBriefField, retainBriefSubmissionIntent, writeBriefRecovery,
+  writeBriefSessionPointer,
 } from "./briefDraft";
 import type { BriefDraft, BriefField, BriefGroup, BriefRecoveryEntry, BriefSubmission, UnreadableBriefRecovery } from "./briefDraft";
 
@@ -27,13 +28,17 @@ function readRecovery(project: Project) {
   const cached = liveDrafts.get(scope);
   // Prefer this tab's own copy over another tab's newer clean checkpoint.
   const ownCopyUnreadable = unreadable.some(copy => copy.sessionId === previousSession);
-  const restored = entries.find(entry => entry.value.sessionId === previousSession)
-    ?? (ownCopyUnreadable || limited ? undefined : entries[0]);
+  // A missing writer pointer must not silently import another tab's "most
+  // recent" draft. A durable copy is still visible for deliberate Restore.
+  const restored = previousSession && !ownCopyUnreadable
+    ? entries.find(entry => entry.value.sessionId === previousSession) : undefined;
   const draft = reconcileBriefDraft(cached?.draft ?? restored?.value.draft ?? createBriefDraft(project), project);
   return { draft, sessionId: cached?.sessionId ?? crypto.randomUUID(), entries, unreadable, limited, backupError,
     notice: cached && briefDraftHasWork(draft) ? "Your uncommitted brief inputs are still available."
-      : !cached && restored?.value.draft ? "Recovered a local brief draft. Compare it with the current project before saving."
-      : null };
+      : !cached && restored?.value.draft ? "Recovered this tab's brief draft. Compare it with the current project before saving."
+      : !cached && entries.some(entry => entry.value.draft !== null)
+        ? "Local brief copies are available. Choose Restore explicitly; no other window's draft was adopted."
+        : null };
 }
 
 export default function BriefWorkspace(props: Props) {
@@ -80,24 +85,24 @@ function BriefEditor({ project, commit }: Props) {
       }
       writeBriefRecovery(window.localStorage, { schema: "motionwright.brief-recovery/1", scope,
         sessionId: sessionId.current, updatedAt: Date.now(), draft: hasWork ? next : null });
-      // Each new document has a distinct writer ID, even when a tab was duplicated.
-      // Move its recovery pointer only after its own copy was written successfully.
-      try { window.sessionStorage.setItem(SESSION_POINTER_PREFIX + scope, sessionId.current); }
-      catch { /* Reopening can still choose the durable local copy explicitly. */ }
+      // The copy alone is NOT automatic reload recovery: its session pointer
+      // must be both written and read back before permitting Project writes.
+      // A failed pointer still leaves original bytes for explicit Restore.
+      writeBriefSessionPointer(window.sessionStorage, SESSION_POINTER_PREFIX + scope, sessionId.current);
       setBackupError(null);
       return true;
     } catch (reason) {
       setBackupError((reason instanceof Error ? reason.message : "Local storage is unavailable.")
-        + " Your current inputs remain in this session, but the latest edit may not survive closing or reloading. Copies with input and unreadable copies were kept.");
+        + " Your current input remains in this editor. If its writer pointer failed, restore the durable copy explicitly after reload; no Project change was sent. Unreadable copies were kept.");
       return false;
     }
   }
-  function replace(next: BriefDraft, persist = true) {
+  function replace(next: BriefDraft, persist = true): boolean {
     // A former clean key may already have been compacted by another tab. Never
     // reuse it for input, even when that old checkpoint is no longer in storage.
     if (briefDraftHasWork(next) && !briefDraftHasWork(draftRef.current)) sessionId.current = crypto.randomUUID();
     remember(next); setDraft(next);
-    if (persist) backup(next);
+    return persist ? backup(next) : true;
   }
   function edit(field: BriefField, raw: string) {
     const preserveIntent = inFlight.current || Boolean(submitted.current?.fields.includes(field));
@@ -149,7 +154,13 @@ function BriefEditor({ project, commit }: Props) {
     try { attempt = prepareBriefSubmission(draftRef.current, projectRef.current, group); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); return; }
     submitted.current = attempt; inFlight.current = true; setPending(true); setError(null); setNotice(null);
-    replace(retainBriefSubmissionIntent(draftRef.current, projectRef.current, attempt));
+    if (!replace(retainBriefSubmissionIntent(draftRef.current, projectRef.current, attempt))) {
+      submitted.current = null;
+      inFlight.current = false;
+      setPending(false);
+      setError("The brief recovery copy or its session pointer is unconfirmed. Nothing was sent to the Project. Restore or retry backup before committing.");
+      return;
+    }
     try {
       await commit(attempt.change);
       if (!mounted.current) return;
@@ -189,7 +200,7 @@ function BriefEditor({ project, commit }: Props) {
     try { window.localStorage.removeItem(key); refreshCopies(); }
     catch (reason) { setBackupError(reason instanceof Error ? reason.message : "The unreadable copy could not be removed."); }
   }
-  const groupBlocked = (group: BriefGroup) => pending || contentLocked
+  const groupBlocked = (group: BriefGroup) => pending || contentLocked || backupError !== null
     || conflicts.some(conflict => briefGroupFields(group).includes(conflict.field))
     || !briefGroupHasChanges(draft, project, group)
     || (group === "title" && !draft.fields.title.raw.trim());
