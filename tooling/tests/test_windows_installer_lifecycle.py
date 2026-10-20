@@ -688,7 +688,7 @@ class WindowsLifecycleTests(unittest.TestCase):
         connection = sqlite3.connect(db_path)
         try:
             connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA user_version=2")
+            connection.execute("PRAGMA user_version=3")
             connection.execute("CREATE TABLE projects(id TEXT,generation TEXT,revision INTEGER,title TEXT,document_json TEXT)")
             project = {"id": str(uuid.uuid4()), "generation": str(uuid.uuid4()),
                        "revision": 0, "title": "motionwright ci first use"}
@@ -829,7 +829,7 @@ class WindowsLifecycleTests(unittest.TestCase):
         database = profile / "motionwright.sqlite3"
         connection = sqlite3.connect(database)
         try:
-            connection.execute("PRAGMA user_version=2")
+            connection.execute("PRAGMA user_version=3")
             connection.execute("CREATE TABLE projects(id TEXT,generation TEXT,revision INTEGER,title TEXT,document_json TEXT)")
             project = {"id": str(uuid.uuid4()), "generation": str(uuid.uuid4()),
                        "revision": 0, "title": LEGACY_FIRST_USE_TITLE}

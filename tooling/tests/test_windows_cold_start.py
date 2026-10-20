@@ -29,7 +29,7 @@ TITLE = "motionwright ci first use"
 
 
 def project_db(target: Path, *, title: str = TITLE, duplicate: bool = False,
-               forged_generation: bool = False) -> dict:
+               forged_generation: bool = False, schema_version: int = 3) -> dict:
     target.parent.mkdir(parents=True, exist_ok=True)
     ident, generation = str(uuid.uuid4()), str(uuid.uuid4())
     source = {
@@ -39,7 +39,7 @@ def project_db(target: Path, *, title: str = TITLE, duplicate: bool = False,
         "title": title,
     }
     with closing(sqlite3.connect(target)) as db:
-        db.execute("PRAGMA user_version=2")
+        db.execute("PRAGMA user_version=" + str(schema_version))
         db.execute("""
             CREATE TABLE projects (
                 id TEXT PRIMARY KEY, generation TEXT, revision INTEGER,
@@ -170,14 +170,16 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         project_db(database)
         self.assertFalse(windows._empty_library_ready(database))
         with closing(sqlite3.connect(database)) as connection, connection:
-            connection.execute("PRAGMA user_version=2")
+            connection.execute("PRAGMA user_version=3")
             connection.execute("DELETE FROM projects")
         original = database.read_bytes()
         self.assertTrue(windows._empty_library_ready(database))
         self.assertEqual(database.read_bytes(), original)
-        with closing(sqlite3.connect(database)) as connection, connection:
-            connection.execute("PRAGMA user_version=99")
-        self.assertFalse(windows._empty_library_ready(database))
+        for version in (2, 4, 99):
+            with closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute("PRAGMA user_version=" + str(version))
+            with self.subTest(schema=version):
+                self.assertFalse(windows._empty_library_ready(database))
 
     def test_accessible_native_action_must_be_one_confirmed_invocation(self):
         from unittest.mock import Mock
@@ -374,7 +376,7 @@ class WindowsCandidateUnitTests(unittest.TestCase):
 
     def test_legacy_real_sqlite_reopen_preserves_identity_revision_schema_and_exact_content(self):
         database = self.root / "legacy.sqlite3"
-        document = project_db(database, title=windows.LEGACY_FIRST_USE_TITLE)
+        document = project_db(database, title=windows.LEGACY_FIRST_USE_TITLE, schema_version=2)
         original = database.read_bytes()
         first = windows.read_project_snapshot(
             database, first_use_contract=windows.LEGACY_FIRST_USE_CONTRACT,
@@ -394,13 +396,13 @@ class WindowsCandidateUnitTests(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (2,))
 
     def test_current_and_legacy_contracts_never_accept_each_others_title(self):
-        for index, (title, contract) in enumerate((
-            (windows.LEGACY_FIRST_USE_TITLE, windows.CURRENT_FIRST_USE_CONTRACT),
-            (TITLE, windows.LEGACY_FIRST_USE_CONTRACT),
-            ("Previously edited project", windows.LEGACY_FIRST_USE_CONTRACT),
+        for index, (title, contract, schema) in enumerate((
+            (windows.LEGACY_FIRST_USE_TITLE, windows.CURRENT_FIRST_USE_CONTRACT, 3),
+            (TITLE, windows.LEGACY_FIRST_USE_CONTRACT, 2),
+            ("Previously edited project", windows.LEGACY_FIRST_USE_CONTRACT, 2),
         )):
             database = self.root / (str(index) + ".sqlite3")
-            project_db(database, title=title)
+            project_db(database, title=title, schema_version=schema)
             with self.subTest(contract=contract, title=title), self.assertRaisesRegex(
                 windows.ColdStartError, "initialized",
             ):
@@ -408,25 +410,31 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         with self.assertRaisesRegex(windows.ColdStartError, "unsupported"):
             windows.read_project_snapshot(database, first_use_contract=True)
 
-    def test_both_bootstrap_contracts_require_schema_two(self):
-        for index, (title, contract) in enumerate((
-            (TITLE, windows.CURRENT_FIRST_USE_CONTRACT),
-            (windows.LEGACY_FIRST_USE_TITLE, windows.LEGACY_FIRST_USE_CONTRACT),
+    def test_bootstrap_contracts_require_their_exact_source_schema(self):
+        for index, (title, contract, expected, rejected) in enumerate((
+            (TITLE, windows.CURRENT_FIRST_USE_CONTRACT, 3, (0, 1, 2, 4)),
+            (windows.LEGACY_FIRST_USE_TITLE, windows.LEGACY_FIRST_USE_CONTRACT, 2, (0, 1, 3, 4)),
         )):
             database = self.root / (str(index) + ".sqlite3")
-            project_db(database, title=title)
-            for version in (0, 1, 3):
+            project = project_db(database, title=title, schema_version=expected)
+            original = database.read_bytes()
+            snapshot = windows.read_project_snapshot(database, first_use_contract=contract)
+            self.assertEqual(snapshot["project_id"], project["id"])
+            self.assertEqual(database.read_bytes(), original)
+            for version in rejected:
                 with closing(sqlite3.connect(database)) as connection, connection:
                     connection.execute("PRAGMA user_version=" + str(version))
+                original = database.read_bytes()
                 with self.subTest(contract=contract, schema=version), self.assertRaisesRegex(
                     windows.ColdStartError, "schema",
                 ):
                     windows.read_project_snapshot(database, first_use_contract=contract)
+                self.assertEqual(database.read_bytes(), original)
 
     def test_legacy_contract_keeps_row_identity_and_unique_project_requirements(self):
         for index, options in enumerate(({"forged_generation": True}, {"duplicate": True})):
             database = self.root / (str(index) + ".sqlite3")
-            project_db(database, title=windows.LEGACY_FIRST_USE_TITLE, **options)
+            project_db(database, title=windows.LEGACY_FIRST_USE_TITLE, schema_version=2, **options)
             with self.assertRaises(windows.ColdStartError):
                 windows.read_project_snapshot(
                     database, first_use_contract=windows.LEGACY_FIRST_USE_CONTRACT,
@@ -434,7 +442,7 @@ class WindowsCandidateUnitTests(unittest.TestCase):
 
     def test_legacy_boot_and_reopen_never_activate_the_new_library_create_control(self):
         database = self.root / "com.seradotcom.motionwright" / "motionwright.sqlite3"
-        project_db(database, title=windows.LEGACY_FIRST_USE_TITLE)
+        project_db(database, title=windows.LEGACY_FIRST_USE_TITLE, schema_version=2)
         original = database.read_bytes()
         with mocked_boot() as (_, launch, create):
             first, actual, _ = windows.boot_once(
@@ -456,7 +464,7 @@ class WindowsCandidateUnitTests(unittest.TestCase):
 
     def test_empty_legacy_store_never_falls_back_to_current_ui_creation(self):
         database = self.root / "motionwright.sqlite3"
-        project_db(database, title=windows.LEGACY_FIRST_USE_TITLE)
+        project_db(database, title=windows.LEGACY_FIRST_USE_TITLE, schema_version=2)
         with closing(sqlite3.connect(database)) as connection, connection:
             connection.execute("DELETE FROM projects")
         with mocked_boot() as (_, launch, create), self.assertRaises(windows.ColdStartError) as ctx:
@@ -513,7 +521,7 @@ class WindowsCandidateUnitTests(unittest.TestCase):
 
     def test_timeout_distinguishes_visible_hwnd_from_rejected_real_sqlite_snapshot(self):
         database = self.root / "motionwright.sqlite3"
-        project_db(database, title=windows.LEGACY_FIRST_USE_TITLE)
+        project_db(database, title=windows.LEGACY_FIRST_USE_TITLE, schema_version=3)
         with mocked_boot() as (_, launch, create), self.assertRaises(windows.ColdStartError) as ctx:
             windows.boot_once(
                 self.root / "fixture.exe", {}, [self.root], self.root / "wrong-title.log",
