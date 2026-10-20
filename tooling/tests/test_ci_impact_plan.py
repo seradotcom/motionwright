@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE = Path(__file__).resolve().parents[1] / "ci_impact_plan.py"
@@ -922,6 +923,197 @@ class AggregateTests(unittest.TestCase):
                     path.write_text(text, encoding="utf-8")
                     with self.assertRaises(impact.PlanError):
                         impact.read_json(path)
+
+
+class TreeReadCacheTests(unittest.TestCase):
+    """Real Git blob reads; caches cannot become source or result authority."""
+
+    SOURCE = "inputs/source.txt"
+    ALIAS = "inputs/alias.txt"
+    OTHER = "inputs/other.txt"
+    EMPTY = "inputs/empty.txt"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-ci-blob-cache-")
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Repo(Path(self.temp.name))
+        self.raw = b"Authenticated fixture blob.\n"
+        self.other = b"Independent fixture blob.\n"
+        self.write_bytes(self.SOURCE, self.raw)
+        self.write_bytes(self.ALIAS, self.raw)
+        self.write_bytes(self.OTHER, self.other)
+        self.write_bytes(self.EMPTY, b"")
+        self.head = self.repo.commit("real blob read fixtures")
+
+    def write_bytes(self, name, raw):
+        path = self.repo.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+    def tree(self, sha=None):
+        return impact.Tree(self.repo.root, sha or self.head)
+
+    def processes(self):
+        return mock.patch.object(impact.subprocess, "run", wraps=impact.subprocess.run)
+
+    def assert_process_count(self, observed, expected):
+        self.assertEqual(len(observed.call_args_list), expected,
+                         [call.args[0] for call in observed.call_args_list])
+
+    def test_repeated_blob_and_alias_launch_git_once(self):
+        tree = self.tree()
+        self.assertEqual(tree.entries[self.SOURCE][1], tree.entries[self.ALIAS][1])
+        with self.processes() as observed:
+            self.assertEqual(tree.read(self.SOURCE), self.raw)
+            self.assertEqual(tree.read(self.SOURCE), self.raw)
+            self.assertEqual(tree.read(self.ALIAS), self.raw)
+        # A single authenticated read uses one size and one content process.
+        self.assert_process_count(observed, 2)
+
+    def test_cache_is_bound_to_one_tree_instance(self):
+        first, second = self.tree(), self.tree()
+        with self.processes() as observed:
+            self.assertEqual(first.read(self.SOURCE), self.raw)
+            self.assertEqual(second.read(self.SOURCE), self.raw)
+        self.assert_process_count(observed, 4)
+
+    def test_empty_blob_is_reused(self):
+        tree = self.tree()
+        with self.processes() as observed:
+            self.assertEqual(tree.read(self.EMPTY), b"")
+            self.assertEqual(tree.read(self.EMPTY), b"")
+        self.assert_process_count(observed, 2)
+
+    def test_each_cached_path_still_requires_regular_git_mode(self):
+        oid = self.repo.call("rev-parse", self.head + ":" + self.SOURCE)
+        self.repo.call("update-index", "--add", "--cacheinfo", "100755", oid,
+                       "inputs/executable")
+        self.repo.call("update-index", "--add", "--cacheinfo", "120000", oid,
+                       "inputs/link")
+        self.repo.call("commit", "--no-gpg-sign", "-m", "real Git executable and link modes")
+        tree = self.tree(self.repo.call("rev-parse", "HEAD"))
+        self.assertEqual(tree.entries["inputs/executable"], ("100755", oid))
+        self.assertEqual(tree.entries["inputs/link"], ("120000", oid))
+        with self.processes() as observed:
+            self.assertEqual(tree.read(self.SOURCE), self.raw)
+            self.assertEqual(tree.read("inputs/executable"), self.raw)
+            with self.assertRaisesRegex(impact.PlanError, "not a regular Git blob"):
+                tree.read("inputs/link")
+        self.assert_process_count(observed, 2)
+
+    def test_cached_reads_still_reject_unsafe_and_missing_paths(self):
+        tree = self.tree()
+        self.assertEqual(tree.read(self.SOURCE), self.raw)
+        with self.processes() as observed:
+            for path in ("../inputs/source.txt", "/inputs/source.txt", "C:/input",
+                         "inputs\\source.txt", ""):
+                with self.subTest(path=path), self.assertRaises(impact.PlanError):
+                    tree.read(path)
+            with self.assertRaises(KeyError):
+                tree.read("inputs/missing.txt")
+        self.assert_process_count(observed, 0)
+
+    def test_oversized_blob_is_rejected_before_content_and_not_cached(self):
+        self.write_bytes("inputs/oversized", b"z" * 2_000_001)
+        tree = self.tree(self.repo.commit("oversized real blob"))
+        with self.processes() as observed:
+            for _ in range(2):
+                with self.assertRaisesRegex(impact.PlanError, "exceeds bounded parser size"):
+                    tree.read("inputs/oversized")
+        self.assert_process_count(observed, 2)
+        self.assertTrue(all(call.args[0][-2] == "-s"
+                            for call in observed.call_args_list))
+
+    def test_exact_size_limit_is_accepted_and_cached(self):
+        raw = b"b" * 2_000_000
+        self.write_bytes("inputs/boundary", raw)
+        tree = self.tree(self.repo.commit("exact bounded real blob"))
+        with self.processes() as observed:
+            self.assertEqual(tree.read("inputs/boundary"), raw)
+            self.assertEqual(tree.read("inputs/boundary"), raw)
+        self.assert_process_count(observed, 2)
+
+    def test_content_length_mismatch_is_rejected_and_not_cached(self):
+        tree = self.tree()
+        original_git = impact.git
+
+        def truncated(repo, *args):
+            raw = original_git(repo, *args)
+            return raw[:-1] if args[:2] == ("cat-file", "blob") else raw
+
+        with self.processes() as observed:
+            with mock.patch.object(impact, "git", side_effect=truncated):
+                with self.assertRaisesRegex(impact.PlanError, "blob size disagrees"):
+                    tree.read(self.SOURCE)
+            self.assertEqual(tree.read(self.SOURCE), self.raw)
+        self.assert_process_count(observed, 4)
+
+    def test_blob_identity_mismatch_is_rejected_and_not_cached(self):
+        tree = self.tree()
+        original_git = impact.git
+
+        def corrupt(repo, *args):
+            raw = original_git(repo, *args)
+            return b"!" + raw[1:] if args[:2] == ("cat-file", "blob") else raw
+
+        with self.processes() as observed:
+            with mock.patch.object(impact, "git", side_effect=corrupt):
+                with self.assertRaisesRegex(impact.PlanError, "blob identity does not match"):
+                    tree.read(self.SOURCE)
+            self.assertEqual(tree.read(self.SOURCE), self.raw)
+        self.assert_process_count(observed, 4)
+
+    def test_missing_git_object_failure_is_not_cached(self):
+        tree = self.tree()
+        oid = tree.entries[self.SOURCE][1]
+        loose = self.repo.root / ".git" / "objects" / oid[:2] / oid[2:]
+        withheld = loose.with_name(loose.name + ".withheld")
+        self.assertTrue(loose.is_file())
+        loose.rename(withheld)
+        try:
+            with self.processes() as failed:
+                with self.assertRaisesRegex(impact.PlanError, "Git operation failed"):
+                    tree.read(self.SOURCE)
+            self.assert_process_count(failed, 1)
+        finally:
+            withheld.rename(loose)
+        with self.processes() as recovered:
+            self.assertEqual(tree.read(self.SOURCE), self.raw)
+        self.assert_process_count(recovered, 2)
+
+    def test_byte_budget_reads_uncached_content_without_omitting_inputs(self):
+        with mock.patch.object(impact.Tree, "_BLOB_CACHE_MAX_BYTES", len(self.raw)):
+            tree = self.tree()
+            with self.processes() as observed:
+                self.assertEqual(tree.read(self.SOURCE), self.raw)
+                self.assertEqual(tree.read(self.OTHER), self.other)
+                self.assertEqual(tree.read(self.OTHER), self.other)
+                self.assertEqual(tree.read(self.ALIAS), self.raw)
+        self.assert_process_count(observed, 6)
+
+    def test_entry_budget_reads_uncached_content_without_omitting_inputs(self):
+        with mock.patch.object(impact.Tree, "_BLOB_CACHE_MAX_ENTRIES", 1):
+            tree = self.tree()
+            with self.processes() as observed:
+                self.assertEqual(tree.read(self.EMPTY), b"")
+                self.assertEqual(tree.read(self.SOURCE), self.raw)
+                self.assertEqual(tree.read(self.SOURCE), self.raw)
+                self.assertEqual(tree.read(self.EMPTY), b"")
+        self.assert_process_count(observed, 6)
+
+    def test_changed_commit_has_distinct_bytes_and_no_cross_tree_cache(self):
+        first = self.tree()
+        self.assertEqual(first.read(self.SOURCE), self.raw)
+        changed = b"Source bytes from a different commit.\n"
+        self.write_bytes(self.SOURCE, changed)
+        second = self.tree(self.repo.commit("source changes"))
+        self.assertNotEqual(first.sha, second.sha)
+        self.assertNotEqual(first.entries[self.SOURCE][1], second.entries[self.SOURCE][1])
+        with self.processes() as observed:
+            self.assertEqual(first.read(self.SOURCE), self.raw)
+            self.assertEqual(second.read(self.SOURCE), changed)
+            self.assertEqual(second.read(self.SOURCE), changed)
+        self.assert_process_count(observed, 2)
 
 
 if __name__ == "__main__":

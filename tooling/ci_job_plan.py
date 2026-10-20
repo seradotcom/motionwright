@@ -22,7 +22,7 @@ import types
 WORKFLOW = ".github/workflows/ci.yml"
 SELF = "tooling/ci_job_plan.py"
 PROVIDER = "tooling/ci_impact_plan.py"
-REVIEWED_PROVIDER_SHA256 = "09bb7ed477da7af4b8037206bb93c1cc5003f06f43161f21891061918e588233"
+REVIEWED_PROVIDER_SHA256 = "4033074d76d7e337c3869eb08d4355523b46151c928848b84f6e96b100f60afa"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 HASH = re.compile(r"[0-9a-f]{64}\Z")
 ZERO = "0" * 40

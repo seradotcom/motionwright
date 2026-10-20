@@ -150,11 +150,16 @@ def is_ancestor(repo: Path, before: str, after: str) -> bool:
 
 
 class Tree:
+    _BLOB_CACHE_MAX_BYTES = 2_000_000
+    _BLOB_CACHE_MAX_ENTRIES = 256
+
     def __init__(self, repo: Path, sha: str):
         self.repo, self.sha = repo, commit_sha(sha)
         require(git_text(repo, "cat-file", "-t", sha) == "commit", "SHA is not a commit")
         self.tree_sha = git_text(repo, "rev-parse", f"{sha}^{{tree}}")
         self.entries: dict[str, tuple[str, str]] = {}
+        self._blob_cache: dict[str, bytes] = {}
+        self._blob_cache_bytes = 0
         for row in git(repo, "ls-tree", "-r", "-z", sha).split(b"\0"):
             if not row:
                 continue
@@ -167,9 +172,21 @@ class Tree:
     def read(self, path: str) -> bytes:
         mode, oid = self.entries[safe_path(path)]
         require(mode in ("100644", "100755"), "source input is not a regular Git blob")
+        # Cache authenticated immutable object bytes in this Tree, never results.
+        cached = self._blob_cache.get(oid)
+        if cached is not None:
+            return cached
         size = int(git_text(self.repo, "cat-file", "-s", oid))
         require(size <= 2_000_000, "source input exceeds bounded parser size")
-        return git(self.repo, "cat-file", "blob", oid)
+        raw = git(self.repo, "cat-file", "blob", oid)
+        require(len(raw) == size, "Git blob size disagrees with source metadata")
+        require(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() == oid,
+                "Git blob identity does not match source tree")
+        if (len(self._blob_cache) < self._BLOB_CACHE_MAX_ENTRIES
+                and self._blob_cache_bytes + size <= self._BLOB_CACHE_MAX_BYTES):
+            self._blob_cache[oid] = raw
+            self._blob_cache_bytes += size
+        return raw
 
     def workflows(self) -> set[str]:
         return {

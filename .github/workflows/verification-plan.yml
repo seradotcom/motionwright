@@ -49,11 +49,13 @@ jobs:
           python tooling/ci_test_runner.py --repo . \
             --test-directory tooling/tests \
             --pattern test_ci_impact_plan.py \
+            --pattern test_ci_job_plan.py \
             --pattern test_conformance_policy.py \
             --pattern test_acceptance_policy.py \
             --pattern test_acceptance_session.py \
             --pattern test_acceptance_evidence_identity.py \
             --pattern test_acceptance_cross_checkout.py \
+            --pattern test_native_av_failure_guard.py \
             --mode both --expected-source "$MW_SOURCE_SHA" \
             --report "$RUNNER_TEMP/verification/g0-receipt.json" \
             --require-complete
