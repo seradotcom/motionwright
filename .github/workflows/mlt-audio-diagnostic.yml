@@ -1168,7 +1168,7 @@ jobs:
           assert receipt["context"]["source_tree"]==os.environ["MW_OFFICIAL_SOURCE_TREE"]
           assert set(receipt["runtime_bindings"])=={"original_module","melt"}
           paths={"original_module":"/usr/lib/x86_64-linux-gnu/mlt-7/libmltavformat.so",
-                 "melt":"/usr/bin/melt"}
+                 "melt":"/usr/bin/melt-7"}
           for name,value in receipt["runtime_bindings"].items():
               assert set(value)=={"installed_path","sha256"}
               assert value["installed_path"]==paths[name] and re.fullmatch(r"[0-9a-f]{64}",value["sha256"])
