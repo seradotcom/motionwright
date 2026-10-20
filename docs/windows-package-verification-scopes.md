@@ -8,6 +8,14 @@
 | `windows_contracts` | Required | Required | Not selected | Not selected | Not selected | Not selected |
 | `windows_installed` | Required | Required | Required | Not selected | Not selected | Not selected |
 
+For the reviewed PR #325 foreground-input probe, the windows-contracts job
+checks **18 unique static Python unittest controls** in both discovery and
+dotted-module modes before packaging. All 18 must pass without skips or
+expected failures. This includes the native accessible-field selector negative;
+the actual test-definition, Git source tree, CI runner, stdout/stderr bytes,
+and run/job/attempt identities are checked. These synthetic G1 controls do not
+claim a successful installed UI execution or human acceptance.
+
 The quick policy job runs the source, acceptance and creative-status validators plus the existing candidate receipt and smoke contract suites for every scope. The acceptance and creative-status validators call the shared conformance checks. A failing prerequisite prevents the dependent package job from running. Windows packages still require both the receipt-policy and Windows-contract jobs. The existing Linux, macOS and Windows package steps, source receipts and failure handling are unchanged.
 
 ## Selecting the work

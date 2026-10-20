@@ -311,7 +311,7 @@ jobs:
             --report "$report" --expected-source "$head" --require-complete --timeout 180
           if ($LASTEXITCODE -ne 0) { throw 'Windows unit contracts failed or were incomplete; NSIS build is blocked' }
           $readback = @'
-          import hashlib, json, os, re, sys
+          import ast, hashlib, json, os, re, sys
           from datetime import datetime, timezone
           from pathlib import Path
           report, root = Path(sys.argv[1]), Path(sys.argv[2])
@@ -321,9 +321,29 @@ jobs:
           receipt = json.loads(report.read_bytes())
           test_path = "tooling/tests/test_windows_cold_start.py"
           class_name = "WindowsCandidateUnitTests"
-          methods = set(re.findall(r"(?m)^    def (test_\w+)\(", (root / test_path).read_text(encoding="utf-8")))
-          if len(methods) != 17:
-              raise SystemExit("The reviewed Windows contract requires exactly 17 source methods")
+          # AST-bound exact source inventory; reject duplicate or dynamic cases.
+          source_tree = ast.parse((root / test_path).read_text(encoding="utf-8"))
+          classes = [node for node in source_tree.body
+                     if isinstance(node, ast.ClassDef) and node.name == class_name]
+          if len(classes) != 1:
+              raise SystemExit("The reviewed Windows test class must be unique")
+          cls = classes[0]
+          if not any(isinstance(parent, ast.Attribute) and isinstance(parent.value, ast.Name)
+                     and parent.value.id == "unittest" and parent.attr == "TestCase"
+                     for parent in cls.bases):
+              raise SystemExit("The reviewed Windows class must subclass unittest.TestCase")
+          source_methods = [node.name for node in cls.body
+                            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")]
+          methods = set(source_methods)
+          all_methods = [node.name for node in ast.walk(source_tree)
+                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         and node.name.startswith("test_")]
+          dynamic_loaders = [node for node in ast.walk(source_tree)
+                             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                             and node.name == "load_tests"]
+          if (len(source_methods) != 18 or len(methods) != 18
+                  or len(all_methods) != 18 or dynamic_loaders):
+              raise SystemExit("The reviewed Windows contract requires exactly 18 unique static source methods")
           expected_entries = ["discovery:test_windows_cold_start.py", "dotted:tooling.tests.test_windows_cold_start"]
           if (receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
                   or receipt.get("require_complete") is not True
@@ -344,11 +364,11 @@ jobs:
               counts = step.get("counts", {})
               if (step.get("status") != "PASS" or type(step.get("exit_code")) is not int or step["exit_code"] != 0
                       or counts.get("terminal_status") != "OK"
-                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 17
-                      or type(counts.get("passed")) is not int or counts["passed"] != 17
+                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 18
+                      or type(counts.get("passed")) is not int or counts["passed"] != 18
                       or any(type(counts.get(key)) is not int or counts[key] != 0 for key in
                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                  raise SystemExit("Windows unit entry point did not complete 17 controls without omissions")
+                  raise SystemExit("Windows unit entry point did not complete 18 controls without omissions")
               for stream in ("stdout", "stderr"):
                   path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
                   if step.get(stream) != {"file": path.name, "sha256": digest(path)}:
@@ -358,8 +378,8 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
               module = "test_windows_cold_start" if index == 0 else "tooling.tests.test_windows_cold_start"
               expected = {f"{module}.{class_name}.{method}" for method in methods}
-              if len(observed) != 17 or set(observed) != expected:
-                  raise SystemExit("Original verbose output does not contain each of the 17 source controls exactly once")
+              if len(observed) != 18 or set(observed) != expected:
+                  raise SystemExit("Original verbose output does not contain each of the 18 source controls exactly once")
               method_inventory[step["entry_point"]] = sorted(observed)
           source_inputs = {name: digest(root / name) for name in (
               test_path, "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
@@ -369,14 +389,14 @@ jobs:
                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                     "receipt_sha256": digest(report), "github": receipt["github"],
                     "source_inputs_sha256": source_inputs, "entrypoint_methods": method_inventory,
-                    "unique_source_controls": 17, "entrypoints": 2, "skipped": 0,
+                    "unique_source_controls": 18, "entrypoints": 2, "skipped": 0,
                     "scope": "Synthetic G1: temporary SQLite/receipt fixtures and mocked native transport",
                     "installed_application_execution": False, "native_ui_execution": False,
                     "formal_acceptance": False, "release_verdict": False}
           with report.with_name("contract-readback.json").open("x", encoding="utf-8", newline="\n") as handle:
               json.dump(result, handle, indent=2, sort_keys=True)
               handle.write("\n")
-          print("windows-unit-contracts=PASS unique=17 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
+          print("windows-unit-contracts=PASS unique=18 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
           '@
           $readbackPath = Join-Path "$proofDir" 'verify-contract-readback.py'
           [System.IO.File]::WriteAllText($readbackPath, $readback, [System.Text.UTF8Encoding]::new($false))
