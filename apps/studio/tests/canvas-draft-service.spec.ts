@@ -201,7 +201,7 @@ test("structural removal denial is accessible and preserves authored hierarchy t
     await page.locator(".canvas-create-row").getByRole("button", { name: "group", exact: true }).click();
     const group = nodeNamed(sceneNamed(await saved("group created"), scene.name), "Group 1");
     await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
-    const child = nodeNamed(sceneNamed(await saved("editable child created"), scene.name), "Text 2");
+    const child = nodeNamed(sceneNamed(await saved("editable child created"), scene.name), "Text 1");
     await selectNode(page, child.name);
     await input(page, "parent").selectOption(group.id);
     await input(page, "z order").fill("7");
@@ -218,7 +218,7 @@ test("structural removal denial is accessible and preserves authored hierarchy t
     await button(page, "Commit text").click();
     await saved("child copy committed");
     await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
-    const sibling = nodeNamed(sceneNamed(await saved("independent object created"), scene.name), "Text 3");
+    const sibling = nodeNamed(sceneNamed(await saved("independent object created"), scene.name), "Text 2");
     await selectNode(page, sibling.name);
     await input(page, "text").fill("Independent copy before review");
     await button(page, "Commit text").click();
