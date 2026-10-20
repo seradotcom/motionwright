@@ -6023,3 +6023,37 @@ select:focus {
   .otio-cut-review .portable-operation { grid-template-columns: minmax(0, 1fr); }
   .otio-cut-review .portable-operation > .button { grid-column: 1; justify-self: start; }
 }
+
+/* SOURCE Canvas in Program is an editorial object study, never the verified
+ * media stage. Native frame and AV modes retain their separate opt-in gates. */
+.program-design-study {
+  position: absolute;
+  inset: 28px 0 2px;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.program-design-study .production-study {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+}
+.program-design-disclosure {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  max-width: calc(100% - 20px);
+  margin: 0;
+  padding: 4px 7px;
+  border: 1px solid rgba(245,245,242,.18);
+  border-radius: 3px;
+  background: rgba(10,13,18,.8);
+  color: rgba(245,245,242,.92);
+  font-size: 9px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}

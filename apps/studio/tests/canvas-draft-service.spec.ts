@@ -1452,3 +1452,164 @@ for (const failingStore of ["record", "pointer"] as const) {
     } finally { await retainEvidence(testInfo, [service], evidence, [() => page.close()]); }
   });
 }
+
+test("saved parented Canvas text stays visible in real editorial study after service reopen", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    let project = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(project, "Independent synthetic scene"), child = scene.nodes[0];
+    evidence.initial = project; evidence.final = project;
+    await service.attachFixturePage(page, project.id); await page.goto("/");
+    await openCanvas(page, scene.name, child.name);
+    // Author the parent object through real Studio/SQLite rather than
+    // fabricating an in-memory relationship in the browser.
+    await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+    project = await checkpoint(service, page, evidence, project.id, project.revision + 1, "real second Canvas text parent");
+    const parent = sceneNamed(project, scene.name).nodes[1];
+    await selectNode(page, child.name);
+    await page.getByLabel("Canvas parent", { exact: true }).selectOption({ value: parent.id });
+    await page.getByLabel("Canvas z order", { exact: true }).fill("8");
+    await button(page, "Commit hierarchy").click();
+    const saved = await checkpoint(service, page, evidence, project.id, project.revision + 1, "parented original text saved");
+    expect(storedNode(saved, scene.id, child.id)).toMatchObject({
+      id: child.id, parent_id: parent.id, z_index: 8, text: child.text, style: child.style,
+    });
+    const savedJournal = await service.history(project.id, project.revision);
+    expect(savedJournal.map(item => item.change.type)).toEqual(["reparent_canvas_node"]);
+    const applyCount = applyRequests(service).length;
+    const inspect = async () => {
+      await button(page, "Production").click();
+      await page.getByLabel("Production working scene", { exact: true })
+        .selectOption({ value: scene.id });
+      await button(page, "Scoped changes").click();
+      const study = page.getByRole("img", { name: "Before scoped changes", exact: true });
+      await expect(study).toBeVisible();
+      const childSVG = study.locator('[data-canvas-node-id="' + child.id + '"]');
+      await expect(childSVG).toHaveAttribute("data-parent-id", parent.id);
+      await expect(childSVG.locator("text")).toContainText(child.text ?? "");
+      await expect(study).toContainText("Native Film");
+    };
+    await inspect();
+    await service.close(); await service.start(); await page.reload();
+    await revision(page, saved.revision);
+    await inspect();
+    expect(await service.project(saved.id)).toEqual(saved);
+    expect(await service.history(saved.id, project.revision)).toEqual(savedJournal);
+    expect(applyRequests(service)).toHaveLength(applyCount);
+    evidence.observations.push({ label: "parented_subject_remains_visible_in_editorial_svg_after_sqlite_reopen",
+      childId: child.id, parentId: parent.id, savedRevision: saved.revision,
+      expectedSvgLayerZ: 8, exactStoredProjectAndJournal: true,
+      nativeParentFidelity: "NOT_VERIFIED" });
+  } finally {
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});
+
+test("saved localized profile text overrides the editorial SVG across two revisions and reopening", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    let initial = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), node = scene.nodes[0];
+    expect(node.kind).toBe("text");
+    evidence.initial = initial; evidence.final = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await button(page, "Deliver").click();
+    const original = initial.deliverables[0];
+    await button(page, "Derive selected").click();
+    initial = await checkpoint(service, page, evidence, initial.id, initial.revision + 1, "derived profile from original");
+    await page.getByLabel("Language / locale", { exact: true }).fill("es-MX");
+    const localized = page.getByRole("region", { name: "Localized text", exact: true });
+    await expect(localized).toBeVisible();
+    const editors = localized.locator(".localized-text-ledger input");
+    const editorCount = await editors.count();
+    expect(editorCount).toBeGreaterThan(0);
+    for (let index = 0; index < editorCount; index++) {
+      await editors.nth(index).fill("Texto localizado original " + index);
+    }
+    await button(page, "Save profile").click();
+    let saved = await checkpoint(service, page, evidence, initial.id, initial.revision + 1, "localized source-bound text committed");
+    const variant = saved.deliverables.find(profile => profile.parent_profile_id === original.id);
+    expect(variant).toBeDefined();
+    if (!variant) throw new Error("A derived profile was not persisted.");
+    const firstOverride = variant.text_overrides[node.id];
+    expect(typeof firstOverride).toBe("string");
+    expect(firstOverride).toMatch(/^Texto localizado original/);
+
+    const profileIndex = page.getByRole("list", { name: "Delivery profile index", exact: true });
+    async function compareSelectedProfileText(expected: string, origin: "profile" | "source") {
+      await button(page, "Production").click();
+      await page.getByLabel("Production working scene", { exact: true })
+        .selectOption({ value: scene.id });
+      await button(page, "Scoped changes").click();
+      const svg = page.getByRole("img", { name: "Before scoped changes", exact: true });
+      await expect(svg).toBeVisible();
+      const originalNode = svg.locator('[data-canvas-node-id="' + node.id + '"] text');
+      await expect(originalNode).toHaveAttribute("data-text-origin", origin);
+      await expect(originalNode).toContainText(expected);
+      // Camera reuses the same saved selected-profile text; no separate
+      // localization cache or independent variant authority is allowed.
+      await page.getByRole("navigation", { name: "Production tools" })
+        .getByRole("button", { name: "Camera", exact: true }).click();
+      const camera = page.getByRole("img", { name: /Planar camera at/ });
+      await expect(camera).toBeVisible();
+      const cameraNode = camera.locator('[data-canvas-node-id="' + node.id + '"] text');
+      await expect(cameraNode).toHaveAttribute("data-text-origin", origin);
+      await expect(cameraNode).toContainText(expected);
+    }
+    await page.getByRole("combobox", { name: "Editor preview timebase", exact: true }).selectOption(variant.id);
+    await compareSelectedProfileText(firstOverride, "profile");
+    await button(page, "Deliver").click();
+    await profileIndex.getByText(original.name, { exact: true }).click();
+    await page.getByRole("combobox", { name: "Editor preview timebase", exact: true }).selectOption(original.id);
+    await expect(page.getByLabel("Profile name", { exact: true })).toHaveValue(original.name);
+    await compareSelectedProfileText(node.text ?? "", "source");
+    await button(page, "Deliver").click();
+    await profileIndex.getByText(variant.name, { exact: true }).click();
+    await page.getByRole("combobox", { name: "Editor preview timebase", exact: true }).selectOption(variant.id);
+    await expect(page.getByLabel("Profile name", { exact: true })).toHaveValue(variant.name);
+    const editorsNext = page.getByRole("region", { name: "Localized text", exact: true })
+      .locator(".localized-text-ledger input");
+    for (let index = 0; index < await editorsNext.count(); index++) {
+      await editorsNext.nth(index).fill("Segunda decisión localizada " + index);
+    }
+    await button(page, "Save profile").click();
+    saved = await checkpoint(service, page, evidence, initial.id, saved.revision + 1,
+      "second localized author correction saved");
+    const finalVariant = saved.deliverables.find(profile => profile.id === variant.id)!;
+    const secondOverride = finalVariant.text_overrides[node.id];
+    expect(secondOverride).toMatch(/^Segunda decisión localizada/);
+    expect(secondOverride).not.toBe(firstOverride);
+    await compareSelectedProfileText(secondOverride, "profile");
+
+    expect(sceneNamed(saved, scene.name).nodes.find(item => item.id === node.id)?.text).toBe(node.text);
+    expect(saved.deliverables.find(profile => profile.id === original.id)?.text_overrides[node.id]).toBeUndefined();
+    const journal = await service.history(saved.id, evidence.initial.revision);
+    expect(journal).toHaveLength(3);
+    const applyCount = applyRequests(service).length;
+    expect(applyCount).toBe(3);
+    await service.close(); await service.start();
+    await page.reload(); await revision(page, saved.revision);
+    await button(page, "Deliver").click();
+    await page.getByRole("list", { name: "Delivery profile index", exact: true })
+      .getByText(finalVariant.name, { exact: true }).click();
+    await page.getByRole("combobox", { name: "Editor preview timebase", exact: true }).selectOption(finalVariant.id);
+    await compareSelectedProfileText(secondOverride, "profile");
+    expect(await service.project(saved.id)).toEqual(saved);
+    expect(await service.history(saved.id, evidence.initial.revision)).toEqual(journal);
+    expect(applyRequests(service)).toHaveLength(applyCount);
+    evidence.observations.push({
+      label: "real_variant_text_controls_actual_svg_with_repeat_edit_reopen",
+      originalProfileId: original.id, variantId: finalVariant.id, targetTextId: node.id,
+      originalText: node.text, firstOverride, secondOverride, revision: saved.revision,
+      journalCount: journal.length, nativeFrames: "NOT_VERIFIED",
+    });
+  } finally {
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});

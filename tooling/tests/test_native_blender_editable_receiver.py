@@ -593,8 +593,14 @@ class BlenderEditableReceiverPureTests(unittest.TestCase):
     def _invoke_final_contract(self, receipts, bpy, args):
         for name,row in receipts.items():
             write_receipt(pathlib.Path(args.root)/name,row)
-        with mock.patch.dict(sys.modules,{"bpy":bpy}):
+        # These are fake-file receipt joins; the physical normal reader is a separate gate.
+        with mock.patch.dict(sys.modules,{"bpy":bpy}), mock.patch.object(
+                receiver, "verify_received_corner_normals",
+                return_value={"contract_test_only": True}) as normal_readback:
             receiver.run_phase(args)
+            normal_readback.assert_called_once_with(
+                bpy, pathlib.Path(args.root)/"edited.glb",
+                receipts["edit.json"]["artifacts"]["edited_glb"]["sha256"])
 
     def test_final_phase_requires_each_consumed_receipt_source_phase_and_schema(self):
         for name in ("import.json","edit.json","verified.json","reimport.json"):
@@ -740,6 +746,223 @@ class BlenderEditableReceiverPureTests(unittest.TestCase):
                     self._invoke_final_contract(receipts,bpy,args)
                 self.assertFalse((dest/"complete.json").exists())
 
+
+
+
+def _float32(value):
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
+def _pack_geometry_glb(document, binary):
+    doc = copy.deepcopy(document)
+    doc["buffers"] = [{"byteLength": len(binary)}]
+    raw = json.dumps(doc, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    raw += b" " * (-len(raw) % 4)
+    body = bytes(binary) + b"\0" * (-len(binary) % 4)
+    return (struct.pack("<4sII", b"glTF", 2, 28 + len(raw) + len(body))
+            + struct.pack("<II", len(raw), 0x4E4F534A) + raw
+            + struct.pack("<II", len(body), 0x004E4942) + body)
+
+
+def indexed_geometry_glb():
+    """Real FLOAT32/index buffers from independent declared triangle fixtures, no bpy."""
+    binary, accessors, views, meshes, nodes, geometry, expected = bytearray(), [], [], [], [], [], {}
+    def add(values, kind, code, components, target):
+        while len(binary) % 4:
+            binary.append(0)
+        offset = len(binary)
+        for row in values:
+            binary.extend(struct.pack("<" + code * components, *row))
+        views.append({"buffer": 0, "byteOffset": offset, "byteLength": len(binary)-offset, "target": target})
+        accessor = {"bufferView": len(views)-1, "componentType": 5126 if code == "f" else 5123,
+                    "count": len(values), "type": kind}
+        if kind == "VEC3":
+            accessor["min"] = [min(row[i] for row in values) for i in range(components)]
+            accessor["max"] = [max(row[i] for row in values) for i in range(components)]
+        accessors.append(accessor)
+        return len(accessors)-1
+    for label, name, mesh_name in (("panel", PANEL, "Plane"), ("focus", FOCUS, "Cylinder")):
+        declared = mesh_fixture(label)
+        positions, normals, uvs, indices, unique = [], [], [], [], {}
+        expected[name] = []
+        for face, face_normals, face_uvs in zip(declared["triangles"], declared["corner_normals"], declared["corner_uv0"]):
+            for index, normal, uv in zip(face, face_normals, face_uvs):
+                p = [_float32(x) for x in declared["positions"][index]]
+                n = [_float32(x) for x in normal]
+                t = [_float32(x) for x in uv]
+                key = tuple(p+n+t)
+                if key not in unique:
+                    unique[key] = len(positions)
+                    positions.append(p); normals.append(n); uvs.append(t)
+                indices.append(unique[key])
+                expected[name].append(n)
+        positions_glb = [[x, z, -y] for x, y, z in positions]
+        normals_glb = [[x, z, -y] for x, y, z in normals]
+        attrs = {"POSITION": add(positions_glb, "VEC3", "f", 3, 34962),
+                 "NORMAL": add(normals_glb, "VEC3", "f", 3, 34962),
+                 "TEXCOORD_0": add([[u, _float32(1-v)] for u, v in uvs], "VEC2", "f", 2, 34962)}
+        indices_id = add([[i] for i in indices], "SCALAR", "H", 1, 34963)
+        nodes.append({"name": name, "mesh": len(meshes)})
+        meshes.append({"name": mesh_name, "primitives": [{"attributes": attrs, "indices": indices_id,
+                                                           "material": len(meshes), "mode": 4}]})
+        geometry.append({"name": name, "mesh_name": mesh_name, "mesh_users": 1,
+                         "positions": positions, "loop_vertices": indices,
+                         "polygon_loops": [list(range(i, i+3)) for i in range(0, len(indices), 3)]})
+    doc = {"asset": {"version": "2.0"}, "buffers": [{"byteLength": len(binary)}],
+           "accessors": accessors, "bufferViews": views, "meshes": meshes, "nodes": nodes,
+           "scene": 0, "scenes": [{"nodes": [0, 1]}],
+           "materials": [{"name": name+"-material", "doubleSided": True,
+                          "pbrMetallicRoughness": {"baseColorFactor": [.2, .3, .4, 1.],
+                                                   "metallicFactor": 0., "roughnessFactor": .5}}
+                         for name in (PANEL, FOCUS)]}
+    return doc, bytes(binary), geometry, expected
+
+
+class ReceivedCornerNormalSourceTests(unittest.TestCase):
+    """Pure real-binary mappings, not Blender import or native editability evidence."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="blender-normal-source-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = pathlib.Path(self.temp.name)
+        self.doc, self.binary, self.geometry, self.expected = indexed_geometry_glb()
+        self.serial = 0
+
+    def received(self, document=None, binary=None):
+        doc = self.doc if document is None else document
+        data = self.binary if binary is None else binary
+        path = self.root / ("source-%02d.glb" % self.serial); self.serial += 1
+        payload = _pack_geometry_glb(doc, data); path.write_bytes(payload)
+        info, decoded, body = receiver._read_glb_source(path, digest(payload))
+        return path, info, decoded, body
+
+    def plan(self, document=None, binary=None, geometry=None):
+        _, _, doc, body = self.received(document, binary)
+        return receiver.glb_corner_normal_assignments(
+            doc, body, self.geometry if geometry is None else geometry)
+
+    def test_real_binary_normals_bind_every_source_corner_without_quantization(self):
+        assignments = self.plan()
+        self.assertEqual(set(assignments), {PANEL, FOCUS})
+        self.assertEqual(sum(len(row["normals"]) for row in assignments.values()), 378)
+        for name, normals in self.expected.items():
+            self.assertEqual(assignments[name]["normals"], normals)
+            self.assertEqual(receiver.source_normal_observation(normals, normals)["max_component_error"], 0)
+
+    def test_permuted_normals_with_same_histogram_do_not_pass(self):
+        assignments = self.plan()
+        expected = assignments[FOCUS]["normals"]
+        changed = copy.deepcopy(expected)
+        other = next(i for i, value in enumerate(changed) if value != changed[0])
+        changed[0], changed[other] = changed[other], changed[0]
+        self.assertEqual(sorted(changed), sorted(expected))
+        result = receiver.source_normal_observation(changed, expected)
+        self.assertFalse(result["within_source_limit"])
+        with self.assertRaisesRegex(ReceiverError, "exceed_1e6"):
+            receiver._require_received_normal_limit({"focus": {"base": result, "evaluated": result}})
+
+    def test_source_limit_does_not_modify_historical_roundtrip_tolerance(self):
+        self.assertEqual(receiver.NORMAL_TOLERANCE, 1e-5)
+        actual = [[2e-6, 0., 1.]]
+        result = receiver.source_normal_observation(actual, [[0., 0., 1.]])
+        self.assertFalse(result["within_source_limit"])
+        self.assertLess(result["max_component_error"], receiver.NORMAL_TOLERANCE)
+
+    def test_real_current_glb_normal_change_cannot_use_stale_original_assignments(self):
+        before = self.plan()
+        primitive = self.doc["meshes"][0]["primitives"][0]
+        accessor = self.doc["accessors"][primitive["attributes"]["NORMAL"]]
+        offset = self.doc["bufferViews"][accessor["bufferView"]]["byteOffset"]
+        changed = bytearray(self.binary)
+        native = [_float32(.01), 0., _float32(math.sqrt(1-.01**2))]
+        struct.pack_into("<fff", changed, offset, native[0], native[2], -native[1])
+        current = self.plan(binary=changed)
+        self.assertEqual(current[PANEL]["normals"][0], native)
+        self.assertNotEqual(current[PANEL]["normals"], before[PANEL]["normals"])
+        self.assertFalse(receiver.source_normal_observation(
+            before[PANEL]["normals"], current[PANEL]["normals"])["within_source_limit"])
+        self.assertTrue(receiver.source_normal_observation(
+            current[PANEL]["normals"], current[PANEL]["normals"])["within_source_limit"])
+
+    def test_wrong_source_sha_is_rejected_before_geometry_decode(self):
+        path, info, _, _ = self.received()
+        with self.assertRaisesRegex(ReceiverError, "original_GLB_SHA_changed"):
+            receiver._read_glb_source(path, "0"*64)
+        self.assertEqual(original_glb(path, info["sha256"]), info)
+
+    def test_native_mapping_requires_names_positions_loop_order_and_unique_meshes(self):
+        for field in ("name", "mesh_name", "positions", "loop_vertices", "polygon_loops", "mesh_users"):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(self.geometry)
+                row = changed[0]
+                if field == "name": row[field] = FOCUS
+                elif field == "mesh_name": row[field] = "ForeignMesh"
+                elif field == "positions": row[field][0][0] += .0001
+                elif field == "loop_vertices": row[field][0], row[field][1] = row[field][1], row[field][0]
+                elif field == "polygon_loops": row[field][0] = list(reversed(row[field][0]))
+                else: row[field] = 2
+                with self.assertRaises(ReceiverError):
+                    self.plan(geometry=changed)
+
+    def test_accessor_types_counts_bounds_sparse_and_missing_normals_fail_closed(self):
+        for change in ("missing", "count-bool", "count-short", "stride", "offset",
+                       "sparse", "normalized", "integer-normal", "external-buffer",
+                       "missing-buffer", "buffer-false"):
+            with self.subTest(change=change):
+                doc = copy.deepcopy(self.doc)
+                attrs = doc["meshes"][0]["primitives"][0]["attributes"]
+                accessor = doc["accessors"][attrs["NORMAL"]]
+                view = doc["bufferViews"][accessor["bufferView"]]
+                if change == "missing": del attrs["NORMAL"]
+                elif change == "count-bool": accessor["count"] = True
+                elif change == "count-short": accessor["count"] -= 1
+                elif change == "stride": view["byteStride"] = 8
+                elif change == "offset": accessor["byteOffset"] = 100000
+                elif change == "sparse": accessor["sparse"] = {}
+                elif change == "normalized": accessor["normalized"] = True
+                elif change == "integer-normal": accessor["componentType"] = 5125
+                elif change == "missing-buffer": del view["buffer"]
+                elif change == "buffer-false": view["buffer"] = False
+                else: view["buffer"] = 1
+                with self.assertRaises(ReceiverError):
+                    self.plan(document=doc)
+
+    def test_nonfinite_and_zero_normal_binary_vectors_are_rejected(self):
+        accessor = self.doc["accessors"][self.doc["meshes"][0]["primitives"][0]["attributes"]["NORMAL"]]
+        offset = self.doc["bufferViews"][accessor["bufferView"]]["byteOffset"]
+        for vector in ((float("nan"), 0., 1.), (float("inf"), 0., 1.), (0., 0., 0.)):
+            with self.subTest(vector=vector):
+                changed = bytearray(self.binary)
+                struct.pack_into("<fff", changed, offset, *vector)
+                with self.assertRaises(ReceiverError):
+                    self.plan(binary=changed)
+
+    def test_source_with_no_real_accessor_payload_is_only_metadata(self):
+        path = self.root / "inert.glb"; payload = original_two_object_glb(); path.write_bytes(payload)
+        _, doc, body = receiver._read_glb_source(path, digest(payload))
+        with self.assertRaisesRegex(ReceiverError, "POSITION_NORMAL_required"):
+            receiver.glb_corner_normal_assignments(doc, body, self.geometry)
+
+    def test_duplicate_mesh_binding_and_deformation_are_not_admitted(self):
+        for change in ("shared-mesh", "morph-target", "weights", "wrong-mode", "bool-index", "skin-zero"):
+            with self.subTest(change=change):
+                doc = copy.deepcopy(self.doc)
+                if change == "shared-mesh": doc["nodes"][1]["mesh"] = 0
+                elif change == "morph-target": doc["meshes"][0]["primitives"][0]["targets"] = [{}]
+                elif change == "weights": doc["meshes"][0]["weights"] = [1.]
+                elif change == "skin-zero": doc["nodes"][0]["skin"] = 0
+                elif change == "wrong-mode": doc["meshes"][0]["primitives"][0]["mode"] = 5
+                else: doc["nodes"][0]["mesh"] = False
+                with self.assertRaises(ReceiverError):
+                    self.plan(document=doc)
+
+    def test_base_or_evaluated_getter_failure_cannot_be_hidden_by_the_other(self):
+        good = receiver.source_normal_observation([[0., 0., 1.]], [[0., 0., 1.]])
+        bad = receiver.source_normal_observation([[.01, 0., 1.]], [[0., 0., 1.]])
+        for key in ("base", "evaluated"):
+            values = {"base": good, "evaluated": good}
+            values[key] = bad
+            with self.assertRaisesRegex(ReceiverError, "exceed_1e6"):
+                receiver._require_received_normal_limit({"focus": values})
 
 
 if __name__=="__main__":
