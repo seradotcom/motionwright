@@ -377,6 +377,43 @@ class Film180G2SourceTests(unittest.TestCase):
                 ):
                     runner.original_png_index(root, manifest)
 
+    def test_source_signed_manifest_cannot_hide_duplicate_frames_field(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, original = self.native_manifest(Path(temp))
+            manifest_path = (
+                root / "original-film180-manifest" / "artifact-manifest.json"
+            )
+            raw = manifest_path.read_text(encoding="utf-8")
+            self.assertIn('"frames":', raw)
+            forged = raw.replace('"frames":', '"frames": [], "frames":', 1)
+            manifest_path.write_bytes(forged.encode("utf-8"))
+            # Even a provider reporting the digest of the ambiguous JSON
+            # cannot make the duplicate-key manifest authoritative.
+            original["segments"][0]["artifact"]["manifest_sha256"] = (
+                hashlib.sha256(forged.encode("utf-8")).hexdigest()
+            )
+            with self.assertRaisesRegex(
+                runner.Film180G2Rejected, "duplicate_JSON_field"
+            ):
+                runner.original_png_index(root, original)
+
+    def test_source_manifest_rejects_nonfinite_nested_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, original = self.native_manifest(Path(temp))
+            manifest_path = (
+                root / "original-film180-manifest" / "artifact-manifest.json"
+            )
+            raw = manifest_path.read_text(encoding="utf-8")
+            forged = raw.replace('"first_frame": 0', '"first_frame": NaN', 1)
+            manifest_path.write_bytes(forged.encode("utf-8"))
+            original["segments"][0]["artifact"]["manifest_sha256"] = (
+                hashlib.sha256(forged.encode("utf-8")).hexdigest()
+            )
+            with self.assertRaisesRegex(
+                runner.Film180G2Rejected, "manifest_nonfinite_json"
+            ):
+                runner.original_png_index(root, original)
+
     def test_source_binding_is_closed_to_new_operation_stage_names(self):
         self.assertEqual(runner.ORIGINAL_AUDIO_OWNER_NAME, "firstparty-film180-source.wav")
         self.assertEqual(runner.STAGE_TIMEOUT, 1500)

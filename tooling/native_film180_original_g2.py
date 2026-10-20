@@ -425,9 +425,24 @@ def original_png_index(output_root: Path, film: dict, *, frames: int = 180) -> d
             and frame_root.is_dir() and not frame_root.is_symlink()
             and manifest_file.is_file() and not manifest_file.is_symlink(),
             "native_Film_artifact_manifest_or_frames_symlink_not_admitted")
+    require(0 < manifest_file.stat().st_size <= 1024 * 1024,
+            "native_Film_manifest_outside_closed_byte_budget")
     require(digest(manifest_file) == artifact.get("manifest_sha256"),
             "native_Film_manifest_digest_not_original")
-    manifest = json.loads(manifest_file.read_bytes())
+
+    def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict:
+        result = {}
+        for key, value in pairs:
+            require(key not in result, "native_Film_manifest_duplicate_JSON_field")
+            result[key] = value
+        return result
+
+    manifest = json.loads(
+        manifest_file.read_bytes(), object_pairs_hook=reject_duplicate_json_keys,
+        parse_constant=lambda _: require(False, "native_Film_manifest_nonfinite_json"),
+    )
+    require(type(manifest) is dict,
+            "native_Film_manifest_root_must_be_object")
     indexed = manifest.get("frames")
     plan = manifest.get("plan", {})
     require(type(indexed) is list and len(indexed) == frames
