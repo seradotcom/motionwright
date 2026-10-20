@@ -61,15 +61,18 @@ export function cameraDraftValue(draft: CameraDraft): CameraReframe {
 export function cameraSessionIssue(draft: CameraDraft, project: Project, scene: Scene,
   stored: CameraReframe | undefined): string | null {
   if (draft.scope!==cameraScope(project,scene)) return "A different Project or scene owns this Camera draft.";
-  if (draft.awaiting) return "The previous Camera operation has an unconfirmed result; review the saved Project before retrying.";
+  if (draft.awaiting) return "The original Camera operation has an unconfirmed result; only its original response can resolve this pending attempt.";
   if (draft.baseRevision !== project.revision) return "Project revision changed; compare and explicitly rebase this Camera draft.";
   if (JSON.stringify(draft.base)!==JSON.stringify(stored??null))
     return "The saved Camera changed in another editor; choose a resolution before applying.";
   return null;
 }
 export function rebaseCameraDraft(draft: CameraDraft,project:Project,scene:Scene): CameraDraft {
-  if(draft.awaiting) throw new Error("Review the unconfirmed Camera operation before rebasing.");
-  const saved=project.production_design?.camera_reframes?.find(item=>item.scene_id===scene.id)??null;
+  if(draft.awaiting) throw new Error("The original Camera operation is still unconfirmed; it cannot be rebased.");
+  const ownedScene=project.scenes.find(item=>item.id===draft.sceneId);
+  if(!ownedScene || scene.id!==ownedScene.id || draft.scope!==cameraScope(project,ownedScene))
+    throw new Error("A different Project or scene owns this Camera draft.");
+  const saved=project.production_design?.camera_reframes?.find(item=>item.scene_id===ownedScene.id)??null;
   if(saved&&saved.id!==draft.cameraId)
     throw new Error("Saved Camera identity changed. Restore the saved Camera explicitly.");
   return {...draft,baseRevision:project.revision,base:structuredClone(saved)};
@@ -83,28 +86,58 @@ export function armCameraDraft(draft:CameraDraft, project:Project,scene:Scene,
   return {...draft,awaiting:{id,revision:project.revision,operation,
     source:source?structuredClone(source):null,sequence:draft.sequence}};
 }
-export function cameraAcknowledged(draft:CameraDraft,project:Project,scene:Scene):boolean {
+// The attempt ID must come from the invocation that returned this Project.
+// Reading a Project, restoring a copy or matching values cannot produce it.
+export function cameraAcknowledged(draft:CameraDraft,project:Project,scene:Scene,
+  originalAttemptId?:string):boolean {
   const sent=draft.awaiting;
-  if(!sent || draft.scope!==cameraScope(project,scene) || project.revision<=sent.revision) return false;
-  const saved=project.production_design?.camera_reframes?.find(item=>item.scene_id===scene.id)??null;
-  return JSON.stringify(saved)===JSON.stringify(sent.source);
+  if(!sent || originalAttemptId!==sent.id || !Number.isSafeInteger(project.revision) ||
+    project.revision<=sent.revision) return false;
+  const ownedScenes=project.scenes.filter(item=>item.id===draft.sceneId);
+  if(ownedScenes.length!==1 || scene.id!==draft.sceneId ||
+    draft.scope!==cameraScope(project,ownedScenes[0])) return false;
+  // Only the scene contained in the returned Project selects the result.
+  // An out-of-band Scene cannot supply missing receipt membership.
+  const saved=project.production_design?.camera_reframes?.filter(item=>
+    item.scene_id===ownedScenes[0].id)??[];
+  if(sent.operation==="detach") return sent.source===null && saved.length===0;
+  const expected=sent.source;
+  if(sent.operation!=="upsert" || !expected || saved.length!==1 ||
+    expected.id!==draft.cameraId || expected.scene_id!==draft.sceneId) return false;
+  const actual=saved[0];
+  return actual.id===expected.id && actual.scene_id===expected.scene_id &&
+    actual.component_version===expected.component_version &&
+    CAMERA_FIELDS.every(field=>Number.isFinite(actual[field]) &&
+      Number.isFinite(expected[field]) && actual[field]===expected[field]);
 }
-export function reconcileCameraDraft(draft:CameraDraft,project:Project,scene:Scene):CameraDraft {
-  if(!cameraAcknowledged(draft,project,scene))return draft;
-  const sent=draft.awaiting!;
-  const saved=project.production_design?.camera_reframes?.find(item=>item.scene_id===scene.id)??null;
+
+export function acknowledgeCameraDraft(draft:CameraDraft,originalAttemptId:string,
+  committedProject:Project,committedScene:Scene):CameraDraft {
+  const sent=draft.awaiting;
+  // A late result cannot replace another attempt or a later completed draft.
+  if(!sent || sent.id!==originalAttemptId) return draft;
+  if(!cameraAcknowledged(draft,committedProject,committedScene,originalAttemptId))
+    throw new Error("The original Camera result does not confirm this exact pending operation.");
+  const saved=committedProject.production_design?.camera_reframes?.find(item=>
+    item.scene_id===draft.sceneId)??null;
   const keepLater=draft.sequence!==sent.sequence;
   const latest=saved?cameraFields(saved):draft.initial;
-  return {...draft,awaiting:null,baseRevision:project.revision,base:structuredClone(saved),
-    initial:latest,fields:keepLater?draft.fields:latest};
+  return {...draft,awaiting:null,baseRevision:committedProject.revision,
+    base:structuredClone(saved),initial:latest,fields:keepLater?draft.fields:latest};
 }
-export function confirmCameraOutcomeAbsent(draft:CameraDraft, project:Project,scene:Scene):CameraDraft {
-  const sent=draft.awaiting;
-  if(!sent || project.revision!==sent.revision) throw new Error("The saved Camera outcome cannot be confirmed absent.");
-  const saved=project.production_design?.camera_reframes?.find(item=>item.scene_id===scene.id)??null;
-  if(JSON.stringify(saved)!==JSON.stringify(draft.base))
-    throw new Error("Saved Camera changed. Do not retry this request.");
-  return {...draft,awaiting:null};
+
+export function reconcileCameraDraft(draft:CameraDraft,project:Project,scene:Scene,
+  originalAttemptId?:string):CameraDraft {
+  // Snapshot and recovery reads preserve UNKNOWN. The explicit original
+  // callback can also use this entry point with its correlated attempt ID.
+  return originalAttemptId===undefined?draft:
+    acknowledgeCameraDraft(draft,originalAttemptId,project,scene);
+}
+
+export function confirmCameraOutcomeAbsent(draft:CameraDraft,_project:Project,_scene:Scene):CameraDraft {
+  if(draft.awaiting)
+    throw new Error("The original Camera operation is still unconfirmed. A Project read cannot establish its terminal result.");
+  return draft;
 }
 export function validCameraDraft(value:unknown,scope:string):value is CameraDraft {
   if(!record(value)||value.schema!=="motionwright.camera-draft/1"||value.scope!==scope||
@@ -155,6 +188,35 @@ export function writeCameraCopy(local:Pick<Storage,"getItem"|"setItem">,
   if(session.getItem(pointer)!==writerId) throw new Error("Camera session pointer was not confirmed.");
   return raw;
 }
+
+// Publish a confirmed checkpoint under a new writer. The original armed copy
+// remains intact even if storage fails after writing data or switching pointer.
+export function writeCameraConfirmationCopy(local:Pick<Storage,"getItem"|"setItem">,
+  session:Pick<Storage,"getItem"|"setItem">,draft:CameraDraft,writerId:string,
+  expectedRaw:string,nextWriterId:string):string {
+  if(!uuid(writerId)||!uuid(nextWriterId)||writerId===nextWriterId||
+    !validCameraDraft(draft,draft.scope)||draft.awaiting)
+    throw new Error("Invalid confirmed Camera copy.");
+  const original=decodeCameraCopy(expectedRaw,draft.scope,writerId);
+  if(!original.awaiting||draft.cameraId!==original.cameraId||draft.sceneId!==original.sceneId||
+    draft.baseRevision<=original.awaiting.revision)
+    throw new Error("The Camera confirmation does not belong to the retained original.");
+  const key=cameraRecoveryKey(draft.scope,writerId),pointer=cameraPointerKey(draft.scope);
+  const nextKey=cameraRecoveryKey(draft.scope,nextWriterId);
+  const unchanged=()=>session.getItem(pointer)===writerId&&local.getItem(key)===expectedRaw;
+  if(!unchanged())throw new Error("Camera recovery changed; original copies were retained.");
+  if(local.getItem(nextKey)!==null)throw new Error("The Camera confirmation writer already exists.");
+  const raw=JSON.stringify({schema:"motionwright.camera-recovery/1",writerId:nextWriterId,
+    scope:draft.scope,draft});
+  if(raw.length>16384)throw new Error("Camera recovery exceeds the bounded 16 KiB copy.");
+  local.setItem(nextKey,raw);
+  if(local.getItem(nextKey)!==raw)throw new Error("Camera confirmation copy could not be verified.");
+  if(!unchanged())throw new Error("Camera recovery changed while confirmation was staged; copies were retained.");
+  session.setItem(pointer,nextWriterId);
+  if(session.getItem(pointer)!==nextWriterId)throw new Error("Camera confirmation pointer was not verified.");
+  return raw;
+}
+
 export function loadCameraCopy(local:Pick<Storage,"getItem">,session:Pick<Storage,"getItem">,
   scope:string):{writerId:string;draft:CameraDraft}|null {
   const writerId=session.getItem(cameraPointerKey(scope));

@@ -70,3 +70,46 @@ test("silently failed Camera backup blocks canonical command without deleting au
   await expect(page.getByLabel("End center X",{exact:true})).not.toHaveValue("974");
   await expect(page.getByLabel("Local Camera recovery copies")).toBeVisible();
 });
+
+test("Camera inspection preserves a recovered pending copy and never authorizes replay",async({page},info)=>{
+  const button=(name:string)=>page.getByRole("button",{name,exact:true});
+  const open=async()=>{
+    await button("Production").click();await button("Camera").click();
+    await expect(page.getByRole("heading",{name:"Camera Reframe",exact:true})).toBeVisible();
+  };
+  await page.goto("/");await open();
+  await page.getByLabel("End center X",{exact:true}).fill("974");
+  // Browser-demo recovery fixture only: no service result or native success is
+  // manufactured here. Real held-request cases live in the service spec.
+  const pending=await page.evaluate(async()=>{
+    const draftModule="/src/cameraReframeDraft.ts",fixtureModule="/src/fixture.ts";
+    const model=await import(draftModule),{fixtureProject}=await import(fixtureModule);
+    const pointer=Object.keys(sessionStorage).find(key=>key.startsWith(model.CAMERA_POINTER_PREFIX));
+    if(!pointer)throw new Error("Camera did not write its real recovery pointer.");
+    const scope=decodeURIComponent(pointer.slice(model.CAMERA_POINTER_PREFIX.length));
+    const writerId=sessionStorage.getItem(pointer)!;
+    const key=model.cameraRecoveryKey(scope,writerId),raw=localStorage.getItem(key)!;
+    const draft=model.decodeCameraCopy(raw,scope,writerId);
+    const scene=fixtureProject.scenes.find((item:{id:string})=>item.id===draft.sceneId);
+    if(!scene||model.cameraScope(fixtureProject,scene)!==scope)throw new Error("Fixture scope changed.");
+    const attempt=model.armCameraDraft(draft,fixtureProject,scene,"upsert",
+      model.cameraDraftValue(draft),crypto.randomUUID());
+    const retained=model.writeCameraCopy(localStorage,sessionStorage,attempt,writerId,raw);
+    return {key,raw:retained,awaiting:attempt.awaiting,revision:fixtureProject.revision};
+  });
+  await page.reload();await open();
+  const region=page.getByRole("region",{name:"Unconfirmed Camera submission"});
+  await expect(region).toBeVisible();
+  await expect(button("Attach camera reframe")).toBeDisabled();
+  const inspect=page.getByRole("button",{name:/^(Inspect saved Camera|I verified this operation was not saved)$/});
+  await inspect.click();
+  await expect(region.getByRole("status")).toContainText("remains unconfirmed");
+  const after=await page.evaluate(key=>localStorage.getItem(key),pending.key);
+  expect(after).toBe(pending.raw);
+  expect(JSON.parse(after!).draft.awaiting).toEqual(pending.awaiting);
+  await expect(button("Attach camera reframe")).toBeDisabled();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+pending.revision);
+  await expect(page.getByLabel("End center X",{exact:true})).toHaveValue("974");
+  await expect(button("I verified this operation was not saved")).toHaveCount(0);
+  await page.screenshot({path:info.outputPath("camera-recovery-inspection.png"),fullPage:true});
+});
