@@ -251,14 +251,31 @@ def verify_bytes(data, pin):
 
 def expand_index(data, release):
     verify_bytes(data, release["compressed"])
+    require(0 < len(data) <= LIMIT_COMPRESSED, "compressed index limit")
     expected = release["uncompressed"]
-    require(expected["size"] <= LIMIT_INDEX, "uncompressed index limit")
-    try:
-        decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=LIMIT_INDEX)
-        result = decoder.decompress(data, max_length=expected["size"] + 1)
-    except lzma.LZMAError as error:
-        raise IntakeError("invalid or excessive XZ stream") from error
-    require(decoder.eof and not decoder.unused_data, "truncated, concatenated or trailing XZ")
+    require(type(expected["size"]) is int and 0 < expected["size"] <= LIMIT_INDEX,
+            "uncompressed index limit")
+    # A standalone XZ file may contain concatenated streams, including an empty
+    # terminal stream, and zero padding in multiples of four bytes. Both signed
+    # digests still bind the entire compressed and expanded file.
+    remaining, result, streams = data, bytearray(), 0
+    while remaining:
+        streams += 1
+        require(streams <= 32, "too many XZ index streams")
+        try:
+            decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=LIMIT_INDEX)
+            chunk = decoder.decompress(remaining, max_length=expected["size"] - len(result) + 1)
+        except lzma.LZMAError as error:
+            raise IntakeError("invalid or excessive XZ stream") from error
+        result.extend(chunk)
+        require(len(result) <= expected["size"], "expanded index exceeds authenticated size")
+        require(decoder.eof, "truncated XZ index stream")
+        unused = decoder.unused_data
+        require(len(unused) < len(remaining), "XZ decoder made no progress")
+        padding = len(unused) - len(unused.lstrip(b"\x00"))
+        require(padding % 4 == 0, "misaligned XZ stream padding")
+        remaining = unused[padding:]
+    result = bytes(result)
     verify_bytes(result, expected)
     return result
 

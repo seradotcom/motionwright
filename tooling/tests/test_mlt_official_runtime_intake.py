@@ -625,5 +625,76 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
                                          selected, members, observation)
 
 
+
+class AuthenticatedXzStreamTests(unittest.TestCase):
+    @staticmethod
+    def binding(compressed, expanded):
+        return {"compressed": pin(compressed), "uncompressed": pin(expanded)}
+
+    def test_signed_content_followed_by_empty_stream_is_admitted(self):
+        expanded = packages()
+        compressed = lzma.compress(expanded) + lzma.compress(b"")
+        self.assertEqual(intake.expand_index(compressed, self.binding(compressed, expanded)), expanded)
+
+    def test_multiple_streams_require_the_exact_signed_expanded_file(self):
+        pieces = [b"Package: first\n\n", packages(), b"Package: last\n\n"]
+        compressed = b"".join(lzma.compress(x) for x in pieces)
+        expanded = b"".join(pieces)
+        self.assertEqual(intake.expand_index(compressed, self.binding(compressed, expanded)), expanded)
+
+    def test_aligned_zero_padding_between_and_after_streams_is_admitted(self):
+        expanded = packages()
+        compressed = lzma.compress(expanded) + b"\x00" * 8 + lzma.compress(b"") + b"\x00" * 4
+        self.assertEqual(intake.expand_index(compressed, self.binding(compressed, expanded)), expanded)
+
+    def test_misaligned_zero_padding_is_rejected_even_when_compressed_pin_matches(self):
+        expanded = packages()
+        first = lzma.compress(expanded)
+        for size in (1, 2, 3, 5, 6, 7):
+            for suffix in (b"", lzma.compress(b"")):
+                compressed = first + b"\x00" * size + suffix
+                with self.subTest(size=size, suffix=bool(suffix)):
+                    with self.assertRaises(intake.IntakeError):
+                        intake.expand_index(compressed, self.binding(compressed, expanded))
+
+    def test_nonzero_trailing_data_is_not_treated_as_padding(self):
+        expanded = packages()
+        for suffix in (b"tail", b"\x00\x00\x00x", b"\x00" * 4 + b"tail"):
+            compressed = lzma.compress(expanded) + suffix
+            with self.subTest(suffix=suffix):
+                with self.assertRaises(intake.IntakeError):
+                    intake.expand_index(compressed, self.binding(compressed, expanded))
+
+    def test_second_stream_cannot_exceed_the_total_authenticated_output_budget(self):
+        expected = b"small"
+        compressed = lzma.compress(expected) + lzma.compress(b"x" * 100_000)
+        with self.assertRaisesRegex(intake.IntakeError, "authenticated size"):
+            intake.expand_index(compressed, self.binding(compressed, expected))
+
+    def test_empty_stream_chain_has_a_finite_stream_count(self):
+        expanded = packages()
+        compressed = lzma.compress(expanded) + lzma.compress(b"") * 32
+        with self.assertRaisesRegex(intake.IntakeError, "too many XZ"):
+            intake.expand_index(compressed, self.binding(compressed, expanded))
+
+    def test_empty_suffix_cannot_be_appended_without_the_original_compressed_pin(self):
+        expanded = packages()
+        original = lzma.compress(expanded)
+        with self.assertRaisesRegex(intake.IntakeError, "authenticated digest or size"):
+            intake.expand_index(original + lzma.compress(b""), self.binding(original, expanded))
+
+    def test_truncated_second_stream_cannot_hide_after_a_complete_first_stream(self):
+        expanded = packages()
+        compressed = lzma.compress(expanded) + lzma.compress(b"")[:-4]
+        with self.assertRaises(intake.IntakeError):
+            intake.expand_index(compressed, self.binding(compressed, expanded))
+
+    def test_padding_only_and_empty_files_are_not_xz_indices(self):
+        for compressed in (b"", b"\x00" * 4, b"\x00" * 32):
+            with self.subTest(size=len(compressed)):
+                with self.assertRaises(intake.IntakeError):
+                    intake.expand_index(compressed, self.binding(compressed, b"x"))
+
+
 if __name__ == "__main__":
     unittest.main()
