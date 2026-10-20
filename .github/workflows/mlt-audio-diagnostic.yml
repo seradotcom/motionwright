@@ -7,6 +7,12 @@ on:
       - 'tooling/mlt-audio-diagnostic/**'
       - 'tooling/mlt_repair_verification.py'
       - 'tooling/tests/test_mlt_repair_verification.py'
+      - 'tooling/native_mlt_runtime_admission.py'
+      - 'tooling/tests/test_native_mlt_runtime_admission.py'
+      - 'tooling/ci_mlt_runtime_selected.py'
+      - 'tooling/tests/test_ci_mlt_runtime_selected.py'
+      - 'tooling/native_mlt_loaded_module.py'
+      - 'tooling/tests/test_native_mlt_loaded_module.py'
 permissions:
   contents: read
 concurrency:
@@ -73,6 +79,10 @@ jobs:
           source_paths={folder+"/"+name for name in names}|verify_paths
           attestor_paths={"tooling/native_mlt_loaded_module.py",
                           "tooling/tests/test_native_mlt_loaded_module.py"}
+          runtime_paths={"tooling/native_mlt_runtime_admission.py",
+                         "tooling/tests/test_native_mlt_runtime_admission.py",
+                         "tooling/ci_mlt_runtime_selected.py",
+                         "tooling/tests/test_ci_mlt_runtime_selected.py"}
           workflow_path=".github/workflows/mlt-audio-diagnostic.yml"
           require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,
                   "wrong worktree")
@@ -86,7 +96,7 @@ jobs:
           require({p.name for p in (repo/folder).iterdir()}==names,"diagnostic source set is not closed")
           originals={}
           oids={}
-          for path in sorted(source_paths|attestor_paths|{workflow_path}):
+          for path in sorted(source_paths|attestor_paths|runtime_paths|{workflow_path}):
               entries=git("ls-tree","-rz",expected,"--",path).split(b"\0")
               require(len(entries)==2 and entries[-1]==b"","expected one source blob")
               metadata,raw_path=entries[0].split(b"\t",1)
@@ -101,8 +111,8 @@ jobs:
                       "worktree bytes differ from Git blob")
               originals[path]=data
               oids[path]=oid.decode("ascii")
-          require(set(originals)==source_paths|attestor_paths|{workflow_path},
-                  "missing source or attestor blob")
+          require(set(originals)==source_paths|attestor_paths|runtime_paths|{workflow_path},
+                  "missing source, attestor or runtime-admission blob")
           # G0: all 3 G1 suites must remain bound to the exact committed tests.
           # Reuse authenticated Git blobs; execute BEFORE FFmpeg package installation
           # or the upstream MLT download. Do not replace any later result guards.
@@ -180,6 +190,9 @@ jobs:
                             "attestor_sources":{path:hashlib.sha256(originals[path]).hexdigest()
                                                 for path in sorted(attestor_paths)},
                             "attestor_blob_oids":{path:oids[path] for path in sorted(attestor_paths)},
+                            "runtime_sources":{path:hashlib.sha256(originals[path]).hexdigest()
+                                               for path in sorted(runtime_paths)},
+                            "runtime_blob_oids":{path:oids[path] for path in sorted(runtime_paths)},
                             "workflow":{"path":workflow_path,"sha256":hashlib.sha256(originals[workflow_path]).hexdigest(),
                                         "git_blob_oid":oids[workflow_path]}},sort_keys=True,indent=2))
           PY
@@ -219,6 +232,40 @@ jobs:
                   assert counts[key]==0
               for kind in ("stdout","stderr"):
                   assert sha(root/row[kind]["file"])==row[kind]["sha256"]
+          PY
+      - name: Verify reviewed MLT runtime selection controls before native setup (G0)
+        run: |
+          set -euo pipefail
+          python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
+            --pattern test_ci_mlt_runtime_selected.py --mode both \
+            --expected-source "$GITHUB_SHA" --require-complete \
+            --report "$MW_DIAG_WORK/public/runtime-selector-contracts.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          sources=json.loads((public/"source-inputs.json").read_text())
+          rec=json.loads((public/"runtime-selector-contracts.json").read_text())
+          expected={"tooling/ci_mlt_runtime_selected.py":"8c945cc3114d426e258021392d5fb47c76cce898e9fb337b9f4d8aff6ab76edc","tooling/native_mlt_runtime_admission.py":"9a9d2db6a7c61fe74a74d00daed4a5bb23a7aefccbbeb82c55d465be2ea00f8e","tooling/tests/test_ci_mlt_runtime_selected.py":"dc409f57854ef26feaffd63dd6d8c4634cb88917c2c5cece2afd413ab40fa5a7","tooling/tests/test_native_mlt_runtime_admission.py":"2273f92321325187d4e0e05e6ce95ea46072da799671781a449ae4878d3d53f7"}
+          assert sources["runtime_sources"]==expected
+          assert set(sources["runtime_blob_oids"])==set(expected)
+          assert sources["source_sha"]==rec["executed_source_sha"]==os.environ["GITHUB_SHA"]
+          case="tooling/tests/test_ci_mlt_runtime_selected.py"
+          assert rec["test_definition_sha256"]=={case:expected[case]}
+          assert rec["status"]=="PASS" and rec["exit_code"]==0 and rec["require_complete"] is True
+          assert len(rec["steps"])==2
+          assert {s["entry_point"] for s in rec["steps"]}=={
+              "discovery:test_ci_mlt_runtime_selected.py",
+              "dotted:tooling.tests.test_ci_mlt_runtime_selected"}
+          for step in rec["steps"]:
+              counts=step["counts"]
+              assert step["status"]=="PASS" and step["exit_code"]==0
+              assert counts["tests_run"]==counts["passed"]==14
+              assert counts["terminal_status"]=="OK"
+              assert all(counts[key]==0 for key in (
+                  "errors","failures","skipped","expected_failures","unexpected_successes"))
+              for label in ("stdout","stderr"):
+                  assert sha(public/step[label]["file"])==step[label]["sha256"]
           PY
       - name: Check source and acceptance policies
         run: |
@@ -390,6 +437,38 @@ jobs:
             2> "$MW_DIAG_WORK/public/repair-prepare.stderr.log"
           cp "$MW_DIAG_WORK/build/repair-prepared/prepare-receipt.json" \
             "$MW_DIAG_WORK/public/prepare-receipt.json"
+      - name: Verify twelve Linux-applicable native runtime admission contracts (G1)
+        run: |
+          set -euo pipefail
+          original="$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c"
+          repaired="$MW_DIAG_WORK/build/repair-prepared/repaired-consumer.c"
+          echo "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910  $original" | sha256sum --check
+          echo "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0  $repaired" | sha256sum --check
+          python3 -B -I -S tooling/ci_mlt_runtime_selected.py \
+            --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" \
+            --platform linux --original "$original" --repaired "$repaired" \
+            --report "$MW_DIAG_WORK/public/runtime-linux-selected.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          rec=json.loads((public/"runtime-linux-selected.json").read_text())
+          source=json.loads((public/"source-inputs.json").read_text())
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          assert rec["schema"]=="motionwright.mlt-runtime-selected-platform-g1/1"
+          assert rec["status"]=="PASS_SELECTED_PLATFORM_G1" and rec["exit_code"]==0
+          assert rec["source_sha"]==source["source_sha"]==os.environ["GITHUB_SHA"]
+          assert rec["tree_sha"]==source["tree"]
+          assert rec["executor_platform"]=="linux" and rec["selected_count"]==12
+          assert len(set(rec["selected_methods"]))==12
+          assert rec["not_executed_on_this_platform"]==[
+              "test_existing_user_windows_machine_can_never_admit_module"]
+          assert rec["not_executed_are_not_passes"] is True
+          assert rec["A4_source_sha256"]=={
+              "original":"c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910",
+              "repaired":"246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"}
+          for name in ("stdout","stderr"):
+              assert sha(public/rec[name]["file"])==rec[name]["sha256"]
+          PY
       - name: Reject the exact historical zero-padding helper with the new C oracle
         run: |
           set -euo pipefail
@@ -676,3 +755,33 @@ jobs:
           path: ${{ env.MW_DIAG_WORK }}/public
           if-no-files-found: error
           retention-days: 14
+  runtime-admission-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Verify real Windows refuses unapproved native MLT runtime installation (G1)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proof = Join-Path $env:RUNNER_TEMP "mw-mlt-windows-$($env:GITHUB_SHA)-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          if (Test-Path -LiteralPath $proof) { throw 'Windows G1 output already exists' }
+          New-Item -ItemType Directory -Path $proof | Out-Null
+          python -B -I -S tooling/ci_mlt_runtime_selected.py --repo "$env:GITHUB_WORKSPACE" --expected-source "$env:GITHUB_SHA" --platform windows --report (Join-Path $proof 'runtime-windows-selected.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Windows-specific native module refusal G1 FAILED' }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: mlt-runtime-windows-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mw-mlt-windows-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
