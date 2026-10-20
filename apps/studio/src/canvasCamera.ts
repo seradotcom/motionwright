@@ -63,3 +63,14 @@ export function projectWorldPoint(camera: CameraState, x: number, y: number): { 
   };
   return [output.x, output.y].every(Number.isFinite) ? output : null;
 }
+
+/** One SVG viewport transform over unchanged world objects. Uses the same
+ * projection as Canvas; never add a second terminal-camera offset. */
+export function cameraSvgTransform(camera: CameraState): string | null {
+  const origin = projectWorldPoint(camera, 0, 0);
+  if (!origin) return null;
+  const rad = camera.rotation_deg * Math.PI / 180;
+  const a = camera.zoom * Math.cos(rad), b = -camera.zoom * Math.sin(rad);
+  const c = camera.zoom * Math.sin(rad), d = camera.zoom * Math.cos(rad);
+  return `matrix(${a} ${b} ${c} ${d} ${origin.x} ${origin.y})`;
+}
