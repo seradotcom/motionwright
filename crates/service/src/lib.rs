@@ -157,8 +157,7 @@ fn source_looks_like_svg(source: &Path, media_type: &str) -> StorageResult<bool>
         }
         let decoded = if unit_bytes == 2 {
             let mut units = Vec::with_capacity(body.len() / 2);
-            for pair in body.chunks_exact(2) {
-                let bytes = [pair[0], pair[1]];
+            for &bytes in body.as_chunks::<2>().0 {
                 units.push(if little_endian {
                     u16::from_le_bytes(bytes)
                 } else {
@@ -169,8 +168,7 @@ fn source_looks_like_svg(source: &Path, media_type: &str) -> StorageResult<bool>
                 .map_err(|_| invalid_import("encoded XML-like media is not valid UTF-16"))?
         } else {
             let mut result = String::with_capacity(body.len() / 4);
-            for quad in body.chunks_exact(4) {
-                let bytes = [quad[0], quad[1], quad[2], quad[3]];
+            for &bytes in body.as_chunks::<4>().0 {
                 let codepoint = if little_endian {
                     u32::from_le_bytes(bytes)
                 } else {
