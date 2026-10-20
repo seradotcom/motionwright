@@ -291,6 +291,109 @@ def payloads(value, *, with_self):
     return result
 
 
+def validate_rendered_resource_directories(text: str, resource_paths) -> dict:
+    """Bind the rendered directory instructions to the captured resource names.
+
+    This checks the existing template's closed instruction shape, not runtime
+    directory creation or a successful installation.
+    """
+    require(isinstance(text, str) and 0 < len(text) <= MAX_JSON,
+            "rendered_template_size")
+    require("{{" not in text and "}}" not in text, "unexpanded_template_expression")
+    require(isinstance(resource_paths, (list, tuple)) and len(resource_paths) <= 64,
+            "rendered_resource_inventory")
+
+    def canonical(value, *, empty=False):
+        require(isinstance(value, str) and not any(c in value for c in '$"\r\n\0'),
+                "rendered_resource_directory_literal")
+        if not value:
+            require(empty, "rendered_resource_directory_empty")
+            return ""
+        normalized = value.replace("\\", "/")
+        try:
+            require(_relative(normalized, "rendered resource") == normalized,
+                    "rendered_resource_directory_path")
+        except ValueError as error:
+            raise LifecycleError("rendered_resource_directory_path") from error
+        return normalized
+
+    resources = [canonical(path) for path in resource_paths]
+    require(all(path == original for path, original in zip(resources, resource_paths))
+            and len({path.casefold() for path in resources}) == len(resources),
+            "rendered_resource_inventory")
+    expected_dirs = {path.rpartition("/")[0] for path in resources}
+    expected_ancestors = set()
+    for directory in expected_dirs:
+        while directory:
+            expected_ancestors.add(directory)
+            directory = directory.rpartition("/")[0]
+
+    def section(name):
+        matches = re.findall(r"^[ \t]*Section " + name
+                             + r"[ \t]*\r?\n(.*?)^[ \t]*SectionEnd[ \t]*\r?$",
+                             text, re.MULTILINE | re.DOTALL)
+        require(len(matches) == 1, "rendered_resource_section")
+        return [line.strip() for line in matches[0].splitlines()
+                if line.strip() and not line.lstrip().startswith(";")]
+
+    install, uninstall = section("Install"), section("Uninstall")
+    main = '!insertmacro MWINST_INSTALL_PAYLOAD "${MAINBINARYNAME}.exe" MW_MAIN'
+    require(install.count(main) == 1, "rendered_resource_main_instruction")
+    main_at = install.index(main)
+
+    def resource_calls(lines, deletion):
+        pattern = (r'!insertmacro MWINST_DELETE_OWNED "([^"]+)" '
+                   r'"\$\{MW_RESOURCE_([0-9]+)_SHA256\}" "\$\{MW_RESOURCE_\2_SIZE\}"'
+                   if deletion else
+                   r'!insertmacro MWINST_INSTALL_PAYLOAD "([^"]+)" MW_RESOURCE_([0-9]+)')
+        found = [(i, canonical(match.group(1)))
+                 for i, line in enumerate(lines)
+                 if (match := re.fullmatch(pattern, line))]
+        require(len(found) == len(resources)
+                and {path for _, path in found} == set(resources),
+                "rendered_resource_calls")
+        return [i for i, _ in found]
+
+    install_calls = resource_calls(install, False)
+    delete_calls = resource_calls(uninstall, True)
+
+    def directories(lines, operation):
+        result = []
+        for i, line in enumerate(lines):
+            if not re.match(operation + r"\b", line):
+                continue
+            require(line == operation + r' "$INSTDIR\$MWINST_Relative"',
+                    "rendered_resource_directory_instruction")
+            assignment_at = i - (2 if operation == "CreateDirectory" else 1)
+            require(assignment_at >= 0, "rendered_resource_directory_assignment")
+            assignment = re.fullmatch(r'StrCpy \$MWINST_Relative "([^"]*)"',
+                                      lines[assignment_at])
+            require(assignment is not None, "rendered_resource_directory_assignment")
+            directory = canonical(assignment.group(1), empty=operation == "CreateDirectory")
+            if operation == "CreateDirectory":
+                require(lines[i - 1] == "ClearErrors" and lines[i + 1:i + 4] == [
+                    "${If} ${Errors}",
+                    '!insertmacro MWINST_FAIL "A resource directory could not be created."',
+                    "${EndIf}"], "rendered_resource_directory_error_guard")
+                require(main_at < assignment_at
+                        and install_calls and i + 3 < min(install_calls),
+                        "rendered_resource_directory_order")
+            else:
+                require(delete_calls and assignment_at > max(delete_calls),
+                        "rendered_resource_directory_order")
+            result.append(directory)
+        require(len(result) == len(set(result)), "rendered_resource_directory_duplicate")
+        return result
+
+    created = directories(install, "CreateDirectory")
+    removed = directories(uninstall, "RMDir")
+    require(set(created) == expected_dirs, "rendered_resource_directories_mismatch")
+    require(set(removed) == expected_ancestors, "rendered_resource_ancestors_mismatch")
+    depths = [len(path.split("/")) for path in removed]
+    require(depths == sorted(depths, reverse=True), "rendered_resource_ancestor_order")
+    return {"install_directories": created, "uninstall_ancestors": removed}
+
+
 def validate_inputs(root: Path, admission: dict, expected_source: str, expected_run: dict,
                     *, pe_reader=read_pe_versions) -> dict:
     exact(admission, {"schema", "source_sha", "source_tree", "run", "refs"}, "admission_fields")
@@ -363,6 +466,9 @@ def validate_inputs(root: Path, admission: dict, expected_source: str, expected_
             == len(old_entries), "previous_payload_duplicate")
     old_payloads = payloads({row["relative"]: row for row in old_entries}, with_self=True)
     current_payloads = payloads(compiled.get("current_payloads"), with_self=False)
+    validate_rendered_resource_directories(text, [
+        relative for relative, item in compiled["current_payloads"].items()
+        if item["kind"] == "resource"])
     require(old_payloads.get("motionwright-desktop.exe") == ref_identity(refs["previous_main"])
             and current_payloads.get("motionwright-desktop.exe") == ref_identity(refs["current_main"])
             and profile["target"].get("main_sha256") == refs["current_main"]["sha256"],

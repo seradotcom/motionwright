@@ -229,7 +229,7 @@ jobs:
           all_methods = [item.name for item in ast.walk(tree)
                          if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                          and item.name.startswith("test_")]
-          require(len(methods) == len(set(methods)) == len(all_methods) == 44
+          require(len(methods) == len(set(methods)) == len(all_methods) == 52
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
@@ -253,8 +253,8 @@ jobs:
               counts = step.get("counts", {})
               require(step.get("status") == "PASS" and step.get("exit_code") == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 44
-                      and type(counts.get("passed")) is int and counts["passed"] == 44
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 52
+                      and type(counts.get("passed")) is int and counts["passed"] == 52
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -266,7 +266,7 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
               expected = {f"{module}.WindowsLifecycleTests.{method}" for method in methods}
-              require(len(observed) == 44 and set(observed) == expected,
+              require(len(observed) == 52 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -275,7 +275,7 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 44, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 52, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
@@ -423,7 +423,7 @@ jobs:
           all_methods = [item.name for item in ast.walk(tree)
                          if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                          and item.name.startswith("test_")]
-          require(len(methods) == len(set(methods)) == len(all_methods) == 44
+          require(len(methods) == len(set(methods)) == len(all_methods) == 52
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
@@ -447,8 +447,8 @@ jobs:
               counts = step.get("counts", {})
               require(step.get("status") == "PASS" and step.get("exit_code") == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 44
-                      and type(counts.get("passed")) is int and counts["passed"] == 44
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 52
+                      and type(counts.get("passed")) is int and counts["passed"] == 52
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -460,7 +460,7 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
               expected = {f"{module}.WindowsLifecycleTests.{method}" for method in methods}
-              require(len(observed) == 44 and set(observed) == expected,
+              require(len(observed) == 52 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -469,7 +469,7 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 44, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 52, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
@@ -1573,7 +1573,10 @@ jobs:
           EVIDENCE = ROOT / "ci-evidence"
           PROOF = EVIDENCE / "windows-nsis-update-compiled.json"
 
-          from windows_installer_lifecycle import SOURCE_PATHS, read_pe_versions, require_pe_version
+          from windows_installer_lifecycle import (
+              SOURCE_PATHS, read_pe_versions, require_pe_version,
+              validate_rendered_resource_directories,
+          )
 
           def require(ok, code):
               if not ok:
@@ -1835,6 +1838,8 @@ jobs:
                       relative = _relative(literal(relative), "compiled install destination")
                   installed_calls.append((relative, symbol))
           require(installed_calls == entries, "compiled_lookup_and_install_inventories_differ")
+          validate_rendered_resource_directories(rendered, [
+              relative for relative, symbol in entries if symbol.startswith("MW_RESOURCE_")])
 
           retained = EVIDENCE / "windows-nsis-update-compiled-inputs"
           retained.mkdir()

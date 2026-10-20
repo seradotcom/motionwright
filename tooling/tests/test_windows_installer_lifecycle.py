@@ -72,6 +72,9 @@ class Fixture:
             "INSTALLMODE": "currentUser", "MAINBINARYNAME": "motionwright-desktop",
             "MANUFACTURER": "seradotcom"}
         self.rendered = "\n".join(f'!define {key} "{value}"' for key, value in defines.items()) + "\n"
+        self.rendered += ("Section Install\n"
+                          '!insertmacro MWINST_INSTALL_PAYLOAD "${MAINBINARYNAME}.exe" MW_MAIN\n'
+                          "SectionEnd\nSection Uninstall\nSectionEnd\n")
         self.rendered_ref = self.blob("installer.nsi", self.rendered.encode("utf-8-sig"))
         self.compiled_doc = {"schema": "motionwright-windows-nsis-compiled-fixture/1",
             "status": "COMPILED_SOURCE_BOUND", "source_sha": self.source, "source_tree": self.tree,
@@ -206,6 +209,126 @@ class Fixture:
 
 
 class WindowsLifecycleTests(unittest.TestCase):
+    @staticmethod
+    def resource_render(paths, *, create=None, remove=None):
+        parents = {path.rpartition("/")[0] for path in paths}
+        ancestors = set()
+        for parent in parents:
+            while parent:
+                ancestors.add(parent)
+                parent = parent.rpartition("/")[0]
+        create = sorted(parents) if create is None else create
+        remove = sorted(ancestors, key=lambda item: (-len(item.split("/")), item)) if remove is None else remove
+        lines = ["Section Install",
+                 '!insertmacro MWINST_INSTALL_PAYLOAD "${MAINBINARYNAME}.exe" MW_MAIN']
+        for parent in create:
+            lines.extend([
+                'StrCpy $MWINST_Relative "' + parent.replace("/", "\\") + '"',
+                "ClearErrors", r'CreateDirectory "$INSTDIR\$MWINST_Relative"',
+                "${If} ${Errors}",
+                '!insertmacro MWINST_FAIL "A resource directory could not be created."',
+                "${EndIf}"])
+        for index, path in enumerate(paths):
+            lines.append('!insertmacro MWINST_INSTALL_PAYLOAD "' + path.replace("/", "\\")
+                         + '" MW_RESOURCE_' + str(index))
+        lines.extend(["SectionEnd", "Section Uninstall"])
+        for index, path in enumerate(paths):
+            symbol = "MW_RESOURCE_" + str(index)
+            lines.append('!insertmacro MWINST_DELETE_OWNED "' + path.replace("/", "\\")
+                         + '" "${' + symbol + '_SHA256}" "${' + symbol + '_SIZE}"')
+        for parent in remove:
+            lines.extend(['StrCpy $MWINST_Relative "' + parent.replace("/", "\\") + '"',
+                          r'RMDir "$INSTDIR\$MWINST_Relative"'])
+        return "\n".join([*lines, "SectionEnd", ""])
+
+    def test_rendered_resources_bind_directories_and_ancestors(self):
+        paths = ["root.dat", "one/alpha.dat", "one/deeper/beta.dat", "two/gamma.dat"]
+        result = lifecycle.validate_rendered_resource_directories(self.resource_render(paths), paths)
+        self.assertEqual(set(result["install_directories"]), {"", "one", "one/deeper", "two"})
+        self.assertEqual(set(result["uninstall_ancestors"]), {"one", "one/deeper", "two"})
+        self.assertEqual(result["uninstall_ancestors"][0], "one/deeper")
+        self.assertEqual(lifecycle.validate_rendered_resource_directories(
+            self.resource_render([]), []),
+            {"install_directories": [], "uninstall_ancestors": []})
+
+    def test_rendered_resources_reject_residual_template_tokens(self):
+        paths = ["mw-ci-render/resource-alpha.dat", "mw-ci-render/resource-beta.dat"]
+        rendered = self.resource_render(paths)
+        for operation in ("CreateDirectory", "RMDir"):
+            with self.subTest(operation=operation):
+                broken = rendered.replace(
+                    operation + r' "$INSTDIR\$MWINST_Relative"',
+                    operation + ' "$INSTDIR{{this}}"')
+                with self.assertRaisesRegex(lifecycle.LifecycleError, "unexpanded_template_expression"):
+                    lifecycle.validate_rendered_resource_directories(broken, paths)
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "unexpanded_template_expression"):
+            lifecycle.validate_rendered_resource_directories(rendered + "; {{unexpected}}\n", paths)
+
+    def test_rendered_resources_reject_missing_directory_or_ancestor(self):
+        paths = ["one/two/resource.dat"]
+        for rendered in (self.resource_render(paths, create=[]),
+                         self.resource_render(paths, remove=["one/two"])):
+            with self.subTest(rendered=rendered):
+                with self.assertRaisesRegex(lifecycle.LifecycleError, "mismatch"):
+                    lifecycle.validate_rendered_resource_directories(rendered, paths)
+
+    def test_rendered_resources_reject_extra_directory_or_ancestor(self):
+        paths = ["one/resource.dat"]
+        for rendered in (self.resource_render(paths, create=["one", "extra"]),
+                         self.resource_render(paths, remove=["one", "extra"])):
+            with self.subTest(rendered=rendered):
+                with self.assertRaisesRegex(lifecycle.LifecycleError, "mismatch"):
+                    lifecycle.validate_rendered_resource_directories(rendered, paths)
+
+    def test_rendered_resources_reject_foreign_dynamic_or_alias_directory(self):
+        paths = ["one/resource.dat"]
+        for value in ("other", "$TEMP", "..\\outside", "one\\..\\outside"):
+            with self.subTest(value=value):
+                rendered = self.resource_render(paths).replace(
+                    'StrCpy $MWINST_Relative "one"', 'StrCpy $MWINST_Relative "' + value + '"', 1)
+                with self.assertRaises(lifecycle.LifecycleError):
+                    lifecycle.validate_rendered_resource_directories(rendered, paths)
+
+    def test_rendered_resources_reject_recursive_duplicate_or_unguarded_instructions(self):
+        paths = ["one/two/resource.dat"]
+        rendered = self.resource_render(paths)
+        cases = [
+            rendered.replace('RMDir "', 'RMDir /r "', 1),
+            self.resource_render(paths, create=["one/two", "one/two"]),
+            self.resource_render(paths, remove=["one", "one/two"]),
+            rendered.replace("ClearErrors\nCreateDirectory", "CreateDirectory", 1),
+            rendered.replace("${If} ${Errors}\n", "", 1),
+            rendered.replace("CreateDirectory ", 'StrCpy $MWINST_Relative "other"\nCreateDirectory ', 1),
+        ]
+        for broken in cases:
+            with self.subTest(rendered=broken):
+                with self.assertRaises(lifecycle.LifecycleError):
+                    lifecycle.validate_rendered_resource_directories(broken, paths)
+
+    def test_rendered_resources_reject_missing_section_or_unbound_resource_calls(self):
+        paths = ["one/resource.dat"]
+        rendered = self.resource_render(paths)
+        for broken in (rendered.replace("Section Uninstall", "Section Other"),
+                       rendered + "Section Install\nSectionEnd\n",
+                       rendered.replace("MW_RESOURCE_0_SIZE", "MW_RESOURCE_1_SIZE"),
+                       rendered.replace('"one\\resource.dat" MW_RESOURCE_0',
+                                        '"other\\resource.dat" MW_RESOURCE_0')):
+            with self.subTest(rendered=broken):
+                with self.assertRaises(lifecycle.LifecycleError):
+                    lifecycle.validate_rendered_resource_directories(broken, paths)
+
+    def test_unexpanded_render_is_rejected_before_pe_or_installer_observation(self):
+        broken = self.fx.rendered.replace(
+            "Section Install\n", 'Section Install\nCreateDirectory "$INSTDIR{{this}}"\n')
+        reference = self.fx.blob("unexpanded-render.nsi", broken.encode("utf-8-sig"))
+        self.fx.admission["refs"]["rendered"] = reference
+        self.fx.compiled_doc["rendered_installer"] = self.fx.ident(reference)
+        self.fx.edit_admission_doc("compiled", self.fx.compiled_doc)
+        pe = mock.Mock(side_effect=AssertionError("PE observation must remain unsent"))
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "unexpanded_template_expression"):
+            self.fx.validate_inputs(pe)
+        pe.assert_not_called()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "evidence"

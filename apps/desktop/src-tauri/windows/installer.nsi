@@ -930,8 +930,9 @@ Section Install
   !insertmacro MWINST_INSTALL_PAYLOAD "${MAINBINARYNAME}.exe" MW_MAIN
 
   {{#each resources_dirs}}
+    StrCpy $MWINST_Relative "{{this}}"
     ClearErrors
-    CreateDirectory "$INSTDIR\{{this}}"
+    CreateDirectory "$INSTDIR\$MWINST_Relative"
     ${If} ${Errors}
       !insertmacro MWINST_FAIL "A resource directory could not be created."
     ${EndIf}
@@ -1192,7 +1193,8 @@ Section Uninstall
   ; authenticated byte baselines for their later removal. A shortcut target or
   ; registry value cannot substitute for those baselines.
   {{#each resources_ancestors}}
-    RMDir "$INSTDIR\{{this}}"
+    StrCpy $MWINST_Relative "{{this}}"
+    RMDir "$INSTDIR\$MWINST_Relative"
   {{/each}}
   ; The retained uninstall.exe keeps the install root. No deferred removal is queued.
 
