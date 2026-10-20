@@ -21,10 +21,12 @@ use std::{
     path::{Component, Path, PathBuf},
     time::Duration,
 };
+#[cfg(test)]
+use tokio::time::timeout;
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    time::{Instant, sleep, timeout},
+    time::{Instant, sleep, timeout_at},
 };
 use uuid::Uuid;
 
@@ -702,6 +704,7 @@ impl ProductionClient {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
+        let deadline = Instant::now() + Duration::from_secs(RUNTIME_PROBE_DEADLINE_SECS);
         let mut child = child.spawn().map_err(|_| {
             Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
         })?;
@@ -713,32 +716,41 @@ impl ProductionClient {
             .stderr
             .take()
             .ok_or_else(|| backend("Semwright CLI stderr unavailable"))?;
-        let stdout_task = tokio::spawn(read_bounded(stdout));
-        let stderr_task = tokio::spawn(read_bounded(stderr));
-
-        let status = match timeout(
-            Duration::from_secs(RUNTIME_PROBE_DEADLINE_SECS),
-            child.wait(),
-        )
-        .await
-        {
-            Ok(result) => result.map_err(|_| backend("Semwright CLI version probe failed"))?,
+        // One deadline covers process exit and EOF on both pipes. A descendant
+        // may retain a writer after the direct CLI has exited. Keep all readers
+        // in this future so timeout or caller cancellation closes them.
+        let captured = timeout_at(deadline, async {
+            tokio::try_join!(
+                async {
+                    child
+                        .wait()
+                        .await
+                        .map_err(|_| backend("Semwright CLI version probe failed"))
+                },
+                async {
+                    read_bounded(stdout)
+                        .await
+                        .map_err(|_| backend("Semwright CLI version output could not be read"))
+                },
+                async {
+                    read_bounded(stderr)
+                        .await
+                        .map_err(|_| backend("Semwright CLI version diagnostics could not be read"))
+                },
+            )
+        })
+        .await;
+        let (status, stdout, stderr) = match captured {
+            Ok(result) => result?,
             Err(_) => {
-                let _ = child.kill().await;
+                // Dropping the owned child retains kill_on_drop semantics,
+                // without an additional unbounded kill/wait after the deadline.
                 return Err(Error::new(
                     ErrorCode::Timeout,
                     "Semwright CLI version probe timed out",
                 ));
             }
         };
-        let stdout = stdout_task
-            .await
-            .map_err(|_| backend("Semwright CLI version output task failed"))?
-            .map_err(|_| backend("Semwright CLI version output could not be read"))?;
-        let stderr = stderr_task
-            .await
-            .map_err(|_| backend("Semwright CLI version diagnostic task failed"))?
-            .map_err(|_| backend("Semwright CLI version diagnostics could not be read"))?;
         if stdout.len() > MAX_RUNTIME_VERSION_BYTES || stderr.len() > MAX_RUNTIME_VERSION_BYTES {
             return Err(backend(
                 "Semwright CLI version response exceeded the transport budget",
@@ -802,6 +814,15 @@ impl ProductionClient {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
+        let budget_secs = if command.starts_with("driver.mlt-video.")
+            || command.starts_with("driver.blender.")
+            || command.starts_with("driver.manim-community.")
+        {
+            MLT_DEADLINE_SECS
+        } else {
+            DEFAULT_DEADLINE_SECS
+        };
+        let deadline = Instant::now() + Duration::from_secs(budget_secs);
         let mut child = child.spawn().map_err(|_| {
             Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
         })?;
@@ -818,38 +839,37 @@ impl ProductionClient {
             .stderr
             .take()
             .ok_or_else(|| post_spawn_error(backend("Semwright CLI stderr unavailable")))?;
-        let stdout_task = tokio::spawn(read_bounded(stdout));
-        let stderr_task = tokio::spawn(read_bounded(stderr));
-        let deadline = if command.starts_with("driver.mlt-video.")
-            || command.starts_with("driver.blender.")
-            || command.starts_with("driver.manim-community.")
-        {
-            MLT_DEADLINE_SECS
-        } else {
-            DEFAULT_DEADLINE_SECS
-        };
-
-        let status = match timeout(Duration::from_secs(deadline), child.wait()).await {
-            Ok(result) => {
-                result.map_err(|_| post_spawn_error(backend("Semwright CLI process failed")))?
-            }
+        // Joining owned reader futures avoids detached tasks on every error
+        // and cancellation path. Process exit never starts a new output budget.
+        let captured = timeout_at(deadline, async {
+            tokio::try_join!(
+                async {
+                    child
+                        .wait()
+                        .await
+                        .map_err(|_| post_spawn_error(backend("Semwright CLI process failed")))
+                },
+                async {
+                    read_bounded(stdout).await.map_err(|_| {
+                        post_spawn_error(backend("Semwright CLI output could not be read"))
+                    })
+                },
+                async {
+                    read_bounded(stderr).await.map_err(|_| {
+                        post_spawn_error(backend("Semwright CLI diagnostics could not be read"))
+                    })
+                },
+            )
+        })
+        .await;
+        let (status, stdout, stderr) = match captured {
+            Ok(result) => result?,
             Err(_) => {
-                let _ = child.kill().await;
                 let error =
                     Error::new(ErrorCode::Timeout, "Canonical production command timed out");
                 return Err(post_spawn_error(error));
             }
         };
-        let stdout = stdout_task
-            .await
-            .map_err(|_| post_spawn_error(backend("Semwright CLI output task failed")))?
-            .map_err(|_| post_spawn_error(backend("Semwright CLI output could not be read")))?;
-        let stderr = stderr_task
-            .await
-            .map_err(|_| post_spawn_error(backend("Semwright CLI diagnostic task failed")))?
-            .map_err(|_| {
-                post_spawn_error(backend("Semwright CLI diagnostics could not be read"))
-            })?;
         if stdout.len() > MAX_OUTPUT_BYTES || stderr.len() > MAX_OUTPUT_BYTES {
             return Err(post_spawn_error(Error::new(
                 ErrorCode::ResourceExhausted,
