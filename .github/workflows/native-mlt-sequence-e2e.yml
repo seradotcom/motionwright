@@ -41,6 +41,8 @@ on:
       - 'tooling/tests/test_native_mlt_g2_observation.py'
       - 'tooling/tests/test_native_mlt_live_observer_diagnostics.py'
       - 'tooling/tests/test_native_mlt_host_tool_observation.py'
+      - 'tooling/tests/test_native_mlt_publication_binding.py'
+      - 'tooling/tests/test_native_mlt_linux_descriptor_custody.py'
       - 'tooling/tests/test_native_mlt_loaded_module.py'
       - 'tooling/tests/test_native_mlt_executable_alias.py'
       - 'tooling/tests/test_native_mlt_ci_audio.py'
@@ -154,6 +156,40 @@ jobs:
               "dotted:tooling.tests.test_native_mlt_loaded_module": 18,
               "dotted:tooling.tests.test_native_mlt_executable_alias": 24,
               "dotted:tooling.tests.test_native_mlt_compiler_intake": 24,
+          }
+          assert {step["entry_point"] for step in result["steps"]} == set(expected)
+          assert len(result["steps"]) == len(expected)
+          for step in result["steps"]:
+              counts = step["counts"]
+              assert step["status"] == "PASS" and step["exit_code"] == 0
+              assert counts["terminal_status"] == "OK"
+              assert counts["tests_run"] == counts["passed"] == expected[step["entry_point"]]
+              assert all(counts[key] == 0 for key in (
+                  "errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
+          PY
+
+      - name: Verify original consumer publication and Linux descriptor custody
+        if: matrix.mode == 'final-mp4'
+        env:
+          CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/mw-mlt-g2-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/publication-binding.json"
+          "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete \
+            --expected-source "$GITHUB_SHA" --report "$report" \
+            --pattern test_native_mlt_publication_binding.py \
+            --pattern test_native_mlt_linux_descriptor_custody.py
+          "$CUSTODY_PYTHON" -B -E -s - "$report" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          result = json.loads(Path(sys.argv[1]).read_bytes())
+          assert result["status"] == "PASS" and result["exit_code"] == 0
+          assert result["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert "source_postcheck_error" not in result
+          expected = {
+              "dotted:tooling.tests.test_native_mlt_publication_binding": 7,
+              "dotted:tooling.tests.test_native_mlt_linux_descriptor_custody": 1,
           }
           assert {step["entry_point"] for step in result["steps"]} == set(expected)
           assert len(result["steps"]) == len(expected)

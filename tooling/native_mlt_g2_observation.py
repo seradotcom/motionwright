@@ -1101,7 +1101,13 @@ class G2Session:
                 "g2_retained_master_differs_from_native_result")
         try:
             require(self.observer is not None, "g2_original_observer_missing")
-            self.live_proof = self.observer.require_one(master)
+            proof = self.observer.require_one(master)
+            require(type(proof.get("published_output_sha256")) is str
+                    and proof["published_output_sha256"] == expected_sha
+                    and type(proof.get("published_output_bytes")) is int
+                    and proof["published_output_bytes"] == expected_size,
+                    "g2_original_consumer_differs_from_native_result_ack")
+            self.live_proof = proof
             new_json(self.evidence_dir / "original-live-module.json", self.live_proof)
         except Exception as error:
             # Keep decoding this one original artifact even if a live witness
@@ -1198,10 +1204,12 @@ class G2Session:
 
     def __exit__(self, exc_type, error, traceback):
         self.retain_observer_diagnostic()
+        cleanup_error = None
         if self.observer is not None:
             try:
                 self.observer.close()
             except Exception as close_error:
+                cleanup_error = close_error
                 self.observer_error_details["observer_descriptor_close"] = bounded_error(close_error)
                 self.secondary("observer_descriptor_close")
         try:
@@ -1239,6 +1247,10 @@ class G2Session:
                 raise failure
         if self.native_error is not None and error is not self.native_error:
             raise self.native_error.with_traceback(self.native_traceback)
+        if cleanup_error is not None and error is None:
+            failure = G2Unverified("g2_original_consumer_descriptor_cleanup_failed")
+            failure.native_result = self.native_result
+            raise failure from cleanup_error
         if error is not None and self.native_result is not None:
             try:
                 error.motionwright_native_result = self.native_result
