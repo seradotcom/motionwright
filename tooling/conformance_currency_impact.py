@@ -19,6 +19,7 @@ import argparse
 import collections
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -38,8 +39,21 @@ def sha256(data: bytes) -> str:
 
 
 def git(root: Path, *args: str) -> bytes:
-    command = ["git", "-C", str(root), *args]
-    process = subprocess.run(command, capture_output=True, timeout=80, check=False)
+    # A commit name alone is not a source boundary: inherited Git overrides
+    # and repository-local replace refs can substitute another object database
+    # or different bytes while preserving the requested commit label.
+    env = {key: value for key, value in os.environ.items()
+           if not key.upper().startswith("GIT_")}
+    env.update({
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_LAZY_FETCH": "1",
+    })
+    command = ["git", "--no-replace-objects", "-C", str(root), *args]
+    process = subprocess.run(command, capture_output=True, env=env,
+                             timeout=80, check=False)
     if process.returncode:
         raise ValueError("Git source lookup failed: " + " ".join(args[:2]) +
                          ": " + process.stderr.decode("utf-8", "replace")[-180:])
@@ -48,6 +62,13 @@ def git(root: Path, *args: str) -> bytes:
 
 def commit_sha(root: Path, spec: str) -> str:
     # Never interpolate commit specs into a shell, and reject revision expressions.
+    try:
+        root = Path(root).resolve(strict=True)
+    except OSError as error:
+        raise ValueError("source repository is unavailable") from error
+    actual = git(root, "rev-parse", "--show-toplevel").decode("utf-8", "strict").strip()
+    if Path(actual).resolve() != root:
+        raise ValueError("source repository root differs from the requested root")
     if spec == "HEAD":
         resolved = git(root, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
     elif SHA.fullmatch(spec):
@@ -74,11 +95,11 @@ class GitSnapshot:
     """Exact committed Git UTF-8 text; checkout state and symlinks cannot substitute."""
 
     def __init__(self, root: Path, source: str):
-        self.root = Path(root)
-        self.source = source
+        self.root = Path(root).resolve(strict=True)
+        self.source = commit_sha(self.root, source)
         self.modes: dict[str, str] = {}
         self.cache: dict[str, str | None] = {}
-        tree = git(root, "ls-tree", "-rz", "--full-tree", source)
+        tree = git(self.root, "ls-tree", "-rz", "--full-tree", self.source)
         for row in tree.split(b"\0"):
             if not row:
                 continue
