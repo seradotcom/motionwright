@@ -1,4 +1,4 @@
-import { expect,test,type Page } from "@playwright/test";
+import { expect,test,type Page } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 import { reviewableOtioProject,sampleOtioPreview } from "../src/otioCutReviewTestFixtures";
 
@@ -35,7 +35,12 @@ test("owner reviews explicit native changes and accepts one project transaction"
     runtime.__OTIO_ACCEPTANCE_CALLS__=calls;
     runtime.__TAURI_INTERNALS__={invoke:async(name,args)=>{
       calls.push({name,args});
-      if(name==="bootstrap")return {...boot,project:structuredClone(snapshot)};
+      if (name === "bootstrap") {
+        const syntheticResponse = {...boot,project:structuredClone(snapshot)};
+        const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
+        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic mock requires selected project identity.");
+        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      }
       if(name==="issue_effect_grant")return {token:"test-only-non-authoritative-grant"};
       if(name==="apply_change"){
         const request=args?.request as {

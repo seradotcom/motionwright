@@ -275,5 +275,99 @@ class HistoryGuardTests(unittest.TestCase):
             guard.git_exact(Path("."),"a"*40,"../../private/secret.json")
 
 
+    def test_H03_roundtrip_logical_history_equals_all_previous_entries(self):
+        original = copy.deepcopy(self.row["assessment_history"])
+        archive = guard.encode_assessment_history(original)
+        self.assertEqual(archive["entry_count"],len(original))
+        self.assertEqual(guard.expand_assessment_history([archive]),original)
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["assessment_history"]=[archive]
+        self.assertEqual(guard.inspect(self.old,self.new)["ledger_rows_verified"],1)
+
+    def test_H03_real_source_transition_requires_exact_prior_snapshot(self):
+        original=copy.deepcopy(self.row["assessment_history"])
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["assessment_history"]=[
+            guard.encode_assessment_history(original),
+            {"source":copy.deepcopy(self.source),"prior_technical_status":"not_run",
+             "prior_criteria":[copy.deepcopy(self.field)],
+             "prior_contract_status":"open",
+             "prior_current_record_ids":["record-current"]}]
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        self.assertEqual(guard.inspect(self.old,self.new)["changed_assessments_with_history"],1)
+
+    def test_H03_forged_archived_prefix_rejected(self):
+        old=copy.deepcopy(self.row["assessment_history"])
+        old[0]["prior_criteria"]=[]
+        self.new[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]=[
+            guard.encode_assessment_history(old)]
+        self.assertViolation("assessment_history_rewritten_or_truncated")
+
+    def test_H03_archive_sha_mismatch_rejected(self):
+        archive=guard.encode_assessment_history(self.row["assessment_history"])
+        archive["plain_sha256"]="0"*64
+        self.new[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]=[archive]
+        self.assertViolation("history_archive_sha256_mismatch")
+
+    def test_H03_invalid_base64_rejected(self):
+        archive=guard.encode_assessment_history(self.row["assessment_history"])
+        archive["payload_base64"]="!not-base64?"
+        self.new[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]=[archive]
+        self.assertViolation("history_archive_decode_failed")
+
+    def test_H03_plaintext_decompression_limit_enforced(self):
+        import base64
+        import hashlib
+        import zlib
+        archive=guard.encode_assessment_history(self.row["assessment_history"])
+        plain=b"X"*(guard.MAX_HISTORY_PLAIN_BYTES+1)
+        archive["payload_base64"]=base64.b64encode(zlib.compress(plain,9)).decode()
+        archive["plain_sha256"]=hashlib.sha256(plain).hexdigest()
+        archive["plain_bytes"]=len(plain)
+        self.new[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]=[archive]
+        self.assertViolation("history_archive_plain_size_exceeded")
+
+    def test_H03_archive_after_first_entry_is_rejected(self):
+        archive=guard.encode_assessment_history(self.row["assessment_history"])
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["assessment_history"].append(archive)
+        self.assertViolation("history_archive_must_be_prefix")
+
+    def test_H03_change_with_only_old_archive_cannot_auto_pass(self):
+        archive=guard.encode_assessment_history(self.row["assessment_history"])
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["assessment_history"]=[archive]
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    def test_H03_unknown_archive_version_rejected(self):
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        row["assessment_history"]=[{"schema":"motionwright.assessment-history-zlib-json/2"}]
+        self.assertViolation("unknown_history_archive_schema")
+
+    def test_H03_empty_history_does_not_claim_a_real_snapshot(self):
+        with self.assertRaisesRegex(guard.HistoryViolation,"empty_history_archive"):
+            guard.encode_assessment_history([])
+
+    def test_H03_rearchiving_existing_archive_remains_lossless(self):
+        original=copy.deepcopy(self.row["assessment_history"])
+        first=guard.encode_assessment_history(original)
+        second=guard.encode_assessment_history([first])
+        self.assertEqual(guard.expand_assessment_history([second]),original)
+        self.assertEqual(first["plain_sha256"],second["plain_sha256"])
+
+    def test_H03_duplicate_archive_json_keys_rejected(self):
+        import base64
+        import hashlib
+        import zlib
+        archive=guard.encode_assessment_history(self.row["assessment_history"])
+        invalid=b'[{"source":"x","source":"y"}]'
+        archive["payload_base64"]=base64.b64encode(zlib.compress(invalid,9)).decode()
+        archive["plain_sha256"]=hashlib.sha256(invalid).hexdigest()
+        archive["plain_bytes"]=len(invalid)
+        archive["entry_count"]=1
+        self.new[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]=[archive]
+        self.assertViolation("duplicate_history_archive_json_field")
+
 if __name__=="__main__":
     unittest.main()
