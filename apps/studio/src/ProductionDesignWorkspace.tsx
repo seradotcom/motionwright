@@ -206,7 +206,7 @@ function SourcesWorkbench({project,scene,commit,busy}:{project:Project;scene:Sce
   </div>;
 }
 
-export default function ProductionDesignWorkspace(props:{project:Project;scene:Scene|null;commit:Commit;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
+export default function ProductionDesignWorkspace(props:{project:Project;scene:Scene|null;commit:Commit; commitCamera:(change:Change)=>Promise<Project>;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
   const [tab,setTab]=useState<"component"|"stage"|"plan"|"brand"|"sources"|"captures"|"data"|"procedural"|"camera"|"impact"|"evaluator"|"identity"|"distillation"|"generation"|"patch"|"inspection"|"contrast">("component");
   const [repairDraft,setRepairDraft]=useState<NativeReviewRepairDraft|null>(null);
   const design=props.project.production_design ?? emptyProductionDesign();

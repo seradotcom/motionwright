@@ -24,7 +24,8 @@ const mix: AudioDraftGroup = { kind: "mix" }, segment: AudioDraftGroup = { kind:
 function saved(source: Project, attempt: AudioSubmission) {
   const value = structuredClone(source); value.revision++;
   const change = attempt.change;
-  if (change.type === "set_mix_intent") value.audio.mix = structuredClone(change.mix);
+  if (change.type === "set_active_voice_track") value.audio.active_voice_track_id = change.track_id;
+  else if (change.type === "set_mix_intent") value.audio.mix = structuredClone(change.mix);
   else if (change.type === "upsert_transcript_segment") value.audio.transcript = [...value.audio.transcript.filter(item => item.id !== change.segment.id), structuredClone(change.segment)];
   else value.audio.cues = [...value.audio.cues.filter(item => item.id !== change.cue.id), structuredClone(change.cue)];
   return value;

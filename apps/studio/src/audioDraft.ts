@@ -1,8 +1,9 @@
-import type { Change, Project, RationalTime } from "./types";
+import type { Change, Project, ProjectEvent, RationalTime } from "./types";
 import { rationalSeconds } from "./types";
 
 /** Editor buffers only. The Project, service grants and SQLite CAS retain authority. */
 export type AudioDraftGroup =
+  | { kind: "active-voice" }
   | { kind: "mix" }
   | { kind: "transcript"; id: string; voiceId: string }
   | { kind: "cue"; id: string }
@@ -11,7 +12,8 @@ export type AudioDraftGroup =
 export interface AudioFieldDraft { raw: string; base: string; baseRevision: number; intent?: true }
 export interface AudioSubmission {
   scope: string; revision: number; raw: Record<string, string>;
-  change: Extract<Change, { type: "set_mix_intent" | "upsert_transcript_segment" | "upsert_audio_cue" }>;
+  selection?: { intentId: string; outcome: "UNKNOWN" | "ACKNOWLEDGED"; diagnostic: string | null };
+  change: Extract<Change, { type: "set_active_voice_track" | "set_mix_intent" | "upsert_transcript_segment" | "upsert_audio_cue" }>;
 }
 export interface AudioDraft {
   schema: "motionwright.audio-draft/1";
@@ -27,12 +29,12 @@ const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 export const audioFieldLabels: Record<string, string> = {
   voiceGain: "Voice gain dB", musicGain: "Music gain dB", targetLufs: "Target LUFS",
   targetPeak: "Target true peak dBFS", start: "Start", end: "End", speaker: "Speaker",
-  text: "Transcript", at: "Cue time", label: "Cue label",
+  text: "Transcript", at: "Cue time", label: "Cue label", trackId: "Active voice",
 };
-export const audioGroupName = (group: AudioDraftGroup) => group.kind === "mix" ? "Mix intent"
+export const audioGroupName = (group: AudioDraftGroup) => group.kind === "active-voice" ? "Active voice" : group.kind === "mix" ? "Mix intent"
   : group.kind === "new-transcript" ? "New transcript" : group.kind === "new-cue" ? "New cue"
   : group.kind === "transcript" ? "Transcript " + group.id : "Cue " + group.id;
-export const audioFields = (group: AudioDraftGroup): string[] => group.kind === "mix"
+export const audioFields = (group: AudioDraftGroup): string[] => group.kind === "active-voice" ? ["trackId"] : group.kind === "mix"
   ? ["voiceGain", "musicGain", "targetLufs", "targetPeak"]
   : group.kind === "transcript" || group.kind === "new-transcript" ? ["start", "end", "speaker", "text"]
   : ["at", "label"];
@@ -41,6 +43,7 @@ export const audioDraftScope = (project: Project, group: AudioDraftGroup) =>
 const seconds = (time: RationalTime) => String(Number(time.num) / Number(time.den));
 const isNew = (group: AudioDraftGroup) => group.kind.startsWith("new-");
 export function audioCanonicalFields(project: Project, group: AudioDraftGroup): Record<string, string> | null {
+  if (group.kind === "active-voice") return { trackId: project.audio.active_voice_track_id ?? "" };
   if (isNew(group)) return Object.fromEntries(audioFields(group).map(field => [field, ""]));
   if (group.kind === "mix") return {
     voiceGain: String(project.audio.mix.voice_gain_db), musicGain: String(project.audio.mix.music_gain_db),
@@ -60,7 +63,7 @@ export function parseAudioNumber(raw: string): number {
   return Number(value);
 }
 function comparable(field: string, raw: string): string {
-  if (["text", "speaker", "label"].includes(field)) return raw.trim();
+  if (["text", "speaker", "label", "trackId"].includes(field)) return raw.trim();
   if (["targetLufs", "targetPeak"].includes(field) && !raw.trim()) return "";
   try {
     const value = parseAudioNumber(raw);
@@ -110,6 +113,7 @@ export function reconcileAudioDraft(draft: AudioDraft, project: Project): AudioD
 }
 export function resolveAudioField(draft: AudioDraft, project: Project, field: string, choice: "saved" | "draft"): AudioDraft {
   assertScope(draft, project);
+  if (draft.group.kind === "active-voice" && draft.awaiting) throw new Error("Review the retained selection before another intent.");
   const source = audioCanonicalFields(project, draft.group);
   if (!source) throw new Error("The source was removed. Keep this recovery copy or discard it explicitly; saving cannot recreate the removed item.");
   return { ...draft, awaiting: null, fields: { ...draft.fields, [field]: {
@@ -138,7 +142,12 @@ export function prepareAudioSubmission(input: AudioDraft, project: Project): Aud
   if (!Object.values(draft.fields).some(audioFieldHasInput)) throw new Error("There are no pending audio inputs.");
   const raw = Object.fromEntries(audioFields(group).map(field => [field, draft.fields[field].raw]));
   let change: AudioSubmission["change"];
-  if (group.kind === "mix") {
+  if (group.kind === "active-voice") {
+    if (project.production_design?.narration_take_lock
+      || project.locks.some(lock => lock.resource === "project:" + project.id && lock.kind === "content")) throw new Error("Voice selection is protected.");
+    if (!uuid.test(raw.trackId) || !project.audio.voice_tracks.some(track => track.id === raw.trackId)) throw new Error("Select an existing measured voice.");
+    change = { type: "set_active_voice_track", track_id: raw.trackId };
+  } else if (group.kind === "mix") {
     const float = (key: string, optional = false) => {
       if (optional && !raw[key].trim()) return null;
       const value = parseAudioNumber(raw[key]);
@@ -167,7 +176,8 @@ export function prepareAudioSubmission(input: AudioDraft, project: Project): Aud
       at: old && !audioFieldHasInput(draft.fields.at) ? structuredClone(old.at) : authoredTime(raw.at),
       label: bounded(raw.label, 512, true, "Cue label"), source_segment_id: old?.source_segment_id ?? null, evidence: "manual" } };
   }
-  return { scope: draft.scope, revision: project.revision, raw, change };
+  return { scope: draft.scope, revision: project.revision, raw, change,
+    ...(group.kind === "active-voice" ? { selection: { intentId: crypto.randomUUID(), outcome: "UNKNOWN" as const, diagnostic: null } } : {}) };
 }
 export function retainAudioSubmission(draft: AudioDraft, submission: AudioSubmission): AudioDraft {
   if (draft.scope !== submission.scope) throw new Error("The submitted audio scope changed.");
@@ -177,6 +187,8 @@ export function retainAudioSubmission(draft: AudioDraft, submission: AudioSubmis
 export function audioSubmissionMatches(project: Project, group: AudioDraftGroup, attempt: AudioSubmission): boolean {
   if (audioDraftScope(project, group) !== attempt.scope || project.revision !== attempt.revision + 1) return false;
   const { change } = attempt;
+  // Project equality, including r+1, cannot acknowledge a lost selection reply.
+  if (change.type === "set_active_voice_track") return false;
   if (change.type === "set_mix_intent") return Object.keys(change.mix).every(key => {
     const field = key as keyof typeof change.mix, expected = change.mix[field], actual = project.audio.mix[field];
     return expected === null ? actual === null : actual !== null && Math.fround(expected) === Math.fround(actual);
@@ -214,6 +226,16 @@ function validStoredAudioTime(value: unknown): value is RationalTime {
 }
 function validateStoredAudioAttempt(attempt: AudioSubmission, group: AudioDraftGroup, creationId: string) {
   const change = attempt.change;
+  if (group.kind === "active-voice") {
+    if (change.type !== "set_active_voice_track" || !uuid.test(change.track_id)
+      || Object.keys(change).sort().join() !== "track_id,type"
+      || Object.keys(attempt.raw).join() !== "trackId" || attempt.raw.trackId !== change.track_id
+      || !attempt.selection || !uuid.test(attempt.selection.intentId)
+      || !["UNKNOWN", "ACKNOWLEDGED"].includes(attempt.selection.outcome)
+      || (attempt.selection.diagnostic !== null && typeof attempt.selection.diagnostic !== "string")) throw new Error("Invalid stored voice selection.");
+    return;
+  }
+  if (attempt.selection !== undefined) throw new Error("Selection outcome is not valid for this audio group.");
   if (group.kind === "mix") {
     if (change.type !== "set_mix_intent" || !change.mix || Object.keys(change.mix).sort().join() !== "music_gain_db,target_lufs,target_true_peak_dbfs,voice_gain_db") throw new Error("Invalid stored mix snapshot.");
     for (const [key, value] of Object.entries(change.mix)) {
@@ -254,7 +276,7 @@ export function decodeAudioRecovery(raw: string, scope: string, group: AudioDraf
     const attempt = draft.awaiting;
     if (!attempt || attempt.scope !== scope || !Number.isSafeInteger(attempt.revision) || attempt.revision < 0
       || !attempt.raw || keys.some(key => typeof attempt.raw[key] !== "string")
-      || !attempt.change || !["set_mix_intent", "upsert_transcript_segment", "upsert_audio_cue"].includes(attempt.change.type)) throw new Error("Invalid pending audio save.");
+      || !attempt.change || !["set_active_voice_track", "set_mix_intent", "upsert_transcript_segment", "upsert_audio_cue"].includes(attempt.change.type)) throw new Error("Invalid pending audio save.");
     validateStoredAudioAttempt(attempt, group, draft.creationId);
     // Decoding never authorizes this stored operation. It is used only for readback acknowledgement;
     // all new mutations are reconstructed from fields and the currently observed Project.
@@ -290,4 +312,154 @@ export function writeAudioRecovery(storage: Storage, recovery: AudioRecovery) {
   if (count + 1 > AUDIO_COPY_LIMIT || total + bytes(raw) > AUDIO_TOTAL_BYTES) throw new Error("Audio recovery capacity is full. Existing drafts and unreadable copies were kept.");
   storage.setItem(key, raw);
   if (storage.getItem(key) !== raw) throw new Error("The audio recovery write could not be read back.");
+}
+
+export interface ActiveVoiceOutcomeReview {
+  scope: string; attemptFingerprint: string; project: Project; events: ProjectEvent[];
+  matchingValueRevisions: number[];
+}
+export const activeVoiceGroup: AudioDraftGroup = { kind: "active-voice" };
+export const activeVoiceIsUnconfirmed = (draft: AudioDraft) =>
+  draft.group.kind === "active-voice" && draft.awaiting?.selection?.outcome === "UNKNOWN";
+export function prepareActiveVoiceSelection(project: Project, trackId: string, intentId: string = crypto.randomUUID()): AudioDraft {
+  if (!uuid.test(intentId)) throw new Error("The local selection intent identity is invalid.");
+  if (project.production_design?.narration_take_lock
+    || project.locks.some(lock => lock.resource === "project:" + project.id && lock.kind === "content")) {
+    throw new Error("The recorded source or project content is protected.");
+  }
+  if (!uuid.test(trackId) || !project.audio.voice_tracks.some(track => track.id === trackId)) {
+    throw new Error("The selected measured voice is no longer in this project.");
+  }
+  if (project.audio.active_voice_track_id === trackId) throw new Error("This measured voice is already active.");
+  const draft = editAudioField(createAudioDraft(project, activeVoiceGroup), "trackId", trackId);
+  const submission = prepareAudioSubmission(draft, project);
+  submission.selection = { intentId, outcome: "UNKNOWN", diagnostic: null };
+  return retainAudioSubmission(draft, submission);
+}
+export function settleActiveVoiceSelection(
+  draft: AudioDraft, attempt: AudioSubmission, outcome: "ACKNOWLEDGED" | "UNKNOWN", diagnostic: string | null,
+): AudioDraft {
+  const current = draft.awaiting;
+  if (draft.group.kind !== "active-voice" || !current?.selection || !attempt.selection
+    || current.scope !== attempt.scope || current.revision !== attempt.revision
+    || current.selection.intentId !== attempt.selection.intentId
+    || JSON.stringify(current.change) !== JSON.stringify(attempt.change)
+    || JSON.stringify(current.raw) !== JSON.stringify(attempt.raw)) return draft;
+  return { ...draft, awaiting: { ...current, selection: { ...current.selection, outcome, diagnostic } } };
+}
+export function retainActiveVoiceRecord(
+  storage: Storage, session: Pick<Storage, "getItem" | "setItem">, pointerKey: string, record: AudioRecovery,
+) {
+  if (record.draft.group.kind !== "active-voice" || !record.draft.awaiting?.selection) throw new Error("A retained selection record is required.");
+  writeAudioRecovery(storage, record);
+  const key = audioRecoveryKey(record.scope, record.writer), raw = JSON.stringify(record);
+  if (storage.getItem(key) !== raw) throw new Error("The selection record could not be verified before sending.");
+  session.setItem(pointerKey, record.writer);
+  if (session.getItem(pointerKey) !== record.writer || storage.getItem(key) !== raw) {
+    throw new Error("The selection pointer or record could not be read back; no Project change was sent.");
+  }
+}
+export interface ActiveVoiceReply {
+  outcome: "NOT_SENT" | "ACKNOWLEDGED" | "UNKNOWN"; record: AudioRecovery;
+  diagnostic: string | null; custodyError: string | null;
+}
+/** One call through the existing mutation coordinator. A local intent ID is
+ * never the API request ID. Retain the original reply before later custody. */
+export async function sendRetainedActiveVoiceSelection(
+  storage: Storage, session: Pick<Storage, "getItem" | "setItem">, pointerKey: string,
+  record: AudioRecovery, commit: (change: Change) => Promise<void>,
+  preserve: (record: AudioRecovery) => void,
+): Promise<ActiveVoiceReply> {
+  const message = (error: unknown): string => {
+    try {
+      const value: unknown = error instanceof Error ? error.message : error;
+      return typeof value === "string" ? value : String(value);
+    } catch {
+      return "The original diagnostic could not be displayed.";
+    }
+  };
+  record = structuredClone(record);
+  if (!activeVoiceIsUnconfirmed(record.draft)) return {
+    outcome: "NOT_SENT", record, diagnostic: "A new selection requires its retained uncertain attempt.", custodyError: null,
+  };
+  try { retainActiveVoiceRecord(storage, session, pointerKey, record); }
+  catch (error) {
+    const diagnostic = message(error);
+    const retained = { ...record, draft: settleActiveVoiceSelection(record.draft, record.draft.awaiting!, "UNKNOWN", "NOT_SENT: " + diagnostic) };
+    const failures: string[] = [];
+    try { preserve(retained); } catch (secondary) { failures.push(message(secondary)); }
+    try { writeAudioRecovery(storage, retained); } catch (secondary) { failures.push(message(secondary)); }
+    return { outcome: "NOT_SENT", record: retained, diagnostic, custodyError: failures.length ? failures.join(" · ") : null };
+  }
+  let outcome: "ACKNOWLEDGED" | "UNKNOWN", diagnostic: string | null = null;
+  try { await commit(record.draft.awaiting!.change); outcome = "ACKNOWLEDGED"; }
+  catch (error) { outcome = "UNKNOWN"; diagnostic = message(error); }
+  const retained = { ...record, updatedAt: Math.max(record.updatedAt, Date.now()),
+    draft: settleActiveVoiceSelection(record.draft, record.draft.awaiting!, outcome, diagnostic) };
+  const custody: string[] = [];
+  // A notification or storage error cannot replace this original outcome.
+  try { preserve(retained); } catch (error) { custody.push(message(error)); }
+  try { writeAudioRecovery(storage, retained); } catch (error) { custody.push(message(error)); }
+  return { outcome, record: retained, diagnostic, custodyError: custody.length ? custody.join(" · ") : null };
+}
+export interface ActiveVoiceOutcomeTransport {
+  readProject: (id: string) => Promise<Project>;
+  readHistory: (project: Project, afterRevision: number, limit: number) => Promise<ProjectEvent[]>;
+}
+/** Read-only observation of the existing Project and journal. Their change
+ * values cannot identify or acknowledge a request whose response was lost. */
+export async function inspectActiveVoiceOutcome(
+  draft: AudioDraft, selected: Project, transport: ActiveVoiceOutcomeTransport,
+): Promise<ActiveVoiceOutcomeReview> {
+  assertScope(draft, selected);
+  if (!activeVoiceIsUnconfirmed(draft)) throw new Error("There is no unconfirmed voice selection to inspect.");
+  const attempt = structuredClone(draft.awaiting!);
+  const observed = structuredClone(await transport.readProject(selected.id));
+  if (audioDraftScope(observed, activeVoiceGroup) !== draft.scope
+    || JSON.stringify(observed) !== JSON.stringify(selected)) {
+    throw new Error("The saved Project changed. Reload it before inspecting this selection.");
+  }
+  if (!Number.isSafeInteger(observed.revision) || observed.revision < attempt.revision
+    || observed.revision - attempt.revision > 2048) throw new Error("The selection history range is unavailable or exceeds its review bound.");
+  const events: ProjectEvent[] = [];
+  let cursor = attempt.revision;
+  do {
+    const page = await transport.readHistory(observed, cursor, 256);
+    if (!Array.isArray(page) || page.length > 256 || (!page.length && cursor < observed.revision)) {
+      throw new Error("The selection history is incomplete.");
+    }
+    for (const event of page) {
+      if (!event || !Number.isSafeInteger(event.revision) || event.revision !== cursor + 1
+        || event.revision > observed.revision || !event.change || typeof event.change.type !== "string"
+        || typeof event.created_at !== "string" || !event.created_at) {
+        throw new Error("The saved history changed or is not a contiguous revision sequence.");
+      }
+      events.push(structuredClone(event)); cursor = event.revision;
+    }
+  } while (cursor < observed.revision);
+  const after = await transport.readProject(selected.id);
+  if (JSON.stringify(after) !== JSON.stringify(observed)) throw new Error("The saved Project changed during inspection. Inspect it again.");
+  const trackId = attempt.change.type === "set_active_voice_track" ? attempt.change.track_id : null;
+  return { scope: draft.scope, attemptFingerprint: JSON.stringify(attempt), project: observed, events,
+    matchingValueRevisions: events.filter(event => event.change.type === "set_active_voice_track"
+      && event.change.track_id === trackId).map(event => event.revision) };
+}
+export function activeVoiceReviewMatches(draft: AudioDraft, project: Project, review: ActiveVoiceOutcomeReview | null): boolean {
+  return Boolean(review && activeVoiceIsUnconfirmed(draft) && review.scope === draft.scope
+    && audioDraftScope(project, activeVoiceGroup) === draft.scope
+    && review.attemptFingerprint === JSON.stringify(draft.awaiting)
+    && JSON.stringify(review.project) === JSON.stringify(project));
+}
+/** The old record remains unchanged. Only an explicit later click can retain
+ * and send a new selection. Reload before that click restores the old UNKNOWN. */
+export function prepareSeparateActiveVoiceIntent(
+  storage: Storage, record: AudioRecovery, project: Project, review: ActiveVoiceOutcomeReview,
+): AudioDraft {
+  if (!activeVoiceReviewMatches(record.draft, project, review)) throw new Error("Inspect this selection against the current saved Project first.");
+  const key = audioRecoveryKey(record.scope, record.writer), raw = storage.getItem(key);
+  if (raw === null) throw new Error("Retain the earlier selection record before starting another intent.");
+  const decoded = decodeAudioRecovery(raw, record.scope, activeVoiceGroup, record.writer);
+  if (JSON.stringify(decoded.draft) !== JSON.stringify(record.draft)) throw new Error("The earlier selection record changed. Inspect it again.");
+  if (storage.getItem(key) !== raw) throw new Error("The earlier selection record changed during readback.");
+  return createAudioDraft(project, activeVoiceGroup);
 }
