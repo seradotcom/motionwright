@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Existing static scene or one original 120-frame camera job
+        description: Source contracts, existing static scene, or one original 120-frame camera job
         type: choice
-        options: [static-scene, camera120]
+        options: [source-contracts, static-scene, camera120]
         default: static-scene
       evidence_recipient_spki:
         description: Canonical RSA-3072 public SPKI DER in base64 for private originals
@@ -60,15 +60,40 @@ env:
   SEMWRIGHT_TEST_MANIM_RUNTIME: /tmp/motionwright-manim-runtime
 
 jobs:
-  native-manim-roundtrip:
+  source-contracts:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
-      - name: Require 19 complete source-bound camera pixel regressions
+      - name: Validate requested workflow scenario
+        env:
+          WORKFLOW_EVENT: ${{ github.event_name }}
+          MANIM_REQUESTED_SCENARIO: ${{ inputs.scenario }}
+        run: |
+          python3 -B - <<'PY'
+          import os
+          event = os.environ["WORKFLOW_EVENT"]
+          scenario = os.environ["MANIM_REQUESTED_SCENARIO"]
+          if event == "workflow_dispatch":
+              if scenario not in {"source-contracts", "static-scene", "camera120"}:
+                  raise SystemExit("Unsupported Manim workflow scenario")
+          elif event != "pull_request":
+              raise SystemExit("Unsupported Manim workflow event")
+          PY
+
+      - name: Install pinned private-custody test dependencies outside the checkout
+        run: |
+          python3 -m venv "$RUNNER_TEMP/manim-custody-venv"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes \
+            -r tooling/requirements/mlt-g2-custody.txt
+
+      - name: Require 24 complete source-bound camera pixel regressions
         run: |
           python3 -B tooling/ci_test_runner.py \
             --pattern test_native_manim_camera_pixels.py \
@@ -81,16 +106,9 @@ jobs:
           assert value["status"] == "PASS" and value["exit_code"] == 0
           assert len(value["steps"]) == 1
           counts = value["steps"][0]["counts"]
-          assert counts["tests_run"] == counts["passed"] == 19
+          assert counts["tests_run"] == counts["passed"] == 24
           assert counts["skipped"] == counts["expected_failures"] == 0
           PY
-
-      - name: Install pinned private-custody test dependencies outside the checkout
-        run: |
-          python3 -m venv "$RUNNER_TEMP/manim-custody-venv"
-          "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
-            --disable-pip-version-check --require-hashes \
-            -r tooling/requirements/mlt-g2-custody.txt
 
       - name: Verify camera original-custody and publication regressions
         run: |
@@ -104,9 +122,41 @@ jobs:
           value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-camera-custody-g0/report.json").read_text())
           counts = value["steps"][0]["counts"]
           assert value["status"] == "PASS" and value["exit_code"] == 0 and len(value["steps"]) == 1
-          assert counts["tests_run"] == counts["passed"] == 26
+          assert counts["tests_run"] == counts["passed"] == 30
           assert counts["skipped"] == counts["expected_failures"] == 0
           PY
+
+      - name: Retain original source-contract reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manim-camera-source-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-camera-pixel-g0/
+            ${{ runner.temp }}/manim-camera-custody-g0/
+          if-no-files-found: error
+          retention-days: 14
+
+  native-manim-roundtrip:
+    needs: source-contracts
+    if: >-
+      ${{ github.event_name == 'pull_request' ||
+          (github.event_name == 'workflow_dispatch' &&
+           (inputs.scenario == 'static-scene' ||
+            inputs.scenario == 'camera120')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned private-custody test dependencies outside the checkout
+        run: |
+          python3 -m venv "$RUNNER_TEMP/manim-custody-venv"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes \
+            -r tooling/requirements/mlt-g2-custody.txt
 
       - name: Validate one original camera dispatch and public recovery key
         if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'camera120'
