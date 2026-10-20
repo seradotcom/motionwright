@@ -7,11 +7,15 @@ ignored knowledge directory.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import zlib
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 LEDGERS = (
@@ -67,6 +71,114 @@ def prefix(previous: list, candidate: list, label: str) -> None:
         raise HistoryViolation(label + "_rewritten_or_truncated")
 
 
+# H03: bounded, reversible lossless history archive for long source lineages.
+HISTORY_ARCHIVE_SCHEMA = "motionwright.assessment-history-zlib-json/1"
+MAX_HISTORY_PLAIN_BYTES = 1_048_576
+MAX_HISTORY_ENCODED_BYTES = 1_048_576
+
+
+def _history_canonical(value: list) -> bytes:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8")
+
+
+def _history_pairs_unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise HistoryViolation("duplicate_history_archive_json_field")
+        result[key] = value
+    return result
+
+
+def _history_archive_entry(value: object) -> bool:
+    return isinstance(value, dict) and value.get("schema") == HISTORY_ARCHIVE_SCHEMA
+
+
+def encode_assessment_history(history: list) -> dict:
+    if not isinstance(history, list):
+        raise HistoryViolation("invalid_assessment_history")
+    entries = expand_assessment_history(history)
+    if not entries:
+        raise HistoryViolation("empty_history_archive")
+    plain = _history_canonical(entries)
+    if len(plain) > MAX_HISTORY_PLAIN_BYTES:
+        raise HistoryViolation("history_archive_plain_size_exceeded")
+    compressed = zlib.compress(plain, level=9)
+    if len(compressed) > MAX_HISTORY_ENCODED_BYTES:
+        raise HistoryViolation("history_archive_encoded_size_exceeded")
+    return {
+        "schema": HISTORY_ARCHIVE_SCHEMA,
+        "encoding": "zlib+base64",
+        "entry_count": len(entries),
+        "plain_bytes": len(plain),
+        "plain_sha256": hashlib.sha256(plain).hexdigest(),
+        "payload_base64": base64.b64encode(compressed).decode("ascii"),
+    }
+
+
+def _decode_assessment_history_archive(value: dict) -> list:
+    if set(value) != {"schema", "encoding", "entry_count", "plain_bytes",
+                      "plain_sha256", "payload_base64"}:
+        raise HistoryViolation("history_archive_envelope_changed")
+    if value["encoding"] != "zlib+base64":
+        raise HistoryViolation("history_archive_unknown_encoding")
+    count = value["entry_count"]
+    length = value["plain_bytes"]
+    if type(count) is not int or count <= 0 or count > 10000:
+        raise HistoryViolation("history_archive_entry_count_invalid")
+    if type(length) is not int or length <= 0 or length > MAX_HISTORY_PLAIN_BYTES:
+        raise HistoryViolation("history_archive_plain_size_exceeded")
+    digest = value["plain_sha256"]
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise HistoryViolation("history_archive_sha256_invalid")
+    raw = value["payload_base64"]
+    if not isinstance(raw, str) or len(raw) > (MAX_HISTORY_ENCODED_BYTES * 4 // 3 + 8):
+        raise HistoryViolation("history_archive_encoded_size_exceeded")
+    try:
+        compressed = base64.b64decode(raw, validate=True)
+        if not compressed or len(compressed) > MAX_HISTORY_ENCODED_BYTES:
+            raise HistoryViolation("history_archive_encoded_size_exceeded")
+        decoder = zlib.decompressobj()
+        plain = decoder.decompress(compressed, MAX_HISTORY_PLAIN_BYTES + 1)
+        if (len(plain) != length or not decoder.eof or
+                decoder.unconsumed_tail or decoder.unused_data):
+            raise HistoryViolation("history_archive_truncated_or_oversized")
+        if hashlib.sha256(plain).hexdigest() != digest:
+            raise HistoryViolation("history_archive_sha256_mismatch")
+        entries = json.loads(plain.decode("utf-8"), object_pairs_hook=_history_pairs_unique)
+    except (binascii.Error, zlib.error, UnicodeError, json.JSONDecodeError,
+            ValueError) as exc:
+        if isinstance(exc, HistoryViolation):
+            raise
+        raise HistoryViolation("history_archive_decode_failed") from exc
+    if (not isinstance(entries, list) or len(entries) != count or
+            not all(isinstance(x, dict) and "schema" not in x for x in entries)):
+        raise HistoryViolation("history_archive_entries_invalid")
+    if _history_canonical(entries) != plain:
+        raise HistoryViolation("history_archive_noncanonical_json")
+    return entries
+
+
+def expand_assessment_history(history: list) -> list:
+    if not isinstance(history, list):
+        raise HistoryViolation("invalid_assessment_history")
+    expanded = []
+    for index, entry in enumerate(history):
+        if _history_archive_entry(entry):
+            if index != 0:
+                raise HistoryViolation("history_archive_must_be_prefix")
+            expanded.extend(_decode_assessment_history_archive(entry))
+        elif isinstance(entry, dict) and "schema" in entry and str(entry["schema"]).startswith(
+                "motionwright.assessment-history-"):
+            raise HistoryViolation("unknown_history_archive_schema")
+        elif isinstance(entry, dict):
+            expanded.append(entry)
+        else:
+            raise HistoryViolation("invalid_assessment_history_entry")
+    return expanded
+
+
 def scoped_rows(document: dict) -> dict:
     return fixed_identity_map(
         document.get("requirements", []) + document.get("cases", []) +
@@ -76,8 +188,8 @@ def scoped_rows(document: dict) -> dict:
 def review_row(before: dict, after: dict) -> bool:
     if after.get("source_record_sha256") != before.get("source_record_sha256"):
         raise HistoryViolation("canonical_row_identity_changed")
-    oldhistory = before.get("assessment_history")
-    newhistory = after.get("assessment_history")
+    oldhistory = expand_assessment_history(before.get("assessment_history"))
+    newhistory = expand_assessment_history(after.get("assessment_history"))
     prefix(oldhistory, newhistory, "assessment_history")
     old = before.get("technical_assessment")
     new = after.get("technical_assessment")
