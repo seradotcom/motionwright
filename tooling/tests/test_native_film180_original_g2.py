@@ -348,6 +348,35 @@ class Film180G2SourceTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.Film180G2Rejected, "IHDR"):
                 runner.original_png_color_types(directory)
 
+    def test_film_original_frames_directory_symlink_is_rejected_before_hashes(self):
+        # Real Windows symlink creation can require elevated permissions. Mock
+        # only the filesystem's symlink observation so this negative runs on
+        # both host platforms without making foreign filesystem references.
+        actual = Path.is_symlink
+        with tempfile.TemporaryDirectory() as temp:
+            root, manifest = self.native_manifest(Path(temp))
+            with mock.patch.object(
+                Path, "is_symlink",
+                lambda path: path.name == "frames" or actual(path),
+            ):
+                with self.assertRaisesRegex(
+                    runner.Film180G2Rejected, "frames_symlink_not_admitted"
+                ):
+                    runner.original_png_index(root, manifest)
+
+    def test_film_owner_output_root_symlink_is_not_trusted(self):
+        actual = Path.is_symlink
+        with tempfile.TemporaryDirectory() as temp:
+            root, manifest = self.native_manifest(Path(temp))
+            with mock.patch.object(
+                Path, "is_symlink",
+                lambda path: path == root or actual(path),
+            ):
+                with self.assertRaisesRegex(
+                    runner.Film180G2Rejected, "frames_symlink_not_admitted"
+                ):
+                    runner.original_png_index(root, manifest)
+
     def test_source_binding_is_closed_to_new_operation_stage_names(self):
         self.assertEqual(runner.ORIGINAL_AUDIO_OWNER_NAME, "firstparty-film180-source.wav")
         self.assertEqual(runner.STAGE_TIMEOUT, 1500)

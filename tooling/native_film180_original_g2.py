@@ -417,10 +417,14 @@ def original_png_index(output_root: Path, film: dict, *, frames: int = 180) -> d
             and directory not in (".", ".."),
             "native_Film_artifact_directory_not_closed")
     root = output_root / directory
+    frame_root = root / "frames"
     manifest_file = root / "artifact-manifest.json"
-    require(root.is_dir() and not root.is_symlink()
+    require(output_root.is_absolute()
+            and output_root.is_dir() and not output_root.is_symlink()
+            and root.is_dir() and not root.is_symlink()
+            and frame_root.is_dir() and not frame_root.is_symlink()
             and manifest_file.is_file() and not manifest_file.is_symlink(),
-            "native_Film_artifact_manifest_missing")
+            "native_Film_artifact_manifest_or_frames_symlink_not_admitted")
     require(digest(manifest_file) == artifact.get("manifest_sha256"),
             "native_Film_manifest_digest_not_original")
     manifest = json.loads(manifest_file.read_bytes())
@@ -637,6 +641,9 @@ def native_png_vs_h264_observations(
     """
     require(stage in {"original", "edited"}, "PSN_observation_source_stage_not_admitted")
     require(output_root.is_absolute() and output_root.is_dir()
+            and not output_root.is_symlink()
+            and master_path.is_absolute() and master_path.is_file()
+            and not master_path.is_symlink()
             and owner_evidence.is_absolute()
             and owner_evidence.is_dir()
             and not owner_evidence.is_symlink(),
