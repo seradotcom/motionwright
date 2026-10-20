@@ -301,6 +301,7 @@ test("canvas hierarchy style relations and safe removal are versioned", async ({
   await expect(page.locator(".canvas-tree-row").filter({ hasText: "Shape 2" })).toHaveCount(0);
 
   await page.locator(".canvas-tree-row").filter({ hasText: "Group 1" }).click();
+  await page.getByRole("button", { name: "Review Canvas draft on current revision", exact: true }).click();
   await page.getByRole("button", { name: "Remove object", exact: true }).click();
   await expect(page.locator(".canvas-tree-row").filter({ hasText: "Group 1" })).toHaveCount(0);
 });

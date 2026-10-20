@@ -311,3 +311,557 @@ describe("bounded Canvas recovery storage", () => {
     expect(full).toBe(true); expect(storage.length).toBeGreaterThan(20); expect(storage.length).toBeLessThan(CANVAS_COPY_LIMIT);
   });
 });
+
+describe("Canvas recovery writes are atomic", () => {
+  const seeded = () => {
+    const storage = new MemoryStorage(), base = draftFor(source());
+    const older = copy(null, "older-clean", 10), newer = copy(null, "newer-clean", 11);
+    storage.setItem(canvasRecoveryKey(older.scope, older.writerId), JSON.stringify(older));
+    storage.setItem(canvasRecoveryKey(newer.scope, newer.writerId), JSON.stringify(newer));
+    return { storage, base, older, newer };
+  };
+
+  it("does not remove old clean copies before a rejected write", () => {
+    const { storage, base, older, newer } = seeded();
+    const before = new Map(storage.data);
+    storage.failWrites = true;
+    const attempted = copy(editCanvasField(base, "text", "A human decision"), "new-author", 12);
+    expect(() => retain(storage, attempted)).toThrow(/QuotaExceededError/);
+    expect(storage.data).toEqual(before);
+    expect(storage.getItem(canvasRecoveryKey(older.scope, older.writerId))).toBe(JSON.stringify(older));
+    expect(storage.getItem(canvasRecoveryKey(newer.scope, newer.writerId))).toBe(JSON.stringify(newer));
+  });
+
+  it("retires only same-scope old clean copies after confirmed clean replacement", () => {
+    const { storage, base, older, newer } = seeded();
+    const replacement = copy(null, "new-clean", 20), key = canvasRecoveryKey(replacement.scope, replacement.writerId);
+    const originalSet = storage.setItem.bind(storage);
+    storage.setItem = (path, raw) => {
+      if (path === key) {
+        expect(storage.getItem(canvasRecoveryKey(older.scope, older.writerId))).not.toBeNull();
+        expect(storage.getItem(canvasRecoveryKey(newer.scope, newer.writerId))).not.toBeNull();
+      }
+      originalSet(path, raw);
+    };
+    const retained = retain(storage, replacement);
+    expect(storage.getItem(key)).toBe(retained);
+    expect(storage.getItem(canvasRecoveryKey(older.scope, older.writerId))).toBeNull();
+    expect(storage.getItem(canvasRecoveryKey(newer.scope, newer.writerId))).toBeNull();
+    expect(readCanvasRecoveries(storage, base.scope).entries[0].value.draft).toBeNull();
+  });
+
+  it("preserves every existing copy when storage silently fails to write", () => {
+    const { storage, base } = seeded();
+    const before = new Map(storage.data), attempted = copy(editCanvasField(base, "text", "Kept input"), "silent-writer", 21);
+    const key = canvasRecoveryKey(attempted.scope, attempted.writerId);
+    const originalSet = storage.setItem.bind(storage);
+    storage.setItem = (path, raw) => { if (path !== key) originalSet(path, raw); };
+    expect(() => retain(storage, attempted)).toThrow(/could not be verified/);
+    expect(storage.data).toEqual(before);
+  });
+
+  it("does not evict 128 clean copies to hide a capacity error", () => {
+    const storage = new MemoryStorage(), base = draftFor(source());
+    for (let index = 0; index < CANVAS_COPY_LIMIT; index++) {
+      const saved = copy(null, "old-clean-" + index, index);
+      storage.setItem(canvasRecoveryKey(saved.scope, saved.writerId), JSON.stringify(saved));
+    }
+    const before = new Map(storage.data);
+    expect(() => retain(storage, copy(editCanvasField(base, "text", "New work"), "newest", 129)))
+      .toThrow(/full/);
+    expect(storage.data).toEqual(before);
+  });
+});
+
+describe("Canvas session recovery pointer admission", () => {
+  it("confirms the chosen writer or fails closed on silent and thrown writes", async () => {
+    const { writeCanvasSessionPointer } = await import("./canvasWorkspaceDraft");
+    const entries = new Map<string, string>();
+    const read = (key: string) => entries.get(key) ?? null;
+    const working = { getItem: read, setItem: (key: string, value: string) => { entries.set(key, value); } };
+    writeCanvasSessionPointer(working, "canvas-session", "window-1");
+    expect(read("canvas-session")).toBe("window-1");
+    expect(() => writeCanvasSessionPointer({ getItem: read, setItem: () => {} }, "canvas-session", "window-2"))
+      .toThrow(/not confirmed/);
+    expect(read("canvas-session")).toBe("window-1");
+    expect(() => writeCanvasSessionPointer({ getItem: read, setItem: () => { throw new Error("session denied"); } },
+      "canvas-session", "window-2")).toThrow(/session denied/);
+    expect(read("canvas-session")).toBe("window-1");
+  });
+});
+
+describe("Canvas style uses one recoverable, revision-bound authoring session", () => {
+  it("preserves fill, typography and exact raw values through ten other author revisions", async () => {
+    const { CANVAS_STYLE_FIELDS, canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject);
+    const scene = project.scenes[0], first = scene.nodes[0];
+    let draft = createCanvasDraft(project, scene.id, first.id);
+    for (const [field, raw] of Object.entries({ fill: "#F7EAD7", font_size: "55", line_height: "1.35", font_weight: "600" })) {
+      draft = editCanvasField(draft, field as typeof CANVAS_STYLE_FIELDS[number], raw);
+    }
+    for (let index = 0; index < 10; index++) {
+      project = structuredClone(project); project.revision++;
+      project.scenes[0].nodes[0].text = "External copy " + index;
+      draft = reconcileCanvasDraft(draft, project);
+    }
+    expect(draft.fields.fill.raw).toBe("#F7EAD7");
+    expect(draft.fields.font_size.raw).toBe("55");
+    expect(draft.fields.line_height.raw).toBe("1.35");
+    expect(canvasGroupIssue(draft, project, "style")).toBeNull();
+    const saved = prepareCanvasSubmission(draft, project, "style", "style-10").change;
+    expect(saved.type).toBe("update_canvas_style");
+    if (saved.type === "update_canvas_style") expect(saved.style).toMatchObject({ fill: "#F7EAD7", font_size: 55, line_height: 1.35 });
+  });
+
+  it("rejects partial typography and composes unrelated saved style changes", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject);
+    let draft = editCanvasField(createCanvasDraft(project, project.scenes[0].id, project.scenes[0].nodes[0].id), "font_size", "1e");
+    expect(canvasGroupIssue(draft, project, "style")).toContain("Font size");
+    expect(() => prepareCanvasSubmission(draft, project, "style", "no")).toThrow();
+    draft = editCanvasField(draft, "font_size", "63");
+    project = structuredClone(project); project.revision++; project.scenes[0].nodes[0].style.stroke = "#AA3412";
+    draft = reconcileCanvasDraft(draft, project);
+    expect(canvasGroupIssue(draft, project, "style")).toBeNull();
+    const change = prepareCanvasSubmission(draft, project, "style", "composed").change;
+    if (change.type === "update_canvas_style") expect(change.style).toMatchObject({ stroke: "#AA3412", font_size: 63 });
+  });
+
+  it("keeps a later human style decision through the saved acknowledgement", async () => {
+    const { canvasSubmissionMatches } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject);
+    let draft = editCanvasField(createCanvasDraft(project, project.scenes[0].id, project.scenes[0].nodes[0].id), "fill", "#132435");
+    const submitted = prepareCanvasSubmission(draft, project, "style", "style-attempt");
+    draft = editCanvasField(submitted.draft, "fill", "#ABCDEF");
+    const saved = structuredClone(project); saved.revision++;
+    if (submitted.change.type !== "update_canvas_style") throw new Error("Expected style");
+    saved.scenes[0].nodes[0].style = submitted.change.style;
+    expect(canvasSubmissionMatches(saved, draft, submitted.submission)).toBe(true);
+    draft = reconcileCanvasDraft(draft, saved);
+    expect(draft.awaiting).toBeNull();
+    expect(draft.fields.fill.raw).toBe("#ABCDEF");
+    const next = prepareCanvasSubmission(draft, saved, "style", "later");
+    if (next.change.type === "update_canvas_style") expect(next.change.style.fill).toBe("#ABCDEF");
+  });
+
+  it("prevents overwriting an overlapping peer fill without explicit review", async () => {
+    const { canvasGroupIssue, canvasDraftConflicts, resolveCanvasField } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject);
+    let draft = editCanvasField(createCanvasDraft(project, project.scenes[0].id, project.scenes[0].nodes[0].id), "fill", "#123456");
+    project = structuredClone(project);project.revision++;project.scenes[0].nodes[0].style.fill = "#888888";
+    draft = reconcileCanvasDraft(draft, project);
+    expect(canvasDraftConflicts(draft,project).some(c => c.field === "fill")).toBe(true);
+    expect(canvasGroupIssue(draft,project,"style")).toContain("overlapping");
+    expect(() => prepareCanvasSubmission(draft,project,"style","blocked")).toThrow();
+    draft = resolveCanvasField(draft,project,"fill","draft");
+    const committed = prepareCanvasSubmission(draft,project,"style","chosen");
+    if (committed.change.type === "update_canvas_style") expect(committed.change.style.fill).toBe("#123456");
+  });
+
+  it("keeps optional shape typography null instead of silently converting to zero", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    const project = structuredClone(fixtureProject), shape = project.scenes[0].nodes.find(node => node.kind === "shape")!;
+    let draft = createCanvasDraft(project,project.scenes[0].id,shape.id);
+    expect(canvasGroupIssue(draft,project,"style")).toContain("already match");
+    draft = editCanvasField(draft,"stroke","#AE2177");
+    const change = prepareCanvasSubmission(draft,project,"style","shape").change;
+    expect(change.type).toBe("update_canvas_style");
+    if(change.type === "update_canvas_style") {
+      expect(change.style.stroke).toBe("#AE2177");
+      expect(change.style.font_size).toBeNull();
+      expect(change.style.line_height).toBeNull();
+      expect(change.style.font_weight).toBeNull();
+    }
+  });
+
+  it("upgrades valid old v1 Canvas copies without dropping text and numeric drafts", async () => {
+    const { CANVAS_STYLE_FIELDS } = await import("./canvasWorkspaceDraft");
+    const project = structuredClone(fixtureProject);
+    let draft = editCanvasField(createCanvasDraft(project,project.scenes[0].id,project.scenes[0].nodes[0].id),"text","Kept legacy content");
+    draft = editCanvasField(draft,"x","345");
+    const legacy = structuredClone(draft);
+    legacy.schema = "motionwright.canvas-draft/1";
+    for (const field of CANVAS_STYLE_FIELDS) delete (legacy.fields as Partial<typeof draft.fields>)[field];
+    const scope = draft.scope, raw = JSON.stringify({schema:"motionwright.canvas-recovery/1",scope,writerId:"old",updatedAt:1,draft:legacy});
+    const decoded = decodeCanvasRecovery(raw,scope,"old").draft!;
+    const migrated = reconcileCanvasDraft(decoded,project);
+    expect(migrated.schema).toBe("motionwright.canvas-draft/5");
+    expect(migrated.fields.text.raw).toBe("Kept legacy content");
+    expect(migrated.fields.x.raw).toBe("345");
+    expect(migrated.fields.font_size.raw).toBe(String(project.scenes[0].nodes[0].style.font_size));
+  });
+});
+
+describe("Canvas style lock authority", () => {
+  it("rejects locked style without losing the author's draft", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    const original = structuredClone(fixtureProject);
+    const scene = original.scenes[0], node = scene.nodes[0];
+    const draft = editCanvasField(createCanvasDraft(original,scene.id,node.id),"fill","#F7EAD7");
+    const withSceneLock = structuredClone(original);
+    withSceneLock.locks.push({id:"style-scene-lock",resource:"scene:"+scene.id,kind:"style",note:"Approved art direction"});
+    expect(canvasGroupIssue(draft,withSceneLock,"style")).toContain("lock");
+    expect(() => prepareCanvasSubmission(draft,withSceneLock,"style","blocked")).toThrow();
+    const withNodeLock = structuredClone(original);
+    withNodeLock.scenes[0].nodes[0].property_locks.push("style");
+    expect(canvasGroupIssue(draft,withNodeLock,"style")).toContain("lock");
+    expect(draft.fields.fill.raw).toBe("#F7EAD7");
+  });
+});
+
+describe("Canvas parent and Z authoring uses the same persistent revision-scoped draft", () => {
+  it("retains parent and exact Z input through ten independent human text revisions", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject), scene = project.scenes[0];
+    const node = scene.nodes[0], parentId = scene.nodes[1].id;
+    let draft = createCanvasDraft(project, scene.id, node.id);
+    draft = editCanvasField(draft,"parent_id",parentId);
+    draft = editCanvasField(draft,"z_index","8");
+    for(let i=0;i<10;i++){
+      project = structuredClone(project); project.revision++;
+      project.scenes[0].nodes[0].text = "Separate author note "+i;
+      draft = reconcileCanvasDraft(draft,project);
+    }
+    expect(draft.fields.parent_id.raw).toBe(parentId);
+    expect(draft.fields.z_index.raw).toBe("8");
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toBeNull();
+    expect(prepareCanvasSubmission(draft,project,"hierarchy","hier-10").change).toMatchObject({
+      type:"reparent_canvas_node",parent_id:parentId,z_index:8,
+    });
+  });
+
+  it("retains incomplete Z raw and rejects invalid parents before any service operation", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    const project = structuredClone(fixtureProject), scene = project.scenes[0], node = scene.nodes[0];
+    let draft = editCanvasField(createCanvasDraft(project,scene.id,node.id),"z_index","1e");
+    expect(draft.fields.z_index.raw).toBe("1e");
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toContain("Z order");
+    expect(() => prepareCanvasSubmission(draft,project,"hierarchy","bad")).toThrow();
+    draft = editCanvasField(draft,"z_index","2147483648");
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toContain("Z order");
+    draft = editCanvasField(draft,"z_index","4");
+    draft = editCanvasField(draft,"parent_id","not-a-saved-object");
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toContain("same saved scene");
+    expect(() => prepareCanvasSubmission(draft,project,"hierarchy","invalid-parent")).toThrow();
+  });
+
+  it("requires both parent and Z property locks to be clear for the coupled Rust command", async () => {
+    const { canvasGroupIssue } = await import("./canvasWorkspaceDraft");
+    const source = structuredClone(fixtureProject), scene = source.scenes[0], node = scene.nodes[0];
+    for(const property of ["parent","order"] as const){
+      const locked = structuredClone(source);locked.scenes[0].nodes[0].property_locks.push(property);
+      const draft = editCanvasField(createCanvasDraft(locked,scene.id,node.id),"z_index","7");
+      expect(canvasGroupIssue(draft,locked,"hierarchy")).toContain("lock");
+      expect(() => prepareCanvasSubmission(draft,locked,"hierarchy","locked")).toThrow();
+    }
+    const sceneLocked = structuredClone(source);
+    sceneLocked.locks.push({id:"hier-lock",resource:"scene:"+scene.id,kind:"content",note:"Human review"});
+    const retained = editCanvasField(createCanvasDraft(sceneLocked,scene.id,node.id),"z_index","9");
+    expect(canvasGroupIssue(retained,sceneLocked,"hierarchy")).toContain("lock");
+    expect(retained.fields.z_index.raw).toBe("9");
+  });
+
+  it("acknowledges the saved reparent operation but keeps a later edited Z value", async () => {
+    const { canvasSubmissionMatches } = await import("./canvasWorkspaceDraft");
+    const project = structuredClone(fixtureProject),scene=project.scenes[0],first=scene.nodes[0];
+    let draft = createCanvasDraft(project,scene.id,first.id);
+    draft = editCanvasField(draft,"parent_id",scene.nodes[1].id);
+    draft = editCanvasField(draft,"z_index","6");
+    const attempted = prepareCanvasSubmission(draft,project,"hierarchy","hier-ack");
+    draft = editCanvasField(attempted.draft,"z_index","9");
+    const saved=structuredClone(project);saved.revision++;
+    if(attempted.change.type!=="reparent_canvas_node")throw new Error("Wrong command");
+    saved.scenes[0].nodes[0].parent_id=attempted.change.parent_id;
+    saved.scenes[0].nodes[0].z_index=attempted.change.z_index;
+    expect(canvasSubmissionMatches(saved,draft,attempted.submission)).toBe(true);
+    draft=reconcileCanvasDraft(draft,saved);
+    expect(draft.awaiting).toBeNull();
+    expect(draft.fields.z_index.raw).toBe("9");
+    expect(draft.fields.parent_id.raw).toBe(scene.nodes[1].id);
+    expect(prepareCanvasSubmission(draft,saved,"hierarchy","later").change).toMatchObject({z_index:9});
+  });
+
+  it("requires explicit choice on overlapping peer Z changes and rejects parent cycles", async () => {
+    const { canvasGroupIssue, canvasDraftConflicts, resolveCanvasField } = await import("./canvasWorkspaceDraft");
+    let project=structuredClone(fixtureProject),scene=project.scenes[0],first=scene.nodes[0];
+    let draft=editCanvasField(createCanvasDraft(project,scene.id,first.id),"z_index","9");
+    project=structuredClone(project);project.revision++;project.scenes[0].nodes[0].z_index=6;
+    draft=reconcileCanvasDraft(draft,project);
+    expect(canvasDraftConflicts(draft,project).some(conflict=>conflict.field==="z_index")).toBe(true);
+    expect(canvasGroupIssue(draft,project,"hierarchy")).toContain("overlapping");
+    const reviewed=resolveCanvasField(draft,project,"z_index","draft");
+    expect(prepareCanvasSubmission(reviewed,project,"hierarchy","chosen").change).toMatchObject({z_index:9});
+    const cyclic=structuredClone(fixtureProject);
+    cyclic.scenes[0].nodes[1].parent_id=cyclic.scenes[0].nodes[0].id;
+    const candidate=editCanvasField(createCanvasDraft(cyclic,scene.id,first.id),"parent_id",cyclic.scenes[0].nodes[1].id);
+    expect(canvasGroupIssue(candidate,cyclic,"hierarchy")).toContain("descendant");
+  });
+
+  it("migrates valid v2 recovery without losing text, style or its author intent", async () => {
+    const { CANVAS_HIERARCHY_FIELDS } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],first=scene.nodes[0];
+    let draft=createCanvasDraft(project,scene.id,first.id);
+    draft=editCanvasField(draft,"text","Kept human copy");
+    draft=editCanvasField(draft,"fill","#F7EAD7");
+    const previous=structuredClone(draft) as typeof draft; previous.schema="motionwright.canvas-draft/2";
+    for (const field of CANVAS_HIERARCHY_FIELDS) delete (previous.fields as Partial<typeof draft.fields>)[field];
+    const raw=JSON.stringify({schema:"motionwright.canvas-recovery/1",scope:draft.scope,writerId:"v2-author",updatedAt:1,draft:previous});
+    const original=raw;
+    const decoded=decodeCanvasRecovery(raw,draft.scope,"v2-author").draft!;
+    const migrated=reconcileCanvasDraft(decoded,project);
+    expect(migrated.schema).toBe("motionwright.canvas-draft/5");
+    expect(migrated.fields.text.raw).toBe("Kept human copy");
+    expect(migrated.fields.fill.raw).toBe("#F7EAD7");
+    expect(migrated.fields.parent_id.raw).toBe(first.parent_id??"");
+    expect(migrated.fields.z_index.raw).toBe(String(first.z_index));
+    expect(raw).toBe(original);
+  });
+});
+
+describe("Canvas relations belong to the same persistent scoped authoring session", () => {
+  it("retains relation target and kind through ten independent revisions", async () => {
+    const { canvasRelationIssue, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject),scene=project.scenes[0];
+    const node=scene.nodes[0],other=scene.nodes[1];
+    let draft=createCanvasDraft(project,scene.id,node.id);
+    draft=editCanvasField(draft,"relation_kind","align_right");
+    draft=editCanvasField(draft,"relation_target",other.id);
+    for(let i=0;i<10;i++) {
+      project=structuredClone(project);project.revision++;
+      project.scenes[0].nodes[0].text="Independent revision "+i;
+      draft=reconcileCanvasDraft(draft,project);
+    }
+    expect(draft.fields.relation_kind.raw).toBe("align_right");
+    expect(draft.fields.relation_target.raw).toBe(other.id);
+    expect(canvasRelationIssue(draft,project,"add")).toBeNull();
+    const prepared=prepareCanvasRelationSubmission(draft,project,"add","018f0000-0000-7000-8000-000000000290");
+    expect(prepared.change.type).toBe("set_canvas_relations");
+    expect(prepared.change.relations).toMatchObject([{kind:"align_right",target_id:other.id}]);
+    expect(prepared.draft.awaiting?.relations).toEqual(prepared.change.relations);
+  });
+
+  it("matches exact Add acknowledgement, consumes its target once, and forbids a duplicated relation", async () => {
+    const { canvasRelationIssue, canvasSubmissionMatches, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    let draft=createCanvasDraft(project,scene.id,node.id);
+    draft=editCanvasField(draft,"relation_kind","follow");
+    draft=editCanvasField(draft,"relation_target",scene.nodes[1].id);
+    const sent=prepareCanvasRelationSubmission(draft,project,"add","018f0000-0000-7000-8000-000000000291");
+    expect(() => prepareCanvasRelationSubmission(sent.draft,project,"add","018f0000-0000-7000-8000-000000000292")).toThrow(/unconfirmed/);
+    const saved=structuredClone(project);saved.revision++;
+    saved.scenes[0].nodes[0].relations=sent.change.relations;
+    expect(canvasSubmissionMatches(saved,sent.draft,sent.submission)).toBe(true);
+    draft=reconcileCanvasDraft(sent.draft,saved);
+    expect(draft.awaiting).toBeNull();
+    expect(draft.fields.relation_kind.raw).toBe("follow");
+    expect(draft.fields.relation_target.raw).toBe("");
+    expect(draft.relationsBase).toEqual(sent.change.relations);
+    draft=editCanvasField(draft,"relation_target",scene.nodes[1].id);
+    expect(canvasRelationIssue(draft,saved,"add")).toContain("already exists");
+    expect(() => prepareCanvasRelationSubmission(draft,saved,"add","018f0000-0000-7000-8000-000000000292")).toThrow(/already exists/);
+  });
+
+  it("requires an explicit choice when a peer changes the saved relation list", async () => {
+    const { canvasRelationIssue, canvasDraftConflicts, resolveCanvasField, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    let project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    let draft=editCanvasField(createCanvasDraft(project,scene.id,node.id),"relation_target",scene.nodes[1].id);
+    const peer=structuredClone(project);peer.revision++;
+    peer.scenes[0].nodes[0].relations=[{id:"018f0000-0000-7000-8000-000000000293",kind:"follow",target_id:scene.nodes[1].id}];
+    draft=reconcileCanvasDraft(draft,peer);
+    expect(canvasDraftConflicts(draft,peer).some(item=>item.field==="relation_target")).toBe(true);
+    expect(canvasRelationIssue(draft,peer,"add")).toContain("Review the changed relation list");
+    expect(() => prepareCanvasRelationSubmission(draft,peer,"add","018f0000-0000-7000-8000-000000000294")).toThrow(/changed relation list/);
+    draft=resolveCanvasField(draft,peer,"relation_target","draft");
+    expect(canvasRelationIssue(draft,peer,"add")).toBeNull();
+    const result=prepareCanvasRelationSubmission(draft,peer,"add","018f0000-0000-7000-8000-000000000294");
+    expect(result.change.relations).toHaveLength(2);
+    expect(result.change.relations[0].id).toBe(peer.scenes[0].nodes[0].relations[0].id);
+  });
+
+  it("an uncertain Remove retains its exact list until the author explicitly reviews a newer revision", async () => {
+    const { prepareCanvasRelationSubmission, releaseCanvasSubmission, canvasRelationIssue } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    node.relations=[{id:"018f0000-0000-7000-8000-000000000295",kind:"align_left",target_id:scene.nodes[1].id}];
+    const draft=createCanvasDraft(project,scene.id,node.id);
+    const pending=prepareCanvasRelationSubmission(draft,project,"remove","018f0000-0000-7000-8000-000000000296",node.relations[0].id);
+    expect(pending.change.relations).toEqual([]);
+    const peer=structuredClone(project);peer.revision++;peer.scenes[0].nodes[0].text="Other author";
+    const held=reconcileCanvasDraft(pending.draft,peer);
+    expect(held.awaiting?.relations).toEqual([]);
+    expect(canvasRelationIssue(held,peer,"remove",node.relations[0].id)).toContain("unconfirmed");
+    expect(() => prepareCanvasRelationSubmission(held,peer,"remove","018f0000-0000-7000-8000-000000000297",node.relations[0].id)).toThrow(/unconfirmed/);
+    const reviewed=reconcileCanvasDraft(releaseCanvasSubmission(held,pending.submission.id),peer);
+    expect(canvasRelationIssue(reviewed,peer,"remove",node.relations[0].id)).toBeNull();
+  });
+
+  it("rejects invalid/self targets, duplicate IDs and saved position locks before grant", async () => {
+    const { canvasRelationIssue, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    let draft=editCanvasField(createCanvasDraft(project,scene.id,node.id),"relation_target",node.id);
+    expect(canvasRelationIssue(draft,project,"add")).toContain("another saved");
+    expect(() => prepareCanvasRelationSubmission(draft,project,"add","018f0000-0000-7000-8000-000000000298")).toThrow();
+    draft=editCanvasField(draft,"relation_target","missing");
+    expect(canvasRelationIssue(draft,project,"add")).toContain("another saved");
+    draft=editCanvasField(draft,"relation_target",scene.nodes[1].id);
+    const locked=structuredClone(project);
+    locked.scenes[0].nodes[0].property_locks.push("position");
+    expect(canvasRelationIssue(draft,locked,"add")).toContain("lock");
+    expect(() => prepareCanvasRelationSubmission(draft,locked,"add","018f0000-0000-7000-8000-000000000298")).toThrow(/lock/);
+    expect(draft.fields.relation_target.raw).toBe(scene.nodes[1].id);
+  });
+
+  it("preserves later human target change after a saved Add ACK", async () => {
+    const { canvasSubmissionMatches, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    let draft=editCanvasField(createCanvasDraft(project,scene.id,node.id),"relation_target",scene.nodes[1].id);
+    const sent=prepareCanvasRelationSubmission(draft,project,"add","018f0000-0000-7000-8000-000000000299");
+    draft=editCanvasField(sent.draft,"relation_target","");
+    const saved=structuredClone(project);saved.revision++;saved.scenes[0].nodes[0].relations=sent.change.relations;
+    expect(canvasSubmissionMatches(saved,draft,sent.submission)).toBe(true);
+    draft=reconcileCanvasDraft(draft,saved);
+    expect(draft.awaiting).toBeNull();
+    expect(draft.fields.relation_target.raw).toBe("");
+    expect(draft.fields.relation_target.intent).toBe(true);
+  });
+
+  it("migrates a valid v3 copy without losing text, style, hierarchy and saved relation identity", async () => {
+    const { CANVAS_RELATION_FIELDS } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    node.relations=[{id:"018f0000-0000-7000-8000-0000000002a0",kind:"align_left",target_id:scene.nodes[1].id}];
+    let draft=createCanvasDraft(project,scene.id,node.id);
+    draft=editCanvasField(draft,"text","Legacy human message");
+    draft=editCanvasField(draft,"fill","#C15A73");
+    draft=editCanvasField(draft,"z_index","17");
+    const legacy=structuredClone(draft) as typeof draft;legacy.schema="motionwright.canvas-draft/3";
+    for(const field of CANVAS_RELATION_FIELDS) delete (legacy.fields as Partial<typeof draft.fields>)[field];
+    delete (legacy as Partial<typeof draft>).relationsBase;
+    const scope=draft.scope,original=JSON.stringify({schema:"motionwright.canvas-recovery/1",scope,writerId:"v3-writer",updatedAt:1,draft:legacy});
+    const decoded=decodeCanvasRecovery(original,scope,"v3-writer").draft!;
+    const migrated=reconcileCanvasDraft(decoded,project);
+    expect(migrated.schema).toBe("motionwright.canvas-draft/5");
+    expect(migrated.fields.text.raw).toBe("Legacy human message");
+    expect(migrated.fields.fill.raw).toBe("#C15A73");
+    expect(migrated.fields.z_index.raw).toBe("17");
+    expect(migrated.relationsBase).toEqual(node.relations);
+    expect(migrated.fields.relation_kind.raw).toBe("align_left");
+    expect(migrated.fields.relation_target.raw).toBe("");
+  });
+
+  it("quarantines malformed, excessive, duplicated and unknown-kind recovered relation lists", async () => {
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    const draft=createCanvasDraft(project,scene.id,node.id),valid={id:"018f0000-0000-7000-8000-0000000002a1",kind:"follow",target_id:scene.nodes[1].id};
+    const read = (list: unknown) => decodeCanvasRecovery(JSON.stringify({schema:"motionwright.canvas-recovery/1",scope:draft.scope,
+      writerId:"tampered-writer",updatedAt:1,draft:{...draft,relationsBase:list}}),draft.scope,"tampered-writer");
+    expect(() => read([valid,valid])).toThrow(/invalid/);
+    expect(() => read([{...valid,kind:"unauthorized_kind"}])).toThrow(/invalid/);
+    expect(() => read(Array.from({length:129},(_,i)=>({...valid,id:String(i)})))).toThrow(/invalid/);
+    expect(() => read([valid])).not.toThrow();
+  });
+});
+
+describe("Canvas object removal uses the existing scoped recovery without claiming a service receipt", () => {
+  it("retains an exact removal intent and blocks another submission until explicit review", async () => {
+    const { prepareCanvasRemovalSubmission, canvasRemovalObservation } = await import("./canvasWorkspaceDraft");
+    const project = source(), prepared = prepareCanvasRemovalSubmission(draftFor(project), project, "local-removal");
+    expect(prepared.change).toEqual({ type: "remove_canvas_node", scene_id: sceneId, node_id: nodeId });
+    const recovered = roundTrip(prepared.draft);
+    expect(recovered.schema).toBe("motionwright.canvas-draft/5");
+    expect(recovered.awaiting).toEqual(prepared.submission);
+    expect(canvasRemovalObservation(recovered, project)).toBe("present");
+    expect(canvasSubmissionMatches(project, recovered, prepared.submission)).toBe(false);
+    expect(() => prepareCanvasRemovalSubmission(recovered, project, "duplicate")).toThrow(/review/);
+    const later = editCanvasField(recovered, "text", "Input after removal was submitted");
+    expect(() => prepareCanvasSubmission(later, project, "text", "blocked-text")).toThrow(/unconfirmed/);
+    expect(releaseCanvasSubmission(later, "different-local-token")).toBe(later);
+    const reviewed = releaseCanvasSubmission(later, prepared.submission.id);
+    expect(reviewed.awaiting).toBeNull();
+    expect(reviewed.fields).toEqual(later.fields);
+    expect(project).toEqual(source());
+  });
+
+  it("keeps uncertainty and later raw input after later scoped absence without inventing an ACK", async () => {
+    const { prepareCanvasRemovalSubmission, canvasRemovalObservation } = await import("./canvasWorkspaceDraft");
+    const project = source(), prepared = prepareCanvasRemovalSubmission(draftFor(project), project, "lost-removal-reply");
+    let kept = editCanvasField(prepared.draft, "text", "  Preserve this later line\n");
+    kept = editCanvasField(kept, "x", "1e");
+    const absent = structuredClone(project); absent.revision++;
+    absent.scenes[0].nodes = absent.scenes[0].nodes.filter(item => item.id !== nodeId);
+    const recovered = reconcileCanvasDraft(roundTrip(kept), absent);
+    expect(canvasRemovalObservation(recovered, absent)).toBe("absent");
+    expect(canvasSubmissionMatches(absent, recovered, prepared.submission)).toBe(false);
+    expect(recovered.awaiting).toEqual(prepared.submission);
+    expect(recovered.fields).toEqual(kept.fields);
+    expect(() => prepareCanvasRemovalSubmission(recovered, absent, "forbidden-replay")).toThrow();
+    expect(absent.scenes[0].nodes.some(item => item.id === nodeId)).toBe(false);
+    const unrelated = nextProject(project, { y: node(project).y + 1 });
+    expect(reconcileCanvasDraft(roundTrip(kept), unrelated).awaiting).toEqual(prepared.submission);
+    expect(canvasRemovalObservation(kept, unrelated)).toBe("present");
+  });
+
+  it("requires the exact scope, an existing scene and a later revision before observing absence", async () => {
+    const { prepareCanvasRemovalSubmission, canvasRemovalObservation } = await import("./canvasWorkspaceDraft");
+    const project = source(), prepared = prepareCanvasRemovalSubmission(draftFor(project), project, "scope-removal");
+    const removed = structuredClone(project); removed.scenes[0].nodes = [];
+    expect(canvasRemovalObservation(prepared.draft, removed)).toBe("unconfirmed");
+    expect(canvasRemovalObservation(prepared.draft, { ...removed, revision: project.revision - 1 })).toBe("unconfirmed");
+    removed.revision++;
+    for (const field of ["id", "generation", "active_branch"] as const) {
+      expect(canvasRemovalObservation(prepared.draft, { ...removed, [field]: removed[field] + "-other" })).toBe("unconfirmed");
+      expect(() => reconcileCanvasDraft(prepared.draft, { ...removed, [field]: removed[field] + "-other" })).toThrow(/another project/);
+    }
+    expect(canvasRemovalObservation(prepared.draft, { ...removed, scenes: [] })).toBe("unconfirmed");
+    expect(() => reconcileCanvasDraft(prepared.draft, { ...removed, scenes: [] })).toThrow(/no longer/);
+  });
+
+  it("migrates schema4 input without promoting a local recovery into execution authority", async () => {
+    const { prepareCanvasRemovalSubmission } = await import("./canvasWorkspaceDraft");
+    const project = source();
+    const legacy = editCanvasField(draftFor(project), "text", "Version four author input");
+    legacy.schema = "motionwright.canvas-draft/4";
+    const original = JSON.stringify(copy(legacy));
+    const migrated = reconcileCanvasDraft(decodeCanvasRecovery(original, legacy.scope, "window-a").draft!, project);
+    expect(migrated.schema).toBe("motionwright.canvas-draft/5");
+    expect(migrated.fields.text.raw).toBe("Version four author input");
+    expect(migrated.relationsBase).toEqual(legacy.relationsBase);
+    expect(original).toBe(JSON.stringify(copy(legacy)));
+    const pending = prepareCanvasSubmission(legacy, project, "text", "schema4-text-ACK");
+    pending.draft.schema = "motionwright.canvas-draft/4";
+    const retained = reconcileCanvasDraft(roundTrip(pending.draft), project);
+    expect(retained.awaiting).toEqual(pending.submission);
+    expect(retained.fields.text.raw).toBe(legacy.fields.text.raw);
+    const attempt = prepareCanvasRemovalSubmission(draftFor(project), project, "local-only");
+    const forged = { ...copy(attempt.draft), request_id: "not-a-service-receipt", effect_grant: "not-authority" };
+    const decoded = decodeCanvasRecovery(JSON.stringify(forged), attempt.draft.scope, "window-a");
+    expect(decoded).not.toHaveProperty("request_id");
+    expect(decoded).not.toHaveProperty("effect_grant");
+    const oldSchema = { ...attempt.draft, schema: "motionwright.canvas-draft/4" };
+    expect(() => decodeCanvasRecovery(JSON.stringify(copy(oldSchema as CanvasWorkspaceDraft)), attempt.draft.scope, "window-a"))
+      .toThrow(/removal snapshot/);
+    const invalid = { ...attempt.draft, awaiting: { ...attempt.submission, fields: { text: { raw: "payload" } } } };
+    expect(() => decodeCanvasRecovery(JSON.stringify(copy(invalid as CanvasWorkspaceDraft)), attempt.draft.scope, "window-a"))
+      .toThrow(/removal snapshot/);
+  });
+
+  it("finds removal recovery after node loss without consuming other object, writer or project inputs", async () => {
+    const { prepareCanvasRemovalSubmission, readCanvasRemovalRecoveries } = await import("./canvasWorkspaceDraft");
+    const project = source(), storage = new MemoryStorage();
+    const removed = prepareCanvasRemovalSubmission(draftFor(project), project, "retained-removal");
+    const raw = retain(storage, copy(removed.draft));
+    const other = editCanvasField(draftFor(project), "text", "Another window's human input");
+    retain(storage, copy(other, "other-window"));
+    const foreign = { ...project, generation: project.generation + "-other" };
+    const foreignDraft = prepareCanvasRemovalSubmission(createCanvasDraft(foreign, sceneId, nodeId), foreign, "foreign-removal").draft;
+    retain(storage, { ...copy(foreignDraft, "foreign-window"), scope: foreignDraft.scope });
+    const before = new Map(storage.data), absent = structuredClone(project);
+    absent.revision++; absent.scenes[0].nodes = [];
+    const found = readCanvasRemovalRecoveries(storage, absent, sceneId).entries;
+    expect(found).toHaveLength(1);
+    expect(found[0].raw).toBe(raw);
+    expect(found[0].value.draft?.awaiting?.id).toBe("retained-removal");
+    expect(storage.data).toEqual(before);
+    discardCanvasRecovery(storage, found[0].key, found[0].raw);
+    expect(readCanvasRemovalRecoveries(storage, absent, sceneId).entries).toEqual([]);
+    expect(storage.getItem(canvasRecoveryKey(other.scope, "other-window"))).toBe(before.get(canvasRecoveryKey(other.scope, "other-window")));
+    expect(storage.getItem(canvasRecoveryKey(foreignDraft.scope, "foreign-window"))).toBe(before.get(canvasRecoveryKey(foreignDraft.scope, "foreign-window")));
+  });
+});

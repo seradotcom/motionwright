@@ -3,6 +3,7 @@ import { Save, RefreshCw, ExternalLink, Unlink } from "lucide-react";
 import type { CanvasNode, Change, Project, Scene } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
+import { inheritedTextInk } from "./canvasInheritedInk";
 import { defaultProceduralConfig, normalizedProceduralConfig, realizeProceduralField } from "./proceduralField";
 import type { ProceduralConfig } from "./proceduralField";
 
@@ -128,7 +129,7 @@ export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOp
       </label>
       {previewLoading?<p role="status">Evaluating bounded procedural preview…</p>
        :previewError?<p role="status">No preview until the field constraints are valid.</p>
-       :<CompositionStudy nodes={nodes} width={1920} height={1080} time={renderedTime} background="#0C1723"
+       :<CompositionStudy nodes={nodes} width={1920} height={1080} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)}
           label={`Procedural editorial preview, ${draft.distribution} distribution, ${nodes.length} editable objects`}/>}
       <p className="mono">{draft.count} authored objects · seed {draft.seed} ·
         {stored?` attached field ${stored.id.slice(0,8)}…`:" not yet attached"} · no native render receipt</p>
