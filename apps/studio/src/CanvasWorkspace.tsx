@@ -23,8 +23,11 @@ import VisualLanguageEditor from "./VisualLanguageEditor";
 import {
   CANVAS_DRAFT_PREFIX, CANVAS_FIELD_LABELS, CANVAS_TRANSFORM_FIELDS, canvasContextConflicts, canvasDraftConflicts, canvasDraftHasWork,
   canvasDraftScope, canvasFieldHasInput, canvasFieldIssue, canvasGroupIssue, canvasNumber,
-  canvasSubmissionMatches, createCanvasDraft, decodeCanvasRecovery, discardCanvasRecovery, editCanvasField, prepareCanvasSubmission,
+  canvasSubmissionMatches, createCanvasDraft, decodeCanvasRecovery, discardCanvasRecovery, editCanvasField,
+  prepareCanvasSubmission, prepareCanvasRelationSubmission, prepareCanvasRemovalSubmission, canvasRelationIssue,
+  canvasRemovalObservation, canvasRecoveryKey, readCanvasRemovalRecoveries,
   readCanvasRecoveries, reconcileCanvasDraft, releaseCanvasSubmission, resolveCanvasField, reviewCanvasContext, writeCanvasRecovery,
+  writeCanvasSessionPointer,
 } from "./canvasWorkspaceDraft";
 import type { CanvasDraftField, CanvasDraftGroup, CanvasRecoveryEntry, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
 
@@ -94,8 +97,7 @@ function createNode(scene: Scene, kind: "text" | "shape" | "group"): CanvasNode 
 }
 
 const CANVAS_SESSION_PREFIX = "motionwright.canvas-session.v1:";
-// Scoped here so the object editor can evolve without changing shared Studio
-// surfaces owned by other workstreams.
+// Recovery styles belong to the scoped object inspector.
 const CANVAS_DRAFT_STYLES = `
 .canvas-draft-inspector {display:grid;gap:9px;padding:0 10px 12px;font-size:11px;line-height:1.5;}
 .canvas-draft-inspector p {margin:0;}
@@ -105,6 +107,7 @@ const CANVAS_DRAFT_STYLES = `
 .canvas-draft-inspector .canvas-field-grid .production-error {font-size:10px;line-height:1.45;text-transform:none;letter-spacing:normal;}
 .canvas-draft-inspector .canvas-text-editor {padding:0;gap:4px;}
 .canvas-draft-inspector .button.full {width:100%;margin:0;}
+.canvas-draft-inspector .button[aria-disabled="true"] {opacity:.55;cursor:not-allowed;}
 .canvas-draft-inspector .production-notice {padding:10px;gap:7px;}
 .canvas-draft-inspector dl {display:grid;gap:6px;margin:8px 0;}
 .canvas-draft-inspector dt {font-size:9px;color:var(--muted);}
@@ -113,10 +116,12 @@ const CANVAS_DRAFT_STYLES = `
 .canvas-draft-inspector summary {cursor:pointer;font-weight:600;}
 .canvas-draft-inspector details>div {border-top:1px solid var(--border-soft);padding-top:7px;margin-top:7px;}
 `;
-type CanvasDraftSession = { draft: CanvasWorkspaceDraft; writerId: string; lastRaw: string | null; listeners: Set<() => void> };
+type CanvasDraftSession = { draft: CanvasWorkspaceDraft; writerId: string; lastRaw: string | null; listeners: Set<() => void>; removing?: boolean };
 // Synchronous durable writes are primary. The cache also preserves navigation
 // during a storage outage, which is reported before a user leaves the editor.
 const liveCanvasDrafts = new Map<string, CanvasDraftSession>();
+const CANVAS_RECOVERY_CHANGED = "motionwright:canvas-recovery-changed";
+const notifyCanvasRecovery = () => window.dispatchEvent(new Event(CANVAS_RECOVERY_CHANGED));
 function recoverCanvasDraft(project: Project, sceneId: string, nodeId: string) {
   const scope = canvasDraftScope(project, sceneId, nodeId);
   let copies: ReturnType<typeof readCanvasRecoveries> = { entries: [], unreadable: [], limited: false };
@@ -132,7 +137,93 @@ function recoverCanvasDraft(project: Project, sceneId: string, nodeId: string) {
   const session = cached ?? { draft, writerId: crypto.randomUUID(), lastRaw: null, listeners: new Set<() => void>() };
   session.draft = draft;
   return { session, copies, backupError,
-    notice: canvasDraftHasWork(draft) ? "Recovered your local Canvas input. Commit to apply it." : null };
+    notice: draft.awaiting?.group === "removal" ? "Recovered an unconfirmed removal. No request was sent again."
+      : canvasDraftHasWork(draft) ? "Recovered your local Canvas input. Commit to apply it." : null };
+}
+
+type CanvasRemovalNotice = { key: string; raw: string; draft: CanvasWorkspaceDraft; writerId: string; durable: boolean; pending: boolean };
+function CanvasRemovalRecovery({ project, sceneId }: { project: Project; sceneId: string }) {
+  const [notices, setNotices] = useState<CanvasRemovalNotice[]>([]);
+  const [limited, setLimited] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  function refresh() {
+    const found = new Map<string, CanvasRemovalNotice>();
+    try {
+      const recovered = readCanvasRemovalRecoveries(window.localStorage, project, sceneId);
+      setLimited(recovered.limited);
+      for (const entry of recovered.entries) {
+        found.set(entry.key, { key: entry.key, raw: entry.raw, draft: entry.value.draft!,
+          writerId: entry.value.writerId, durable: true, pending: false });
+      }
+      setError(null);
+    } catch (reason) {
+      setError("Local removal records could not be read. " + (reason instanceof Error ? reason.message : String(reason)));
+    }
+    for (const writer of liveCanvasDrafts.values()) {
+      const draft = writer.draft;
+      if (draft.awaiting?.group !== "removal" || draft.scope !== canvasDraftScope(project, sceneId, draft.nodeId)) continue;
+      const key = canvasRecoveryKey(draft.scope, writer.writerId), stored = found.get(key);
+      // A later raw edit may exist only in memory after a storage failure. It
+      // remains downloadable and is never replaced by an older durable copy.
+      const same = stored && JSON.stringify(stored.draft) === JSON.stringify(draft);
+      found.set(key, { key, raw: same ? stored.raw : JSON.stringify({
+        schema: "motionwright.canvas-recovery/1", scope: draft.scope, writerId: writer.writerId,
+        updatedAt: Date.now(), draft,
+      }), draft, writerId: writer.writerId, durable: Boolean(same), pending: Boolean(writer.removing) });
+    }
+    setNotices([...found.values()]);
+  }
+  useEffect(() => {
+    refresh();
+    const changed = () => refresh();
+    const storage = (event: StorageEvent) => { if (event.key?.startsWith(CANVAS_DRAFT_PREFIX)) refresh(); };
+    window.addEventListener(CANVAS_RECOVERY_CHANGED, changed);
+    window.addEventListener("storage", storage);
+    return () => { window.removeEventListener(CANVAS_RECOVERY_CHANGED, changed); window.removeEventListener("storage", storage); };
+  }, [project, sceneId]);
+  function download(copy: CanvasRemovalNotice) {
+    const url = URL.createObjectURL(new Blob([copy.raw], { type: "application/json;charset=utf-8" }));
+    const link = document.createElement("a"); link.href = url; link.download = "canvas-removal-" + copy.draft.nodeId + ".json"; link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+  function discard(copy: CanvasRemovalNotice) {
+    const writer = liveCanvasDrafts.get(copy.draft.scope);
+    if (!copy.durable || copy.pending || writer?.removing || canvasRemovalObservation(copy.draft, project) !== "absent") return;
+    if (writer?.writerId === copy.writerId && JSON.stringify(writer.draft) !== JSON.stringify(copy.draft)) {
+      refresh(); setError("Newer local input was kept. Review the refreshed copy before discarding it."); return;
+    }
+    try {
+      // Explicit local housekeeping only: this cannot cancel, reverse or replay
+      // the service operation. Compare the exact displayed recovery bytes.
+      discardCanvasRecovery(window.localStorage, copy.key, copy.raw);
+      if (writer?.writerId === copy.writerId && writer.lastRaw === copy.raw) liveCanvasDrafts.delete(copy.draft.scope);
+      notifyCanvasRecovery(); refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+  if (notices.length === 0 && !error && !limited) return null;
+  return <section className="production-notice" role="region" aria-label="Canvas removal recovery">
+    <strong>Retained Canvas removal</strong>
+    <p>The saved state may not identify the outcome of this request. Nothing is sent again automatically.</p>
+    {error && <p role="status">{error}</p>}
+    {limited && <p role="status">Only the first 128 local recovery copies were inspected. Additional copies were kept unchanged.</p>}
+    {notices.map(copy => {
+      const observation = canvasRemovalObservation(copy.draft, project);
+      return <div key={copy.key}>
+        <p>{copy.draft.nodeId} · based on r{copy.draft.awaiting!.revision}</p>
+        <p role="status">{copy.pending ? "Removal pending; this request is still awaiting a response."
+          : observation === "absent" ? "The object is absent in the saved project at r" + project.revision + ". This observation does not identify which request removed it."
+          : observation === "present" ? "The object is present in the saved project. The removal request outcome is unconfirmed."
+          : "No later saved state for this exact object scope has been observed. The removal remains unconfirmed."}</p>
+        {!copy.durable && <p role="status">The latest retained input is available in this session but its durable copy is not verified. Download it before reloading.</p>}
+        <button className="button compact" type="button" onClick={() => download(copy)}>Download removal recovery</button>
+        {observation === "absent" && <div>
+          <p>Discarding removes only this local copy, including any later unsaved input. It does not cancel or undo a service operation.</p>
+          <button className="button compact" type="button" disabled={!copy.durable || copy.pending}
+            onClick={() => discard(copy)}>Discard local removal copy</button>
+        </div>}
+      </div>;
+    })}
+  </section>;
 }
 
 function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
@@ -146,7 +237,9 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
   const [backupError, setBackupError] = useState(initial.backupError);
   const [notice, setNotice] = useState<string | null>(initial.notice);
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const [localPending, setPending] = useState(false);
+  const [removalPending, setRemovalPending] = useState(Boolean(initial.session.removing));
+  const pending = localPending || removalPending;
   const inFlight = useRef(false), mounted = useRef(true);
   const scope = draft.scope;
   const conflicts = canvasDraftConflicts(draft, project);
@@ -167,7 +260,16 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       }
       writer.lastRaw = writeCanvasRecovery(window.localStorage, { schema: "motionwright.canvas-recovery/1", scope,
         writerId: writer.writerId, updatedAt: Date.now(), draft: canvasDraftHasWork(next) ? next : null }, writer.lastRaw);
-      try { window.sessionStorage.setItem(CANVAS_SESSION_PREFIX + scope, writer.writerId); } catch { /* The local copy is still durable. */ }
+      try { writeCanvasSessionPointer(window.sessionStorage, CANVAS_SESSION_PREFIX + scope, writer.writerId); }
+      catch (reason) {
+        // The durable record is not lost, but a reload cannot identify its
+        // window without the pointer. Do not grant a mutation until recovery
+        // has been confirmed; explicit Restore remains available.
+        if (mounted.current) setBackupError("Canvas input was saved locally but its session pointer could not be verified. "
+          + "Reload requires an explicit Restore from Local Canvas recovery copies. "
+          + (reason instanceof Error ? reason.message : String(reason)));
+        return false;
+      }
       if (mounted.current) setBackupError(null);
       return true;
     } catch (reason) {
@@ -188,7 +290,7 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
     }
     writer.listeners.forEach(listener => listener());
     if (mounted.current) setDraft(next);
-    return backup(next);
+    const retained = backup(next); notifyCanvasRecovery(); return retained;
   }
   function observe(current: Project) {
     const previous = session.current.draft, attempt = previous.awaiting;
@@ -203,7 +305,7 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
   }
   useEffect(() => {
     mounted.current = true;
-    const writer = session.current, refresh = () => setDraft(writer.draft);
+    const writer = session.current, refresh = () => { setDraft(writer.draft); setRemovalPending(Boolean(writer.removing)); };
     writer.listeners.add(refresh);
     const storageChanged = (event: StorageEvent) => { if (event.key?.startsWith(CANVAS_DRAFT_PREFIX)) refreshCopies(); };
     window.addEventListener("storage", storageChanged);
@@ -214,8 +316,8 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
   function edit(field: CanvasDraftField, raw: string) {
     setError(null); setNotice(null); replace(editCanvasField(session.current.draft, field, raw));
   }
-  async function save(group: CanvasDraftGroup) {
-    if (inFlight.current) return;
+  async function save(group: Exclude<CanvasDraftGroup, "relations">) {
+    if (inFlight.current || session.current.removing) return;
     let attempt: ReturnType<typeof prepareCanvasSubmission>;
     try { attempt = prepareCanvasSubmission(session.current.draft, projectRef.current, group, crypto.randomUUID()); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); return; }
@@ -232,21 +334,77 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       // Project acknowledges this input; a resolved promise is insufficient.
       if (mounted.current) observe(projectRef.current);
     } catch (reason) {
-      replace(releaseCanvasSubmission(session.current.draft, attempt.submission.id));
-      if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason)) + " Your Canvas input has been kept.");
+      // A lost response is not evidence that the service rejected the command.
+      // Keep the exact submitted snapshot in recovery, blocking replay until
+      // the saved revision acknowledges it or the author reviews explicitly.
+      if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason))
+        + " The Canvas result is unconfirmed. Reload to inspect the saved revision; no automatic retry will occur.");
     } finally {
       inFlight.current = false; if (mounted.current) setPending(false);
     }
   }
+  async function changeRelation(operation: "add" | "remove", relationId?: string) {
+    if (inFlight.current || session.current.removing) return;
+    let attempt: ReturnType<typeof prepareCanvasRelationSubmission>;
+    try {
+      attempt = prepareCanvasRelationSubmission(session.current.draft, projectRef.current,
+        operation, crypto.randomUUID(), relationId);
+    } catch (reason) {
+      if (mounted.current) setError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
+    // Stable identities and the exact proposed list are retained before the
+    // service receives the change. The snapshot is never an automatic replay.
+    if (!replace(attempt.draft)) {
+      replace(releaseCanvasSubmission(session.current.draft, attempt.submission.id));
+      if (mounted.current) setError("Canvas relation recovery could not be retained. Nothing was sent.");
+      return;
+    }
+    inFlight.current = true; setPending(true); setError(null); setNotice(null);
+    try {
+      await commit(attempt.change);
+      if (mounted.current) observe(projectRef.current);
+    } catch (reason) {
+      if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason))
+        + " The relation result is unconfirmed. Review the saved list before attempting another change.");
+    } finally { inFlight.current = false; if (mounted.current) setPending(false); }
+  }
+  async function removeObject() {
+    if (inFlight.current || session.current.removing) return;
+    let attempt: ReturnType<typeof prepareCanvasRemovalSubmission>;
+    try { attempt = prepareCanvasRemovalSubmission(session.current.draft, projectRef.current, crypto.randomUUID()); }
+    catch (reason) { if (mounted.current) setError(reason instanceof Error ? reason.message : String(reason)); return; }
+    if (!replace(attempt.draft)) {
+      replace(releaseCanvasSubmission(session.current.draft, attempt.submission.id));
+      if (mounted.current) setError("Canvas removal recovery could not be retained. Nothing was sent.");
+      return;
+    }
+    inFlight.current = true; session.current.removing = true;
+    setPending(true); setError(null); setNotice(null);
+    session.current.listeners.forEach(listener => listener()); notifyCanvasRecovery();
+    try {
+      await commit(attempt.change);
+      if (mounted.current) observe(projectRef.current);
+    } catch (reason) {
+      // The transport exposes an untyped rejection. Retain uncertainty even
+      // when its diagnostic describes a domain denial; do not infer a receipt.
+      if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason))
+        + " The removal result is unconfirmed. Inspect the saved project before deciding on another action; no automatic retry will occur.");
+    } finally {
+      inFlight.current = false; session.current.removing = false;
+      if (mounted.current) setPending(false);
+      session.current.listeners.forEach(listener => listener()); notifyCanvasRecovery();
+    }
+  }
   function resolve(field: CanvasDraftField, choice: "saved" | "draft") {
-    if (inFlight.current) return;
+    if (inFlight.current || session.current.removing) return;
     replace(resolveCanvasField(session.current.draft, projectRef.current, field, choice));
     setError(null); setNotice(choice === "saved" ? "Kept the saved " + CANVAS_FIELD_LABELS[field] + ". Other draft fields are unchanged."
       : "Kept your " + CANVAS_FIELD_LABELS[field] + " draft against r" + project.revision + ". Commit explicitly to apply it.");
     document.getElementById(fieldId(field))?.focus();
   }
   function restore(entry: CanvasRecoveryEntry) {
-    if (inFlight.current || !entry.value.draft) return;
+    if (inFlight.current || session.current.removing || !entry.value.draft) return;
     try {
       if (window.localStorage.getItem(entry.key) !== entry.raw) {
         setError("This Canvas copy changed after it was shown. Refresh the recovery copies before restoring it."); refreshCopies(); return;
@@ -274,10 +432,10 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
   return <section className="canvas-draft-inspector" aria-label="Canvas object draft">
     <style>{CANVAS_DRAFT_STYLES}</style>
     {canvasDraftHasWork(draft) && <p className="inspector-note" role="status">
-      {pending ? "Saving this snapshot. You can keep editing." : "Local Canvas draft · not yet committed."}
+      {pending ? draft.awaiting?.group === "removal" ? "Removal pending. No duplicate request will be sent." : "Saving this snapshot. You can keep editing." : "Local Canvas draft · not yet committed."}
     </p>}
     {notice && <p className="production-notice" role="status">{notice}</p>}
-    {error && <p className="production-error" role="alert">{error}</p>}
+    {error && <p className="production-error" role="alert" id={"canvas-draft-error-" + node.id}>{error}</p>}
     {backupError && <section className="production-notice" role="alert" aria-label="Canvas draft backup warning">
       <p>{backupError}</p>
       <button className="button compact" type="button" onClick={() => { backup(session.current.draft); refreshCopies(); }}>Retry Canvas draft backup</button>
@@ -308,7 +466,9 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       </div>)}
     </details>}
     {draft.awaiting && !pending && <section className="production-notice" role="region" aria-label="Unconfirmed Canvas submission">
-      <p>A previous submission has no matching observed saved revision. The retained input will not be sent automatically.</p>
+      <p>{draft.awaiting.group === "removal"
+        ? "The removal request outcome is unconfirmed. Review retains the current object and input locally; it cannot cancel a service operation or establish that it failed."
+        : "A previous submission has no matching observed saved revision. The retained input will not be sent automatically."}</p>
       <button className="button compact" type="button" onClick={() => {
         const current = session.current.draft;
         if (current.awaiting) replace(reconcileCanvasDraft(releaseCanvasSubmission(current, current.awaiting.id), projectRef.current));
@@ -373,6 +533,12 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       {canvasFieldIssue("text", draft.fields.text.raw) && <span id={fieldId("text") + "-error"} className="production-error">{canvasFieldIssue("text", draft.fields.text.raw)}</span>}
     </label>
     <button className="button full" type="button" onClick={() => void save("text")} disabled={pending || textIssue !== null} title={textIssue ?? undefined}>Commit text</button>
+    <CanvasStructureEditor scene={scene} node={node} remove={() => void removeObject()}
+      removalErrorId={error ? "canvas-draft-error-" + node.id : undefined} draft={draft}
+      edit={edit} saveStyle={() => void save("style")} styleIssue={canvasGroupIssue(draft,project,"style")}
+      saveHierarchy={() => void save("hierarchy")} hierarchyIssue={canvasGroupIssue(draft,project,"hierarchy")}
+      relation={(operation, id) => void changeRelation(operation, id)}
+      relationIssue={canvasRelationIssue(draft,project,"add")} pending={pending}/>
     {canvasDraftHasWork(draft) && <button className="button full" type="button" disabled={pending} onClick={() => {
       replace(createCanvasDraft(projectRef.current, scene.id, node.id));
       setError(null); setNotice("Discarded this object's local input. The saved project and other object drafts are unchanged.");
@@ -789,6 +955,7 @@ export default function CanvasWorkspace({
         <aside className="canvas-properties" aria-label="Canvas properties"
           onChangeCapture={() => { localInteractionVersion.current += 1; }}>
           <div className="canvas-panel-heading">Object</div>
+          <CanvasRemovalRecovery project={project} sceneId={scene.id}/>
           {!selectedNode ? (
             <div className="canvas-empty-note">Select an object to inspect its semantic properties.</div>
           ) : (
@@ -1029,7 +1196,6 @@ export default function CanvasWorkspace({
                 </label>
               </div>
 
-              <CanvasStructureEditor scene={scene} node={selectedNode} commit={commit} />
             </>
           )}
           <TypographySafetyReview
