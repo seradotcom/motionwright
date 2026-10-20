@@ -1,5 +1,38 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
+import type { Page as RecipeFixturePage } from "@playwright/test";
+import { applyChange as applySyntheticFixtureChange } from "../src/api";
+import type { Change as RecipeFixtureChange, Project as RecipeFixtureProject } from "../src/types";
+
+interface RecipeFixtureRequest {
+  effect?: string; project_id: string; generation: string; revision: number;
+  effect_grant: string; change?: RecipeFixtureChange;
+}
+
+// Explicit synthetic authoring fixture. The Node-side API uses its existing
+// simulator branch, not SQLite, Tauri, native rendering or owner authority.
+// The real UI still issues ProjectEdit/apply_change and observes the returned
+// Project revision; no saved recipe is injected directly into the component.
+async function installRecipeAuthoringFixture(page: RecipeFixturePage) {
+  await page.exposeFunction("__MW_RECIPE_FIXTURE_APPLY__", async (source: RecipeFixtureProject, request: RecipeFixtureRequest) => {
+    if (request.project_id !== source.id || request.generation !== source.generation || request.revision !== source.revision
+        || request.effect_grant !== "synthetic-recipe-only" || request.change?.type !== "set_delivery_recipe") {
+      throw new Error("Synthetic recipe fixture rejected a stale or unsupported authoring request.");
+    }
+    return applySyntheticFixtureChange(source, request.change);
+  });
+}
+
+async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" = "film") {
+  const revision = Number((await page.locator(".command-bar .revision-chip").innerText()).slice(1));
+  const label = group === "film" ? "Save scene intent" : "Save original mix recipe";
+  await page.getByRole("button", { name: label, exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (revision + 1));
+  await expect(page.getByRole("region", { name: (group === "film" ? "Scene intent" : "Original mix") + " draft review", exact: true }).getByRole("status").first())
+    .toContainText("Showing saved recipe values at revision r" + (revision + 1));
+  return revision + 1;
+}
+
 
 test("desktop AV master is linked only to session-native visual evidence and a measured saved voice", async ({ page }) => {
   // Synthetic Tauri transport; the native MLT driver and verified WAV bytes
@@ -35,7 +68,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   const native = {
     project_resource: "project:" + boot.project.id,
     generation: boot.project.generation,
-    revision: boot.project.revision,
+    revision: boot.project.revision + 1,
     deliverable_id: master.id,
     frame_rate: { num: 30, den: 1 },
     segments: [{
@@ -70,6 +103,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
     decoded_audio: { kind: "synthetic-only" },
     sync: null,
   };
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initial, rendered, mastered }) => {
     const app = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -79,6 +113,20 @@ test("desktop AV master is linked only to session-native visual evidence and a m
     app.__SYNTHETIC_AV__ = { requests: [], exports: [], reviews: [], renders: 0, effects: 0 };
     app.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (command === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === project.id && recipeRequest.generation === project.generation
+            && recipeRequest.revision === project.revision) return { token: "synthetic-recipe-only" };
+        if (command === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          project = await apply(project, recipeRequest);
+          initial.project = structuredClone(project);
+          rendered.revision = project.revision; // Future synthetic native reply uses the saved source.
+          mastered.revision = project.revision; // Future synthetic native reply uses the saved source.
+          return structuredClone(project);
+        }
+
         if (command === "production_runtime_status") return {
           status: "ready", reason: null, expected_version: "1.0.0",
           observed_version: "1.0.0", version_compatible: true,
@@ -98,7 +146,14 @@ test("desktop AV master is linked only to session-native visual evidence and a m
           };
         }
 
-        if (command === "bootstrap") return { ...initial, project: structuredClone(project) };
+        if (command === "bootstrap") {
+          const syntheticResponse = { ...initial, project: structuredClone(project) };
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "issue_effect_grant") {
           app.__SYNTHETIC_AV__.effects++;
           return { token: "synthetic-only-effect" };
@@ -154,6 +209,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   await page.getByLabel(first.name + " motion archetype").selectOption("statement");
   await page.getByLabel(second.name + " narrative role").selectOption("problem");
   await page.getByLabel(second.name + " motion archetype").selectOption("diagram_build");
+  await saveFixtureRecipe(page);
   await page.getByRole("button", { name: "Check Film projection" }).click();
   await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();
@@ -177,7 +233,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   expect(invocations.requests[0]).toMatchObject({
     project_id: boot.project.id,
     generation: boot.project.generation,
-    revision: boot.project.revision,
+    revision: boot.project.revision + 1,
     deliverable_id: master.id,
     voice_track_id: takeId,
     preview_token: "native-session-token",
@@ -201,7 +257,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   expect(reviewArgs).toMatchObject({
     project_id: boot.project.id,
     generation: boot.project.generation,
-    revision: boot.project.revision,
+    revision: boot.project.revision + 1,
     export_token: "synthetic-export-token",
   });
   expect(reviewArgs).not.toHaveProperty("path");
@@ -233,7 +289,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   expect(afterExport.exports[0]).toMatchObject({
     project_id: boot.project.id,
     generation: boot.project.generation,
-    revision: boot.project.revision,
+    revision: boot.project.revision + 1,
     export_token: "synthetic-export-token",
     destination: "/tmp/motionwright-delivered-master.mp4",
     include_integrity_manifest: true,
@@ -244,7 +300,7 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
 
   await page.getByRole("button", { name: "Brief", exact: true }).click();
-  await page.getByLabel("Project title").fill("Changed after native AV master");
+  await page.locator("#project-title-rich").fill("Changed after native AV master");
   await page.getByRole("button", { name: "Save title" }).click();
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
   await expect(receipt).toContainText("STALE · HISTORICAL");
@@ -270,11 +326,23 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
     source_sha256: hash, loudness_lufs: null, true_peak_dbfs: null,
   });
   profile.voice_track_id = takeId;
+  await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initial, sceneIds }) => {
     const app = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
     };
     app.__TAURI_INTERNALS__ = { invoke: async (cmd, args) => {
+        // Authoring is counted separately from the native-only operations below.
+        const recipeRequest = args?.request as RecipeFixtureRequest | undefined;
+        if (cmd === "issue_effect_grant" && recipeRequest?.effect === "project_edit"
+            && recipeRequest.project_id === initial.project.id && recipeRequest.generation === initial.project.generation
+            && recipeRequest.revision === initial.project.revision) return { token: "synthetic-recipe-only" };
+        if (cmd === "apply_change" && recipeRequest?.change?.type === "set_delivery_recipe") {
+          const apply = (window as unknown as { __MW_RECIPE_FIXTURE_APPLY__: (source: RecipeFixtureProject, request: RecipeFixtureRequest) => Promise<RecipeFixtureProject> }).__MW_RECIPE_FIXTURE_APPLY__;
+          initial.project = await apply(initial.project, recipeRequest);
+          return structuredClone(initial.project);
+        }
+
         if (cmd === "production_runtime_status") return {
           status: "ready", reason: null, expected_version: "1.0.0",
           observed_version: "1.0.0", version_compatible: true,
@@ -294,7 +362,12 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
           };
         }
 
-      if (cmd === "bootstrap") return structuredClone(initial);
+      if (cmd === "bootstrap") {
+        const syntheticResponse = structuredClone(initial);
+        const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
+        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic mock requires selected project identity.");
+        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      }
       if (cmd === "issue_effect_grant") return { token: "synthetic-only" };
       if (cmd === "render_motion_canvas") return {
         project_resource: "project:" + initial.project.id,
@@ -315,6 +388,7 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
   await page.getByLabel(first.name + " motion archetype").selectOption("statement");
   await page.getByLabel(second.name + " narrative role").selectOption("problem");
   await page.getByLabel(second.name + " motion archetype").selectOption("diagram_build");
+  await saveFixtureRecipe(page);
   await page.getByRole("button", { name: "Check Film projection" }).click();
   await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
   await page.getByRole("button", { name: "Render native segments" }).click();

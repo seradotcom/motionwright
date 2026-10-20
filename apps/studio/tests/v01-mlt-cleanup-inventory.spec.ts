@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 
 function inventoryFixture(project: typeof fixtureBootstrap.project) {
@@ -29,7 +29,14 @@ test("installed Jobs can inspect MLT creation receipts without driver dispatch o
     };
     local.__MLT_INSPECTION__={reads:0,forbidden:[],scopes:[]};
     local.__TAURI_INTERNALS__={invoke:async(command,args)=>{
-      if (command==="bootstrap") return structuredClone(initial);
+      if (command === "bootstrap") {
+        const syntheticResponse = structuredClone(initial);
+        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+        }
+        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      }
       if (command==="production_jobs") return [];
       if (command==="mlt_cleanup_inventory") {
         local.__MLT_INSPECTION__.reads++;
@@ -71,8 +78,15 @@ test("foreign source receipt inventory cannot be displayed as current project",a
     const app=window as unknown as {
       __TAURI_INTERNALS__:{invoke:(command:string)=>Promise<unknown>};
     };
-    app.__TAURI_INTERNALS__={invoke:async(command)=>{
-      if(command==="bootstrap")return structuredClone(initial);
+    app.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+      if (command === "bootstrap") {
+        const syntheticResponse = structuredClone(initial);
+        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+        }
+        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      }
       if(command==="production_jobs")return [];
       if(command==="mlt_cleanup_inventory")return structuredClone(report);
       throw Error("No native operation authorized");

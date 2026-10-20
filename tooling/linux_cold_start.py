@@ -10,6 +10,8 @@ human installation, Semwright renderer, or visual editing acceptance.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import ctypes.util
 from dataclasses import dataclass
 from contextlib import closing
 import hashlib
@@ -17,6 +19,8 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
+import time
 import shutil
 import sqlite3
 from urllib.parse import quote
@@ -29,7 +33,7 @@ MAX_DB_BYTES = 128 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
 MAX_TRAVERSAL_ENTRIES = 1500
 EXPECTED_SCHEMA = 2
-EXPECTED_INITIAL_TITLE = "Untitled Motion Project"
+EXPECTED_INITIAL_TITLE = "motionwright ci first use"
 EXPECTED_DATABASE_NAME = "motionwright.sqlite3"
 
 
@@ -178,6 +182,109 @@ def _bootstrap_committed(scratch: Path) -> bool:
     return True
 
 
+def _empty_library_ready(scratch: Path) -> bool:
+    """Observe schema and zero projects before the one real UI mutation."""
+    try:
+        database = _safe_database(scratch / "data")
+        uri = "file:" + quote(str(database.resolve(strict=True)), safe="/") + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=3)) as connection:
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("PRAGMA trusted_schema=OFF")
+            return (
+                connection.execute("PRAGMA quick_check(1)").fetchone() == ("ok",)
+                and connection.execute("PRAGMA user_version").fetchone() == (EXPECTED_SCHEMA,)
+                and connection.execute("SELECT COUNT(*) FROM projects").fetchone() == (0,)
+            )
+    except (ColdStartError, sqlite3.Error, OSError):
+        return False
+
+
+def _send_native_x11_create() -> None:
+    """Send a single real keyboard activation to the accessible modal.
+
+    ProjectLibraryDialog focuses its heading and traps Shift+Tab to its last
+    enabled control, the labeled title input (Create is disabled until title).
+    The subsequent Tab/Return uses the native WebKit/Xvfb event path.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not os.environ.get("DISPLAY"):
+        raise ColdStartError("Native first-use keyboard requires disposable Xvfb CI")
+    observed = subprocess.run(
+        ["xwininfo", "-root", "-tree"], capture_output=True, text=True,
+        timeout=5, check=False,
+    )
+    if observed.returncode:
+        raise ColdStartError("Could not inspect native installed X11 window")
+    ids = re.findall(r'^\s*(0x[0-9A-Fa-f]+)\s+"Motionwright":',
+                     observed.stdout, re.MULTILINE)
+    if len(ids) != 1:
+        raise ColdStartError("Expected exactly one original Motionwright X11 window")
+    x11_name = ctypes.util.find_library("X11") or "libX11.so.6"
+    xtst_name = ctypes.util.find_library("Xtst") or "libXtst.so.6"
+    try:
+        x11 = ctypes.CDLL(x11_name)
+        xtst = ctypes.CDLL(xtst_name)
+    except OSError as error:
+        raise ColdStartError("X11 XTest runtime unavailable on disposable runner") from error
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    x11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XRaiseWindow.restype = ctypes.c_int
+    x11.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    x11.XSetInputFocus.restype = ctypes.c_int
+    x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+    x11.XStringToKeysym.restype = ctypes.c_ulong
+    x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    xtst.XTestFakeKeyEvent.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong,
+    ]
+    xtst.XTestFakeKeyEvent.restype = ctypes.c_int
+    display = x11.XOpenDisplay(None)
+    if not display:
+        raise ColdStartError("Xvfb display could not be opened for the native GUI action")
+    try:
+        window_id = int(ids[0], 16)
+        x11.XRaiseWindow(display, window_id)
+        x11.XSetInputFocus(display, window_id, 1, 0)
+        x11.XSync(display, 0)
+        time.sleep(1.2)
+        def key(name: str, pressed: bool) -> None:
+            symbol = x11.XStringToKeysym(name.encode("ascii"))
+            code = x11.XKeysymToKeycode(display, symbol)
+            if not code or not xtst.XTestFakeKeyEvent(display, code, int(pressed), 0):
+                raise ColdStartError("Native X11 project-creation key event was rejected")
+            x11.XSync(display, 0)
+        def stroke(name: str) -> None:
+            key(name, True)
+            key(name, False)
+            time.sleep(0.035)
+        # The dialog focuses its h2. First Shift+Tab wraps to the footer
+        # Close button; the second reaches the labeled Project title input
+        # because the Create button is disabled before a title is entered.
+        # A single Shift+Tab would type into the footer and never create.
+        key("Shift_L", True)
+        stroke("Tab")
+        stroke("Tab")
+        key("Shift_L", False)
+        for char in EXPECTED_INITIAL_TITLE:
+            stroke("space" if char == " " else char)
+        stroke("Tab")
+        stroke("Return")
+    finally:
+        x11.XCloseDisplay(display)
+
+
+def _first_project_window_interaction(scratch: Path) -> bool:
+    if not _empty_library_ready(scratch):
+        return False
+    # No retry follows this point even if acknowledgement is lost. The
+    # installed application and SQLite journal remain authoritative.
+    _send_native_x11_create()
+    return True
+
+
 def probe_cold_relaunch(
     *, app_run: Path, scratch: Path, source_sha: str,
     semwright_sha: str, seconds: int = 24,
@@ -193,6 +300,7 @@ def probe_cold_relaunch(
         raise ColdStartError("Cold-start scratch must be empty before the first launch")
     first_gui = run_probe(
         app_run, scratch, seconds=seconds, ready_check=_bootstrap_committed,
+        window_interaction=_first_project_window_interaction,
     )
     if first_gui.get("status") != "WINDOW_OBSERVED":
         raise ColdStartError("First installed run created no observed desktop window")

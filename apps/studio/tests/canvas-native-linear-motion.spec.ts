@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 
 test("Canvas issues exactly one source-scoped native linear move and preserves base pose", async ({ page }) => {
@@ -20,7 +20,14 @@ test("Canvas issues exactly one source-scoped native linear move and preserves b
     mock.__NATIVE_AUTHORING_REQUESTS__ = [];
     mock.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") return { ...initialBoot, project: structuredClone(project) };
+        if (command === "bootstrap") {
+          const syntheticResponse = { ...initialBoot, project: structuredClone(project) };
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "issue_effect_grant") return { token: "synthetic-only-authority" };
         if (command === "apply_change") {
           const request = args?.request as {

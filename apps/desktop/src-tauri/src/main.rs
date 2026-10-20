@@ -1,10 +1,13 @@
 mod av_delivery;
 mod av_master;
+mod caption_export;
 mod effect_grants;
+mod file_import;
 mod generation_journal;
 mod media_integrity;
 mod narration_native;
 mod original_mix_native;
+mod project_library;
 mod runtime_setup;
 
 use av_delivery::{
@@ -16,11 +19,11 @@ use media_integrity::{
 mod native_preview;
 
 use av_master::{canonical_av_request_id, stage_measured_wav, validate_master_voice_timing};
+use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
-    AlignmentEvidence, CaptionFormat, Change, CueEvidence, Project, RevisionStamp, caption_sidecar,
-    otio_interchange,
+    AlignmentEvidence, Change, CueEvidence, Project, RevisionStamp, otio_interchange,
 };
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
@@ -40,9 +43,11 @@ use motionwright_native::{
 };
 use motionwright_service::{
     AssetIntegrityPage, MltCleanupInventory, ModelRequestDraft, ModelRequestPreflight,
-    ProductionJobProjection, ProjectEvent, StudioService, VoiceImportMetadata, WaveformPage,
+    ProductionJobProjection, ProjectCreationIntent, ProjectCreationOutcome, ProjectEvent,
+    StudioService, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
+use project_library::{BootstrapProjectSelection, BootstrapRequest};
 use runtime_setup::RuntimeConnectionRegistry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,6 +63,9 @@ const SEMWRIGHT_VERSION: &str = "1.0.0";
 #[derive(Clone)]
 struct AppState {
     service: StudioService,
+    /// This non-nil identity and Store are fixed for this AppState's lifetime.
+    /// Creation grants bind the actual invoking window label in this session.
+    workspace_session: Uuid,
     effect_grants: EffectGrantRegistry,
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
@@ -74,7 +82,8 @@ struct NativeSdkInfo {
 
 #[derive(Debug, Serialize)]
 struct BootstrapResponse {
-    project: Project,
+    project: Option<Project>,
+    project_selection: BootstrapProjectSelection,
     native_sdk: NativeSdkInfo,
 }
 
@@ -433,22 +442,6 @@ struct ExportBundleRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct ExportCaptionRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    profile_id: Uuid,
-    path: String,
-    effect_grant: Uuid,
-}
-
-#[derive(Debug, Serialize)]
-struct CaptionExportResponse {
-    path: String,
-    cue_count: usize,
-}
-
-#[derive(Debug, Deserialize)]
 struct ExportOtioRequest {
     project_id: Uuid,
     generation: Uuid,
@@ -462,29 +455,6 @@ struct OtioExportResponse {
     path: String,
     scene_count: usize,
     loss_report: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ImportAssetRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    effect_grant: Uuid,
-    path: String,
-    name: Option<String>,
-    media_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ImportVoiceRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    effect_grant: Uuid,
-    path: String,
-    name: Option<String>,
-    media_type: Option<String>,
-    label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -515,16 +485,20 @@ struct BundleExportResponse {
 }
 
 #[tauri::command]
-fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapResponse, String> {
-    let project = state
-        .service
-        .projects(1)
-        .map_err(sanitized)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| "No Motionwright project is available".to_string())?;
+fn bootstrap(
+    state: State<'_, AppState>,
+    request: Option<BootstrapRequest>,
+) -> Result<BootstrapResponse, String> {
+    // The saved UI selection is a read hint, never a grant or permission to
+    // create/replace a document. An unavailable id must not choose a fallback.
+    let (project, mut project_selection) =
+        project_library::bootstrap_project(&state.service, request.unwrap_or_default());
+    if let BootstrapProjectSelection::Unavailable { message, .. } = &mut project_selection {
+        *message = sanitized(&*message);
+    }
     Ok(BootstrapResponse {
         project,
+        project_selection,
         native_sdk: NativeSdkInfo {
             application: motionwright_native::APP_ID,
             pinned_revision: SEMWRIGHT_REVISION,
@@ -534,13 +508,72 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapResponse, String> {
     })
 }
 
+#[tauri::command]
+fn list_projects(
+    state: State<'_, AppState>,
+    request: project_library::ListProjectsRequest,
+) -> Result<project_library::ProjectLibraryPage, String> {
+    project_library::list_projects(&state.service, request).map_err(sanitized)
+}
+
+#[tauri::command]
+fn open_project(
+    state: State<'_, AppState>,
+    request: project_library::OpenProjectRequest,
+) -> Result<Project, String> {
+    project_library::open_project(&state.service, request).map_err(sanitized)
+}
+
+#[tauri::command]
+fn issue_project_creation_grant(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    request: ProjectCreationIntent,
+) -> Result<EffectGrantReceipt, String> {
+    project_library::issue_creation_grant(
+        &state.effect_grants,
+        state.workspace_session,
+        window.label(),
+        &request,
+    )
+    .map_err(sanitized)
+}
+
+#[tauri::command]
+fn create_project(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    request: project_library::CreateProjectRequest,
+) -> Result<ProjectCreationOutcome, String> {
+    project_library::create_project(
+        &state.service,
+        &state.effect_grants,
+        state.workspace_session,
+        window.label(),
+        request,
+    )
+    .map_err(sanitized)
+}
+
+#[tauri::command]
+fn recover_project_creation(
+    state: State<'_, AppState>,
+    request: ProjectCreationIntent,
+) -> Result<Option<ProjectCreationOutcome>, String> {
+    project_library::recover_project_creation(&state.service, &request).map_err(sanitized)
+}
+
 fn checked_effect_scope(
     state: &AppState,
     project_id: Uuid,
     generation: Uuid,
     revision: u64,
 ) -> Result<EffectScope, String> {
-    let project = state.service.project(project_id).map_err(sanitized)?;
+    let project = project_library::open_project(
+        &state.service,
+        project_library::OpenProjectRequest { project_id },
+    )
+    .map_err(sanitized)?;
     if project.generation != generation || project.revision != revision {
         return Err("Effect grant scope is stale; refresh the project before retrying.".into());
     }
@@ -552,6 +585,11 @@ fn issue_effect_grant(
     state: State<'_, AppState>,
     request: IssueEffectGrantRequest,
 ) -> Result<EffectGrantReceipt, String> {
+    if request.effect == EffectKind::ProjectCreate {
+        return Err(
+            "Use the dedicated project creation command with its exact retained intent.".into(),
+        );
+    }
     let scope = match (request.project_id, request.generation, request.revision) {
         (Some(project_id), Some(generation), Some(revision)) => {
             checked_effect_scope(&state, project_id, generation, revision)?
@@ -1108,9 +1146,17 @@ async fn read_original_native_job_status(
                 .map_err(|_| {
                     "Source-bound native job history could not be confirmed.".to_owned()
                 })?;
+            // A job_ref can recur under another provider or Project stamp.
+            // Select the original Motion Canvas row from this trusted snapshot
+            // before applying the existing native authority validator.
             let job = jobs
                 .iter()
-                .find(|job| job.job_ref == selected)
+                .find(|job| {
+                    job.job_ref == selected
+                        && job.provider == "driver:motion-canvas"
+                        && job.generation == generation
+                        && job.revision == revision
+                })
                 .ok_or_else(|| {
                     "No acknowledged native render job matches the selection.".to_owned()
                 })?;
@@ -1907,151 +1953,74 @@ async fn preview_native_frame(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-#[tauri::command]
-fn import_asset_file(
-    state: State<'_, AppState>,
-    request: ImportAssetRequest,
-) -> Result<Project, String> {
-    let source = absolute_asset_path(&request.path)?;
-    let scope = checked_effect_scope(
-        &state,
-        request.project_id,
-        request.generation,
-        request.revision,
-    )?;
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::ImportLocal,
-        scope,
-        request.path.trim(),
-    )?;
-    if !source.is_file() {
-        return Err("Asset source must be an existing local file.".into());
+fn file_import_error(error: file_import::FileImportError) -> String {
+    match error {
+        file_import::FileImportError::Invalid(message) => message,
+        file_import::FileImportError::Storage(message) => sanitized(message),
     }
-    let name = request
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            source
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| "Asset file name is unavailable.".to_string())?;
-    let media_type = request
-        .media_type
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| infer_media_type(&source).to_owned());
-    let current = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    let expected = RevisionStamp {
-        resource: current.resource_key(),
-        generation: request.generation,
-        revision: request.revision,
-    };
-    state
-        .service
-        .import_asset_file(
-            request.project_id,
-            &expected,
-            &Uuid::now_v7().to_string(),
-            &source,
-            name,
-            media_type,
-        )
-        .map(|outcome| outcome.project)
-        .map_err(sanitized)
 }
 
 #[tauri::command]
-fn import_voice_file(
+async fn prepare_file_import(
     state: State<'_, AppState>,
-    request: ImportVoiceRequest,
-) -> Result<Project, String> {
-    let source = absolute_asset_path(&request.path)?;
-    let scope = checked_effect_scope(
-        &state,
-        request.project_id,
-        request.generation,
-        request.revision,
-    )?;
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::ImportLocal,
-        scope,
-        request.path.trim(),
-    )?;
-    if !source.is_file() {
-        return Err("Voice source must be an existing local file.".into());
-    }
-    let name = request
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            source
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| "Voice file name is unavailable.".to_string())?;
-    let label = request
-        .label
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            source
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "Voice take".into());
-    let media_type = request
-        .media_type
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| infer_media_type(&source).to_owned());
-    if !media_type.starts_with("audio/") {
-        return Err("Voice import requires a supported audio file.".into());
-    }
-    let current = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    let expected = RevisionStamp {
-        resource: current.resource_key(),
-        generation: request.generation,
-        revision: request.revision,
-    };
-    state
-        .service
-        .import_voice_file(
-            request.project_id,
-            &expected,
-            &Uuid::now_v7().to_string(),
-            &source,
-            VoiceImportMetadata {
-                name,
-                media_type,
-                label,
-            },
-        )
-        .map(|outcome| outcome.project)
-        .map_err(sanitized)
+    request: file_import::FileImportPrepareRequest,
+) -> Result<file_import::PreparedFileImport, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::prepare_file_import(&service, request).map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| "Import preparation task failed.".to_string())?
+}
+
+#[tauri::command]
+async fn import_asset_file(
+    state: State<'_, AppState>,
+    request: file_import::FileImportDispatchRequest,
+) -> Result<file_import::FileImportReceipt, String> {
+    let service = state.service.clone();
+    // The clone shares the existing registry; it does not create new authority.
+    let grants = state.effect_grants.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::import_asset_file(&service, &grants, request).map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| {
+        "File import task failed. Check the original import result before importing again."
+            .to_string()
+    })?
+}
+
+#[tauri::command]
+async fn import_voice_file(
+    state: State<'_, AppState>,
+    request: file_import::FileImportDispatchRequest,
+) -> Result<file_import::FileImportReceipt, String> {
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::import_voice_file(&service, &grants, request).map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| {
+        "Voice import task failed. Check the original import result before importing again."
+            .to_string()
+    })?
+}
+
+#[tauri::command]
+async fn recover_file_import(
+    state: State<'_, AppState>,
+    request: file_import::FileImportRecoveryRequest,
+) -> Result<Option<file_import::FileImportReceipt>, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::recover_file_import(&service, request).map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| {
+        "Import recovery read failed. The retained request is still available.".to_string()
+    })?
 }
 
 #[tauri::command]
@@ -2113,50 +2082,7 @@ fn export_caption_sidecar(
     state: State<'_, AppState>,
     request: ExportCaptionRequest,
 ) -> Result<CaptionExportResponse, String> {
-    let scope = checked_effect_scope(
-        &state,
-        request.project_id,
-        request.generation,
-        request.revision,
-    )?;
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::DeliverLocal,
-        scope,
-        request.path.trim(),
-    )?;
-    let project = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    let sidecar = caption_sidecar(&project, request.profile_id).map_err(sanitized)?;
-    let destination = absolute_caption_path(&request.path, sidecar.format)?;
-    let parent = destination
-        .parent()
-        .ok_or_else(|| "Caption export destination has no parent directory.".to_string())?;
-    if !parent.is_dir() {
-        return Err("Caption export directory must already exist.".into());
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "Caption export destination already exists; Motionwright will not overwrite it."
-                    .to_string()
-            } else {
-                "Motionwright could not create the caption sidecar.".to_string()
-            }
-        })?;
-    file.write_all(sidecar.body.as_bytes())
-        .map_err(|_| "Motionwright could not write the caption sidecar.".to_string())?;
-    file.sync_all()
-        .map_err(|_| "Motionwright could not finalize the caption sidecar.".to_string())?;
-    Ok(CaptionExportResponse {
-        path: destination.display().to_string(),
-        cue_count: sidecar.cue_count,
-    })
+    caption_export::export_caption_sidecar(&state.service, &state.effect_grants, request)
 }
 
 #[tauri::command]
@@ -2288,7 +2214,13 @@ async fn apply_change(
 
     let service = state.service.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let current = service.project(request.project_id).map_err(sanitized)?;
+        let current = project_library::open_project(
+            &service,
+            project_library::OpenProjectRequest {
+                project_id: request.project_id,
+            },
+        )
+        .map_err(sanitized)?;
         let expected = RevisionStamp {
             resource: current.resource_key(),
             generation: request.generation,
@@ -2306,76 +2238,6 @@ async fn apply_change(
     })
     .await
     .map_err(|_| "Motionwright project mutation task failed".to_string())?
-}
-
-fn absolute_asset_path(value: &str) -> Result<PathBuf, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("Choose an absolute asset file path.".into());
-    }
-    let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
-        return Err("Asset file paths must be absolute.".into());
-    }
-    Ok(path)
-}
-
-fn infer_media_type(path: &std::path::Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "wav" => "audio/wav",
-        "mp3" => "audio/mpeg",
-        "flac" => "audio/flac",
-        "ogg" | "oga" => "audio/ogg",
-        "m4a" | "aac" => "audio/mp4",
-        "aif" | "aiff" => "audio/aiff",
-        "caf" => "audio/x-caf",
-        "mp4" => "video/mp4",
-        "mov" => "video/quicktime",
-        "webm" => "video/webm",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "glb" => "model/gltf-binary",
-        "gltf" => "model/gltf+json",
-        "json" => "application/json",
-        "srt" => "application/x-subrip",
-        "vtt" => "text/vtt",
-        "txt" => "text/plain",
-        _ => "application/octet-stream",
-    }
-}
-
-fn absolute_caption_path(value: &str, format: CaptionFormat) -> Result<PathBuf, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("Choose an absolute caption sidecar path.".into());
-    }
-    let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
-        return Err("Caption sidecar paths must be absolute.".into());
-    }
-    let expected = match format {
-        CaptionFormat::WebVtt => "vtt",
-        CaptionFormat::SubRip => "srt",
-    };
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if extension != expected {
-        return Err(format!(
-            "Caption sidecar must use the .{expected} extension."
-        ));
-    }
-    Ok(path)
 }
 
 fn absolute_otio_path(value: &str) -> Result<PathBuf, String> {
@@ -2445,15 +2307,9 @@ fn main() {
             std::fs::create_dir_all(&data_dir)?;
             let service = StudioService::open(data_dir.join("motionwright.sqlite3"))
                 .map_err(|error| format!("local project store unavailable: {error}"))?;
-            if service
-                .projects(1)
-                .map_err(|error| format!("project index unavailable: {error}"))?
-                .is_empty()
-            {
-                service
-                    .create_project("Untitled Motion Project")
-                    .map_err(|error| format!("initial project unavailable: {error}"))?;
-            }
+            // Register the existing store even when no project is selected or
+            // its latest document is unreadable. The library reads its index;
+            // opening or creating a project is a separate explicit operation.
 
             // Build the public Native SDK cooperation surface during application setup.
             // Driver Host runs the same surface through the standalone provider executable.
@@ -2462,6 +2318,7 @@ fn main() {
 
             app.manage(AppState {
                 service,
+                workspace_session: Uuid::now_v7(),
                 effect_grants: EffectGrantRegistry::default(),
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
@@ -2471,6 +2328,11 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            list_projects,
+            open_project,
+            issue_project_creation_grant,
+            create_project,
+            recover_project_creation,
             issue_effect_grant,
             project_history,
             project_history_recent,
@@ -2495,6 +2357,8 @@ fn main() {
             verify_local_media_integrity,
             review_native_av_master,
             preview_native_frame,
+            prepare_file_import,
+            recover_file_import,
             import_asset_file,
             import_voice_file,
             waveform_page,

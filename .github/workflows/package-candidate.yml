@@ -1,7 +1,18 @@
 name: Candidate Packages
+run-name: Candidate packages / ${{ inputs.verification_scope || 'all' }} / ${{ github.sha }}
 
 on:
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Full candidate packages, Windows contracts, or Windows installed first-use
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - windows_contracts
+          - windows_installed
   pull_request:
     paths:
       - "apps/desktop/**"
@@ -21,6 +32,9 @@ on:
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
+      - "tooling/windows_first_project_ui.ps1"
+      - "tooling/ci_test_runner.py"
+      - "tooling/verify_powershell_exit_guard.py"
       - "tooling/tests/test_windows_cold_start.py"
       - "tooling/linux_cold_start.py"
       - "tooling/tests/test_linux_cold_start.py"
@@ -50,6 +64,9 @@ on:
       - "tooling/candidate_smoke.py"
       - "tooling/linux_gui_probe.py"
       - "tooling/windows_cold_start.py"
+      - "tooling/windows_first_project_ui.ps1"
+      - "tooling/ci_test_runner.py"
+      - "tooling/verify_powershell_exit_guard.py"
       - "tooling/tests/test_windows_cold_start.py"
       - "tooling/linux_cold_start.py"
       - "tooling/tests/test_linux_cold_start.py"
@@ -74,12 +91,18 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
+      - name: Quick source and conformance policies for every verification scope
+        run: |
+          python3 tooling/source_policy.py
+          python3 tooling/acceptance_policy.py
+          python3 tooling/creative_status_policy.py
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
           python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
 
   linux:
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed')
     needs: receipt-policy
     runs-on: ubuntu-24.04
     steps:
@@ -243,19 +266,180 @@ jobs:
             ci-evidence/linux-appimage-window.json
           if-no-files-found: error
 
+  windows-contracts:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Source and acceptance policy before Windows contract execution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B -E -s tooling/source_policy.py
+          if ($LASTEXITCODE -ne 0) { throw 'Source policy failed before Windows contracts' }
+          python -B -E -s tooling/acceptance_policy.py
+          if ($LASTEXITCODE -ne 0) { throw 'Acceptance policy failed before Windows contracts' }
+      - name: Windows cold-start unit contracts before package build
+        id: windows-contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = (Resolve-Path $env:GITHUB_WORKSPACE).Path
+          $head = (& git --no-replace-objects -C "$source" rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:GITHUB_SHA) {
+            throw 'Windows contracts require the exact checked-out workflow source'
+          }
+          $tree = (& git --no-replace-objects -C "$source" rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot identify Windows contract source tree' }
+          $proofDir = Join-Path $env:RUNNER_TEMP "motionwright-windows-contracts-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          if (Test-Path -LiteralPath "$proofDir") { throw 'Windows contract output must be new' }
+          New-Item -ItemType Directory -Path "$proofDir" | Out-Null
+          $report = Join-Path "$proofDir" 'receipt.json'
+          python -B -I -S tooling/ci_test_runner.py `
+            --repo "$source" --test-directory tooling/tests `
+            --pattern test_windows_cold_start.py --mode both `
+            --report "$report" --expected-source "$head" --require-complete --timeout 180
+          if ($LASTEXITCODE -ne 0) { throw 'Windows unit contracts failed or were incomplete; NSIS build is blocked' }
+          $readback = @'
+          import ast, hashlib, json, os, re, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          report, root = Path(sys.argv[1]), Path(sys.argv[2])
+          head, tree = sys.argv[3:5]
+          if sys.platform != "win32":
+              raise SystemExit("Windows contract assertions require the real Windows interpreter")
+          receipt = json.loads(report.read_bytes())
+          test_path = "tooling/tests/test_windows_cold_start.py"
+          class_name = "WindowsCandidateUnitTests"
+          # AST-bound exact source inventory; reject duplicate or dynamic cases.
+          source_tree = ast.parse((root / test_path).read_text(encoding="utf-8"))
+          classes = [node for node in source_tree.body
+                     if isinstance(node, ast.ClassDef) and node.name == class_name]
+          if len(classes) != 1:
+              raise SystemExit("The reviewed Windows test class must be unique")
+          cls = classes[0]
+          if not any(isinstance(parent, ast.Attribute) and isinstance(parent.value, ast.Name)
+                     and parent.value.id == "unittest" and parent.attr == "TestCase"
+                     for parent in cls.bases):
+              raise SystemExit("The reviewed Windows class must subclass unittest.TestCase")
+          source_methods = [node.name for node in cls.body
+                            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")]
+          methods = set(source_methods)
+          all_methods = [node.name for node in ast.walk(source_tree)
+                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         and node.name.startswith("test_")]
+          dynamic_loaders = [node for node in ast.walk(source_tree)
+                             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                             and node.name == "load_tests"]
+          if (len(source_methods) != 18 or len(methods) != 18
+                  or len(all_methods) != 18 or dynamic_loaders):
+              raise SystemExit("The reviewed Windows contract requires exactly 18 unique static source methods")
+          expected_entries = ["discovery:test_windows_cold_start.py", "dotted:tooling.tests.test_windows_cold_start"]
+          if (receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
+                  or receipt.get("require_complete") is not True
+                  or receipt.get("executed_source_sha") != head or receipt.get("tree_sha") != tree
+                  or receipt.get("source_postcheck_error")
+                  or [step.get("entry_point") for step in receipt.get("steps", [])] != expected_entries):
+              raise SystemExit("Windows unit receipt is incomplete or belongs to another source")
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          if receipt.get("test_definition_sha256") != {test_path: digest(root / test_path)}:
+              raise SystemExit("Windows test definitions changed after execution")
+          if receipt.get("runner_sha256") != digest(root / "tooling/ci_test_runner.py"):
+              raise SystemExit("Windows unit runner changed after execution")
+          for key in ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB"):
+              if receipt.get("github", {}).get(key) != os.environ[key]:
+                  raise SystemExit("Windows unit receipt belongs to another job or attempt")
+          method_inventory = {}
+          for index, step in enumerate(receipt["steps"]):
+              counts = step.get("counts", {})
+              if (step.get("status") != "PASS" or type(step.get("exit_code")) is not int or step["exit_code"] != 0
+                      or counts.get("terminal_status") != "OK"
+                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 18
+                      or type(counts.get("passed")) is not int or counts["passed"] != 18
+                      or any(type(counts.get(key)) is not int or counts[key] != 0 for key in
+                             ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
+                  raise SystemExit("Windows unit entry point did not complete 18 controls without omissions")
+              for stream in ("stdout", "stderr"):
+                  path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
+                  if step.get(stream) != {"file": path.name, "sha256": digest(path)}:
+                      raise SystemExit("Original unittest stream identity differs from its receipt")
+              data = report.with_name(f"{report.stem}-{index:02d}-stderr.log").read_bytes()
+              parsed_view = data.decode("utf-8", "strict").replace("\r\n", "\n").replace("\r", "\n")
+              observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
+              module = "test_windows_cold_start" if index == 0 else "tooling.tests.test_windows_cold_start"
+              expected = {f"{module}.{class_name}.{method}" for method in methods}
+              if len(observed) != 18 or set(observed) != expected:
+                  raise SystemExit("Original verbose output does not contain each of the 18 source controls exactly once")
+              method_inventory[step["entry_point"]] = sorted(observed)
+          source_inputs = {name: digest(root / name) for name in (
+              test_path, "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
+              "tooling/ci_test_runner.py", ".github/workflows/package-candidate.yml")}
+          result = {"schema": "motionwright.windows-unit-contract-readback/1",
+                    "status": "PASS_WINDOWS_UNIT_CONTRACTS", "source_sha": head, "tree_sha": tree,
+                    "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "receipt_sha256": digest(report), "github": receipt["github"],
+                    "source_inputs_sha256": source_inputs, "entrypoint_methods": method_inventory,
+                    "unique_source_controls": 18, "entrypoints": 2, "skipped": 0,
+                    "scope": "Synthetic G1: temporary SQLite/receipt fixtures and mocked native transport",
+                    "installed_application_execution": False, "native_ui_execution": False,
+                    "formal_acceptance": False, "release_verdict": False}
+          with report.with_name("contract-readback.json").open("x", encoding="utf-8", newline="\n") as handle:
+              json.dump(result, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          print("windows-unit-contracts=PASS unique=18 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
+          '@
+          $readbackPath = Join-Path "$proofDir" 'verify-contract-readback.py'
+          [System.IO.File]::WriteAllText($readbackPath, $readback, [System.Text.UTF8Encoding]::new($false))
+          python -B -I -S "$readbackPath" "$report" "$source" "$head" "$tree"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows unit contract source/count/log readback failed' }
+      - name: Preserve Windows unit contract receipts and original streams
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/motionwright-windows-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+      - name: Observe original PowerShell guard with successful and failing child exits
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proofDir = Join-Path $env:RUNNER_TEMP "motionwright-windows-exit-guard-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          python -B -I -S tooling/verify_powershell_exit_guard.py `
+            --repo "$env:GITHUB_WORKSPACE" --expected-source "$env:GITHUB_SHA" `
+            --powershell (Join-Path $PSHOME 'pwsh.exe') --output "$proofDir"
+          if ($LASTEXITCODE -ne 0) { throw 'The real PowerShell exit guard was not verified' }
+      - name: Retain original positive and negative PowerShell exit observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-exit-guard-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/motionwright-windows-exit-guard-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+
   windows:
-    needs: receipt-policy
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts'
+    needs: [receipt-policy, windows-contracts]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13"
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.98.1
@@ -354,6 +538,7 @@ jobs:
           if-no-files-found: error
 
   macos:
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed')
     needs: receipt-policy
     runs-on: macos-latest
     steps:
@@ -433,7 +618,7 @@ jobs:
   # on PRs, while this job is NOT_RUN until trusted dispatch or main push.
   attest-candidates:
     name: Candidate GH provenance (trusted runs only)
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'all' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [linux, windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
