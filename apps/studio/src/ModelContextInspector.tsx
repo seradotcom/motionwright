@@ -1,5 +1,5 @@
 import { Eye, ShieldCheck } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { modelRequestPreflight } from "./api";
 import type {
   DataClass,
@@ -33,11 +33,25 @@ export default function ModelContextInspector({
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
 
-  useEffect(() => {
-    setResourceRef("scene:" + scene.id);
+  const requestAttempt = useRef(0);
+  const invalidateInspection = useCallback(() => {
+    requestAttempt.current += 1;
     setPlan(null);
     setPreflightError(null);
-  }, [scene.id, project.revision]);
+    setReading(false);
+  }, []);
+
+  useLayoutEffect(() => {
+    invalidateInspection();
+    setResourceRef("scene:" + scene.id);
+    return () => {
+      // A response cannot publish after a scope change or unmount.
+      requestAttempt.current += 1;
+    };
+  }, [
+    project.id, project.generation, project.revision, project.active_branch,
+    scene.id, invalidateInspection,
+  ]);
 
   const resourceOptions = [
     { value: "scene:" + scene.id, label: "Scene · " + scene.name },
@@ -57,16 +71,20 @@ export default function ModelContextInspector({
   ];
 
   const toggleClass = (dataClass: DataClass) => {
+    invalidateInspection();
     setClasses((current) =>
       current.includes(dataClass)
         ? current.filter((candidate) => candidate !== dataClass)
         : [...current, dataClass],
     );
-    setPlan(null);
-    setPreflightError(null);
   };
 
   const inspect = async () => {
+    const attempt = ++requestAttempt.current;
+    const ownsInspection = () => requestAttempt.current === attempt;
+    const expectedProject = {
+      id: project.id, generation: project.generation, revision: project.revision,
+    };
     setReading(true);
     setPreflightError(null);
     setPlan(null);
@@ -83,11 +101,21 @@ export default function ModelContextInspector({
           max_cost_microunits: providerKind === "remote" ? 100_000 : null,
         },
       });
+      if (!ownsInspection()) return;
+      if (next.project_id !== expectedProject.id
+        || next.generation !== expectedProject.generation
+        || next.base_revision !== expectedProject.revision) {
+        throw new Error(
+          "The preflight belongs to a different project snapshot. Refresh the project and inspect again.",
+        );
+      }
       setPlan(next);
     } catch (reason) {
-      setPreflightError(reason instanceof Error ? reason.message : String(reason));
+      if (ownsInspection()) {
+        setPreflightError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
-      setReading(false);
+      if (ownsInspection()) setReading(false);
     }
   };
 
@@ -111,8 +139,8 @@ export default function ModelContextInspector({
             aria-label="Model provider mode"
             value={providerKind}
             onChange={(event) => {
+              invalidateInspection();
               setProviderKind(event.target.value as ModelProviderKind);
-              setPlan(null);
             }}
           >
             <option value="manual">Manual</option>
@@ -127,8 +155,8 @@ export default function ModelContextInspector({
             aria-label="Model provider"
             value={provider}
             onChange={(event) => {
+              invalidateInspection();
               setProvider(event.target.value);
-              setPlan(null);
             }}
           />
         </label>
@@ -138,8 +166,8 @@ export default function ModelContextInspector({
             aria-label="Model identifier"
             value={model}
             onChange={(event) => {
+              invalidateInspection();
               setModel(event.target.value);
-              setPlan(null);
             }}
           />
         </label>
@@ -149,8 +177,8 @@ export default function ModelContextInspector({
             aria-label="Model context resource"
             value={resourceRef}
             onChange={(event) => {
+              invalidateInspection();
               setResourceRef(event.target.value);
-              setPlan(null);
             }}
           >
             {resourceOptions.map((option) => (
