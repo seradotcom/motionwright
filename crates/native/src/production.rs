@@ -2268,6 +2268,27 @@ impl ProductionCoordinator {
         if let Some(digest) = camera_getters_sha256 {
             verified_artifact["camera_getters_sha256"] = json!(digest);
         }
+        if requires_camera_getters {
+            let source_check = serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Original Manim camera plan cannot be reopened"))
+                .and_then(
+                    |plan: motionwright_manim_profile::planar_camera::ManimCameraScenePlanV1| {
+                        crate::manim_camera_projection::verify_rendered_manim_camera_source(
+                            &self.client.connection().output_root,
+                            &relative_path,
+                            &plan,
+                            &artifact,
+                        )
+                    },
+                );
+            match source_check {
+                Ok(source) => verified_artifact["camera_source"] = source,
+                Err(error) => {
+                    verified_artifact["camera_source_custody_error"] =
+                        json!({"message": error.to_string()});
+                }
+            }
+        }
         Ok(json!({
             "renderer": "manim-community",
             "native_driver": "driver:manim-community",

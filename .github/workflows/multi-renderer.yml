@@ -47,6 +47,8 @@ jobs:
         run: cargo test --locked -p motionwright-native multi_renderer::tests --all-targets
       - name: Production driver boundaries
         run: cargo test --locked -p motionwright-native production::tests --all-targets
+      - name: Manim camera source persistence and reopen
+        run: cargo test --locked -p motionwright-native --test manim_camera_source
       - name: Multi-renderer clippy
         run: cargo clippy --locked -p motionwright-native -p motionwright-manim-profile -p motionwright-manim-community-driver --all-targets -- -D warnings
 
