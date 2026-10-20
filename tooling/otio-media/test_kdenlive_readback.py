@@ -142,6 +142,54 @@ class KdenliveNativeReadbackTests(unittest.TestCase):
             ):
                 inspect_saved_kdenlive(reopened, reopen_sha, bundle, seal)
 
+    def test_Kdenlive_audio_companion_track_is_not_a_duplicate_video_clip(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            bundle, seal = capsule(Path(scratch))
+            raw = mlt_xml(media_name=f"media/{MEDIA_SHA}.mp4").replace(
+                b'<track producer="timeline0"/>',
+                b'<track producer="timeline0"/>'
+                b'<track hide="video" producer="audio_tractor"/>', 1,
+            ).replace(
+                b"</mlt>",
+                b'<playlist id="audio_playlist">'
+                b'<entry producer="chain1" in="0" out="29"/>'
+                b'</playlist>'
+                b'<tractor id="audio_tractor">'
+                b'<track producer="audio_playlist"/></tractor></mlt>',
+            )
+            project, sha = native_file(bundle, raw)
+            receipt = inspect_saved_kdenlive(project, sha, bundle, seal)
+            self.assertEqual(receipt["observed_bound_clip_count"], 1)
+            self.assertEqual(receipt["video_hidden_MLT_track_count_excluded"], 1)
+            self.assertEqual(receipt["observed_bound_editorial_clip_semantics"][0][
+                "original_media_sha256"], MEDIA_SHA)
+
+    def test_original_Kdenlive_video_track_gap_never_appears_as_a_contiguous_cut(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            bundle, seal = capsule(Path(scratch))
+            raw = mlt_xml(media_name=f"media/{MEDIA_SHA}.mp4").replace(
+                b"</playlist>",
+                b'<blank length="00:00:01.000"/></playlist>', 1,
+            )
+            project, sha = native_file(bundle, raw)
+            with self.assertRaisesRegex(
+                KdenliveReadbackRejected, "unexpected_gap"
+            ):
+                inspect_saved_kdenlive(project, sha, bundle, seal)
+
+    def test_Kdenlive_media_on_audio_only_track_cannot_fake_video_reopen(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            bundle, seal = capsule(Path(scratch))
+            raw = mlt_xml(media_name=f"media/{MEDIA_SHA}.mp4").replace(
+                b'<track producer="timeline0"/>',
+                b'<track hide="video" producer="timeline0"/>', 1,
+            )
+            project, sha = native_file(bundle, raw)
+            with self.assertRaisesRegex(
+                KdenliveReadbackRejected, "lost_original_clip_instances"
+            ):
+                inspect_saved_kdenlive(project, sha, bundle, seal)
+
     def test_first_Kdenlive_import_may_not_claim_original_authored_reorder(self):
         with tempfile.TemporaryDirectory() as scratch:
             bundle, seal, project, sha = self.scene(Path(scratch))

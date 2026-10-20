@@ -228,6 +228,7 @@ def inspect_saved_kdenlive(
             "native_Kdenlive_project_tractor_not_unique")
     reachable = set()
     timeline_entries = []
+    hidden_video_track_refs = []
 
     def walk(identifier: str, ancestors: frozenset[str]) -> None:
         require(identifier in objects,
@@ -246,11 +247,22 @@ def inspect_saved_kdenlive(
             [item for item in current if item.tag == "entry"]
             if current.tag == "playlist" else []
         )
+        require(current.tag != "playlist"
+                or not any(item.tag == "blank" for item in current),
+                "native_Kdenlive_unexpected_gap_in_original_contiguous_cut")
         parent_ids = ancestors | frozenset((identifier,))
         for child in children:
             referenced = child.attrib.get("producer")
             require(type(referenced) is str and 0 < len(referenced) <= 250,
                     "native_Kdenlive_playback_entry_has_no_original_source")
+            if current.tag == "tractor" and child.attrib.get("hide") in (
+                "video", "both",
+            ):
+                # Kdenlive nested tractors commonly carry companion audio
+                # tracks referencing the same source. An audio-only instance
+                # is NOT a duplicate clip on the observable video timeline.
+                hidden_video_track_refs.append(referenced)
+                continue
             if current.tag == "playlist":
                 timeline_entries.append(child)
             walk(referenced, parent_ids)
@@ -355,6 +367,8 @@ def inspect_saved_kdenlive(
         "native_kdenlive_main_bin_and_tractor": True,
         "native_editor_timeline_entries_present": True,
         "observed_editable_timeline_entry_count": len(timeline_entries),
+        "video_hidden_MLT_track_count_excluded": len(hidden_video_track_refs),
+        "unexpected_video_timeline_gaps_accepted": False,
         "observed_bound_clip_count": len(played),
         "observed_bound_editorial_clip_semantics": played,
         "original_capsule_scene_order": manifest["scene_order"],
