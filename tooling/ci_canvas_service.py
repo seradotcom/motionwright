@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Canvas, Program and Brief browser contracts against the freshly built SQLite service."""
+"""Run Canvas, Program, Brief and Audio browser contracts against the freshly built SQLite service."""
 from __future__ import annotations
 
 import argparse
@@ -60,6 +60,14 @@ BRIEF_UNCERTAINTY_TITLES = (
     "a late Brief reply cannot consume the pending state of a new recovery writer",
     "a failed recovery fork pointer keeps the earlier Brief UNKNOWN and sends nothing",
 )
+ACTIVE_VOICE_TITLES = (
+    "active voice selection preserves both measured sources and canonical state through keyboard save and reopen",
+    "a held original selection reply blocks duplicate sends across workspace remount",
+    "an unrelated r+1 leaves active voice UNKNOWN until separate saved-state review",
+    "a committed active voice followed by r+2 remains UNKNOWN after lost reply and reload",
+    "active voice record retention failure is NOT_SENT and reload never submits it",
+    "active voice pointer retention failure is NOT_SENT and reload never submits it",
+)
 SELECTIONS = (
     ("canvas", "canvas-draft-service.spec.ts", CANVAS_TITLES),
     ("ink", "visual-language-draft-service.spec.ts", (INK_TITLE,)),
@@ -67,6 +75,7 @@ SELECTIONS = (
     ("brief", "brief-service.spec.ts", BRIEF_TITLES),
     ("brief-recovery", "brief-recovery-admission-service.spec.ts", BRIEF_RECOVERY_TITLES),
     ("brief-uncertain", "brief-uncertain-outcome-service.spec.ts", BRIEF_UNCERTAINTY_TITLES),
+    ("active-voice", "audio-active-voice-service.spec.ts", ACTIVE_VOICE_TITLES),
 )
 
 
@@ -153,6 +162,9 @@ def source_observation(repo):
         "apps/studio/src/App.tsx",
         "apps/studio/src/BriefWorkspace.tsx",
         "apps/studio/src/briefDraft.ts",
+        "apps/studio/src/AudioWorkspace.tsx",
+        "apps/studio/src/audioDraft.ts",
+        "apps/studio/tests/audio-active-voice-service.spec.ts",
         "tooling/ci_canvas_service.py",
     )
     files = {}
@@ -237,7 +249,7 @@ def main():
             if label == "ink":
                 argv += ["--grep", re.escape(INK_TITLE) + "$"]
             command = execute(argv, repo / "apps/studio", case_env, output, label,
-                              1800 if label == "canvas" else 900 if label in ("brief", "brief-uncertain")
+                              1800 if label == "canvas" else 900 if label in ("brief", "brief-uncertain", "active-voice")
                               else 600 if label == "program" else 180)
             selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
             report["selections"].append(selection)

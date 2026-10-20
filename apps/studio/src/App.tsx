@@ -2332,6 +2332,7 @@ export default function App() {
           <AudioWorkspace
             project={project}
             commit={commit}
+            commitRequired={commitRequired}
             desktopMode={boot.native_sdk.mode === "tauri"}
             importVoice={ingestVoice}
             playhead={playhead}

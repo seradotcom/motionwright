@@ -24,14 +24,16 @@ import type {
   WaveformPage,
 } from "./types";
 import {
+  activeVoiceGroup, activeVoiceIsUnconfirmed, activeVoiceReviewMatches, inspectActiveVoiceOutcome,
+  prepareActiveVoiceSelection, prepareSeparateActiveVoiceIntent, retainActiveVoiceRecord, sendRetainedActiveVoiceSelection,
   AUDIO_COPY_LIMIT, AUDIO_DRAFT_PREFIX, audioCanonicalFields, audioConflicts,
   audioDraftHasWork, audioDraftScope, audioFieldLabels, audioFields, audioGroupName,
   audioRecoveryKey, createAudioDraft, decodeAudioRecovery, editAudioField,
   observeAudioDraft, prepareAudioSubmission, readAudioRecoveries,
   reconcileAudioDraft, resolveAudioField, retainAudioSubmission, writeAudioRecovery,
 } from "./audioDraft";
-import type { AudioDraft, AudioDraftGroup, AudioRecovery, AudioRecoveryCopy, AudioSubmission } from "./audioDraft";
-import { waveformPage as loadWaveformPage } from "./api";
+import type { AudioDraft, AudioDraftGroup, AudioRecovery, AudioRecoveryCopy, AudioSubmission, ActiveVoiceOutcomeReview } from "./audioDraft";
+import { bootstrap, projectHistory, waveformPage as loadWaveformPage } from "./api";
 
 type Commit = (change: Change) => Promise<void>;
 
@@ -46,7 +48,8 @@ const secondsLabel = (time: RationalTime) => {
 
 const audioDocumentWriter = crypto.randomUUID();
 const audioSessionPointer = "motionwright.audio-session.v1:";
-const liveAudioDrafts = new Map<string, { draft: AudioDraft; writer: string; warning: string | null; blocked: boolean; blockedKey: string | null }>();
+type AudioLiveDraft = { draft: AudioDraft; writer: string; warning: string | null; blocked: boolean; blockedKey: string | null; attemptInFlight?: boolean; custodyPending?: boolean; notice?: string | null };
+const liveAudioDrafts = new Map<string, AudioLiveDraft>();
 const messageOf = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 const audioProjectIdentity = (project: Project) => JSON.stringify([project.id, project.generation, project.active_branch]);
 
@@ -318,7 +321,7 @@ function MixEditor({ project, commit }: { project: Project; commit: Commit }) {
   </section>;
 }
 
-type AudioWorkspaceProps = { project: Project; commit: Commit; desktopMode: boolean; importVoice: (path: string, label?: string) => Promise<void>; playhead: number; onSeek: (seconds: number) => void };
+type AudioWorkspaceProps = { project: Project; commit: Commit; commitRequired: Commit; desktopMode: boolean; importVoice: (path: string, label?: string) => Promise<void>; playhead: number; onSeek: (seconds: number) => void };
 
 function AudioRetainedDrafts({ project }: { project: Project }) {
   const [copies, setCopies] = useState<AudioRecoveryCopy[]>([]), [error, setError] = useState<string | null>(null);
@@ -390,6 +393,7 @@ export default function AudioWorkspace(props: AudioWorkspaceProps) {
 function AudioWorkspaceEditor({
   project,
   commit,
+  commitRequired,
   desktopMode,
   importVoice,
   playhead,
@@ -397,6 +401,7 @@ function AudioWorkspaceEditor({
 }: {
   project: Project;
   commit: Commit;
+  commitRequired: Commit;
   desktopMode: boolean;
   importVoice: (path: string, label?: string) => Promise<void>;
   playhead: number;
@@ -540,35 +545,7 @@ function AudioWorkspaceEditor({
       {importError && <div className="portable-message error" role="alert"><strong>Voice import blocked.</strong><span>{importError}</span></div>}
 
       <div className="audio-main-grid">
-        <aside className="voice-take-ledger" aria-label="Voice takes">
-          <header><strong>Voice takes</strong><span>Byte-bound measurements</span></header>
-          {project.audio.voice_tracks.length === 0 && (
-            <div className="audio-empty">
-              <AudioLines size={20} />
-              <strong>No measured take</strong>
-              <span>No waveform or timing evidence is synthesized.</span>
-            </div>
-          )}
-          {project.audio.voice_tracks.map((track) => {
-            const selected = track.id === activeId;
-            return (
-              <button
-                type="button"
-                key={track.id}
-                disabled={sourceLocked && !selected}
-                className={selected ? "voice-take-row selected" : "voice-take-row"}
-                onClick={() => !sourceLocked && !selected && void commit({ type: "set_active_voice_track", track_id: track.id })}
-              >
-                <span className="take-state">{selected ? <Check size={14} /> : <span />}</span>
-                <span className="voice-take-copy">
-                  <strong>{track.label}</strong>
-                  <span>{track.sample_rate_hz.toLocaleString()} Hz · {track.channels} ch · {secondsLabel(track.measured_duration)}</span>
-                  <span className="mono">sha256:{track.source_sha256.slice(0, 12)}</span>
-                </span>
-              </button>
-            );
-          })}
-        </aside>
+        <ActiveVoiceSelection project={project} commit={commitRequired} />
 
         <div className="audio-evidence-editor">
           <section className="audio-meter-ledger" aria-label="Audio measurements">
@@ -683,4 +660,192 @@ function AudioWorkspaceEditor({
       </div>
     </section>
   );
+}
+
+function ActiveVoiceSelection({ project, commit }: { project: Project; commit: Commit }) {
+  const scope = audioDraftScope(project, activeVoiceGroup);
+  const projectRef = useRef(project); projectRef.current = project;
+  const [entry] = useState(() => {
+    const cached = liveAudioDrafts.get(scope);
+    if (cached) return cached;
+    let draft = createAudioDraft(project, activeVoiceGroup);
+    let writer: string = crypto.randomUUID();
+    let warning: string | null = null, blocked = false, blockedKey: string | null = null;
+    try {
+      const { copies, limited } = readAudioRecoveries(window.localStorage, scope, activeVoiceGroup);
+      let previous: string | null = null;
+      if (!window.opener && performance.getEntriesByType("navigation").some(item => (item as PerformanceNavigationTiming).type === "reload")) {
+        previous = window.sessionStorage.getItem(audioSessionPointer + scope);
+      }
+      const own = copies.find(copy => copy.writer === previous);
+      if (own?.value) { draft = own.value.draft; writer = own.writer; }
+      else if (own) { blocked = true; blockedKey = own.key; warning = "This tab's selection record is unreadable and has been kept."; }
+      else if (limited || copies.some(copy => !copy.value || activeVoiceIsUnconfirmed(copy.value.draft))) {
+        blocked = true; warning = "Inspect a retained selection record before starting another selection.";
+      }
+    } catch (reason) { blocked = true; warning = messageOf(reason); }
+    const created: AudioLiveDraft = { draft, writer, warning, blocked, blockedKey };
+    liveAudioDrafts.set(scope, created); return created;
+  });
+  const [, render] = useState(0);
+  const [copies, setCopies] = useState<AudioRecoveryCopy[]>([]);
+  const [review, setReview] = useState<ActiveVoiceOutcomeReview | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const mounted = useRef(true);
+  function notify() { liveAudioDrafts.set(scope, entry); window.dispatchEvent(new Event("motionwright-audio-draft")); }
+  function refresh() {
+    try {
+      const result = readAudioRecoveries(window.localStorage, scope, activeVoiceGroup); setCopies(result.copies);
+      if (result.limited) entry.warning = "The local selection record list exceeds its bound. No copies were removed.";
+    } catch (reason) { entry.warning = messageOf(reason); }
+    render(value => value + 1);
+  }
+  useEffect(() => {
+    mounted.current = true; refresh();
+    const receive = () => refresh();
+    window.addEventListener("motionwright-audio-draft", receive);
+    const storage = (event: StorageEvent) => { if (event.key === null || event.key.startsWith(AUDIO_DRAFT_PREFIX)) refresh(); };
+    window.addEventListener("storage", storage);
+    return () => { mounted.current = false; window.removeEventListener("motionwright-audio-draft", receive); window.removeEventListener("storage", storage); };
+    // The keyed Audio workspace owns one project/generation/branch scope.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
+  const locked = !!project.production_design?.narration_take_lock
+    || project.locks.some(lock => lock.resource === "project:" + project.id && lock.kind === "content");
+  const attempt = entry.draft.awaiting, selection = attempt?.selection;
+  const unknown = activeVoiceIsUnconfirmed(entry.draft);
+  const pending = entry.attemptInFlight === true;
+  function record(): AudioRecovery {
+    return { schema: "motionwright.audio-recovery/1", scope, writer: entry.writer, updatedAt: Date.now(), draft: entry.draft };
+  }
+  function retainLocal() {
+    try {
+      retainActiveVoiceRecord(window.localStorage, window.sessionStorage, audioSessionPointer + scope, record());
+      entry.warning = null; entry.custodyPending = false; notify();
+    } catch (reason) { entry.warning = messageOf(reason); notify(); }
+  }
+  async function select(trackId: string) {
+    if (entry.attemptInFlight || entry.custodyPending || locked || entry.blocked || activeVoiceIsUnconfirmed(entry.draft)) return;
+    let next: AudioDraft;
+    try { next = prepareActiveVoiceSelection(projectRef.current, trackId); }
+    catch (reason) { entry.warning = messageOf(reason); notify(); return; }
+    const original: AudioRecovery = { schema: "motionwright.audio-recovery/1", scope, writer: crypto.randomUUID(), updatedAt: Date.now(), draft: next };
+    entry.writer = original.writer; entry.draft = next; entry.attemptInFlight = true; entry.warning = null; entry.notice = null;
+    setReview(null); notify();
+    const belongs = () => entry.writer === original.writer
+      && entry.draft.awaiting?.selection?.intentId === original.draft.awaiting?.selection?.intentId;
+    let local: Storage, session: Storage;
+    try { local = window.localStorage; session = window.sessionStorage; }
+    catch (reason) {
+      entry.attemptInFlight = false; entry.notice = "NOT_SENT: " + messageOf(reason) + " No Project change was invoked."; notify(); return;
+    }
+    const result = await sendRetainedActiveVoiceSelection(local, session, audioSessionPointer + scope,
+      original, commit, retained => { if (belongs()) { entry.draft = retained.draft; notify(); } });
+    if (belongs()) {
+      entry.draft = result.record.draft; entry.attemptInFlight = false;
+      entry.warning = result.custodyError; entry.custodyPending = result.custodyError !== null;
+      entry.notice = result.outcome === "NOT_SENT"
+        ? "NOT_SENT: " + result.diagnostic + " The local intent is retained; no Project change was invoked."
+        : result.outcome === "ACKNOWLEDGED"
+          ? "The original selection response was acknowledged. The active marker below follows the current saved Project."
+          : "The selection outcome remains UNKNOWN. No retry was sent.";
+      notify();
+    }
+  }
+  async function inspect() {
+    if (entry.attemptInFlight || reviewing || !activeVoiceIsUnconfirmed(entry.draft)) return;
+    setReviewing(true); setReview(null);
+    try {
+      const observed = await inspectActiveVoiceOutcome(entry.draft, projectRef.current, {
+        readProject: async id => {
+          const saved = await bootstrap(id);
+          if (!saved.project || saved.project_selection.status !== "selected") throw new Error("The selected saved Project is unavailable.");
+          return saved.project;
+        }, readHistory: projectHistory,
+      });
+      if (!mounted.current) return;
+      if (!activeVoiceReviewMatches(entry.draft, projectRef.current, observed)) throw new Error("The selection or Project changed during inspection.");
+      setReview(observed); entry.warning = null; notify();
+    } catch (reason) { if (mounted.current) { entry.warning = messageOf(reason); notify(); } }
+    finally { if (mounted.current) setReviewing(false); }
+  }
+  function continueSelection() {
+    if (entry.attemptInFlight || !review) return;
+    try {
+      const next = prepareSeparateActiveVoiceIntent(window.localStorage, record(), projectRef.current, review);
+      entry.draft = next; entry.writer = crypto.randomUUID(); entry.blocked = false; entry.blockedKey = null;
+      entry.warning = null; entry.notice = "The earlier UNKNOWN record is kept. Choose a take explicitly to create another intent; nothing was retried.";
+      setReview(null); notify();
+    } catch (reason) { entry.warning = messageOf(reason); notify(); }
+  }
+  function inspectCopy(copy: AudioRecoveryCopy) {
+    if (entry.attemptInFlight || !copy.value || activeVoiceIsUnconfirmed(entry.draft)) return;
+    try {
+      if (window.localStorage.getItem(copy.key) !== copy.raw) throw new Error("This retained record changed. Read its current version first.");
+      if (entry.draft.awaiting) retainActiveVoiceRecord(window.localStorage, window.sessionStorage, audioSessionPointer + scope, record());
+      const restored: AudioRecovery = { ...copy.value, writer: crypto.randomUUID(), updatedAt: Date.now() };
+      retainActiveVoiceRecord(window.localStorage, window.sessionStorage, audioSessionPointer + scope, restored);
+      entry.writer = restored.writer; entry.draft = restored.draft;
+      entry.blocked = entry.blocked && !activeVoiceIsUnconfirmed(restored.draft);
+      if (!entry.blocked) entry.blockedKey = null;
+      entry.warning = null; entry.notice = "Retained selection opened for inspection. No change was replayed."; setReview(null); notify();
+    } catch (reason) { entry.warning = messageOf(reason); notify(); }
+  }
+  function discardCopy(copy: AudioRecoveryCopy) {
+    if (entry.attemptInFlight || (copy.value && copy.value.draft.awaiting?.selection?.outcome !== "ACKNOWLEDGED")) return;
+    try {
+      if (window.localStorage.getItem(copy.key) !== copy.raw) throw new Error("This retained record changed before discard.");
+      window.localStorage.removeItem(copy.key);
+      if (window.localStorage.getItem(copy.key) !== null) throw new Error("The selected local record was not removed.");
+      if (copy.writer === entry.writer || entry.blockedKey === copy.key) {
+        entry.draft = createAudioDraft(projectRef.current, activeVoiceGroup); entry.writer = crypto.randomUUID(); entry.blockedKey = null;
+      }
+      const remaining = readAudioRecoveries(window.localStorage, scope, activeVoiceGroup);
+      entry.blocked = remaining.limited || remaining.copies.some(item => !item.value || activeVoiceIsUnconfirmed(item.value.draft));
+      entry.warning = null; entry.notice = "Only the selected local record was discarded. The saved Project is unchanged."; notify();
+    } catch (reason) { entry.warning = messageOf(reason); notify(); }
+  }
+  return <aside className="voice-take-ledger" aria-label="Voice takes" aria-busy={pending}>
+    <header><strong>Voice takes</strong><span>Byte-bound measurements</span></header>
+    {project.audio.voice_tracks.length === 0 && <div className="audio-empty"><AudioLines size={20} /><strong>No measured take</strong><span>No waveform or timing evidence is synthesized.</span></div>}
+    {project.audio.voice_tracks.map(track => {
+      const selected = track.id === project.audio.active_voice_track_id;
+      return <button type="button" key={track.id} aria-label={"Activate voice " + track.label} aria-pressed={selected}
+        disabled={pending || reviewing || unknown || entry.blocked || entry.custodyPending || (locked && !selected)}
+        className={selected ? "voice-take-row selected" : "voice-take-row"}
+        onClick={() => { if (!selected) void select(track.id); }}>
+        <span className="take-state">{selected ? <Check size={14} /> : <span />}</span>
+        <span className="voice-take-copy"><strong>{track.label}</strong>
+          <span>{track.sample_rate_hz.toLocaleString()} Hz · {track.channels} ch · {secondsLabel(track.measured_duration)}</span>
+          <span className="mono">sha256:{track.source_sha256.slice(0, 12)}</span></span>
+      </button>;
+    })}
+    {locked && <p role="status">Voice selection is protected by the recorded-source or project content lock.</p>}
+    {pending && <p role="status">Waiting for the original selection response. Another selection is disabled.</p>}
+    {entry.notice && <p role="status">{entry.notice}</p>}
+    {entry.warning && <p role="alert">{entry.warning}</p>}
+    {selection && <section aria-label="Retained voice selection" className="audio-recovery">
+      <strong>{selection.outcome === "UNKNOWN" ? "Unconfirmed voice selection" : "Acknowledged selection response"}</strong>
+      <p>Intent {selection.intentId} · from r{attempt!.revision} · requested {attempt!.change.type === "set_active_voice_track" ? attempt!.change.track_id : "UNKNOWN"}</p>
+      {selection.diagnostic && <p role="alert">{selection.diagnostic}</p>}
+      <button type="button" className="button compact" disabled={pending} onClick={retainLocal}>Retain local selection record</button>
+      {unknown && <button type="button" className="button compact" disabled={pending || reviewing} onClick={() => void inspect()}>
+        {reviewing ? "Reading saved selection…" : "Read saved selection and history"}
+      </button>}
+      {activeVoiceReviewMatches(entry.draft, project, review) && <section aria-label="Saved voice selection review">
+        <p>Read saved revision r{review!.project.revision}. This observation does not identify or acknowledge the earlier request.</p>
+        <p>{review!.matchingValueRevisions.length ? "History contains matching values at " + review!.matchingValueRevisions.map(value => "r" + value).join(", ") : "No matching change values in the observed history."}</p>
+        <button type="button" className="button compact" disabled={pending || reviewing} onClick={continueSelection}>Keep earlier record and choose another selection</button>
+      </section>}
+    </section>}
+    {copies.length > 0 && <details className="audio-recovery"><summary>Retained selection records ({copies.length})</summary>
+      {copies.map(copy => <div key={copy.key}>
+        <span>{copy.value ? copy.value.draft.awaiting?.selection?.outcome + " · r" + copy.value.draft.awaiting?.revision : "Unreadable local record"}</span>
+        {copy.value && <button type="button" className="button compact" disabled={pending || reviewing || unknown} onClick={() => inspectCopy(copy)}>Inspect retained selection {copy.writer.slice(0, 8)}</button>}
+        {(!copy.value || copy.value.draft.awaiting?.selection?.outcome === "ACKNOWLEDGED") && <button type="button" className="button compact" disabled={pending || reviewing} onClick={() => discardCopy(copy)}>
+          {copy.value ? "Discard acknowledged local record " : "Discard unreadable local record "}{copy.writer.slice(0, 8)}
+        </button>}
+      </div>)}
+    </details>}
+  </aside>;
 }

@@ -34,7 +34,7 @@ function render(protectedSource:boolean):string{
     }:null
   };
   return renderToStaticMarkup(createElement(AudioWorkspace,{
-    project,commit:async()=>{},desktopMode:true,
+    project,commit:async()=>{},commitRequired:async()=>{},desktopMode:true,
     importVoice:async()=>{},playhead:0,onSeek:()=>{}
   }));
 }
