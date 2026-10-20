@@ -1,5 +1,5 @@
 use motionwright_domain::{Change, DomainError, Project, RevisionStamp};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -415,6 +415,171 @@ fn load_project_from_row(conn: &Connection, id: Uuid) -> Result<Project> {
     .into_project()
 }
 
+/// A version number alone cannot establish that an existing SQLite file
+/// is a Motionwright project database. Reject unknown and incomplete layouts
+/// before running the WAL-mode or schema-creation pragmas. This recognizes
+/// source layout, not the application's owner or an external authorization.
+fn validate_existing_project_store_layout(conn: &Connection, version: u32) -> Result<()> {
+    // No user tables is NOT equivalent to an empty database: a foreign
+    // SQLite file may contain only a persisted VIEW (or another user object).
+    // Do not enable WAL or create product tables in such a database.
+    // Exclude only SQLite's reserved internal names such as sqlite_sequence.
+    let mut statement = conn.prepare(
+        "SELECT name,type FROM sqlite_master
+         WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
+    )?;
+    let mapped = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut tables = BTreeSet::new();
+    let mut has_user_schema_object = false;
+    for entry in mapped {
+        let (name, kind) = entry?;
+        has_user_schema_object = true;
+        if kind == "table" {
+            tables.insert(name);
+        }
+    }
+    drop(statement);
+
+    if !has_user_schema_object {
+        return if version == 0 {
+            Ok(()) // A genuinely fresh, empty SQLite database.
+        } else {
+            Err(StorageError::InvalidBackup(
+                "an existing versioned SQLite database has no Motionwright tables".into(),
+            ))
+        };
+    }
+
+    // These are the mandatory common columns in the original v1 source and
+    // every supported later schema. Additional third-party tables are not
+    // touched: requiring the entire exact table set would reject existing
+    // projects with harmless extensions.
+    const REQUIRED: [(&str, &[&str]); 3] = [
+        (
+            "projects",
+            &[
+                "id",
+                "generation",
+                "revision",
+                "title",
+                "document_json",
+                "updated_at",
+            ],
+        ),
+        (
+            "receipts",
+            &[
+                "project_id",
+                "request_id",
+                "request_sha256",
+                "result_json",
+                "created_at",
+            ],
+        ),
+        (
+            "events",
+            &[
+                "event_id",
+                "project_id",
+                "revision",
+                "kind",
+                "payload_json",
+                "created_at",
+            ],
+        ),
+    ];
+    for (name, required_columns) in REQUIRED {
+        if !tables.contains(name) {
+            return Err(StorageError::InvalidBackup(
+                "existing SQLite file is not a recognized complete Motionwright store".into(),
+            ));
+        }
+        // Names are fixed internal identifiers, never input-derived SQL.
+        let mut statement = conn.prepare(&format!("PRAGMA table_info({name})"))?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<BTreeSet<String>>>()?;
+        if required_columns
+            .iter()
+            .any(|column| !columns.contains(*column))
+        {
+            return Err(StorageError::InvalidBackup(
+                "existing SQLite file has an unrecognized project table layout".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A SQLite schema is not proof that the caller owns the path to it.
+/// Resolve no links at the SQLite leaf or in any pre-existing parent; doing
+/// so could create WAL, schema or project state in another owner's directory.
+/// The path checks are intentionally performed before *any* directory creation.
+fn checked_sqlite_storage_path(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty()
+        || path
+            .to_str()
+            .is_some_and(|name| name.to_ascii_lowercase().starts_with("file:"))
+    {
+        return Err(StorageError::UnsafeSourcePath(
+            "SQLite storage requires an ordinary filesystem path".into(),
+        ));
+    }
+    for (index, component) in path.ancestors().enumerate() {
+        let metadata = match fs::symlink_metadata(component) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        #[cfg(windows)]
+        let reparse = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes() & 0x0400 != 0
+        };
+        #[cfg(not(windows))]
+        let reparse = false;
+        if metadata.file_type().is_symlink() || reparse {
+            // macOS system-level /var and /tmp aliases resolve to built-in
+            // /private paths on supported hosts. These privileged root
+            // aliases are not user project-directory redirections.
+            #[cfg(target_os = "macos")]
+            if darwin_system_directory_alias(component) {
+                continue;
+            }
+            return Err(StorageError::UnsafeSourcePath(
+                "SQLite storage cannot follow a symbolic-link or reparse path".into(),
+            ));
+        }
+        if index == 0 && !metadata.is_file() {
+            return Err(StorageError::UnsafeSourcePath(
+                "existing SQLite storage leaf must be a regular file".into(),
+            ));
+        }
+        if index != 0 && !metadata.is_dir() {
+            return Err(StorageError::UnsafeSourcePath(
+                "SQLite storage parent must be a regular directory".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_system_directory_alias(path: &Path) -> bool {
+    // A specific immutable OS directory mapping, not a generic symlink
+    // exception. A foreign or substituted root alias still fails closed.
+    let expected = if path == Path::new("/var") {
+        "/private/var"
+    } else if path == Path::new("/tmp") {
+        "/private/tmp"
+    } else {
+        return false;
+    };
+    fs::canonicalize(path).is_ok_and(|resolved| resolved == Path::new(expected))
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
@@ -434,10 +599,31 @@ impl Store {
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let blob_root = blob_root.as_ref().to_path_buf();
+        checked_sqlite_storage_path(&path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut conn = Connection::open(&path)?;
+        checked_sqlite_storage_path(&path)?;
+        // On macOS /var and /tmp are built-in aliases to /private/var and
+        // /private/tmp. The checks above admit only these *exact* privileged
+        // roots, but SQLite NOFOLLOW still rejects the unresolved alias.
+        // Canonicalize the already-checked parent, never the SQLite leaf:
+        // this keeps the SQLite-native final-leaf no-follow protection.
+        #[cfg(target_os = "macos")]
+        let sqlite_path = {
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let leaf = path.file_name().ok_or_else(|| {
+                StorageError::UnsafeSourcePath("SQLite storage requires a filename".into())
+            })?;
+            fs::canonicalize(parent)?.join(leaf)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let sqlite_path = path.clone();
+        let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let mut conn = Connection::open_with_flags(&sqlite_path, flags)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         let observed_schema: u32 =
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -447,6 +633,7 @@ impl Store {
                 supported: STORAGE_SCHEMA_VERSION,
             });
         }
+        validate_existing_project_store_layout(&conn, observed_schema)?;
         // Connection pragmas must execute outside a transaction. All
         // schema DDL and its authoritative user_version stamp are committed
         // together under one SQLite IMMEDIATE writer lock.
@@ -464,6 +651,8 @@ impl Store {
                 supported: STORAGE_SCHEMA_VERSION,
             });
         }
+        // Another opener may have changed the schema before this writer lock.
+        validate_existing_project_store_layout(&schema_tx, locked_schema)?;
         schema_tx.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS projects(
@@ -900,6 +1089,18 @@ impl Store {
     }
 
     pub fn import_project(&mut self, backup: &ProjectBackup) -> Result<Project> {
+        self.import_project_with_publication(backup, |_| Ok(()))
+    }
+
+    // Hold SQLite's IMMEDIATE writer lock from the destination-ID check
+    // through CAS publication and project/journal commit. Another SQLite
+    // writer cannot claim the imported ID in the interval after inspection.
+    // This is not a filesystem/SQLite crash-atomic transaction.
+    fn import_project_with_publication(
+        &mut self,
+        backup: &ProjectBackup,
+        publish_captured_blobs: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<Project> {
         self.inspect_import(backup)?;
         let mut project = backup.project.clone();
         project.generation = Uuid::now_v7();
@@ -921,7 +1122,6 @@ impl Store {
         if exists {
             return Err(StorageError::ProjectExists);
         }
-
         tx.execute(
             "INSERT INTO projects(id,generation,revision,title,document_json,updated_at)
              VALUES(?1,?2,?3,?4,?5,?6)",
@@ -947,6 +1147,10 @@ impl Store {
                 ],
             )?;
         }
+        // Prepare both authoritative SQLite tables BEFORE publishing media.
+        // A rejected project or journal write cannot orphan CAS. The writer
+        // lock remains held through captured publication and SQLite commit.
+        publish_captured_blobs(&self.blob_root)?;
         tx.commit()?;
         Ok(project)
     }
@@ -1168,13 +1372,17 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ProjectEvent>> {
         let limit = limit.clamp(1, 256);
+        // A valid SQLite revision is nonnegative signed i64. Casting a larger
+        // user-supplied u64 directly would wrap to a negative cursor and
+        // replay history already consumed by the caller.
+        let after_revision = revision.min(i64::MAX as u64) as i64;
         let mut stmt = self.conn.prepare(
             "SELECT revision,payload_json,created_at FROM events
              WHERE project_id=?1 AND revision>?2
              ORDER BY revision ASC LIMIT ?3",
         )?;
         let rows = stmt.query_map(
-            params![id.to_string(), revision as i64, limit as i64],
+            params![id.to_string(), after_revision, limit as i64],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)? as u64,

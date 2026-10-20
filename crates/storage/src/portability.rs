@@ -121,6 +121,17 @@ impl Store {
         source: &Path,
         manifest: &ProjectBundleManifest,
     ) -> Result<Project> {
+        self.import_validated_bundle_after_check(source, manifest, || {})
+    }
+
+    // The seam lets a test drive a second SQLite writer exactly after the
+    // final destination inspection, at the CAS publication boundary.
+    fn import_validated_bundle_after_check(
+        &mut self,
+        source: &Path,
+        manifest: &ProjectBundleManifest,
+        after_check: impl FnOnce(),
+    ) -> Result<Project> {
         // Capture and validate every member before publishing even the first
         // member. A path can change after the earlier inspection.
         let staged = self.capture_bundle_blobs(source, manifest)?;
@@ -128,11 +139,18 @@ impl Store {
         // captured set BEFORE publishing its first content-addressed member.
         // Never delete a foreign or pre-existing blob on failure.
         self.preflight_bundle_blob_destinations(&staged)?;
-        for captured in &staged {
-            self.publish_file_import(captured)?;
-        }
-        drop(staged);
-        self.import_project(&manifest.backup)
+        // The final project-ID check and the CAS publication share the same
+        // IMMEDIATE SQLite writer transaction. A peer cannot insert the same
+        // project ID after the check but before the project/journal commit.
+        // This serializes database writers; it does NOT make CAS and SQLite
+        // crash-atomic if publication or commit is interrupted.
+        self.import_project_with_publication(&manifest.backup, |blob_root| {
+            after_check();
+            for captured in &staged {
+                file_import::publish_file_import_under_root(blob_root, captured)?;
+            }
+            Ok(())
+        })
     }
 
     fn preflight_bundle_blob_destinations(&self, staged: &[StagedFileImport]) -> Result<()> {
@@ -741,6 +759,181 @@ mod tests {
         assert_eq!(source.load_project(original.id).unwrap(), advanced);
         let actual = load_bundle_manifest(&destination).unwrap();
         assert_eq!(actual, exported);
+    }
+
+    #[test]
+    fn newly_visible_existing_project_id_must_not_publish_any_bundle_blobs() {
+        // Reproduce the time window between an accepted initial bundle
+        // inspection and the later media capture. A second SQLite connection
+        // legitimately creates another project using the bundle's ID.
+        let directory = tempfile::tempdir().unwrap();
+        let (bundle, manifest) = bundle_fixture(directory.path());
+        assert_eq!(manifest.blobs.len(), 2);
+        let database = directory.path().join("target/state.sqlite3");
+        let mut target = Store::open(&database).unwrap();
+        let initial = target
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap();
+        assert_eq!(initial.plan.blob_count, 2);
+        for blob in &manifest.blobs {
+            assert!(
+                target.verify_blob(&blob.sha256).is_err(),
+                "target unexpectedly already contains a source CAS member"
+            );
+        }
+
+        let mut peer = Store::open(&database).unwrap();
+        let mut current = Project::new("Independent local project").unwrap();
+        current.id = manifest.backup.project.id;
+        peer.create_project(&current).unwrap();
+        drop(peer);
+
+        let before = snapshot(&target);
+        let rejected = target.import_validated_bundle(&bundle, &manifest);
+        assert!(
+            matches!(rejected, Err(StorageError::ProjectExists)),
+            "second connection's valid project ID collision was not rejected"
+        );
+        assert_eq!(
+            snapshot(&target),
+            before,
+            "journal, project or receipts changed"
+        );
+        assert_eq!(target.load_project(current.id).unwrap(), current);
+        for blob in &manifest.blobs {
+            assert!(
+                target.verify_blob(&blob.sha256).is_err(),
+                "a bundle CAS member was published after an already-visible
+                 project collision rejected its import"
+            );
+        }
+        let stage = target.blob_root().join(".staging");
+        assert!(
+            fs::read_dir(stage).unwrap().next().is_none(),
+            "rejected bundle left private captured import bytes"
+        );
+        for blob in &manifest.blobs {
+            assert!(bundle.join(&blob.relative_path).is_file());
+        }
+    }
+
+    #[test]
+    fn late_sqlite_writer_cannot_claim_project_during_portable_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let (bundle, manifest) = bundle_fixture(directory.path());
+        assert_eq!(manifest.blobs.len(), 2);
+        let database = directory.path().join("target/state.sqlite3");
+        let mut target = Store::open(&database).unwrap();
+        let mut peer = Store::open(&database).unwrap();
+        peer.conn.busy_timeout(Duration::from_millis(150)).unwrap();
+
+        let inspected = target
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap();
+        assert_eq!(inspected.plan.blob_count, 2);
+        let mut competitor = Project::new("Second client destination").unwrap();
+        competitor.id = manifest.backup.project.id;
+
+        let stage = target.blob_root().join(".staging");
+        fs::create_dir_all(&stage).unwrap();
+        let foreign_capture = stage.join("untouched-other-capture.part");
+        fs::write(&foreign_capture, b"foreign capture must remain untouched").unwrap();
+
+        // Inject the other writer at the exact boundary between the final
+        // project-ID check and the first CAS publication. Merely rechecking
+        // the ID in a SELECT cannot protect this interval.
+        let mut other_writer = None;
+        let result = target.import_validated_bundle_after_check(&bundle, &manifest, || {
+            other_writer = Some(peer.create_project(&competitor));
+        });
+        let other_writer = other_writer.expect("boundary hook did not execute");
+        assert!(
+            matches!(
+                &other_writer,
+                Err(StorageError::Sql(rusqlite::Error::SqliteFailure(error, _)))
+                    if matches!(
+                        error.code,
+                        rusqlite::ErrorCode::DatabaseBusy
+                            | rusqlite::ErrorCode::DatabaseLocked
+                    )
+            ),
+            "second writer claimed the ID while portable CAS publication was admitted: {other_writer:?}"
+        );
+        let imported = result.expect("admitted source should commit after peer writer is blocked");
+        assert_eq!(target.load_project(imported.id).unwrap(), imported);
+        assert!(
+            peer.create_project(&competitor).is_err(),
+            "competing project overwrote the already committed import"
+        );
+        for blob in &manifest.blobs {
+            assert_eq!(
+                target.read_blob(&blob.sha256, blob.size_bytes).unwrap(),
+                fs::read(bundle.join(&blob.relative_path)).unwrap()
+            );
+        }
+        let staged_files: Vec<_> = fs::read_dir(&stage)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(staged_files, vec![foreign_capture.clone()]);
+        assert_eq!(
+            fs::read(foreign_capture).unwrap(),
+            b"foreign capture must remain untouched"
+        );
+    }
+
+    #[test]
+    fn rejected_sqlite_project_or_event_write_does_not_publish_captured_cas() {
+        for rejected_table in ["projects", "events"] {
+            let directory = tempfile::tempdir().unwrap();
+            let (bundle, manifest) = bundle_fixture(directory.path());
+            assert_eq!(manifest.backup.events.len(), 2);
+            let database = directory.path().join("target/state.sqlite3");
+            let mut target = Store::open(&database).unwrap();
+            let inspected = target
+                .inspect_project_bundle_with_fingerprint(&bundle)
+                .unwrap();
+
+            // A real SQLite trigger rejects a late row/event write after the
+            // bytes and manifest were valid, not an artificially bad bundle.
+            target
+                .conn
+                .execute_batch(&format!(
+                    "CREATE TRIGGER reject_import BEFORE INSERT ON {rejected_table}
+                     BEGIN SELECT RAISE(ABORT, 'fixture-sqlite-insert-rejected'); END;"
+                ))
+                .unwrap();
+            let before = snapshot(&target);
+            let staging = target.blob_root().join(".staging");
+            fs::create_dir_all(&staging).unwrap();
+            let foreign = staging.join("separate-staging-operation.part");
+            fs::write(&foreign, b"foreign staging bytes").unwrap();
+
+            assert!(
+                matches!(
+                    target.import_project_bundle_inspected(&bundle, &inspected.fingerprint),
+                    Err(StorageError::Sql(_))
+                ),
+                "SQLite {rejected_table} trigger did not reject import"
+            );
+            assert_eq!(snapshot(&target), before);
+            for blob in &manifest.blobs {
+                assert!(
+                    target.verify_blob(&blob.sha256).is_err(),
+                    "SQLite {rejected_table} rejection orphaned a captured CAS member"
+                );
+            }
+            let retained: Vec<_> = fs::read_dir(&staging)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(retained, vec![foreign.clone()]);
+            assert_eq!(fs::read(foreign).unwrap(), b"foreign staging bytes");
+            drop(target);
+            let reopened = Store::open(&database).unwrap();
+            assert_eq!(snapshot(&reopened), before);
+            assert!(reopened.list_projects(10).unwrap().is_empty());
+        }
     }
 
     #[test]
