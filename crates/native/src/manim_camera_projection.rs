@@ -468,7 +468,11 @@ fn read_saved_camera_asset_source(
     let bytes = {
         let handle = service.store();
         let store = handle.lock();
-        if store.project(project.id).map_err(crate::storage_error)? != *project {
+        if store
+            .load_project(project.id)
+            .map_err(crate::storage_error)?
+            != *project
+        {
             return Err(stale());
         }
         store
