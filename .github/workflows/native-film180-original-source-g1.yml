@@ -43,7 +43,7 @@ jobs:
           mkdir -p "$work/public" "$work/tmp"
           echo "FILM_G1_PUBLIC=$work/public" >> "$GITHUB_ENV"
           echo "TMPDIR=$work/tmp" >> "$GITHUB_ENV"
-      - name: Confirm authenticated A4 source and exact 27 tests
+      - name: Confirm authenticated A4 source and exact 29 tests
         run: |
           set -euo pipefail
           python3 -B -I -S - <<'PY'
@@ -60,8 +60,8 @@ jobs:
           assert not git("status","--porcelain=v1","--untracked-files=all")
           assert not git("ls-files","--others","--ignored","--exclude-standard","-z")
           pins={
-           "tooling/native_film180_original_g2.py":"644013f656061b8aff34a0364e407413b56252177dadba4398925ab816a81867",
-           "tooling/tests/test_native_film180_original_g2.py":"7890ee3973a546ae143a34d6a05b4e8ea7b7f50f3160dd5563f5c84606c66014",
+           "tooling/native_film180_original_g2.py":"b0bc8f6e59f6ff48acb39c0ff93a381dbdd32c1cc3cd1d257c4789127a2e35a9",
+           "tooling/tests/test_native_film180_original_g2.py":"fed8d2edfe1dee26f1fda1025a90dd0d5cd53772522356b4cb527941bf5ad16e",
            "tooling/ci_test_runner.py":"b7d39ad4c94be70abcac75880f92d00cf3c8d49eb0198b404a962ce5ab1a712f"}
           observed={}
           for name,want in pins.items():
@@ -83,9 +83,11 @@ jobs:
                                     and x.value.id=="unittest" and x.attr=="TestCase" for x in cls[0].bases)
           cases=[f.name for f in cls[0].body if isinstance(f,ast.FunctionDef) and f.name.startswith("test_")]
           all_tests=[f.name for f in ast.walk(t) if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef)) and f.name.startswith("test_")]
-          assert len(cases)==len(all_tests)==len(set(cases))==27
+          assert len(cases)==len(all_tests)==len(set(cases))==29
           assert not any(isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef)) and f.name=="load_tests" for f in ast.walk(t))
           assert "test_simulated_windows_native_effect_denial_also_runs_on_linux_ci" in cases
+          assert "test_source_signed_manifest_cannot_hide_duplicate_frames_field" in cases
+          assert "test_source_manifest_rejects_nonfinite_nested_metadata" in cases
           assert os.environ["MOTIONWRIGHT_APPROVED_FILM180_G2"]=="0"
           public=pathlib.Path(os.environ["FILM_G1_PUBLIC"])
           assert public.is_absolute() and public.is_dir() and not public.resolve().is_relative_to(root)
@@ -93,7 +95,7 @@ jobs:
                    "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
                    "run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
                    "A4_published_head":"4ac8d96965db7eb48639f0bb7e26d5e8dfa6d9de",
-                   "Git_verified":observed,"exact_test_names":sorted(cases),"test_count":27,
+                   "Git_verified":observed,"exact_test_names":sorted(cases),"test_count":29,
                    "G2_installed":False,"native_film_180_rendered":False,"physical_AAC":False}
           with (public/"source-inputs.json").open("x") as f:json.dump(receipt,f,indent=2);f.write("\n")
           print("SOURCE_BOUND_FILM180_G0_PASS",head,len(cases))
@@ -128,11 +130,11 @@ jobs:
           assert len(done["steps"])==2
           assert {s["entry_point"] for s in done["steps"]}=={
            "discovery:test_native_film180_original_g2.py","dotted:tooling.tests.test_native_film180_original_g2"}
-          assert len(source["exact_test_names"])==27
+          assert len(source["exact_test_names"])==29
           for row in done["steps"]:
            count=row["counts"]
            assert row["status"]=="PASS" and row["exit_code"]==0
-           assert count["tests_run"]==count["passed"]==27
+           assert count["tests_run"]==count["passed"]==29
            assert all(count[k]==0 for k in ("failures","errors","skipped","expected_failures","unexpected_successes"))
            for key in ("stdout","stderr"):
             assert sha(row[key]["file"])==row[key]["sha256"]
@@ -141,7 +143,7 @@ jobs:
                "source_sha":source["source_sha"],"tree_sha":source["tree_sha"],
                "run_id":source["run_id"],"attempt":source["run_attempt"],
                "source_receipt_sha256":sha("source-inputs.json"),"runner_sha256":sha("selected-runner.json"),
-               "passed_each_entrypoint":27,"total_invocations":54,"skipped":0,"failed":0,
+               "passed_each_entrypoint":29,"total_invocations":58,"skipped":0,"failed":0,
                "physical_180_frame_G2":"NOT_RUN","physical_PCM_H264":"NOT_RUN",
                "release_authorized":False,"human_acceptance":False}
           with (root/"Film180-G1-complete.json").open("x") as f:json.dump(out,f,indent=2);f.write("\n")
