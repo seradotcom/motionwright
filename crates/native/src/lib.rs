@@ -4489,6 +4489,220 @@ mod tests {
         }
     }
 
+    fn append_receipt_order_fixture(
+        service: &StudioService,
+        project: &Project,
+        key: &str,
+        command: &str,
+        stage: &str,
+        payload: Value,
+    ) -> motionwright_storage::ProductionReceipt {
+        service
+            .append_production_receipt(motionwright_storage::ProductionReceiptInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: key.into(),
+                request_sha256: "a".repeat(64),
+                command: command.into(),
+                stage: stage.into(),
+                payload,
+            })
+            .unwrap()
+    }
+
+    fn advance_receipt_order_fixture_clock(path: &std::path::Path, id: Uuid) -> Uuid {
+        // Retained bytes simulate an earlier process with an advanced clock.
+        // No host clock, provider, Broker or real-effect operation is touched.
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        let ordinal: i64 = db
+            .query_row(
+                "SELECT sequence FROM production_receipt_order WHERE receipt_id=?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let advanced = Uuid::from_u128(id.as_u128() + (86_400_000_u128 << 80));
+        assert_eq!(
+            db.execute(
+                "UPDATE production_receipts SET receipt_id=?1,created_at='2100-01-01T00:00:00Z' WHERE receipt_id=?2",
+                rusqlite::params![advanced.to_string(), id.to_string()],
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT sequence FROM production_receipt_order WHERE receipt_id=?1",
+                [advanced.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            ordinal
+        );
+        advanced
+    }
+
+    #[tokio::test]
+    async fn native_receipt_pages_follow_persisted_order_across_clock_correction() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("native-receipt-clock.sqlite3");
+        let service = StudioService::open(&path).unwrap();
+        let other = service.create_project("Foreign receipt owner").unwrap();
+        let foreign = append_receipt_order_fixture(
+            &service,
+            &other,
+            "foreign-first",
+            "driver.motion-canvas.composition.inspect",
+            "completed",
+            json!({}),
+        );
+        let project = service.create_project("Native commit order").unwrap();
+        let mut ids = Vec::new();
+        for index in 0..270 {
+            ids.push(
+                append_receipt_order_fixture(
+                    &service,
+                    &project,
+                    &format!("observation-{index}"),
+                    "driver.motion-canvas.composition.inspect",
+                    "completed",
+                    json!({"private_fixture_payload":"must-not-be-exposed"}),
+                )
+                .id,
+            );
+        }
+        drop(service);
+        // Page one has indices 269..253; its continuation UUID exceeds the
+        // newest UUID even though that receipt was committed earlier.
+        ids[253] = advance_receipt_order_fixture_clock(&path, ids[253]);
+        assert!(ids[253] > ids[269]);
+        let service = StudioService::open(&path).unwrap();
+        let head = service.production_receipt_watermark(project.id).unwrap();
+        assert_eq!(head.latest_id, Some(ids[269]));
+        assert_eq!(head.count, 270);
+        let observer = MotionwrightObserver::new(service.clone());
+        let context = CallContext::application_local("native-clock-order").unwrap();
+        let mut query = Query {
+            resource: project.resource_key(),
+            scope: "production-receipts".into(),
+            limit: 17,
+            cursor: None,
+        };
+        let first = observer.observe(&query, &context).await.unwrap();
+        let version = first.version.clone();
+        let first_cursor = first.next.clone().unwrap();
+        assert_eq!(first.items.last().unwrap()["id"], ids[253].to_string());
+        let mut observed = Vec::new();
+        let mut page = first;
+        let mut completed = false;
+        for _ in 0..17 {
+            for item in &page.items {
+                assert!(item.get("payload").is_none());
+                assert!(!item.to_string().contains("must-not-be-exposed"));
+                observed.push(Uuid::parse_str(item["id"].as_str().unwrap()).unwrap());
+            }
+            if page.complete {
+                assert!(page.next.is_none());
+                completed = true;
+                break;
+            }
+            query.cursor = page.next;
+            assert!(query.cursor.is_some());
+            page = observer.observe(&query, &context).await.unwrap();
+        }
+        assert!(completed, "the complete retained snapshot must terminate");
+        ids.reverse();
+        assert_eq!(observed, ids, "no omissions, duplicates or UUID sorting");
+        for invalid in [foreign.id, Uuid::nil()] {
+            query.cursor = Some(
+                production_cursor(&query, &version, "receipts", &head, &invalid.to_string())
+                    .unwrap(),
+            );
+            assert_eq!(
+                observer.observe(&query, &context).await.unwrap_err().code,
+                ErrorCode::InvalidArgument
+            );
+        }
+        append_receipt_order_fixture(
+            &service,
+            &project,
+            "new-snapshot",
+            "driver.motion-canvas.composition.inspect",
+            "completed",
+            json!({}),
+        );
+        query.cursor = Some(first_cursor);
+        assert_eq!(
+            observer.observe(&query, &context).await.unwrap_err().code,
+            ErrorCode::StaleReference
+        );
+        assert_eq!(service.project(project.id).unwrap(), project);
+    }
+
+    #[tokio::test]
+    async fn native_job_pages_rank_commit_order_without_rewriting_display_dates() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("native-job-clock.sqlite3");
+        let service = StudioService::open(&path).unwrap();
+        let project = service.create_project("Native committed jobs").unwrap();
+        let job_payload = |reference: &str| {
+            json!({
+                "job_ref":reference,
+                "result":{
+                    "data":{"job_ref":reference,"state":"queued"},
+                    "execution":{"provenance":{
+                        "provider":"driver:motion-canvas","provider_generation":17
+                    }}
+                }
+            })
+        };
+        let older = append_receipt_order_fixture(
+            &service,
+            &project,
+            "older-start",
+            "driver.motion-canvas.render.start",
+            "completed",
+            job_payload("a-older"),
+        );
+        drop(service);
+        let advanced = advance_receipt_order_fixture_clock(&path, older.id);
+        let service = StudioService::open(&path).unwrap();
+        let newer = append_receipt_order_fixture(
+            &service,
+            &project,
+            "newer-start",
+            "driver.motion-canvas.render.start",
+            "completed",
+            job_payload("z-newer"),
+        );
+        assert!(newer.id < advanced);
+        let observer = MotionwrightObserver::new(service.clone());
+        let context = CallContext::application_local("native-job-commit-order").unwrap();
+        let mut query = Query {
+            resource: project.resource_key(),
+            scope: "production-jobs".into(),
+            limit: 1,
+            cursor: None,
+        };
+        let first = observer.observe(&query, &context).await.unwrap();
+        assert_eq!(first.items.len(), 1);
+        assert_eq!(first.items[0]["job_ref"], "z-newer");
+        assert_eq!(first.items[0]["root_request_id"], "newer-start");
+        assert_eq!(first.items[0]["provider_generation"], 17);
+        assert!(!first.complete);
+        query.cursor = first.next;
+        let last = observer.observe(&query, &context).await.unwrap();
+        assert!(last.complete);
+        assert!(last.next.is_none());
+        assert_eq!(last.items.len(), 1);
+        assert_eq!(last.items[0]["job_ref"], "a-older");
+        assert_eq!(last.items[0]["root_request_id"], "older-start");
+        assert_eq!(last.items[0]["created_at"], "2100-01-01T00:00:00Z");
+        assert_eq!(service.project(project.id).unwrap(), project);
+    }
+
     #[tokio::test]
     async fn native_history_cursor_pages_remain_revision_bound_and_complete() {
         let (service, mut project) = fixture();
