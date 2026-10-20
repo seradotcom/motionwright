@@ -37,12 +37,18 @@ class CanvasServiceReportTests(unittest.TestCase):
         self.assertEqual(len(set(gate.CANVAS_TITLES)), 19)
         self.assertEqual(len(gate.PROGRAM_TITLES), 3)
         self.assertEqual(len(set(gate.PROGRAM_TITLES)), 3)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 23)
+        self.assertEqual(len(gate.BRIEF_TITLES), 7)
+        self.assertEqual(len(gate.BRIEF_RECOVERY_TITLES), 1)
+        self.assertEqual(len(gate.BRIEF_UNCERTAINTY_TITLES), 6)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 37)
         self.assertEqual(
             [(label, filename) for label, filename, _ in gate.SELECTIONS],
             [("canvas", "canvas-draft-service.spec.ts"),
              ("ink", "visual-language-draft-service.spec.ts"),
-             ("program", "program-design-service.spec.ts")],
+             ("program", "program-design-service.spec.ts"),
+             ("brief", "brief-service.spec.ts"),
+             ("brief-recovery", "brief-recovery-admission-service.spec.ts"),
+             ("brief-uncertain", "brief-uncertain-outcome-service.spec.ts")],
         )
 
     def test_skip_failure_and_flaky_counters_cannot_be_green(self):

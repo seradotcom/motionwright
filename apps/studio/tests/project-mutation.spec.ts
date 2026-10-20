@@ -5,7 +5,7 @@ import { expect, test, type BrowserContext, type Page, type TestInfo } from "@pl
 import { fixtureBootstrap } from "../src/fixture";
 import { seedSyntheticProjectSelection } from "./support/selectedSyntheticProject";
 import { applyChange as applySyntheticCanvasChange } from "../src/api";
-import type { Change, Project } from "../src/types";
+import type { Change, Project, ProjectEvent } from "../src/types";
 import type { FileImportDispatchRequest, FileImportIntent, FileImportReceipt, PreparedFileImport } from "../src/fileImport";
 import { ScopedChangeService } from "./support/scopedChangeService";
 
@@ -18,6 +18,7 @@ for (const kind of ["asset", "voice"] as const) {
     await seedSyntheticProjectSelection(page, initial.project.id);
     await page.addInitScript(boot => {
       let project = structuredClone(boot.project);
+      const history: ProjectEvent[] = [];
       let prepared: PreparedFileImport | null = null;
       let pendingImport: FileImportDispatchRequest | null = null;
       let resolveImport: ((value: FileImportReceipt) => void) | null = null;
@@ -30,6 +31,8 @@ for (const kind of ["asset", "voice"] as const) {
         complete: () => {
           if (!pendingImport || !resolveImport) throw new Error("No synthetic import is pending");
           project = { ...project, revision: project.revision + 1, title: "Synthetic import completed" };
+          history.push({ revision: project.revision, created_at: "2026-10-20T00:00:00Z",
+            change: { type: "rename_project", title: project.title } }); // Same synthetic fixture mutation.
           resolveImport({ schema: "motionwright.file-import-receipt/1",
             request_id: pendingImport.request_id, intent: structuredClone(pendingImport.intent),
             project: structuredClone(project), replayed: false });
@@ -37,7 +40,7 @@ for (const kind of ["asset", "voice"] as const) {
         },
       };
       type SyntheticRequest = {
-        project_id?: string | null; generation?: string; revision?: number;
+        project_id?: string | null; generation?: string; revision?: number; after_revision?: number; limit?: number;
         kind?: "asset" | "voice"; path?: string; name?: string | null;
         media_type?: string | null; label?: string | null;
         request_id?: string; effect_grant?: string; effect?: string; subject?: string;
@@ -51,10 +54,15 @@ for (const kind of ["asset", "voice"] as const) {
       host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
         state.calls.push(command);
         if (command === "bootstrap") {
-          const syntheticResponse = structuredClone(boot);
+          const syntheticResponse = { ...structuredClone(boot), project: structuredClone(project) };
           const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
           if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
           return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+        }
+        if (command === "project_history") {
+          if (args?.request?.project_id !== project.id) throw new Error("Wrong synthetic history Project");
+          return structuredClone(history.filter(event => event.revision > (args?.request?.after_revision ?? 0))
+            .slice(0, args?.request?.limit ?? 100));
         }
         if (command === "open_project") {
           if (args?.request?.project_id !== project.id) throw new Error("Wrong synthetic current Project");
@@ -99,6 +107,8 @@ for (const kind of ["asset", "voice"] as const) {
           const change = args?.request?.change;
           if (change?.type !== "rename_project" || typeof change.title !== "string") throw new Error("Unsupported synthetic change");
           project = { ...project, revision: project.revision + 1, title: change.title };
+          history.push({ revision: project.revision, created_at: "2026-10-20T00:00:00Z",
+            change: { type: "rename_project", title: project.title } });
           return structuredClone(project);
         }
         throw new Error("Unimplemented synthetic IPC: " + command);
@@ -140,6 +150,23 @@ for (const kind of ["asset", "voice"] as const) {
     await expect(page.getByRole("textbox", { name: "Project title", exact: true })).toHaveValue("Do not race an import");
     await expect(page.getByRole("region", { name: "Project title conflict", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Save title", exact: true })).toBeDisabled();
+    // The throwing callback did not establish a typed remote outcome. Reading
+    // this fixture's changed state is an explicit review, not an import replay.
+    const mutationCallsBeforeReview = await page.evaluate(() => (window as unknown as {
+      __MUTATION_FIXTURE__: { calls: string[] };
+    }).__MUTATION_FIXTURE__.calls.filter(command => command === "apply_change" || command === "issue_effect_grant"));
+    await expect(page.getByRole("region", { name: "Unconfirmed brief submission", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Read saved Brief and history", exact: true }).click();
+    const review = page.getByRole("region", { name: "Saved Brief outcome review", exact: true });
+    await expect(review).toContainText("Read saved revision r13");
+    await expect(review).toContainText("does not identify or acknowledge the earlier request");
+    await page.getByRole("button", { name: "Keep earlier attempt and continue editing", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Unconfirmed brief submission", exact: true })).toHaveCount(0);
+    expect(await page.evaluate(() => (window as unknown as {
+      __MUTATION_FIXTURE__: { calls: string[] };
+    }).__MUTATION_FIXTURE__.calls.filter(command => command === "apply_change" || command === "issue_effect_grant")))
+      .toEqual(mutationCallsBeforeReview);
+    await expect(page.getByRole("textbox", { name: "Project title", exact: true })).toHaveValue("Do not race an import");
     await page.getByRole("button", { name: "Keep my draft Project title", exact: true }).click();
     await page.getByRole("textbox", { name: "Project title", exact: true }).fill("Edit after import");
     await page.getByRole("button", { name: "Save title", exact: true }).click();
