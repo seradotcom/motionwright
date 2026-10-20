@@ -7,6 +7,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use uuid::Uuid;
 
@@ -16,6 +17,7 @@ const MAX_CONFIG_BYTES: u64 = 8 * 1024;
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeConnectionRegistry {
     root: PathBuf,
+    root_identity: Arc<same_file::Handle>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,7 +62,14 @@ impl RuntimeConnectionRegistry {
         // an existing registry does not follow a later retarget of that alias.
         let root = fs::canonicalize(&root)
             .map_err(|_| "Runtime settings directory could not be resolved")?;
-        let registry = Self { root };
+        // Keep the original directory open across clones. A canonical pathname
+        // alone cannot identify an ordinary directory replaced at that name.
+        let root_identity = same_file::Handle::from_path(&root)
+            .map_err(|_| "Runtime settings directory identity could not be established")?;
+        let registry = Self {
+            root,
+            root_identity: Arc::new(root_identity),
+        };
         registry.validate_root()?;
         Ok(registry)
     }
@@ -83,7 +92,12 @@ impl RuntimeConnectionRegistry {
         if current != self.root {
             return Err("Runtime settings directory location has changed".into());
         }
-        // This rejects redirection already present before the operation.
+        let current_identity = same_file::Handle::from_path(&self.root)
+            .map_err(|_| "Runtime settings directory identity is unavailable")?;
+        if self.root_identity.as_ref() != &current_identity {
+            return Err("Runtime settings directory identity has changed".into());
+        }
+        // This rejects redirection and ordinary replacement already present.
         // Path checks do not provide atomic directory-handle confinement.
         Ok(())
     }

@@ -39,8 +39,73 @@ Windows requires fresh runner-provisioned NTFS fixtures for each source executio
 
 Tests move these entries, verify reparse/directory attributes and canonical targets, then perform real registry operations. Missing fixtures fail explicitly when the tests are invoked. Their ignore annotation excludes external fixture requirements from ordinary local runs; the dedicated execution must include them and report zero ignored. Provisioning evidence must establish the actual NTFS junction type: a reparse attribute alone does not identify that subtype.
 
+## Ordinary directory replacement
+
+The registry also retains an open directory identity across clones and compares
+it with the directory currently occupying its canonical path before every read,
+write or clear. A different ordinary directory at the same pathname is rejected
+before environment fallback, staging or deletion. Opening or comparing the
+identity must succeed; an error never re-anchors an existing registry object.
+Reopening deliberately constructs a new registry against the current app-data
+root and preserves the existing startup checks.
+
+The ordinary_directory_identity regression module uses six real substitutions:
+read, write and clear after replacing either the final directory or its ancestor.
+Both physical directories contain valid synthetic references for the same
+project and generation, but different selected paths. Each fixture retains the
+old tree, moves the other ordinary tree into its pathname, proves that the
+canonical pathname is unchanged, and checks both trees' complete entry/byte
+snapshots after the attempted operation. Only a clone of the original registry
+survives the substitution. No symlink privilege or Broker session is required.
+
+A seventh control replaces an existing record with different bytes, reopens it,
+adds another project and clears the first. The original registry and clone must
+continue to resolve the second project without altering its bytes. This ensures
+that legitimate directory-content changes do not invalidate the retained identity.
+
+same-file 1.0.6 is already resolved in the repository lockfile. This change adds
+only its desktop dependency edge, without changing package versions or checksums.
+Its retained handle uses device/inode identity on Unix and volume/file index on
+Windows. The latter is a 64-bit identifier: Microsoft documents that it is not
+universally unique on ReFS, and network filesystems have their own identity
+limitations. Evidence must name the filesystem actually exercised; the NTFS
+runner is not evidence for every Windows filesystem. The handle is not an
+exclusive directory lock, and pathname operations after validation remain
+subject to concurrent replacement.
+
+Primary implementation references:
+- [same-file 1.0.6 Handle](https://docs.rs/same-file/1.0.6/same_file/struct.Handle.html)
+- [Microsoft file identity limits](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information)
+
+| Requirement contribution | Executable boundary | Remaining scope |
+| --- | --- | --- |
+| CR-PROJECT-01 / CR-PROJECT-03 (partial) | Reject changed physical registry roots before persistence operations. | Project SQLite durability, backup/restore and document CAS require their own evidence. |
+| CR-DELIVER-02 | Preserve the explicit runtime reference against a changed registry directory. | Installed runtime compatibility and absence of hidden downloads remain separate. |
+| CR-SEC-07 | Reject replacement of the store holding project/generation-scoped references. | This does not authenticate actors, sessions or Broker grants. |
+| ACC-043 | Real filesystem read/write/clear regressions and preserved unrelated bytes. | Synthetic references are not installed native production or human acceptance. |
+
+The regression-only source d714b3299b08b2b1e0ed6190a1fdfd686d512b34
+preserves the previous product code. [Run 39512671373](https://github.com/seradotcom/motionwright/actions/runs/39512671373)
+compiled and executed the actual platform suites with these results:
+
+| Platform | Job | Passed | Failed | Ignored |
+| --- | --- | ---: | ---: | ---: |
+| Windows 2025 | 118938011729 | 18 | 6 | 0 |
+| Ubuntu 24.04 | 118938011765 | 21 | 6 | 0 |
+| macOS 15 | 118938011786 | 21 | 6 | 0 |
+
+On every platform, all six ordinary root/ancestor substitution cases failed at
+the product-behavior assertions and the original/clone/reopen control passed.
+Reads accepted the replacement; writes and clears changed its preserved byte
+snapshot. Original output, source identity and named outcomes are retained in
+private custody. The complete test section is unchanged by the correction.
+
+These are results for the regression-only source. Corrected-source admission
+must cite its own exact SHA and original platform output; the table does not
+claim a successful execution of the correction.
+
 ## Requirement scope and limits
 
 This change supplies registry-path integrity evidence for the v0.1 installed runtime and security requirements: safe connection selection, explicit recovery errors and preservation of unrelated data. It does not alone close installed-owner acceptance, first launch, platform packaging or the complete authorization criteria.
 
-These are pre-operation path checks, not atomic directory-handle confinement. They do not prevent a concurrent substitution after validation, identify a replacement ordinary directory at the same pathname, establish a full Unix ownership/ancestor policy, or authenticate a Broker principal. Unix checks reject any group/other permission bits rather than requiring an exact owner mode of 0700 during every operation. Current connection contents and native resource lifetimes continue to use their existing validation and close paths. Platform acceptance must cite the exact source SHA, actual fixtures and executed cases; omitted or ignored cases are not a platform pass.
+These are pre-operation path checks, not atomic directory-handle confinement. They do not prevent a concurrent substitution after validation, establish a full Unix ownership/ancestor policy, guarantee universal filesystem identity, or authenticate a Broker principal. Unix checks reject any group/other permission bits rather than requiring an exact owner mode of 0700 during every operation. Current connection contents and native resource lifetimes continue to use their existing validation and close paths. Platform acceptance must cite the exact source SHA, actual fixtures and executed cases; omitted or ignored cases are not a platform pass.
