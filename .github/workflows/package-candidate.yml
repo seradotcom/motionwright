@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Full candidate packages, Windows contracts, or Windows installed first-use
+        description: Candidate packages, Windows contracts or first-use, or isolated NSIS source and compiler checks
         required: true
         type: choice
         default: all
@@ -13,12 +13,17 @@ on:
           - all
           - windows_contracts
           - windows_installed
+          - nsis_source
+          - nsis_compile
   pull_request:
     paths:
       - "apps/desktop/**"
       - "apps/studio/**"
       - "crates/**"
       - "tooling/package_receipt.py"
+      - "tooling/nsis_owned_files.py"
+      - "tooling/tests/test_nsis_owned_files.py"
+      - "docs/reliability/windows-uninstall-integrity.md"
       - "tooling/v01_glib_product_admission.py"
       - "tooling/upstream-crates/**"
       - "vendor/glib-0.18.5/**"
@@ -51,6 +56,9 @@ on:
       - "apps/studio/**"
       - "crates/**"
       - "tooling/package_receipt.py"
+      - "tooling/nsis_owned_files.py"
+      - "tooling/tests/test_nsis_owned_files.py"
+      - "docs/reliability/windows-uninstall-integrity.md"
       - "tooling/v01_glib_product_admission.py"
       - "tooling/upstream-crates/**"
       - "vendor/glib-0.18.5/**"
@@ -101,8 +109,181 @@ jobs:
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
           python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
 
+      - name: Require all seventeen NSIS helper tests on Linux without skips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import unittest
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(ROOT / "tooling"))
+          from package_receipt import verified_artifact
+          from release_manifest import _checkout
+
+          SOURCE = os.environ["GITHUB_SHA"]
+          PATHS = ("tooling/nsis_owned_files.py", "tooling/tests/test_nsis_owned_files.py",
+                   "apps/desktop/src-tauri/windows/installer.nsi",
+                   "apps/desktop/src-tauri/windows/uninstall-ownership.nsh")
+          def source():
+              _checkout(ROOT, SOURCE)
+              subprocess.run(["git", "ls-files", "--error-unmatch", "--", *PATHS],
+                             cwd=ROOT, check=True, capture_output=True, timeout=10)
+              files = {}
+              for path in PATHS:
+                  observed, size, digest = verified_artifact(ROOT, ROOT / path)
+                  files[path] = {"bytes": size, "sha256": digest}
+              tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, check=True,
+                                    capture_output=True, text=True).stdout.strip()
+              return {"checkout": SOURCE, "tree": tree, "files": files}
+
+          before = source()
+          runtime = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-linux-source-tests"
+          runtime.mkdir()
+          os.environ["MOTIONWRIGHT_TEST_ROOT"] = str(runtime)
+          suite = unittest.defaultTestLoader.discover("tooling/tests", pattern="test_nsis_owned_files.py")
+          def cases(node):
+              for item in node:
+                  if isinstance(item, unittest.TestSuite):
+                      yield from cases(item)
+                  else:
+                      yield item.id()
+          ids = list(cases(suite))
+          if len(ids) != 17 or len(set(ids)) != 17:
+              raise RuntimeError("expected_exactly_seventeen_distinct_nsis_source_tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          after = source()
+          record = {
+              "schema": "motionwright.nsis-source-tests/1", "platform": sys.platform,
+              "source_before": before, "source_after": after, "test_ids": ids,
+              "tests": result.testsRun, "failures": len(result.failures), "errors": len(result.errors),
+              "skips": [{"id": case.id(), "reason": reason} for case, reason in result.skipped],
+              "unexpected_successes": len(result.unexpectedSuccesses),
+              "expected_failures": len(result.expectedFailures),
+              "nsis_compilation": "NOT_RUN", "installer_execution": "NOT_RUN",
+              "human_install_acceptance": "NOT_RUN",
+          }
+          output = ROOT / "ci-evidence/nsis-linux-source-tests.json"
+          output.parent.mkdir(exist_ok=True)
+          with output.open("x", encoding="utf-8", newline="\n") as stream:
+              json.dump(record, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          ok = (sys.platform.startswith("linux") and before == after and result.wasSuccessful()
+                and result.testsRun == 17 and not result.skipped
+                and not result.expectedFailures and not result.unexpectedSuccesses)
+          print("nsis-linux-source-tests=" + ("PASS" if ok else "FAIL") + " required=17 skips=0")
+          raise SystemExit(0 if ok else 1)
+          PY
+      - name: Retain the exact Linux NSIS source-test result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-nsis-linux-source-tests
+          path: ci-evidence/nsis-linux-source-tests.json
+          if-no-files-found: warn
+
+  nsis-source-windows:
+    needs: receipt-policy
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13.16'
+      - name: Require all seventeen NSIS helper tests on Windows without skips
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import unittest
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(ROOT / "tooling"))
+          from package_receipt import verified_artifact
+          from release_manifest import _checkout
+
+          SOURCE = os.environ["GITHUB_SHA"]
+          PATHS = ("tooling/nsis_owned_files.py", "tooling/tests/test_nsis_owned_files.py",
+                   "apps/desktop/src-tauri/windows/installer.nsi",
+                   "apps/desktop/src-tauri/windows/uninstall-ownership.nsh")
+          def source():
+              _checkout(ROOT, SOURCE)
+              subprocess.run(["git", "ls-files", "--error-unmatch", "--", *PATHS],
+                             cwd=ROOT, check=True, capture_output=True, timeout=10)
+              files = {}
+              for path in PATHS:
+                  observed, size, digest = verified_artifact(ROOT, ROOT / path)
+                  files[path] = {"bytes": size, "sha256": digest}
+              tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, check=True,
+                                    capture_output=True, text=True).stdout.strip()
+              return {"checkout": SOURCE, "tree": tree, "files": files}
+
+          before = source()
+          runtime = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-windows-source-tests"
+          runtime.mkdir()
+          os.environ["MOTIONWRIGHT_TEST_ROOT"] = str(runtime)
+          suite = unittest.defaultTestLoader.discover("tooling/tests", pattern="test_nsis_owned_files.py")
+          def cases(node):
+              for item in node:
+                  if isinstance(item, unittest.TestSuite):
+                      yield from cases(item)
+                  else:
+                      yield item.id()
+          ids = list(cases(suite))
+          if len(ids) != 17 or len(set(ids)) != 17:
+              raise RuntimeError("expected_exactly_seventeen_distinct_nsis_source_tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          after = source()
+          record = {
+              "schema": "motionwright.nsis-source-tests/1", "platform": sys.platform,
+              "python_version": sys.version,
+              "source_before": before, "source_after": after, "test_ids": ids,
+              "tests": result.testsRun, "failures": len(result.failures), "errors": len(result.errors),
+              "skips": [{"id": case.id(), "reason": reason} for case, reason in result.skipped],
+              "unexpected_successes": len(result.unexpectedSuccesses),
+              "expected_failures": len(result.expectedFailures),
+              "nsis_compilation": "NOT_RUN", "installer_execution": "NOT_RUN",
+              "human_install_acceptance": "NOT_RUN",
+          }
+          output = ROOT / "ci-evidence/nsis-windows-source-tests.json"
+          output.parent.mkdir(exist_ok=True)
+          with output.open("x", encoding="utf-8", newline="\n") as stream:
+              json.dump(record, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          ok = (sys.platform == "win32" and before == after and result.wasSuccessful()
+                and result.testsRun == 17 and not result.skipped
+                and not result.expectedFailures and not result.unexpectedSuccesses)
+          print("nsis-windows-source-tests=" + ("PASS" if ok else "FAIL") + " required=17 skips=0")
+          raise SystemExit(0 if ok else 1)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'The Windows source-bound NSIS gate failed' }
+      - name: Retain the exact Windows NSIS source-test result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-nsis-windows-source-tests
+          path: ci-evidence/nsis-windows-source-tests.json
+          if-no-files-found: warn
+
   linux:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile')
     needs: receipt-policy
     runs-on: ubuntu-24.04
     steps:
@@ -267,6 +448,7 @@ jobs:
           if-no-files-found: error
 
   windows-contracts:
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile')
     runs-on: windows-latest
     timeout-minutes: 10
     env:
@@ -427,8 +609,8 @@ jobs:
           if-no-files-found: error
 
   windows:
-    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_contracts'
-    needs: [receipt-policy, windows-contracts]
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile')
+    needs: [receipt-policy, windows-contracts, nsis-source-windows]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -537,8 +719,1008 @@ jobs:
             ci-evidence/windows-nsis-cold-relaunch.json
           if-no-files-found: error
 
+  windows-update:
+    # This separately selected compiler fixture never launches its installer.
+    # Its setup is outside the normal candidate attestation subjects.
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'nsis_compile'
+    needs: [receipt-policy, nsis-source-windows]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13.16'
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: false
+      - name: Install the locked Studio and Tauri CLI dependencies
+        shell: pwsh
+        run: |
+          npm --prefix apps/studio ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked dependency installation failed' }
+      - name: Require a real Windows NTFS junction rejection with zero skips
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import subprocess
+          import sys
+          import unittest
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          SOURCE = os.environ["GITHUB_SHA"]
+          sys.path.insert(0, str(ROOT / "tooling"))
+          import nsis_owned_files as owned
+          from package_receipt import verified_artifact
+          from release_manifest import _checkout
+
+          PATHS = ("tooling/nsis_owned_files.py", "tooling/tests/test_nsis_owned_files.py",
+                   "apps/desktop/src-tauri/windows/installer.nsi",
+                   "apps/desktop/src-tauri/windows/uninstall-ownership.nsh")
+          def source():
+              _checkout(ROOT, SOURCE)
+              subprocess.run(["git", "ls-files", "--error-unmatch", "--", *PATHS],
+                             cwd=ROOT, check=True, capture_output=True, timeout=10)
+              files = {}
+              for path in PATHS:
+                  observed, size, digest = verified_artifact(ROOT, ROOT / path)
+                  files[path] = {"bytes": size, "sha256": digest}
+              tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, check=True,
+                                    capture_output=True, text=True).stdout.strip()
+              return {"checkout": SOURCE, "tree": tree, "files": files}
+
+          before = source()
+          runtime = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-windows-junction-oracle"
+          runtime.mkdir()
+          target = runtime / "target"
+          target.mkdir()
+          plain = runtime / "plain"
+          plain.mkdir()
+          source_file = target / "owned.bin"
+          source_bytes = b"actual NTFS junction fixture; original bytes\n"
+          source_file.write_bytes(source_bytes)
+          link = runtime / "linked"
+          fixture = {}
+
+          class NativeJunctionTests(unittest.TestCase):
+              def test_real_ntfs_junction_refuses_source_and_output_before_publication(self):
+                  self.assertEqual(os.name, "nt")
+                  child_env = dict(os.environ)
+                  child_env.pop("GH_TOKEN", None)
+                  child_env.pop("GITHUB_TOKEN", None)
+                  child_env["MW_NSIS_FIXTURE_TARGET"] = str(target)
+                  child_env["MW_NSIS_FIXTURE_LINK"] = str(link)
+                  command = (
+                      "$ErrorActionPreference='Stop'; "
+                      "New-Item -ItemType Junction -Path $env:MW_NSIS_FIXTURE_LINK "
+                      "-Target $env:MW_NSIS_FIXTURE_TARGET -ErrorAction Stop | Out-Null"
+                  )
+                  run = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
+                                        "-Command", command], env=child_env,
+                                       capture_output=True, timeout=20, check=False)
+                  self.assertEqual(run.returncode, 0)
+                  observed = link.lstat()
+                  self.assertEqual(getattr(observed, "st_reparse_tag", None), 0xA0000003)
+                  self.assertTrue(getattr(observed, "st_file_attributes", 0) & 0x400)
+                  self.assertTrue(stat.S_ISDIR(observed.st_mode))
+                  self.assertTrue(owned._is_link_or_reparse(observed))
+                  fixture.update({
+                      "create_exit": run.returncode,
+                      "stdout_sha256": hashlib.sha256(run.stdout).hexdigest(),
+                      "stderr_sha256": hashlib.sha256(run.stderr).hexdigest(),
+                      "reparse_tag": observed.st_reparse_tag,
+                      "file_attributes": observed.st_file_attributes,
+                      "file_identity": {"device": observed.st_dev, "inode": observed.st_ino},
+                  })
+                  with self.assertRaises(owned.CaptureError):
+                      owned.capture_owned_file(link / "owned.bin", plain / "capture.bin",
+                                               plain / "capture.nsh", "MW_JUNCTION")
+                  with self.assertRaises(owned.CaptureError):
+                      owned.capture_owned_file(source_file, link / "output.bin",
+                                               plain / "output.nsh", "MW_JUNCTION")
+                  with self.assertRaises(owned.CaptureError):
+                      owned.emit_predecessor_include(
+                          link / "predecessor.nsh", application="Motionwright",
+                          bundle_id="com.seradotcom.motionwright", arch="x64",
+                          target_version="0.1.0", target_main_sha256="1" * 64, environment={})
+                  self.assertEqual(source_file.read_bytes(), source_bytes)
+                  self.assertEqual(sorted(item.name for item in target.iterdir()), ["owned.bin"])
+                  self.assertEqual(list(plain.iterdir()), [])
+                  final = link.lstat()
+                  self.assertEqual((final.st_dev, final.st_ino, final.st_reparse_tag),
+                                   (observed.st_dev, observed.st_ino, observed.st_reparse_tag))
+                  fixture["outside_bytes_sha256"] = hashlib.sha256(source_file.read_bytes()).hexdigest()
+                  fixture["new_output_files"] = 0
+
+          suite = unittest.defaultTestLoader.loadTestsFromTestCase(NativeJunctionTests)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          after = source()
+          record = {
+              "schema": "motionwright.nsis-native-junction-test/1",
+              "source_before": before, "source_after": after,
+              "test_id": "NativeJunctionTests.test_real_ntfs_junction_refuses_source_and_output_before_publication",
+              "tests": result.testsRun, "failures": len(result.failures), "errors": len(result.errors),
+              "skips": len(result.skipped), "fixture": fixture,
+              "native_nsis_installer": "NOT_RUN", "human_install_acceptance": "NOT_RUN",
+          }
+          output = ROOT / "ci-evidence/nsis-windows-junction-test.json"
+          output.parent.mkdir(exist_ok=True)
+          with output.open("x", encoding="utf-8", newline="\n") as stream:
+              json.dump(record, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          ok = (before == after and result.wasSuccessful() and result.testsRun == 1
+                and not result.skipped and not result.expectedFailures and not result.unexpectedSuccesses)
+          print("nsis-windows-junction=" + ("PASS" if ok else "FAIL") + " required=1 skips=0")
+          raise SystemExit(0 if ok else 1)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS gate failed' }
+      - name: Build the real application without producing a package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location apps/desktop
+          try {
+            npm --prefix ../studio exec -- tauri build --no-bundle
+            if ($LASTEXITCODE -ne 0) { throw 'The unbundled application build failed' }
+          } finally {
+            Pop-Location
+          }
+      - name: Admit exact retained predecessor bytes and prepare the independent render inputs
+        timeout-minutes: 8
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import stat
+          import subprocess
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import zipfile
+
+          sys.path.insert(0, str(Path.cwd() / "tooling"))
+          from nsis_owned_files import _capture, emit_predecessor_include
+          from package_receipt import verified_artifact
+          from release_manifest import _checkout, _path_has_reparse
+          from windows_cold_start import native_windows_launch_environment
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          SOURCE = os.environ["GITHUB_SHA"]
+          WORK = Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-guarded-update"
+          INPUT = WORK / "input"
+          PROOF = ROOT / "ci-evidence/windows-nsis-update-inputs.json"
+          CHILD_ENV = native_windows_launch_environment(os.environ)
+          CHILD_ENV.pop("GH_TOKEN", None)
+          CHILD_ENV.pop("GITHUB_TOKEN", None)
+          FIXED = json.loads(r'''{"run":39032220978,"source":"679cc48baf7c6f9bb4a0b803508c9b2a9891d944","tree":"4ce7c4423c73da4f3af638427088ee6e962d12d5","packageArtifact":{"id":12101032310,"bytes":7134483,"sha256":"740ff6b52b1c655755f693ab9e620b36e15d5d5b642199f38e9a122d1b28155e"},"evidenceArtifact":{"id":12101216495,"bytes":125856,"sha256":"cab9c044019be1909162b9541b21f9a34bc46a44b4406a6bbda5b23aaf4f7e55"},"package":{"member":"target/release/bundle/nsis/Motionwright_0.1.0_x64-setup.exe","bytes":7149373,"sha256":"c071870c1c5f12f1728389f526471bee43b23eb7ad0bae3410147349a8da9f46"},"main":{"member":"motionwright-desktop.exe","bytes":32794112,"sha256":"4c1f8f492a505340ec3ca8e521254ff753a01875c92052a48c0dc42ad1314de8"},"self":{"member":"unchanged-control-original-uninstaller.exe","bytes":79338,"sha256":"dd03a5e87b450ae24950d67d2935dd18f78a27b45e1c52558625d47b60852224"},"receipt":{"member":"receipt.json","bytes":17792,"sha256":"ae15f0e7f21678b9fd950ec46a0b9cfe3601290851744a3d9aea158e39c5193e"}}''')
+
+          def require(ok, code):
+              if not ok:
+                  raise RuntimeError(code)
+
+          def identity(path):
+              observed, size, digest = verified_artifact(ROOT, path)
+              return {"bytes": size, "sha256": digest}
+
+          def plain_directory(path):
+              for item in (path, *path.parents):
+                  info = item.lstat()
+                  require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                          and not _path_has_reparse(item, info), "nonordinary_input_ancestor")
+
+          def write_new(path, body):
+              with path.open("xb") as stream:
+                  stream.write(body)
+                  stream.flush()
+                  os.fsync(stream.fileno())
+
+          def limited(stream, maximum):
+              body = stream.read(maximum + 1)
+              require(len(body) <= maximum, "response_exceeds_declared_bound")
+              return body
+
+          def api_json(route):
+              request = urllib.request.Request(
+                  API + route,
+                  headers={"Authorization": "Bearer " + TOKEN, "Accept": "application/vnd.github+json",
+                           "X-GitHub-Api-Version": "2022-11-28"})
+              with opener.open(request, timeout=30) as response:
+                  require(response.status == 200, "actions_api_response_not_ok")
+                  return json.loads(limited(response, 1024 * 1024))
+
+
+          SOURCE_PATHS = (
+              ".github/workflows/package-candidate.yml",
+              "apps/desktop/src-tauri/tauri.conf.json",
+              "apps/desktop/src-tauri/windows/installer.nsi",
+              "apps/desktop/src-tauri/windows/uninstall-ownership.nsh",
+              "tooling/nsis_owned_files.py",
+              "tooling/tests/test_nsis_owned_files.py",
+              "tooling/package_receipt.py",
+              "tooling/release_manifest.py",
+              "tooling/candidate_smoke.py",
+              "tooling/windows_cold_start.py",
+              "apps/studio/package.json",
+              "apps/studio/package-lock.json",
+              "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json",
+          )
+
+          def source_bytes(relative):
+              require(relative in SOURCE_PATHS, "source_path_outside_the_explicit_gate_set")
+              path = ROOT / relative
+              observed, size, digest = verified_artifact(ROOT, path)
+              require(size <= 4 * 1024 * 1024, "source_text_exceeds_gate_bound")
+              with path.open("rb") as stream:
+                  body = stream.read(4 * 1024 * 1024 + 1)
+              final, final_size, final_digest = verified_artifact(ROOT, path)
+              require(len(body) == size and hashlib.sha256(body).hexdigest() == digest
+                      and (final, final_size, final_digest) == (observed, size, digest),
+                      "source_text_changed_during_read")
+              return body
+
+          def source_observation():
+              _checkout(ROOT, SOURCE)
+              subprocess.run(["git", "ls-files", "--error-unmatch", "--", *SOURCE_PATHS],
+                             cwd=ROOT, check=True, capture_output=True, timeout=10)
+              tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT,
+                                    check=True, capture_output=True, text=True).stdout.strip()
+              require(re.fullmatch(r"[0-9a-f]{40}", tree) is not None, "source_tree_invalid")
+              files = {}
+              for relative in SOURCE_PATHS:
+                  files[relative] = identity(ROOT / relative)
+              _checkout(ROOT, SOURCE)
+              return {"checkout": SOURCE, "tree": tree, "files": files}
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, request, fp, code, message, headers, new_url):
+                  return None
+
+          def fetch_artifact(label, record):
+              meta = api_json("/actions/artifacts/" + str(record["id"]))
+              run = meta.get("workflow_run", {})
+              require(meta.get("id") == record["id"] and meta.get("expired") is False
+                      and meta.get("size_in_bytes") == record["bytes"]
+                      and meta.get("digest") == "sha256:" + record["sha256"]
+                      and run.get("id") == FIXED["run"] and run.get("head_sha") == FIXED["source"]
+                      and run.get("repository_id") == int(os.environ["GITHUB_REPOSITORY_ID"])
+                      and run.get("head_repository_id") == run.get("repository_id"),
+                      "retained_actions_artifact_binding_mismatch")
+              request = urllib.request.Request(
+                  API + "/actions/artifacts/" + str(record["id"]) + "/zip",
+                  headers={"Authorization": "Bearer " + TOKEN,
+                           "X-GitHub-Api-Version": "2022-11-28"})
+              try:
+                  response = opener.open(request, timeout=30)
+              except urllib.error.HTTPError as redirect:
+                  require(redirect.code == 302, "artifact_download_did_not_return_a_signed_location")
+                  location = redirect.headers.get("Location", "")
+                  redirect.close()
+              else:
+                  response.close()
+                  raise RuntimeError("artifact_download_redirect_contract_changed")
+              parsed = urllib.parse.urlparse(location)
+              require(parsed.scheme == "https" and parsed.hostname and parsed.port in (None, 443)
+                      and parsed.username is None and parsed.password is None and not parsed.fragment,
+                      "artifact_download_location_invalid")
+              output = WORK / (label + ".zip")
+              # A new unauthenticated request follows the signed URL. Never forward the
+              # repository token to the artifact storage origin or retain that URL.
+              with urllib.request.urlopen(urllib.request.Request(location), timeout=30) as response:
+                  require(response.status == 200, "artifact_body_response_not_ok")
+                  digest = hashlib.sha256()
+                  count = 0
+                  with output.open("xb") as stream:
+                      while True:
+                          block = response.read(min(1024 * 1024, record["bytes"] - count + 1))
+                          if not block:
+                              break
+                          count += len(block)
+                          require(count <= record["bytes"], "artifact_exceeds_pinned_size")
+                          digest.update(block)
+                          stream.write(block)
+                      stream.flush()
+                      os.fsync(stream.fileno())
+              require(count == record["bytes"] and digest.hexdigest() == record["sha256"],
+                      "artifact_archive_differs_from_literal_pin")
+              with zipfile.ZipFile(output) as archive:
+                  entries = archive.infolist()
+                  require(0 < len(entries) <= 64
+                          and sum(entry.file_size for entry in entries) <= 128 * 1024 * 1024
+                          and len({entry.filename.casefold() for entry in entries}) == len(entries)
+                          and archive.testzip() is None, "retained_archive_crc_or_inventory_invalid")
+              return output, {"artifact_id": record["id"], **identity(output),
+                              "workflow_run": FIXED["run"], "source_sha": FIXED["source"]}
+
+          def member(archive_path, record, output):
+              with zipfile.ZipFile(archive_path) as archive:
+                  entry = archive.getinfo(record["member"])
+                  require(not entry.is_dir() and entry.file_size == record["bytes"],
+                          "retained_member_size_mismatch")
+                  with archive.open(entry) as stream:
+                      body = limited(stream, record["bytes"])
+                  require(len(body) == record["bytes"]
+                          and hashlib.sha256(body).hexdigest() == record["sha256"],
+                          "retained_member_digest_mismatch")
+                  write_new(output, body)
+
+          require(os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true",
+                  "guarded_update_requires_the_disposable_windows_job")
+          plain_directory(WORK.parent)
+          WORK.mkdir()
+          INPUT.mkdir()
+          (ROOT / "ci-evidence").mkdir(exist_ok=True)
+          source_before = source_observation()
+          repo = os.environ["GITHUB_REPOSITORY"]
+          require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) is not None,
+                  "repository_identity_invalid")
+          API = "https://api.github.com/repos/" + repo
+          TOKEN = os.environ["GH_TOKEN"]
+          opener = urllib.request.build_opener(NoRedirect())
+          prior_run = api_json("/actions/runs/" + str(FIXED["run"]))
+          prior_commit = api_json("/git/commits/" + FIXED["source"])
+          require(prior_run.get("id") == FIXED["run"]
+                  and prior_run.get("head_sha") == FIXED["source"]
+                  and prior_run.get("repository", {}).get("full_name") == repo
+                  and prior_commit.get("sha") == FIXED["source"]
+                  and prior_commit.get("tree", {}).get("sha") == FIXED["tree"],
+                  "predecessor_run_or_git_tree_mismatch")
+          package_zip, package_admission = fetch_artifact("predecessor-package", FIXED["packageArtifact"])
+          evidence_zip, evidence_admission = fetch_artifact("predecessor-evidence", FIXED["evidenceArtifact"])
+          member(package_zip, FIXED["package"], INPUT / "previous-setup.exe")
+          member(evidence_zip, FIXED["self"], INPUT / "previous-uninstall.exe")
+          member(evidence_zip, FIXED["receipt"], INPUT / "previous-capture-receipt.json")
+
+          old = json.loads((INPUT / "previous-capture-receipt.json").read_bytes())
+          expected_files = {
+              "motionwright-desktop.exe": {"bytes": FIXED["main"]["bytes"], "sha256": FIXED["main"]["sha256"]},
+              "uninstall.exe": {"bytes": FIXED["self"]["bytes"], "sha256": FIXED["self"]["sha256"]},
+          }
+          require(old.get("source_sha") == FIXED["source"] and old.get("run_id") == str(FIXED["run"])
+                  and old.get("source_before") == old.get("source_after")
+                  and old["source_before"]["checkout"] == FIXED["source"]
+                  and old["source_before"]["tree"] == FIXED["tree"]
+                  and old.get("candidate") == old.get("candidate_after"),
+                  "original_capture_source_binding_mismatch")
+          require(len(old["cases"]) == 2
+                  and {case["id"] for case in old["cases"]} == {"unchanged-control", "modified-owned"},
+                  "original_capture_cases_mismatch")
+          for case in old["cases"]:
+              require(case["initial_inventory"] == {
+                  "directories": [], "directory_present": True, "files": expected_files},
+                  "predecessor_inventory_is_not_the_reviewed_two_file_case")
+          require(old["candidate"]["artifacts"] == [{
+              "bundle_kind": "nsis", "bytes": FIXED["package"]["bytes"],
+              "filename": "Motionwright_0.1.0_x64-setup.exe", "sha256": FIXED["package"]["sha256"],
+          }], "original_package_receipt_does_not_bind_the_setup")
+          # Extract one named member from the pinned setup; never run the setup during
+          # profile generation. Its full literal digest is independently checked below.
+          seven = Path(shutil.which("7z.exe") or r"C:\Program Files\7-Zip\7z.exe")
+          seven_before = identity(seven)
+          with (WORK / "predecessor-main-extraction.stderr").open("xb") as error_log:
+              extraction = subprocess.run(
+                  [str(seven), "x", "-so", str(INPUT / "previous-setup.exe"), FIXED["main"]["member"]],
+                  check=False, stdout=subprocess.PIPE, stderr=error_log, timeout=45, env=CHILD_ENV)
+          require(extraction.returncode == 0, "predecessor_static_extraction_failed")
+          require(len(extraction.stdout) == FIXED["main"]["bytes"]
+                  and hashlib.sha256(extraction.stdout).hexdigest() == FIXED["main"]["sha256"],
+                  "predecessor_main_differs_from_literal_pin")
+          write_new(INPUT / "previous-main.exe", extraction.stdout)
+          require(identity(seven) == seven_before, "static_extraction_tool_changed")
+
+          config = json.loads(source_bytes("apps/desktop/src-tauri/tauri.conf.json"))
+          windows = config["bundle"]["windows"]
+          require(config["productName"] == "Motionwright" and config["identifier"] == "com.seradotcom.motionwright"
+                  and config.get("mainBinaryName", "motionwright-desktop") == "motionwright-desktop"
+                  and not windows.get("certificateThumbprint") and not windows.get("signCommand")
+                  and not config["bundle"].get("createUpdaterArtifacts"),
+                  "guarded_update_fixture_requires_the_unsigned_single_nsis_profile")
+          require(windows["nsis"]["installMode"] == "currentUser"
+                  and windows["nsis"]["template"] == "windows/installer.nsi"
+                  and windows["nsis"]["installerHooks"] == "windows/uninstall-ownership.nsh",
+                  "guarded_update_template_not_configured")
+          main = ROOT / "target/release/motionwright-desktop.exe"
+          main_before = identity(main)
+          require(main_before["sha256"] != FIXED["main"]["sha256"], "new_main_is_not_a_distinct_build")
+
+          require(not config["bundle"].get("externalBin") and not config["bundle"].get("resources"),
+                  "the_render_fixture_must_not_replace_configured_application_payloads")
+          fixture = WORK / "render-inputs"
+          fixture.mkdir()
+          resource_inputs = {}
+          expected_fixture = {}
+          for name, body in (("resource-alpha.dat", b"Motionwright NSIS render input alpha\n"),
+                             ("resource-beta.dat", b"Motionwright NSIS render input beta: distinct bytes\n")):
+              resource = fixture / name
+              write_new(resource, body)
+              target = "mw-ci-render/" + name
+              resource_inputs[str(resource)] = target
+              expected_fixture[target] = {"kind": "resource", **identity(resource)}
+          external_inputs = []
+          for stem, binary_source in (("mw-ci-current-sidecar", main),
+                                      ("mw-ci-previous-sidecar", INPUT / "previous-main.exe")):
+              sidecar = fixture / (stem + "-x86_64-pc-windows-msvc.exe")
+              digest, size, captured = _capture(binary_source, sidecar)
+              expected_fixture[stem + ".exe"] = {
+                  "kind": "external_binary", "bytes": size, "sha256": digest}
+              require(identity(sidecar) == {"bytes": size, "sha256": digest},
+                      "sidecar_capture_changed")
+              external_inputs.append(str(fixture / stem))
+          require(expected_fixture["mw-ci-current-sidecar.exe"]["sha256"]
+                  != expected_fixture["mw-ci-previous-sidecar.exe"]["sha256"],
+                  "the_two_render_sidecars_need_distinct_literal_bytes")
+          overlay = {"bundle": {"resources": resource_inputs, "externalBin": external_inputs}}
+          overlay_path = INPUT / "render-overlay.json"
+          overlay_raw = (json.dumps(overlay, indent=2, sort_keys=True) + "\n").encode("utf-8")
+          write_new(overlay_path, overlay_raw)
+          overlay_identity = identity(overlay_path)
+          require(identity(main) == main_before, "new_main_changed_during_fixture_preparation")
+
+          cli_root = ROOT / "apps/studio/node_modules/@tauri-apps"
+          cli_package = json.loads((cli_root / "cli/package.json").read_text(encoding="utf-8"))
+          require(cli_package["version"] == "2.12.1", "installed_cli_is_not_the_reviewed_version")
+          cli_inputs = {}
+          for name in ("cli/package.json", "cli/tauri.js", "cli-win32-x64-msvc/package.json",
+                       "cli-win32-x64-msvc/cli.win32-x64-msvc.node"):
+              cli_inputs[name] = identity(cli_root / name)
+          node = Path(shutil.which("node.exe") or "")
+          node_identity = identity(node)
+          tool_runs = []
+          for label, arguments in (("version", ["--version"]), ("bundle-help", ["bundle", "--help"])):
+              run = subprocess.run([str(node), str(cli_root / "cli/tauri.js"), *arguments],
+                                   cwd=ROOT / "apps/desktop", env=CHILD_ENV,
+                                   capture_output=True, timeout=20, check=False)
+              require(run.returncode == 0 and len(run.stdout) <= 128 * 1024
+                      and len(run.stderr) <= 128 * 1024, "installed_cli_probe_failed")
+              write_new(WORK / ("cli-" + label + ".stdout"), run.stdout)
+              write_new(WORK / ("cli-" + label + ".stderr"), run.stderr)
+              text = run.stdout.decode("utf-8")
+              if label == "version":
+                  require(text.strip() == "tauri-cli 2.12.1", "installed_cli_version_output_mismatch")
+              else:
+                  require("--no-binary-patching" in text and "--bundles" in text,
+                          "installed_cli_does_not_offer_the_reviewed_bundle_option")
+              tool_runs.append({"label": label, "exit_code": run.returncode,
+                                "stdout_sha256": hashlib.sha256(run.stdout).hexdigest(),
+                                "stderr_sha256": hashlib.sha256(run.stderr).hexdigest()})
+          require(identity(node) == node_identity
+                  and all(identity(cli_root / name) == value for name, value in cli_inputs.items()),
+                  "installed_cli_bytes_changed_during_probe")
+          profile = {
+              "schema": "motionwright.nsis-predecessor/1",
+              "identity": {"application": "Motionwright", "bundle_id": config["identifier"], "arch": "x64"},
+              "version": "0.1.0", "source_sha": FIXED["source"], "source_tree": FIXED["tree"],
+              "target": {"version": config["version"], "main_sha256": main_before["sha256"]},
+              "package": {"path": "previous-setup.exe", "bytes": FIXED["package"]["bytes"],
+                          "sha256": FIXED["package"]["sha256"]},
+              "capture_receipt": {"path": "previous-capture-receipt.json", "bytes": FIXED["receipt"]["bytes"],
+                                  "sha256": FIXED["receipt"]["sha256"]},
+              "files": [
+                  {"relative": "motionwright-desktop.exe", "source": "previous-main.exe", "kind": "main",
+                   "bytes": FIXED["main"]["bytes"], "sha256": FIXED["main"]["sha256"]},
+                  {"relative": "uninstall.exe", "source": "previous-uninstall.exe", "kind": "uninstaller",
+                   "bytes": FIXED["self"]["bytes"], "sha256": FIXED["self"]["sha256"]},
+              ],
+          }
+          raw = (json.dumps(profile, indent=2, sort_keys=True) + "\n").encode("utf-8")
+          profile_path = INPUT / "predecessor.json"
+          write_new(profile_path, raw)
+          profile_sha = hashlib.sha256(raw).hexdigest()
+          probe = WORK / "profile-probe"
+          probe.mkdir()
+          admitted = emit_predecessor_include(
+              probe / "mw-predecessor.nsh", application="Motionwright",
+              bundle_id=config["identifier"], arch="x64", target_version=config["version"],
+              target_main_sha256=main_before["sha256"],
+              environment={"MW_NSIS_PREDECESSOR_MANIFEST": str(profile_path),
+                           "MW_NSIS_PREDECESSOR_MANIFEST_SHA256": profile_sha})
+          require(admitted == {"enabled": True, "files": 2, "manifest_sha256": profile_sha,
+                               "package_sha256": FIXED["package"]["sha256"]},
+                  "existing_guard_did_not_admit_the_exact_profile")
+          source_after = source_observation()
+          require(source_after == source_before, "source_changed_during_input_admission")
+          proof = {
+              "schema": "motionwright-windows-nsis-update-inputs/1", "source_sha": SOURCE,
+              "source_before": source_before, "source_after": source_after,
+              "profile_sha256": profile_sha, "profile": profile, "new_main_before_bundle": main_before,
+              "render_overlay": overlay_identity, "expected_fixture_payloads": expected_fixture,
+              "fixture_scope": "two_resources_and_two_nonexecuted_pe_sidecars_only",
+              "previous_package_archive": package_admission, "previous_evidence_archive": evidence_admission,
+              "previous_run_conclusion": prior_run.get("conclusion"),
+              "original_stock_modified_owned_case": "FAIL_PRESERVED_AS_HISTORICAL_RESULT",
+              "static_extraction_tool": seven_before, "static_extraction_exit_code": extraction.returncode,
+              "installed_cli_version": cli_package["version"], "installed_cli_inputs": cli_inputs,
+              "installed_node": node_identity, "cli_probe_commands": tool_runs,
+              "upstream_review_sha": "30da1fd6e17de6107ecc850c95dfb16b5729f2dd",
+              "upstream_cli_bundle_sha256": "fa883f16f84ad4a0d7d091daa2a57e177b804b481a9ec8f8227c5a398dcafdf6",
+              "upstream_bundler_bundle_sha256": "91c8387ccb2e52388cdcfeccfd23f69dac5439aba397d464b1d5446153fdc82e",
+              "guard_profile_preflight": admitted,
+              "native_installer_execution": "NOT_RUN", "human_install_acceptance": "NOT_RUN",
+              "release_published": False,
+          }
+          write_new(PROOF, (json.dumps(proof, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+          require(not any(c in str(profile_path) for c in "\r\n"), "profile_environment_path_invalid")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
+              environment.write("MW_NSIS_PREDECESSOR_MANIFEST=" + str(profile_path) + "\n")
+              environment.write("MW_NSIS_PREDECESSOR_MANIFEST_SHA256=" + profile_sha + "\n")
+              require(not any(c in str(overlay_path) for c in "\r\n"), "overlay_environment_path_invalid")
+              environment.write("MW_NSIS_RENDER_OVERLAY=" + str(overlay_path) + "\n")
+              for variable, value in (("MW_NSIS_BUNDLE_NODE", str(node)),
+                                      ("MW_NSIS_BUNDLE_CLI", str(cli_root / "cli/tauri.js"))):
+                  require(not any(c in value for c in "\r\n"), "bundle_tool_environment_path_invalid")
+                  environment.write(variable + "=" + value + "\n")
+          print("nsis-predecessor-profile=ADMITTED source=" + SOURCE
+                + " owned_files=2 installer_execution=NOT_RUN human=NOT_RUN")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS gate failed' }
+      - name: Compile the actual NSIS template with two resources and two distinct PE sidecars
+        shell: pwsh
+        timeout-minutes: 12
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location apps/desktop
+          try {
+            & $env:MW_NSIS_BUNDLE_NODE $env:MW_NSIS_BUNDLE_CLI bundle --bundles nsis --no-binary-patching --config "$env:MW_NSIS_RENDER_OVERLAY"
+            if ($LASTEXITCODE -ne 0) { throw 'The actual Tauri NSIS compilation failed' }
+          } finally {
+            Pop-Location
+          }
+      - name: Record the separate compiled fixture setup digest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setups = @(Get-ChildItem target/release/bundle/nsis/*-setup.exe -File)
+          if ($setups.Count -ne 1) { throw 'Expected exactly one fixture setup' }
+          python tooling/package_receipt.py --git-sha "$env:GITHUB_SHA" --platform windows --arch x86_64 --artifact "$($setups[0].FullName)" --output ci-evidence/windows-nsis-update-candidate.json
+          if ($LASTEXITCODE -ne 0) { throw 'The separate setup receipt failed' }
+      - name: Inspect the actual rendered template and every captured payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import sys
+
+          sys.path.insert(0, str(Path.cwd() / "tooling"))
+          from nsis_owned_files import (
+              _capture, _relative, _require_plain_parents, _require_regular,
+              _require_unchanged,
+          )
+          from package_receipt import verified_artifact
+          from release_manifest import _checkout
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          SOURCE = os.environ["GITHUB_SHA"]
+          WORK = Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-guarded-update"
+          BUILD = ROOT / "target/release/nsis/x64"
+          EVIDENCE = ROOT / "ci-evidence"
+          PROOF = EVIDENCE / "windows-nsis-update-compiled.json"
+
+          SOURCE_PATHS = (
+              ".github/workflows/package-candidate.yml",
+              "apps/desktop/src-tauri/tauri.conf.json",
+              "apps/desktop/src-tauri/windows/installer.nsi",
+              "apps/desktop/src-tauri/windows/uninstall-ownership.nsh",
+              "tooling/nsis_owned_files.py",
+              "tooling/tests/test_nsis_owned_files.py",
+              "tooling/package_receipt.py",
+              "tooling/release_manifest.py",
+              "tooling/candidate_smoke.py",
+              "tooling/windows_cold_start.py",
+              "apps/studio/package.json",
+              "apps/studio/package-lock.json",
+              "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json",
+          )
+
+          def require(ok, code):
+              if not ok:
+                  raise RuntimeError(code)
+
+          def identity(path):
+              actual, size, digest = verified_artifact(ROOT, path)
+              return {"bytes": size, "sha256": digest}
+
+          def read_bound(path, maximum=4 * 1024 * 1024):
+              observed = identity(path)
+              require(observed["bytes"] <= maximum, "compiled_evidence_exceeds_bound")
+              with path.open("rb") as stream:
+                  body = stream.read(maximum + 1)
+              require(len(body) == observed["bytes"]
+                      and hashlib.sha256(body).hexdigest() == observed["sha256"]
+                      and identity(path) == observed, "compiled_evidence_changed")
+              return body, observed
+
+          def write_new(path, value):
+              body = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+              require(len(body) <= 4 * 1024 * 1024, "compiled_projection_exceeds_bound")
+              with path.open("xb") as stream:
+                  require(stream.write(body) == len(body), "compiled_projection_short_write")
+                  stream.flush()
+                  os.fsync(stream.fileno())
+
+          def source_bytes(relative):
+              require(relative in SOURCE_PATHS, "source_path_outside_the_explicit_gate_set")
+              body, observed = read_bound(ROOT / relative)
+              return body
+
+          def literal(value):
+              # This reader covers the controlled CI path alphabet. It is not a second
+              # NSIS renderer and refuses any unexpanded or escaped expression.
+              require(value and not any(c in value for c in '$"\r\n\x00'),
+                      "compiled_fixture_has_an_unsupported_nsis_literal")
+              return value
+
+          def define(text, name, quoted=True):
+              pattern = (r'^!define ' + re.escape(name)
+                         + (r' "([^"\r\n]*)"\r?$' if quoted else r' ([0-9]+)\r?$'))
+              matches = re.findall(pattern, text, re.MULTILINE)
+              require(len(matches) == 1, "compiled_definition_missing_or_duplicated")
+              return matches[0]
+
+          def retain_original_compiled_inputs():
+              """Retain only bounded compiler outputs before inspecting their semantics."""
+              destination = EVIDENCE / "windows-nsis-update-compiled-diagnostics"
+              _require_plain_parents(destination)
+              destination.mkdir()
+              report = {
+                  "schema": "motionwright.nsis-compiled-diagnostic-custody/1",
+                  "status": "DIAGNOSTIC_NOT_VERIFIED", "source_sha": SOURCE,
+                  "collection_complete": False, "files": [],
+                  "installer_execution": "NOT_RUN", "update_recovery": "NOT_RUN",
+                  "release_published": False,
+              }
+              try:
+                  candidates = [
+                      (BUILD / "installer.nsi", 4 * 1024 * 1024),
+                      (BUILD / "mw-predecessor.nsh", 64 * 1024),
+                      (BUILD / "mw-predecessor-manifest.capture.json", 4 * 1024 * 1024),
+                  ]
+                  _require_plain_parents(BUILD / "compiler-output")
+                  build_entries = []
+                  for entry in BUILD.iterdir():
+                      require(len(build_entries) < 128, "diagnostic_build_entry_bound")
+                      build_entries.append(entry)
+                  for entry in sorted(build_entries):
+                      if entry.name.startswith("mw-owned-"):
+                          require(re.fullmatch(
+                              r"mw-owned-MW_(?:MAIN|RESOURCE_[0-9]{1,2}|BINARY_[0-9]{1,2})\.(?:bin|nsh)",
+                              entry.name) is not None, "diagnostic_capture_name_not_admitted")
+                          maximum = 64 * 1024 if entry.suffix == ".nsh" else 256 * 1024 * 1024
+                          candidates.append((entry, maximum))
+                  setup_root = ROOT / "target/release/bundle/nsis"
+                  _require_plain_parents(setup_root / "setup-output")
+                  setup_entries = []
+                  for entry in setup_root.iterdir():
+                      require(len(setup_entries) < 32, "diagnostic_setup_entry_bound")
+                      setup_entries.append(entry)
+                  setups = [entry for entry in setup_entries if re.fullmatch(
+                      r"Motionwright_[0-9]+\.[0-9]+\.[0-9]+_x64-setup\.exe", entry.name)]
+                  require(len(setups) == 1, "diagnostic_setup_count_invalid")
+                  candidates.append((setups[0], 256 * 1024 * 1024))
+                  require(len(candidates) <= 64, "diagnostic_candidate_count_bound")
+                  names = [path.name for path, _ in candidates]
+                  require(len(names) == len(set(names)), "diagnostic_output_name_duplicated")
+                  total = 0
+                  for path, maximum in candidates:
+                      _require_plain_parents(path)
+                      initial = path.lstat()
+                      _require_regular(initial, "diagnostic source")
+                      require(0 < initial.st_size <= maximum, "diagnostic_file_size_bound")
+                      require(total + initial.st_size <= 512 * 1024 * 1024,
+                              "diagnostic_total_size_bound")
+                      copied = destination / path.name
+                      digest, size, _ = _capture(path, copied)
+                      _require_unchanged(path.lstat(), initial, "diagnostic source")
+                      require(size == initial.st_size, "diagnostic_source_size_changed")
+                      observed = {"bytes": size, "sha256": digest}
+                      require(identity(copied) == observed, "diagnostic_retained_bytes_changed")
+                      total += size
+                      report["files"].append({
+                          "source_relative": path.relative_to(ROOT).as_posix(),
+                          "retained_name": copied.name, **observed,
+                      })
+                  report["collection_complete"] = True
+                  report["retained_bytes"] = total
+              finally:
+                  primary_failure = sys.exc_info()[0] is not None
+                  try:
+                      write_new(destination / "manifest.json", report)
+                  except Exception:
+                      if not primary_failure:
+                          raise
+                      print("NSIS_DIAGNOSTIC_MANIFEST_UNAVAILABLE primary_failure_preserved",
+                            file=sys.stderr)
+              return report
+
+          def verify_retained_compiled_inputs(report):
+              """Bind the complete diagnostic copies to the final successful projection."""
+              destination = EVIDENCE / "windows-nsis-update-compiled-diagnostics"
+              require(report["collection_complete"]
+                      and report["status"] == "DIAGNOSTIC_NOT_VERIFIED",
+                      "diagnostic_collection_not_complete")
+              for entry in report["files"]:
+                  expected = {key: entry[key] for key in ("bytes", "sha256")}
+                  require(identity(ROOT / entry["source_relative"]) == expected
+                          and identity(destination / entry["retained_name"]) == expected,
+                          "diagnostic_source_or_copy_changed")
+              raw, observed = read_bound(destination / "manifest.json")
+              require(json.loads(raw) == report, "diagnostic_manifest_changed")
+              return observed
+
+          _checkout(ROOT, SOURCE)
+          subprocess.run(["git", "ls-files", "--error-unmatch", "--", *SOURCE_PATHS],
+                             cwd=ROOT, check=True, capture_output=True, timeout=10)
+          diagnostic_custody = retain_original_compiled_inputs()
+          inputs_raw, inputs_identity = read_bound(EVIDENCE / "windows-nsis-update-inputs.json")
+          inputs = json.loads(inputs_raw)
+          require(inputs["source_sha"] == SOURCE and inputs["source_before"] == inputs["source_after"],
+                  "compiled_input_source_binding_invalid")
+          before = inputs["source_after"]
+          require(set(before["files"]) == set(SOURCE_PATHS), "compiled_source_pathset_changed")
+          tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT,
+                                check=True, capture_output=True, text=True).stdout.strip()
+          require(tree == before["tree"] and before["checkout"] == SOURCE,
+                  "compiled_input_tree_binding_invalid")
+          for relative, expected in before["files"].items():
+              require(identity(ROOT / relative) == expected, "compiled_source_changed")
+          profile_path = WORK / "input/predecessor.json"
+          profile_raw, profile_identity = read_bound(profile_path)
+          require(profile_identity["sha256"] == inputs["profile_sha256"]
+                  and os.environ["MW_NSIS_PREDECESSOR_MANIFEST_SHA256"] == inputs["profile_sha256"]
+                  and json.loads(profile_raw) == inputs["profile"],
+                  "compiled_predecessor_authority_changed")
+          captured_profile, captured_profile_identity = read_bound(
+              BUILD / "mw-predecessor-manifest.capture.json")
+          require(captured_profile == profile_raw, "native_bundle_did_not_capture_the_exact_profile")
+          overlay_path = WORK / "input/render-overlay.json"
+          require(identity(overlay_path) == inputs["render_overlay"], "render_overlay_changed")
+          rendered_raw, rendered_identity = read_bound(BUILD / "installer.nsi")
+          require(rendered_raw.startswith(b"\xef\xbb\xbf"), "bundler_render_is_not_the_expected_utf8_bom")
+          rendered = rendered_raw.decode("utf-8-sig")
+          require("{{#each" not in rendered, "unexpanded_template_loop")
+          config = json.loads(source_bytes("apps/desktop/src-tauri/tauri.conf.json"))
+          identity_defines = {
+              "PRODUCTNAME": "Motionwright", "BUNDLEID": config["identifier"],
+              "ARCH": "x64", "INSTALLMODE": "currentUser", "VERSION": config["version"],
+              "MAINBINARYNAME": "motionwright-desktop",
+          }
+          require(all(define(rendered, key) == value for key, value in identity_defines.items()),
+                  "compiled_application_identity_invalid")
+          main_source = Path(literal(define(rendered, "MAINBINARYSRCPATH")))
+          require(main_source == ROOT / "target/release/motionwright-desktop.exe",
+                  "compiled_main_path_not_the_built_target")
+          require(identity(main_source) == inputs["new_main_before_bundle"],
+                  "no_binary_patching_did_not_preserve_the_pinned_main_bytes")
+          cli_root = ROOT / "apps/studio/node_modules/@tauri-apps"
+          for name, expected in inputs["installed_cli_inputs"].items():
+              require(identity(cli_root / name) == expected, "compiled_cli_input_changed")
+          require(identity(Path(os.environ["MW_NSIS_BUNDLE_NODE"])) == inputs["installed_node"],
+                  "bundle_node_changed")
+          require(Path(os.environ["MW_NSIS_BUNDLE_CLI"]) == cli_root / "cli/tauri.js",
+                  "bundle_cli_launch_path_changed")
+
+          symbol_pattern = r"MW_(?:MAIN|RESOURCE_[0-9]+|BINARY_[0-9]+)"
+          captures = {}
+          for line in rendered.splitlines():
+              if line.strip().startswith("!insertmacro MWINST_CAPTURE "):
+                  match = re.fullmatch(r'\s*!insertmacro MWINST_CAPTURE (' + symbol_pattern
+                                       + r') "([^"\r\n]+)"\s*', line)
+                  require(match is not None, "compiled_capture_symbol_did_not_render")
+                  symbol, source_text = match.groups()
+                  require(symbol not in captures, "compiled_capture_symbol_duplicated")
+                  if symbol == "MW_MAIN":
+                      require(source_text == "${MAINBINARYSRCPATH}", "compiled_main_capture_source_invalid")
+                      source_path = main_source
+                  else:
+                      source_path = Path(literal(source_text))
+                  require(source_path.is_absolute(), "compiled_capture_source_not_absolute")
+                  captures[symbol] = source_path
+          require("MW_MAIN" in captures, "compiled_main_capture_missing")
+          resource_symbols = sorted(s for s in captures if s.startswith("MW_RESOURCE_"))
+          binary_symbols = sorted(s for s in captures if s.startswith("MW_BINARY_"))
+          for prefix, symbols in (("MW_RESOURCE_", resource_symbols), ("MW_BINARY_", binary_symbols)):
+              require(len(symbols) >= 2
+                      and {int(symbol.removeprefix(prefix)) for symbol in symbols} == set(range(len(symbols))),
+                      "actual_bundler_did_not_render_two_distinct_numeric_indexes")
+
+          entries = []
+          self_entries = 0
+          for line in rendered.splitlines():
+              if line.strip().startswith("!insertmacro MWINST_CURRENT_ENTRY "):
+                  if line.strip() == ('!insertmacro MWINST_CURRENT_ENTRY "uninstall.exe" '
+                                      '"$MWINST_NewSelfSha" "$MWINST_NewSelfSize"'):
+                      self_entries += 1
+                      continue
+                  match = re.fullmatch(
+                      r'\s*!insertmacro MWINST_CURRENT_ENTRY "([^"\r\n]+)" "\$\{('
+                      + symbol_pattern + r')_SHA256\}" "\$\{\2_SIZE\}"\s*', line)
+                  require(match is not None, "compiled_current_inventory_did_not_render")
+                  relative, symbol = match.groups()
+                  if symbol == "MW_MAIN":
+                      require(relative == "${MAINBINARYNAME}.exe", "compiled_main_destination_invalid")
+                      relative = "motionwright-desktop.exe"
+                  else:
+                      relative = _relative(literal(relative), "compiled destination")
+                  entries.append((relative, symbol))
+          require(self_entries == 1 and len(entries) == len(captures)
+                  and {symbol for _, symbol in entries} == set(captures)
+                  and len({relative.casefold() for relative, _ in entries}) == len(entries),
+                  "compiled_inventory_is_not_complete_and_unique")
+
+          installed_calls = []
+          for line in rendered.splitlines():
+              if line.strip().startswith("!insertmacro MWINST_INSTALL_PAYLOAD "):
+                  match = re.fullmatch(r'\s*!insertmacro MWINST_INSTALL_PAYLOAD "([^"\r\n]+)" ('
+                                       + symbol_pattern + r')\s*', line)
+                  require(match is not None, "compiled_install_call_did_not_render")
+                  relative, symbol = match.groups()
+                  if symbol == "MW_MAIN":
+                      require(relative == "${MAINBINARYNAME}.exe", "compiled_main_install_name_invalid")
+                      relative = "motionwright-desktop.exe"
+                  else:
+                      relative = _relative(literal(relative), "compiled install destination")
+                  installed_calls.append((relative, symbol))
+          require(installed_calls == entries, "compiled_lookup_and_install_inventories_differ")
+
+          retained = EVIDENCE / "windows-nsis-update-compiled-inputs"
+          retained.mkdir()
+          render_capture = retained / "installer.nsi"
+          render_digest, render_size, _ = _capture(BUILD / "installer.nsi", render_capture)
+          require({"bytes": render_size, "sha256": render_digest} == rendered_identity,
+                  "render_capture_differs_from_the_observed_template")
+          current = {}
+          capture_inputs = {}
+          for relative, symbol in entries:
+              header_path = BUILD / ("mw-owned-" + symbol + ".nsh")
+              header_raw, header_identity = read_bound(header_path, 64 * 1024)
+              header = header_raw.decode("utf-8-sig")
+              digest = define(header, symbol + "_SHA256")
+              size_text = define(header, symbol + "_SIZE", quoted=False)
+              require(re.fullmatch(r"[0-9a-f]{64}", digest) is not None,
+                      "compiled_payload_digest_invalid")
+              declared = {"bytes": int(size_text), "sha256": digest}
+              capture_path = BUILD / ("mw-owned-" + symbol + ".bin")
+              require(Path(literal(define(header, symbol + "_SOURCE"))) == capture_path,
+                      "compiled_file_instruction_uses_another_capture")
+              # All inputs in this concrete fixture are nonempty. The helper's separate
+              # zero-byte contract remains exercised by its source tests.
+              require(declared["bytes"] > 0 and identity(capture_path) == declared
+                      and identity(captures[symbol]) == declared,
+                      "compiled_payload_capture_or_source_mismatch")
+              kind = ("main" if symbol == "MW_MAIN" else
+                      "resource" if symbol.startswith("MW_RESOURCE_") else "external_binary")
+              current[relative] = {"kind": kind, **declared, "symbol": symbol}
+              capture_inputs[symbol] = {"capture": declared, "header": header_identity}
+              observed_digest, observed_size, _ = _capture(header_path, retained / header_path.name)
+              require({"bytes": observed_size, "sha256": observed_digest} == header_identity,
+                      "compiled_header_custody_mismatch")
+          for relative, expected in inputs["expected_fixture_payloads"].items():
+              require(relative in current
+                      and {key: current[relative][key] for key in ("kind", "bytes", "sha256")} == expected,
+                      "actual_bundler_did_not_preserve_the_distinct_fixture_mapping")
+          require(current["motionwright-desktop.exe"]["sha256"]
+                  == inputs["new_main_before_bundle"]["sha256"], "compiled_main_digest_not_bound")
+
+          previous_header_raw, previous_header_identity = read_bound(BUILD / "mw-predecessor.nsh")
+          previous_header = previous_header_raw.decode("utf-8-sig")
+          require(define(previous_header, "MWPREV_ENABLED", quoted=False) == "1"
+                  and define(previous_header, "MWPREV_MANIFEST_SHA256") == inputs["profile_sha256"]
+                  and define(previous_header, "MWPREV_PACKAGE_SHA256")
+                  == inputs["profile"]["package"]["sha256"],
+                  "actual_nsis_compile_did_not_consume_the_pinned_predecessor")
+          for filename in ("mw-predecessor.nsh", "mw-predecessor-manifest.capture.json"):
+              source = BUILD / filename
+              expected = identity(source)
+              digest, size, _ = _capture(source, retained / filename)
+              require({"bytes": size, "sha256": digest} == expected, "predecessor_capture_custody_mismatch")
+          setups = sorted((ROOT / "target/release/bundle/nsis").glob("*-setup.exe"))
+          require(len(setups) == 1, "compiled_update_setup_count_invalid")
+          setup_identity = identity(setups[0])
+          receipt_raw, receipt_identity = read_bound(EVIDENCE / "windows-nsis-update-candidate.json")
+          receipt = json.loads(receipt_raw)
+          require(receipt["candidate"]["source_revision"] == SOURCE
+                  and receipt["candidate"]["platform"] == "windows"
+                  and receipt["candidate"]["arch"] == "x86_64"
+                  and receipt["artifacts"] == [{
+                      "bundle_kind": "nsis", **setup_identity, "filename": setups[0].name}],
+                  "separate_update_setup_receipt_binding_invalid")
+          after_files = {}
+          for relative, expected in before["files"].items():
+              after_files[relative] = identity(ROOT / relative)
+              require(after_files[relative] == expected, "source_changed_during_compiled_inspection")
+          _checkout(ROOT, SOURCE)
+          after_tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT,
+                                     check=True, capture_output=True, text=True).stdout.strip()
+          after = {"checkout": SOURCE, "tree": after_tree, "files": after_files}
+          require(after == before, "source_tree_changed_during_compiled_inspection")
+          diagnostic_manifest = verify_retained_compiled_inputs(diagnostic_custody)
+          proof = {
+              "schema": "motionwright-windows-nsis-compiled-fixture/1",
+              "status": "COMPILED_SOURCE_BOUND", "source_sha": SOURCE, "source_tree": tree,
+              "source_before": before, "source_after": after,
+              "inputs_receipt": inputs_identity, "candidate_receipt": receipt_identity,
+              "setup": setup_identity, "rendered_installer": rendered_identity,
+              "diagnostic_custody_manifest": diagnostic_manifest,
+              "predecessor_profile": captured_profile_identity,
+              "predecessor_header": previous_header_identity, "profile_sha256": inputs["profile_sha256"],
+              "current_payloads": current, "captured_inputs": capture_inputs,
+              "resources": len(resource_symbols), "sidecars": len(binary_symbols),
+              "self_publication_reference": "RUNTIME_GUARD_STAGED_HASH_NOT_OBSERVED_IN_THIS_COMPILE",
+              "native_nsis_compile": "EXIT_ZERO_REQUIRED_BY_PREVIOUS_STEP",
+              "sidecar_execution": "NOT_RUN",
+              "installer_execution": "NOT_RUN", "update_recovery": "NOT_RUN",
+              "project_preservation": "NOT_RUN", "human_install_acceptance": "NOT_RUN",
+              "normal_candidate_or_attestation_equivalence": "NOT_CLAIMED",
+              "release_published": False,
+          }
+          write_new(PROOF, proof)
+          print("nsis-actual-render=COMPILED_SOURCE_BOUND resources=" + str(len(resource_symbols))
+                + " sidecars=" + str(len(binary_symbols))
+                + " installer_execution=NOT_RUN human=NOT_RUN")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS gate failed' }
+      - name: Retain the compiled fixture and bounded source-bound render observations
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-nsis-render-fixture
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            ci-evidence/windows-nsis-update-candidate.json
+            ci-evidence/windows-nsis-update-inputs.json
+            ci-evidence/windows-nsis-update-compiled.json
+            ci-evidence/windows-nsis-update-compiled-inputs/*
+            ci-evidence/windows-nsis-update-compiled-diagnostics/*
+            ci-evidence/nsis-windows-junction-test.json
+          if-no-files-found: error
+      - name: Retain available compiler gate receipts after failure or cancellation
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-nsis-render-diagnostics
+          path: |
+            ci-evidence/windows-nsis-update-*.json
+            ci-evidence/windows-nsis-update-compiled-diagnostics/*
+            ci-evidence/nsis-windows-junction-test.json
+          if-no-files-found: warn
+
   macos:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile')
     needs: receipt-policy
     runs-on: macos-latest
     steps:

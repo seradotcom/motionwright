@@ -32,7 +32,9 @@
     "windows": {
       "allowDowngrades": false,
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "template": "windows/installer.nsi",
+        "installerHooks": "windows/uninstall-ownership.nsh"
       }
     },
     "icon": ["icons/icon.png"],
