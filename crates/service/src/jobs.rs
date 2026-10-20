@@ -1022,7 +1022,7 @@ mod tests {
         assert_eq!(jobs[0].state, ProductionJobState::Succeeded);
         assert!(jobs[0].artifact_available && jobs[0].result_available);
 
-        let orphan = derive_production_jobs(&[result.clone()], generation, 7, 16);
+        let orphan = derive_production_jobs(std::slice::from_ref(&result), generation, 7, 16);
         assert_eq!(orphan[0].state, ProductionJobState::OutcomeUnknown);
         assert!(!orphan[0].artifact_available && !orphan[0].result_available);
 
