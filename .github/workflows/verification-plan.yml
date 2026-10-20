@@ -50,6 +50,7 @@ jobs:
             --test-directory tooling/tests \
             --pattern test_ci_impact_plan.py \
             --pattern test_conformance_policy.py \
+            --pattern test_conformance_currency_impact.py \
             --pattern test_acceptance_policy.py \
             --pattern test_acceptance_session.py \
             --pattern test_acceptance_evidence_identity.py \
