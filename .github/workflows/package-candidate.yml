@@ -229,7 +229,7 @@ jobs:
           all_methods = [item.name for item in ast.walk(tree)
                          if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                          and item.name.startswith("test_")]
-          require(len(methods) == len(set(methods)) == len(all_methods) == 41
+          require(len(methods) == len(set(methods)) == len(all_methods) == 44
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
@@ -253,8 +253,8 @@ jobs:
               counts = step.get("counts", {})
               require(step.get("status") == "PASS" and step.get("exit_code") == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 41
-                      and type(counts.get("passed")) is int and counts["passed"] == 41
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 44
+                      and type(counts.get("passed")) is int and counts["passed"] == 44
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -266,7 +266,7 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
               expected = {f"{module}.WindowsLifecycleTests.{method}" for method in methods}
-              require(len(observed) == 41 and set(observed) == expected,
+              require(len(observed) == 44 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -275,7 +275,7 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 41, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 44, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
@@ -423,7 +423,7 @@ jobs:
           all_methods = [item.name for item in ast.walk(tree)
                          if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                          and item.name.startswith("test_")]
-          require(len(methods) == len(set(methods)) == len(all_methods) == 41
+          require(len(methods) == len(set(methods)) == len(all_methods) == 44
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
@@ -447,8 +447,8 @@ jobs:
               counts = step.get("counts", {})
               require(step.get("status") == "PASS" and step.get("exit_code") == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 41
-                      and type(counts.get("passed")) is int and counts["passed"] == 41
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 44
+                      and type(counts.get("passed")) is int and counts["passed"] == 44
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -460,7 +460,7 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
               expected = {f"{module}.WindowsLifecycleTests.{method}" for method in methods}
-              require(len(observed) == 41 and set(observed) == expected,
+              require(len(observed) == 44 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -469,7 +469,7 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 41, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 44, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
@@ -731,9 +731,9 @@ jobs:
           dynamic_loaders = [node for node in ast.walk(source_tree)
                              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and node.name == "load_tests"]
-          if (len(source_methods) != 18 or len(methods) != 18
-                  or len(all_methods) != 18 or dynamic_loaders):
-              raise SystemExit("The reviewed Windows contract requires exactly 18 unique static source methods")
+          if (len(source_methods) != 34 or len(methods) != 34
+                  or len(all_methods) != 34 or dynamic_loaders):
+              raise SystemExit("The reviewed Windows contract requires exactly 34 unique static source methods")
           expected_entries = ["discovery:test_windows_cold_start.py", "dotted:tooling.tests.test_windows_cold_start"]
           if (receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
                   or receipt.get("require_complete") is not True
@@ -754,11 +754,11 @@ jobs:
               counts = step.get("counts", {})
               if (step.get("status") != "PASS" or type(step.get("exit_code")) is not int or step["exit_code"] != 0
                       or counts.get("terminal_status") != "OK"
-                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 18
-                      or type(counts.get("passed")) is not int or counts["passed"] != 18
+                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 34
+                      or type(counts.get("passed")) is not int or counts["passed"] != 34
                       or any(type(counts.get(key)) is not int or counts[key] != 0 for key in
                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                  raise SystemExit("Windows unit entry point did not complete 18 controls without omissions")
+                  raise SystemExit("Windows unit entry point did not complete 34 controls without omissions")
               for stream in ("stdout", "stderr"):
                   path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
                   if step.get(stream) != {"file": path.name, "sha256": digest(path)}:
@@ -768,8 +768,8 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
               module = "test_windows_cold_start" if index == 0 else "tooling.tests.test_windows_cold_start"
               expected = {f"{module}.{class_name}.{method}" for method in methods}
-              if len(observed) != 18 or set(observed) != expected:
-                  raise SystemExit("Original verbose output does not contain each of the 18 source controls exactly once")
+              if len(observed) != 34 or set(observed) != expected:
+                  raise SystemExit("Original verbose output does not contain each of the 34 source controls exactly once")
               method_inventory[step["entry_point"]] = sorted(observed)
           source_inputs = {name: digest(root / name) for name in (
               test_path, "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
@@ -779,14 +779,14 @@ jobs:
                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                     "receipt_sha256": digest(report), "github": receipt["github"],
                     "source_inputs_sha256": source_inputs, "entrypoint_methods": method_inventory,
-                    "unique_source_controls": 18, "entrypoints": 2, "skipped": 0,
+                    "unique_source_controls": 34, "entrypoints": 2, "skipped": 0,
                     "scope": "Synthetic G1: temporary SQLite/receipt fixtures and mocked native transport",
                     "installed_application_execution": False, "native_ui_execution": False,
                     "formal_acceptance": False, "release_verdict": False}
           with report.with_name("contract-readback.json").open("x", encoding="utf-8", newline="\n") as handle:
               json.dump(result, handle, indent=2, sort_keys=True)
               handle.write("\n")
-          print("windows-unit-contracts=PASS unique=18 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
+          print("windows-unit-contracts=PASS unique=34 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
           '@
           $readbackPath = Join-Path "$proofDir" 'verify-contract-readback.py'
           [System.IO.File]::WriteAllText($readbackPath, $readback, [System.Text.UTF8Encoding]::new($false))
@@ -1973,7 +1973,7 @@ jobs:
           from release_manifest import write_new_manifest
           from windows_cold_start import (
               known_databases, native_windows_launch_environment,
-              run_installed_relaunch, write_sanitized_failure_record,
+              run_installed_relaunch, select_first_use_contract, write_sanitized_failure_record,
           )
           from windows_installer_lifecycle import (
               bound_file, bound_json, capture_snapshot, custody_error, file_identity,
@@ -2037,6 +2037,10 @@ jobs:
               "run": RUN, "refs": refs}
           admission_ref = publish("admission.json", admission)
           verified = validate_inputs(EVIDENCE, admission, SOURCE, RUN)
+          project_contract = select_first_use_contract(
+              verified["previous_source"],
+              verified["previous_payloads"]["motionwright-desktop.exe"]["sha256"],
+          )
           require(verified["source_before"] == before_source, "lifecycle_compiler_source_changed")
           publish("admitted-inputs-and-pe.json", verified)
 
@@ -2123,7 +2127,8 @@ jobs:
               executable_before = file_identity(executable)
               baseline = capture_snapshot(EVIDENCE, snapshot_name=phase + "-before",
                   operation=oid, position="before", install_root=install_root,
-                  database=database, registry_keys=verified["registry_keys"])
+                  database=database, registry_keys=verified["registry_keys"],
+                  first_use_contract=project_contract)
               if phase == "install":
                   initial = bound_json(EVIDENCE, baseline)
                   require(not initial["installed"]
@@ -2190,7 +2195,8 @@ jobs:
                   require(original["exit_code"] is not None, "installer_terminal_not_quiescent")
                   reference = capture_snapshot(EVIDENCE, snapshot_name=phase + "-after",
                       operation=oid, position="after", install_root=install_root,
-                      database=database, registry_keys=verified["registry_keys"])
+                      database=database, registry_keys=verified["registry_keys"],
+                      first_use_contract=project_contract)
                   # Exit zero is only the original process result. Before another effect,
                   # require the same observable invariants the final consumer rechecks.
                   prior = bound_json(EVIDENCE, baseline)
@@ -2277,7 +2283,8 @@ jobs:
               try:
                   run_installed_relaunch(
                       executable=installed, smoke_receipt=bound_file(EVIDENCE, smoke_ref),
-                      expected_sha=old_source, scratch=app_scratch, output=project_output)
+                      expected_sha=old_source, scratch=app_scratch, output=project_output,
+                      first_use_contract=project_contract)
               except Exception as error:
                   try:
                       write_sanitized_failure_record(

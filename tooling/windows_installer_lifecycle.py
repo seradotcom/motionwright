@@ -25,7 +25,9 @@ from nsis_owned_files import (
 )
 from package_receipt import verified_artifact
 from release_manifest import ManifestError, _checkout, _strict_object, write_new_manifest
-from windows_cold_start import read_project_snapshot
+from windows_cold_start import (
+    CURRENT_FIRST_USE_CONTRACT, read_project_snapshot, select_first_use_contract,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -478,7 +480,8 @@ def optional_regular_stamp(path: Path):
 
 def capture_snapshot(root: Path, *, snapshot_name: str, operation: str, position: str,
                      install_root: Path, database: Path, registry_keys: list[str],
-                     registry_reader=registry_snapshot) -> dict:
+                     registry_reader=registry_snapshot,
+                     first_use_contract: str = CURRENT_FIRST_USE_CONTRACT) -> dict:
     """Capture a quiescent fixture; never follows a reparse or modifies its store."""
     operation_id(operation)
     require(position in {"before", "after"}, "snapshot_position")
@@ -528,7 +531,9 @@ def capture_snapshot(root: Path, *, snapshot_name: str, operation: str, position
                 _capture(bound_file(root, ref), inspection / name)
         # SQLite may update its reader locks in these disposable inspection
         # copies. The original DB/WAL/SHM captures above remain untouched.
-        project = read_project_snapshot(inspection / database.name)
+        project = read_project_snapshot(
+            inspection / database.name, first_use_contract=first_use_contract,
+        )
     else:
         require(all(value is None for value in family.values()), "orphan_sqlite_sidecar")
     require(registry_reader(registry_keys) == before_registry, "registry_changed_during_capture")
@@ -778,6 +783,10 @@ def validate_lifecycle(root: Path, record: dict, inputs: dict, admission_digest:
             and project_origin.get("source_sha") == inputs["previous_source"]
             and project_origin.get("installed_binary_sha256")
                 == inputs["previous_payloads"]["motionwright-desktop.exe"]["sha256"]
+            and project_origin.get("first_use_contract") == select_first_use_contract(
+                inputs["previous_source"],
+                inputs["previous_payloads"]["motionwright-desktop.exe"]["sha256"],
+            )
             and project_origin.get("first_launch_real_visible_hwnd") is True
             and project_origin.get("second_launch_real_visible_hwnd") is True
             and project_origin.get("separate_process_lifetimes") is True

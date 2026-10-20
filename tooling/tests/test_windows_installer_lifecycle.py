@@ -179,6 +179,7 @@ class Fixture:
                 "before": self.js("snapshot-before", before), "after": self.js("snapshot-after", after)})
         origin = {"schema": "motionwright-windows-nsis-cold-relaunch/1",
             "source_sha": self.old_source, "installed_binary_sha256": self.old_main["sha256"],
+            "first_use_contract": lifecycle.CURRENT_FIRST_USE_CONTRACT,
             "first_launch_real_visible_hwnd": True, "second_launch_real_visible_hwnd": True,
             "separate_process_lifetimes": True, "same_project_generation_revision_document": True,
             "project": self.project, "human_install_acceptance": "NOT_RUN"}
@@ -564,6 +565,7 @@ class WindowsLifecycleTests(unittest.TestCase):
         connection = sqlite3.connect(db_path)
         try:
             connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA user_version=2")
             connection.execute("CREATE TABLE projects(id TEXT,generation TEXT,revision INTEGER,title TEXT,document_json TEXT)")
             project = {"id": str(uuid.uuid4()), "generation": str(uuid.uuid4()),
                        "revision": 0, "title": "motionwright ci first use"}
@@ -631,6 +633,98 @@ class WindowsLifecycleTests(unittest.TestCase):
                 database=profile / "motionwright.sqlite3",
                 registry_keys=self.fx.context["registry_keys"], registry_reader=reader)
         self.assertFalse((self.root / "changed-registry/snapshot.json").exists())
+
+
+    def test_project_origin_requires_the_source_selected_first_use_contract(self):
+        original = lifecycle.bound_json(self.root, self.fx.record["project_origin"])
+        self.assertEqual(original["first_use_contract"], lifecycle.CURRENT_FIRST_USE_CONTRACT)
+        for replacement in (None, True, "automatic-project-679cc48b/1", "arbitrary"):
+            changed = copy.deepcopy(original)
+            if replacement is None:
+                changed.pop("first_use_contract")
+            else:
+                changed["first_use_contract"] = replacement
+            self.fx.record["project_origin"] = self.fx.js("wrong-first-use-contract", changed)
+            with self.subTest(replacement=replacement), self.assertRaisesRegex(
+                lifecycle.LifecycleError, "project_origin_not_bound",
+            ):
+                self.fx.verify()
+
+    def test_real_legacy_sqlite_family_survives_every_lifecycle_snapshot_and_reopen(self):
+        from windows_cold_start import LEGACY_FIRST_USE_CONTRACT, LEGACY_FIRST_USE_TITLE
+        parent = Path(self.temp.name)
+        installed = parent / "legacy-install"
+        installed.mkdir()
+        (installed / "motionwright-desktop.exe").write_bytes(b"synthetic installed fixture")
+        profile = parent / "legacy-profile"
+        profile.mkdir()
+        database = profile / "motionwright.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA user_version=2")
+            connection.execute("CREATE TABLE projects(id TEXT,generation TEXT,revision INTEGER,title TEXT,document_json TEXT)")
+            document = {"id": str(uuid.uuid4()), "generation": str(uuid.uuid4()),
+                        "revision": 0, "title": LEGACY_FIRST_USE_TITLE}
+            encoded = json.dumps(document)
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?)",
+                (document["id"], document["generation"], 0, document["title"], encoded))
+            connection.commit()
+            original = {path.name: path.read_bytes() for path in profile.iterdir()}
+            projects = []
+            for index, phase in enumerate(("upgrade", "uninstall")):
+                for position in ("before", "after"):
+                    ref = lifecycle.capture_snapshot(
+                        self.root, snapshot_name="legacy-" + phase + "-" + position,
+                        operation=str(uuid.uuid4()), position=position, install_root=installed,
+                        database=database, registry_keys=self.fx.context["registry_keys"],
+                        registry_reader=lambda _: self.fx.registry("0.1.0"),
+                        first_use_contract=LEGACY_FIRST_USE_CONTRACT,
+                    )
+                    captured = lifecycle.bound_json(self.root, ref)
+                    projects.append(captured["project"])
+                    self.assertEqual({path.name: path.read_bytes() for path in profile.iterdir()}, original)
+                    for name, retained in captured["sqlite_family"].items():
+                        self.assertEqual(lifecycle.bound_file(self.root, retained).read_bytes(), original[name])
+            self.assertTrue(all(item == projects[0] for item in projects))
+            self.assertEqual(projects[0]["project_id"], document["id"])
+            self.assertEqual(projects[0]["generation"], document["generation"])
+            self.assertEqual(projects[0]["document_sha256"], hashlib.sha256(encoded.encode()).hexdigest())
+        finally:
+            connection.close()
+        self.assertEqual(lifecycle.read_project_snapshot(
+            database, first_use_contract=LEGACY_FIRST_USE_CONTRACT,
+        ), projects[0])
+
+    def test_lifecycle_snapshot_does_not_infer_legacy_contract_from_existing_title(self):
+        from windows_cold_start import ColdStartError, LEGACY_FIRST_USE_TITLE
+        parent = Path(self.temp.name)
+        installed = parent / "title-only-install"
+        installed.mkdir()
+        profile = parent / "title-only-profile"
+        profile.mkdir()
+        database = profile / "motionwright.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("PRAGMA user_version=2")
+            connection.execute("CREATE TABLE projects(id TEXT,generation TEXT,revision INTEGER,title TEXT,document_json TEXT)")
+            project = {"id": str(uuid.uuid4()), "generation": str(uuid.uuid4()),
+                       "revision": 0, "title": LEGACY_FIRST_USE_TITLE}
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?)",
+                (project["id"], project["generation"], 0, project["title"], json.dumps(project)))
+            connection.commit()
+        finally:
+            connection.close()
+        original = database.read_bytes()
+        with self.assertRaisesRegex(ColdStartError, "initialized"):
+            lifecycle.capture_snapshot(
+                self.root, snapshot_name="wrong-contract",
+                operation=str(uuid.uuid4()), position="before", install_root=installed,
+                database=database, registry_keys=self.fx.context["registry_keys"],
+                registry_reader=lambda _: self.fx.registry("0.1.0"),
+            )
+        self.assertEqual(database.read_bytes(), original)
+        self.assertFalse((self.root / "wrong-contract/snapshot.json").exists())
 
 
 if __name__ == "__main__":
