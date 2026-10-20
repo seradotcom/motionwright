@@ -320,47 +320,61 @@ impl Store {
 
     /// Publish only the unchanged validated capture; never overwrite a blob.
     pub fn publish_file_import(&self, staged: &StagedFileImport) -> Result<BlobDescriptor> {
-        if staged.blob_root != self.blob_root {
-            return Err(StorageError::UnsafeSourcePath(
-                "staged import belongs to another blob root".into(),
-            ));
+        publish_file_import_under_root(&self.blob_root, staged)
+    }
+}
+
+/// Publish an already validated capture without borrowing the SQLite handle.
+/// Callers may hold an SQLite IMMEDIATE transaction that serializes project ID
+/// claims while this filesystem-only step runs.
+pub(super) fn publish_file_import_under_root(
+    blob_root: &Path,
+    staged: &StagedFileImport,
+) -> Result<BlobDescriptor> {
+    if staged.blob_root.as_path() != blob_root {
+        return Err(StorageError::UnsafeSourcePath(
+            "staged import belongs to another blob root".into(),
+        ));
+    }
+    ensure_regular_directory(blob_root, "blob root")?;
+    let staging_root = blob_root.join(".staging");
+    ensure_regular_directory(&staging_root, "blob staging directory")?;
+    if staged.path.parent() != Some(staging_root.as_path()) {
+        return Err(StorageError::UnsafeSourcePath(
+            "staged import is outside the blob staging directory".into(),
+        ));
+    }
+    let captured =
+        super::portability::hash_portable_file(&staged.path, staged.descriptor.size_bytes)?;
+    if captured != staged.descriptor {
+        return Err(StorageError::InvalidBlobDigest);
+    }
+    super::validate_digest(&captured.sha256)?;
+    let destination = blob_root
+        .join("sha256")
+        .join(&captured.sha256[..2])
+        .join(&captured.sha256);
+    let sha_root = blob_root.join("sha256");
+    create_checked_blob_directory(&sha_root)?;
+    create_checked_blob_directory(&sha_root.join(&captured.sha256[..2]))?;
+    let verify_existing = match fs::symlink_metadata(&destination) {
+        Ok(_) => true,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            match fs::hard_link(&staged.path, &destination) {
+                Ok(()) => false,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => true,
+                Err(error) => return Err(error.into()),
+            }
         }
-        ensure_regular_directory(&self.blob_root, "blob root")?;
-        let staging_root = self.blob_root.join(".staging");
-        ensure_regular_directory(&staging_root, "blob staging directory")?;
-        if staged.path.parent() != Some(staging_root.as_path()) {
-            return Err(StorageError::UnsafeSourcePath(
-                "staged import is outside the blob staging directory".into(),
-            ));
-        }
-        let captured =
-            super::portability::hash_portable_file(&staged.path, staged.descriptor.size_bytes)?;
-        if captured != staged.descriptor {
+        Err(error) => return Err(error.into()),
+    };
+    if verify_existing {
+        let existing = super::checked_existing_blob_path_from_root(blob_root, &captured.sha256)?;
+        if super::portability::hash_portable_file(&existing, captured.size_bytes)? != captured {
             return Err(StorageError::InvalidBlobDigest);
         }
-        let destination = self.blob_path(&captured.sha256)?;
-        let sha_root = self.blob_root.join("sha256");
-        create_checked_blob_directory(&sha_root)?;
-        create_checked_blob_directory(&sha_root.join(&captured.sha256[..2]))?;
-        let verify_existing = match fs::symlink_metadata(&destination) {
-            Ok(_) => true,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                match fs::hard_link(&staged.path, &destination) {
-                    Ok(()) => false,
-                    Err(error) if error.kind() == ErrorKind::AlreadyExists => true,
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            Err(error) => return Err(error.into()),
-        };
-        if verify_existing {
-            let existing = self.checked_existing_blob_path(&captured.sha256)?;
-            if super::portability::hash_portable_file(&existing, captured.size_bytes)? != captured {
-                return Err(StorageError::InvalidBlobDigest);
-            }
-        }
-        Ok(captured)
     }
+    Ok(captured)
 }
 
 #[cfg(test)]

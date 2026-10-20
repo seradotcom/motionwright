@@ -900,6 +900,18 @@ impl Store {
     }
 
     pub fn import_project(&mut self, backup: &ProjectBackup) -> Result<Project> {
+        self.import_project_with_publication(backup, |_| Ok(()))
+    }
+
+    // Hold SQLite's IMMEDIATE writer lock from the destination-ID check
+    // through CAS publication and project/journal commit. Another SQLite
+    // writer cannot claim the imported ID in the interval after inspection.
+    // This is not a filesystem/SQLite crash-atomic transaction.
+    fn import_project_with_publication(
+        &mut self,
+        backup: &ProjectBackup,
+        publish_captured_blobs: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<Project> {
         self.inspect_import(backup)?;
         let mut project = backup.project.clone();
         project.generation = Uuid::now_v7();
@@ -921,6 +933,10 @@ impl Store {
         if exists {
             return Err(StorageError::ProjectExists);
         }
+        // This closure only publishes already captured/validated CAS members.
+        // It runs while the same transaction prevents a competing project-ID
+        // insertion; any publication error rolls SQLite back.
+        publish_captured_blobs(&self.blob_root)?;
 
         tx.execute(
             "INSERT INTO projects(id,generation,revision,title,document_json,updated_at)
