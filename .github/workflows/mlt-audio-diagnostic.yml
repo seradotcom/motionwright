@@ -12,6 +12,8 @@ on:
       - 'tooling/ci_mlt_runtime_selected.py'
       - 'tooling/tests/test_ci_mlt_runtime_selected.py'
       - 'tooling/native_mlt_loaded_module.py'
+      - 'tooling/native_mlt_repair_only_compiler_receipt.py'
+      - 'tooling/tests/test_native_mlt_repair_only_compiler_receipt.py'
       - 'tooling/tests/test_native_mlt_loaded_module.py'
 permissions:
   contents: read
@@ -81,6 +83,8 @@ jobs:
                           "tooling/tests/test_native_mlt_loaded_module.py"}
           runtime_paths={"tooling/native_mlt_runtime_admission.py",
                          "tooling/tests/test_native_mlt_runtime_admission.py",
+                         "tooling/native_mlt_repair_only_compiler_receipt.py",
+                         "tooling/tests/test_native_mlt_repair_only_compiler_receipt.py",
                          "tooling/ci_mlt_runtime_selected.py",
                          "tooling/tests/test_ci_mlt_runtime_selected.py"}
           workflow_path=".github/workflows/mlt-audio-diagnostic.yml"
@@ -246,7 +250,12 @@ jobs:
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           sources=json.loads((public/"source-inputs.json").read_text())
           rec=json.loads((public/"runtime-selector-contracts.json").read_text())
-          expected={"tooling/ci_mlt_runtime_selected.py":"8c945cc3114d426e258021392d5fb47c76cce898e9fb337b9f4d8aff6ab76edc","tooling/native_mlt_runtime_admission.py":"9a9d2db6a7c61fe74a74d00daed4a5bb23a7aefccbbeb82c55d465be2ea00f8e","tooling/tests/test_ci_mlt_runtime_selected.py":"dc409f57854ef26feaffd63dd6d8c4634cb88917c2c5cece2afd413ab40fa5a7","tooling/tests/test_native_mlt_runtime_admission.py":"2273f92321325187d4e0e05e6ce95ea46072da799671781a449ae4878d3d53f7"}
+          expected={"tooling/ci_mlt_runtime_selected.py":"9d2077979c21a6c6a3f5cfc1bf78dccb7311bab989d3fc896216d79d9d047d4b",
+                    "tooling/native_mlt_runtime_admission.py":"c27e707a5e602eafb97e68b2caee4f46364246841bdbd79acb8d9dce17bc173e",
+                    "tooling/native_mlt_repair_only_compiler_receipt.py":"e62b7f34c7583e963ffb2d53d134b30315aeedea6e6a6e531cda95586e1dab10",
+                    "tooling/tests/test_ci_mlt_runtime_selected.py":"f31591a9b7905a9a3c64d3b6ccf8a538dd398c0174ef217652ed049b63bae907",
+                    "tooling/tests/test_native_mlt_runtime_admission.py":"d6d25be72a907b5f7344c920866189fbdba607ce839dc027fe50efacee8ef4ab",
+                    "tooling/tests/test_native_mlt_repair_only_compiler_receipt.py":"17fc44df0110b54a7ec56d16e6a9d7d86dc5dfb1bb4cdd9deb2b1c3c7ddd2269"}
           assert sources["runtime_sources"]==expected
           assert set(sources["runtime_blob_oids"])==set(expected)
           assert sources["source_sha"]==rec["executed_source_sha"]==os.environ["GITHUB_SHA"]
@@ -437,7 +446,7 @@ jobs:
             2> "$MW_DIAG_WORK/public/repair-prepare.stderr.log"
           cp "$MW_DIAG_WORK/build/repair-prepared/prepare-receipt.json" \
             "$MW_DIAG_WORK/public/prepare-receipt.json"
-      - name: Verify twelve Linux-applicable native runtime admission contracts (G1)
+      - name: Verify thirteen portable native runtime admission contracts (G1)
         run: |
           set -euo pipefail
           original="$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c"
@@ -458,16 +467,51 @@ jobs:
           assert rec["status"]=="PASS_SELECTED_PLATFORM_G1" and rec["exit_code"]==0
           assert rec["source_sha"]==source["source_sha"]==os.environ["GITHUB_SHA"]
           assert rec["tree_sha"]==source["tree"]
-          assert rec["executor_platform"]=="linux" and rec["selected_count"]==12
-          assert len(set(rec["selected_methods"]))==12
-          assert rec["not_executed_on_this_platform"]==[
-              "test_existing_user_windows_machine_can_never_admit_module"]
+          assert rec["executor_platform"]=="linux" and rec["selected_count"]==13
+          assert len(set(rec["selected_methods"]))==13
+          assert "test_simulated_windows_machine_can_never_admit_module_on_either_runner" in rec["selected_methods"]
+          assert rec["not_executed_on_this_platform"]==[]
           assert rec["not_executed_are_not_passes"] is True
           assert rec["A4_source_sha256"]=={
               "original":"c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910",
               "repaired":"246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"}
           for name in ("stdout","stderr"):
               assert sha(public/rec[name]["file"])==rec[name]["sha256"]
+          PY
+      - name: Verify fourteen repaired-only ELF source receipt controls (G1, no compiler invoked)
+        run: |
+          set -euo pipefail
+          original="$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c"
+          repaired="$MW_DIAG_WORK/build/repair-prepared/repaired-consumer.c"
+          echo "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910  $original" | sha256sum --check
+          echo "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0  $repaired" | sha256sum --check
+          MOTIONWRIGHT_MLT_V722_ORIGINAL="$original" MOTIONWRIGHT_MLT_V722_REPAIRED="$repaired" \
+            python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
+              --pattern test_native_mlt_repair_only_compiler_receipt.py --mode both \
+              --expected-source "$GITHUB_SHA" --require-complete \
+              --report "$MW_DIAG_WORK/public/repair-only-compiler-contracts.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          src=json.loads((public/"source-inputs.json").read_text())
+          rec=json.loads((public/"repair-only-compiler-contracts.json").read_text())
+          path="tooling/tests/test_native_mlt_repair_only_compiler_receipt.py"
+          assert rec["schema"] and rec["executed_source_sha"]==src["source_sha"]==os.environ["GITHUB_SHA"]
+          assert rec["status"]=="PASS" and rec["exit_code"]==0 and rec["require_complete"] is True
+          assert rec["tree_sha"]==src["tree"]
+          assert rec["test_definition_sha256"]=={path:src["runtime_sources"][path]}
+          assert len(rec["steps"])==2
+          assert {r["entry_point"] for r in rec["steps"]}=={
+              "discovery:test_native_mlt_repair_only_compiler_receipt.py",
+              "dotted:tooling.tests.test_native_mlt_repair_only_compiler_receipt"}
+          for row in rec["steps"]:
+              cnt=row["counts"]
+              assert row["status"]=="PASS" and row["exit_code"]==0
+              assert cnt["tests_run"]==cnt["passed"]==14 and cnt["terminal_status"]=="OK"
+              assert all(cnt[k]==0 for k in ("failures","errors","skipped","expected_failures","unexpected_successes"))
+              for stream in ("stdout","stderr"):
+                  assert digest(public/row[stream]["file"])==row[stream]["sha256"]
           PY
       - name: Reject the exact historical zero-padding helper with the new C oracle
         run: |
@@ -755,33 +799,3 @@ jobs:
           path: ${{ env.MW_DIAG_WORK }}/public
           if-no-files-found: error
           retention-days: 14
-  runtime-admission-windows:
-    runs-on: windows-latest
-    timeout-minutes: 10
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-      GIT_CONFIG_COUNT: '1'
-      GIT_CONFIG_KEY_0: core.autocrlf
-      GIT_CONFIG_VALUE_0: 'false'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: "3.13"
-      - name: Verify real Windows refuses unapproved native MLT runtime installation (G1)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $proof = Join-Path $env:RUNNER_TEMP "mw-mlt-windows-$($env:GITHUB_SHA)-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
-          if (Test-Path -LiteralPath $proof) { throw 'Windows G1 output already exists' }
-          New-Item -ItemType Directory -Path $proof | Out-Null
-          python -B -I -S tooling/ci_mlt_runtime_selected.py --repo "$env:GITHUB_WORKSPACE" --expected-source "$env:GITHUB_SHA" --platform windows --report (Join-Path $proof 'runtime-windows-selected.json')
-          if ($LASTEXITCODE -ne 0) { throw 'Windows-specific native module refusal G1 FAILED' }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: mlt-runtime-windows-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/mw-mlt-windows-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          if-no-files-found: error

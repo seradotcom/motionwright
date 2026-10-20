@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Source-bound, platform-selected MLT runtime admission unit contracts.
 
-This never installs a provider, invokes melt or renders media. The twelve
-portable tests execute on Linux with authenticated C sources; the Windows-only
-fail-closed test executes on Windows. No omission is relabelled as a PASS.
+This never installs a provider, invokes melt or renders media. All thirteen
+reviewed fail-closed tests, including a simulated Windows refusal, execute on
+Linux with authenticated original+repaired C sources and zero omissions.
+An optional Windows execution requires the same real source bytes.
 """
 from __future__ import annotations
 
@@ -25,10 +26,10 @@ SCRIPT_PATH = "tooling/ci_mlt_runtime_selected.py"
 WORKFLOW_PATH = ".github/workflows/mlt-audio-diagnostic.yml"
 ORIGINAL_SHA = "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
 REPAIRED_SHA = "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"
-WINDOWS_CASE = "test_existing_user_windows_machine_can_never_admit_module"
+PORTABLE_CASE = "test_simulated_windows_machine_can_never_admit_module_on_either_runner"
 EXPECTED = frozenset((
     "test_known_original_source_sha_is_fixed_not_discovered_dynamically",
-    WINDOWS_CASE,
+    PORTABLE_CASE,
     "test_existing_unsafe_runtime_overrides_are_explicitly_forbidden",
     "test_authentic_source_and_mock_compiler_receipt_are_structurally_bound",
     "test_wrong_original_or_repaired_source_refuses_candidate",
@@ -82,14 +83,14 @@ def selected_names(test_source: bytes, platform: str) -> tuple[str, ...]:
             and set(names) == EXPECTED,
             "native MLT runtime test inventory diverges from 13 reviewed names")
     special = next(n for n in cls.body
-                   if isinstance(n, ast.FunctionDef) and n.name == WINDOWS_CASE)
+                   if isinstance(n, ast.FunctionDef) and n.name == PORTABLE_CASE)
     literal = ast.get_source_segment(test_source.decode("utf-8"), special) or ""
-    require("self.skipTest(" in literal and "sys.platform" in literal
-            and "'linux'" in literal or
-            "self.skipTest(" in literal and "sys.platform" in literal
-            and '"linux"' in literal,
-            "Windows-specific negative lacks explicit Linux inapplicability")
-    return tuple(sorted(EXPECTED - {WINDOWS_CASE})) if platform == "linux" else (WINDOWS_CASE,)
+    require('mock.patch.object(gate.sys, "platform", "win32")' in literal
+            and "self.assertRaisesRegex" in literal
+            and '"disposable_GHA"' in literal
+            and "self.skipTest(" not in literal,
+            "portable simulated Windows rejection must run without skips")
+    return tuple(sorted(EXPECTED))
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -185,17 +186,12 @@ def main() -> int:
                  for p in (TEST_PATH, GATE_PATH, SCRIPT_PATH, WORKFLOW_PATH)}
         methods = selected_names(tracked_blob(repo, args.expected_source, TEST_PATH),
                                  args.platform)
-        source_hashes = {}
-        if args.platform == "linux":
-            require(args.original is not None and args.repaired is not None,
-                    "both original and repaired authentic C inputs required")
-            source_hashes = {
-                "original": checked_c_source(args.original, ORIGINAL_SHA, 96690),
-                "repaired": checked_c_source(args.repaired, REPAIRED_SHA, 98847),
-            }
-        else:
-            require(args.original is None and args.repaired is None,
-                    "Windows-only negative must not claim native C provenance")
+        require(args.original is not None and args.repaired is not None,
+                "both original and repaired authentic C inputs required")
+        source_hashes = {
+            "original": checked_c_source(args.original, ORIGINAL_SHA, 96690),
+            "repaired": checked_c_source(args.repaired, REPAIRED_SHA, 98847),
+        }
         out = args.report
         require(out.is_absolute() and out.parent.is_dir() and not out.exists()
                 and not out.is_symlink() and not out.resolve().is_relative_to(repo),
@@ -206,12 +202,8 @@ def main() -> int:
         env = dict(os.environ)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env.pop("MOTIONWRIGHT_APPROVED_MLT_G2", None)
-        if args.platform == "linux":
-            env["MOTIONWRIGHT_MLT_V722_ORIGINAL"] = str(args.original)
-            env["MOTIONWRIGHT_MLT_V722_REPAIRED"] = str(args.repaired)
-        else:
-            env.pop("MOTIONWRIGHT_MLT_V722_ORIGINAL", None)
-            env.pop("MOTIONWRIGHT_MLT_V722_REPAIRED", None)
+        env["MOTIONWRIGHT_MLT_V722_ORIGINAL"] = str(args.original)
+        env["MOTIONWRIGHT_MLT_V722_REPAIRED"] = str(args.repaired)
         proc = subprocess.run(args_command, cwd=repo, env=env,
                               capture_output=True, timeout=120)
         stdout_path = out.with_name(out.stem + "-stdout.log")

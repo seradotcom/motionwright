@@ -24,17 +24,18 @@ class MltPlatformSelectionTests(unittest.TestCase):
 
     def test_thirteen_original_method_names_are_explicitly_reviewed(self):
         self.assertEqual(len(selected.EXPECTED), 13)
-        self.assertIn(selected.WINDOWS_CASE, selected.EXPECTED)
+        self.assertIn(selected.PORTABLE_CASE, selected.EXPECTED)
 
-    def test_linux_admits_exactly_twelve_explicit_nonwindows_cases(self):
+    def test_linux_runs_all_thirteen_including_simulated_windows_refusal(self):
         methods = selected.selected_names(self.source, "linux")
-        self.assertEqual(len(methods), 12)
-        self.assertEqual(set(methods), selected.EXPECTED - {selected.WINDOWS_CASE})
-        self.assertNotIn(selected.WINDOWS_CASE, methods)
+        self.assertEqual(len(methods), 13)
+        self.assertEqual(set(methods), selected.EXPECTED)
+        self.assertIn(selected.PORTABLE_CASE, methods)
 
-    def test_windows_admits_exact_one_os_negative_case(self):
-        self.assertEqual(selected.selected_names(self.source, "windows"),
-                         (selected.WINDOWS_CASE,))
+    def test_windows_can_select_all_thirteen_with_authentic_sources(self):
+        methods = selected.selected_names(self.source, "windows")
+        self.assertEqual(len(methods), 13)
+        self.assertEqual(set(methods), selected.EXPECTED)
 
     def test_unreviewed_platform_refused(self):
         with self.assertRaisesRegex(selected.ContractError, "unsupported platform"):
@@ -75,19 +76,19 @@ class MltPlatformSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(selected.ContractError, "unittest.TestCase"):
             selected.selected_names(source, "windows")
 
-    def test_removing_explicit_linux_skip_guard_refused(self):
+    def test_weakened_portable_windows_simulation_is_rejected(self):
         source = self.replace(self.source,
-                              b'if sys.platform == "linux":',
-                              b'if sys.platform == "darwin":')
-        with self.assertRaisesRegex(selected.ContractError, "inapplicability"):
-            selected.selected_names(source, "windows")
+                              b'with mock.patch.object(gate.sys, "platform", "win32"):',
+                              b'with mock.patch.object(gate.sys, "platform", "linux"):')
+        with self.assertRaisesRegex(selected.ContractError, "portable simulated Windows"):
+            selected.selected_names(source, "linux")
 
     def test_non_utf8_source_refused(self):
         with self.assertRaisesRegex(selected.ContractError, "unparseable"):
             selected.selected_names(self.source + b"\xff", "windows")
 
     def test_verbose_run_requires_exact_methods_and_terminal_ok(self):
-        methods = selected.selected_names(self.source, "windows")
+        methods = (selected.PORTABLE_CASE,)
         only = methods[0]
         payload = (f"{only} (tooling.tests.test_native_mlt_runtime_admission."
                    f"NativeModuleAdmissionTests.{only}) ... ok\n"
