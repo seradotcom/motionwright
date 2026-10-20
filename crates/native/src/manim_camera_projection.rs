@@ -122,9 +122,9 @@ pub fn build_manim_camera_plan_v1(
             "Manim camera contributes no voice or caption timing",
         ));
     }
-    // A2 owns admission of exact V2/ManimCommunity, retaining legacy V1.
-    // Until the shared domain validates the saved pair, this call fails
-    // closed; do not sanitize the Project or bypass its validator.
+    // The shared domain validates the exact renderer/version pair and retains
+    // the legacy profile. Preserve its validator and reject unsupported source;
+    // never sanitize the Project to manufacture admission.
     project.validate().map_err(|_| {
         reject("Canonical Manim V2 camera source is not yet admitted by the Project domain")
     })?;
