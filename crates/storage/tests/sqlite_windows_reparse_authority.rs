@@ -11,8 +11,7 @@ const REPARSE_POINT: u32 = 0x0400;
 
 fn synthetic_runner_root() -> PathBuf {
     let root = PathBuf::from(
-        env::var_os("MW_SQLITE_NTFS_FIXTURE_ROOT")
-            .expect("requires MW_SQLITE_NTFS_FIXTURE_ROOT"),
+        env::var_os("MW_SQLITE_NTFS_FIXTURE_ROOT").expect("requires MW_SQLITE_NTFS_FIXTURE_ROOT"),
     );
     let runner_temp =
         PathBuf::from(env::var_os("RUNNER_TEMP").expect("requires a disposable runner"));
