@@ -39,8 +39,99 @@ Windows requires fresh runner-provisioned NTFS fixtures for each source executio
 
 Tests move these entries, verify reparse/directory attributes and canonical targets, then perform real registry operations. Missing fixtures fail explicitly when the tests are invoked. Their ignore annotation excludes external fixture requirements from ordinary local runs; the dedicated execution must include them and report zero ignored. Provisioning evidence must establish the actual NTFS junction type: a reparse attribute alone does not identify that subtype.
 
+## Ordinary directory replacement
+
+The registry retains its initial directory identity across clones and compares
+it with the directory currently occupying its canonical path before every read,
+write or clear. Unix retains an open handle. Windows stores volume/file index
+and creation time when available, closing the inspection handle immediately. A different ordinary directory at the same pathname is rejected
+before environment fallback, staging or deletion. Opening or comparing the
+identity must succeed; an error never re-anchors an existing registry object.
+Reopening deliberately constructs a new registry against the current app-data
+root and preserves the existing startup checks.
+
+The ordinary_directory_identity regression module uses six real substitutions:
+read, write and clear after replacing either the final directory or its ancestor.
+Both physical directories contain valid synthetic references for the same
+project and generation, but different selected paths. Each fixture retains the
+old tree, moves the other ordinary tree into its pathname, proves that the
+canonical pathname is unchanged, and checks both trees' complete entry/byte
+snapshots after the attempted operation. Only a clone of the original registry
+survives the substitution. No symlink privilege or Broker session is required.
+
+A seventh control replaces an existing record with different bytes, reopens it,
+adds another project and clears the first. The original registry and clone must
+continue to resolve the second project without altering its bytes. This ensures
+that legitimate directory-content changes do not invalidate the retained identity.
+
+same-file 1.0.6 and winapi-util 0.1.11 are already resolved in the repository
+lockfile. The desktop adds explicit dependency edges only, with winapi-util
+selected on Windows. Package versions and checksums are unchanged.
+
+Unix retains device/inode identity with an open handle. A Windows directory
+handle held across operations prevents renaming its ancestor on NTFS even when
+the handle shares deletion. Windows therefore captures volume/file index and
+creation time through a temporary handle, closes it, and compares fresh
+observations before each operation. Size, last access and last write time are
+not identity fields, so normal record changes remain valid.
+
+The Windows snapshot is not an anti-reuse guarantee: an identifier may be
+reused after deletion, and creation timestamps are not immutable authority.
+Microsoft also documents that the 64-bit file identifier is not universally
+unique on ReFS; network filesystems have their own limitations. Evidence must
+name the filesystem actually exercised. These checks do not establish
+confinement against a concurrent replacement after validation.
+
+Primary implementation references:
+- [same-file 1.0.6 Handle](https://docs.rs/same-file/1.0.6/same_file/struct.Handle.html)
+- [winapi-util file information](https://docs.rs/winapi-util/0.1.11/winapi_util/file/fn.information.html)
+- [Microsoft file identity limits](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information)
+
+| Requirement contribution | Executable boundary | Remaining scope |
+| --- | --- | --- |
+| CR-PROJECT-01 / CR-PROJECT-03 (partial) | Reject changed physical registry roots before persistence operations. | Project SQLite durability, backup/restore and document CAS require their own evidence. |
+| CR-DELIVER-02 | Preserve the explicit runtime reference against a changed registry directory. | Installed runtime compatibility and absence of hidden downloads remain separate. |
+| CR-SEC-07 | Reject replacement of the store holding project/generation-scoped references. | This does not authenticate actors, sessions or Broker grants. |
+| ACC-043 | Real filesystem read/write/clear regressions and preserved unrelated bytes. | Synthetic references are not installed native production or human acceptance. |
+
+The regression-only source d714b3299b08b2b1e0ed6190a1fdfd686d512b34
+preserves the previous product code. [Run 39512671373](https://github.com/seradotcom/motionwright/actions/runs/39512671373)
+compiled and executed the actual platform suites with these results:
+
+| Platform | Job | Passed | Failed | Ignored |
+| --- | --- | ---: | ---: | ---: |
+| Windows 2025 | 118938011729 | 18 | 6 | 0 |
+| Ubuntu 24.04 | 118938011765 | 21 | 6 | 0 |
+| macOS 15 | 118938011786 | 21 | 6 | 0 |
+
+On every platform, all six ordinary root/ancestor substitution cases failed at
+the product-behavior assertions and the original/clone/reopen control passed.
+Reads accepted the replacement; writes and clears changed its preserved byte
+snapshot. Original output, source identity and named outcomes are retained in
+private custody. The complete test section is unchanged by the correction.
+
+These are results for the regression-only source. Corrected-source admission
+must cite its own exact SHA and original platform output; the table does not
+claim a successful execution of the correction.
+
+
+### Windows ancestor compatibility regression
+
+The first identity implementation, e06c75507b90b32d3df84b852d6facafa12406fd,
+passed all 27 Linux and 27 macOS cases in
+[run 39516616747](https://github.com/seradotcom/motionwright/actions/runs/39516616747).
+Windows passed 18 and failed six, with zero ignored. All six failures occurred
+while preserving an original ancestor: the retained child-directory handle
+caused Win32 access-denied error 5. This affected three existing junction cases
+and three new ordinary-directory cases before their product assertions.
+
+That result is a failed Windows candidate, not successful confinement evidence.
+The successor changes the Windows identity capture while retaining the complete
+test section. A successful successor must perform those ancestor renames and
+reach the unchanged read/write/clear assertions on its own exact source.
+
 ## Requirement scope and limits
 
 This change supplies registry-path integrity evidence for the v0.1 installed runtime and security requirements: safe connection selection, explicit recovery errors and preservation of unrelated data. It does not alone close installed-owner acceptance, first launch, platform packaging or the complete authorization criteria.
 
-These are pre-operation path checks, not atomic directory-handle confinement. They do not prevent a concurrent substitution after validation, identify a replacement ordinary directory at the same pathname, establish a full Unix ownership/ancestor policy, or authenticate a Broker principal. Unix checks reject any group/other permission bits rather than requiring an exact owner mode of 0700 during every operation. Current connection contents and native resource lifetimes continue to use their existing validation and close paths. Platform acceptance must cite the exact source SHA, actual fixtures and executed cases; omitted or ignored cases are not a platform pass.
+These are pre-operation path checks, not atomic directory-handle confinement. They do not prevent a concurrent substitution after validation, establish a full Unix ownership/ancestor policy, guarantee universal filesystem identity, or authenticate a Broker principal. Unix checks reject any group/other permission bits rather than requiring an exact owner mode of 0700 during every operation. Current connection contents and native resource lifetimes continue to use their existing validation and close paths. Platform acceptance must cite the exact source SHA, actual fixtures and executed cases; omitted or ignored cases are not a platform pass.
