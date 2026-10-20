@@ -4,11 +4,13 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
@@ -84,6 +86,67 @@ class CurrencyImpactTests(unittest.TestCase):
         self.snapshot.modes["product.py"] = "120000"  # A Git symlink cannot be a trusted product source.
         self.snapshot.cache.clear()
         self.assertIsNone(self.snapshot.digest("product.py"))
+
+
+    def test_source_identity_ignores_local_commit_replacements(self):
+        (self.root / "product.py").write_text("source_value = 2\n", encoding="utf-8")
+        self.run_git("add", "product.py")
+        self.run_git("commit", "-q", "-m", "replacement candidate")
+        second = self.run_git("rev-parse", "HEAD")
+        self.run_git("replace", self.first, second)
+        snapshot = impact.GitSnapshot(self.root, self.first)
+        self.assertEqual(snapshot.source, self.first)
+        self.assertEqual(snapshot.digest("product.py"), self.ref)
+        self.assertEqual(impact.record_currency(self.record, self.first, self.lock,
+                                               snapshot)["current_source_relation"],
+                         "current_execution_candidate")
+
+    def test_source_identity_ignores_replacement_added_after_snapshot(self):
+        original = self.run_git("rev-parse", self.first + ":product.py")
+        replacement = self.run_git("hash-object", "-w", "oracle.py")
+        snapshot = impact.GitSnapshot(self.root, self.first)
+        self.run_git("replace", original, replacement)
+        self.assertEqual(snapshot.digest("product.py"), self.ref)
+
+    def test_source_identity_ignores_inherited_repository_overrides(self):
+        other = self.root / "other-repository"
+        other.mkdir()
+        subprocess.run(["git", "-C", str(other), "init", "-q"], check=True)
+        with mock.patch.dict(os.environ, {
+            "GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other),
+            "GIT_INDEX_FILE": str(other / "index"),
+            "GIT_OBJECT_DIRECTORY": str(other / ".git" / "objects"),
+        }):
+            self.assertEqual(impact.commit_sha(self.root, "HEAD"), self.first)
+            self.assertEqual(impact.GitSnapshot(self.root, self.first)
+                             .digest("product.py"), self.ref)
+
+    def test_source_identity_ignores_inherited_config_and_replace_namespace(self):
+        (self.root / "product.py").write_text("source_value = 2\n", encoding="utf-8")
+        self.run_git("add", "product.py")
+        self.run_git("commit", "-q", "-m", "alternate replacement candidate")
+        second = self.run_git("rev-parse", "HEAD")
+        self.run_git("update-ref", "refs/alternate/" + self.first, second)
+        with mock.patch.dict(os.environ, {
+            "GIT_REPLACE_REF_BASE": "refs/alternate/",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.bare",
+            "GIT_CONFIG_VALUE_0": "true",
+        }):
+            self.assertEqual(impact.GitSnapshot(self.root, self.first)
+                             .digest("product.py"), self.ref)
+
+    def test_source_identity_rejects_nested_nonroot_repository(self):
+        nested = self.root / "nested"
+        nested.mkdir()
+        with self.assertRaises(ValueError):
+            impact.GitSnapshot(nested, self.first)
+
+    def test_source_identity_snapshot_requires_exact_commit(self):
+        for spec in (self.first[:7], "HEAD~0", "main", self.first.upper()):
+            with self.subTest(spec=spec), self.assertRaises(ValueError):
+                impact.GitSnapshot(self.root, spec)
+
 
     def test_malformed_source_path_is_rejected(self):
         for pointer in ("../private", "/etc/passwd", "C:/private/file", "foo\\bar",
