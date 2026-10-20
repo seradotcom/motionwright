@@ -94,6 +94,13 @@ def original_source_and_receipts() -> tuple[dict, dict, dict]:
             },
         },
     }
+    # The canonical seed updates the first default profile and retains the others.
+    for number, (width, height) in enumerate(((1080, 1920), (1080, 1080)), start=21):
+        other = copy.deepcopy(source["deliverables"][0])
+        other.update(id=f"00000000-0000-4000-8000-{number:012x}",
+                     width=width, height=height, captions=False,
+                     burn_in_captions=False, voice_track_id=None)
+        source["deliverables"].append(other)
     return source, receipt, master
 
 
@@ -141,9 +148,71 @@ class Film180ReadbackContracts(unittest.TestCase):
     def test_source_custody_requires_original_native_receipt_and_media_hash(self):
         src, film, master = original_source_and_receipts()
         out = verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+        self.assertEqual(len(src["deliverables"]), 3)
+        self.assertEqual(out["deliverable_id"], src["deliverables"][0]["id"])
         self.assertEqual(len(out["scene_ids"]), 2)
         self.assertEqual(len(out["node_ids"]), 4)
         self.assertEqual(out["revision"], 11)
+
+    def test_deliverable_inventory_must_be_nonempty_objects(self):
+        for invalid in (None, {}, [], [None], ["profile"]):
+            with self.subTest(invalid=invalid):
+                src, film, master = original_source_and_receipts()
+                src["deliverables"] = invalid
+                with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "deliverable_inventory"):
+                    verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+
+    def test_deliverable_ids_must_be_valid_uuid_strings(self):
+        for invalid in (None, True, {}, "invalid", "00000000-0000-4000-8000-00000000000A"):
+            with self.subTest(invalid=invalid):
+                src, film, master = original_source_and_receipts()
+                src["deliverables"][1]["id"] = invalid
+                with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "deliverable_ids"):
+                    verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+
+    def test_duplicate_selected_deliverable_is_rejected(self):
+        src, film, master = original_source_and_receipts()
+        src["deliverables"][1]["id"] = src["deliverables"][0]["id"]
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "deliverable_ids"):
+            verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+
+    def test_duplicate_unselected_deliverable_is_rejected(self):
+        src, film, master = original_source_and_receipts()
+        src["deliverables"][2]["id"] = src["deliverables"][1]["id"]
+        with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "deliverable_ids"):
+            verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+
+    def test_receipts_cannot_select_another_retained_deliverable(self):
+        for changed in ("motion", "master", "both"):
+            with self.subTest(changed=changed):
+                src, film, master = original_source_and_receipts()
+                other = src["deliverables"][1]["id"]
+                if changed in ("motion", "both"):
+                    film["deliverable_id"] = other
+                if changed in ("master", "both"):
+                    master["deliverable_id"] = other
+                with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "deliverable_identity"):
+                    verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+
+    def test_reader_does_not_search_past_changed_first_profile(self):
+        src, film, master = original_source_and_receipts()
+        src["deliverables"][0], src["deliverables"][1] = (
+            src["deliverables"][1], src["deliverables"][0])
+        with self.assertRaises(verifier.OriginalMediaMismatch):
+            verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
+
+    def test_multiple_deliverables_do_not_relax_original_scene_graph(self):
+        for shape in ([], [3], [3, 1, 1], [2, 1], [3, 0], [4, 1]):
+            with self.subTest(shape=shape):
+                src, film, master = original_source_and_receipts()
+                templates = copy.deepcopy(src["scenes"])
+                src["scenes"] = []
+                for i, count in enumerate(shape):
+                    scene = copy.deepcopy(templates[min(i, 1)])
+                    scene["nodes"] = [{"id": UUIDS[6]} for _ in range(count)]
+                    src["scenes"].append(scene)
+                with self.assertRaisesRegex(verifier.OriginalMediaMismatch, "scene_graph_changed"):
+                    verifier.source_identity(src, film, master, "ab" * 32, "cd" * 32)
 
     def test_saved_rational_scene_boundary_not_silently_retimed(self):
         src, film, master = original_source_and_receipts()

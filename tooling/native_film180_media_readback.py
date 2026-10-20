@@ -99,8 +99,15 @@ def source_identity(source: dict, motion: dict, master: dict, wave_sha: str,
                 "media_receipt_does_not_bind_saved_project_revision")
     profiles = source.get("deliverables")
     scenes = source.get("scenes")
-    require(type(profiles) is list and len(profiles) == 1
-            and type(scenes) is list and len(scenes) == 2
+    require(type(profiles) is list and len(profiles) >= 1
+            and all(type(profile) is dict for profile in profiles),
+            "original_source_deliverable_inventory_invalid")
+    profile_ids = [profile.get("id") for profile in profiles]
+    require(all(type(profile_id) is str and UUID.fullmatch(profile_id) is not None
+                for profile_id in profile_ids)
+            and len(set(profile_ids)) == len(profile_ids),
+            "original_source_deliverable_ids_invalid_or_duplicated")
+    require(type(scenes) is list and len(scenes) == 2
             and [len(scene.get("nodes", [])) for scene in scenes] == [3, 1],
             "180frame_original_source_scene_graph_changed")
     profile = profiles[0]
