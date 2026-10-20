@@ -2183,6 +2183,7 @@ dependencies = [
  "motionwright-manim-profile",
  "motionwright-service",
  "motionwright-storage",
+ "rusqlite",
  "semwright-effect-conformance",
  "semwright-media-time",
  "semwright-motion-authoring",

@@ -81,7 +81,7 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 2;
+pub const STORAGE_SCHEMA_VERSION: u32 = 3;
 pub const PROJECT_BACKUP_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
@@ -417,6 +417,128 @@ fn load_project_from_row(conn: &Connection, id: Uuid) -> Result<Project> {
     .into_project()
 }
 
+// Receipt UUIDs and wall-clock timestamps identify observations, not commit order.
+// Preserve the original table so extension foreign keys and triggers keep their
+// targets. SQLite allocates the ordinal in the same transaction as the receipt.
+const PRODUCTION_RECEIPT_ORDER_SCHEMA: [(&str, &str, &str); 3] = [
+    (
+        "production_receipt_order",
+        "table",
+        "CREATE TABLE production_receipt_order(
+           sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+           receipt_id TEXT NOT NULL UNIQUE,
+           project_id TEXT NOT NULL,
+           FOREIGN KEY(receipt_id) REFERENCES production_receipts(receipt_id)
+             ON UPDATE CASCADE ON DELETE CASCADE,
+           FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+         )",
+    ),
+    (
+        "production_receipt_order_by_project",
+        "index",
+        "CREATE INDEX production_receipt_order_by_project
+           ON production_receipt_order(project_id, sequence DESC)",
+    ),
+    (
+        "production_receipt_order_append",
+        "trigger",
+        "CREATE TRIGGER production_receipt_order_append
+         AFTER INSERT ON production_receipts
+         BEGIN
+           INSERT INTO production_receipt_order(receipt_id,project_id)
+             VALUES(NEW.receipt_id,NEW.project_id);
+         END",
+    ),
+];
+
+fn normalized_schema_sql(sql: &str) -> String {
+    sql.trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn validate_production_receipt_order_layout(conn: &Connection, version: u32) -> Result<()> {
+    for (name, expected_kind, expected_sql) in PRODUCTION_RECEIPT_ORDER_SCHEMA {
+        // Triggers have a different SQLite name namespace from tables and
+        // indexes. Inspect cardinality across every object kind, not one row.
+        let existing = {
+            let mut statement = conn.prepare(
+                "SELECT type,sql FROM sqlite_master WHERE name=?1 COLLATE NOCASE LIMIT 2",
+            )?;
+            statement
+                .query_map([name], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        match existing.as_slice() {
+            [] if version < 3 => {}
+            [(kind, Some(sql))]
+                if version >= 3
+                    && kind.as_str() == expected_kind
+                    && normalized_schema_sql(sql) == normalized_schema_sql(expected_sql) => {}
+            _ => {
+                return Err(StorageError::InvalidBackup(
+                    "receipt commit-order schema is missing, incompatible or reserved by an extension"
+                        .into(),
+                ));
+            }
+        }
+    }
+    if version >= 3 {
+        validate_production_receipt_order_integrity(conn, None)?;
+    }
+    Ok(())
+}
+
+fn validate_production_receipt_order_integrity(
+    conn: &Connection,
+    project_id: Option<Uuid>,
+) -> Result<()> {
+    // An INNER JOIN alone would hide an unmapped pending mutation. Never repair
+    // an absent mapping after migration by assigning that old receipt a new head.
+    let invalid: bool = conn.query_row(
+        "SELECT
+           EXISTS(SELECT 1 FROM production_receipts AS r
+                  LEFT JOIN production_receipt_order AS o ON o.receipt_id=r.receipt_id
+                  WHERE (?1 IS NULL OR r.project_id=?1)
+                    AND (o.receipt_id IS NULL OR o.project_id IS NOT r.project_id
+                         OR o.sequence<=0))
+           OR EXISTS(SELECT 1 FROM production_receipt_order AS o
+                     LEFT JOIN production_receipts AS r ON r.receipt_id=o.receipt_id
+                     WHERE (?1 IS NULL OR o.project_id=?1)
+                       AND (r.receipt_id IS NULL OR o.project_id IS NOT r.project_id
+                            OR o.sequence<=0))",
+        [project_id.map(|id| id.to_string())],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(StorageError::InvalidBackup(
+            "receipt commit-order mapping is incomplete or inconsistent".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn migrate_production_receipt_order(conn: &Connection, version: u32) -> Result<()> {
+    if version < 3 {
+        // Called only under the schema IMMEDIATE transaction. The retained rowid
+        // order is the migration boundary, not a reconstructed historical clock.
+        conn.execute_batch(PRODUCTION_RECEIPT_ORDER_SCHEMA[0].2)?;
+        conn.execute(
+            "INSERT INTO production_receipt_order(receipt_id,project_id)
+             SELECT receipt_id,project_id FROM production_receipts ORDER BY rowid",
+            [],
+        )?;
+        for (_, _, sql) in &PRODUCTION_RECEIPT_ORDER_SCHEMA[1..] {
+            conn.execute_batch(sql)?;
+        }
+    }
+    validate_production_receipt_order_layout(conn, 3)
+}
+
 /// A version number alone cannot establish that an existing SQLite file
 /// is a Motionwright project database. Reject unknown and incomplete layouts
 /// before running the WAL-mode or schema-creation pragmas. This recognizes
@@ -512,7 +634,7 @@ fn validate_existing_project_store_layout(conn: &Connection, version: u32) -> Re
             ));
         }
     }
-    Ok(())
+    validate_production_receipt_order_layout(conn, version)
 }
 
 /// A SQLite schema is not proof that the caller owns the path to it.
@@ -627,15 +749,19 @@ impl Store {
         let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
         let mut conn = Connection::open_with_flags(&sqlite_path, flags)?;
         conn.busy_timeout(Duration::from_secs(5))?;
+        // Keep the pre-WAL source check on one read snapshot: a concurrent
+        // migration must not pair an old version with newly committed objects.
+        let admission = conn.unchecked_transaction()?;
         let observed_schema: u32 =
-            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            admission.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if observed_schema > STORAGE_SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchemaVersion {
                 found: observed_schema,
                 supported: STORAGE_SCHEMA_VERSION,
             });
         }
-        validate_existing_project_store_layout(&conn, observed_schema)?;
+        validate_existing_project_store_layout(&admission, observed_schema)?;
+        admission.commit()?;
         // Connection pragmas must execute outside a transaction. All
         // schema DDL and its authoritative user_version stamp are committed
         // together under one SQLite IMMEDIATE writer lock.
@@ -756,6 +882,7 @@ impl Store {
               ON production_receipts(project_id, request_id, receipt_id DESC);
             "#,
         )?;
+        migrate_production_receipt_order(&schema_tx, locked_schema)?;
         if locked_schema < STORAGE_SCHEMA_VERSION {
             schema_tx.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }
