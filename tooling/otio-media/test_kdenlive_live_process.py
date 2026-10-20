@@ -17,7 +17,7 @@ from unittest import mock
 from kdenlive_live_process import (
     NativeKdenliveProcessRejected, check_commandline,
     compare_distinct_native_sessions, inspect_live_native_kdenlive,
-    process_starttime, read_exact_file,
+    parse_native_kdenlive_version, process_starttime, read_exact_file,
 )
 
 
@@ -141,6 +141,7 @@ class KdenliveNativeProcessControls(unittest.TestCase):
             "pid": pid,
             "kernel_starttime_ticks": start,
             "actual_executable_sha256": "ab" * 32,
+            "original_Kdenlive_application_version": "25.4.3",
             "source_original_OTIO_sha256": "cd" * 32,
             "saved_native_project_sha256": "ef" * 32,
             "process_arguments": {
@@ -179,6 +180,39 @@ class KdenliveNativeProcessControls(unittest.TestCase):
             NativeKdenliveProcessRejected, "source"
         ):
             compare_distinct_native_sessions(original, reopened)
+
+    def test_Kdenlive_native_OTIO_export_fix_minimum_version(self):
+        accepted = [
+            (b"kdenlive 25.04.3\n", "25.4.3"),
+            (b"Kdenlive version 25.08.1\n", "25.8.1"),
+            (b"kdenlive v26.04.0\n", "26.4.0"),
+        ]
+        for raw, expected in accepted:
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_native_kdenlive_version(raw), expected)
+        for raw in [b"kdenlive 25.04.0\n", b"kdenlive 25.04.2\n",
+                    b"kdenlive 24.12.9\n"]:
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(
+                    NativeKdenliveProcessRejected, "predates_track_order_fix"
+                ):
+                    parse_native_kdenlive_version(raw)
+
+    def test_native_OTIO_export_version_must_be_identifiable(self):
+        for raw in [b"", b"Qt 6.8.3", b"unknown-program 25.04.3",
+                    b"kdenlive testing unstable", b"\xff\xfe"]:
+            with self.subTest(raw=raw):
+                with self.assertRaises(NativeKdenliveProcessRejected):
+                    parse_native_kdenlive_version(raw)
+
+    def test_a_different_Kdenlive_version_between_sessions_cannot_approve_reopen(self):
+        first = self.stage_receipt(phase="import", pid=12, start=1234)
+        later = self.stage_receipt(phase="reopen", pid=23, start=1300)
+        later["original_Kdenlive_application_version"] = "26.4.0"
+        with self.assertRaisesRegex(
+            NativeKdenliveProcessRejected, "original_executable_or_source"
+        ):
+            compare_distinct_native_sessions(first, later)
 
     def test_physical_G2_never_runs_on_windows_or_without_approval(self):
         with mock.patch.object(sys, "platform", "win32"), mock.patch.dict(

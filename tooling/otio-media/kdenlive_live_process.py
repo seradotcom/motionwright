@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 
 HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -64,6 +65,54 @@ def read_exact_file(path: Path, expected_sha256: str, budget: int) -> dict:
         "bytes": before.st_size,
         "inode": before.st_ino,
     }
+
+
+def parse_native_kdenlive_version(raw: bytes) -> str:
+    """Kdenlive 25.04.3 fixed OTIO export track ordering.
+
+    This native G2 exact-order profile requires 25.04.3 or a later release.
+    Version text alone never proves the actual app process or UI export.
+    """
+    require(0 < len(raw) <= 2048,
+            "native_Kdenlive_version_stdout_missing_or_unbounded")
+    try:
+        text = raw.decode("ascii").strip()
+    except UnicodeError as error:
+        raise NativeKdenliveProcessRejected(
+            "native_Kdenlive_version_stdout_not_ASCII"
+        ) from error
+    match = re.search(
+        r"\bkdenlive\s+(?:version\s+)?v?(\d{2})\.(\d{1,2})\.(\d+)(?![0-9])",
+        text, re.IGNORECASE,
+    )
+    require(match is not None,
+            "native_Kdenlive_original_application_version_unidentified")
+    numbers = tuple(map(int, match.groups()))
+    require(numbers >= (25, 4, 3),
+            "native_Kdenlive_OTIO_export_version_predates_track_order_fix")
+    return ".".join(str(x) for x in numbers)
+
+
+def inspect_actual_kdenlive_version(executable: Path) -> str:
+    """Separate read-only --version invocation of the same SHA-bound binary."""
+    require(executable.is_absolute() and executable.is_file()
+            and executable.name in APP_NAMES,
+            "native_Kdenlive_version_command_not_original_binary")
+    try:
+        result = subprocess.run(
+            [str(executable), "--version"],
+            capture_output=True, timeout=15,
+            stdin=subprocess.DEVNULL, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise NativeKdenliveProcessRejected(
+            "native_Kdenlive_original_application_version_not_observable"
+        ) from error
+    require(result.returncode == 0
+            and len(result.stdout) <= 2048
+            and len(result.stderr) <= 4096,
+            "native_Kdenlive_version_command_failed_or_unbounded")
+    return parse_native_kdenlive_version(result.stdout)
 
 
 def process_starttime(raw: bytes, expected_pid: int) -> int:
@@ -142,6 +191,7 @@ def inspect_live_native_kdenlive(
             and expected_binary.name in APP_NAMES,
             "native_Kdenlive_live_pid_or_executable_not_admitted")
     binary = read_exact_file(expected_binary, expected_binary_sha256, MAX_EXE_BYTES)
+    version = inspect_actual_kdenlive_version(expected_binary)
     source = read_exact_file(original_otio, original_otio_sha256, MAX_OTIO_BYTES)
     require(saved_native.suffix.lower() == ".kdenlive",
             "native_Kdenlive_saved_file_extension_not_admitted")
@@ -175,6 +225,8 @@ def inspect_live_native_kdenlive(
         "pid": pid,
         "kernel_starttime_ticks": first_start,
         "actual_executable_sha256": binary["sha256"],
+        "original_Kdenlive_application_version": version,
+        "native_OTIO_export_order_fix_version_admitted": True,
         "source_original_OTIO_sha256": source["sha256"],
         "source_original_OTIO_bytes": source["bytes"],
         "saved_native_project_sha256": native["sha256"],
@@ -199,6 +251,8 @@ def compare_distinct_native_sessions(first: dict, reopened: dict) -> dict:
             and reopened.get("live_application_binary_and_pid_verified") is True
             and first.get("actual_executable_sha256") ==
             reopened.get("actual_executable_sha256")
+            and first.get("original_Kdenlive_application_version") ==
+            reopened.get("original_Kdenlive_application_version")
             and first.get("source_original_OTIO_sha256") ==
             reopened.get("source_original_OTIO_sha256")
             and type(first.get("pid")) is int
@@ -217,6 +271,7 @@ def compare_distinct_native_sessions(first: dict, reopened: dict) -> dict:
         "schema": "motionwright.native.kdenlive-distinct-process-reopen/1",
         "original_OTIO_sha256": first["source_original_OTIO_sha256"],
         "native_executable_sha256": first["actual_executable_sha256"],
+        "native_Kdenlive_version": first["original_Kdenlive_application_version"],
         "initial_native_project_sha256": first["saved_native_project_sha256"],
         "reopened_native_project_sha256": reopened["saved_native_project_sha256"],
         "two_distinct_live_native_process_snapshots": True,
