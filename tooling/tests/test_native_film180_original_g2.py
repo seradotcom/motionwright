@@ -15,11 +15,19 @@ import native_film180_original_g2 as runner
 
 
 class Film180G2SourceTests(unittest.TestCase):
-    def test_never_automatically_authorizes_native_effects_on_windows(self):
-        if sys.platform == "linux":
-            self.skipTest("Linux GHA requires a separate permission-negative run")
-        with self.assertRaisesRegex(runner.Film180G2Rejected, "approved_Linux_GHA"):
-            runner.checked_plan()
+    def test_simulated_windows_native_effect_denial_also_runs_on_linux_ci(self):
+        # Do not skip this negative when executed in selected Linux CI:
+        # test the Windows platform denial with a harmless patched platform.
+        with mock.patch.object(runner.sys, "platform", "win32"):
+            with self.assertRaisesRegex(runner.Film180G2Rejected, "approved_Linux_GHA"):
+                runner.checked_plan()
+
+    def test_absent_owner_G2_authorization_fails_closed_on_every_host(self):
+        with mock.patch.dict(
+            os.environ, {"MOTIONWRIGHT_APPROVED_FILM180_G2": "0"},
+        ):
+            with self.assertRaisesRegex(runner.Film180G2Rejected, "approved_Linux_GHA"):
+                runner.checked_plan()
 
     def test_closed_native_tool_and_provider_protocol_without_alternate_runtime(self):
         with mock.patch.object(runner, "pin_version", return_value="1.0.0"):
