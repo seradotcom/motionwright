@@ -79,3 +79,77 @@ describe("saved source Canvas is the Timeline Program editorial representation",
     expect(p.project.revision).toEqual(fixtureProject.revision);
   });
 });
+
+describe("Program design never presents an excluded source scene as part of the selected output", () => {
+  it("distinguishes a missing selected profile from an admitted export cut", async () => {
+    const { programSceneCutScope } = await import("./ProgramDesignStudy");
+    const p = source();
+    expect(programSceneCutScope(p.scene, null)).toBe("unselected");
+    expect(render(p, null)).toContain('data-output-cut-scope="unselected"');
+    expect(render(p, null)).not.toContain("SCENE EXCLUDED FROM SELECTED OUTPUT CUT");
+  });
+
+  it("uses Film's contract that an empty included_scene_ids list means the full sequence", async () => {
+    const { programSceneCutScope } = await import("./ProgramDesignStudy");
+    const p = source();
+    const profile = structuredClone(p.project.deliverables[0]);
+    profile.included_scene_ids = [];
+    expect(programSceneCutScope(p.scene, profile)).toBe("full");
+    const html = render(p, profile);
+    expect(html).toContain('data-output-cut-scope="full"');
+    expect(html).not.toContain("SCENE EXCLUDED FROM SELECTED OUTPUT CUT");
+  });
+
+  it("shows a saved scene included in a partial cut without suppressing the original creative content", async () => {
+    const { programSceneCutScope } = await import("./ProgramDesignStudy");
+    const p = source();
+    const profile = structuredClone(p.project.deliverables[0]);
+    profile.included_scene_ids = [p.scene.id];
+    expect(programSceneCutScope(p.scene, profile)).toBe("included");
+    const html = render(p, profile);
+    expect(html).toContain('data-output-cut-scope="included"');
+    expect(html).toContain(p.text.text!);
+    expect(html).not.toContain("SCENE EXCLUDED FROM SELECTED OUTPUT CUT");
+  });
+
+  it("clearly warns about a real output cut excluding the selected editable scene", async () => {
+    const { programSceneCutScope } = await import("./ProgramDesignStudy");
+    const p = source();
+    const profile = structuredClone(p.project.deliverables[0]);
+    profile.included_scene_ids = ["018f0000-0000-7000-8000-0000000002a1"];
+    expect(programSceneCutScope(p.scene, profile)).toBe("excluded");
+    const html = render(p, profile);
+    expect(html).toContain('data-output-cut-scope="excluded"');
+    expect(html).toContain("SCENE EXCLUDED FROM SELECTED OUTPUT CUT");
+    expect(html).toContain("This editable source scene will not be exported in this profile");
+    expect(html).toContain('role="status"');
+    expect(html).toContain('data-canvas-node-id="' + p.text.id + '"');
+  });
+
+  it("profile switching changes the source-only disclosure without mutating Project revision or source text", async () => {
+    const p = source(), original = structuredClone(p.project);
+    const excluded = structuredClone(p.project.deliverables[0]);
+    excluded.included_scene_ids = ["018f0000-0000-7000-8000-0000000002a1"];
+    const included = {...excluded, included_scene_ids: [p.scene.id]};
+    const red = render(p, excluded), green = render(p, included), full = render(p);
+    expect(red).toContain('data-output-cut-scope="excluded"');
+    expect(green).toContain('data-output-cut-scope="included"');
+    expect(full).toContain('data-output-cut-scope="full"');
+    expect(p.project).toEqual(original);
+  });
+});
+
+describe("excluded-scene source text remains authentic despite leftover localized profile fields", () => {
+  it("renders the original saved node text, not a stale override for a scene omitted from the selected cut", () => {
+    const p = source();
+    p.text.text = "Original author copy outside the deliverable";
+    const profile = structuredClone(p.project.deliverables[0]);
+    profile.included_scene_ids = ["018f0000-0000-7000-8000-0000000002a1"];
+    profile.text_overrides[p.text.id] = "Localized words that must not appear";
+    const html = render(p, profile);
+    expect(html).toContain('data-output-cut-scope="excluded"');
+    expect(html).toContain("Original author copy outside the deliverable");
+    expect(html).not.toContain("Localized words that must not appear");
+    expect(html).toContain('data-text-origin="source"');
+  });
+});
