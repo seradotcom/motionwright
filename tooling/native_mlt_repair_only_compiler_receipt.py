@@ -19,8 +19,8 @@ import shlex
 import sys
 
 ORIGINAL_SHA = "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-REPAIRED_SHA = "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"
-COMBINED_DIAGNOSTIC_SHA = "579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+REPAIRED_SHA = "fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121"
+COMBINED_DIAGNOSTIC_SHA = "9d4794bcc825f5c7bd717f630dc3dbaa3c675278a3bad9610bf97ef6c42b04fa"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 HEAD = re.compile(r"[0-9a-f]{40}\Z")
 MAX_SOURCE = 256 * 1024
@@ -199,7 +199,7 @@ def build_receipt(original: Path, repaired: Path, compiled_source: Path,
     oracle_bytes = checked(oracle_file, MAX_JSON)
     require(len(before) == 96690 and sha(before) == ORIGINAL_SHA,
             "original_Ubuntu_MLT_consumer_not_source_locked")
-    require(len(candidate) == 98847 and sha(candidate) == REPAIRED_SHA
+    require(len(candidate) == 99266 and sha(candidate) == REPAIRED_SHA
             and actual_built_source == candidate
             and sha(actual_built_source) != COMBINED_DIAGNOSTIC_SHA,
             "built_consumer_not_the_uninstrumented_repaired_only_source")

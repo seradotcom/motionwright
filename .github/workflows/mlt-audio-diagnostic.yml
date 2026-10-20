@@ -95,7 +95,8 @@ jobs:
           folder="tooling/mlt-audio-diagnostic"
           names={"audio_tap.h","instrument_consumer.py","verify_trace.py",
                  "test_verify_trace.py","test_audio_tap.c","README.md",
-                 "repair_planar_source.py","test_repair_planar_source.py","test_planar_padding.c"}
+                 "repair_planar_source.py","test_repair_planar_source.py","test_planar_padding.c",
+                 "test_encoder_last_frame.c"}
           verify_paths={"tooling/mlt_repair_verification.py",
                         "tooling/tests/test_mlt_repair_verification.py"}
           source_paths={folder+"/"+name for name in names}|verify_paths
@@ -167,7 +168,7 @@ jobs:
               require(workflow.count(marker)==1,"MLT G1 step missing or ambiguous")
               return workflow.split(marker,1)[1].split("\n      - name:",1)[0]
           inventories=(
-              ("tooling/tests/test_mlt_repair_verification.py",26,
+              ("tooling/tests/test_mlt_repair_verification.py",32,
                "Verify source composition and identity contracts",
                ((r'suite\.countTestCases\(\)!=(\d+)',"step"),
                 (r'result\.testsRun==(\d+) and result\.wasSuccessful\(\)',"step"),
@@ -179,7 +180,7 @@ jobs:
                 (r'result\.testsRun!=(\d+)',"step"),
                 (r'Ran (\d+) tests in ',"step"),
                 (r'"original_observer":(\d+)',"workflow"))),
-              ("tooling/mlt-audio-diagnostic/test_repair_planar_source.py",13,
+              ("tooling/mlt-audio-diagnostic/test_repair_planar_source.py",15,
                "Verify the pinned planar repair source",
                ((r'suite\.countTestCases\(\)!=(\d+)',"step"),
                 (r'result\.testsRun==(\d+) and result\.wasSuccessful\(\)',"step"),
@@ -310,11 +311,11 @@ jobs:
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           sources=json.loads((public/"source-inputs.json").read_text())
           rec=json.loads((public/"runtime-selector-contracts.json").read_text())
-          expected={"tooling/ci_mlt_runtime_selected.py":"8792a494b032e418d2be5d04a9817d40c8deb4e4b6e65450695c2d78e9e2bbe4",
-                    "tooling/native_mlt_runtime_admission.py":"c5ae5194bf47758fd3dd63037cf652c9f952ab2f6f30a073d7a54fa38f1e37ec",
-                    "tooling/native_mlt_repair_only_compiler_receipt.py":"03827c4451f52f51befc88f10a11f5b348803a4039d3ab49933af29032a2a577",
+          expected={"tooling/ci_mlt_runtime_selected.py":"027cbdeff135d9464e192d590a4765d63a9ab7bf6e219960a8fcdeaa98895eef",
+                    "tooling/native_mlt_runtime_admission.py":"18dd17b4724739c8d08a858880b78d3dbeadc68e745b933e12ce936fd14f3a9b",
+                    "tooling/native_mlt_repair_only_compiler_receipt.py":"91a832b9f8d7b96ff1837fbcead9c838fea72059d90497f645276cfc42a8e8fd",
                     "tooling/tests/test_ci_mlt_runtime_selected.py":"f31591a9b7905a9a3c64d3b6ccf8a538dd398c0174ef217652ed049b63bae907",
-                    "tooling/tests/test_native_mlt_runtime_admission.py":"d6d25be72a907b5f7344c920866189fbdba607ce839dc027fe50efacee8ef4ab",
+                    "tooling/tests/test_native_mlt_runtime_admission.py":"35404f3abdca504467374229a20ec2e09da894c60f9670d33405a639d77bda77",
                     "tooling/tests/test_native_mlt_repair_only_compiler_receipt.py":"34d10de92e010329995e52b86381c30d6696f6c61cbc56e5f4de42948421a1bb"}
           assert sources["runtime_sources"]==expected
           assert set(sources["runtime_blob_oids"])==set(expected)
@@ -357,9 +358,9 @@ jobs:
           sys.modules[spec.name]=tests
           spec.loader.exec_module(tests)
           suite=unittest.defaultTestLoader.loadTestsFromModule(tests)
-          if suite.countTestCases()!=26: raise SystemExit("expected exactly 26 composition contracts")
+          if suite.countTestCases()!=32: raise SystemExit("expected exactly 32 composition contracts")
           result=unittest.TextTestRunner(verbosity=2).run(suite)
-          complete=(result.testsRun==26 and result.wasSuccessful() and not result.skipped
+          complete=(result.testsRun==32 and result.wasSuccessful() and not result.skipped
                     and not result.expectedFailures and not result.unexpectedSuccesses)
           report={"tests_run":result.testsRun,"failures":len(result.failures),"errors":len(result.errors),
                   "skipped":len(result.skipped),"expected_failures":len(result.expectedFailures),
@@ -483,9 +484,9 @@ jobs:
           sys.modules[spec.name]=tests
           spec.loader.exec_module(tests)
           suite=unittest.defaultTestLoader.loadTestsFromModule(tests)
-          if suite.countTestCases()!=13: raise SystemExit("expected exactly 13 repair contracts")
+          if suite.countTestCases()!=15: raise SystemExit("expected exactly 15 repair contracts")
           result=unittest.TextTestRunner(verbosity=2).run(suite)
-          complete=(result.testsRun==13 and result.wasSuccessful() and not result.skipped
+          complete=(result.testsRun==15 and result.wasSuccessful() and not result.skipped
                     and not result.expectedFailures and not result.unexpectedSuccesses)
           report={"tests_run":result.testsRun,"failures":len(result.failures),"errors":len(result.errors),
                   "skipped":len(result.skipped),"expected_failures":len(result.expectedFailures),
@@ -512,7 +513,7 @@ jobs:
           original="$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c"
           repaired="$MW_DIAG_WORK/build/repair-prepared/repaired-consumer.c"
           echo "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910  $original" | sha256sum --check
-          echo "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0  $repaired" | sha256sum --check
+          echo "fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121  $repaired" | sha256sum --check
           python3 -B -I -S tooling/ci_mlt_runtime_selected.py \
             --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" \
             --platform linux --original "$original" --repaired "$repaired" \
@@ -534,7 +535,7 @@ jobs:
           assert rec["not_executed_are_not_passes"] is True
           assert rec["upstream_source_sha256"]=={
               "original":"c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910",
-              "repaired":"246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"}
+              "repaired":"fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121"}
           for name in ("stdout","stderr"):
               assert sha(public/rec[name]["file"])==rec[name]["sha256"]
           PY
@@ -544,7 +545,7 @@ jobs:
           original="$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c"
           repaired="$MW_DIAG_WORK/build/repair-prepared/repaired-consumer.c"
           echo "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910  $original" | sha256sum --check
-          echo "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0  $repaired" | sha256sum --check
+          echo "fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121  $repaired" | sha256sum --check
           MOTIONWRIGHT_MLT_V722_ORIGINAL="$original" MOTIONWRIGHT_MLT_V722_REPAIRED="$repaired" \
             python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
               --pattern test_native_mlt_repair_only_compiler_receipt.py --mode both \
@@ -657,6 +658,537 @@ jobs:
           assert (public/"planar.stdout.log").read_bytes()==expected,"planar case receipt differs"
           assert (public/"planar.stderr.log").read_bytes()==b"","unexpected planar diagnostics"
           PY
+      - name: Verify the exact encoder callsite against the previous source
+        id: mlt_last_frame_callsite
+        run: |
+          set -euo pipefail
+          (
+            set -o noclobber
+            cat > "$MW_DIAG_WORK/control/mlt-last-frame-gate.py" <<'MW_LAST_FRAME_PY'
+          import hashlib
+          import importlib.util
+          import json
+          import os
+          import re
+          import shlex
+          import shutil
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          OLD = ("246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0", 98847)
+          NEW = ("fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121", 99266)
+          HELPER = "d90db74a261da8053a7f8258f1b9975e692ab54888408cd0a2818ee26e720bf9"
+          DIAG = "tooling/mlt-audio-diagnostic/"
+          PINS = {
+              DIAG + "repair_planar_source.py":
+                  "76c4c00139483c44f47c56c297392f20764568fbbed9f15be7e34235c4858084",
+              DIAG + "test_repair_planar_source.py":
+                  "74433bb1f85b3420b3f545589d77599d5d14f2ad50c3cc8afdee0779b911ab2d",
+              DIAG + "test_encoder_last_frame.c":
+                  "5b20a7d05b02258da6f611e7dd81da3c6067dc254fca0597f6041b1941fc552f",
+          }
+          FLAGS = [
+              "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
+              "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
+              "-fno-omit-frame-pointer",
+          ]
+          SAN = {
+              "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
+              "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1",
+          }
+          PASS = (
+              b"MLT_LAST_FRAME_CALLSITE_PASS cases=8 source-only; "
+              b"codec-not-opened; native-master-NOT_RUN\n"
+          )
+          NEG = b"".join(
+              f"MLT_LAST_FRAME_RED {reason} samples={n} declared={n}\n".encode("ascii")
+              for n in (576, 256, 1, 1023)
+              for reason in ("encoder-visible sample count", "submitted sample clock")
+          ) + b"MLT_LAST_FRAME_FAIL cases=8 errors=8\n"
+          FIXED = {
+              "schema": "motionwright.mlt-encoder-last-frame-callsite/1",
+              "status": "PASS_SOURCE_CONTRACT",
+              "candidate_case_count": 8,
+              "previous_count_clock_errors": 8,
+              "previous_consumer_reconstructed_for_negative_only": True,
+              "source_inputs_unchanged_during_gate": True,
+              "codec_opened": False,
+              "native_dispatched": False,
+              "physical_runtime": "NOT_RUN",
+              "production_master_acceptance": False,
+              "release_authorized": False,
+          }
+
+
+          def need(ok, message):
+              if not ok:
+                  raise SystemExit("MLT last-frame gate: " + message)
+
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+
+          def encoded(value):
+              return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode("utf-8")
+
+
+          need(
+              sys.flags.dont_write_bytecode and sys.flags.isolated and sys.flags.no_site,
+              "invoke Python with -B -I -S",
+          )
+          need(
+              len(sys.argv) == 2 and sys.argv[1] in ("run", "verify"),
+              "expected run or verify mode",
+          )
+          W = Path(os.environ["MW_DIAG_WORK"]).resolve(strict=True)
+          P = (W / "public").resolve(strict=True)
+          D = Path(os.environ["MW_DIAG_SOURCE"]).resolve(strict=True)
+          V = Path(os.environ["MW_DIAG_VERIFY"]).resolve(strict=True)
+          PREP = (W / "build" / "repair-prepared").resolve(strict=True)
+          C = PREP / "repaired-consumer.c"
+          H = PREP / "planar-helper-under-test.h"
+          SELF = Path(__file__).resolve(strict=True)
+          for directory in (P, D, V, PREP):
+              need(directory.is_relative_to(W), "diagnostic directory escaped work")
+          need(
+              SELF == (W / "control" / "mlt-last-frame-gate.py").resolve(strict=True)
+              and SELF.is_relative_to(W / "control"),
+              "unexpected temporary helper location",
+          )
+          need(
+              sha(SELF.read_bytes()) == os.environ["MW_LAST_FRAME_GATE_SHA256"],
+              "temporary helper differs from the workflow output pin",
+          )
+          need(
+              C.is_file() and H.is_file() and not C.is_symlink() and not H.is_symlink(),
+              "prepared inputs must be the exact regular files",
+          )
+          for key in ("LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH"):
+              need(not os.environ.get(key), "unexpected loader override: " + key)
+
+
+          def file_id(path):
+              path = Path(path).resolve(strict=True)
+              data = path.read_bytes()
+              return {"path": str(path), "sha256": sha(data), "bytes": len(data)}
+
+
+          def put(name, data):
+              need(Path(name).name == name, "nonflat public artifact")
+              with (P / name).open("xb") as stream:
+                  stream.write(data)
+              return {"name": name, "sha256": sha(data), "bytes": len(data)}
+
+
+          def take(ref):
+              need(set(ref) == {"name", "sha256", "bytes"}, "invalid artifact record")
+              need(Path(ref["name"]).name == ref["name"], "nonflat artifact reference")
+              path = (P / ref["name"]).resolve(strict=True)
+              need(path.parent == P, "artifact escaped public")
+              data = path.read_bytes()
+              need(
+                  (sha(data), len(data)) == (ref["sha256"], ref["bytes"]),
+                  "artifact changed: " + ref["name"],
+              )
+              return data
+
+
+          def tool_state():
+              names = {"cc": "cc", "pkg_config": "pkg-config", "ldd": "ldd", "git": "git"}
+              paths = {key: shutil.which(name) for key, name in names.items()}
+              need(all(paths.values()), "required native tool is missing")
+              paths["python"] = sys.executable
+              return {key: file_id(path) for key, path in paths.items()}
+
+
+          TOOLS = tool_state()
+
+
+          def identity():
+              source = os.environ["GITHUB_SHA"]
+              need(re.fullmatch(r"[0-9a-f]{40}", source), "invalid source SHA")
+              need(file_id(TOOLS["git"]["path"]) == TOOLS["git"], "Git executable changed")
+              result = subprocess.run(
+                  [
+                      TOOLS["git"]["path"], "-C", os.environ["GITHUB_WORKSPACE"],
+                      "rev-parse", "--verify", source + "^{tree}",
+                  ],
+                  env=os.environ | {"GIT_OPTIONAL_LOCKS": "0"},
+                  stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False,
+              )
+              tree = result.stdout.decode("ascii").strip()
+              need(
+                  result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", tree),
+                  "cannot authenticate source tree",
+              )
+              result = {
+                  "source_sha": source, "source_tree": tree,
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "job_key": os.environ["GITHUB_JOB"],
+              }
+              need(all(result.values()), "missing execution identity")
+              return result
+
+
+          SOURCES = {
+              "tooling/mlt_repair_verification.py": V / "mlt_repair_verification.py",
+              DIAG + "repair_planar_source.py": D / "repair_planar_source.py",
+              DIAG + "test_repair_planar_source.py": D / "test_repair_planar_source.py",
+              DIAG + "test_encoder_last_frame.c": D / "test_encoder_last_frame.c",
+          }
+
+
+          def input_state():
+              raw = (P / "source-inputs.json").read_bytes()
+              manifest = json.loads(raw)
+              actual = identity()
+              need(
+                  manifest["source_sha"] == os.environ["GITHUB_SHA"],
+                  "manifest source_sha differs from GITHUB_SHA",
+              )
+              need(
+                  manifest["tree"] == actual["source_tree"],
+                  "manifest tree differs from the actual Git tree",
+              )
+              selected = {}
+              for name, path in SOURCES.items():
+                  data = path.read_bytes()
+                  need(sha(data) == manifest["sources"][name], "source hash mismatch: " + name)
+                  blob = b"blob " + str(len(data)).encode("ascii") + b"\0" + data
+                  need(
+                      hashlib.sha1(blob).hexdigest() == manifest["source_blob_oids"][name],
+                      "source blob OID mismatch: " + name,
+                  )
+                  actual_blob = subprocess.run(
+                      [
+                          TOOLS["git"]["path"], "-C", os.environ["GITHUB_WORKSPACE"],
+                          "rev-parse", "--verify", os.environ["GITHUB_SHA"] + ":" + name,
+                      ],
+                      env=os.environ | {"GIT_OPTIONAL_LOCKS": "0"},
+                      stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False,
+                  )
+                  need(
+                      actual_blob.returncode == 0
+                      and actual_blob.stdout.decode("ascii").strip()
+                          == manifest["source_blob_oids"][name],
+                      "manifest path is not bound to the actual Git tree: " + name,
+                  )
+                  if name in PINS:
+                      need(sha(data) == PINS[name], "unexpected selected source: " + name)
+                  selected[name] = file_id(path)
+              consumer, helper = file_id(C), file_id(H)
+              need(
+                  (consumer["sha256"], consumer["bytes"]) == NEW,
+                  "prepared candidate changed",
+              )
+              need(helper["sha256"] == HELPER, "prepared helper changed")
+              return {
+                  "source_inputs_sha256": sha(raw),
+                  "source_sha": manifest["source_sha"], "source_tree": manifest["tree"],
+                  "sources": manifest["sources"],
+                  "source_blob_oids": manifest["source_blob_oids"],
+                  "selected": selected, "consumer": consumer, "helper": helper,
+                  "gate_sha256": sha(SELF.read_bytes()),
+              }
+
+
+          INITIAL = input_state()
+          sys.path.insert(0, str(D))
+          spec = importlib.util.spec_from_file_location(
+              "mw_last_frame_authenticated_tests", D / "test_repair_planar_source.py",
+          )
+          need(spec is not None and spec.loader is not None, "extractor unavailable")
+          tests = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = tests
+          spec.loader.exec_module(tests)
+          repair = tests.repair
+          need(
+              Path(repair.__file__).resolve(strict=True) == D / "repair_planar_source.py",
+              "extractor imported a different repair module",
+          )
+          FIXTURE = (D / "test_encoder_last_frame.c").read_bytes()
+          includes = {
+              item.decode("ascii")
+              for item in re.findall(
+                  rb'(?m)^[ \t]*#[ \t]*include[ \t]+"([^"\r\n]+)"', FIXTURE,
+              )
+          }
+          need(
+              all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", name) for name in includes),
+              "unexpected quoted include",
+          )
+          headers = includes - {H.name}
+          need(len(headers) == 1, "ambiguous callsite header")
+          NAMES = {
+              "consumer": "consumer_avformat.c", "helper": H.name,
+              "fixture": "test_encoder_last_frame.c", "header": headers.pop(),
+              "binary": "test_encoder_last_frame",
+          }
+          need(len(set(NAMES.values())) == len(NAMES), "case filenames collide")
+
+
+          def extract(source):
+              need(isinstance(source, bytes), "extractor input must be bytes")
+              result = tests.encoder_submission(source)
+              need(isinstance(result, bytes), "encoder_submission did not return bytes")
+              return result
+
+
+          def command(argv, cwd, overrides, timeout):
+              return {
+                  "argv": argv, "cwd": str(cwd),
+                  "environment_overrides": overrides, "timeout_seconds": timeout,
+              }
+
+
+          def run(name, argv, cwd, overrides=None, timeout=30):
+              overrides = dict(overrides or {})
+              rec = {
+                  "command": put(
+                      name + ".command.json", encoded(command(argv, cwd, overrides, timeout)),
+                  )
+              }
+              try:
+                  result = subprocess.run(
+                      argv, cwd=cwd, env=os.environ | overrides, stdin=subprocess.DEVNULL,
+                      capture_output=True, timeout=timeout, check=False,
+                  )
+                  code, out, err = result.returncode, result.stdout, result.stderr
+                  timed_out = False
+              except subprocess.TimeoutExpired as exc:
+                  code, out, err = None, exc.stdout or b"", exc.stderr or b""
+                  timed_out = True
+              rec.update(
+                  stdout=put(name + ".stdout", out),
+                  stderr=put(name + ".stderr", err),
+                  exit=put(
+                      name + ".exit.json",
+                      encoded({"returncode": code, "timed_out": timed_out}),
+                  ),
+              )
+              return rec, code, out
+
+
+          def checked_run(rec, name, argv, cwd, overrides, timeout, expected_code):
+              need(set(rec) == {"command", "stdout", "stderr", "exit"}, "command record changed")
+              for key, suffix in (
+                  ("command", ".command.json"), ("stdout", ".stdout"),
+                  ("stderr", ".stderr"), ("exit", ".exit.json"),
+              ):
+                  need(rec[key]["name"] == name + suffix, "command artifact name changed")
+              need(
+                  json.loads(take(rec["command"])) == command(argv, cwd, overrides, timeout),
+                  "command or execution environment changed",
+              )
+              need(
+                  json.loads(take(rec["exit"])) == {"returncode": expected_code, "timed_out": False},
+                  "unexpected original exit",
+              )
+              return take(rec["stdout"]), take(rec["stderr"])
+
+
+          def libraries(stdout):
+              text = stdout.decode("utf-8")
+              need("not found" not in text, "unresolved library")
+              paths = set()
+              for line in text.splitlines():
+                  tail = line.split("=>", 1)[-1].strip()
+                  if not tail:
+                      continue
+                  token = tail.split()[0]
+                  if token.startswith("/"):
+                      paths.add(Path(token).resolve(strict=True))
+                  else:
+                      need(token.startswith("linux-vdso"), "unexpected ldd output")
+              for prefix in ("libasan.so", "libubsan.so", "libavcodec.so", "libavutil.so"):
+                  need(
+                      any(path.name.startswith(prefix) for path in paths),
+                      "required linked runtime missing: " + prefix,
+                  )
+              return [file_id(path) for path in sorted(paths)]
+
+
+          def compile_argv(directory, flags):
+              return [
+                  TOOLS["cc"]["path"], *FLAGS, "-I", str(directory),
+                  str(directory / NAMES["fixture"]), "-o", str(directory / NAMES["binary"]),
+                  *flags, "-lm",
+              ]
+
+
+          PKG_ARGV = [
+              TOOLS["pkg_config"]["path"], "--cflags", "--libs", "libavcodec", "libavutil",
+          ]
+
+
+          def verify(receipt):
+              for key, value in FIXED.items():
+                  need(
+                      type(receipt[key]) is type(value) and receipt[key] == value,
+                      "scope/count/status changed: " + key,
+                  )
+              need(receipt["tools"] == tool_state(), "tool bytes or paths changed")
+              need(
+                  all(receipt[key] == value for key, value in identity().items()),
+                  "run identity changed",
+              )
+              need(receipt["inputs"] == input_state(), "source/runtime inputs changed")
+              need(
+                  receipt["gate_source"]["name"] == "last-frame-gate-source.py",
+                  "helper artifact name changed",
+              )
+              need(take(receipt["gate_source"]) == SELF.read_bytes(), "helper archive changed")
+              pkg_out, _ = checked_run(
+                  receipt["pkg_config"], "last-frame-pkg-config", PKG_ARGV, W, {}, 30, 0,
+              )
+              flags = shlex.split(pkg_out.decode("utf-8"))
+              need("-lavcodec" in flags and "-lavutil" in flags, "codec/util flags missing")
+              need(set(receipt["cases"]) == {"previous", "candidate"}, "case set changed")
+              for label, expected in (("previous", OLD), ("candidate", NEW)):
+                  case = receipt["cases"][label]
+                  directory = W / "build" / "encoder-last-frame" / label
+                  prefix = "last-frame-" + label
+                  need(set(case["files"]) == set(NAMES), "case file set changed")
+                  data = {}
+                  for role, ref in case["files"].items():
+                      need(ref["name"] == prefix + "-" + role, "case artifact name changed")
+                      data[role] = take(ref)
+                      need(
+                          (directory / NAMES[role]).read_bytes() == data[role],
+                          "build file differs from preserved original",
+                      )
+                  need(
+                      (sha(data["consumer"]), len(data["consumer"])) == expected,
+                      "full consumer identity changed",
+                  )
+                  need(
+                      data["helper"] == H.read_bytes() and sha(data["helper"]) == HELPER,
+                      "helper differs from authenticated prepared input",
+                  )
+                  need(data["fixture"] == FIXTURE, "fixture differs from authenticated source")
+                  need(
+                      data["header"] == extract(data["consumer"]),
+                      "header is not extracted from the authenticated full consumer",
+                  )
+                  checked_run(
+                      case["compilation"], prefix + "-compile",
+                      compile_argv(directory, flags), directory, {}, 90, 0,
+                  )
+                  dep_out, dep_err = checked_run(
+                      case["dependencies"], prefix + "-libraries",
+                      [TOOLS["ldd"]["path"], str(directory / NAMES["binary"])],
+                      directory, SAN, 15, 0,
+                  )
+                  need(
+                      not dep_err and case["libraries"] == libraries(dep_out),
+                      "library bytes/list differ from original dependency evidence",
+                  )
+                  out, err = checked_run(
+                      case["execution"], prefix + "-run",
+                      [str(directory / NAMES["binary"])], directory, SAN, 30,
+                      1 if label == "previous" else 0,
+                  )
+                  need(
+                      (out, err) == ((b"", NEG) if label == "previous" else (PASS, b"")),
+                      "unexpected original count/clock or sanitizer result",
+                  )
+              need(receipt["inputs"] == input_state(), "inputs changed during verification")
+              need(receipt["tools"] == tool_state(), "tools changed during verification")
+
+
+          def produce():
+              candidate = C.read_bytes()
+              need((sha(candidate), len(candidate)) == NEW, "candidate bytes changed")
+              # Reverse only the bounded new edits; do not invoke either source generator.
+              text = candidate.decode("utf-8")
+              need(text.count(repair.OPTIMIZED_START) == 1, "ambiguous optimized branch")
+              start = text.index(repair.OPTIMIZED_START)
+              stop = text.index("} else {", start)
+              scoped = text[start:stop]
+              joined = repair.VALID_LAST_FRAME + repair.CLOCK_ADVANCE + repair.SEND_FRAME
+              need(
+                  scoped.count(joined) == 1 and scoped.count(repair.VALID_LAST_FRAME) == 1
+                  and scoped.count(repair.CLOCK_ADVANCE) == 1,
+                  "unexpected candidate edits",
+              )
+              scoped = scoped.replace(repair.VALID_LAST_FRAME, "", 1)
+              scoped = scoped.replace(repair.CLOCK_ADVANCE, "", 1)
+              pts = "            ctx->audio_avframe->pts = ctx->sample_count[i];\n"
+              need(scoped.count(pts) == 1, "ambiguous historical clock anchor")
+              scoped = scoped.replace(pts, pts + repair.CLOCK_ADVANCE, 1)
+              previous = (text[:start] + scoped + text[stop:]).encode("utf-8")
+              need((sha(previous), len(previous)) == OLD, "inverse did not recover old246")
+
+              root = W / "build" / "encoder-last-frame"
+              root.mkdir(parents=True, exist_ok=False)
+              receipt = {
+                  **FIXED, **identity(), "inputs": INITIAL, "tools": TOOLS,
+                  "gate_source": put("last-frame-gate-source.py", SELF.read_bytes()), "cases": {},
+              }
+              pkg, code, out = run("last-frame-pkg-config", PKG_ARGV, W)
+              need(code == 0, "pkg-config failed")
+              receipt["pkg_config"] = pkg
+              flags = shlex.split(out.decode("utf-8"))
+              need("-lavcodec" in flags and "-lavutil" in flags, "codec/util flags missing")
+              for label, source in (("previous", previous), ("candidate", candidate)):
+                  directory = root / label
+                  directory.mkdir(exist_ok=False)
+                  prefix = "last-frame-" + label
+                  originals = {
+                      "consumer": source, "helper": H.read_bytes(),
+                      "fixture": FIXTURE, "header": extract(source),
+                  }
+                  files = {}
+                  for role, data in originals.items():
+                      with (directory / NAMES[role]).open("xb") as stream:
+                          stream.write(data)
+                      files[role] = put(prefix + "-" + role, data)
+                  compilation, code, _ = run(
+                      prefix + "-compile", compile_argv(directory, flags), directory, timeout=90,
+                  )
+                  need(code == 0, label + " compilation failed")
+                  binary = directory / NAMES["binary"]
+                  files["binary"] = put(prefix + "-binary", binary.read_bytes())
+                  deps, code, dep_out = run(
+                      prefix + "-libraries", [TOOLS["ldd"]["path"], str(binary)], directory, SAN, 15,
+                  )
+                  need(code == 0, label + " dependency inspection failed")
+                  linked = libraries(dep_out)
+                  execution, _, _ = run(prefix + "-run", [str(binary)], directory, SAN, 30)
+                  receipt["cases"][label] = {
+                      "files": files, "compilation": compilation, "dependencies": deps,
+                      "execution": execution, "libraries": linked,
+                  }
+              # A successful receipt is published only after exact original-output checks.
+              verify(receipt)
+              put("last-frame-callsite.json", encoded(receipt))
+
+
+          if sys.argv[1] == "run":
+              produce()
+          else:
+              verify(json.loads((P / "last-frame-callsite.json").read_bytes()))
+          print(
+              "MLT_LAST_FRAME_GATE_VERIFIED source-only; "
+              "codec-not-opened; native-master-NOT_RUN"
+          )
+          MW_LAST_FRAME_PY
+          )
+          python3 -B -I -S - <<'PY'
+          import hashlib,os,subprocess,sys
+          from pathlib import Path
+          work=Path(os.environ["MW_DIAG_WORK"]).resolve(strict=True)
+          path=(work/"control/mlt-last-frame-gate.py").resolve(strict=True)
+          assert path.is_relative_to(work/"control")
+          expected=hashlib.sha256(path.read_bytes()).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8") as output:
+              output.write("gate_sha256="+expected+"\n")
+          subprocess.run([sys.executable,"-B","-I","-S",str(path),"run"],
+                         env=os.environ|{"MW_LAST_FRAME_GATE_SHA256":expected},check=True)
+          PY
       - name: Compile the complete repaired consumer with the observer
         run: |
           set -euo pipefail
@@ -674,7 +1206,7 @@ jobs:
           original=pathlib.Path(os.environ["MW_MLT_SOURCE"])/"src/modules/avformat/consumer_avformat.c"
           combined=source/"src/modules/avformat/consumer_avformat.c"
           assert hashlib.sha256(original.read_bytes()).hexdigest()=="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-          assert hashlib.sha256(combined.read_bytes()).hexdigest()=="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+          assert hashlib.sha256(combined.read_bytes()).hexdigest()=="9d4794bcc825f5c7bd717f630dc3dbaa3c675278a3bad9610bf97ef6c42b04fa"
           modules=re.findall(r"^option\((MOD_[A-Z0-9_]+) ",(source/"CMakeLists.txt").read_text(),re.M)
           assert "MOD_AVFORMAT" in modules
           args=["cmake","-S",str(source),"-B",str(work/"build/mlt"),
@@ -692,7 +1224,7 @@ jobs:
           work=pathlib.Path(os.environ["MW_DIAG_WORK"])
           source=pathlib.Path(os.environ["MW_MLT_COMBINED_SOURCE"])
           consumer=(source/"src/modules/avformat/consumer_avformat.c").resolve(strict=True)
-          assert hashlib.sha256(consumer.read_bytes()).hexdigest()=="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+          assert hashlib.sha256(consumer.read_bytes()).hexdigest()=="9d4794bcc825f5c7bd717f630dc3dbaa3c675278a3bad9610bf97ef6c42b04fa"
           compile_rows=json.loads((work/"build/mlt/compile_commands.json").read_text())
           def compiled_file(row):
               path=pathlib.Path(row["file"])
@@ -711,6 +1243,8 @@ jobs:
               json.dumps(selected[0],indent=2)+"\n")
           PY
       - name: Bind completed planar repair source evidence
+        env:
+          MW_LAST_FRAME_GATE_SHA256: ${{ steps.mlt_last_frame_callsite.outputs.gate_sha256 }}
         run: |
           set -euo pipefail
           python3 -B -I -S "$MW_DIAG_CHECK" verify > "$MW_DIAG_WORK/source-inputs-after.json"
@@ -725,7 +1259,7 @@ jobs:
           cmp "$MW_DIAG_WORK/build/repair-prepared/prepare-receipt.json" \
             "$MW_DIAG_WORK/public/prepare-receipt.json"
           python3 -B -I -S - <<'PY'
-          import hashlib,importlib.util,json,os,pathlib,re,shutil,sys
+          import hashlib,importlib.util,json,os,pathlib,re,shutil,subprocess,sys
           work=pathlib.Path(os.environ["MW_DIAG_WORK"])
           public=work/"public"
           def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
@@ -739,13 +1273,13 @@ jobs:
           assert prepared["sources"]==inputs["sources"] and prepared["source_blob_oids"]==inputs["source_blob_oids"]
           assert prepared["C_layout_checks"]==prepared["full_consumer_compile"]==prepared["physical_runtime"]=="NOT_RUN"
           assert prepared["legacy_C_negative_checks"]=="NOT_RUN"
-          assert prepared["outputs"]["consumer_avformat.c"]=="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+          assert prepared["outputs"]["consumer_avformat.c"]=="9d4794bcc825f5c7bd717f630dc3dbaa3c675278a3bad9610bf97ef6c42b04fa"
           assert prepared["outputs"]["planar-helper-under-test.h"]=="d90db74a261da8053a7f8258f1b9975e692ab54888408cd0a2818ee26e720bf9"
           assert prepared["outputs"]["legacy-planar-helper-under-test.h"]=="fa56e6635f8731f62c9fca1305ee1b916e752526bbeeaaa4404addb24e327013"
           for name in ("provider_compiled","provider_admitted","native_dispatched",
                        "master_audio_tail_corrected","production_master_accepted","release_authorized"):
               assert prepared[name] is False
-          for name,expected in (("composition-contracts.json",26),("repair-contracts.json",13)):
+          for name,expected in (("composition-contracts.json",32),("repair-contracts.json",15)):
               result=json_file(name)
               assert result=={"tests_run":expected,"failures":0,"errors":0,"skipped":0,
                               "expected_failures":0,"unexpected_successes":0,"complete":True}
@@ -818,6 +1352,13 @@ jobs:
                       assert path.is_file()
                       libraries[str(path)]=sha(path)
           assert libraries,"no observed loaded-library paths"
+          gate=(work/"control/mlt-last-frame-gate.py").resolve(strict=True)
+          expected_gate=os.environ["MW_LAST_FRAME_GATE_SHA256"]
+          assert re.fullmatch(r"[0-9a-f]{64}",expected_gate)
+          assert gate.is_relative_to((work/"control").resolve(strict=True))
+          assert sha(gate)==expected_gate
+          subprocess.run([sys.executable,"-B","-I","-S",str(gate),"verify"],
+                         env=os.environ.copy(),check=True)
           evidence={p.name:sha(p) for p in public.iterdir() if p.is_file()}
           result={"schema":"motionwright.mlt-planar-repair-source-check/2",
                   "source_sha":os.environ["GITHUB_SHA"],"tree":inputs["tree"],
@@ -839,7 +1380,7 @@ jobs:
                   "legacy_zero_padding_negative":negative,
                   "legacy_negative_receipt_sha256":sha(public/"legacy-planar-negative.json"),
                   "python_version":sys.version,"platform":sys.platform,
-                  "python_contract_tests":{"source_composition":26,"original_observer":32,"planar_repair":13},
+                  "python_contract_tests":{"source_composition":32,"original_observer":32,"planar_repair":15},
                   "python_skipped":0,"planar_C_layout_cases":12,
                   "constructor_C_sanitizers":"PASS","planar_layout_C_sanitizers":"PASS",
                   "actual_combined_consumer_module_compile":"PASS",
@@ -865,18 +1406,34 @@ jobs:
           repaired=work/"build/repair-prepared/repaired-consumer.c"
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           original_digest="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-          repaired_digest="246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"
+          repaired_digest="fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121"
           assert os.environ["GITHUB_ACTIONS"]=="true" and os.environ["RUNNER_OS"]=="Linux"
           assert os.environ.get("MOTIONWRIGHT_APPROVED_MLT_G2")!="1"
           assert original.stat().st_size==96690 and sha(original)==original_digest
-          assert repaired.stat().st_size==98847 and sha(repaired)==repaired_digest
-          assert repaired_digest!="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+          assert repaired.stat().st_size==99266 and sha(repaired)==repaired_digest
+          assert repaired_digest!="9d4794bcc825f5c7bd717f630dc3dbaa3c675278a3bad9610bf97ef6c42b04fa"
           before=json.loads((public/"planar-repair-verification-receipt.json").read_text())
           assert before["source_sha"]==os.environ["GITHUB_SHA"] and before["run_id"]==os.environ["GITHUB_RUN_ID"]
           assert before["run_attempt"]==os.environ["GITHUB_RUN_ATTEMPT"]
           assert before["constructor_C_sanitizers"]==before["planar_layout_C_sanitizers"]=="PASS"
           assert before["actual_combined_consumer_module_compile"]=="PASS"
           assert before["planar_C_layout_cases"]==12 and before["physical_runtime"]=="NOT_RUN"
+          last_frame_path=public/"last-frame-callsite.json"
+          assert before["evidence"]["last-frame-callsite.json"]==sha(last_frame_path)
+          last_frame=json.loads(last_frame_path.read_bytes())
+          assert last_frame["schema"]=="motionwright.mlt-encoder-last-frame-callsite/1"
+          assert last_frame["status"]=="PASS_SOURCE_CONTRACT"
+          for field,variable in (("source_sha","GITHUB_SHA"),("run_id","GITHUB_RUN_ID"),
+                                 ("run_attempt","GITHUB_RUN_ATTEMPT"),("job_key","GITHUB_JOB")):
+              assert last_frame[field]==os.environ[variable]
+          assert last_frame["source_tree"]==before["tree"]
+          assert type(last_frame["candidate_case_count"]) is int and last_frame["candidate_case_count"]==8
+          assert type(last_frame["previous_count_clock_errors"]) is int and last_frame["previous_count_clock_errors"]==8
+          assert last_frame["source_inputs_unchanged_during_gate"] is True
+          assert last_frame["codec_opened"] is False and last_frame["native_dispatched"] is False
+          assert last_frame["physical_runtime"]=="NOT_RUN"
+          assert last_frame["production_master_acceptance"] is False
+          assert last_frame["release_authorized"] is False
           source=work/"build/mlt-only-new-source"
           target=work/"build/mlt-only-new-build"
           assert not source.exists() and not target.exists()
@@ -884,7 +1441,7 @@ jobs:
           compiled=source/"src/modules/avformat/consumer_avformat.c"
           assert sha(compiled)==original_digest
           compiled.write_bytes(repaired.read_bytes())
-          assert sha(compiled)==repaired_digest and compiled.stat().st_size==98847
+          assert sha(compiled)==repaired_digest and compiled.stat().st_size==99266
           options=re.findall(r"^option\((MOD_[A-Z0-9_]+) ",(source/"CMakeLists.txt").read_text(),re.M)
           assert len(options)==len(set(options)) and "MOD_AVFORMAT" in options
           config=["cmake","-S",str(source),"-B",str(target),"-DCMAKE_BUILD_TYPE=RelWithDebInfo",

@@ -37,7 +37,7 @@ UPSTREAM_URL = "https://archive.ubuntu.com/ubuntu/pool/universe/m/mlt/mlt_7.22.0
 UPSTREAM_ARCHIVE_SHA256 = "7cf4d9573a061d76902c6e12a2f09f5f461e7c697635233df82a63a3fe4d6da6"
 UPSTREAM_MEMBER = "mlt-7.22.0/src/modules/avformat/consumer_avformat.c"
 REPAIR_GENERATOR = "tooling/mlt-audio-diagnostic/repair_planar_source.py"
-REPAIR_GENERATOR_SHA256 = "028d1f6e7e2a034aeb60b0e40dfc5154af401691f960483c3d0b77fe09bde87d"
+REPAIR_GENERATOR_SHA256 = "76c4c00139483c44f47c56c297392f20764568fbbed9f15be7e34235c4858084"
 MAX_UPSTREAM_ARCHIVE = 16 * 1024 * 1024
 MAX_UPSTREAM_TAR = 64 * 1024 * 1024
 PUBLIC_SCHEMA = "motionwright.native.mlt-g2-public/1"
@@ -313,7 +313,7 @@ def reconstruct_sources(raw, repo, directory):
                  "__file__": str(generator_path)}
     exec(compile(generator, str(generator_path), "exec"), namespace)
     repaired, _ = namespace["repair_exact_original"](original)
-    require(type(repaired) is bytes and len(repaired) == 98847
+    require(type(repaired) is bytes and len(repaired) == 99266
             and sha(repaired) == admission.REPAIRED_SHA, "reconstructed_source_digest")
     require(regular(generator_path, 256 * 1024)[0] == generator,
             "source_generator_changed")

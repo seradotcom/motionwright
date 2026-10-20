@@ -25,7 +25,7 @@ GATE_PATH = "tooling/native_mlt_runtime_admission.py"
 SCRIPT_PATH = "tooling/ci_mlt_runtime_selected.py"
 WORKFLOW_PATH = ".github/workflows/mlt-audio-diagnostic.yml"
 ORIGINAL_SHA = "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-REPAIRED_SHA = "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"
+REPAIRED_SHA = "fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121"
 PORTABLE_CASE = "test_simulated_windows_machine_can_never_admit_module_on_either_runner"
 EXPECTED = frozenset((
     "test_known_original_source_sha_is_fixed_not_discovered_dynamically",
@@ -190,7 +190,7 @@ def main() -> int:
                 "both original and repaired authentic C inputs required")
         source_hashes = {
             "original": checked_c_source(args.original, ORIGINAL_SHA, 96690),
-            "repaired": checked_c_source(args.repaired, REPAIRED_SHA, 98847),
+            "repaired": checked_c_source(args.repaired, REPAIRED_SHA, 99266),
         }
         out = args.report
         require(out.is_absolute() and out.parent.is_dir() and not out.exists()
