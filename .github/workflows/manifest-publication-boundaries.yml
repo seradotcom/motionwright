@@ -1,0 +1,57 @@
+name: Manifest publication and consumer boundaries
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/manifest-publication-boundaries.yml'
+      - 'tooling/ci_test_runner.py'
+      - 'tooling/release_manifest.py'
+      - 'tooling/package_receipt.py'
+      - 'tooling/owner_candidate_provenance.py'
+      - 'tooling/tests/test_release_manifest_integrity.py'
+      - 'tooling/tests/test_release_manifest_publication.py'
+      - 'tooling/tests/test_candidate_receipt_source.py'
+      - 'tooling/tests/test_owner_candidate_provenance.py'
+      - 'tooling/tests/test_package_receipt.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manifest-publication-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publication-and-consumers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Verify publication uncertainty, source identity and consumers
+        run: |
+          python -B tooling/ci_test_runner.py --repo . \
+            --pattern test_release_manifest_integrity.py \
+            --pattern test_release_manifest_publication.py \
+            --pattern test_candidate_receipt_source.py \
+            --pattern test_owner_candidate_provenance.py \
+            --pattern test_package_receipt.py \
+            --mode both --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manifest-publication-boundaries.json"
+      - name: Retain exact test identities and original process output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: manifest-publication-boundaries-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manifest-publication-boundaries.json
+            ${{ runner.temp }}/manifest-publication-boundaries-*.log
+          if-no-files-found: error
+          retention-days: 14
