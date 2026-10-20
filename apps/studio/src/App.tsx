@@ -1,6 +1,7 @@
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
 import { isPaletteShortcut } from "./editorCommandSearch";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
+import ProgramDesignStudy, { hasEditableProgramDesign } from "./ProgramDesignStudy";
 import {
   Activity,
   AlignLeft,
@@ -256,6 +257,7 @@ function PreviewSurface({
   const showingNative = previewSource === "frames" && nativeFrame !== null;
   const showingAv = previewSource === "av" && nativeAv !== null;
   const relative = scene ? Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start))) : 0;
+  const hasProgramDesign = hasEditableProgramDesign(scene);
 
   return (
     <section className="preview-wrap" aria-label="Program preview">
@@ -305,6 +307,7 @@ function PreviewSurface({
           </div>
           {scene ? (
             <>
+              {!hasProgramDesign && <>
               <div className="preview-copy">
                 <span className="scene-kicker">SCENE {project.scenes.indexOf(scene) + 1}</span>
                 <h2>{scene.name}</h2>
@@ -317,6 +320,9 @@ function PreviewSurface({
                 <MoveRight size={16} aria-hidden="true" />
                 <div className="semantic-node accent">{rendererLabels[scene.renderer]}</div>
               </div>
+              </>}
+              {hasProgramDesign && previewSource === "design" &&
+                <ProgramDesignStudy project={project} scene={scene} time={relative} profile={profile}/>}
               <div className="preview-progress" aria-hidden="true">
                 <span
                   style={{
