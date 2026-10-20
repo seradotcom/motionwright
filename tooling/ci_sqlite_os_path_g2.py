@@ -40,7 +40,8 @@ TEST_PATH = {
     "windows": "crates/storage/tests/sqlite_windows_reparse_authority.rs",
     "macos": "crates/storage/tests/sqlite_darwin_system_alias.rs",
 }
-PARENT = "420864831a2dfa8626cbe1854e747ae03ef8a2db"
+SOURCE_BASE = "420864831a2dfa8626cbe1854e747ae03ef8a2db"
+PARENT = "46d50a0efd979ebf5908350de6b7e3c34f461da0"
 WORKFLOW = ".github/workflows/storage-sqlite-os-path-authority.yml"
 SCHEMA = "motionwright.A6.sqlite-real-os-path-authority/1"
 
@@ -92,18 +93,22 @@ def git_query(repo: Path, *parts: str) -> bytes:
     return result.stdout
 
 
-def source_identity(repo: Path, sha: str) -> dict:
+def verify_checkout_history(repo: Path, sha: str) -> None:
     require(re.fullmatch("[0-9a-f]{40}", sha) is not None, "expected full Git SHA")
     require(git_query(repo, "rev-parse", "HEAD").decode().strip() == sha,
             "Git checkout SHA differs")
     parents = git_query(repo, "rev-list", "--parents", "-n", "1", "HEAD").decode().strip().split()
     require(parents == [sha, PARENT], "source ancestry changed; new review required")
-    require(git_query(repo, "diff", "--name-only", PARENT, sha).decode().splitlines() ==
+    require(git_query(repo, "diff", "--name-only", SOURCE_BASE, sha).decode().splitlines() ==
             [WORKFLOW, "tooling/ci_sqlite_os_path_g2.py",
              "tooling/tests/test_ci_sqlite_os_path_g2.py"],
             "unreviewed files in candidate")
     require(not git_query(repo, "status", "--porcelain", "--untracked-files=all").strip(),
             "checkout differs from Git")
+
+
+def source_identity(repo: Path, sha: str) -> dict:
+    verify_checkout_history(repo, sha)
     evidence = {}
     for rel, expected in SOURCES.items():
         local = repo / rel
@@ -172,10 +177,28 @@ def check_environment(platform: str, evidence: Path, repo: Path) -> dict:
 def run_selected(repo: Path, head: str, platform: str, report: Path) -> None:
     require(platform in CASES, "unsupported platform")
     require(os.environ.get("GITHUB_SHA") == head, "GHA source SHA changed")
-    names = source_identity(repo, head)
     require(report.is_absolute() and not report.exists()
             and not report.is_symlink(), "receipt must be new and outside source")
     e = check_environment(platform, report.parent, repo)
+    try:
+        names = source_identity(repo, head)
+    except VerificationError as err:
+        rejection = {
+            "schema": SCHEMA, "status": "SOURCE_PREFLIGHT_REJECTED",
+            "expected_source_sha": head, "source_verified": False,
+            "run_id": os.environ["GITHUB_RUN_ID"],
+            "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+            "job_id": os.environ["GITHUB_JOB"], "executor_OS": platform,
+            "cases_expected": list(CASES[platform]), "tests_executed": 0,
+            "test_status": "NOT_RUN", "rejection": str(err),
+            "runner_scope": e, "human_acceptance": False,
+            "release_authorized": False,
+            "at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        with report.open("x", encoding="utf-8") as stream:
+            json.dump(rejection, stream, indent=2)
+            stream.write("\n")
+        raise
     cmd = ["cargo", "test", "--locked", "-p", "motionwright-storage",
            "--test", ("sqlite_windows_reparse_authority" if platform == "windows"
                       else "sqlite_darwin_system_alias"), "--"]

@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          fetch-depth: 3
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13'
@@ -54,6 +55,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          fetch-depth: 3
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13'
@@ -98,7 +100,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   macos-var-alias-real-g2:
-    if: ${{ inputs.os_scope == 'macos' || inputs.os_scope == 'both' }}
+    if: ${{ github.event_name == 'push' || inputs.os_scope == 'macos' || inputs.os_scope == 'both' }}
     needs: g0-source-policy
     runs-on: macos-15
     timeout-minutes: 40
@@ -106,6 +108,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          fetch-depth: 3
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13'
