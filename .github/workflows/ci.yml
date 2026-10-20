@@ -47,6 +47,8 @@ jobs:
           if-no-files-found: error
 
   source-policy:
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     needs: plan
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
