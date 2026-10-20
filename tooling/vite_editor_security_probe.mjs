@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Run the real bundled Vite editor path with filesystem/process effects replaced.
-// This is a component admission test; it never invokes an editor or command shell.
+// This component test simulates Windows and WSL; it never invokes an editor or shell.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -70,7 +70,17 @@ const rejectedCases = [
     error: /argument containing a line break/ },
 ];
 
-function observe(file) {
+function observe(file, fixture = {}) {
+  const platform = fixture.platform ?? "win32";
+  const editor = fixture.editor ?? "code.cmd";
+  const virtualCwd = platform === "linux" ? "/mnt/c/editor-fixture" : "C:\\editor-fixture";
+  const flavor = platform === "linux" ? path.posix : path.win32;
+  const virtualPath = Object.freeze({
+    ...flavor,
+    resolve: (...parts) => flavor.resolve(virtualCwd, ...parts),
+    relative: (from, to) => flavor.relative(
+      flavor.resolve(virtualCwd, from), flavor.resolve(virtualCwd, to)),
+  });
   const executions = [];
   const errors = [];
   const messages = [];
@@ -87,7 +97,7 @@ function observe(file) {
     "exec", "execFile", "execSync", "execFileSync", "spawn", "spawnSync", "fork",
   ].map((operation) => [operation, (...args) => {
     executions.push({ operation, args });
-    if (operation !== "exec") {
+    if (operation !== (platform === "win32" ? "exec" : "spawn")) {
       throw new Error("unexpected process primitive: " + operation);
     }
     return child;
@@ -98,9 +108,9 @@ function observe(file) {
       return !value.endsWith("\\missing.ts");
     },
   });
-  const fakeOs = Object.freeze({ release: () => "fixture" });
+  const fakeOs = Object.freeze({ release: () => fixture.wsl ? "5.15.0-Microsoft" : "fixture" });
   const allowed = new Map([
-    ["fs", fakeFs], ["os", fakeOs], ["path", path.win32], ["child_process", childProcess],
+    ["fs", fakeFs], ["os", fakeOs], ["path", virtualPath], ["child_process", childProcess],
   ]);
   const context = vm.createContext({
     __commonJSMin(factory) {
@@ -119,28 +129,30 @@ function observe(file) {
     },
     // Only the explicitly supplied one-token editor is selected. No discovery.
     require_shell_quote: () => ({ parse: (value) => {
-      assert.equal(value, "code.cmd");
+      assert.equal(value, editor);
       return [value];
     } }),
     require_picocolors: () => ({ red: (value) => value }),
     process: Object.freeze({
-      platform: "win32", env: Object.freeze({}), versions: Object.freeze({}),
+      platform, cwd: () => virtualCwd, env: Object.freeze({}), versions: Object.freeze({}),
     }),
     console: Object.freeze({ log: (...args) => messages.push(args) }),
     fixtureFile: file,
+    fixtureEditor: editor,
     fixtureError: (fileName, message) => errors.push({ fileName, message }),
   }, { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext(moduleSource +
-    "\nrequire_launch_editor()(fixtureFile, 'code.cmd', fixtureError);",
+    "\nrequire_launch_editor()(fixtureFile, fixtureEditor, fixtureError);",
     context, { timeout: 1000, filename: "verified-vite-launch-editor-regions.js" });
-  return { executions, errors, messages, fileChecks, unexpectedEffects };
+  return { simulated_platform: fixture.wsl ? "linux-wsl" : platform,
+    executions, errors, messages, fileChecks, unexpectedEffects };
 }
 
 const results = [];
-function check(name, file, oracle) {
+function check(name, file, oracle, fixture = {}) {
   let observation;
   try {
-    observation = observe(file);
+    observation = observe(file, fixture);
     assert.equal(observation.unexpectedEffects.length, 0);
     oracle(observation);
     results.push({ name, status: "PASS", observation });
@@ -167,6 +179,34 @@ for (const test of rejectedCases) {
     assert.match(observed.errors[0].message, test.error);
   });
 }
+
+check("windows_parent_component_normalized_after_position",
+  "C:\\editor-fixture\\nonexistent\\..:12:3", (observed) => {
+    assert.deepEqual(observed.fileChecks, ["C:\\editor-fixture"]);
+    assert.equal(observed.errors.length, 0);
+    assert.equal(observed.executions.length, 1);
+    assert.equal(observed.executions[0].operation, "exec");
+    assert.equal(observed.executions[0].args[0],
+      "code.cmd -r -g C:\\editor-fixture:12:3");
+    assert.equal(observed.executions[0].args[1].shell, true);
+  });
+for (const prefix of ["+", "-"]) {
+  const absoluteFile = "/mnt/c/editor-fixture/" + prefix + "scene.ts";
+  check(prefix === "+" ? "wsl_plus_filename_is_positional" : "wsl_minus_filename_is_positional",
+    absoluteFile, (observed) => {
+      assert.deepEqual(observed.fileChecks, [absoluteFile]);
+      assert.equal(observed.errors.length, 0);
+      assert.equal(observed.executions.length, 1);
+      const call = observed.executions[0];
+      assert.equal(call.operation, "spawn");
+      assert.equal(call.args.length, 3);
+      assert.equal(call.args[0], "vim");
+      assert.deepEqual(Array.from(call.args[1]), ["./" + prefix + "scene.ts"]);
+      assert.deepEqual(Object.keys(call.args[2]), ["stdio"]);
+      assert.equal(call.args[2].stdio, "inherit");
+    }, { platform: "linux", editor: "vim", wsl: true });
+}
+
 check("missing_file_has_no_effect", "C:\\editor-fixture\\missing.ts", (observed) => {
   assert.equal(observed.fileChecks.length, 1);
   assert.equal(observed.executions.length, 0);
@@ -174,7 +214,7 @@ check("missing_file_has_no_effect", "C:\\editor-fixture\\missing.ts", (observed)
 });
 const report = {
   schema: "motionwright.vite-editor-admission/1",
-  advisory: "GHSA-698v-4r3x-3vcv",
+  advisories: ["GHSA-698v-4r3x-3vcv", "GHSA-587h-7wmj-h5pm", "GHSA-r825-w8mm-5pxw"],
   source_sha_from_ci_environment: sourceShaFromCiEnvironment,
   ci_run_id: process.env.GITHUB_RUN_ID ?? null,
   ci_run_attempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
@@ -190,7 +230,7 @@ const report = {
   module_regions_sha256: hash(moduleSource),
   bundled_launch_editor: [...versions][0],
   actual_host_platform: process.platform,
-  simulated_platform: "win32",
+  simulated_platforms: ["win32", "linux-wsl"],
   actual_os_processes_started: 0,
   scope: "Actual bundled editor command admission with virtual file existence and intercepted effects; not cmd.exe/editor or installed application execution",
   results,
