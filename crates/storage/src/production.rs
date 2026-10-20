@@ -50,6 +50,38 @@ fn bounded_token(value: &str, max: usize, label: &str) -> Result<()> {
     Ok(())
 }
 
+// A request key has one immutable identity even when observations arrive out of
+// order. Check every prior binding so older inconsistent histories fail closed
+// instead of choosing authority from a receipt UUID or the latest observation.
+fn validate_original_production_binding(
+    conn: &rusqlite::Connection,
+    input: &ProductionReceiptInput,
+) -> Result<bool> {
+    let revision = i64::try_from(input.revision).map_err(|_| StorageError::RequestReuse)?;
+    let (has_prior, binding_changed): (bool, bool) = conn.query_row(
+        "SELECT
+           EXISTS(SELECT 1 FROM production_receipts
+                  WHERE project_id=?1 AND request_id=?2),
+           EXISTS(SELECT 1 FROM production_receipts
+                  WHERE project_id=?1 AND request_id=?2
+                    AND (request_sha256 IS NOT ?3 OR command IS NOT ?4
+                         OR generation IS NOT ?5 OR revision IS NOT ?6))",
+        params![
+            input.project_id.to_string(),
+            &input.request_id,
+            &input.request_sha256,
+            &input.command,
+            input.generation.to_string(),
+            revision,
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if binding_changed {
+        return Err(StorageError::RequestReuse);
+    }
+    Ok(has_prior)
+}
+
 impl Store {
     /// Atomically claim one application-owned recovery stage. This is deliberately
     /// NOT a Semwright command: the Driver Host retains runtime authority.
@@ -89,6 +121,7 @@ impl Store {
                 actual: current.revision,
             });
         }
+        validate_original_production_binding(&tx, &input)?;
         // A changed input fingerprint (or newly named workflow) must NOT
         // bypass an earlier uncertain mutation of the same native provider.
         // Read the latest receipt for every stage key, not historic dispatches
@@ -224,22 +257,10 @@ impl Store {
             });
         }
 
-        let prior: Option<(String, String)> = tx
-            .query_row(
-                "SELECT request_sha256,command FROM production_receipts
-                 WHERE project_id=?1 AND request_id=?2
-                 ORDER BY receipt_id DESC LIMIT 1",
-                params![input.project_id.to_string(), &input.request_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
+        let has_prior = validate_original_production_binding(&tx, &input)?;
         // Observations may extend an existing request, but cannot grant a new
         // dispatch. Explicit recovery retries use claim_recovery_stage.
-        if let Some((prior_sha, prior_command)) = prior
-            && (prior_sha != input.request_sha256
-                || prior_command != input.command
-                || input.stage == "dispatching")
-        {
+        if has_prior && input.stage == "dispatching" {
             return Err(StorageError::RequestReuse);
         }
 

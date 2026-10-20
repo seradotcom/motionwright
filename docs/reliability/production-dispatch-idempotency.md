@@ -6,10 +6,12 @@ storage admission decision belongs inside the write transaction.
 
 ## Admission rules
 
-Production receipts bind a project-scoped request ID to one command and request
-SHA-256 digest.
+Production receipts bind a project-scoped request ID to one command, request
+SHA-256 digest, project generation, and original revision.
 
-- Reusing an existing request ID with a different command or digest is rejected.
+- Reusing an existing request ID with a different command, digest, generation,
+  or revision is rejected. This includes a current revision reached after the
+  original dispatch; being newer does not authorize reattributing an old result.
 - A new `dispatching` receipt requires a previously unused request ID. An earlier
   receipt consumes that dispatch opportunity, including when its latest state is
   `completed`, `failed_known`, or `outcome_unknown`.
@@ -47,7 +49,10 @@ the operation.
 
 Recovery-stage claims retain their existing policy and retry contract through
 `claim_recovery_stage`. Existing receipt history is preserved; this admission
-guard cannot undo external effects that preceded it.
+guard cannot undo external effects that preceded it. A permitted retry retains the
+original request binding. If the project moved to a different revision, the same
+request key cannot be reclaimed for that new base. Existing inconsistent receipt
+histories fail closed without being rewritten.
 
 ## Verification
 
@@ -66,10 +71,13 @@ Run the relevant suites with:
 ```sh
 cargo test --locked -p motionwright-storage production::tests
 cargo test --locked -p motionwright-service --test production_dispatch_idempotency
+cargo test --locked -p motionwright-service --test production_request_revision_authority
 ```
 
 The tests live in [storage receipt tests](../../crates/storage/src/production.rs)
-and [service regressions](../../crates/service/tests/production_dispatch_idempotency.rs).
+and the service regressions for
+[dispatch idempotency](../../crates/service/tests/production_dispatch_idempotency.rs)
+and [original revision authority](../../crates/service/tests/production_request_revision_authority.rs).
 
 These tests establish local receipt admission and persistence behavior. Their
 scope does not include native provider execution, recovery of historical unknown
