@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { fixtureBootstrap } from "./fixture";
-import type { Project } from "./types";
+import type { Project, ProjectEvent } from "./types";
 import {
   acknowledgeBriefSubmission, BRIEF_DRAFT_STORAGE_PREFIX, briefDraftConflicts, briefDraftHasWork,
   briefDraftScope, briefDraftStorageKey, briefGroupHasChanges, briefSubmissionMatches, createBriefDraft,
   decodeBriefRecovery, editBriefField, encodeBriefRecovery, MAX_BRIEF_DRAFT_BYTES, MAX_BRIEF_RECOVERY_BYTES, MAX_BRIEF_RECOVERY_COPIES,
   prepareBriefSubmission, readBriefRecoveries, reconcileBriefDraft, resolveBriefField, retainBriefSubmissionIntent, writeBriefRecovery, writeBriefSessionPointer,
+  stageBriefSubmission, briefHasUnconfirmedSubmission, markBriefNotSent, retainBriefUncertainReply,
+  inspectBriefOutcome, releaseBriefUnconfirmed, briefOutcomeReviewMatches, retainReviewedBriefIntent, MAX_BRIEF_OUTCOME_EVENTS,
 } from "./briefDraft";
 import type { BriefDraft, BriefRecovery, BriefSubmission, DraftStorage } from "./briefDraft";
 
@@ -562,5 +564,239 @@ describe("brief session writer readback is required for automatic recovery", () 
     };
     expect(() => writeBriefRecovery(storage, copy)).toThrow(/not confirmed/i);
     expect(storage.getItem(key)).toBeNull();
+  });
+});
+
+describe("durable Brief outcomes stay distinct from observed saved values", () => {
+  const clock = "2026-10-20T16:00:00Z";
+  function pendingBrief(source = project()) {
+    const draft = editBriefField(createBriefDraft(source), "objective", "Submitted Brief objective");
+    const submission = prepareBriefSubmission(draft, source, "brief");
+    return { source, submission, draft: stageBriefSubmission(draft, source, submission) };
+  }
+  function journal(source: Project, changes: ProjectEvent["change"][]): ProjectEvent[] {
+    return changes.map((change, index) => ({ revision: source.revision + index + 1, change, created_at: clock }));
+  }
+  function reader(current: Project, events: ProjectEvent[]) {
+    const calls: {project: number; history: number} = {project: 0, history: 0};
+    return {
+      calls,
+      transport: {
+        readProject: async () => { calls.project++; return structuredClone(current); },
+        readHistory: async (_project: Project, after: number, limit: number) => {
+          calls.history++;
+          return structuredClone(events.filter(event => event.revision > after).slice(0, limit));
+        },
+      },
+    };
+  }
+
+  it("matching r+1 values alone cannot consume an UNKNOWN pending attempt", () => {
+    const item = pendingBrief(), saved = persisted(item.source, item.submission);
+    expect(briefSubmissionMatches(saved, item.submission)).toBe(true);
+    expect(reconcileBriefDraft(item.draft, saved).pending).toEqual(item.draft.pending);
+    expect(acknowledgeBriefSubmission(item.draft, saved, item.submission)).toBe(item.draft);
+    expect(briefHasUnconfirmedSubmission(item.draft)).toBe(true);
+    // This separate call explicitly represents the original successful reply.
+    const observed = acknowledgeBriefSubmission(item.draft, saved, item.submission, true);
+    expect(observed.pending).toBeUndefined();
+    expect(observed.fields.objective.base).toBe("Submitted Brief objective");
+  });
+
+  it("legacy pending copies remain UNKNOWN and never gain a request identity", () => {
+    const item = pendingBrief(), legacy = structuredClone(item.draft);
+    delete legacy.pending!.intentId; delete legacy.pending!.outcome;
+    const value = recovery(legacy, item.source);
+    const restored = decodeBriefRecovery(encodeBriefRecovery(value), value.scope, value.sessionId).draft!;
+    expect(restored.pending).toEqual(legacy.pending);
+    expect(briefHasUnconfirmedSubmission(restored)).toBe(true);
+    expect(encodeBriefRecovery(value)).not.toMatch(/request_id|effect_grant|"change"/);
+  });
+
+  it("a fresh review of an unrelated r+1 permits only an explicit separate intent", async () => {
+    const item = pendingBrief(), current = structuredClone(item.source);
+    current.revision++; current.title = "A different editor changed the title";
+    const log = journal(item.source, [{type:"rename_project", title:current.title}]);
+    const source = reader(current, log);
+    const exactPending = structuredClone(item.draft.pending);
+    const later = editBriefField(item.draft, "objective", "Later author input\n");
+    const review = await inspectBriefOutcome(later, current, source.transport);
+    expect(review.matchingValueRevisions).toEqual([]);
+    expect(source.calls).toEqual({project:2, history:1});
+    expect(later.pending).toEqual(exactPending);
+    const released = releaseBriefUnconfirmed(later, current, review);
+    expect(released.pending).toBeUndefined();
+    expect(released.fields.objective.raw).toBe("Later author input\n");
+    expect(item.draft.pending).toEqual(exactPending);
+    const next = prepareBriefSubmission(released, current, "brief");
+    expect(next.revision).toBe(current.revision);
+    expect(next.change).toMatchObject({type:"set_brief", objective:"Later author input\n"});
+  });
+
+  it("r+2 with matching journal values is observation, preserving newer raw input and conflict review", async () => {
+    const item = pendingBrief(), applied = persisted(item.source, item.submission);
+    const current = structuredClone(applied); current.revision++; current.title = "Independent r+2 edit";
+    const log = journal(item.source, [item.submission.change, {type:"rename_project", title:current.title}]);
+    const later = editBriefField(item.draft, "objective", "Later correction kept verbatim\n\n", true);
+    const review = await inspectBriefOutcome(later, current, reader(current,log).transport);
+    expect(review.matchingValueRevisions).toEqual([item.source.revision+1]);
+    expect(later.pending?.outcome).toBe("UNKNOWN");
+    const released = releaseBriefUnconfirmed(later, current, review);
+    expect(released.fields.objective.raw).toBe("Later correction kept verbatim\n\n");
+    expect(() => prepareBriefSubmission(released,current,"brief")).toThrow(/Resolve/);
+    const resolved = resolveBriefField(released,current,"objective","draft");
+    expect(prepareBriefSubmission(resolved,current,"brief").change).toMatchObject({
+      type:"set_brief", objective:"Later correction kept verbatim\n\n",
+    });
+    expect(item.draft.pending?.outcome).toBe("UNKNOWN");
+  });
+
+  it("reads every contiguous page and brackets the journal with the same Project", async () => {
+    const item = pendingBrief(), current=structuredClone(item.source);
+    const changes=Array.from({length:257},(_,index)=>({type:"rename_project",title:"Revision "+index}));
+    current.revision+=changes.length; current.title="Revision 256";
+    const source=reader(current,journal(item.source,changes));
+    const review=await inspectBriefOutcome(item.draft,current,source.transport);
+    expect(review.events).toHaveLength(257);
+    expect(source.calls).toEqual({project:2,history:2});
+    expect(review.events[0].revision).toBe(item.source.revision+1);
+    expect(review.events.at(-1)?.revision).toBe(current.revision);
+  });
+
+  it("rejects gaps, duplicates, future events, incomplete pages and changing Project reads", async () => {
+    const item=pendingBrief(), current=structuredClone(item.source);
+    current.revision+=2; current.title="Peer";
+    const valid=journal(item.source,[{type:"rename_project",title:"Peer1"},{type:"rename_project",title:"Peer"}]);
+    const badLogs=[[],[valid[1]],[valid[0],valid[0]],[...valid,{...valid[1],revision:current.revision+1}]];
+    for(const events of badLogs) {
+      await expect(inspectBriefOutcome(item.draft,current,reader(current,events).transport))
+        .rejects.toThrow(/history/);
+      expect(briefHasUnconfirmedSubmission(item.draft)).toBe(true);
+    }
+    let reads=0;
+    await expect(inspectBriefOutcome(item.draft,current,{
+      readProject:async()=> { const value=structuredClone(current); if(reads++)value.revision++; return value; },
+      readHistory:async()=>valid,
+    })).rejects.toThrow(/changed while/);
+    const foreign=structuredClone(current); foreign.generation=crypto.randomUUID();
+    await expect(inspectBriefOutcome(item.draft,current,reader(foreign,valid).transport))
+      .rejects.toThrow(/changed/);
+    const tooFar=structuredClone(current);tooFar.revision=item.source.revision+MAX_BRIEF_OUTCOME_EVENTS+1;
+    await expect(inspectBriefOutcome(item.draft,tooFar,reader(tooFar,[]).transport))
+      .rejects.toThrow(/bounded/);
+  });
+
+  it("an unchanged Project still reads its real journal and never marks the old request NOT_SENT", async () => {
+    const item=pendingBrief(), source=reader(item.source,[]);
+    const review=await inspectBriefOutcome(item.draft,item.source,source.transport);
+    expect(source.calls).toEqual({project:2,history:1});
+    expect(review.events).toEqual([]);
+    expect(item.draft.pending?.outcome).toBe("UNKNOWN");
+    const released=releaseBriefUnconfirmed(item.draft,item.source,review);
+    expect(released.pending).toBeUndefined();
+    expect(item.draft.pending?.outcome).toBe("UNKNOWN");
+  });
+
+  it("rejects release against a changed Project, pending identity or diagnostic", async () => {
+    const item=pendingBrief();
+    const review=await inspectBriefOutcome(item.draft,item.source,reader(item.source,[]).transport);
+    const changed=structuredClone(item.source);changed.revision++;
+    expect(()=>releaseBriefUnconfirmed(item.draft,changed,review)).toThrow(/Inspect/);
+    const laterReply=retainBriefUncertainReply(item.draft,item.submission,"Original timeout remains UNKNOWN");
+    expect(()=>releaseBriefUnconfirmed(laterReply,item.source,review)).toThrow(/Inspect/);
+    const otherAttempt=structuredClone(item.draft);otherAttempt.pending!.intentId=crypto.randomUUID();
+    expect(()=>releaseBriefUnconfirmed(otherAttempt,item.source,review)).toThrow(/Inspect/);
+    expect(item.draft.pending?.outcome).toBe("UNKNOWN");
+  });
+
+  it("only the local pre-dispatch branch becomes NOT_SENT and a new preparation gets a fresh local identity", () => {
+    const item=pendingBrief(), before=structuredClone(item.draft);
+    const unsent=markBriefNotSent(item.draft,item.submission,"record or writer pointer was not confirmed");
+    expect(briefHasUnconfirmedSubmission(unsent)).toBe(false);
+    expect(unsent.pending?.outcome).toBe("NOT_SENT");
+    expect(unsent.fields).toEqual(before.fields);
+    const recovered=recovery(unsent,item.source);
+    const restored=decodeBriefRecovery(encodeBriefRecovery(recovered),recovered.scope,recovered.sessionId).draft!;
+    const next=prepareBriefSubmission(restored,item.source,"brief");
+    const staged=stageBriefSubmission(restored,item.source,next);
+    expect(staged.pending?.intentId).not.toBe(unsent.pending?.intentId);
+    expect(staged.pending?.outcome).toBe("UNKNOWN");
+    const wrong={...item.submission,revision:item.submission.revision+1};
+    expect(()=>markBriefNotSent(item.draft,wrong,"unrelated")).toThrow(/changed/);
+    const uncertain=retainBriefUncertainReply(item.draft,item.submission,"Exact original UNKNOWN diagnostic");
+    expect(uncertain.pending).toMatchObject({outcome:"UNKNOWN",diagnostic:"Exact original UNKNOWN diagnostic"});
+    expect(()=>prepareBriefSubmission(uncertain,item.source,"brief")).toThrow(/unconfirmed/);
+  });
+
+  it("archives the UNKNOWN copy byte for byte before releasing another writer with later inputs intact", async () => {
+    const item=pendingBrief(), later=editBriefField(item.draft,"audience","Later audience");
+    const review=await inspectBriefOutcome(later,item.source,reader(item.source,[]).transport);
+    const next=releaseBriefUnconfirmed(later,item.source,review);
+    const disk=new MemoryStorage(),pointer=new MemoryStorage();
+    const original=recovery(later,item.source,"original-writer",3);
+    const retained=retainReviewedBriefIntent(disk,pointer,"writer-pointer",original,next,"new-writer");
+    const key=briefDraftStorageKey(original.scope,original.sessionId);
+    expect(disk.getItem(key)).toBe(encodeBriefRecovery(original));
+    expect(decodeBriefRecovery(disk.getItem(key)!,original.scope,original.sessionId).draft?.pending?.outcome).toBe("UNKNOWN");
+    expect(pointer.getItem("writer-pointer")).toBe("new-writer");
+    expect(retained.draft?.pending).toBeUndefined();
+    expect(retained.draft?.fields.audience.raw).toBe("Later audience");
+    expect(disk.getItem(briefDraftStorageKey(retained.scope,retained.sessionId))).toBe(encodeBriefRecovery(retained));
+  });
+
+  it("keeps an already retained UNKNOWN archive exactly despite newer recovery timestamps", async () => {
+    const item=pendingBrief(), disk=new MemoryStorage(), pointer=new MemoryStorage();
+    const review=await inspectBriefOutcome(item.draft,item.source,reader(item.source,[]).transport);
+    const next=releaseBriefUnconfirmed(item.draft,item.source,review);
+    const original=recovery(item.draft,item.source,"original-writer",100);
+    writeBriefRecovery(disk,original);
+    writeBriefRecovery(disk,recovery(item.draft,item.source,"another-writer",1000));
+    const key=briefDraftStorageKey(original.scope,original.sessionId), exact=disk.getItem(key);
+    const retained=retainReviewedBriefIntent(disk,pointer,"writer-pointer",
+      {...original,updatedAt:10},next,"new-writer");
+    expect(disk.getItem(key)).toBe(exact);
+    expect(retained.updatedAt).toBeGreaterThan(1000);
+    expect(retained.draft?.pending).toBeUndefined();
+    expect(disk.getItem(briefDraftStorageKey(retained.scope,retained.sessionId))).toBe(encodeBriefRecovery(retained));
+  });
+
+  it("record or pointer failure during the recovery fork cannot return a released draft", async () => {
+    const item=pendingBrief();
+    const review=await inspectBriefOutcome(item.draft,item.source,reader(item.source,[]).transport);
+    const next=releaseBriefUnconfirmed(item.draft,item.source,review);
+    for(const failure of ["original","new-pending","pointer","released-record"] as const) {
+      const disk=new MemoryStorage(),pointer=new MemoryStorage();
+      const original=recovery(item.draft,item.source,"original-writer",3);
+      const write=disk.setItem.bind(disk);let writes=0;
+      disk.setItem=(key,value)=> {
+        writes++;
+        if((failure==="original"&&writes===1)||(failure==="new-pending"&&writes===2)
+          ||(failure==="released-record"&&writes===3))return; // real readback detects silent loss
+        write(key,value);
+      };
+      if(failure==="pointer")pointer.setItem=()=>{};
+      expect(()=>retainReviewedBriefIntent(disk,pointer,"writer-pointer",original,next,"new-writer")).toThrow();
+      expect(item.draft.pending?.outcome).toBe("UNKNOWN");
+      if(failure!=="original")
+        expect(disk.getItem(briefDraftStorageKey(original.scope,original.sessionId))).toBe(encodeBriefRecovery(original));
+      if(failure==="pointer"||failure==="released-record") {
+        const raw=disk.getItem(briefDraftStorageKey(original.scope,"new-writer"))!;
+        expect(decodeBriefRecovery(raw,original.scope,"new-writer").draft?.pending?.outcome).toBe("UNKNOWN");
+      }
+    }
+  });
+
+  it("caller preparation never mutates or silently accepts the original UNKNOWN record", async () => {
+    const item=pendingBrief(), original=structuredClone(item.draft);
+    const review=await inspectBriefOutcome(item.draft,item.source,reader(item.source,[]).transport);
+    const next=releaseBriefUnconfirmed(item.draft,item.source,review);
+    expect(item.draft).toEqual(original);
+    expect(next).not.toBe(item.draft);
+    expect(briefOutcomeReviewMatches(item.draft,item.source,review)).toBe(true);
+    expect(briefOutcomeReviewMatches(next,item.source,review)).toBe(false);
+    const forged=structuredClone(original);
+    (forged.pending as unknown as Record<string,unknown>).outcome="ACKNOWLEDGED";
+    const value=recovery(forged,item.source);
+    expect(()=>encodeBriefRecovery(value)).toThrow(/unconfirmed/);
   });
 });

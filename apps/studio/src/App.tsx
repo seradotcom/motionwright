@@ -2312,7 +2312,7 @@ export default function App() {
   const renderWorkspace = () => {
     switch (workspace) {
       case "Brief":
-        return <RichBriefView project={project} commit={commit} />;
+        return <RichBriefView project={project} commit={commitRequired} />;
       case "Narrative":
         return <RichNarrativeView project={project} scene={selectedScene} commit={commit} />;
       case "Audio":

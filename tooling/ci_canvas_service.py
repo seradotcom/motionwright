@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Canvas and Program browser contracts against the freshly built SQLite service."""
+"""Run Canvas, Program and Brief browser contracts against the freshly built SQLite service."""
 from __future__ import annotations
 
 import argparse
@@ -40,10 +40,33 @@ PROGRAM_TITLES = (
     "a real saved partial cut excludes an editable Program scene until an explicit full-sequence revision",
     "real SQLite profile cut with stale localized text shows only the excluded original source after reopen",
 )
+BRIEF_TITLES = (
+    "saving the title or brief commits only that group and conserves the other raw inputs",
+    "a late real reply preserves newer typing and reload never replays an already committed brief",
+    "returning an in-flight field to its original value survives navigation and reload until explicitly saved",
+    "a real brief validation failure preserves every input through reload and correction",
+    "two real clients resolve only the overlapping brief field by keeping the saved value",
+    "two real clients resolve only the overlapping brief field by keeping the draft value",
+    "reopening revokes a real grant without changing the revision or clearing the refused brief",
+)
+BRIEF_RECOVERY_TITLES = (
+    "lost brief session writer pointer stops service grant; explicit Restore saves once and survives reopen",
+)
+BRIEF_UNCERTAINTY_TITLES = (
+    "an unrelated r+1 is reviewed without acknowledging or replaying an uncertain Brief",
+    "a committed Brief followed by r+2 preserves later input until separate review",
+    "Brief record retention failure is NOT_SENT and retry backup permits one explicit save",
+    "Brief pointer retention failure is NOT_SENT and retry backup permits one explicit save",
+    "a late Brief reply cannot consume the pending state of a new recovery writer",
+    "a failed recovery fork pointer keeps the earlier Brief UNKNOWN and sends nothing",
+)
 SELECTIONS = (
     ("canvas", "canvas-draft-service.spec.ts", CANVAS_TITLES),
     ("ink", "visual-language-draft-service.spec.ts", (INK_TITLE,)),
     ("program", "program-design-service.spec.ts", PROGRAM_TITLES),
+    ("brief", "brief-service.spec.ts", BRIEF_TITLES),
+    ("brief-recovery", "brief-recovery-admission-service.spec.ts", BRIEF_RECOVERY_TITLES),
+    ("brief-uncertain", "brief-uncertain-outcome-service.spec.ts", BRIEF_UNCERTAINTY_TITLES),
 )
 
 
@@ -124,6 +147,12 @@ def source_observation(repo):
         "apps/studio/tests/canvas-draft-service.spec.ts",
         "apps/studio/tests/visual-language-draft-service.spec.ts",
         "apps/studio/tests/program-design-service.spec.ts",
+        "apps/studio/tests/brief-service.spec.ts",
+        "apps/studio/tests/brief-recovery-admission-service.spec.ts",
+        "apps/studio/tests/brief-uncertain-outcome-service.spec.ts",
+        "apps/studio/src/App.tsx",
+        "apps/studio/src/BriefWorkspace.tsx",
+        "apps/studio/src/briefDraft.ts",
         "tooling/ci_canvas_service.py",
     )
     files = {}
@@ -208,7 +237,8 @@ def main():
             if label == "ink":
                 argv += ["--grep", re.escape(INK_TITLE) + "$"]
             command = execute(argv, repo / "apps/studio", case_env, output, label,
-                              1800 if label == "canvas" else 600 if label == "program" else 180)
+                              1800 if label == "canvas" else 900 if label in ("brief", "brief-uncertain")
+                              else 600 if label == "program" else 180)
             selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
             report["selections"].append(selection)
             try:
