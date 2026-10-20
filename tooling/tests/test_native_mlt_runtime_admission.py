@@ -37,8 +37,26 @@ class NativeModuleAdmissionTests(unittest.TestCase):
         module.write_bytes(binary)
         module_sha = hashlib.sha256(binary).hexdigest()
         receipt = {
+            "schema": "motionwright.native.mlt.repaired-only-compiler-receipt/1",
             "original_source_sha256": gate.ORIGINAL_SHA,
             "repaired_source_sha256": "ff" * 32 if bad_source else gate.REPAIRED_SHA,
+            "compiled_source_sha256": gate.REPAIRED_SHA,
+            "instrumented_combined_source_compiled": False,
+            "compiled_consumer_object_sha256": "ab" * 32,
+            "compiled_consumer_object_linked": True,
+            "linker_consumer_object_sha256": "ab" * 32,
+            "linker_command_sha256": "cd" * 32,
+            "linker_command": {
+                "original_link_command_sha256": "cd" * 32,
+                "repaired_consumer_object_in_link": True,
+            },
+            "compiler_result": "PASS",
+            "source_sanitizers_result": "PASS",
+            "source_frame_oracle_result": "PASS",
+            "module_installed": False,
+            "source_head": "aa" * 20,
+            "run_id": "39352693034",
+            "run_attempt": "1",
             "compiled_module_sha256": module_sha,
             "compiled_module_bytes": len(binary),
             "MLT_version": "7.22.0",
