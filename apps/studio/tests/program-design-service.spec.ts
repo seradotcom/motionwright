@@ -137,3 +137,99 @@ test("Timeline Program renders actual saved Canvas text, style and selected loca
       final,[],[()=>page.close()]);
   }
 });
+
+test("a real saved partial cut excludes an editable Program scene until an explicit full-sequence revision", async ({page}, info) => {
+  const service = await ScopedChangeService.create({
+    databasePath:info.outputPath("studio","cut-disclosure.sqlite3"),desktopInvokeFixture:true,
+  });
+  let final: Project | undefined, projectId: string | null = null;
+  const evidence: {label:string;revision:number;project:Project}[] = [];
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    projectId = initial.id; final = initial;
+    const originalScene = initial.scenes.find(scene => scene.renderer === "motion-canvas"
+      && scene.nodes.some(node => node.kind === "text"));
+    if (!originalScene) throw new Error("A real source text scene is required");
+    const textNode = originalScene.nodes.find(node => node.kind === "text")!;
+    const profile = initial.deliverables[0];
+    if (!profile) throw new Error("A real output profile is required");
+    await service.attachFixturePage(page,initial.id); await page.goto("/");
+    await button(page,"Canvas").click();
+    await button(page,"Add scene").click();
+    await page.getByLabel("New scene name",{exact:true}).fill("A3 explicitly included cut scene");
+    await page.locator(".add-scene-form").getByRole("button",{name:"Add",exact:true}).click();
+    await revision(page,initial.revision+1);
+    const twoScene = await service.project(initial.id);
+    final = twoScene;
+    evidence.push({label:"new scene authored through Studio",revision:twoScene.revision,project:twoScene});
+    expect(twoScene.scenes.length).toBeGreaterThan(initial.scenes.length);
+    const originalIndex = twoScene.scenes.findIndex(scene => scene.id === originalScene.id);
+    expect(originalIndex).toBeGreaterThanOrEqual(0);
+
+    await button(page,"Deliver").click();
+    await button(page,"Customize cut").click();
+    const scope = page.getByRole("region",{name:"Variant content",exact:true});
+    const include = scope.getByRole("checkbox",{name:"Include",exact:true});
+    await expect(include).toHaveCount(twoScene.scenes.length);
+    await include.nth(originalIndex).uncheck();
+    await button(page,"Save profile").click();
+    await revision(page,twoScene.revision+1);
+    let saved = await service.project(initial.id);
+    final = saved;
+    evidence.push({label:"real partial output cut excludes original scene",revision:saved.revision,project:saved});
+    const savedProfile = saved.deliverables.find(item => item.id === profile.id);
+    expect(savedProfile).toBeDefined();
+    expect(savedProfile!.included_scene_ids.length).toBeGreaterThan(0);
+    expect(savedProfile!.included_scene_ids).not.toContain(originalScene.id);
+    expect(savedProfile!.included_scene_ids).toContain(twoScene.scenes.at(-1)!.id);
+    await button(page,"Canvas").click();
+    await page.locator(".tree-row").filter({has:page.getByText(originalScene.name,{exact:true})}).click();
+    await button(page,"Timeline").click();
+    const monitor = page.getByLabel("Saved Canvas editorial design monitor",{exact:true});
+    await expect(monitor).toHaveAttribute("data-output-cut-scope","excluded");
+    await expect(monitor.getByRole("status")).toContainText("SCENE EXCLUDED FROM SELECTED OUTPUT CUT");
+    await expect(monitor).toContainText("This editable source scene will not be exported in this profile");
+    await expect(readProgramText(page,textNode.id)).toContainText(textNode.text ?? "");
+    await expect(page.getByRole("button",{name:"Review final AV"})).toHaveCount(0);
+    const applyCount = applied(service).length;
+    expect(applyCount).toBe(2);
+    await service.close(); await service.start(); await page.reload();
+    await revision(page,saved.revision);
+    await button(page,"Timeline").click();
+    await expect(monitor).toHaveAttribute("data-output-cut-scope","excluded");
+    await expect(readProgramText(page,textNode.id)).toContainText(textNode.text ?? "");
+    expect(await service.project(initial.id)).toEqual(saved);
+    expect(applied(service)).toHaveLength(applyCount);
+
+    await button(page,"Deliver").click();
+    await button(page,"Use full sequence").click();
+    await button(page,"Save profile").click();
+    await revision(page,saved.revision+1);
+    saved=await service.project(initial.id);
+    final=saved;
+    evidence.push({label:"explicit return to full output sequence",revision:saved.revision,project:saved});
+    expect(saved.deliverables.find(item => item.id === profile.id)?.included_scene_ids).toEqual([]);
+    await button(page,"Timeline").click();
+    await expect(monitor).toHaveAttribute("data-output-cut-scope","full");
+    await expect(monitor.getByRole("status")).toHaveCount(0);
+    await expect(readProgramText(page,textNode.id)).toContainText(textNode.text ?? "");
+    const journal=await service.history(initial.id,initial.revision);
+    expect(journal.map(item => item.change.type)).toEqual([
+      "add_scene","upsert_deliverable","upsert_deliverable",
+    ]);
+    expect(applied(service)).toHaveLength(applyCount+1);
+    expect(await service.project(initial.id)).toEqual(saved);
+    const proof=info.outputPath("program-cut-source-oracle.json");
+    await writeFile(proof,JSON.stringify({
+      source:"real authored Studio UI -> Rust StudioService -> SQLite -> Project + journal + browser DOM",
+      exact_profile:profile.id,editable_scene:originalScene.id,
+      excludes:["native Film frames","actual exported AV","installed Tauri","human acceptance"],
+      checkpoints:evidence,serialized_cut_sequence:["full","excluded","full"],journal,
+    },null,2));
+    await info.attach("program-cut-source-oracle",{path:proof,contentType:"application/json"});
+  } finally {
+    if(projectId){try{final=await service.project(projectId)}catch{/* finalization reports */}}
+    await service.finalizeClosedStore(info.outputPath("program-cut-closed-store"),
+      final,[],[()=>page.close()]);
+  }
+});
