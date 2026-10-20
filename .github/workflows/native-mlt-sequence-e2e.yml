@@ -27,6 +27,8 @@ on:
       - 'tooling/native_mlt_sequence_e2e.py'
       - 'tooling/ci_private_evidence.py'
       - 'tooling/native_mlt_g2_custody.py'
+      - 'tooling/mlt-audio-diagnostic/repair_planar_source.py'
+      - 'tooling/tests/test_native_mlt_compiler_intake.py'
       - 'tooling/native_mlt_g2_observation.py'
       - 'tooling/native_mlt_runtime_admission.py'
       - 'tooling/native_mlt_loaded_module.py'
@@ -128,7 +130,8 @@ jobs:
             --pattern test_native_mlt_owner_workspace.py \
             --pattern test_native_mlt_g2_custody.py \
             --pattern test_native_mlt_g2_observation.py \
-            --pattern test_native_mlt_executable_alias.py
+            --pattern test_native_mlt_executable_alias.py \
+            --pattern test_native_mlt_compiler_intake.py
           "$CUSTODY_PYTHON" -B -E -s - "$report" <<'PY'
           import json, os, sys
           from pathlib import Path
@@ -141,6 +144,7 @@ jobs:
               "dotted:tooling.tests.test_native_mlt_g2_custody": 27,
               "dotted:tooling.tests.test_native_mlt_g2_observation": 23,
               "dotted:tooling.tests.test_native_mlt_executable_alias": 24,
+              "dotted:tooling.tests.test_native_mlt_compiler_intake": 24,
           }
           assert {step["entry_point"] for step in result["steps"]} == set(expected)
           assert len(result["steps"]) == len(expected)

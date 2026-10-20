@@ -17,6 +17,9 @@ import stat
 import subprocess
 import sys
 import zipfile
+import tarfile
+import urllib.request
+import zlib
 
 from ci_private_evidence import (
     CustodyRejected, HEX, SOURCE, MAX_FILE, MAX_TOTAL, MAX_FILES, MAX_JSON,
@@ -28,6 +31,15 @@ import native_mlt_g2_observation as g2
 import native_mlt_runtime_admission as admission
 
 DISPATCH_SCHEMA = "motionwright.native.mlt-g2-dispatch/1"
+SOURCE_DISPATCH_SCHEMA = "motionwright.native.mlt-g2-dispatch/2"
+SOURCE_MODE = "pinned-upstream-reconstruction"
+UPSTREAM_URL = "https://archive.ubuntu.com/ubuntu/pool/universe/m/mlt/mlt_7.22.0.orig.tar.gz"
+UPSTREAM_ARCHIVE_SHA256 = "7cf4d9573a061d76902c6e12a2f09f5f461e7c697635233df82a63a3fe4d6da6"
+UPSTREAM_MEMBER = "mlt-7.22.0/src/modules/avformat/consumer_avformat.c"
+REPAIR_GENERATOR = "tooling/mlt-audio-diagnostic/repair_planar_source.py"
+REPAIR_GENERATOR_SHA256 = "028d1f6e7e2a034aeb60b0e40dfc5154af401691f960483c3d0b77fe09bde87d"
+MAX_UPSTREAM_ARCHIVE = 16 * 1024 * 1024
+MAX_UPSTREAM_TAR = 64 * 1024 * 1024
 PUBLIC_SCHEMA = "motionwright.native.mlt-g2-public/1"
 REPO = "seradotcom/motionwright"
 ARTIFACT_KEYS = {"artifact_id", "run_id", "run_attempt", "source_sha", "zip_sha256"}
@@ -92,7 +104,7 @@ def validate_dispatch(raw, current):
     value = strict(raw)
     require(set(value) == {"schema", "motionwright_sha", "semwright_sha",
                            "official_runtime", "compiler", "recipient"}
-            and value["schema"] == DISPATCH_SCHEMA
+            and value["schema"] in (DISPATCH_SCHEMA, SOURCE_DISPATCH_SCHEMA)
             and value["motionwright_sha"] == current["source_sha"]
             and value["semwright_sha"] == current["semwright_sha"], "dispatch_source_binding")
     official = value["official_runtime"]
@@ -104,11 +116,17 @@ def validate_dispatch(raw, current):
                 for k in ("receipt_sha256", "known_original_module_sha256", "known_melt_sha256")),
             "official_runtime_pins_required")
     compiler = value["compiler"]
-    require(type(compiler) is dict and set(compiler) == {"artifact", "members"}, "compiler_contract")
+    source_reconstruction = value["schema"] == SOURCE_DISPATCH_SCHEMA
+    keys = {"artifact", "members", "source_mode"} if source_reconstruction else {"artifact", "members"}
+    require(type(compiler) is dict and set(compiler) == keys, "compiler_contract")
+    if source_reconstruction:
+        require(compiler["source_mode"] == SOURCE_MODE, "compiler_source_mode")
     artifact_descriptor(compiler["artifact"])
-    require(type(compiler["members"]) is dict and set(compiler["members"]) == {
-        "original_c_source", "repaired_c_source", "compiled_module", "compiler_receipt_path"},
-        "compiler_member_contract")
+    members = {"compiled_module", "compiler_receipt_path"}
+    if not source_reconstruction:
+        members |= {"original_c_source", "repaired_c_source"}
+    require(type(compiler["members"]) is dict and set(compiler["members"]) == members,
+            "compiler_member_contract")
     selected = [safe_member(p) for p in compiler["members"].values()]
     require(len(set(selected)) == len(selected), "duplicate_selected_compiler_member")
     public_key(value["recipient"])
@@ -132,7 +150,7 @@ def source_guard(repo, current):
         "tooling/native_mlt_sequence_e2e.py", "tooling/native_mlt_runtime_admission.py",
         "tooling/native_mlt_loaded_module.py", "tooling/mlt_official_runtime_intake.py",
         "tooling/native_mlt_ci_pcm_envelope.py", "tooling/native_pcm_source_fidelity.py",
-        "crates/native/examples/native-mlt-sequence-e2e.rs",
+        "crates/native/examples/native-mlt-sequence-e2e.rs", REPAIR_GENERATOR,
     ]
     result = {}
     for path in selected:
@@ -196,6 +214,141 @@ def zip_member(raw, member, expected_sha, limit):
     return data
 
 
+
+class NoUpstreamRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise CustodyRejected("upstream_redirect_refused")
+
+
+def retrieve_upstream(directory):
+    """Retain one bounded response; no retry or fallback after a partial transfer."""
+    new_json(directory / "upstream-download.intent.json", {
+        "url": UPSTREAM_URL, "sha256": UPSTREAM_ARCHIVE_SHA256,
+        "automatic_retry": False, "redirects_allowed": False,
+        "origin": "RETRIEVED_PINNED_UPSTREAM", "compiler_artifact_member": False,
+    })
+    request = urllib.request.Request(UPSTREAM_URL, headers={"Accept-Encoding": "identity"})
+    opener = urllib.request.build_opener(NoUpstreamRedirect())
+    output_path = directory / "upstream-source.tar.gz"
+    try:
+        with output_path.open("xb") as output:
+            with opener.open(request, timeout=30) as response:
+                headers = dict(response.headers.items())
+                require(len(json_bytes(headers)) <= MAX_JSON, "upstream_headers_budget")
+                new_json(directory / "upstream-download.response.json", {
+                    "url": response.geturl(), "status": response.status, "headers": headers,
+                })
+                require(response.status == 200 and response.geturl() == UPSTREAM_URL,
+                        "upstream_response_identity")
+                require(response.headers.get("Content-Encoding", "identity") == "identity",
+                        "upstream_content_encoding")
+                total = 0
+                while True:
+                    chunk = response.read(min(64 * 1024, MAX_UPSTREAM_ARCHIVE - total + 1))
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    total += len(chunk)
+                    require(total <= MAX_UPSTREAM_ARCHIVE, "upstream_download_budget")
+                output.flush()
+                os.fsync(output.fileno())
+        raw = regular(output_path, MAX_UPSTREAM_ARCHIVE)[0]
+        require(raw and sha(raw) == UPSTREAM_ARCHIVE_SHA256, "upstream_archive_digest")
+    except BaseException as error:
+        new_json(directory / "upstream-download.terminal.json", {
+            "status": "ERROR_OR_UNKNOWN", "failure_class": type(error).__name__,
+            "automatic_retry": False, "retained_partial_response": output_path.exists(),
+        })
+        raise
+    new_json(directory / "upstream-download.terminal.json", {
+        "status": "RECEIVED_PINNED_BYTES", "sha256": sha(raw), "bytes": len(raw),
+        "automatic_retry": False, "compiler_artifact_member": False,
+    })
+    return raw
+
+
+def original_from_upstream(raw):
+    require(type(raw) is bytes and 0 < len(raw) <= MAX_UPSTREAM_ARCHIVE
+            and sha(raw) == UPSTREAM_ARCHIVE_SHA256, "upstream_archive_digest")
+    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    expanded = decoder.decompress(raw, MAX_UPSTREAM_TAR + 1)
+    require(len(expanded) <= MAX_UPSTREAM_TAR and decoder.eof
+            and not decoder.unconsumed_tail and not decoder.unused_data,
+            "upstream_single_gzip_stream_budget")
+    with tarfile.open(fileobj=io.BytesIO(expanded), mode="r:") as archive:
+        entries = []
+        seen = set()
+        total = 0
+        selected = None
+        for member in archive:
+            name = member.name.rstrip("/") if member.isdir() else member.name
+            safe_member(name)
+            require(name not in seen, "upstream_duplicate_member")
+            seen.add(name)
+            entries.append(member)
+            total += member.size
+            require(len(entries) <= MAX_FILES and total <= MAX_UPSTREAM_TAR,
+                    "upstream_tar_budget")
+            if name == UPSTREAM_MEMBER:
+                require(member.isfile() and member.type in (tarfile.REGTYPE, tarfile.AREGTYPE)
+                        and member.size == 96690, "upstream_selected_regular_member")
+                selected = member
+        require(selected is not None, "upstream_selected_member_missing")
+        stream = archive.extractfile(selected)
+        require(stream is not None, "upstream_member_unreadable")
+        with stream:
+            original = stream.read(96691)
+    require(len(original) == 96690 and sha(original) == admission.ORIGINAL_SHA,
+            "upstream_consumer_digest")
+    return original
+
+
+def reconstruct_sources(raw, repo, directory):
+    original = original_from_upstream(raw)
+    generator_path = repo / REPAIR_GENERATOR
+    generator = regular(generator_path, 256 * 1024)[0]
+    require(sha(generator) == REPAIR_GENERATOR_SHA256, "source_generator_digest")
+    # Execute only the verified byte snapshot of the existing source generator.
+    namespace = {"__name__": "motionwright_pinned_planar_source",
+                 "__file__": str(generator_path)}
+    exec(compile(generator, str(generator_path), "exec"), namespace)
+    repaired, _ = namespace["repair_exact_original"](original)
+    require(type(repaired) is bytes and len(repaired) == 98847
+            and sha(repaired) == admission.REPAIRED_SHA, "reconstructed_source_digest")
+    require(regular(generator_path, 256 * 1024)[0] == generator,
+            "source_generator_changed")
+    new_bytes(directory / "original_c_source", original)
+    new_bytes(directory / "repaired_c_source", repaired)
+    new_json(directory / "source-reconstruction.json", {
+        "schema": "motionwright.native.mlt-source-reconstruction/1",
+        "upstream_url": UPSTREAM_URL, "upstream_archive_sha256": sha(raw),
+        "upstream_member": UPSTREAM_MEMBER,
+        "original_c_source": {"sha256": sha(original), "bytes": len(original),
+                              "origin": "RETRIEVED_PINNED_UPSTREAM"},
+        "repaired_c_source": {"sha256": sha(repaired), "bytes": len(repaired),
+                              "origin": "DETERMINISTIC_SOURCE_RECONSTRUCTION"},
+        "generator_path": REPAIR_GENERATOR, "generator_sha256": sha(generator),
+        "compiler_artifact_contains_sources": False, "compiled_binary_rebuilt": False,
+        "module_installed": False, "native_execution": "NOT_RUN",
+    })
+
+
+def intake_compiler(dispatch, repo, directory):
+    raw = download_artifact(dispatch["compiler"]["artifact"], "compiler", directory)
+    pins = {"original_c_source": admission.ORIGINAL_SHA, "repaired_c_source": admission.REPAIRED_SHA,
+            "compiled_module": g2.REPAIRED_MODULE_SHA256, "compiler_receipt_path": g2.COMPILER_RECEIPT_SHA256}
+    for name, member in dispatch["compiler"]["members"].items():
+        data = zip_member(raw, member, pins[name], admission.MAX_ELF_BYTES)
+        new_bytes(directory / name, data)
+    if dispatch["compiler"].get("source_mode") == SOURCE_MODE:
+        upstream = retrieve_upstream(directory)
+        reconstruct_sources(upstream, repo, directory)
+    admission.source_compiler_closure(
+        directory / "original_c_source", directory / "repaired_c_source",
+        directory / "compiled_module", g2.REPAIRED_MODULE_SHA256,
+        directory / "compiler_receipt_path", g2.COMPILER_RECEIPT_SHA256)
+
+
 def prepare(env):
     require(sys.platform == "linux" and os.geteuid() != 0, "prepare_requires_normal_Linux_runner")
     current = context(env)
@@ -221,16 +374,7 @@ def prepare(env):
     g2.verify_official_runtime_bindings(
         proof, official["known_original_module_sha256"], official["known_melt_sha256"])
     new_bytes(control / "intake/official-runtime-receipt.json", receipt)
-    raw = download_artifact(dispatch["compiler"]["artifact"], "compiler", control / "intake")
-    pins = {"original_c_source": admission.ORIGINAL_SHA, "repaired_c_source": admission.REPAIRED_SHA,
-            "compiled_module": g2.REPAIRED_MODULE_SHA256, "compiler_receipt_path": g2.COMPILER_RECEIPT_SHA256}
-    for name, pin in pins.items():
-        data = zip_member(raw, dispatch["compiler"]["members"][name], pin, admission.MAX_ELF_BYTES)
-        new_bytes(control / "intake" / name, data)
-    admission.source_compiler_closure(
-        control / "intake/original_c_source", control / "intake/repaired_c_source",
-        control / "intake/compiled_module", g2.REPAIRED_MODULE_SHA256,
-        control / "intake/compiler_receipt_path", g2.COMPILER_RECEIPT_SHA256)
+    intake_compiler(dispatch, Path(env["GITHUB_WORKSPACE"]), control / "intake")
     new_json(control / "records/intake-complete.json",
              {"context": current, "source_inputs": "ADMITTED_BYTES_MATCHED",
               "module_installed": False, "native_execution": "NOT_RUN"})

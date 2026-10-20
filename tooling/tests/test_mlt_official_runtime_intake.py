@@ -779,5 +779,19 @@ class OfficialMeltAliasTests(unittest.TestCase):
         with self.assertRaises(intake.IntakeError):
             intake.extract_regular_member(raw, "/usr/bin/melt-7")
 
+
+class BinaryReadbackTests(unittest.TestCase):
+    def test_regular_capture_preserves_crlf_ctrl_z_and_every_byte(self):
+        raw = b"prefix\r\nline\x1aafter-eof\r\n" + bytes(range(256)) * 3 + b"\x00tail"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "original.bin"
+            path.write_bytes(raw)
+            observed, receipt = intake.capture_regular(path, len(raw))
+            self.assertEqual(observed, raw)
+            self.assertEqual(receipt["sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(receipt["size"], len(raw))
+            self.assertEqual(receipt["before"], receipt["after"])
+            self.assertEqual(receipt["after"], receipt["namespace_after"])
+
 if __name__ == "__main__":
     unittest.main()
