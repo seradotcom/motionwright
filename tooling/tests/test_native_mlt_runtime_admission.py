@@ -60,13 +60,15 @@ class NativeModuleAdmissionTests(unittest.TestCase):
         self.assertEqual(gate.REPAIRED_SHA,
             "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0")
 
-    def test_existing_user_windows_machine_can_never_admit_module(self):
-        if sys.platform == "linux":
-            self.skipTest("GHA/Linux gating is tested on Windows executor")
-        with self.assertRaisesRegex(gate.AdmissionRejected, "disposable_GHA"):
-            gate.disposable_linux_runner()
-        with self.assertRaisesRegex(gate.AdmissionRejected, "disposable_GHA"):
-            gate.install({}, Path("/tmp/fake.so"), Path("/tmp/fake-owner"))
+    def test_simulated_windows_machine_can_never_admit_module_on_either_runner(self):
+        # This control is deliberately portable: run the Windows platform
+        # negative on Linux CI too, without changing any real runtime file.
+        # Strict G1 may now require zero skips across both hosts.
+        with mock.patch.object(gate.sys, "platform", "win32"):
+            with self.assertRaisesRegex(gate.AdmissionRejected, "disposable_GHA"):
+                gate.disposable_linux_runner()
+            with self.assertRaisesRegex(gate.AdmissionRejected, "disposable_GHA"):
+                gate.install({}, Path("/tmp/fake.so"), Path("/tmp/fake-owner"))
 
     def test_existing_unsafe_runtime_overrides_are_explicitly_forbidden(self):
         self.assertIn("LD_LIBRARY_PATH", gate.FORBIDDEN_ENV)
@@ -151,10 +153,11 @@ class NativeModuleAdmissionTests(unittest.TestCase):
             self.assertFalse(missing.exists())
 
     def test_repaired_module_install_requires_linux_uid0_and_ephemeral_allowance(self):
+        # In all environments, absence of the explicit owner authorization
+        # must fail before preflight can touch an installed shared library.
         with mock.patch.dict(os.environ, {"MOTIONWRIGHT_APPROVED_MLT_G2": "0"}):
-            if sys.platform != "linux":
-                with self.assertRaises(gate.AdmissionRejected):
-                    gate.disposable_linux_runner()
+            with self.assertRaisesRegex(gate.AdmissionRejected, "disposable_GHA"):
+                gate.disposable_linux_runner()
         self.assertFalse(gate.INSTALLED.as_posix().startswith("/tmp/"))
 
 
