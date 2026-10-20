@@ -86,8 +86,33 @@ def source_compiler_closure(original: Path, repaired: Path,
         return obj
     proof = json.loads(raw, object_pairs_hook=no_duplicate_keys)
     require(type(proof) is dict
+            and proof.get("schema")
+            == "motionwright.native.mlt.repaired-only-compiler-receipt/1"
             and proof.get("original_source_sha256") == ORIGINAL_SHA
             and proof.get("repaired_source_sha256") == REPAIRED_SHA
+            and proof.get("compiled_source_sha256") == REPAIRED_SHA
+            and proof.get("instrumented_combined_source_compiled") is False
+            and type(proof.get("compiled_consumer_object_sha256")) is str
+            and HEX.fullmatch(proof["compiled_consumer_object_sha256"]) is not None
+            and proof.get("compiled_consumer_object_linked") is True
+            and proof.get("linker_consumer_object_sha256")
+            == proof["compiled_consumer_object_sha256"]
+            and type(proof.get("linker_command_sha256")) is str
+            and HEX.fullmatch(proof["linker_command_sha256"]) is not None
+            and type(proof.get("linker_command")) is dict
+            and proof["linker_command"].get("repaired_consumer_object_in_link") is True
+            and proof["linker_command"].get("original_link_command_sha256")
+            == proof["linker_command_sha256"]
+            and proof.get("compiler_result") == "PASS"
+            and proof.get("source_sanitizers_result") == "PASS"
+            and proof.get("source_frame_oracle_result") == "PASS"
+            and proof.get("module_installed") is False
+            and type(proof.get("source_head")) is str
+            and re.fullmatch(r"[0-9a-f]{40}", proof["source_head"]) is not None
+            and type(proof.get("run_id")) is str
+            and proof["run_id"].isdecimal()
+            and type(proof.get("run_attempt")) is str
+            and proof["run_attempt"].isdecimal()
             and proof.get("compiled_module_sha256") == candidate_sha
             and proof.get("compiled_module_bytes") == len(elf)
             and proof.get("MLT_version") == "7.22.0"
