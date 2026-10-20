@@ -1495,4 +1495,242 @@ mod tests {
             Some(completed)
         );
     }
+
+    fn admitted_recovery_retry(
+        path: &std::path::Path,
+    ) -> (
+        Store,
+        motionwright_domain::Project,
+        ProductionReceiptInput,
+        ProductionReceipt,
+    ) {
+        let mut store = Store::open(path).unwrap();
+        let project = store
+            .create_named_project("Recovery attempt scope")
+            .unwrap();
+        let input = revision_binding_input(
+            &project,
+            "attempt-bound-stage",
+            "motionwright.recovery.motion-canvas",
+        );
+        store.claim_recovery_stage(input.clone()).unwrap();
+        store
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "failed_known".into(),
+                payload: json!({"attempt": 1, "retryable": true}),
+                ..input.clone()
+            })
+            .unwrap();
+        let pending = store.claim_recovery_stage(input.clone()).unwrap();
+        assert_eq!(pending.payload["attempt"], json!(2));
+        (store, project, input, pending)
+    }
+
+    #[test]
+    fn recovery_old_attempt_result_cannot_close_active_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("late-attempt.sqlite3");
+        let (mut store, project, input, pending) = admitted_recovery_retry(&path);
+        let before = store.production_receipt_watermark(project.id).unwrap();
+        for (stage, payload) in [
+            ("completed", json!({"attempt": 1})),
+            ("failed_known", json!({"attempt": 1, "retryable": true})),
+            ("outcome_unknown", json!({"attempt": 1})),
+            ("completed", json!({"attempt": 3})),
+            ("completed", json!({})),
+        ] {
+            let result = store.append_production_receipt(ProductionReceiptInput {
+                stage: stage.into(),
+                payload,
+                ..input.clone()
+            });
+            assert!(
+                matches!(result, Err(StorageError::RequestReuse)),
+                "only the active admitted attempt can be observed: {result:?}"
+            );
+            assert_eq!(
+                store.production_receipt_watermark(project.id).unwrap(),
+                before
+            );
+        }
+        drop(store);
+        let mut reopened = Store::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .latest_production_receipt(project.id, &input.request_id)
+                .unwrap(),
+            Some(pending)
+        );
+        assert!(matches!(
+            reopened.claim_recovery_stage(input.clone()),
+            Err(StorageError::RequestReuse)
+        ));
+        assert!(matches!(
+            reopened.claim_recovery_stage(ProductionReceiptInput {
+                request_id: "renamed-after-late-observer".into(),
+                request_sha256: "b".repeat(64),
+                ..input
+            }),
+            Err(StorageError::RequestReuse)
+        ));
+        assert_eq!(
+            reopened.production_receipt_watermark(project.id).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn recovery_terminal_observation_cannot_be_reclassified_as_retryable() {
+        for terminal in ["completed", "outcome_unknown", "failed_known"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("terminal-stability.sqlite3");
+            let mut store = Store::open(&path).unwrap();
+            let project = store.create_named_project("Terminal observation").unwrap();
+            let input = revision_binding_input(
+                &project,
+                "terminal-stage",
+                "motionwright.recovery.motion-canvas",
+            );
+            store.claim_recovery_stage(input.clone()).unwrap();
+            let original = store
+                .append_production_receipt(ProductionReceiptInput {
+                    stage: terminal.into(),
+                    payload: json!({"attempt": 1, "retryable": false}),
+                    ..input.clone()
+                })
+                .unwrap();
+            drop(store);
+            let mut reopened = Store::open(&path).unwrap();
+            let before = reopened.production_receipt_watermark(project.id).unwrap();
+            let result = reopened.append_production_receipt(ProductionReceiptInput {
+                stage: "failed_known".into(),
+                payload: json!({"attempt": 1, "retryable": true}),
+                ..input.clone()
+            });
+            assert!(
+                matches!(result, Err(StorageError::RequestReuse)),
+                "a generic append cannot downgrade {terminal}: {result:?}"
+            );
+            assert_eq!(
+                reopened
+                    .latest_production_receipt(project.id, &input.request_id)
+                    .unwrap(),
+                Some(original)
+            );
+            assert!(matches!(
+                reopened.claim_recovery_stage(input),
+                Err(StorageError::RequestReuse)
+            ));
+            assert_eq!(
+                reopened.production_receipt_watermark(project.id).unwrap(),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_receipt_append_cannot_bypass_stage_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path().join("no-admission.sqlite3")).unwrap();
+        let project = store
+            .create_named_project("Only claim can admit recovery")
+            .unwrap();
+        let input = revision_binding_input(
+            &project,
+            "unadmitted-stage",
+            "motionwright.recovery.motion-canvas",
+        );
+        for stage in [
+            "dispatching",
+            "failed_known",
+            "completed",
+            "outcome_unknown",
+        ] {
+            let result = store.append_production_receipt(ProductionReceiptInput {
+                stage: stage.into(),
+                payload: json!({"attempt": 1, "retryable": true}),
+                ..input.clone()
+            });
+            assert!(
+                matches!(result, Err(StorageError::RequestReuse)),
+                "generic append cannot create an unadmitted recovery history: {result:?}"
+            );
+            assert_eq!(
+                store
+                    .production_receipt_watermark(project.id)
+                    .unwrap()
+                    .count,
+                0
+            );
+        }
+        let admitted = store.claim_recovery_stage(input).unwrap();
+        assert_eq!(admitted.payload["attempt"], json!(1));
+        assert_eq!(
+            store
+                .production_receipt_watermark(project.id)
+                .unwrap()
+                .count,
+            1
+        );
+    }
+
+    #[test]
+    fn recovery_ambiguous_retained_attempt_history_cannot_authorize_replay() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ambiguous-retained-history.sqlite3");
+        let (store, project, input, _) = admitted_recovery_retry(&path);
+        // Retained bytes from an older writer: a terminal for attempt1 arrived
+        // after attempt2's admission. Keep it available for audit, never as proof.
+        store
+            .conn
+            .execute(
+                "INSERT INTO production_receipts(
+               receipt_id,project_id,generation,revision,request_id,request_sha256,
+               command,stage,payload_json,created_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,'failed_known',?8,?9)",
+                params![
+                    Uuid::now_v7().to_string(),
+                    project.id.to_string(),
+                    project.generation.to_string(),
+                    project.revision as i64,
+                    &input.request_id,
+                    &input.request_sha256,
+                    &input.command,
+                    r#"{"attempt":1,"retryable":true}"#,
+                    chrono::Utc::now().to_rfc3339()
+                ],
+            )
+            .unwrap();
+        drop(store);
+        let mut reopened = Store::open(&path).unwrap();
+        let before = reopened.production_receipt_watermark(project.id).unwrap();
+        assert_eq!(before.count, 4);
+        assert!(
+            reopened
+                .latest_production_receipt(project.id, &input.request_id)
+                .is_err(),
+            "ambiguous history must not return a retryable authority"
+        );
+        assert!(matches!(
+            reopened.claim_recovery_stage(input.clone()),
+            Err(StorageError::RequestReuse)
+        ));
+        assert!(matches!(
+            reopened.claim_recovery_stage(ProductionReceiptInput {
+                request_id: "renamed-ambiguous-stage".into(),
+                request_sha256: "b".repeat(64),
+                ..input
+            }),
+            Err(StorageError::RequestReuse)
+        ));
+        assert_eq!(
+            reopened.production_receipt_watermark(project.id).unwrap(),
+            before
+        );
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap().len(),
+            4,
+            "ambiguous history remains available to read-only audit"
+        );
+    }
 }
