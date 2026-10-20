@@ -84,7 +84,8 @@ jobs:
            "newly_visible_existing_project_id_must_not_publish_any_bundle_blobs"),
            "crates/storage/tests/foreign_sqlite_admission.rs":(
            "foreign_unversioned_sqlite_is_not_replaced_or_extended",
-           "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected"),
+           "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected",
+           "real_v1_source_layout_still_upgrades_without_changing_project_identity"),
            "crates/storage/tests/event_cursor_boundary.rs":(
            "unsigned_event_cursor_overflow_never_replays_consumed_history",)}
           for rel,cases in wanted.items():
@@ -95,13 +96,13 @@ jobs:
           "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
           "A1_source_sha":A1,"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
           "job_key":os.environ["GITHUB_JOB"],"sources":identity,
-          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":6,
+          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":7,
           "actual_Rust_run":"NOT_RUN_SOURCE_CHECK_ONLY","G2_crash_atomicity":"NOT_RUN"}
           out=pathlib.Path(os.environ["MW_SQLITE_EVIDENCE"])
           assert out.is_absolute() and out.is_dir() and not out.resolve().is_relative_to(root)
           with (out/"source-snapshot.json").open("x") as stream:
            json.dump(receipt,stream,indent=2);stream.write("\n")
-          print(json.dumps({"G0":"PASS", "source":head,"6_bound_SQLite_cases":True}))
+          print(json.dumps({"G0":"PASS", "source":head,"7_bound_SQLite_cases":True}))
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -195,7 +196,8 @@ jobs:
            "newly_visible_existing_project_id_must_not_publish_any_bundle_blobs"),
            "crates/storage/tests/foreign_sqlite_admission.rs":(
            "foreign_unversioned_sqlite_is_not_replaced_or_extended",
-           "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected"),
+           "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected",
+           "real_v1_source_layout_still_upgrades_without_changing_project_identity"),
            "crates/storage/tests/event_cursor_boundary.rs":(
            "unsigned_event_cursor_overflow_never_replays_consumed_history",)}
           for rel,cases in wanted.items():
@@ -206,18 +208,18 @@ jobs:
           "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
           "A1_source_sha":A1,"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
           "job_key":os.environ["GITHUB_JOB"],"sources":identity,
-          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":6,
+          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":7,
           "actual_Rust_run":"NOT_RUN_SOURCE_CHECK_ONLY","G2_crash_atomicity":"NOT_RUN"}
           out=pathlib.Path(os.environ["MW_SQLITE_EVIDENCE"])
           assert out.is_absolute() and out.is_dir() and not out.resolve().is_relative_to(root)
           with (out/"source-snapshot.json").open("x") as stream:
            json.dump(receipt,stream,indent=2);stream.write("\n")
-          print(json.dumps({"G0":"PASS", "source":head,"6_bound_SQLite_cases":True}))
+          print(json.dumps({"G0":"PASS", "source":head,"7_bound_SQLite_cases":True}))
           PY
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
-      - name: Execute only six real concurrent SQLite and boundary cases
+      - name: Execute only seven real concurrent SQLite and boundary cases
         run: |
           set -euo pipefail
           python -B -I -S - <<'PY'
@@ -237,7 +239,8 @@ jobs:
            ("portability::tests::newly_visible_existing_project_id_must_not_publish_any_bundle_blobs",)),
           ("foreign-sqlite",["cargo","test","--locked","-p","motionwright-storage","--test","foreign_sqlite_admission","--","--test-threads=1"],
            ("foreign_unversioned_sqlite_is_not_replaced_or_extended",
-            "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected")),
+            "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected",
+            "real_v1_source_layout_still_upgrades_without_changing_project_identity")),
           ("event-cursor",["cargo","test","--locked","-p","motionwright-storage","--test","event_cursor_boundary","--","--test-threads=1"],
            ("unsigned_event_cursor_overflow_never_replays_consumed_history",))]
           env=dict(os.environ,CARGO_INCREMENTAL="0",PYTHONDONTWRITEBYTECODE="1")
@@ -272,7 +275,7 @@ jobs:
             break
           report["completed_suites"]=len(report["suites"])
           report["tests_executed"]=sum(len(item["observed"]) for item in report["suites"])
-          report["status"]="PASS_SELECTED_REAL_SQLITE_CONCURRENCY" if ok and len(report["suites"])==5 and report["tests_executed"]==6 else "FAIL_OR_INCOMPLETE"
+          report["status"]="PASS_SELECTED_REAL_SQLITE_CONCURRENCY" if ok and len(report["suites"])==5 and report["tests_executed"]==7 else "FAIL_OR_INCOMPLETE"
           report["at_utc"]=datetime.datetime.now(datetime.timezone.utc).isoformat()
           with (public/"real-SQLite-crossOS-receipt.json").open("x") as stream:
            json.dump(report,stream,indent=2);stream.write("\n")
