@@ -14,6 +14,7 @@ source, calls Semwright nor grants media rights or human acceptance.
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
 from pathlib import Path
@@ -82,7 +83,15 @@ def read_capsule(bundle: Path, manifest_sha: str) -> tuple[Path, dict]:
         require(type(item) is dict
                 and type(item.get("source_sha256")) is str
                 and HEX.fullmatch(item["source_sha256"])
-                and item.get("path") == f"media/{item['source_sha256']}.mp4",
+                and item.get("path") == f"media/{item['source_sha256']}.mp4"
+                and type(item.get("scene_id")) is str
+                and item["scene_id"] in manifest["scene_order"]
+                and type(item.get("source_start_frame")) is int
+                and item["source_start_frame"] >= 0
+                and type(item.get("duration_frames")) is int
+                and 0 < item["duration_frames"] <= 216000
+                and type(item.get("source_fps")) is int
+                and item["source_fps"] in PROFILE_RATES,
                 "readback_original_media_declaration_malformed")
         original = root / item["path"]
         require(original.is_file() and not original.is_symlink()
@@ -126,6 +135,41 @@ def safe_mlt_xml(data: bytes) -> tuple[ET.Element, bool]:
     require(sum(1 for _ in root.iter()) <= MAX_XML_ELEMENTS,
             "native_Kdenlive_XML_element_count_outside_budget")
     return root, shimmed
+
+
+def original_mlt_frame(value: object, fps: int) -> int:
+    """Decode bounded MLT frame index, millisecond time or HH:MM:SS:FF.
+
+    MLT XML interval `out` is inclusive, unlike OTIO TimeRange durations.
+    Kdenlive may serialize exact source frames as rounded milliseconds; the
+    admitted rounding error must not exceed 0.5ms. No drop-frame or 29.97
+    coercion is permitted in this fixed-rate first-party profile.
+    """
+    require(type(value) is str and 1 <= len(value) <= 24
+            and fps in PROFILE_RATES, "native_MLT_source_inpoint_unadmitted")
+    if re.fullmatch(r"(0|[1-9][0-9]{0,6})", value):
+        return int(value)
+    match = re.fullmatch(
+        r"([0-2][0-9]):([0-5][0-9]):([0-5][0-9])(?:\.([0-9]{3})|:([0-5][0-9]))",
+        value,
+    )
+    require(match is not None,
+            "native_MLT_source_timecode_not_exact_or_unsupported")
+    hours, minutes, seconds = (int(match.group(i)) for i in (1, 2, 3))
+    require(hours < 24, "native_MLT_source_timecode_exceeds_one_day")
+    seconds_total = (hours * 3600 + minutes * 60 + seconds)
+    if match.group(5) is not None:
+        frames = int(match.group(5))
+        require(frames < fps, "native_MLT_SMPTE_frame_outside_source_rate")
+        return seconds_total * fps + frames
+    milliseconds = int(match.group(4))
+    count = (
+        Decimal(seconds_total) + Decimal(milliseconds) / Decimal(1000)
+    ) * Decimal(fps)
+    rounded = int(count.to_integral_value(rounding=ROUND_HALF_UP))
+    require(abs(count - Decimal(rounded)) <= Decimal(fps) / Decimal(2000),
+            "native_MLT_source_inpoint_not_on_exact_video_frame")
+    return rounded
 
 
 def inspect_saved_kdenlive(
@@ -218,6 +262,7 @@ def inspect_saved_kdenlive(
     declared = {item["source_sha256"] for item in manifest["bound_media"]}
     matched = set()
     observations = []
+    component_sha = {}
     for identifier in sorted(reachable):
         source_node = objects[identifier]
         if source_node.tag not in ("producer", "chain"):
@@ -241,6 +286,10 @@ def inspect_saved_kdenlive(
             sha, size = fingerprint(original_path, MAX_MEDIA)
             require(sha in declared,
                     "native_Kdenlive_playback_media_not_immutable_original_SHA")
+            require(identifier not in component_sha
+                    or component_sha[identifier] == sha,
+                    "native_Kdenlive_media_producer_has_conflicting_original_bytes")
+            component_sha[identifier] = sha
             matched.add(sha)
             observations.append({
                 "original_media_sha256": sha,
@@ -251,6 +300,53 @@ def inspect_saved_kdenlive(
             })
     require(matched == declared,
             "native_Kdenlive_reachable_timeline_source_missing_original_media")
+
+    # Bind editorial clip instances, not just media files. A single MP4 may
+    # represent multiple independent scenes at different source inpoints.
+    # The unique SHA/frame-rate/inpoint tuple already appears in the current
+    # Motionwright OTIO bounded receiver; ambiguity is an explicit loss.
+    authored = {}
+    for row in manifest["bound_media"]:
+        key = (row["source_sha256"], row["source_start_frame"],
+               row["source_fps"])
+        require(key not in authored, "native_Kdenlive_original_clip_identity_ambiguous")
+        authored[key] = row
+    played = []
+    used_scenes = set()
+    for entry in timeline_entries:
+        component = entry.attrib["producer"]
+        if component not in component_sha:
+            # Original Kdenlive project graphs can include background color
+            # or black tracks, which are NOT bound editorial media clips.
+            continue
+        frame_in = original_mlt_frame(entry.attrib.get("in"), rate_num // rate_den)
+        frame_out = original_mlt_frame(entry.attrib.get("out"), rate_num // rate_den)
+        require(frame_out >= frame_in,
+                "native_Kdenlive_out_point_precedes_original_inpoint")
+        key = (component_sha[component], frame_in, rate_num // rate_den)
+        bound = authored.get(key)
+        require(bound is not None,
+                "native_Kdenlive_video_clip_inpoint_or_SHA_no_longer_bound")
+        scene_id = bound["scene_id"]
+        require(scene_id not in used_scenes,
+                "native_Kdenlive_duplicate_original_scene_clip_instance")
+        duration = frame_out - frame_in + 1
+        require(0 < duration <= bound["duration_frames"],
+                "native_Kdenlive_clip_duration_extended_or_invalid")
+        used_scenes.add(scene_id)
+        played.append({
+            "scene_id": scene_id,
+            "asset_id": bound.get("asset_id"),
+            "original_media_sha256": component_sha[component],
+            "original_inpoint_frame": frame_in,
+            "duration_frames": duration,
+            "source_fps": bound["source_fps"],
+            "original_authored_duration_frames": bound["duration_frames"],
+            "source_MLT_component_id": component,
+        })
+    require(used_scenes == set(manifest["scene_order"])
+            and len(played) == len(manifest["scene_order"]),
+            "native_Kdenlive_edited_timeline_scene_set_or_instances_changed")
     return {
         "schema": "motionwright.native.kdenlive-saved-project-readback/1",
         "native_file_sha256": native_sha,
@@ -259,6 +355,10 @@ def inspect_saved_kdenlive(
         "native_kdenlive_main_bin_and_tractor": True,
         "native_editor_timeline_entries_present": True,
         "observed_editable_timeline_entry_count": len(timeline_entries),
+        "observed_bound_clip_count": len(played),
+        "observed_bound_editorial_clip_semantics": played,
+        "original_capsule_scene_order": manifest["scene_order"],
+        "source_clip_identity_recovered_from_unique_SHA_rate_inpoint": True,
         "source_clip_UUID_and_inpoint_roundtrip_verified_here": False,
         "native_saved_profile_size": [width, height],
         "native_saved_frame_rate": f"{rate_num}/{rate_den}",
@@ -290,11 +390,47 @@ def compare_two_native_custody_snapshots(
     require({v["original_media_sha256"] for v in original["observed_source_media"]} ==
             {v["original_media_sha256"] for v in reopened["observed_source_media"]},
             "native_Kdenlive_reopened_project_missing_source_media")
+    original_clips = original["observed_bound_editorial_clip_semantics"]
+    reopened_clips = reopened["observed_bound_editorial_clip_semantics"]
+    require([row["scene_id"] for row in original_clips] ==
+            original["original_capsule_scene_order"]
+            and reopened["original_capsule_scene_order"] ==
+            original["original_capsule_scene_order"],
+            "native_Kdenlive_first_import_reordered_original_authored_scenes")
+    initial = {row["scene_id"]: row for row in original_clips}
+    latest = {row["scene_id"]: row for row in reopened_clips}
+    require(len(initial) == len(original_clips)
+            and len(latest) == len(reopened_clips)
+            and set(initial) == set(latest),
+            "native_Kdenlive_reopened_original_scene_instance_set_changed")
+    trimmed = []
+    for scene, old_clip in initial.items():
+        new_clip = latest[scene]
+        require(old_clip["original_media_sha256"] ==
+                new_clip["original_media_sha256"]
+                and old_clip["original_inpoint_frame"] ==
+                new_clip["original_inpoint_frame"]
+                and old_clip["source_fps"] == new_clip["source_fps"]
+                and old_clip["duration_frames"] ==
+                old_clip["original_authored_duration_frames"]
+                and 0 < new_clip["duration_frames"] <= old_clip["duration_frames"],
+                "native_Kdenlive_reopened_source_inpoint_or_duration_changed")
+        if new_clip["duration_frames"] != old_clip["duration_frames"]:
+            trimmed.append({
+                "scene_id": scene,
+                "initial_duration_frames": old_clip["duration_frames"],
+                "reopened_duration_frames": new_clip["duration_frames"],
+            })
     return {
         "schema": "motionwright.native.kdenlive-reopen-comparison/1",
         "original_project_sha256": original["native_file_sha256"],
         "reopened_project_sha256": reopened["native_file_sha256"],
         "reopened_MLT_editorial_source_and_media_match": True,
+        "original_authored_scene_order": [x["scene_id"] for x in original_clips],
+        "reopened_native_scene_order": [x["scene_id"] for x in reopened_clips],
+        "bounded_native_end_trims_observed": trimmed,
+        "native_edit_proposed_not_committed": True,
+        "source_inpoint_and_SHA_consistency": True,
         "native_saved_project_byte_identical":
             original["native_file_sha256"] == reopened["native_file_sha256"],
         "application_process_reopen_authentication": "REQUIRES_DISTINCT_REAL_KDENLIVE_G2",
