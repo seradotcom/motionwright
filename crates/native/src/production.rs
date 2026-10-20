@@ -794,14 +794,19 @@ impl ProductionClient {
         let mut child = child.spawn().map_err(|_| {
             Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
         })?;
+        // Once the child starts, a transport failure cannot establish whether a
+        // mutation ran. A typed Broker error retains its own outcome below.
+        let post_spawn_error = |error: Error| {
+            if mutation { error.uncertain() } else { error }
+        };
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| backend("Semwright CLI stdout unavailable"))?;
+            .ok_or_else(|| post_spawn_error(backend("Semwright CLI stdout unavailable")))?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| backend("Semwright CLI stderr unavailable"))?;
+            .ok_or_else(|| post_spawn_error(backend("Semwright CLI stderr unavailable")))?;
         let stdout_task = tokio::spawn(read_bounded(stdout));
         let stderr_task = tokio::spawn(read_bounded(stderr));
         let deadline = if command.starts_with("driver.mlt-video.")
@@ -814,59 +819,66 @@ impl ProductionClient {
         };
 
         let status = match timeout(Duration::from_secs(deadline), child.wait()).await {
-            Ok(result) => result.map_err(|_| backend("Semwright CLI process failed"))?,
+            Ok(result) => {
+                result.map_err(|_| post_spawn_error(backend("Semwright CLI process failed")))?
+            }
             Err(_) => {
                 let _ = child.kill().await;
                 let error =
                     Error::new(ErrorCode::Timeout, "Canonical production command timed out");
-                return Err(if mutation { error.uncertain() } else { error });
+                return Err(post_spawn_error(error));
             }
         };
         let stdout = stdout_task
             .await
-            .map_err(|_| backend("Semwright CLI output task failed"))?
-            .map_err(|_| backend("Semwright CLI output could not be read"))?;
+            .map_err(|_| post_spawn_error(backend("Semwright CLI output task failed")))?
+            .map_err(|_| post_spawn_error(backend("Semwright CLI output could not be read")))?;
         let stderr = stderr_task
             .await
-            .map_err(|_| backend("Semwright CLI diagnostic task failed"))?
-            .map_err(|_| backend("Semwright CLI diagnostics could not be read"))?;
+            .map_err(|_| post_spawn_error(backend("Semwright CLI diagnostic task failed")))?
+            .map_err(|_| {
+                post_spawn_error(backend("Semwright CLI diagnostics could not be read"))
+            })?;
         if stdout.len() > MAX_OUTPUT_BYTES || stderr.len() > MAX_OUTPUT_BYTES {
-            return Err(Error::new(
+            return Err(post_spawn_error(Error::new(
                 ErrorCode::ResourceExhausted,
                 "Semwright CLI response exceeded the transport budget",
-            ));
+            )));
         }
 
-        let envelope: Envelope = serde_json::from_slice(&stdout)
-            .map_err(|_| backend("Semwright CLI returned an invalid response envelope"))?;
+        let envelope: Envelope = serde_json::from_slice(&stdout).map_err(|_| {
+            post_spawn_error(backend(
+                "Semwright CLI returned an invalid response envelope",
+            ))
+        })?;
         if envelope.command != command {
-            return Err(backend(
+            return Err(post_spawn_error(backend(
                 "Semwright CLI response command does not match the request",
-            ));
+            )));
         }
         if !status.success() || !envelope.ok {
             let error = envelope.error.unwrap_or_else(|| {
-                backend("Canonical production command failed without a typed error")
+                post_spawn_error(backend(
+                    "Canonical production command failed without a typed error",
+                ))
             });
             return Err(error);
         }
-        let provenance = envelope
-            .execution
-            .provenance
-            .as_ref()
-            .ok_or_else(|| backend("Canonical production response has no provenance"))?;
+        let provenance = envelope.execution.provenance.as_ref().ok_or_else(|| {
+            post_spawn_error(backend("Canonical production response has no provenance"))
+        })?;
         if provenance.provider != expected.provider
             || provenance.source != expected.source
             || (expected.provider_generation_required && provenance.provider_generation.is_none())
             || !is_sha256(&provenance.descriptor_sha256)
         {
-            return Err(backend(
+            return Err(post_spawn_error(backend(
                 "Canonical response provenance does not match the expected authority",
-            ));
+            )));
         }
-        let value = envelope
-            .data
-            .ok_or_else(|| backend("Canonical production response has no data"))?;
+        let value = envelope.data.ok_or_else(|| {
+            post_spawn_error(backend("Canonical production response has no data"))
+        })?;
         Ok(BrokerResult {
             value: json!({
                 "data": value,
@@ -3377,5 +3389,410 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                 );
             }
         }
+    }
+
+    #[cfg(unix)]
+    fn transport_reply(command: &str) -> Envelope {
+        let authority = expected_authority(command).unwrap();
+        Envelope {
+            ok: true,
+            request_id: "transport-fixture-original".into(),
+            command: command.into(),
+            data: Some(json!({"changed": true})),
+            error: None,
+            execution: Execution {
+                backend: authority.provider.into(),
+                duration_ms: 1,
+                policy_decision: "allow".into(),
+                fallbacks_attempted: vec![],
+                provenance: Some(InvocationProvenance {
+                    provider: authority.provider.into(),
+                    source: authority.source,
+                    provider_version: "test".into(),
+                    capability_version: "test".into(),
+                    descriptor_sha256: "ab".repeat(32),
+                    untrusted_metadata: false,
+                    catalog_revision: 1,
+                    execution_provider: Some(authority.provider.into()),
+                    provider_generation: Some(17),
+                }),
+                dry_run: false,
+            },
+            warnings: vec![],
+        }
+    }
+
+    #[cfg(unix)]
+    fn fake_transport_connection(
+        temp: &tempfile::TempDir,
+        resource: String,
+        stdout: &str,
+        stderr: &str,
+        exit_code: u8,
+    ) -> (ProductionConnection, PathBuf) {
+        let mut connection = fake_connection(temp, resource);
+        let counter = temp.path().join("transport-invocations");
+        fs::write(
+            &connection.executable,
+            format!(
+                "#!/bin/sh\nprintf 'invoked\\n' >> '{}'\nprintf '%s' '{}'\nprintf '%s' '{}' >&2\nexit {exit_code}\n",
+                counter.to_string_lossy().replace('\'', "'\\''"),
+                stdout.replace('\'', "'\\''"),
+                stderr.replace('\'', "'\\''"),
+            ),
+        )
+        .unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        (connection, counter)
+    }
+
+    #[cfg(unix)]
+    async fn assert_transport_failure(
+        stdout: &str,
+        stderr: &str,
+        exit_code: u8,
+        command: &str,
+        mutation: bool,
+        expected_error: Error,
+    ) {
+        // A local subprocess exercises the real transport and durable receipt
+        // boundary. No Broker, native application or human approval is involved.
+        let (service, project, temp) = fixture_service();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), stdout, stderr, exit_code);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+        let args = json!({"transport_fixture_only": true});
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "original-transport-attempt",
+                command,
+                args.clone(),
+                mutation,
+            )
+            .await
+            .unwrap_err();
+        let expected_json = serde_json::to_value(&expected_error).unwrap();
+        assert_eq!(serde_json::to_value(&error).unwrap(), expected_json);
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        let receipts = service.production_receipts(project.id, 10).unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipts
+                .iter()
+                .filter(|receipt| receipt.stage == "dispatching")
+                .count(),
+            1
+        );
+        let terminal = service
+            .latest_production_receipt(project.id, "original-transport-attempt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            terminal.stage,
+            if expected_error.outcome_known {
+                "failed_known"
+            } else {
+                "outcome_unknown"
+            }
+        );
+        assert_eq!(terminal.payload["error"], expected_json);
+        assert_eq!(terminal.payload["mutation"], json!(mutation));
+        drop(coordinator);
+        drop(service);
+
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap(),
+            receipts
+        );
+        let recovered = ProductionCoordinator::new(reopened.clone(), connection).unwrap();
+        let retry = recovered
+            .execute(
+                project.id,
+                &project.stamp(),
+                "original-transport-attempt",
+                command,
+                args,
+                mutation,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(retry.code, ErrorCode::Conflict);
+        assert_eq!(retry.outcome_known, expected_error.outcome_known);
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap(),
+            receipts
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_transport_spawn_failure_is_known_without_an_invocation() {
+        let (service, project, temp) = fixture_service();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), "", "", 0);
+        fs::set_permissions(&connection.executable, fs::Permissions::from_mode(0o600)).unwrap();
+        connection.validate().unwrap();
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "spawn-failed",
+                "driver.blender.collection.create",
+                json!({"name": "transport-fixture"}),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unavailable);
+        assert_eq!(error.message, "Semwright CLI could not be started");
+        assert!(error.outcome_known);
+        assert!(!counter.exists());
+        let terminal = service
+            .latest_production_receipt(project.id, "spawn-failed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.stage, "failed_known");
+        assert_eq!(
+            terminal.payload["error"],
+            serde_json::to_value(error).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_transport_argument_rejection_precedes_spawn() {
+        let (service, project, temp) = fixture_service();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), "", "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "oversized-arguments",
+                "driver.blender.collection.create",
+                json!({"name": "x".repeat(MAX_ARGS_BYTES + 1)}),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert_eq!(
+            error.message,
+            "Production command arguments exceed the transport budget"
+        );
+        assert!(error.outcome_known);
+        assert!(!counter.exists());
+        assert_eq!(
+            service
+                .latest_production_receipt(project.id, "oversized-arguments")
+                .unwrap()
+                .unwrap()
+                .stage,
+            "failed_known"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_transport_typed_consent_and_unknown_preserve_original_errors() {
+        let command = "driver.blender.collection.create";
+        for original in [
+            Error::new(ErrorCode::ConsentRequired, "original approval decision"),
+            Error::new(ErrorCode::BackendFailed, "original native diagnostic")
+                .uncertain()
+                .recipe_progress(1, command),
+        ] {
+            let mut envelope = transport_reply(command);
+            envelope.ok = false;
+            envelope.data = None;
+            envelope.error = Some(original.clone());
+            assert_transport_failure(
+                &serde_json::to_string(&envelope).unwrap(),
+                "",
+                19,
+                command,
+                true,
+                original,
+            )
+            .await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_transport_unbound_mutation_replies_remain_unknown_after_reopen() {
+        let command = "driver.blender.collection.create";
+        for stdout in ["", "{invalid"] {
+            assert_transport_failure(
+                stdout,
+                "",
+                0,
+                command,
+                true,
+                backend("Semwright CLI returned an invalid response envelope").uncertain(),
+            )
+            .await;
+        }
+        let base = serde_json::to_value(transport_reply(command)).unwrap();
+        for (pointer, replacement, message) in [
+            (
+                "/command",
+                json!("driver.blender.material.create"),
+                "Semwright CLI response command does not match the request",
+            ),
+            (
+                "/execution/provenance",
+                Value::Null,
+                "Canonical production response has no provenance",
+            ),
+            (
+                "/execution/provenance/provider",
+                json!("driver:manim-community"),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "/execution/provenance/source",
+                serde_json::to_value(SourceKind::Builtin).unwrap(),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "/execution/provenance/provider_generation",
+                Value::Null,
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "/execution/provenance/descriptor_sha256",
+                json!("invalid-digest"),
+                "Canonical response provenance does not match the expected authority",
+            ),
+            (
+                "/data",
+                Value::Null,
+                "Canonical production response has no data",
+            ),
+        ] {
+            let mut envelope = base.clone();
+            *envelope.pointer_mut(pointer).unwrap() = replacement;
+            assert_transport_failure(
+                &serde_json::to_string(&envelope).unwrap(),
+                "",
+                0,
+                command,
+                true,
+                backend(message).uncertain(),
+            )
+            .await;
+        }
+        for (ok, exit_code) in [(false, 0), (true, 23)] {
+            let mut envelope = transport_reply(command);
+            envelope.ok = ok;
+            assert_transport_failure(
+                &serde_json::to_string(&envelope).unwrap(),
+                "",
+                exit_code,
+                command,
+                true,
+                backend("Canonical production command failed without a typed error").uncertain(),
+            )
+            .await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_transport_response_budget_failure_preserves_unknown() {
+        let command = "driver.blender.collection.create";
+        let valid = serde_json::to_string(&transport_reply(command)).unwrap();
+        let oversized = "x".repeat(MAX_OUTPUT_BYTES + 1);
+        for (stdout, stderr) in [
+            (oversized.as_str(), ""),
+            (valid.as_str(), oversized.as_str()),
+        ] {
+            assert_transport_failure(
+                stdout,
+                stderr,
+                0,
+                command,
+                true,
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "Semwright CLI response exceeded the transport budget",
+                )
+                .uncertain(),
+            )
+            .await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_transport_read_only_failure_remains_known() {
+        assert_transport_failure(
+            "{invalid",
+            "",
+            0,
+            "driver.motion-canvas.composition.inspect",
+            false,
+            backend("Semwright CLI returned an invalid response envelope"),
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_transport_success_replays_receipt_without_a_second_invocation() {
+        let command = "driver.blender.collection.create";
+        let (service, project, temp) = fixture_service();
+        let output = serde_json::to_string(&transport_reply(command)).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+        let args = json!({"transport_fixture_only": true});
+        let first = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "acknowledged-original",
+                command,
+                args.clone(),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first["replayed"], json!(false));
+        assert_eq!(first["result"]["data"], json!({"changed": true}));
+        assert_eq!(first["receipt"]["stage"], json!("completed"));
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        let receipts = service.production_receipts(project.id, 10).unwrap();
+        drop(coordinator);
+        drop(service);
+
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        let recovered = ProductionCoordinator::new(reopened.clone(), connection).unwrap();
+        let replay = recovered
+            .execute(
+                project.id,
+                &project.stamp(),
+                "acknowledged-original",
+                command,
+                args,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay["replayed"], json!(true));
+        assert_eq!(replay["result"], first["result"]);
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap(),
+            receipts
+        );
     }
 }
