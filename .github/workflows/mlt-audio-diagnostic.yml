@@ -1,10 +1,26 @@
 name: MLT audio observer source checks
 on:
   workflow_dispatch:
+    inputs:
+      repaired_only_source_g1:
+        description: 'Build exact uninstrumented repaired-only MLT ELF; never install or render'
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - '.github/workflows/mlt-audio-diagnostic.yml'
       - 'tooling/mlt-audio-diagnostic/**'
+      - 'tooling/mlt_repair_verification.py'
+      - 'tooling/tests/test_mlt_repair_verification.py'
+      - 'tooling/native_mlt_runtime_admission.py'
+      - 'tooling/tests/test_native_mlt_runtime_admission.py'
+      - 'tooling/ci_mlt_runtime_selected.py'
+      - 'tooling/tests/test_ci_mlt_runtime_selected.py'
+      - 'tooling/native_mlt_loaded_module.py'
+      - 'tooling/native_mlt_repair_only_compiler_receipt.py'
+      - 'tooling/tests/test_native_mlt_repair_only_compiler_receipt.py'
+      - 'tooling/tests/test_native_mlt_loaded_module.py'
 permissions:
   contents: read
 concurrency:
@@ -26,27 +42,32 @@ jobs:
       - name: Prepare isolated source verification
         run: |
           set -euo pipefail
-          work="$GITHUB_WORKSPACE/verification/mlt-audio-observer-source/$GITHUB_SHA"
-          mkdir -p "$work"/{source,build,constructors,public,tmp}
-          control="$RUNNER_TEMP/mw-mlt-source-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          mkdir "$control"
+          work="$RUNNER_TEMP/mw-mlt-source-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$work"
+          mkdir "$work"/{source,build,constructors,public,tmp,control}
+          control="$work/control"
           export MW_DIAG_SOURCE="$control/source"
+          export MW_DIAG_VERIFY="$control/verification"
           export MW_DIAG_CHECK="$control/check-source.py"
           echo "MW_DIAG_WORK=$work" >> "$GITHUB_ENV"
           echo "TMPDIR=$work/tmp" >> "$GITHUB_ENV"
           echo "MW_DIAG_SOURCE=$MW_DIAG_SOURCE" >> "$GITHUB_ENV"
+          echo "MW_DIAG_VERIFY=$MW_DIAG_VERIFY" >> "$GITHUB_ENV"
           echo "MW_DIAG_CHECK=$MW_DIAG_CHECK" >> "$GITHUB_ENV"
           cat > "$MW_DIAG_CHECK" <<'PY'
-          import hashlib,json,os,pathlib,re,shutil,stat,subprocess,sys
+          import ast,hashlib,json,os,pathlib,re,shutil,stat,subprocess,sys
 
           def require(ok,message):
               if not ok: raise SystemExit(message)
 
           repo=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
           export=pathlib.Path(os.environ["MW_DIAG_SOURCE"])
+          verifier=pathlib.Path(os.environ["MW_DIAG_VERIFY"])
           expected=os.environ["GITHUB_SHA"]
           require(re.fullmatch(r"[0-9a-f]{40}",expected),"invalid source SHA")
-          require(export.is_absolute() and not export.resolve().is_relative_to(repo),"export must be outside checkout")
+          for directory in (export,verifier):
+              require(directory.is_absolute() and not directory.resolve().is_relative_to(repo),
+                      "export must be outside checkout")
           env={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           env.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,
                      GIT_CONFIG_GLOBAL=os.devnull,GIT_GRAFT_FILE=os.devnull,
@@ -60,60 +81,271 @@ jobs:
           folder="tooling/mlt-audio-diagnostic"
           names={"audio_tap.h","instrument_consumer.py","verify_trace.py",
                  "test_verify_trace.py","test_audio_tap.c","README.md",
-                 "repair_planar_source.py","test_planar_padding.c","test_repair_planar_source.py"}
-          require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,"wrong worktree")
+                 "repair_planar_source.py","test_repair_planar_source.py","test_planar_padding.c"}
+          verify_paths={"tooling/mlt_repair_verification.py",
+                        "tooling/tests/test_mlt_repair_verification.py"}
+          source_paths={folder+"/"+name for name in names}|verify_paths
+          attestor_paths={"tooling/native_mlt_loaded_module.py",
+                          "tooling/tests/test_native_mlt_loaded_module.py"}
+          runtime_paths={"tooling/native_mlt_runtime_admission.py",
+                         "tooling/tests/test_native_mlt_runtime_admission.py",
+                         "tooling/native_mlt_repair_only_compiler_receipt.py",
+                         "tooling/tests/test_native_mlt_repair_only_compiler_receipt.py",
+                         "tooling/ci_mlt_runtime_selected.py",
+                         "tooling/tests/test_ci_mlt_runtime_selected.py"}
+          workflow_path=".github/workflows/mlt-audio-diagnostic.yml"
+          require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,
+                  "wrong worktree")
           require(git("rev-parse","HEAD").decode().strip()==expected,"HEAD differs from requested SHA")
-          require(not git("status","--porcelain=v1","--untracked-files=all","--",folder),"diagnostic sources changed or untracked")
-          require(not git("ls-files","--others","--ignored","--exclude-standard","-z","--",folder),"ignored diagnostic sources")
-          for p in (repo/"tooling",repo/folder):
+          require(not git("status","--porcelain=v1","--untracked-files=all"),"checkout changed or untracked")
+          require(not git("ls-files","--others","--ignored","--exclude-standard","-z"),
+                  "ignored checkout files")
+          for p in (repo/"tooling",repo/folder,repo/"tooling/tests",repo/".github",
+                    repo/".github/workflows"):
               require(p.is_dir() and not p.is_symlink(),"source directory is not regular")
           require({p.name for p in (repo/folder).iterdir()}==names,"diagnostic source set is not closed")
           originals={}
           oids={}
-          for entry in git("ls-tree","-rz","--full-tree",expected,"--",folder).split(b"\0"):
-              if not entry: continue
-              metadata,raw_path=entry.split(b"\t",1)
+          for path in sorted(source_paths|attestor_paths|runtime_paths|{workflow_path}):
+              entries=git("ls-tree","-rz",expected,"--",path).split(b"\0")
+              require(len(entries)==2 and entries[-1]==b"","expected one source blob")
+              metadata,raw_path=entries[0].split(b"\t",1)
               mode,kind,oid=metadata.split()
-              path=raw_path.decode("utf-8")
               require(mode in (b"100644",b"100755") and kind==b"blob","nonregular source blob")
-              require(path in {folder+"/"+name for name in names},"unexpected source path")
+              require(raw_path.decode("utf-8")==path,"source path differs")
               data=git("cat-file","blob",oid.decode("ascii"))
+              require(hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
+                      ==oid.decode("ascii"),"Git blob object digest differs")
               p=repo/path
-              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==data,"worktree bytes differ from Git blob")
+              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==data,
+                      "worktree bytes differ from Git blob")
               originals[path]=data
               oids[path]=oid.decode("ascii")
-          require(set(originals)=={folder+"/"+name for name in names},"missing source blob")
+          require(set(originals)==source_paths|attestor_paths|runtime_paths|{workflow_path},
+                  "missing source, attestor or runtime-admission blob")
+          # G0: all 3 G1 suites must remain bound to the exact committed tests.
+          # Reuse authenticated Git blobs; execute BEFORE FFmpeg package installation
+          # or the upstream MLT download. Do not replace any later result guards.
+          def static_test_count(path,minimum):
+              module=ast.parse(originals[path].decode("utf-8"))
+              require(not any(isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef))
+                              and node.name=="load_tests" for node in ast.walk(module)),
+                      "dynamic MLT unittest loading cannot authorize G1")
+              classes=[cls for cls in module.body if isinstance(cls,ast.ClassDef)
+                       and any(isinstance(parent,ast.Attribute)
+                               and isinstance(parent.value,ast.Name)
+                               and parent.value.id=="unittest" and parent.attr=="TestCase"
+                               for parent in cls.bases)]
+              cases=[(cls.name,method.name) for cls in classes for method in cls.body
+                     if isinstance(method,ast.FunctionDef) and method.name.startswith("test_")]
+              all_cases=[(cls.name,method.name) for cls in module.body if isinstance(cls,ast.ClassDef)
+                         for method in cls.body if isinstance(method,ast.FunctionDef)
+                         and method.name.startswith("test_")]
+              require(len(cases)>=minimum and len(cases)==len(all_cases)
+                      and len(set(cases))==len(cases),
+                      "MLT source test inventory incomplete or ambiguous")
+              return len(cases)
+          workflow=originals[workflow_path].decode("utf-8")
+          def required_step(label):
+              marker="\n      - name: "+label+"\n        run: |"
+              require(workflow.count(marker)==1,"MLT G1 step missing or ambiguous")
+              return workflow.split(marker,1)[1].split("\n      - name:",1)[0]
+          inventories=(
+              ("tooling/tests/test_mlt_repair_verification.py",26,
+               "Verify source composition and identity contracts",
+               ((r'suite\.countTestCases\(\)!=(\d+)',"step"),
+                (r'result\.testsRun==(\d+) and result\.wasSuccessful\(\)',"step"),
+                (r'\("composition-contracts\.json",(\d+)\)',"workflow"),
+                (r'"source_composition":(\d+)',"workflow"))),
+              ("tooling/mlt-audio-diagnostic/test_verify_trace.py",32,
+               "Independently decode constructor traces",
+               ((r'suite\.countTestCases\(\)!=(\d+)',"step"),
+                (r'result\.testsRun!=(\d+)',"step"),
+                (r'Ran (\d+) tests in ',"step"),
+                (r'"original_observer":(\d+)',"workflow"))),
+              ("tooling/mlt-audio-diagnostic/test_repair_planar_source.py",13,
+               "Verify the pinned planar repair source",
+               ((r'suite\.countTestCases\(\)!=(\d+)',"step"),
+                (r'result\.testsRun==(\d+) and result\.wasSuccessful\(\)',"step"),
+                (r'\("repair-contracts\.json",(\d+)\)',"workflow"),
+                (r'"planar_repair":(\d+)',"workflow")))
+          )
+          for test_path,minimum,step_name,checks in inventories:
+              case_count=static_test_count(test_path,minimum)
+              step=required_step(step_name)
+              for pattern,scope in checks:
+                  matches=re.findall(pattern,step if scope=="step" else workflow)
+                  require(len(matches)==1 and int(matches[0])==case_count,
+                          "MLT G1 count differs from exact committed test inventory")
           require(len(sys.argv)==2 and sys.argv[1] in ("export","verify"),"expected export or verify")
           if sys.argv[1]=="export":
               export.mkdir(exist_ok=False)
-              for path,data in originals.items():
-                  with (export/pathlib.Path(path).name).open("xb") as handle: handle.write(data)
-          require(export.is_dir() and not export.is_symlink(),"export directory is not regular")
-          require({p.name for p in export.iterdir()}==names,"export source set changed")
-          for path,data in originals.items():
-              p=export/pathlib.Path(path).name
-              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==data,"export bytes changed")
+              verifier.mkdir(exist_ok=False)
+              for path in sorted(source_paths):
+                  destination=(verifier if path in verify_paths else export)/pathlib.Path(path).name
+                  with destination.open("xb") as handle: handle.write(originals[path])
+          for directory,expected_names in (
+              (export,names),(verifier,{pathlib.Path(path).name for path in verify_paths})
+          ):
+              require(directory.is_dir() and not directory.is_symlink(),"export directory is not regular")
+              require({p.name for p in directory.iterdir()}==expected_names,"export source set changed")
+          for path in source_paths:
+              p=(verifier if path in verify_paths else export)/pathlib.Path(path).name
+              require(stat.S_ISREG(p.lstat().st_mode) and p.read_bytes()==originals[path],"export bytes changed")
           print(json.dumps({"schema":"motionwright.mlt-observer-source-inputs/1",
                             "source_sha":expected,"tree":git("rev-parse",expected+"^{tree}").decode().strip(),
-                            "sources":{path:hashlib.sha256(data).hexdigest() for path,data in sorted(originals.items())},
-                            "source_blob_oids":dict(sorted(oids.items()))},sort_keys=True,indent=2))
+                            "sources":{path:hashlib.sha256(originals[path]).hexdigest()
+                                       for path in sorted(source_paths)},
+                            "source_blob_oids":{path:oids[path] for path in sorted(source_paths)},
+                            "attestor_sources":{path:hashlib.sha256(originals[path]).hexdigest()
+                                                for path in sorted(attestor_paths)},
+                            "attestor_blob_oids":{path:oids[path] for path in sorted(attestor_paths)},
+                            "runtime_sources":{path:hashlib.sha256(originals[path]).hexdigest()
+                                               for path in sorted(runtime_paths)},
+                            "runtime_blob_oids":{path:oids[path] for path in sorted(runtime_paths)},
+                            "workflow":{"path":workflow_path,"sha256":hashlib.sha256(originals[workflow_path]).hexdigest(),
+                                        "git_blob_oid":oids[workflow_path]}},sort_keys=True,indent=2))
           PY
           python3 -B -I -S "$MW_DIAG_CHECK" export > "$work/public/source-inputs.json"
-      - name: Install compiler and FFmpeg 6.1 development libraries
+      - name: Verify original loaded MLT module attestor source controls (G0)
         run: |
           set -euo pipefail
+          python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
+            --pattern test_native_mlt_loaded_module.py --mode both \
+            --expected-source "$GITHUB_SHA" --require-complete \
+            --report "$MW_DIAG_WORK/public/loaded-module-contracts.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          root=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          source=json.loads((root/"source-inputs.json").read_text())
+          receipt=json.loads((root/"loaded-module-contracts.json").read_text())
+          test="tooling/tests/test_native_mlt_loaded_module.py"
+          reader="tooling/native_mlt_loaded_module.py"
+          expected={reader:"4e5313c9700cb2a07e56430bb2ff109335ecf485abfda0ebc4007807aeb0ab01",
+                    test:"f8d717d0cf057092d9d5f111532551dd3318f169c870efe9a6d974638d6e1e9b"}
+          assert source["source_sha"]==receipt["executed_source_sha"]==os.environ["GITHUB_SHA"]
+          assert source["attestor_sources"]==expected
+          assert set(source["attestor_blob_oids"])==set(expected)
+          assert receipt["status"]=="PASS" and receipt["require_complete"] is True
+          assert receipt["test_definition_sha256"]=={test:expected[test]}
+          assert len(receipt["steps"])==2
+          assert {row["entry_point"] for row in receipt["steps"]}=={
+              "discovery:test_native_mlt_loaded_module.py",
+              "dotted:tooling.tests.test_native_mlt_loaded_module"}
+          for row in receipt["steps"]:
+              counts=row["counts"]
+              assert row["exit_code"]==0 and row["status"]=="PASS"
+              assert counts["tests_run"]==counts["passed"]==18
+              assert counts["terminal_status"]=="OK"
+              for key in ("errors","failures","skipped","expected_failures","unexpected_successes"):
+                  assert counts[key]==0
+              for kind in ("stdout","stderr"):
+                  assert sha(root/row[kind]["file"])==row[kind]["sha256"]
+          PY
+      - name: Verify reviewed MLT runtime selection controls before native setup (G0)
+        run: |
+          set -euo pipefail
+          python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
+            --pattern test_ci_mlt_runtime_selected.py --mode both \
+            --expected-source "$GITHUB_SHA" --require-complete \
+            --report "$MW_DIAG_WORK/public/runtime-selector-contracts.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          sources=json.loads((public/"source-inputs.json").read_text())
+          rec=json.loads((public/"runtime-selector-contracts.json").read_text())
+          expected={"tooling/ci_mlt_runtime_selected.py":"8792a494b032e418d2be5d04a9817d40c8deb4e4b6e65450695c2d78e9e2bbe4",
+                    "tooling/native_mlt_runtime_admission.py":"d7f93cde54a1d2de721a2c466d6eec8f4333365ebc945225d224934a3bc8f859",
+                    "tooling/native_mlt_repair_only_compiler_receipt.py":"03827c4451f52f51befc88f10a11f5b348803a4039d3ab49933af29032a2a577",
+                    "tooling/tests/test_ci_mlt_runtime_selected.py":"f31591a9b7905a9a3c64d3b6ccf8a538dd398c0174ef217652ed049b63bae907",
+                    "tooling/tests/test_native_mlt_runtime_admission.py":"d6d25be72a907b5f7344c920866189fbdba607ce839dc027fe50efacee8ef4ab",
+                    "tooling/tests/test_native_mlt_repair_only_compiler_receipt.py":"34d10de92e010329995e52b86381c30d6696f6c61cbc56e5f4de42948421a1bb"}
+          assert sources["runtime_sources"]==expected
+          assert set(sources["runtime_blob_oids"])==set(expected)
+          assert sources["source_sha"]==rec["executed_source_sha"]==os.environ["GITHUB_SHA"]
+          case="tooling/tests/test_ci_mlt_runtime_selected.py"
+          assert rec["test_definition_sha256"]=={case:expected[case]}
+          assert rec["status"]=="PASS" and rec["exit_code"]==0 and rec["require_complete"] is True
+          assert len(rec["steps"])==2
+          assert {s["entry_point"] for s in rec["steps"]}=={
+              "discovery:test_ci_mlt_runtime_selected.py",
+              "dotted:tooling.tests.test_ci_mlt_runtime_selected"}
+          for step in rec["steps"]:
+              counts=step["counts"]
+              assert step["status"]=="PASS" and step["exit_code"]==0
+              assert counts["tests_run"]==counts["passed"]==14
+              assert counts["terminal_status"]=="OK"
+              assert all(counts[key]==0 for key in (
+                  "errors","failures","skipped","expected_failures","unexpected_successes"))
+              for label in ("stdout","stderr"):
+                  assert sha(public/step[label]["file"])==step[label]["sha256"]
+          PY
+      - name: Check source and acceptance policies
+        run: |
+          set -euo pipefail
+          python3 -B tooling/source_policy.py > "$MW_DIAG_WORK/public/source-policy.stdout.log" 2> "$MW_DIAG_WORK/public/source-policy.stderr.log"
+          python3 -B tooling/acceptance_policy.py > "$MW_DIAG_WORK/public/acceptance-policy.stdout.log" 2> "$MW_DIAG_WORK/public/acceptance-policy.stderr.log"
+          python3 -B tooling/creative_status_policy.py > "$MW_DIAG_WORK/public/creative-status-policy.stdout.log" 2> "$MW_DIAG_WORK/public/creative-status-policy.stderr.log"
+      - name: Verify source composition and identity contracts
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          python3 -B -I -S - > "$MW_DIAG_WORK/public/composition-contracts.stdout.log" \
+            2> "$MW_DIAG_WORK/public/composition-contracts.stderr.log" <<'PY'
+          import importlib.util,json,os,pathlib,sys,unittest
+          source=pathlib.Path(os.environ["MW_DIAG_VERIFY"])
+          spec=importlib.util.spec_from_file_location("test_mlt_repair_verification",
+                                                     source/"test_mlt_repair_verification.py")
+          if spec is None or spec.loader is None: raise SystemExit("missing exact composition contracts")
+          tests=importlib.util.module_from_spec(spec)
+          sys.modules[spec.name]=tests
+          spec.loader.exec_module(tests)
+          suite=unittest.defaultTestLoader.loadTestsFromModule(tests)
+          if suite.countTestCases()!=26: raise SystemExit("expected exactly 26 composition contracts")
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          complete=(result.testsRun==26 and result.wasSuccessful() and not result.skipped
+                    and not result.expectedFailures and not result.unexpectedSuccesses)
+          report={"tests_run":result.testsRun,"failures":len(result.failures),"errors":len(result.errors),
+                  "skipped":len(result.skipped),"expected_failures":len(result.expectedFailures),
+                  "unexpected_successes":len(result.unexpectedSuccesses),"complete":bool(complete)}
+          (pathlib.Path(os.environ["MW_DIAG_WORK"])/"public/composition-contracts.json").write_text(
+              json.dumps(report,indent=2)+"\n")
+          if not complete: raise SystemExit(1)
+          PY
+      - name: Install compiler and exact FFmpeg 6.1.1 development libraries
+        run: |
+          set -euo pipefail
+          ffmpeg_version='7:6.1.1-3ubuntu5'
+          ffmpeg_packages=(libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev
+                           libavdevice-dev libswscale-dev libswresample-dev)
+          requested=()
+          for package in "${ffmpeg_packages[@]}"; do
+            requested+=("$package=$ffmpeg_version")
+          done
+          printf '%s\n' "${requested[@]}" > "$MW_DIAG_WORK/public/dependency-request.txt"
           sudo apt-get update
+          apt-cache policy "${ffmpeg_packages[@]}" > "$MW_DIAG_WORK/public/dependency-candidates.txt"
           sudo apt-get install --no-install-recommends -y \
-            build-essential cmake pkg-config curl \
-            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
-            libavdevice-dev libswscale-dev libswresample-dev
-          dpkg-query -W -f='${Package} ${Version}\n' \
-            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
-            libavdevice-dev libswscale-dev libswresample-dev \
+            build-essential cmake pkg-config curl "${requested[@]}"
+          dpkg-query -W -f='${Package} ${Version}\n' "${ffmpeg_packages[@]}" \
             > "$MW_DIAG_WORK/public/dependency-versions.txt"
-          version="$(dpkg-query -W -f='${Version}' libavcodec-dev)"
-          [[ "$version" == 7:6.1.* ]]
+          for package in "${ffmpeg_packages[@]}"; do
+            actual="$(dpkg-query -W -f='${Version}' "$package")"
+            if [[ "$actual" != "$ffmpeg_version" ]]; then
+              printf 'FFmpeg dependency differs: %s expected %s observed %s\n' \
+                "$package" "$ffmpeg_version" "$actual" >&2
+              exit 1
+            fi
+          done
           pkg-config --modversion libavcodec libavutil > "$MW_DIAG_WORK/public/library-api-versions.txt"
+          printf '60.31.102\n58.29.100\n' > "$MW_DIAG_WORK/public/library-api-versions.expected.txt"
+          if ! cmp "$MW_DIAG_WORK/public/library-api-versions.expected.txt" \
+                   "$MW_DIAG_WORK/public/library-api-versions.txt"; then
+            printf 'FFmpeg API versions differ from the exact admitted source fixture\n' >&2
+            exit 1
+          fi
           cc --version > "$MW_DIAG_WORK/public/compiler-version.txt"
       - name: Retrieve exact upstream MLT consumer source
         run: |
@@ -179,72 +411,571 @@ jobs:
           assert re.search(r"\nOK\s*$",text),text
           assert "skipped=" not in text
           PY
-      - name: Generate instrumented consumer and compile the real module
+      - name: Verify the pinned planar repair source
         run: |
           set -euo pipefail
-          python3 -B -I -S "$MW_DIAG_SOURCE/instrument_consumer.py" \
-            --consumer "$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c" \
-            --output-dir "$MW_DIAG_WORK/build/instrumented-source" \
-            > "$MW_DIAG_WORK/public/instrumenter.stdout.log"
-          cp "$MW_DIAG_WORK/build/instrumented-source/consumer_avformat.c" \
-            "$MW_DIAG_WORK/build/instrumented-source/audio_tap.h" \
-            "$MW_MLT_SOURCE/src/modules/avformat/"
+          original="$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c"
+          echo "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910  $original" | sha256sum --check
+          cd "$RUNNER_TEMP"
+          MOTIONWRIGHT_MLT_V722_ORIGINAL="$original" \
+            python3 -B -I -S - > "$MW_DIAG_WORK/public/repair-contracts.stdout.log" \
+            2> "$MW_DIAG_WORK/public/repair-contracts.stderr.log" <<'PY'
+          import importlib.util,json,os,pathlib,sys,unittest
+          source=pathlib.Path(os.environ["MW_DIAG_SOURCE"])
+          spec=importlib.util.spec_from_file_location("test_repair_planar_source",
+                                                     source/"test_repair_planar_source.py")
+          if spec is None or spec.loader is None: raise SystemExit("missing exact repair contracts")
+          tests=importlib.util.module_from_spec(spec)
+          sys.modules[spec.name]=tests
+          spec.loader.exec_module(tests)
+          suite=unittest.defaultTestLoader.loadTestsFromModule(tests)
+          if suite.countTestCases()!=13: raise SystemExit("expected exactly 13 repair contracts")
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          complete=(result.testsRun==13 and result.wasSuccessful() and not result.skipped
+                    and not result.expectedFailures and not result.unexpectedSuccesses)
+          report={"tests_run":result.testsRun,"failures":len(result.failures),"errors":len(result.errors),
+                  "skipped":len(result.skipped),"expected_failures":len(result.expectedFailures),
+                  "unexpected_successes":len(result.unexpectedSuccesses),"complete":bool(complete)}
+          (pathlib.Path(os.environ["MW_DIAG_WORK"])/"public/repair-contracts.json").write_text(
+              json.dumps(report,indent=2)+"\n")
+          if not complete: raise SystemExit(1)
+          PY
+      - name: Prepare the exact repaired and instrumented consumer
+        run: |
+          set -euo pipefail
+          python3 -B -I -S "$MW_DIAG_VERIFY/mlt_repair_verification.py" prepare \
+            --source-dir "$MW_DIAG_SOURCE" --verification-source-dir "$MW_DIAG_VERIFY" \
+            --source-receipt "$MW_DIAG_WORK/public/source-inputs.json" \
+            --original-consumer "$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c" \
+            --output-dir "$MW_DIAG_WORK/build/repair-prepared" --expected-source "$GITHUB_SHA" \
+            > "$MW_DIAG_WORK/public/repair-prepare.stdout.log" \
+            2> "$MW_DIAG_WORK/public/repair-prepare.stderr.log"
+          cp "$MW_DIAG_WORK/build/repair-prepared/prepare-receipt.json" \
+            "$MW_DIAG_WORK/public/prepare-receipt.json"
+      - name: Verify thirteen portable native runtime admission contracts (G1)
+        run: |
+          set -euo pipefail
+          original="$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c"
+          repaired="$MW_DIAG_WORK/build/repair-prepared/repaired-consumer.c"
+          echo "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910  $original" | sha256sum --check
+          echo "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0  $repaired" | sha256sum --check
+          python3 -B -I -S tooling/ci_mlt_runtime_selected.py \
+            --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" \
+            --platform linux --original "$original" --repaired "$repaired" \
+            --report "$MW_DIAG_WORK/public/runtime-linux-selected.json"
           python3 -B -I -S - <<'PY'
-          import os,pathlib,re,subprocess
-          source=pathlib.Path(os.environ["MW_MLT_SOURCE"])
+          import hashlib,json,os,pathlib
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          rec=json.loads((public/"runtime-linux-selected.json").read_text())
+          source=json.loads((public/"source-inputs.json").read_text())
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          assert rec["schema"]=="motionwright.mlt-runtime-selected-platform-g1/1"
+          assert rec["status"]=="PASS_SELECTED_PLATFORM_G1" and rec["exit_code"]==0
+          assert rec["source_sha"]==source["source_sha"]==os.environ["GITHUB_SHA"]
+          assert rec["tree_sha"]==source["tree"]
+          assert rec["executor_platform"]=="linux" and rec["selected_count"]==13
+          assert len(set(rec["selected_methods"]))==13
+          assert "test_simulated_windows_machine_can_never_admit_module_on_either_runner" in rec["selected_methods"]
+          assert rec["not_executed_on_this_platform"]==[]
+          assert rec["not_executed_are_not_passes"] is True
+          assert rec["upstream_source_sha256"]=={
+              "original":"c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910",
+              "repaired":"246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"}
+          for name in ("stdout","stderr"):
+              assert sha(public/rec[name]["file"])==rec[name]["sha256"]
+          PY
+      - name: Verify sixteen repaired-only ELF source receipt controls (G1, no compiler invoked)
+        run: |
+          set -euo pipefail
+          original="$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c"
+          repaired="$MW_DIAG_WORK/build/repair-prepared/repaired-consumer.c"
+          echo "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910  $original" | sha256sum --check
+          echo "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0  $repaired" | sha256sum --check
+          MOTIONWRIGHT_MLT_V722_ORIGINAL="$original" MOTIONWRIGHT_MLT_V722_REPAIRED="$repaired" \
+            python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
+              --pattern test_native_mlt_repair_only_compiler_receipt.py --mode both \
+              --expected-source "$GITHUB_SHA" --require-complete \
+              --report "$MW_DIAG_WORK/public/repair-only-compiler-contracts.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          src=json.loads((public/"source-inputs.json").read_text())
+          rec=json.loads((public/"repair-only-compiler-contracts.json").read_text())
+          path="tooling/tests/test_native_mlt_repair_only_compiler_receipt.py"
+          assert rec["schema"] and rec["executed_source_sha"]==src["source_sha"]==os.environ["GITHUB_SHA"]
+          assert rec["status"]=="PASS" and rec["exit_code"]==0 and rec["require_complete"] is True
+          assert rec["tree_sha"]==src["tree"]
+          assert rec["test_definition_sha256"]=={path:src["runtime_sources"][path]}
+          assert len(rec["steps"])==2
+          assert {r["entry_point"] for r in rec["steps"]}=={
+              "discovery:test_native_mlt_repair_only_compiler_receipt.py",
+              "dotted:tooling.tests.test_native_mlt_repair_only_compiler_receipt"}
+          for row in rec["steps"]:
+              cnt=row["counts"]
+              assert row["status"]=="PASS" and row["exit_code"]==0
+              assert cnt["tests_run"]==cnt["passed"]==16 and cnt["terminal_status"]=="OK"
+              assert all(cnt[k]==0 for k in ("failures","errors","skipped","expected_failures","unexpected_successes"))
+              for stream in ("stdout","stderr"):
+                  assert digest(public/row[stream]["file"])==row[stream]["sha256"]
+          PY
+      - name: Reject the exact historical zero-padding helper with the new C oracle
+        run: |
+          set -euo pipefail
+          python3 -B -I -S - <<'PY'
+          import hashlib,importlib.util,json,os,pathlib,shlex,shutil,subprocess
           work=pathlib.Path(os.environ["MW_DIAG_WORK"])
+          public=work/"public"
+          source=pathlib.Path(os.environ["MW_DIAG_SOURCE"])
+          prepared=work/"build/repair-prepared"
+          legacy=work/"build/legacy-planar"
+          legacy.mkdir(exist_ok=False)
+          spec=importlib.util.spec_from_file_location(
+              "mlt_repair_verification",pathlib.Path(os.environ["MW_DIAG_VERIFY"])/"mlt_repair_verification.py")
+          assert spec is not None and spec.loader is not None
+          verify=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(verify)
+          header=verify.read_regular(prepared/"legacy-planar-helper-under-test.h")
+          assert header==verify.legacy_planar_helper()
+          verify.write_new(legacy/"planar-helper-under-test.h",header)
+          test_source=source/"test_planar_padding.c"
+          test_sha=hashlib.sha256(verify.read_regular(test_source)).hexdigest()
+          assert test_sha==verify.DIAGNOSTIC_DIGESTS["test_planar_padding.c"]
+          flags=subprocess.check_output(
+              ["pkg-config","--cflags","--libs","libavcodec","libavutil"],text=True)
+          compiler=shutil.which("cc")
+          assert compiler is not None
+          compiler_path=pathlib.Path(compiler).resolve(strict=True)
+          binary=legacy/"test_planar_padding"
+          args=[str(compiler_path),"-std=c11","-O1","-g","-Wall","-Wextra","-Werror",
+                "-fsanitize=address,undefined","-fno-sanitize-recover=all",
+                "-fno-omit-frame-pointer","-I"+str(legacy),str(test_source),
+                *shlex.split(flags),"-o",str(binary)]
+          command={"argv":args,"compiler_path":str(compiler_path),
+                   "compiler_sha256":hashlib.sha256(compiler_path.read_bytes()).hexdigest(),
+                   "fixture_sha256":test_sha,"helper_sha256":verify.LEGACY_HELPER_SHA256}
+          (public/"legacy-planar-compile-command.json").write_text(json.dumps(command,indent=2)+"\n")
+          with (public/"legacy-planar-compile.log").open("xb") as out:
+              subprocess.run(args,stdout=out,stderr=subprocess.STDOUT,check=True)
+          with (public/"legacy-planar-loaded-libraries.txt").open("xb") as out:
+              subprocess.run(["ldd",str(binary)],stdout=out,stderr=subprocess.STDOUT,check=True)
+          environment={**os.environ,"ASAN_OPTIONS":"detect_leaks=1:halt_on_error=1",
+                       "UBSAN_OPTIONS":"halt_on_error=1:print_stacktrace=1"}
+          with (public/"legacy-planar.stdout.log").open("xb") as out, \
+                  (public/"legacy-planar.stderr.log").open("xb") as err:
+              result=subprocess.run([str(binary)],stdout=out,stderr=err,env=environment,timeout=30)
+          (public/"legacy-planar.exit.txt").write_text(str(result.returncode)+"\n")
+          report=verify.validate_legacy_rejection(
+              result.returncode,(public/"legacy-planar.stdout.log").read_bytes(),
+              (public/"legacy-planar.stderr.log").read_bytes())
+          inputs=json.loads((public/"source-inputs.json").read_text())
+          report.update(schema="motionwright.mlt-legacy-u8p-negative/1",
+                        source_sha=os.environ["GITHUB_SHA"],tree=inputs["tree"],
+                        run_id=os.environ["GITHUB_RUN_ID"],run_attempt=os.environ["GITHUB_RUN_ATTEMPT"],
+                        fixture_sha256=test_sha,helper_sha256=verify.LEGACY_HELPER_SHA256,
+                        historical_source_reference=verify.LEGACY_HELPER_REFERENCE,
+                        binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+                        compiler_command_sha256=hashlib.sha256(
+                            (public/"legacy-planar-compile-command.json").read_bytes()).hexdigest())
+          with (public/"legacy-planar-negative.json").open("x") as out:
+              json.dump(report,out,indent=2)
+              out.write("\n")
+          PY
+      - name: Compile and execute the twelve sanitized planar layout cases
+        run: |
+          set -euo pipefail
+          prepared="$MW_DIAG_WORK/build/repair-prepared"
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror \
+            -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
+            -I"$prepared" "$MW_DIAG_SOURCE/test_planar_padding.c" \
+            $(pkg-config --cflags --libs libavcodec libavutil) \
+            -o "$MW_DIAG_WORK/build/test_planar_padding"
+          ldd "$MW_DIAG_WORK/build/test_planar_padding" > "$MW_DIAG_WORK/public/planar-loaded-libraries.txt"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            "$MW_DIAG_WORK/build/test_planar_padding" \
+            > "$MW_DIAG_WORK/public/planar.stdout.log" \
+            2> "$MW_DIAG_WORK/public/planar.stderr.log"
+          python3 -B -I -S - <<'PY'
+          import os,pathlib
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          expected=b"MLT_PLANAR_LAYOUT_PASS checks=12 source-layout-only, no native master\n"
+          assert (public/"planar.stdout.log").read_bytes()==expected,"planar case receipt differs"
+          assert (public/"planar.stderr.log").read_bytes()==b"","unexpected planar diagnostics"
+          PY
+      - name: Compile the complete repaired consumer with the observer
+        run: |
+          set -euo pipefail
+          source="$MW_DIAG_WORK/build/repaired-mlt-source"
+          test ! -e "$source"
+          cp -a "$MW_MLT_SOURCE" "$source"
+          cp "$MW_DIAG_WORK/build/repair-prepared/consumer_avformat.c" \
+            "$MW_DIAG_WORK/build/repair-prepared/audio_tap.h" "$source/src/modules/avformat/"
+          echo "MW_MLT_COMBINED_SOURCE=$source" >> "$GITHUB_ENV"
+          export MW_MLT_COMBINED_SOURCE="$source"
+          python3 -B -I -S - <<'PY'
+          import hashlib,os,pathlib,re,subprocess
+          source=pathlib.Path(os.environ["MW_MLT_COMBINED_SOURCE"])
+          work=pathlib.Path(os.environ["MW_DIAG_WORK"])
+          original=pathlib.Path(os.environ["MW_MLT_SOURCE"])/"src/modules/avformat/consumer_avformat.c"
+          combined=source/"src/modules/avformat/consumer_avformat.c"
+          assert hashlib.sha256(original.read_bytes()).hexdigest()=="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
+          assert hashlib.sha256(combined.read_bytes()).hexdigest()=="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
           modules=re.findall(r"^option\((MOD_[A-Z0-9_]+) ",(source/"CMakeLists.txt").read_text(),re.M)
           assert "MOD_AVFORMAT" in modules
           args=["cmake","-S",str(source),"-B",str(work/"build/mlt"),
                 "-DCMAKE_BUILD_TYPE=RelWithDebInfo","-DBUILD_TESTING=OFF",
-                "-DBUILD_DOCS=OFF","-DCLANG_FORMAT=OFF"]
+                "-DBUILD_DOCS=OFF","-DCLANG_FORMAT=OFF","-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
           args += ["-D"+name+"="+("ON" if name=="MOD_AVFORMAT" else "OFF") for name in modules]
           with (work/"public/cmake-configure.log").open("wb") as log:
               subprocess.run(args,stdout=log,stderr=subprocess.STDOUT,check=True)
           PY
           cmake --build "$MW_DIAG_WORK/build/mlt" --target mltavformat --parallel 2 \
             > "$MW_DIAG_WORK/public/consumer-module-build.log" 2>&1
-          cp "$MW_DIAG_WORK/build/instrumented-source/instrumented-source.json" \
-            "$MW_DIAG_WORK/public/instrumented-source.json"
-      - name: Bind completed source evidence
+          cp "$MW_DIAG_WORK/build/mlt/compile_commands.json" "$MW_DIAG_WORK/public/compile_commands.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          work=pathlib.Path(os.environ["MW_DIAG_WORK"])
+          source=pathlib.Path(os.environ["MW_MLT_COMBINED_SOURCE"])
+          consumer=(source/"src/modules/avformat/consumer_avformat.c").resolve(strict=True)
+          assert hashlib.sha256(consumer.read_bytes()).hexdigest()=="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+          compile_rows=json.loads((work/"build/mlt/compile_commands.json").read_text())
+          def compiled_file(row):
+              path=pathlib.Path(row["file"])
+              return (path if path.is_absolute() else pathlib.Path(row["directory"])/path).resolve()
+          selected=[row for row in compile_rows if compiled_file(row)==consumer]
+          assert len(selected)==1,"expected one actual combined consumer compile command"
+          directory=pathlib.Path(selected[0]["directory"]).resolve(strict=True)
+          assert directory.is_relative_to((work/"build/mlt").resolve(strict=True))
+          assert selected[0].get("command") or selected[0].get("arguments")
+          module=list((work/"build/mlt").rglob("libmltavformat.so"))
+          objects=list((work/"build/mlt").rglob("consumer_avformat.c.o"))
+          assert len(module)==1 and len(objects)==1
+          with (work/"public/consumer-loaded-libraries.txt").open("wb") as log:
+              subprocess.run(["ldd",str(module[0])],stdout=log,stderr=subprocess.STDOUT,check=True)
+          (work/"public/combined-consumer-compile-command.json").write_text(
+              json.dumps(selected[0],indent=2)+"\n")
+          PY
+      - name: Bind completed planar repair source evidence
         run: |
           set -euo pipefail
           python3 -B -I -S "$MW_DIAG_CHECK" verify > "$MW_DIAG_WORK/source-inputs-after.json"
           cmp "$MW_DIAG_WORK/public/source-inputs.json" "$MW_DIAG_WORK/source-inputs-after.json"
+          python3 -B -I -S "$MW_DIAG_VERIFY/mlt_repair_verification.py" verify-prepared \
+            --source-dir "$MW_DIAG_SOURCE" --verification-source-dir "$MW_DIAG_VERIFY" \
+            --source-receipt "$MW_DIAG_WORK/public/source-inputs.json" \
+            --original-consumer "$MW_MLT_SOURCE/src/modules/avformat/consumer_avformat.c" \
+            --output-dir "$MW_DIAG_WORK/build/repair-prepared" --expected-source "$GITHUB_SHA" \
+            > "$MW_DIAG_WORK/public/repair-verify.stdout.log" \
+            2> "$MW_DIAG_WORK/public/repair-verify.stderr.log"
+          cmp "$MW_DIAG_WORK/build/repair-prepared/prepare-receipt.json" \
+            "$MW_DIAG_WORK/public/prepare-receipt.json"
           python3 -B -I -S - <<'PY'
-          import hashlib,json,os,pathlib
+          import hashlib,importlib.util,json,os,pathlib,re,shutil,sys
           work=pathlib.Path(os.environ["MW_DIAG_WORK"])
           public=work/"public"
           def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
-          inputs=json.loads((public/"source-inputs.json").read_text())
-          files=inputs["sources"]
-          source_identity=json.loads((public/"instrumented-source.json").read_text())
-          assert source_identity["input_consumer_sha256"]=="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-          assert source_identity["output_consumer_sha256"]=="9190366bf2cddfd8214497fa9ec42fa2ef55dfbed5f8248c69b7aaae7854cabb"
-          evidence={p.name:sha(p) for p in public.iterdir() if p.is_file()}
+          def json_file(name):return json.loads((public/name).read_text())
+          inputs=json_file("source-inputs.json")
+          assert inputs["source_sha"]==os.environ["GITHUB_SHA"]
+          prepared=json_file("prepare-receipt.json")
+          assert prepared["schema"]=="motionwright.mlt-planar-repair-preparation/2"
+          assert prepared["source_sha"]==inputs["source_sha"] and prepared["tree"]==inputs["tree"]
+          assert prepared["source_inputs_sha256"]==sha(public/"source-inputs.json")
+          assert prepared["sources"]==inputs["sources"] and prepared["source_blob_oids"]==inputs["source_blob_oids"]
+          assert prepared["C_layout_checks"]==prepared["full_consumer_compile"]==prepared["physical_runtime"]=="NOT_RUN"
+          assert prepared["legacy_C_negative_checks"]=="NOT_RUN"
+          assert prepared["outputs"]["consumer_avformat.c"]=="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+          assert prepared["outputs"]["planar-helper-under-test.h"]=="d90db74a261da8053a7f8258f1b9975e692ab54888408cd0a2818ee26e720bf9"
+          assert prepared["outputs"]["legacy-planar-helper-under-test.h"]=="fa56e6635f8731f62c9fca1305ee1b916e752526bbeeaaa4404addb24e327013"
+          for name in ("provider_compiled","provider_admitted","native_dispatched",
+                       "master_audio_tail_corrected","production_master_accepted","release_authorized"):
+              assert prepared[name] is False
+          for name,expected in (("composition-contracts.json",26),("repair-contracts.json",13)):
+              result=json_file(name)
+              assert result=={"tests_run":expected,"failures":0,"errors":0,"skipped":0,
+                              "expected_failures":0,"unexpected_successes":0,"complete":True}
+          observer=(public/"python.stderr.log").read_text()
+          assert re.search(r"Ran 32 tests in ",observer) and re.search(r"\nOK\s*$",observer)
+          assert "skipped=" not in observer
+          assert (public/"planar.stdout.log").read_bytes()==b"MLT_PLANAR_LAYOUT_PASS checks=12 source-layout-only, no native master\n"
+          assert not (public/"planar.stderr.log").read_bytes()
+          spec=importlib.util.spec_from_file_location(
+              "mlt_repair_verification",pathlib.Path(os.environ["MW_DIAG_VERIFY"])/"mlt_repair_verification.py")
+          assert spec is not None and spec.loader is not None
+          verify=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(verify)
+          negative=json_file("legacy-planar-negative.json")
+          expected_negative=verify.validate_legacy_rejection(
+              int((public/"legacy-planar.exit.txt").read_text()),
+              (public/"legacy-planar.stdout.log").read_bytes(),
+              (public/"legacy-planar.stderr.log").read_bytes())
+          for key,value in expected_negative.items():
+              assert negative[key]==value,"historical negative outcome changed"
+          assert negative["schema"]=="motionwright.mlt-legacy-u8p-negative/1"
+          assert negative["source_sha"]==inputs["source_sha"] and negative["tree"]==inputs["tree"]
+          assert negative["run_id"]==os.environ["GITHUB_RUN_ID"] and negative["run_attempt"]==os.environ["GITHUB_RUN_ATTEMPT"]
+          assert negative["fixture_sha256"]==inputs["sources"]["tooling/mlt-audio-diagnostic/test_planar_padding.c"]
+          assert negative["helper_sha256"]==verify.LEGACY_HELPER_SHA256
+          assert negative["historical_source_reference"]==prepared["legacy_helper_reference"]==verify.LEGACY_HELPER_REFERENCE
+          legacy_binary=work/"build/legacy-planar/test_planar_padding"
+          assert negative["binary_sha256"]==sha(legacy_binary)
+          assert sha(work/"build/legacy-planar/planar-helper-under-test.h")==verify.LEGACY_HELPER_SHA256
+          assert negative["compiler_command_sha256"]==sha(public/"legacy-planar-compile-command.json")
+          negative_command=json_file("legacy-planar-compile-command.json")
+          assert negative_command["compiler_sha256"]==sha(pathlib.Path(negative_command["compiler_path"]))
+          requested=dict(line.split("=",1) for line in (public/"dependency-request.txt").read_text().splitlines())
+          observed=dict(line.split() for line in (public/"dependency-versions.txt").read_text().splitlines())
+          expected_packages={"libavcodec-dev","libavformat-dev","libavutil-dev","libavfilter-dev",
+                             "libavdevice-dev","libswscale-dev","libswresample-dev"}
+          assert set(requested)==set(observed)==expected_packages
+          assert all(requested[name]==observed[name]=="7:6.1.1-3ubuntu5" for name in expected_packages)
+          assert (public/"library-api-versions.txt").read_bytes()==b"60.31.102\n58.29.100\n"
+          original=pathlib.Path(os.environ["MW_MLT_SOURCE"])/"src/modules/avformat/consumer_avformat.c"
+          source=pathlib.Path(os.environ["MW_MLT_COMBINED_SOURCE"])
+          consumer=source/"src/modules/avformat/consumer_avformat.c"
+          assert sha(original)=="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
+          assert sha(consumer)==prepared["outputs"]["consumer_avformat.c"]
+          assert sha(source/"src/modules/avformat/audio_tap.h")==prepared["outputs"]["audio_tap.h"]
+          command=json_file("combined-consumer-compile-command.json")
+          compiled_path=pathlib.Path(command["file"])
+          if not compiled_path.is_absolute():
+              compiled_path=pathlib.Path(command["directory"])/compiled_path
+          assert compiled_path.resolve(strict=True)==consumer.resolve(strict=True)
           module=list((work/"build/mlt").rglob("libmltavformat.so"))
-          assert len(module)==1
           consumer_object=list((work/"build/mlt").rglob("consumer_avformat.c.o"))
-          assert len(consumer_object)==1
-          result={"schema":"motionwright.mlt-audio-observer-source-check/1",
-                  "source_sha":os.environ["GITHUB_SHA"],
-                  "tree":inputs["tree"],
+          assert len(module)==1 and len(consumer_object)==1
+          tools={}
+          for name in ("cc","cmake","pkg-config","python3","ld"):
+              located=shutil.which(name)
+              assert located is not None,"missing observed build tool"
+              path=pathlib.Path(located).resolve(strict=True)
+              assert path.is_file()
+              tools[name]={"path":str(path),"sha256":sha(path)}
+          libraries={}
+          for name in ("constructor-loaded-libraries.txt","planar-loaded-libraries.txt",
+                       "legacy-planar-loaded-libraries.txt","consumer-loaded-libraries.txt"):
+              text=(public/name).read_text()
+              assert "not found" not in text,"unresolved loaded library"
+              for line in text.splitlines():
+                  match=re.search(r"(?:=>\s+)?(/[^\s]+)\s+\(",line)
+                  if match:
+                      path=pathlib.Path(match.group(1)).resolve(strict=True)
+                      assert path.is_file()
+                      libraries[str(path)]=sha(path)
+          assert libraries,"no observed loaded-library paths"
+          evidence={p.name:sha(p) for p in public.iterdir() if p.is_file()}
+          result={"schema":"motionwright.mlt-planar-repair-source-check/2",
+                  "source_sha":os.environ["GITHUB_SHA"],"tree":inputs["tree"],
                   "run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
-                  "sources":files,"evidence":evidence,"module_sha256":sha(module[0]),
-                  "consumer_object_sha256":sha(consumer_object[0]),
-                  "python_contract_tests":32,"python_skipped":0,
-                  "constructor_C_sanitizers":"PASS","consumer_sanitizers":"NOT_RUN",
-                  "physical_runtime":"NOT_RUN",
-                  "actual_instrumented_module_compile":"PASS",
-                  "original_distro_runtime_reproduced":False,
-                  "provider_admission":"NOT_ESTABLISHED","native_render":"NOT_RUN",
+                  "job_key":os.environ["GITHUB_JOB"],"workflow":inputs["workflow"],
+                  "sources":inputs["sources"],"source_blob_oids":inputs["source_blob_oids"],
+                  "evidence":evidence,"preparation_receipt_sha256":sha(public/"prepare-receipt.json"),
+                  "source_before_after_equal":True,"original_consumer_preserved":True,
+                  "combined_consumer_source_sha256":sha(consumer),
+                  "tested_planar_helper_sha256":sha(work/"build/repair-prepared/planar-helper-under-test.h"),
+                  "consumer_compile_command_sha256":sha(public/"combined-consumer-compile-command.json"),
+                  "compile_commands_sha256":sha(public/"compile_commands.json"),
+                  "module_sha256":sha(module[0]),"consumer_object_sha256":sha(consumer_object[0]),
+                  "constructor_binary_sha256":sha(work/"build/test_audio_tap"),
+                  "planar_test_binary_sha256":sha(work/"build/test_planar_padding"),
+                  "observed_tools":tools,"observed_loaded_libraries":libraries,
+                  "expected_ffmpeg_packages":requested,"observed_ffmpeg_packages":observed,
+                  "expected_library_api_versions":["60.31.102","58.29.100"],
+                  "legacy_zero_padding_negative":negative,
+                  "legacy_negative_receipt_sha256":sha(public/"legacy-planar-negative.json"),
+                  "python_version":sys.version,"platform":sys.platform,
+                  "python_contract_tests":{"source_composition":26,"original_observer":32,"planar_repair":13},
+                  "python_skipped":0,"planar_C_layout_cases":12,
+                  "constructor_C_sanitizers":"PASS","planar_layout_C_sanitizers":"PASS",
+                  "actual_combined_consumer_module_compile":"PASS",
+                  "instrumented_original_module_compiled_in_this_run":False,
+                  "consumer_runtime_sanitizers":"NOT_RUN","physical_runtime":"NOT_RUN",
+                  "original_distro_runtime_reproduced":False,"provider_admission":"NOT_ESTABLISHED",
+                  "native_render":"NOT_RUN","native_dispatched":False,
                   "production_master_acceptance":False,"release_authorized":False}
-          (public/"receipt.json").write_text(json.dumps(result,indent=2)+"\n")
+          with (public/"planar-repair-verification-receipt.json").open("x") as out:
+              json.dump(result,out,indent=2)
+              out.write("\n")
+          PY
+      - name: Build exact repaired-only uninstrumented MLT ELF (opt-in G1)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.repaired_only_source_g1 == true }}
+        run: |
+          set -euo pipefail
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,re,shutil,subprocess
+          work=pathlib.Path(os.environ["MW_DIAG_WORK"]).resolve(strict=True)
+          public=work/"public"
+          source_root=pathlib.Path(os.environ["MW_MLT_SOURCE"]).resolve(strict=True)
+          original=source_root/"src/modules/avformat/consumer_avformat.c"
+          repaired=work/"build/repair-prepared/repaired-consumer.c"
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          original_digest="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
+          repaired_digest="246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"
+          assert os.environ["GITHUB_ACTIONS"]=="true" and os.environ["RUNNER_OS"]=="Linux"
+          assert os.environ.get("MOTIONWRIGHT_APPROVED_MLT_G2")!="1"
+          assert original.stat().st_size==96690 and sha(original)==original_digest
+          assert repaired.stat().st_size==98847 and sha(repaired)==repaired_digest
+          assert repaired_digest!="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+          before=json.loads((public/"planar-repair-verification-receipt.json").read_text())
+          assert before["source_sha"]==os.environ["GITHUB_SHA"] and before["run_id"]==os.environ["GITHUB_RUN_ID"]
+          assert before["run_attempt"]==os.environ["GITHUB_RUN_ATTEMPT"]
+          assert before["constructor_C_sanitizers"]==before["planar_layout_C_sanitizers"]=="PASS"
+          assert before["actual_combined_consumer_module_compile"]=="PASS"
+          assert before["planar_C_layout_cases"]==12 and before["physical_runtime"]=="NOT_RUN"
+          source=work/"build/mlt-only-new-source"
+          target=work/"build/mlt-only-new-build"
+          assert not source.exists() and not target.exists()
+          shutil.copytree(source_root,source,symlinks=True)
+          compiled=source/"src/modules/avformat/consumer_avformat.c"
+          assert sha(compiled)==original_digest
+          compiled.write_bytes(repaired.read_bytes())
+          assert sha(compiled)==repaired_digest and compiled.stat().st_size==98847
+          options=re.findall(r"^option\((MOD_[A-Z0-9_]+) ",(source/"CMakeLists.txt").read_text(),re.M)
+          assert len(options)==len(set(options)) and "MOD_AVFORMAT" in options
+          config=["cmake","-S",str(source),"-B",str(target),"-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+                  "-DBUILD_TESTING=OFF","-DBUILD_DOCS=OFF","-DCLANG_FORMAT=OFF",
+                  "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
+          config+=["-D"+x+"="+("ON" if x=="MOD_AVFORMAT" else "OFF") for x in options]
+          with (public/"only-cmake-arguments.json").open("x") as f:json.dump(config,f,indent=2)
+          with (public/"only-cmake-configure.log").open("xb") as log:
+              subprocess.run(config,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=180)
+          with (public/"only-module-build.log").open("xb") as log:
+              subprocess.run(["cmake","--build",str(target),"--target","mltavformat","--parallel","2"],
+                             stdout=log,stderr=subprocess.STDOUT,check=True,timeout=420)
+          modules=list(target.rglob("libmltavformat.so"))
+          objects=list(target.rglob("consumer_avformat.c.o"))
+          assert len(modules)==len(objects)==1
+          module=modules[0].resolve(strict=True)
+          obj=objects[0].resolve(strict=True)
+          assert module.read_bytes().startswith(b"\x7fELF") and obj.read_bytes().startswith(b"\x7fELF")
+          compiles=target/"compile_commands.json"
+          link=target/"src/modules/avformat/CMakeFiles/mltavformat.dir/link.txt"
+          assert compiles.is_file() and link.is_file()
+          rows=json.loads(compiles.read_text())
+          selected=[row for row in rows if pathlib.Path(row["file"]).resolve(strict=True)==compiled]
+          assert len(selected)==1 and (selected[0].get("command") or selected[0].get("arguments"))
+          assert "Built target mltavformat" in (public/"only-module-build.log").read_text(errors="replace")
+          assert sha(compiled)==sha(repaired)==repaired_digest
+          for src,name in ((compiles,"only-compile_commands.json"),(link,"only-original-link.txt"),
+                           (obj,"only-consumer_avformat.c.o"),(module,"only-libmltavformat.so")):
+              dest=public/name
+              assert not dest.exists()
+              with dest.open("xb") as f:f.write(src.read_bytes())
+              assert sha(dest)==sha(src)
+          original_paths={"schema":"motionwright.mlt.real-only-original-paths/1",
+                          "head":os.environ["GITHUB_SHA"],"run_id":os.environ["GITHUB_RUN_ID"],
+                          "attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+                          "original":str(original.resolve(strict=True)),
+                          "repaired":str(repaired.resolve(strict=True)),
+                          "compiled":str(compiled.resolve(strict=True)),
+                          "object":str(obj),"module":str(module),
+                          "compile_directory":selected[0]["directory"],
+                          "link_source_path":str(link),
+                          "original_C_SHA256":original_digest,"repaired_C_SHA256":repaired_digest,
+                          "object_sha256":sha(obj),"module_sha256":sha(module),
+                          "CMake_link_sha256":sha(link),
+                          "G2_installed":False,"physical_AAC_master":"NOT_RUN"}
+          with (public/"only-source-paths.json").open("x") as f:
+              json.dump(original_paths,f,indent=2);f.write("\n")
+          with (public/"only-loaded-libraries.txt").open("xb") as log:
+              subprocess.run(["ldd",str(module)],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=30)
+          assert "not found" not in (public/"only-loaded-libraries.txt").read_text()
+          print(json.dumps({"head":os.environ["GITHUB_SHA"],"repaired_only_elf":sha(module),
+                            "consumer_object":sha(obj),"native_module_installed":False}))
+          PY
+      - name: Bind repaired-only ELF to same-run C object and source oracle (opt-in G1)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.repaired_only_source_g1 == true }}
+        run: |
+          set -euo pipefail
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,subprocess,sys
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          read=lambda p:(public/p).read_bytes()
+          sha=lambda p:hashlib.sha256(read(p)).hexdigest()
+          previous=json.loads(read("planar-repair-verification-receipt.json"))
+          negative=json.loads(read("legacy-planar-negative.json"))
+          selected=json.loads(read("runtime-linux-selected.json"))
+          orig=json.loads(read("only-source-paths.json"))
+          assert previous["source_sha"]==selected["source_sha"]==orig["head"]==os.environ["GITHUB_SHA"]
+          assert previous["run_id"]==negative["run_id"]==orig["run_id"]==os.environ["GITHUB_RUN_ID"]
+          assert previous["run_attempt"]==negative["run_attempt"]==orig["attempt"]==os.environ["GITHUB_RUN_ATTEMPT"]
+          assert previous["constructor_C_sanitizers"]==previous["planar_layout_C_sanitizers"]=="PASS"
+          assert previous["planar_C_layout_cases"]==12 and previous["python_skipped"]==0
+          assert selected["status"]=="PASS_SELECTED_PLATFORM_G1" and selected["selected_count"]==13
+          assert selected["not_executed_on_this_platform"]==[]
+          assert negative["expected_rejection_observed"] is True and negative["case_count_reported"]==12
+          assert read("planar.stdout.log")==b"MLT_PLANAR_LAYOUT_PASS checks=12 source-layout-only, no native master\n"
+          assert read("planar.stderr.log")==b""
+          assert read("constructor.stdout.log")==b"audio tap constructors: PASS; codec is not opened; native production NOT_RUN\n"
+          assert "Built target mltavformat" in read("only-module-build.log").decode(errors="replace")
+          assert read("only-consumer_avformat.c.o").startswith(b"\x7fELF")
+          assert read("only-libmltavformat.so").startswith(b"\x7fELF")
+          assert orig["object_sha256"]==sha("only-consumer_avformat.c.o")
+          assert orig["module_sha256"]==sha("only-libmltavformat.so")
+          assert orig["CMake_link_sha256"]==sha("only-original-link.txt")
+          content={"schema":"motionwright.native.mlt.repaired-only-G1-C-oracle/1",
+                   "source_head":orig["head"],"run_id":orig["run_id"],"run_attempt":orig["attempt"],
+                   "original_source_sha256":orig["original_C_SHA256"],
+                   "repaired_source_sha256":orig["repaired_C_SHA256"],
+                   "compiled_consumer_object_sha256":orig["object_sha256"],
+                   "compiled_module_sha256":orig["module_sha256"],
+                   "source_constructor_ASAN_UBSAN":"PASS",
+                   "source_frame_oracle_result":"PASS",
+                   "legacy_U8P_zero_padding_negative":"CORRECTLY_REJECTED",
+                   "complete_MLT_consumer_compiler":"PASS",
+                   "source_frame_scope":"12 same-run source-layout memory cases, not physical AAC master",
+                   "actual_native_effect_performed":False,"module_installed":False,
+                   "original_evidence_sha256":{k:sha(k) for k in (
+                       "planar.stdout.log","legacy-planar-negative.json",
+                       "planar-repair-verification-receipt.json","only-module-build.log",
+                       "only-compile_commands.json","only-original-link.txt",
+                       "only-consumer_avformat.c.o","only-libmltavformat.so")}}
+          with (public/"only-C-oracle.json").open("x") as f:
+              json.dump(content,f,indent=2);f.write("\n")
+          script=["tooling/native_mlt_repair_only_compiler_receipt.py"]
+          args=[sys.executable,"-B","-I","-S",*script,
+                "--original-source",orig["original"],"--repaired-source",orig["repaired"],
+                "--compiled-source",orig["compiled"],"--consumer-object",orig["object"],
+                "--compiled-module",orig["module"],
+                "--compile-commands",str(public/"only-compile_commands.json"),
+                "--link-command",str(public/"only-original-link.txt"),
+                "--oracle-receipt",str(public/"only-C-oracle.json"),
+                "--receipt",str(public/"only-compiler-receipt.json")]
+          with (public/"only-attestor.stdout.log").open("xb") as stdout, \
+               (public/"only-attestor.stderr.log").open("xb") as stderr:
+              subprocess.run(args,stdout=stdout,stderr=stderr,check=True,timeout=60)
+          proof=json.loads(read("only-compiler-receipt.json"))
+          assert proof["schema"]=="motionwright.native.mlt.repaired-only-compiler-receipt/1"
+          assert proof["source_head"]==orig["head"]==os.environ["GITHUB_SHA"]
+          assert proof["run_id"]==os.environ["GITHUB_RUN_ID"] and proof["run_attempt"]==os.environ["GITHUB_RUN_ATTEMPT"]
+          assert proof["compiled_source_sha256"]==orig["repaired_C_SHA256"]
+          assert proof["compiled_module_sha256"]==orig["module_sha256"]==sha("only-libmltavformat.so")
+          assert proof["compiled_consumer_object_sha256"]==orig["object_sha256"]==sha("only-consumer_avformat.c.o")
+          assert proof["G1_oracle_receipt_sha256"]==sha("only-C-oracle.json")
+          assert proof["linker_command_sha256"]==sha("only-original-link.txt")
+          assert proof["compiler_commands_sha256"]==sha("only-compile_commands.json")
+          assert proof["compiled_consumer_object_linked"] is True
+          assert proof["instrumented_combined_source_compiled"] is False
+          assert proof["source_frame_oracle_result"]=="PASS"
+          assert proof["source_G1_attestation_not_a_loaded_module_or_media_PASS"] is True
+          assert proof["module_installed"] is False and proof["actual_native_effect_performed"] is False
+          with (public/"only-G1-summary.json").open("x") as f:
+              json.dump({"schema":"motionwright.mlt.real-repaired-only-G1/1",
+                         "source_sha":orig["head"],"run_id":orig["run_id"],"attempt":orig["attempt"],
+                         "object_sha256":orig["object_sha256"],"module_sha256":orig["module_sha256"],
+                         "attestation_sha256":sha("only-compiler-receipt.json"),
+                         "original_C_oracle_sha256":sha("only-C-oracle.json"),
+                         "loaded_PID":"NOT_RUN","module_installed":False,
+                         "physical_AAC_master":"NOT_RUN","release_authorized":False},f,indent=2)
+              f.write("\n")
+          print(json.dumps({"G1_repaired_only":"PASS_SOURCE_COMPILE_ONLY","head":orig["head"],
+                            "module_sha256":orig["module_sha256"],"physical_master":"NOT_RUN"}))
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: mlt-audio-observer-source-${{ github.sha }}
-          path: verification/mlt-audio-observer-source/${{ github.sha }}/public
+          name: mlt-audio-observer-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MW_DIAG_WORK }}/public
           if-no-files-found: error
           retention-days: 14
