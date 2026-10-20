@@ -16,6 +16,7 @@ a separate negative, not a synthetic full receiver PASS.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -164,13 +165,75 @@ def require_ephemeral_approved_source(destination: Path) -> Path:
     return temp
 
 
-def run_firstparty_native(cmd: list[str], *, timeout: int = 120) -> bytes:
+def _new_original(path: Path, content: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _retain_call(prefix: Path, *, returncode: int | None,
+                 stdout: bytes | None, stderr: bytes | None,
+                 error: BaseException | None = None) -> None:
+    # Record the original terminal before output admission or downstream parsing.
+    streams = {"stdout": stdout, "stderr": stderr}
+    require(all(value is None or isinstance(value, bytes) for value in streams.values()),
+            "original_Kdenlive_G2_capture_is_not_binary")
+    record = {
+        "schema": "motionwright.native.firstparty-source-call/1",
+        "state": "TERMINAL_OBSERVED" if error is None else "ERROR_OR_UNKNOWN",
+        "returncode": returncode, "invocation_retried": False,
+        "timeout_policy": "existing_subprocess_run",
+        "error": None if error is None else {
+            "type": type(error).__name__, "message": str(error)},
+        "captured_streams": {
+            name: {"captured": value is not None,
+                   "bytes": None if value is None else len(value),
+                   "sha256": None if value is None else hashlib.sha256(value).hexdigest()}
+            for name, value in streams.items()},
+    }
+    _new_original(prefix.with_name(prefix.name + ".terminal.json"),
+                  (json.dumps(record, sort_keys=True, indent=2) + "\n").encode())
+    for name, value in streams.items():
+        if value is not None:
+            _new_original(prefix.with_name(prefix.name + "." + name + ".bin"), value)
+
+
+def run_firstparty_native(cmd: list[str], *, timeout: int = 120,
+                          evidence_prefix: Path | None = None) -> bytes:
     require(len(cmd) >= 1 and all(isinstance(arg, str) for arg in cmd),
             "original_Kdenlive_G2_source_command_invalid")
-    result = subprocess.run(
-        cmd, capture_output=True, check=False, timeout=timeout,
-        stdin=subprocess.DEVNULL,
-    )
+    if evidence_prefix is not None:
+        require(evidence_prefix.is_absolute()
+                and evidence_prefix.parent.resolve(strict=True) == evidence_prefix.parent
+                and evidence_prefix.parent.is_dir()
+                and all(not evidence_prefix.with_name(evidence_prefix.name + suffix).exists()
+                        and not evidence_prefix.with_name(evidence_prefix.name + suffix).is_symlink()
+                        for suffix in (".intent.json", ".terminal.json",
+                                       ".stdout.bin", ".stderr.bin")),
+                "original_Kdenlive_G2_call_evidence_not_fresh")
+        _new_original(evidence_prefix.with_name(evidence_prefix.name + ".intent.json"),
+                      (json.dumps({"state": "INTENT", "command": cmd, "timeout": timeout,
+                                   "invocation_retried": False}, sort_keys=True) + "\n").encode())
+    try:
+        # Preserve the existing producer and its subprocess.run timeout policy.
+        result = subprocess.run(
+            cmd, capture_output=True, check=False, timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except BaseException as error:
+        if evidence_prefix is not None:
+            try:
+                _retain_call(evidence_prefix, returncode=None,
+                             stdout=getattr(error, "stdout", None),
+                             stderr=getattr(error, "stderr", None), error=error)
+            except BaseException as retention_error:
+                error.add_note("Original source-call evidence retention failed: "
+                               + type(retention_error).__name__ + ": " + str(retention_error))
+        raise
+    if evidence_prefix is not None:
+        _retain_call(evidence_prefix, returncode=result.returncode,
+                     stdout=result.stdout, stderr=result.stderr)
     require(result.returncode == 0
             and len(result.stdout) <= MAX_RUST_STDOUT
             and len(result.stderr) <= 32 * 1024,
@@ -178,12 +241,29 @@ def run_firstparty_native(cmd: list[str], *, timeout: int = 120) -> bytes:
     return result.stdout
 
 
-def prepare_original(destination: Path) -> dict:
+@contextmanager
+def firstparty_workspace(temp: Path, evidence_root: Path | None = None):
+    if evidence_root is None:
+        with tempfile.TemporaryDirectory(prefix="mw-firstparty-otio3-", dir=temp) as scratch:
+            yield Path(scratch)
+        return
+    require(temp.is_absolute() and temp.resolve(strict=True) == temp
+            and evidence_root.is_absolute() and evidence_root != temp
+            and evidence_root.is_relative_to(temp)
+            and evidence_root.parent.resolve(strict=True) == evidence_root.parent
+            and not evidence_root.exists() and not evidence_root.is_symlink(),
+            "original_Kdenlive_G2_retained_workspace_not_fresh_runner_owned")
+    evidence_root.mkdir(mode=0o700)
+    # The selected caller seals this original tree on success, failure or UNKNOWN.
+    # Do not clean it up while unwinding a failed producer or bridge.
+    yield evidence_root
+
+
+def prepare_original(destination: Path, *, evidence_root: Path | None = None) -> dict:
     temp = require_ephemeral_approved_source(destination)
     # All side effects remain one new disposable GH runner and do not touch
     # Motionwright project source, canonical Studio, the Host or any NLE.
-    with tempfile.TemporaryDirectory(prefix="mw-firstparty-otio3-", dir=temp) as scratch:
-        root = Path(scratch)
+    with firstparty_workspace(temp, evidence_root) as root:
         original = root / "original.mp4"
         require(not original.exists(),
                 "original_Kdenlive_G2_firstparty_media_not_fresh")
@@ -192,7 +272,7 @@ def prepare_original(destination: Path) -> dict:
             "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=3",
             "-frames:v", "90", "-an", "-c:v", "libx264", "-preset", "ultrafast",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(original),
-        ])
+        ], evidence_prefix=None if evidence_root is None else root / "ffmpeg")
         measured = file_probe(original)
         require(measured["fps"] == EXPECTED_FRAME_RATE
                 and measured["frames"] == EXPECTED_SOURCE_FRAMES
@@ -200,7 +280,8 @@ def prepare_original(destination: Path) -> dict:
                 "synthetic_90frame_H264_not_physically_decoded_for_original")
         media_sha = sha(original)
         generated = json.loads(
-            run_firstparty_native([str(ORIGINAL_RUST_FIXTURE), media_sha], timeout=90)
+            run_firstparty_native([str(ORIGINAL_RUST_FIXTURE), media_sha], timeout=90,
+                                  evidence_prefix=None if evidence_root is None else root / "rust-exporter")
         )
         require(generated.get("schema") == "motionwright.real-otio-fixture/1"
                 and isinstance(generated.get("project"), dict)

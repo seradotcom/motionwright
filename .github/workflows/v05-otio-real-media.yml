@@ -2,9 +2,24 @@ name: V05 OTIO real media source interchange
 
 on:
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: 'Source contracts or one admitted native Kdenlive roundtrip'
+        type: choice
+        options: [source, kdenlive-gui]
+        default: source
+        required: true
+      evidence_recipient:
+        description: 'Admitted RSA-3072 public recipient JSON; required for native GUI'
+        type: string
+        default: ''
+        required: false
   pull_request:
     paths:
       - 'tooling/otio-media/**'
+      - 'tooling/ci_private_evidence.py'
+      - 'tooling/mlt_official_runtime_intake.py'
+      - 'tooling/requirements/mlt-g2-custody.txt'
       - 'crates/domain/examples/otio_real_media_fixture.rs'
       - 'docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md'
       - '.github/workflows/v05-otio-real-media.yml'
@@ -12,6 +27,9 @@ on:
     branches: ['main']
     paths:
       - 'tooling/otio-media/**'
+      - 'tooling/ci_private_evidence.py'
+      - 'tooling/mlt_official_runtime_intake.py'
+      - 'tooling/requirements/mlt-g2-custody.txt'
       - 'crates/domain/examples/otio_real_media_fixture.rs'
       - 'docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md'
       - '.github/workflows/v05-otio-real-media.yml'
@@ -20,11 +38,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: v05-otio-media-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-gui' && format('kdenlive-native-exclusive-{0}', github.repository) || format('v05-otio-media-{0}', github.ref) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-gui') }}
 
 jobs:
   verified-native-rust-otio-and-open-timeline-io:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'kdenlive-gui'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -174,6 +193,7 @@ jobs:
           retention-days: 7
 
   verified-windows-junction-admission:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'kdenlive-gui'
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -306,5 +326,186 @@ jobs:
         with:
           name: otio-windows-path-admission-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: verification/otio-windows-reparse/
+          if-no-files-found: error
+          retention-days: 7
+
+  admitted-native-kdenlive-gui:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-gui'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+      MOTIONWRIGHT_KDENLIVE_GUI_SCOPE: kdenlive-gui
+      MOTIONWRIGHT_APPROVED_KDENLIVE_G2_SOURCE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Admit a fresh manual attempt before any native operation
+        env:
+          NATIVE_RECIPIENT_JSON: ${{ inputs.evidence_recipient }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(id -u)" -ne 0
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          raw = os.environ["NATIVE_RECIPIENT_JSON"].encode("utf-8")
+          if not 0 < len(raw) <= 8192:
+              raise SystemExit("Native evidence requires an admitted bounded public recipient")
+          recipient = json.loads(raw)
+          if set(recipient) != {"spki_der_base64", "sha256"}:
+              raise SystemExit("Unexpected public recipient fields")
+          target = Path(os.environ["RUNNER_TEMP"]) / "kdenlive-public-recipient.json"
+          with target.open("xb") as stream:
+              stream.write(raw)
+          PY
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: native-otio-real-media-1.98.1
+          cache-on-failure: true
+      - name: Build the existing original exporter and install disposable GUI dependencies
+        run: |
+          set -euo pipefail
+          cargo build --locked -p motionwright-domain --example otio_real_media_fixture
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            ffmpeg dbus-x11 xvfb xauth openbox xdotool \
+            python3.12-venv python3-gi gir1.2-atspi-2.0 at-spi2-core libxcb-cursor0
+          /usr/bin/python3.12 -m venv --system-site-packages "$RUNNER_TEMP/kdenlive-gui-python"
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" -m pip install \
+            --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, str(Path("tooling").resolve(strict=True)))
+          from ci_private_evidence import public_key, regular, strict
+          public_key(strict(regular(Path(os.environ["RUNNER_TEMP"]) / "kdenlive-public-recipient.json", 8192)[0]))
+          import gi
+          gi.require_version("Atspi", "2.0")
+          from gi.repository import Atspi
+          required = [(Atspi, "get_desktop"), (Atspi, "set_timeout"),
+                      (Atspi.Accessible, "get_process_id"),
+                      (Atspi.Accessible, "get_editable_text_iface"),
+                      (Atspi.Action, "get_action_name"), (Atspi.Action, "do_action"),
+                      (Atspi.Text, "get_character_count"), (Atspi.Text, "get_text"),
+                      (Atspi.EditableText, "set_text_contents")]
+          if not all(callable(getattr(owner, name, None)) for owner, name in required):
+              raise SystemExit("Required AT-SPI binding is absent")
+          PY
+      - name: Run exact offline GUI contracts without native effects or skips
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" - <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          import unittest
+          sys.path.insert(0, str(Path("tooling/otio-media").resolve(strict=True)))
+          import test_kdenlive_gui_e2e as tests
+          import test_kdenlive_complete_g2_fixture as original_tests
+          suite = unittest.TestSuite([
+              unittest.defaultTestLoader.loadTestsFromModule(tests),
+              unittest.defaultTestLoader.loadTestsFromModule(original_tests)])
+          def ids(node):
+              if isinstance(node, unittest.TestSuite):
+                  for child in node:
+                      yield from ids(child)
+              else:
+                  yield node.id()
+          roster = list(ids(suite))
+          if len(roster) != 78 or len(set(roster)) != 78:
+              raise SystemExit("Incomplete native GUI source-contract roster")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          print(json.dumps({"tests_run": result.testsRun, "roster": roster,
+                            "skips": len(result.skipped), "failures": len(result.failures),
+                            "errors": len(result.errors), "native_execution": False}, sort_keys=True))
+          if (not result.wasSuccessful() or result.testsRun != 78 or result.skipped
+                  or result.expectedFailures or result.unexpectedSuccesses):
+              raise SystemExit(1)
+          PY
+      - name: Obtain the exact official Kdenlive distribution once
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/kdenlive-distribution-original"
+          curl --fail --show-error --silent --location --max-redirs 5 \
+            --proto '=https' --proto-redir '=https' --connect-timeout 30 \
+            --max-time 180 --max-filesize 1073741824 \
+            --dump-header "$RUNNER_TEMP/kdenlive-distribution-original/download.headers" \
+            --output "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage" \
+            'https://download.kde.org/Attic/kdenlive/25.08/linux/kdenlive-25.08.3-x86_64.AppImage'
+          printf '%s  %s\n' \
+            '38ec1bdec007ccd9171f951ba00ded8cc2dd43570c14a438e88fabb4f0a81f4f' \
+            "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage" | sha256sum --check --status
+          chmod 0700 "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage"
+      - name: Run one native import, save, reopen, edit and export route
+        id: native
+        run: |
+          set -euo pipefail
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1920x1080x24' bash -c '
+            set -euo pipefail
+            openbox >"$RUNNER_TEMP/kdenlive-distribution-original/window-manager.stdout.log" \
+              2>"$RUNNER_TEMP/kdenlive-distribution-original/window-manager.stderr.log" &
+            exec "$RUNNER_TEMP/kdenlive-gui-python/bin/python" -B \
+              tooling/otio-media/kdenlive_gui_e2e.py \
+              --source-sha "$GITHUB_SHA" \
+              --appimage "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage" \
+              --appdir "$RUNNER_TEMP/kdenlive-appimage-extract/squashfs-root" \
+              --evidence-root "$RUNNER_TEMP/kdenlive-native-original" \
+              --capsule "$RUNNER_TEMP/kdenlive-original-capsule" \
+              --public-dir "$RUNNER_TEMP/kdenlive-public-evidence" \
+              --recipient "$RUNNER_TEMP/kdenlive-public-recipient.json" \
+              --distribution-evidence "$RUNNER_TEMP/kdenlive-distribution-original"
+          '
+      - name: Preserve a closed status if preflight or the native caller failed
+        if: always()
+        env:
+          NATIVE_STEP_OUTCOME: ${{ steps.native.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "kdenlive-public-evidence"
+          root.mkdir(mode=0o700, exist_ok=True)
+          target = root / "projection.json"
+          if not target.exists():
+              outcome = os.environ.get("NATIVE_STEP_OUTCOME")
+              projection = {
+                  "schema": "motionwright.native.kdenlive-gui-preflight/1",
+                  "source_sha": os.environ["GITHUB_SHA"],
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "status": "GATE_DID_NOT_PUBLISH",
+                  "native_execution": "NOT_RUN" if outcome == "skipped" else "NOT_OBSERVED",
+                  "ciphertext_sha256": None, "automatic_retry": False,
+                  "other_workflow_selections": "NOT_RUN",
+                  "human_acceptance": False, "release_authorized": False}
+              with target.open("x", encoding="utf-8") as stream:
+                  json.dump(projection, stream, sort_keys=True)
+                  stream.write("\n")
+          PY
+      - name: Retain only sealed originals and the closed public projection
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kdenlive-native-sealed-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/kdenlive-public-evidence/projection.json
+            ${{ runner.temp }}/kdenlive-public-evidence/original-evidence.mwseal
           if-no-files-found: error
           retention-days: 7
