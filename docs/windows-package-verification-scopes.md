@@ -45,4 +45,4 @@ If a native action has an unknown outcome, preserve that receipt and reconcile i
 
 ## Full candidate
 
-The release integrator selects the actual integrated commit and the required G3 matrix. Use `all` for this workflow and retain the renderer, security, installer recovery, platform and conformance evidence required by the complete verification plan. A5 owns the formal criterion verdicts; the scope menu and workflow result do not grant release or human acceptance.
+The release integrator selects the actual integrated commit and the required G3 matrix. Use `all` for this workflow and retain the renderer, security, installer recovery, platform and conformance evidence required by the complete verification plan. Formal criterion verdicts require the corresponding evidence assessment; the scope menu and workflow result do not grant release or human acceptance.

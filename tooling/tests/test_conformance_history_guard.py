@@ -1,4 +1,4 @@
-"""Synthetic negative/positive tests for A5 history guard; no original private data."""
+"""Synthetic regression tests for source-bound assessment history."""
 from __future__ import annotations
 import copy
 import os
