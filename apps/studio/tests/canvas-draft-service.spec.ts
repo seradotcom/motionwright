@@ -985,3 +985,71 @@ test("Canvas hierarchy retains parent and raw Z through two real revisions and a
     await retainEvidence(testInfo,[service],evidence,[()=>page.close()]);
   }
 });
+
+test("Canvas relation add and remove preserve stable IDs and source intent through reopen", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    let baseline = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(baseline, "Independent synthetic scene"), target = scene.nodes[0];
+    evidence.initial = baseline; evidence.final = baseline;
+    await service.attachFixturePage(page, baseline.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+    await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+    baseline = await checkpoint(service, page, evidence, baseline.id, baseline.revision + 1, "second object created for relation");
+    const other = sceneNamed(baseline, scene.name).nodes[1];
+    await selectNode(page, target.name);
+    const preexistingApplyCount = applyRequests(service).length;
+
+    await page.getByLabel("Canvas relation kind", { exact: true }).selectOption("align_right");
+    await page.getByLabel("Canvas relation target", { exact: true }).selectOption(other.id);
+    await button(page, "Brief").click();
+    await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas relation kind", { exact: true })).toHaveValue("align_right");
+    await expect(page.getByLabel("Canvas relation target", { exact: true })).toHaveValue(other.id);
+    await page.reload(); await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas relation kind", { exact: true })).toHaveValue("align_right");
+    await expect(page.getByLabel("Canvas relation target", { exact: true })).toHaveValue(other.id);
+    expect(applyRequests(service)).toHaveLength(preexistingApplyCount);
+    expect(await service.project(baseline.id)).toEqual(baseline);
+
+    await button(page, "Add canvas relation").click();
+    const linked = await checkpoint(service, page, evidence, baseline.id, baseline.revision + 1, "authored semantic relation");
+    const savedRelation = storedNode(linked, scene.id, target.id).relations[0];
+    expect(storedNode(linked, scene.id, target.id).relations).toHaveLength(1);
+    expect(savedRelation).toMatchObject({ kind: "align_right", target_id: other.id });
+    expect(savedRelation.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(storedNode(linked, scene.id, target.id).text).toBe(target.text);
+    expect((await service.history(baseline.id, baseline.revision)).map(e => e.change.type))
+      .toEqual(["set_canvas_relations"]);
+
+    await page.getByLabel("Canvas relation kind", { exact: true }).selectOption("align_right");
+    await page.getByLabel("Canvas relation target", { exact: true }).selectOption(other.id);
+    await expect(button(page, "Add canvas relation")).toBeDisabled();
+    expect(applyRequests(service)).toHaveLength(preexistingApplyCount + 1);
+    // Removing the existing ID is explicit. The duplicate composer choice
+    // remains authored input and is not automatically submitted.
+    await button(page, "Remove relation " + savedRelation.id).click();
+    const unlinked = await checkpoint(service, page, evidence, baseline.id, baseline.revision + 2, "removed exact relation ID");
+    expect(storedNode(unlinked, scene.id, target.id).relations).toEqual([]);
+    expect(storedNode(unlinked, scene.id, target.id).text).toBe(target.text);
+    const journal = await service.history(baseline.id, baseline.revision);
+    expect(journal.map(event => event.revision)).toEqual([baseline.revision + 1, baseline.revision + 2]);
+    expect(journal.map(event => event.change.type)).toEqual(["set_canvas_relations", "set_canvas_relations"]);
+    expect(applyRequests(service)).toHaveLength(preexistingApplyCount + 2);
+    await service.close(); await service.start(); await page.reload();
+    await openCanvas(page, scene.name, target.name); await revision(page, unlinked.revision);
+    expect(await service.project(baseline.id)).toEqual(unlinked);
+    expect(await service.history(baseline.id, baseline.revision)).toEqual(journal);
+    expect(applyRequests(service)).toHaveLength(preexistingApplyCount + 2);
+    evidence.observations.push({
+      label: "relations_two_exact_saved_revisions_and_reopen", id: savedRelation.id,
+      originallyTargetedObject: other.id, originalTextPreserved: target.text,
+      finalRevision: unlinked.revision, actionCount: 2,
+    });
+  } finally {
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});

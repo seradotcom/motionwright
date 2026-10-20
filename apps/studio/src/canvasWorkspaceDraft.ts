@@ -1,18 +1,20 @@
-import type { CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, Project } from "./types";
+import type { CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, NodeRelation, Project } from "./types";
 
 // These records preserve editor input. Project revisions, locks and the existing
 // service remain authoritative; recovery never executes a stored command.
 export const CANVAS_TRANSFORM_FIELDS = ["x", "y", "width", "height", "rotation_deg", "opacity"] as const;
 export const CANVAS_STYLE_FIELDS = ["fill", "stroke", "stroke_width", "font_family", "font_size", "font_weight", "line_height", "blend_mode"] as const;
 export const CANVAS_HIERARCHY_FIELDS = ["parent_id", "z_index"] as const;
-export const CANVAS_DRAFT_FIELDS = ["text", ...CANVAS_TRANSFORM_FIELDS, ...CANVAS_STYLE_FIELDS, ...CANVAS_HIERARCHY_FIELDS] as const;
+export const CANVAS_RELATION_FIELDS = ["relation_kind", "relation_target"] as const;
+const CANVAS_RELATION_KINDS = ["align_left","align_center_x","align_right","align_top","align_center_y","align_bottom","follow","attach"] as const;
+export const CANVAS_DRAFT_FIELDS = ["text", ...CANVAS_TRANSFORM_FIELDS, ...CANVAS_STYLE_FIELDS, ...CANVAS_HIERARCHY_FIELDS, ...CANVAS_RELATION_FIELDS] as const;
 export type CanvasDraftField = typeof CANVAS_DRAFT_FIELDS[number];
-export type CanvasDraftGroup = "text" | "transform" | "style" | "hierarchy";
+export type CanvasDraftGroup = "text" | "transform" | "style" | "hierarchy" | "relations";
 export const CANVAS_FIELD_LABELS: Record<CanvasDraftField, string> = {
   text: "Text", x: "X", y: "Y", width: "W", height: "H", rotation_deg: "Rotation", opacity: "Opacity",
   fill: "Fill", stroke: "Stroke", stroke_width: "Stroke width", font_family: "Font family",
   font_size: "Font size", font_weight: "Font weight", line_height: "Line height", blend_mode: "Blend mode",
-  parent_id: "Parent", z_index: "Z order",
+  parent_id: "Parent", z_index: "Z order", relation_kind: "Relation kind", relation_target: "Relation target",
 };
 export interface CanvasFieldDraft {
   raw: string; base: string; baseRevision: number; sequence: number; intent?: true;
@@ -22,10 +24,12 @@ export interface CanvasSubmission {
   id: string; scope: string; revision: number; group: CanvasDraftGroup;
   context: CanvasDraftContext;
   fields: Partial<Record<CanvasDraftField, { raw: string; sequence: number; value: string }>>;
+  relations?: NodeRelation[]; relationOperation?: "add" | "remove";
 }
 export interface CanvasWorkspaceDraft {
-  schema: "motionwright.canvas-draft/1" | "motionwright.canvas-draft/2" | "motionwright.canvas-draft/3"; scope: string; sceneId: string; nodeId: string;
+  schema: "motionwright.canvas-draft/1" | "motionwright.canvas-draft/2" | "motionwright.canvas-draft/3" | "motionwright.canvas-draft/4"; scope: string; sceneId: string; nodeId: string;
   baseContext: CanvasDraftContext;
+  relationsBase: NodeRelation[];
   fields: Record<CanvasDraftField, CanvasFieldDraft>; awaiting: CanvasSubmission | null;
 }
 export interface CanvasDraftConflict { field: CanvasDraftField; before: string; current: string; proposed: string; futureRevision: boolean }
@@ -33,7 +37,8 @@ const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 export const canvasDraftScope = (project: Project, sceneId: string, nodeId: string) =>
   JSON.stringify([project.id, project.generation, project.active_branch, sceneId, nodeId]);
 export const canvasGroupFields = (group: CanvasDraftGroup): readonly CanvasDraftField[] =>
-  group === "text" ? ["text"] : group === "style" ? CANVAS_STYLE_FIELDS : group === "hierarchy" ? CANVAS_HIERARCHY_FIELDS : CANVAS_TRANSFORM_FIELDS;
+  group === "text" ? ["text"] : group === "style" ? CANVAS_STYLE_FIELDS
+    : group === "hierarchy" ? CANVAS_HIERARCHY_FIELDS : group === "relations" ? CANVAS_RELATION_FIELDS : CANVAS_TRANSFORM_FIELDS;
 export const canvasFieldHasInput = (field: CanvasFieldDraft) => field.intent === true || field.raw !== field.base;
 export const canvasDraftHasWork = (draft: CanvasWorkspaceDraft) => draft.awaiting !== null
   || CANVAS_DRAFT_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
@@ -51,6 +56,9 @@ export function canvasFieldIssue(field: CanvasDraftField, raw: string): string |
     ? "Canvas text must fit within 100,000 UTF-8 bytes." : null;
   if (isStyleString(field)) return new TextEncoder().encode(raw.trim()).length > 512
     ? "Canvas style values must fit within 512 UTF-8 bytes." : null;
+  if (field === "relation_kind") return (CANVAS_RELATION_KINDS as readonly string[]).includes(raw)
+    ? null : "Choose a supported Canvas relation.";
+  if (field === "relation_target") return raw.length <= 256 ? null : "Choose a valid object in the same Canvas scene.";
   if (field === "parent_id") return new TextEncoder().encode(raw).length > 256 ? "Select a valid Canvas parent." : null;
   if (field === "z_index" && (!/^[+-]?\d+$/.test(raw.trim()) || !Number.isSafeInteger(Number(raw))
     || Number(raw) < -2147483648 || Number(raw) > 2147483647)) return "Use a signed 32-bit whole Z order.";
@@ -70,14 +78,15 @@ export function canvasFieldIssue(field: CanvasDraftField, raw: string): string |
   } catch { return "Enter a finite decimal number."; }
 }
 function proposed(field: CanvasDraftField, raw: string): string {
-  if (field === "text" || field === "blend_mode" || field === "parent_id") return raw;
+  if (field === "text" || field === "blend_mode" || field === "parent_id" || field === "relation_kind" || field === "relation_target") return raw;
   if (isStyleString(field)) return raw.trim();
   if ((optionalNumericStyle as readonly string[]).includes(field) && raw.trim() === "") return "";
   return canvasFieldIssue(field, raw) ? "invalid:" + raw : String(canvasNumber(raw));
 }
 const canonical = (node: CanvasNode, field: CanvasDraftField): string =>
   field === "text" ? node.text ?? "" : isStyleField(field)
-    ? String(node.style[field] ?? "") : field === "parent_id" ? node.parent_id ?? "" : String(node[field]);
+    ? String(node.style[field] ?? "") : field === "parent_id" ? node.parent_id ?? ""
+      : field === "relation_kind" ? "align_left" : field === "relation_target" ? "" : String(node[field]);
 const styleFromSubmission = (node: CanvasNode, values: CanvasSubmission["fields"]): NodeStyle => {
   const style = { ...node.style };
   for (const field of CANVAS_STYLE_FIELDS) {
@@ -88,6 +97,8 @@ const styleFromSubmission = (node: CanvasNode, values: CanvasSubmission["fields"
   }
   return style;
 };
+const relationField = (field: CanvasDraftField) => (CANVAS_RELATION_FIELDS as readonly string[]).includes(field);
+const relationListEqual = (a: NodeRelation[], b: NodeRelation[]): boolean => JSON.stringify(a) === JSON.stringify(b);
 const nodeContext = (node: CanvasNode): CanvasDraftContext => ({ kind: node.kind, parent_id: node.parent_id, coordinate_space: node.coordinate_space });
 const contextMatches = (before: CanvasDraftContext, current: CanvasDraftContext, group: CanvasDraftGroup) => before.kind === current.kind
   && (group === "text" || (before.parent_id === current.parent_id && before.coordinate_space === current.coordinate_space));
@@ -99,10 +110,12 @@ export function canvasDraftNode(draft: CanvasWorkspaceDraft, project: Project): 
   return node;
 }
 export function createCanvasDraft(project: Project, sceneId: string, nodeId: string): CanvasWorkspaceDraft {
-  const draft: CanvasWorkspaceDraft = { schema: "motionwright.canvas-draft/3", scope: canvasDraftScope(project, sceneId, nodeId),
-    sceneId, nodeId, baseContext: { kind: "", parent_id: null, coordinate_space: "project_pixels" }, fields: {} as CanvasWorkspaceDraft["fields"], awaiting: null };
+  const draft: CanvasWorkspaceDraft = { schema: "motionwright.canvas-draft/4", scope: canvasDraftScope(project, sceneId, nodeId),
+    sceneId, nodeId, baseContext: { kind: "", parent_id: null, coordinate_space: "project_pixels" },
+    relationsBase: [], fields: {} as CanvasWorkspaceDraft["fields"], awaiting: null };
   const node = canvasDraftNode(draft, project);
   draft.baseContext = nodeContext(node);
+  draft.relationsBase = structuredClone(node.relations);
   for (const field of CANVAS_DRAFT_FIELDS) draft.fields[field] = {
     raw: canonical(node, field), base: canonical(node, field), baseRevision: project.revision, sequence: 0,
   };
@@ -115,18 +128,25 @@ export function editCanvasField(draft: CanvasWorkspaceDraft, field: CanvasDraftF
 }
 export function canvasDraftConflicts(draft: CanvasWorkspaceDraft, project: Project): CanvasDraftConflict[] {
   const node = canvasDraftNode(draft, project);
-  return CANVAS_DRAFT_FIELDS.flatMap(field => {
+  const valueConflicts = CANVAS_DRAFT_FIELDS.flatMap(field => {
+    if (relationField(field)) return [];
     const input = draft.fields[field], current = canonical(node, field), futureRevision = input.baseRevision > project.revision;
     return canvasFieldHasInput(input) && (futureRevision || (current !== input.base && current !== proposed(field, input.raw)))
       ? [{ field, before: input.base, current, proposed: input.raw, futureRevision }] : [];
   });
+  if (groupHasInput(draft, "relations") && !relationListEqual(draft.relationsBase, node.relations)) {
+    valueConflicts.push({ field: "relation_target", before: JSON.stringify(draft.relationsBase),
+      current: JSON.stringify(node.relations), proposed: draft.fields.relation_target.raw,
+      futureRevision: false });
+  }
+  return valueConflicts;
 }
 /** The same structure invariant used by scoped proposals, with the coordinate
  * space included: equal numbers do not establish equal creative intent after
  * reparenting or changing an object's kind. */
 export function canvasContextConflicts(draft: CanvasWorkspaceDraft, project: Project): CanvasDraftGroup[] {
   const current = nodeContext(canvasDraftNode(draft, project));
-  return (["text", "transform", "style", "hierarchy"] as const).filter(group => groupHasInput(draft, group) && !contextMatches(draft.baseContext, current, group));
+  return (["text", "transform", "style", "hierarchy", "relations"] as const).filter(group => groupHasInput(draft, group) && !contextMatches(draft.baseContext, current, group));
 }
 export function reviewCanvasContext(draft: CanvasWorkspaceDraft, project: Project): CanvasWorkspaceDraft {
   return reconcileCanvasDraft({ ...draft, baseContext: nodeContext(canvasDraftNode(draft, project)) }, project);
@@ -140,7 +160,9 @@ export function canvasSubmissionMatches(project: Project, draft: CanvasWorkspace
   return (attempt.group === "hierarchy"
     ? attempt.context.kind === node.kind && attempt.context.coordinate_space === node.coordinate_space
     : contextMatches(attempt.context, nodeContext(node), attempt.group))
-    && canvasGroupFields(attempt.group).every(field => canonical(node, field) === attempt.fields[field]?.value);
+    && (attempt.group === "relations"
+      ? Boolean(attempt.relations && relationListEqual(node.relations, attempt.relations))
+      : canvasGroupFields(attempt.group).every(field => canonical(node, field) === attempt.fields[field]?.value));
 }
 export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Project): CanvasWorkspaceDraft {
   const node = canvasDraftNode(draft, project), fields = { ...draft.fields };
@@ -150,15 +172,33 @@ export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Proje
     const value = canonical(node, field);
     fields[field] = { raw: value, base: value, baseRevision: project.revision, sequence: 0 };
   }
-  if (draft.schema !== "motionwright.canvas-draft/3") for (const field of CANVAS_HIERARCHY_FIELDS) {
+  if (draft.schema === "motionwright.canvas-draft/1" || draft.schema === "motionwright.canvas-draft/2") for (const field of CANVAS_HIERARCHY_FIELDS) {
     const value = canonical(node, field);
     fields[field] = { raw: value, base: value, baseRevision: project.revision, sequence: 0 };
   }
+  if (draft.schema !== "motionwright.canvas-draft/4") for (const field of CANVAS_RELATION_FIELDS) {
+    const value = canonical(node, field);
+    fields[field] = { raw: value, base: value, baseRevision: project.revision, sequence: 0 };
+  }
+  const earlierRelations = draft.schema === "motionwright.canvas-draft/4"
+    ? draft.relationsBase : structuredClone(node.relations);
   let awaiting = draft.awaiting;
+  const ownRelationAcknowledged = Boolean(awaiting && awaiting.group === "relations"
+    && canvasSubmissionMatches(project, draft, awaiting));
   const ownHierarchyAcknowledged = Boolean(awaiting && awaiting.group === "hierarchy"
     && canvasSubmissionMatches(project, draft, awaiting));
   if (awaiting && canvasSubmissionMatches(project, draft, awaiting)) {
-    for (const field of canvasGroupFields(awaiting.group)) {
+    if (awaiting.group === "relations") {
+      if (awaiting.relationOperation === "add") for (const field of CANVAS_RELATION_FIELDS) {
+        const input = fields[field], sent = awaiting.fields[field]!;
+        // Keep the selected kind for the next operation. A consumed target is
+        // cleared only if the human did not edit it again while awaiting ACK.
+        const unchanged = input.sequence === sent.sequence && input.raw === sent.raw;
+        const base = field === "relation_target" ? "" : sent.raw;
+        fields[field] = { raw: unchanged ? base : input.raw, base, baseRevision: project.revision,
+          sequence: input.sequence, ...(!unchanged ? { intent: true as const } : {}) };
+      }
+    } else for (const field of canvasGroupFields(awaiting.group)) {
       const input = fields[field], sent = awaiting.fields[field]!, base = canonical(node, field);
       // Comparing raw alone loses an edit that changes away and back while an
       // acknowledgement is in flight. The input sequence distinguishes it.
@@ -167,36 +207,50 @@ export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Proje
         sequence: input.sequence, ...(!unchanged ? { intent: true as const } : {}) };
     }
     awaiting = null;
-  } else if (awaiting && project.revision > awaiting.revision) {
+  } else if (awaiting && project.revision > awaiting.revision && awaiting.group !== "relations") {
     // This is not an acknowledgement of our snapshot. Keep every input and
     // its original base; overlapping current values require an explicit choice.
     awaiting = null;
   }
   for (const field of CANVAS_DRAFT_FIELDS) {
     const input = fields[field], current = canonical(node, field), dirty = canvasFieldHasInput(input);
+    // The relation selector is an author's choice, not a saved node attribute.
+    // Never reset kind/target merely because a peer publishes another revision.
+    if (relationField(field)) {
+      if (!dirty) fields[field] = { ...input, baseRevision: project.revision };
+      continue;
+    }
     if (dirty && input.baseRevision > project.revision) continue;
     if (dirty && !contextMatches(draft.baseContext, nodeContext(node), field === "text" ? "text" : isStyleField(field) ? "style" : (CANVAS_HIERARCHY_FIELDS as readonly string[]).includes(field) ? "hierarchy" : "transform")) continue;
     if (!dirty || current === input.base || current === proposed(field, input.raw)) fields[field] = {
       ...input, raw: dirty ? input.raw : current, base: current, baseRevision: project.revision,
     };
   }
-  const next: CanvasWorkspaceDraft = { ...draft, schema: "motionwright.canvas-draft/3", fields, awaiting }, currentContext = nodeContext(node);
-  const textInput = groupHasInput(next, "text"), transformInput = groupHasInput(next, "transform"), styleInput = groupHasInput(next, "style"), hierarchyInput = groupHasInput(next, "hierarchy");
+  const next: CanvasWorkspaceDraft = { ...draft, schema: "motionwright.canvas-draft/4", fields, awaiting,
+    relationsBase: ownRelationAcknowledged || (!awaiting && !groupHasInput({ ...draft, fields, awaiting } as CanvasWorkspaceDraft, "relations"))
+      ? structuredClone(node.relations) : earlierRelations }, currentContext = nodeContext(node);
+  const textInput = groupHasInput(next, "text"), transformInput = groupHasInput(next, "transform"),
+    styleInput = groupHasInput(next, "style"), hierarchyInput = groupHasInput(next, "hierarchy"),
+    relationInput = groupHasInput(next, "relations");
   next.baseContext = {
-    kind: textInput || transformInput || styleInput || hierarchyInput ? draft.baseContext.kind : currentContext.kind,
+    kind: textInput || transformInput || styleInput || hierarchyInput || relationInput ? draft.baseContext.kind : currentContext.kind,
     // A matching hierarchy ACK intentionally changes parent. A later Z edit
     // must be rebased onto that acknowledged parent without erasing its raw
     // intent. Independently authored transform/style still require review.
-    parent_id: transformInput || styleInput || (hierarchyInput && !ownHierarchyAcknowledged)
+    parent_id: transformInput || styleInput || relationInput || (hierarchyInput && !ownHierarchyAcknowledged)
       ? draft.baseContext.parent_id : currentContext.parent_id,
-    coordinate_space: transformInput || styleInput || hierarchyInput ? draft.baseContext.coordinate_space : currentContext.coordinate_space,
+    coordinate_space: transformInput || styleInput || hierarchyInput || relationInput ? draft.baseContext.coordinate_space : currentContext.coordinate_space,
   };
   return next;
 }
 export function resolveCanvasField(draft: CanvasWorkspaceDraft, project: Project, field: CanvasDraftField, choice: "saved" | "draft"): CanvasWorkspaceDraft {
-  const base = canonical(canvasDraftNode(draft, project), field), input = draft.fields[field];
-  return { ...draft, fields: { ...draft.fields, [field]: {
-    raw: choice === "saved" ? base : input.raw, base, baseRevision: project.revision,
+  const currentNode = canvasDraftNode(draft, project);
+  const base = canonical(currentNode, field), input = draft.fields[field];
+  const peerRelationsConflict = field === "relation_target" && !relationListEqual(draft.relationsBase, currentNode.relations);
+  return { ...draft, ...(peerRelationsConflict ? { relationsBase: structuredClone(currentNode.relations) } : {}),
+    fields: { ...draft.fields, [field]: {
+    raw: choice === "saved" ? base : input.raw,
+    base: peerRelationsConflict && choice === "draft" ? input.base : base, baseRevision: project.revision,
     sequence: input.sequence + 1, ...(choice === "draft" && input.intent ? { intent: true as const } : {}),
   } } };
 }
@@ -245,7 +299,7 @@ export function canvasGroupIssue(draft: CanvasWorkspaceDraft, project: Project, 
   }
   return null;
 }
-export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Project, group: CanvasDraftGroup, id: string): {
+export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Project, group: Exclude<CanvasDraftGroup, "relations">, id: string): {
   draft: CanvasWorkspaceDraft; submission: CanvasSubmission; change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" | "update_canvas_style" | "reparent_canvas_node" }>;
 } {
   const current = reconcileCanvasDraft(draft, project), issue = canvasGroupIssue(current, project, group);
@@ -269,6 +323,56 @@ export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Pr
           : { type: "transform_canvas_node", scene_id: current.sceneId, node_id: current.nodeId,
               transform: Object.fromEntries(CANVAS_TRANSFORM_FIELDS.map(field => [field, Number(submission.fields[field]!.value)])) as unknown as CanvasTransform };
   return { draft: { ...current, fields, awaiting: submission }, submission, change };
+}
+
+/** Service validates the complete relation list. Every edit carries the
+ * exact proposed list and a stable UUID; uncertain replies are never replayed. */
+export function canvasRelationIssue(
+  draft: CanvasWorkspaceDraft, project: Project, operation: "add" | "remove", relationId?: string,
+): string | null {
+  const node = canvasDraftNode(draft, project), scene = project.scenes.find(item => item.id === draft.sceneId);
+  if (draft.awaiting) return "Review the unconfirmed Canvas submission before editing relations.";
+  if (canvasContextConflicts(draft, project).includes("relations"))
+    return "Review the changed Canvas object context before editing relations.";
+  if (groupHasInput(draft, "relations") && !relationListEqual(draft.relationsBase, node.relations))
+    return "Review the changed relation list and choose the saved or authored intent.";
+  if (project.locks.some(lock => lock.resource === "scene:" + draft.sceneId && lock.kind === "position")
+    || node.property_locks.includes("position")) return "The saved position lock protects Canvas relations.";
+  if (operation === "remove")
+    return !relationId || !node.relations.some(item => item.id === relationId)
+      ? "The selected relation is no longer saved. Refresh the object." : null;
+  const kind = draft.fields.relation_kind.raw, target = draft.fields.relation_target.raw;
+  if (canvasFieldIssue("relation_kind", kind)) return "Choose a valid Canvas relation.";
+  if (!target || target === node.id || !scene?.nodes.some(item => item.id === target))
+    return "Select another saved Canvas object as the relation target.";
+  if (node.relations.length >= 128) return "Canvas relations are limited to 128.";
+  if (node.relations.some(item => item.kind === kind && item.target_id === target))
+    return "The same relation already exists; review the saved list.";
+  return null;
+}
+export function prepareCanvasRelationSubmission(
+  draft: CanvasWorkspaceDraft, project: Project, operation: "add" | "remove",
+  id: string, relationId?: string,
+): { draft: CanvasWorkspaceDraft; submission: CanvasSubmission; change: Extract<Change, { type: "set_canvas_relations" }> } {
+  const current = reconcileCanvasDraft(draft, project);
+  const issue = canvasRelationIssue(current, project, operation, relationId);
+  if (issue) throw new Error(issue);
+  const node = canvasDraftNode(current, project);
+  const relations: NodeRelation[] = operation === "add"
+    ? [...node.relations, { id, kind: current.fields.relation_kind.raw as NodeRelation["kind"],
+        target_id: current.fields.relation_target.raw }]
+    : node.relations.filter(item => item.id !== relationId);
+  const fields: CanvasSubmission["fields"] = {};
+  if (operation === "add") for (const field of CANVAS_RELATION_FIELDS) {
+    const input = current.fields[field];
+    fields[field] = { raw: input.raw, sequence: input.sequence, value: proposed(field, input.raw) };
+  }
+  const submission: CanvasSubmission = { id, scope: current.scope, revision: project.revision,
+    group: "relations", context: nodeContext(node), fields,
+    relations: structuredClone(relations), relationOperation: operation };
+  return { draft: { ...current, awaiting: submission }, submission,
+    change: { type: "set_canvas_relations", scene_id: current.sceneId,
+      node_id: current.nodeId, relations } };
 }
 
 /** Confirm both directions of the browser-session pointer. A localStorage
@@ -319,6 +423,19 @@ function identity(key: string): [string, string] | null {
       && typeof pair[1] === "string" && pair[1].length > 0 && pair[1].length <= 128 ? [pair[0], pair[1]] : null;
   } catch { return null; }
 }
+function cleanRelationList(value: unknown): NodeRelation[] {
+  if (!Array.isArray(value) || value.length > 128) throw new Error("The Canvas relation list is invalid.");
+  const ids = new Set<string>(), relations: NodeRelation[] = [];
+  for (const entry of value) {
+    if (!record(entry) || typeof entry.id !== "string" || !entry.id || entry.id.length > 128
+      || typeof entry.target_id !== "string" || !entry.target_id || entry.target_id.length > 256
+      || typeof entry.kind !== "string" || !(CANVAS_RELATION_KINDS as readonly string[]).includes(entry.kind)
+      || ids.has(entry.id)) throw new Error("A Canvas recovery relation is invalid.");
+    ids.add(entry.id);
+    relations.push({ id: entry.id, kind: entry.kind as NodeRelation["kind"], target_id: entry.target_id });
+  }
+  return relations;
+}
 export function decodeCanvasRecovery(raw: string, scope: string, writerId: string): CanvasRecovery {
   if (bytes(raw) > CANVAS_COPY_BYTES) throw new Error("This Canvas recovery copy exceeds 1 MiB.");
   const value: unknown = JSON.parse(raw), scopeParts = parsedScope(scope);
@@ -327,12 +444,15 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
   let draft: CanvasWorkspaceDraft | null = null;
   if (value.draft !== null) {
     const saved = value.draft;
-    if (!record(saved) || (saved.schema !== "motionwright.canvas-draft/1" && saved.schema !== "motionwright.canvas-draft/2" && saved.schema !== "motionwright.canvas-draft/3") || saved.scope !== scope
+    if (!record(saved) || (saved.schema !== "motionwright.canvas-draft/1" && saved.schema !== "motionwright.canvas-draft/2"
+        && saved.schema !== "motionwright.canvas-draft/3" && saved.schema !== "motionwright.canvas-draft/4") || saved.scope !== scope
       || saved.sceneId !== scopeParts[3] || saved.nodeId !== scopeParts[4] || !record(saved.fields)) throw new Error("The Canvas draft has an invalid object scope.");
     const fields = {} as CanvasWorkspaceDraft["fields"];
     for (const field of CANVAS_DRAFT_FIELDS) {
       if ((saved.schema === "motionwright.canvas-draft/1" && isStyleField(field))
-        || (saved.schema !== "motionwright.canvas-draft/3" && (CANVAS_HIERARCHY_FIELDS as readonly string[]).includes(field))) continue;
+        || ((saved.schema === "motionwright.canvas-draft/1" || saved.schema === "motionwright.canvas-draft/2")
+          && (CANVAS_HIERARCHY_FIELDS as readonly string[]).includes(field))
+        || (saved.schema !== "motionwright.canvas-draft/4" && relationField(field))) continue;
       const input = saved.fields[field];
       if (!record(input) || typeof input.raw !== "string" || typeof input.base !== "string" || !safeInteger(input.baseRevision)
         || !safeInteger(input.sequence) || (input.intent !== undefined && input.intent !== true)
@@ -344,9 +464,19 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
     if (saved.awaiting !== null) {
       const sent = saved.awaiting;
       if (!record(sent) || typeof sent.id !== "string" || !sent.id || sent.id.length > 128 || sent.scope !== scope
-        || !safeInteger(sent.revision) || (sent.group !== "text" && sent.group !== "transform" && sent.group !== "style" && sent.group !== "hierarchy") || !record(sent.fields)) throw new Error("The Canvas submission snapshot is unreadable.");
+        || !safeInteger(sent.revision) || (sent.group !== "text" && sent.group !== "transform" && sent.group !== "style"
+          && sent.group !== "hierarchy" && sent.group !== "relations") || !record(sent.fields)) throw new Error("The Canvas submission snapshot is unreadable.");
       awaiting = { id: sent.id, scope, revision: sent.revision, group: sent.group, context: cleanContext(sent.context), fields: {} };
-      for (const field of canvasGroupFields(sent.group)) {
+      if (sent.group === "relations") {
+        if ((sent.relationOperation !== "add" && sent.relationOperation !== "remove")
+          || !Array.isArray(sent.relations) || sent.relations.length > 128) {
+          throw new Error("The Canvas relation submission is invalid.");
+        }
+        awaiting.relationOperation = sent.relationOperation;
+        awaiting.relations = cleanRelationList(sent.relations);
+      }
+      for (const field of sent.group === "relations" && sent.relationOperation === "remove"
+        ? [] : canvasGroupFields(sent.group)) {
         const input = sent.fields[field];
         if (!record(input) || typeof input.raw !== "string" || typeof input.value !== "string" || !safeInteger(input.sequence)
           || input.sequence > fields[field].sequence || canvasFieldIssue(field, input.value)
@@ -354,7 +484,10 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
         awaiting.fields[field] = { raw: input.raw, value: input.value, sequence: input.sequence };
       }
     }
-    draft = { schema: saved.schema as CanvasWorkspaceDraft["schema"], scope, sceneId: scopeParts[3], nodeId: scopeParts[4], baseContext: cleanContext(saved.baseContext), fields, awaiting };
+    draft = { schema: saved.schema as CanvasWorkspaceDraft["schema"], scope,
+      sceneId: scopeParts[3], nodeId: scopeParts[4], baseContext: cleanContext(saved.baseContext),
+      relationsBase: saved.schema === "motionwright.canvas-draft/4"
+        ? cleanRelationList(saved.relationsBase) : [], fields, awaiting };
   }
   return { schema: "motionwright.canvas-recovery/1", scope, writerId, updatedAt: value.updatedAt, draft };
 }
