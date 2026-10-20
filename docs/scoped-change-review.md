@@ -260,12 +260,16 @@ project. Supply a new isolated database when a test needs a fresh fixture.
 
 ### PowerShell on Windows
 
-Run in a prepared Windows test environment with the repository at the path
-below. Each external command is checked before the next stage starts.
+Run from within a Motionwright checkout in a prepared Windows test environment.
+The commands resolve the current repository instead of assuming a developer's
+local drive layout. Each external command is checked before the next stage starts.
 
 ```powershell
-Set-Location 'E:\Projects\motionwright'
-$motionwrightRepo = (Get-Location).Path
+$motionwrightRepo = git rev-parse --show-toplevel
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($motionwrightRepo)) {
+  throw 'Run this example from within the Motionwright Git checkout.'
+}
+Set-Location -LiteralPath $motionwrightRepo
 $env:CARGO_TARGET_DIR = Join-Path $motionwrightRepo 'target\scoped-change-review'
 
 cargo build --locked -p motionwright-service --example studio_review_session -j 2
