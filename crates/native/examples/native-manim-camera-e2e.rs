@@ -3,7 +3,7 @@
 //! This program never starts Manim or launches an existing/uncertain Job.
 //! A caller must supply an existing DB, a full RevisionStamp and IDs from the
 //! saved Project. Each process is a fresh StudioService observation. Native
-//! rendered media, source reopen, and rights require separate verification.
+//! rendered media, real source reopen and rights are separate A1/A2/A6 gates.
 use motionwright_domain::RevisionStamp;
 use motionwright_native::manim_camera_projection::{
     author_one_camera_endpoint_edit, prepare_saved_manim_camera_source,
