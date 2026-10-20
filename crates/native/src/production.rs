@@ -661,12 +661,18 @@ pub struct MltAvMasterEvidence {
 #[derive(Clone)]
 pub struct ProductionClient {
     connection: ProductionConnection,
+    #[cfg(test)]
+    execute_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl ProductionClient {
     pub fn new(connection: ProductionConnection) -> NativeResult<Self> {
         connection.validate()?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            #[cfg(test)]
+            execute_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
     }
 
     pub fn connection(&self) -> &ProductionConnection {
@@ -758,6 +764,11 @@ impl ProductionClient {
         args: Value,
         mutation: bool,
     ) -> NativeResult<BrokerResult> {
+        #[cfg(test)]
+        let _ = self
+            .execute_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
         let expected = expected_authority(command).ok_or_else(|| {
             Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
         })?;
@@ -1185,6 +1196,8 @@ fn verified_manim_camera_getter_digest(
 pub struct ProductionCoordinator {
     service: StudioService,
     client: ProductionClient,
+    #[cfg(test)]
+    before_dispatch_admission: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl ProductionCoordinator {
@@ -1192,6 +1205,8 @@ impl ProductionCoordinator {
         Ok(Self {
             service,
             client: ProductionClient::new(connection)?,
+            #[cfg(test)]
+            before_dispatch_admission: None,
         })
     }
 
@@ -2253,6 +2268,27 @@ impl ProductionCoordinator {
         if let Some(digest) = camera_getters_sha256 {
             verified_artifact["camera_getters_sha256"] = json!(digest);
         }
+        if requires_camera_getters {
+            let source_check = serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Original Manim camera plan cannot be reopened"))
+                .and_then(
+                    |plan: motionwright_manim_profile::planar_camera::ManimCameraScenePlanV1| {
+                        crate::manim_camera_projection::verify_rendered_manim_camera_source(
+                            &self.client.connection().output_root,
+                            &relative_path,
+                            &plan,
+                            &artifact,
+                        )
+                    },
+                );
+            match source_check {
+                Ok(source) => verified_artifact["camera_source"] = source,
+                Err(error) => {
+                    verified_artifact["camera_source_custody_error"] =
+                        json!({"message": error.to_string()});
+                }
+            }
+        }
         Ok(json!({
             "renderer": "manim-community",
             "native_driver": "driver:manim-community",
@@ -2330,6 +2366,11 @@ impl ProductionCoordinator {
             } else {
                 error
             });
+        }
+
+        #[cfg(test)]
+        if let Some(before_dispatch_admission) = &self.before_dispatch_admission {
+            before_dispatch_admission();
         }
 
         self.service
@@ -2447,6 +2488,200 @@ mod tests {
         let service = StudioService::from_store(store);
         let project = service.create_project("Production fixture").unwrap();
         (service, project, temp)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stale_dispatch_after_peer_commit_never_enters_the_native_client() {
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let (service, project, temp) = fixture_service();
+        let database = temp.path().join("motionwright.sqlite3");
+        let connection = fake_render_connection(&temp, project.resource_key());
+        let mut coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+
+        let execute_calls = Arc::clone(&coordinator.client.execute_calls);
+        let hook_calls = Arc::new(AtomicUsize::new(0));
+        let peer_result: Arc<Mutex<Option<motionwright_domain::Project>>> =
+            Arc::new(Mutex::new(None));
+
+        let project_id = project.id;
+        let prepared_stamp = motionwright_domain::RevisionStamp::from(&project);
+        let peer_stamp = motionwright_domain::RevisionStamp::from(&project);
+        let peer_database = database.clone();
+        let peer_result_for_hook = Arc::clone(&peer_result);
+        let hook_calls_for_hook = Arc::clone(&hook_calls);
+
+        coordinator.before_dispatch_admission = Some(Arc::new(move || {
+            assert_eq!(
+                hook_calls_for_hook.fetch_add(1, Ordering::SeqCst),
+                0,
+                "the peer edit must occur exactly once after the original preflight"
+            );
+
+            let peer = StudioService::open(&peer_database).unwrap();
+            let edited = peer
+                .apply(
+                    project_id,
+                    &peer_stamp,
+                    "peer-edit-before-native-admission",
+                    &motionwright_domain::Change::RenameProject {
+                        title: "Peer committed before native dispatch".into(),
+                    },
+                )
+                .unwrap()
+                .project;
+
+            *peer_result_for_hook.lock().unwrap() = Some(edited);
+        }));
+
+        let command = "driver.motion-canvas.render.start";
+        let rejected_request = "native-stale-head-admission";
+        let accepted_request = "native-current-head-admission";
+        let args = json!({
+            "expected_fingerprint": "a".repeat(64),
+            "profile": {
+                "first_frame": 0,
+                "end_frame_exclusive": 60,
+                "scale": "full",
+                "transparent": false,
+                "timeout_ms": 300_000
+            }
+        });
+
+        let error = coordinator
+            .execute(
+                project.id,
+                &prepared_stamp,
+                rejected_request,
+                command,
+                args.clone(),
+                true,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::StaleReference);
+        assert!(error.outcome_known);
+        assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            execute_calls.load(Ordering::SeqCst),
+            0,
+            "failed dispatch admission must stop before ProductionClient::execute"
+        );
+        assert!(coordinator.receipts(project.id, 20).unwrap().is_empty());
+        assert!(
+            service
+                .latest_production_receipt(project.id, rejected_request)
+                .unwrap()
+                .is_none()
+        );
+
+        let edited = peer_result.lock().unwrap().clone().unwrap();
+        assert_eq!(edited.id, project.id);
+        assert_eq!(edited.generation, project.generation);
+        assert_eq!(edited.revision, project.revision + 1);
+        assert_eq!(edited.title, "Peer committed before native dispatch");
+
+        let independent = StudioService::open(&database).unwrap();
+        assert_eq!(independent.project(project.id).unwrap(), edited);
+        assert!(
+            independent
+                .production_receipts(project.id, 20)
+                .unwrap()
+                .is_empty()
+        );
+        drop(independent);
+
+        // A fresh explicit request on the committed revision must still reach
+        // the same concrete client. This excludes a permanently blocked fixture.
+        coordinator.before_dispatch_admission = None;
+        let current_stamp = motionwright_domain::RevisionStamp::from(&edited);
+        let accepted = coordinator
+            .execute(
+                project.id,
+                &current_stamp,
+                accepted_request,
+                command,
+                args.clone(),
+                true,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(accepted["replayed"], false);
+        assert_eq!(accepted["result"]["data"]["job_ref"], "job-native-1");
+        assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+
+        let original_receipts = coordinator.receipts(project.id, 20).unwrap();
+        assert_eq!(original_receipts.len(), 2);
+        assert!(original_receipts.iter().all(|receipt| {
+            receipt.project_id == project.id
+                && receipt.generation == edited.generation
+                && receipt.revision == edited.revision
+                && receipt.request_id == accepted_request
+                && receipt.command == command
+        }));
+
+        let dispatch = original_receipts
+            .iter()
+            .find(|receipt| receipt.stage == "dispatching")
+            .unwrap();
+        let completed = original_receipts
+            .iter()
+            .find(|receipt| receipt.stage == "completed")
+            .unwrap();
+        assert_ne!(dispatch.id, completed.id);
+        assert_eq!(dispatch.request_sha256, completed.request_sha256);
+
+        // Reentry of this known completed request must return its original
+        // result and receipt without another client invocation.
+        let replayed = coordinator
+            .execute(
+                project.id,
+                &current_stamp,
+                accepted_request,
+                command,
+                args,
+                true,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(replayed["replayed"], true);
+        assert_eq!(replayed["result"], accepted["result"]);
+        assert_eq!(replayed["receipt"], accepted["receipt"]);
+        assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            coordinator.receipts(project.id, 20).unwrap(),
+            original_receipts
+        );
+        assert!(
+            service
+                .latest_production_receipt(project.id, rejected_request)
+                .unwrap()
+                .is_none()
+        );
+
+        drop(coordinator);
+        drop(service);
+
+        let reopened = StudioService::open(&database).unwrap();
+        assert_eq!(reopened.project(project.id).unwrap(), edited);
+        assert_eq!(
+            reopened.production_receipts(project.id, 20).unwrap(),
+            original_receipts
+        );
+        assert!(
+            reopened
+                .latest_production_receipt(project.id, rejected_request)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[cfg(unix)]
