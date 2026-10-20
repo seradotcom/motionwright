@@ -1,0 +1,155 @@
+name: Film180 original native source contracts (G1)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/native-film180-original-source-g1.yml'
+      - 'tooling/native_film180_original_g2.py'
+      - 'tooling/tests/test_native_film180_original_g2.py'
+      - 'tooling/ci_test_runner.py'
+      - 'tooling/source_policy.py'
+      - 'tooling/acceptance_policy.py'
+  pull_request:
+    paths:
+      - '.github/workflows/native-film180-original-source-g1.yml'
+      - 'tooling/native_film180_original_g2.py'
+      - 'tooling/tests/test_native_film180_original_g2.py'
+      - 'tooling/ci_test_runner.py'
+      - 'tooling/source_policy.py'
+      - 'tooling/acceptance_policy.py'
+permissions:
+  contents: read
+concurrency:
+  group: film180-original-source-${{ github.ref }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  source-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MOTIONWRIGHT_APPROVED_FILM180_G2: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare isolated evidence
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/mw-film180-g1-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$work/public" "$work/tmp"
+          echo "FILM_G1_PUBLIC=$work/public" >> "$GITHUB_ENV"
+          echo "TMPDIR=$work/tmp" >> "$GITHUB_ENV"
+      - name: Confirm authenticated A4 source and exact 27 tests
+        run: |
+          set -euo pipefail
+          python3 -B -I -S - <<'PY'
+          import ast,hashlib,json,os,pathlib,re,stat,subprocess
+          root=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          head=os.environ["GITHUB_SHA"]
+          assert re.fullmatch(r"[0-9a-f]{40}",head)
+          env={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
+          env.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,
+                     GIT_OPTIONAL_LOCKS="0",GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
+          def git(*parts):
+           return subprocess.check_output(["git","--no-replace-objects","-C",str(root),*parts],env=env)
+          assert git("rev-parse","HEAD").decode().strip()==head
+          assert not git("status","--porcelain=v1","--untracked-files=all")
+          assert not git("ls-files","--others","--ignored","--exclude-standard","-z")
+          pins={
+           "tooling/native_film180_original_g2.py":"644013f656061b8aff34a0364e407413b56252177dadba4398925ab816a81867",
+           "tooling/tests/test_native_film180_original_g2.py":"7890ee3973a546ae143a34d6a05b4e8ea7b7f50f3160dd5563f5c84606c66014",
+           "tooling/ci_test_runner.py":"b7d39ad4c94be70abcac75880f92d00cf3c8d49eb0198b404a962ce5ab1a712f"}
+          observed={}
+          for name,want in pins.items():
+           path=root/name
+           assert path.is_file() and not path.is_symlink() and stat.S_ISREG(path.lstat().st_mode)
+           line=git("ls-tree","-z",head,"--",name).rstrip(b"\0")
+           meta,sep,relative=line.partition(b"\t")
+           assert sep and relative.decode("utf-8")==name
+           mode,kind,oid=meta.split()
+           assert mode in (b"100644",b"100755") and kind==b"blob"
+           blob=git("cat-file","blob",oid.decode())
+           assert len(blob)<160000 and blob==path.read_bytes()
+           assert hashlib.sha256(blob).hexdigest()==want
+           assert hashlib.sha1(b"blob "+str(len(blob)).encode()+b"\0"+blob).hexdigest()==oid.decode()
+           observed[name]={"sha256":want,"git_blob_oid":oid.decode()}
+          t=ast.parse((root/"tooling/tests/test_native_film180_original_g2.py").read_text(encoding="utf-8"))
+          cls=[q for q in t.body if isinstance(q,ast.ClassDef) and q.name=="Film180G2SourceTests"]
+          assert len(cls)==1 and any(isinstance(x,ast.Attribute) and isinstance(x.value,ast.Name)
+                                    and x.value.id=="unittest" and x.attr=="TestCase" for x in cls[0].bases)
+          cases=[f.name for f in cls[0].body if isinstance(f,ast.FunctionDef) and f.name.startswith("test_")]
+          all_tests=[f.name for f in ast.walk(t) if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef)) and f.name.startswith("test_")]
+          assert len(cases)==len(all_tests)==len(set(cases))==27
+          assert not any(isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef)) and f.name=="load_tests" for f in ast.walk(t))
+          assert "test_simulated_windows_native_effect_denial_also_runs_on_linux_ci" in cases
+          assert os.environ["MOTIONWRIGHT_APPROVED_FILM180_G2"]=="0"
+          public=pathlib.Path(os.environ["FILM_G1_PUBLIC"])
+          assert public.is_absolute() and public.is_dir() and not public.resolve().is_relative_to(root)
+          receipt={"schema":"motionwright.A6.Film180.original.source-G1/1","source_sha":head,
+                   "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
+                   "run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+                   "A4_published_head":"4ac8d96965db7eb48639f0bb7e26d5e8dfa6d9de",
+                   "Git_verified":observed,"exact_test_names":sorted(cases),"test_count":27,
+                   "G2_installed":False,"native_film_180_rendered":False,"physical_AAC":False}
+          with (public/"source-inputs.json").open("x") as f:json.dump(receipt,f,indent=2);f.write("\n")
+          print("SOURCE_BOUND_FILM180_G0_PASS",head,len(cases))
+          PY
+      - name: Run G0 source and conformance policies
+        run: |
+          set -euo pipefail
+          python3 -B tooling/source_policy.py > "$FILM_G1_PUBLIC/source.stdout.log" 2> "$FILM_G1_PUBLIC/source.stderr.log"
+          python3 -B tooling/acceptance_policy.py > "$FILM_G1_PUBLIC/acceptance.stdout.log" 2> "$FILM_G1_PUBLIC/acceptance.stderr.log"
+          python3 -B tooling/creative_status_policy.py > "$FILM_G1_PUBLIC/creative.stdout.log" 2> "$FILM_G1_PUBLIC/creative.stderr.log"
+      - name: Execute source cases by discovery and module
+        run: |
+          set -euo pipefail
+          python3 -B -E -s tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --test-directory tooling/tests --pattern test_native_film180_original_g2.py \
+            --mode both --expected-source "$GITHUB_SHA" --require-complete \
+            --report "$FILM_G1_PUBLIC/selected-runner.json" --timeout 180
+      - name: Reject incomplete, skipped or cross-SHA receipts
+        run: |
+          set -euo pipefail
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          root=pathlib.Path(os.environ["FILM_G1_PUBLIC"])
+          load=lambda p:json.loads((root/p).read_text())
+          sha=lambda p:hashlib.sha256((root/p).read_bytes()).hexdigest()
+          source=load("source-inputs.json")
+          done=load("selected-runner.json")
+          assert source["source_sha"]==done["executed_source_sha"]==os.environ["GITHUB_SHA"]
+          assert source["tree_sha"]==done["tree_sha"]
+          assert source["run_id"]==os.environ["GITHUB_RUN_ID"] and source["run_attempt"]==os.environ["GITHUB_RUN_ATTEMPT"]
+          assert done["status"]=="PASS" and done["exit_code"]==0 and done["require_complete"] is True
+          assert len(done["steps"])==2
+          assert {s["entry_point"] for s in done["steps"]}=={
+           "discovery:test_native_film180_original_g2.py","dotted:tooling.tests.test_native_film180_original_g2"}
+          assert len(source["exact_test_names"])==27
+          for row in done["steps"]:
+           count=row["counts"]
+           assert row["status"]=="PASS" and row["exit_code"]==0
+           assert count["tests_run"]==count["passed"]==27
+           assert all(count[k]==0 for k in ("failures","errors","skipped","expected_failures","unexpected_successes"))
+           for key in ("stdout","stderr"):
+            assert sha(row[key]["file"])==row[key]["sha256"]
+          assert not source["G2_installed"] and not source["native_film_180_rendered"]
+          out={"schema":"motionwright.A6.Film180.original-G1-complete/1",
+               "source_sha":source["source_sha"],"tree_sha":source["tree_sha"],
+               "run_id":source["run_id"],"attempt":source["run_attempt"],
+               "source_receipt_sha256":sha("source-inputs.json"),"runner_sha256":sha("selected-runner.json"),
+               "passed_each_entrypoint":27,"total_invocations":54,"skipped":0,"failed":0,
+               "physical_180_frame_G2":"NOT_RUN","physical_PCM_H264":"NOT_RUN",
+               "release_authorized":False,"human_acceptance":False}
+          with (root/"Film180-G1-complete.json").open("x") as f:json.dump(out,f,indent=2);f.write("\n")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: film180-source-G1-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.FILM_G1_PUBLIC }}
+          if-no-files-found: error
+          retention-days: 14
