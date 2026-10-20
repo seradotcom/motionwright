@@ -78,7 +78,9 @@ enum RenderCommand {
 fn classify(command: &str) -> Option<(&'static str, RenderCommand)> {
     let provider = if command.starts_with("driver.motion-canvas.render.") {
         "driver:motion-canvas"
-    } else if command.starts_with("driver.manim-community.render.") {
+    } else if command.starts_with("driver.manim-community.render.")
+        || command == "driver.manim-community.camera.render.start"
+    {
         "driver:manim-community"
     } else if command.starts_with("driver.mlt-video.render.") {
         "driver:mlt-video"
@@ -940,5 +942,182 @@ mod tests {
             jobs[0].last_observation,
             ProductionObservationState::Observed
         );
+    }
+    #[test]
+    fn camera_start_uses_manim_provider_without_admitting_other_camera_commands() {
+        assert_eq!(
+            classify("driver.manim-community.camera.render.start"),
+            Some(("driver:manim-community", RenderCommand::Start))
+        );
+        for (command, kind) in [
+            ("driver.manim-community.render.start", RenderCommand::Start),
+            (
+                "driver.manim-community.render.status",
+                RenderCommand::Status,
+            ),
+            (
+                "driver.manim-community.render.cancel",
+                RenderCommand::Cancel,
+            ),
+            (
+                "driver.manim-community.render.result",
+                RenderCommand::Result,
+            ),
+        ] {
+            assert_eq!(classify(command), Some(("driver:manim-community", kind)));
+        }
+        for command in [
+            "driver.manim-community.camera.render.status",
+            "driver.manim-community.camera.render.cancel",
+            "driver.manim-community.camera.render.result",
+            "driver.manim-community.camera.other.render.start",
+            "driver.manim-community.camera.render.start.extra",
+        ] {
+            assert_eq!(classify(command), None);
+        }
+    }
+
+    fn camera_job_payload(job: &str, state: &str) -> Value {
+        json!({
+            "job_ref": job,
+            "result": {
+                "data": {"job_ref": job, "state": state},
+                "execution": {"provenance": {
+                    "provider": "driver:manim-community",
+                    "provider_generation": 17
+                }}
+            }
+        })
+    }
+
+    #[test]
+    fn camera_start_retains_original_lineage_through_legacy_result_command() {
+        let generation = Uuid::now_v7();
+        let start = receipt(
+            generation,
+            7,
+            "camera-original:start",
+            "driver.manim-community.camera.render.start",
+            "completed",
+            camera_job_payload("manim-original", "rendering"),
+            "2026-10-20T01:00:00Z",
+        );
+        let mut completed = camera_job_payload("manim-original", "succeeded");
+        completed["result"]["data"]["artifact"] = json!({"fixture_only": true});
+        let result = receipt(
+            generation,
+            7,
+            "camera-original:result",
+            "driver.manim-community.render.result",
+            "completed",
+            completed,
+            "2026-10-20T01:00:01Z",
+        );
+        let jobs = derive_production_jobs(&[start.clone(), result.clone()], generation, 7, 16);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].provider, "driver:manim-community");
+        assert_eq!(jobs[0].job_ref, "manim-original");
+        assert_eq!(jobs[0].root_request_id, "camera-original:start");
+        assert_eq!(jobs[0].provider_generation, Some(17));
+        assert_eq!(jobs[0].state, ProductionJobState::Succeeded);
+        assert!(jobs[0].artifact_available && jobs[0].result_available);
+
+        let orphan = derive_production_jobs(&[result.clone()], generation, 7, 16);
+        assert_eq!(orphan[0].state, ProductionJobState::OutcomeUnknown);
+        assert!(!orphan[0].artifact_available && !orphan[0].result_available);
+
+        let mut duplicate = start.clone();
+        duplicate.id = Uuid::now_v7();
+        duplicate.request_id = "unrelated-second-start".into();
+        let ambiguous = derive_production_jobs(&[start, duplicate, result], generation, 7, 16);
+        assert_eq!(ambiguous[0].state, ProductionJobState::OutcomeUnknown);
+        assert!(!ambiguous[0].artifact_available && !ambiguous[0].result_available);
+    }
+
+    #[test]
+    fn camera_observations_keep_unknown_for_foreign_identity_and_generation() {
+        let generation = Uuid::now_v7();
+        let start = receipt(
+            generation,
+            7,
+            "camera-original:start",
+            "driver.manim-community.camera.render.start",
+            "completed",
+            camera_job_payload("manim-original", "rendering"),
+            "2026-10-20T01:00:00Z",
+        );
+        for command in [
+            "driver.manim-community.render.status",
+            "driver.manim-community.render.result",
+        ] {
+            for (pointer, replacement) in [
+                ("/result/data/job_ref", json!("manim-foreign")),
+                ("/result/data/job_ref", Value::Null),
+                (
+                    "/result/execution/provenance/provider_generation",
+                    json!(18),
+                ),
+                (
+                    "/result/execution/provenance/provider_generation",
+                    Value::Null,
+                ),
+                (
+                    "/result/execution/provenance/provider",
+                    json!("driver:other"),
+                ),
+            ] {
+                let mut payload = camera_job_payload("manim-original", "succeeded");
+                payload["result"]["data"]["artifact"] = json!({"fixture_only": true});
+                *payload.pointer_mut(pointer).unwrap() = replacement;
+                let observed = receipt(
+                    generation,
+                    7,
+                    "camera-original:read",
+                    command,
+                    "completed",
+                    payload,
+                    "2026-10-20T01:00:01Z",
+                );
+                let jobs = derive_production_jobs(&[start.clone(), observed], generation, 7, 16);
+                assert_eq!(jobs.len(), 1);
+                assert_eq!(jobs[0].root_request_id, "camera-original:start");
+                assert_eq!(jobs[0].state, ProductionJobState::OutcomeUnknown);
+                assert!(!jobs[0].artifact_available && !jobs[0].result_available);
+            }
+        }
+    }
+
+    #[test]
+    fn camera_known_observation_failure_does_not_establish_render_failure() {
+        let generation = Uuid::now_v7();
+        let start = receipt(
+            generation,
+            7,
+            "camera-original:start",
+            "driver.manim-community.camera.render.start",
+            "completed",
+            camera_job_payload("manim-original", "rendering"),
+            "2026-10-20T01:00:00Z",
+        );
+        let failed_read = receipt(
+            generation,
+            7,
+            "camera-original:status",
+            "driver.manim-community.render.status",
+            "failed_known",
+            json!({"job_ref": "manim-original", "error": {
+                "code": "Unavailable", "outcome_known": true
+            }}),
+            "2026-10-20T01:00:01Z",
+        );
+        let jobs = derive_production_jobs(&[start, failed_read], generation, 7, 16);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].root_request_id, "camera-original:start");
+        assert_eq!(
+            jobs[0].last_observation,
+            ProductionObservationState::FailedKnown
+        );
+        assert_eq!(jobs[0].state, ProductionJobState::OutcomeUnknown);
+        assert!(!jobs[0].artifact_available && !jobs[0].result_available);
     }
 }

@@ -1,6 +1,10 @@
 use async_trait::async_trait;
 use motionwright_manim_profile::{
-    ManimRenderProfile, ManimScenePlan, SCENE_CLASS, compile_manim_python, validate_plan,
+    ManimRenderProfile, ManimScenePlan, SCENE_CLASS, compile_manim_python,
+    planar_camera::{
+        ManimCameraScenePlanV1, PreparedCameraProgramV1, compile_camera_program_source_only,
+    },
+    validate_plan,
 };
 use semwright_driver_sdk::{
     Capability, Driver, DriverExecutionContext, DriverInterfaces, RuntimeToolArg, RuntimeToolCwd,
@@ -41,6 +45,42 @@ struct StartArgs {
     profile: ManimRenderProfile,
 }
 
+/// This is a separate typed, discoverable effect. Imported Python and ZIP
+/// content are never accepted in place of this original canonical plan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CameraStartArgs {
+    plan: ManimCameraScenePlanV1,
+    profile: ManimRenderProfile,
+}
+
+/// Closed source generation, not a grant or a render receipt. The caller must
+/// subsequently use the original DriverExecutionContext and sealed runner.
+fn prepare_camera_for_original_host(args: &CameraStartArgs) -> Result<PreparedCameraProgramV1> {
+    args.plan
+        .validate_source_only()
+        .map_err(map_profile_error)?;
+    args.profile.validate().map_err(map_profile_error)?;
+    if args.plan.render_profile != args.profile {
+        return Err(invalid(
+            "Manim camera original plan and requested output profile differ",
+        ));
+    }
+    let program = compile_camera_program_source_only(&args.plan).map_err(map_profile_error)?;
+    if program.native_execution_performed || program.runtime_sample_pts_verified {
+        return Err(invalid(
+            "Manim camera source-only compiler cannot claim native execution",
+        ));
+    }
+    if program.python_source.len() > MAX_SOURCE_BYTES {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            "Generated Manim camera source exceeds the bounded source budget",
+        ));
+    }
+    Ok(program)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct JobArgs {
@@ -58,6 +98,10 @@ struct RenderArtifact {
     height: u32,
     frame_rate: u32,
     plan_sha256: String,
+    /// Only camera jobs publish a private, checked native getter digest.
+    /// A public MP4 alone never proves that all camera poses were applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    camera_getters_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +139,9 @@ struct RenderJob {
     profile: ManimRenderProfile,
     artifact: Option<RenderArtifact>,
     diagnostic: Option<String>,
+    /// Kept only in the original Driver Host's bounded job lifetime. Imported
+    /// source/ZIP cannot assert this typed source identity.
+    camera_plan: Option<ManimCameraScenePlanV1>,
 }
 
 struct ManimCommunityDriver {
@@ -130,6 +177,171 @@ fn canonical_root(name: &str) -> Result<PathBuf> {
 fn plan_digest(plan: &ManimScenePlan) -> Result<String> {
     let bytes = serde_json::to_vec(plan)?;
     Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+/// Validate the original trusted Manim process's private getter sidecar.
+/// This is an input to independent FFmpeg frame/PTS confirmation, NEVER
+/// interchangeable with final video fidelity, user authorization or rights.
+fn verify_camera_getters_bytes(
+    raw: &[u8],
+    plan: &ManimCameraScenePlanV1,
+    expected_plan_sha256: &str,
+) -> Result<String> {
+    if raw.is_empty() || raw.len() > 8 * 1024 * 1024 {
+        return Err(invalid(
+            "Manim camera getter envelope exceeds the admitted size",
+        ));
+    }
+    let v: Value = serde_json::from_slice(raw)
+        .map_err(|_| invalid("Manim camera getter envelope is malformed"))?;
+    let samples = plan.expected_frame_samples().map_err(map_profile_error)?;
+    let count = samples.len();
+    let correct_header = v.get("schema_version").and_then(Value::as_u64) == Some(1)
+        && v.get("profile_id").and_then(Value::as_str) == Some("mw-manim-planar-camera-v1")
+        && v.get("scene_class").and_then(Value::as_str) == Some(SCENE_CLASS)
+        && v.get("plan_sha256").and_then(Value::as_str) == Some(expected_plan_sha256)
+        && v.get("sample_count").and_then(Value::as_u64) == Some(count as u64)
+        && v.get("decoded_video_verified") == Some(&json!(false))
+        && v.get("native_grants_verified_by_this_script") == Some(&json!(false))
+        && v.get("binding") == Some(&serde_json::to_value(&plan.binding)?);
+    if !correct_header {
+        return Err(invalid(
+            "Manim getter source/binding or profile is not exact",
+        ));
+    }
+    let alphas = v
+        .get("callback_alphas")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("Manim callback alpha list is unavailable"))?;
+    let frames = v
+        .get("frames")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("Manim native camera frame getter list is unavailable"))?;
+    if alphas.len() != count || frames.len() != count {
+        return Err(invalid("Manim native camera getter frame count differs"));
+    }
+
+    let close = |actual: Option<f64>, expected: f64| -> bool {
+        actual.is_some_and(|x| x.is_finite() && (x - expected).abs() <= 1e-5)
+    };
+    let point = |value: &Value, target: [f64; 3]| -> bool {
+        value.as_array().is_some_and(|items| {
+            items.len() == 3 && (0..3).all(|index| close(items[index].as_f64(), target[index]))
+        })
+    };
+
+    for (i, frame) in frames.iter().enumerate() {
+        if frame.get("index").and_then(Value::as_u64) != Some(i as u64)
+            || !close(alphas[i].as_f64(), i as f64 / (count as f64 - 0.5))
+        {
+            return Err(invalid(
+                "Manim callback order or original sample PTS changed",
+            ));
+        }
+        let cam = frame
+            .get("camera")
+            .ok_or_else(|| invalid("Manim physical camera getter row is missing"))?;
+        if !point(&cam["frame_center"], samples[i].world_frame_center)
+            || !close(cam["frame_width"].as_f64(), 128.0 / 9.0)
+            || !close(cam["frame_height"].as_f64(), 8.0)
+            || cam["pixel_width"].as_u64() != Some(640)
+            || cam["pixel_height"].as_u64() != Some(360)
+            || !close(cam["frame_rate"].as_f64(), 30.0)
+        {
+            return Err(invalid(
+                "Manim native camera frame pose or dimensions differ",
+            ));
+        }
+        let objects = frame
+            .get("objects")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid("Manim physical shape getters are missing"))?;
+        if objects.len() != plan.nodes.len() {
+            return Err(invalid("Manim getter lost an authored source object"));
+        }
+        for source in &plan.nodes {
+            let id = source.node_id.to_string();
+            let matches: Vec<_> = objects
+                .iter()
+                .filter(|obj| obj.get("node_id").and_then(Value::as_str) == Some(id.as_str()))
+                .collect();
+            if matches.len() != 1 {
+                return Err(invalid("Manim original shape getter identity changed"));
+            }
+            let obj = matches[0];
+            let center = [
+                (source.x_px + source.width_px / 2.0 - 960.0) / 135.0,
+                (540.0 - source.y_px - source.height_px / 2.0) / 135.0,
+                0.0,
+            ];
+            let source_kind = match source.source_kind {
+                motionwright_manim_profile::ManimSourceShapeKindV2::Rectangle => "rectangle",
+                motionwright_manim_profile::ManimSourceShapeKindV2::Circle => "circle",
+                motionwright_manim_profile::ManimSourceShapeKindV2::Shape => {
+                    return Err(invalid("Manim source getter has an unsupported shape"));
+                }
+            };
+            let expected_name = format!("mw_{}", source.node_id.simple());
+            if obj["kind"].as_str() != Some(source_kind)
+                || obj["name"].as_str() != Some(expected_name.as_str())
+                || !point(&obj["world_center"], center)
+                || !close(obj["width"].as_f64(), source.width_px / 135.0)
+                || !close(obj["height"].as_f64(), source.height_px / 135.0)
+                || obj["z_index"].as_i64() != Some(i64::from(source.z_index))
+                || obj["fill_hex"]
+                    .as_str()
+                    .is_none_or(|c| !c.eq_ignore_ascii_case(source.fill_hex.as_str()))
+                || !close(obj["fill_opacity"].as_f64(), 1.0)
+                || !close(obj["stroke_width"].as_f64(), 0.0)
+                || !close(obj["stroke_opacity"].as_f64(), 0.0)
+            {
+                return Err(invalid(
+                    "Manim native shape content differs from original source",
+                ));
+            }
+        }
+    }
+    Ok(hex::encode(Sha256::digest(raw)))
+}
+
+/// Private work-root getter evidence is generated by the trusted Manim
+/// process, not provided by the request. Public publisher cannot turn a
+/// forged .camera.json or merely valid MP4 into a successful native job.
+fn verified_camera_getters_from_work_root(
+    work_root: &Path,
+    source_file: &str,
+    plan: &ManimCameraScenePlanV1,
+    expected_plan_sha256: &str,
+) -> Result<String> {
+    let source = Path::new(source_file);
+    if source.components().count() != 1 || source.extension().and_then(|e| e.to_str()) != Some("py")
+    {
+        return Err(invalid("Manim source filename is not a sealed component"));
+    }
+    let path = work_root.join(source.with_extension("camera.json"));
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|_| invalid("Native Manim camera getter artifact is absent"))?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > 8 * 1024 * 1024
+    {
+        return Err(invalid(
+            "Manim camera getter file is not bounded and regular",
+        ));
+    }
+    let canonical = fs::canonicalize(&path)
+        .map_err(|_| invalid("Manim camera getter source could not be canonicalized"))?;
+    if !canonical.starts_with(work_root) {
+        return Err(invalid(
+            "Manim camera getter file escaped original work root",
+        ));
+    }
+    let bytes = fs::read(&canonical)?;
+    if bytes.len() as u64 != metadata.len() {
+        return Err(invalid("Manim camera getter file changed while reading"));
+    }
+    verify_camera_getters_bytes(&bytes, plan, expected_plan_sha256)
 }
 
 fn strict_job_ref(value: &str) -> Result<()> {
@@ -247,31 +459,65 @@ impl ManimCommunityDriver {
 
     async fn start(&mut self, args: Value, context: &DriverExecutionContext) -> Result<Value> {
         context.check_cancelled()?;
+        let args: StartArgs = serde_json::from_value(args)?;
+        validate_plan(&args.plan).map_err(map_profile_error)?;
+        args.profile.validate().map_err(map_profile_error)?;
+        let source = compile_manim_python(&args.plan).map_err(map_profile_error)?;
+        let plan_sha256 = plan_digest(&args.plan)?;
+        self.start_prepared_source(source, plan_sha256, args.profile, None, context)
+            .await
+    }
+
+    /// The separate camera command shares the exact same Semwright Host
+    /// admission, cancellation, job lifetime, sealed Manim runner and MP4
+    /// custody as the original static command. It does not execute a saved
+    /// scene.py from imported or user-controlled material.
+    async fn start_camera(
+        &mut self,
+        args: Value,
+        context: &DriverExecutionContext,
+    ) -> Result<Value> {
+        context.check_cancelled()?;
+        let args: CameraStartArgs = serde_json::from_value(args)?;
+        let program = prepare_camera_for_original_host(&args)?;
+        self.start_prepared_source(
+            program.python_source,
+            program.plan_sha256,
+            args.profile,
+            Some(args.plan),
+            context,
+        )
+        .await
+    }
+
+    async fn start_prepared_source(
+        &mut self,
+        source: String,
+        plan_sha256: String,
+        profile: ManimRenderProfile,
+        camera_plan: Option<ManimCameraScenePlanV1>,
+        context: &DriverExecutionContext,
+    ) -> Result<Value> {
+        context.check_cancelled()?;
         if self.jobs.len() >= MAX_JOBS {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
                 "Manim retained-job budget is full",
             ));
         }
-        let args: StartArgs = serde_json::from_value(args)?;
-        validate_plan(&args.plan).map_err(map_profile_error)?;
-        args.profile.validate().map_err(map_profile_error)?;
-
-        let source = compile_manim_python(&args.plan).map_err(map_profile_error)?;
         if source.len() > MAX_SOURCE_BYTES {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
                 "Generated Manim source exceeds the bounded source budget",
             ));
         }
-        let plan_sha256 = plan_digest(&args.plan)?;
         let token = Uuid::now_v7().simple().to_string();
         let job_ref = format!("manim-{token}");
         let source_file = format!("mw_{token}.py");
         let output_name = format!("mw_{token}");
         let output_relative = format!(
             "videos/mw_{token}/{}/{}.mp4",
-            args.profile.quality_directory(),
+            profile.quality_directory(),
             output_name
         );
 
@@ -324,11 +570,11 @@ impl ManimCommunityDriver {
                     literal("--output-name".into()),
                     literal(output_name),
                     literal("--width".into()),
-                    literal(args.profile.width.to_string()),
+                    literal(profile.width.to_string()),
                     literal("--height".into()),
-                    literal(args.profile.height.to_string()),
+                    literal(profile.height.to_string()),
                     literal("--fps".into()),
-                    literal(args.profile.frame_rate.to_string()),
+                    literal(profile.frame_rate.to_string()),
                 ],
                 Vec::new(),
                 RENDER_TIMEOUT,
@@ -347,9 +593,10 @@ impl ManimCommunityDriver {
                 source_file,
                 output_relative,
                 plan_sha256,
-                profile: args.profile,
+                profile,
                 artifact: None,
                 diagnostic: None,
+                camera_plan,
             },
         );
         Ok(job_view(
@@ -392,6 +639,25 @@ impl ManimCommunityDriver {
                         output.stderr.len()
                     ));
                 } else {
+                    let camera_getters_sha256 = if let Some(plan) = &job.camera_plan {
+                        match verified_camera_getters_from_work_root(
+                            &self.work_root,
+                            &job.source_file,
+                            plan,
+                            &job.plan_sha256,
+                        ) {
+                            Ok(digest) => Some(digest),
+                            Err(error) => {
+                                job.phase = JobPhase::Failed;
+                                job.diagnostic = Some(format!(
+                                    "Original Manim camera native getter proof missing or invalid: {error}"
+                                ));
+                                return Ok(job_view(job_ref, job));
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let (path, bytes) = safe_output_file(&self.output_root, &job.output_relative)?;
                     let sha256 = sha256_file(&path)?;
                     job.artifact = Some(RenderArtifact {
@@ -403,6 +669,7 @@ impl ManimCommunityDriver {
                         height: job.profile.height,
                         frame_rate: job.profile.frame_rate,
                         plan_sha256: job.plan_sha256.clone(),
+                        camera_getters_sha256,
                     });
                     job.phase = JobPhase::Succeeded;
                 }
@@ -467,6 +734,7 @@ impl ManimCommunityDriver {
     ) -> Result<Value> {
         match command {
             "driver.manim-community.render.start" => self.start(args, context).await,
+            "driver.manim-community.camera.render.start" => self.start_camera(args, context).await,
             "driver.manim-community.render.status" => {
                 let args: JobArgs = serde_json::from_value(args)?;
                 self.refresh(&args.job_ref, context).await
@@ -696,6 +964,55 @@ fn start_schema() -> Value {
     })
 }
 
+/// Discoverable, narrow typed camera rendering input. Closed top-level and
+/// source document fields; exact nested rules are also enforced by the
+/// #[serde(deny_unknown_fields)] wire types and validate_source_only before
+/// the original Driver Host is asked to execute anything.
+fn camera_start_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "plan": {
+                "type": "object",
+                "properties": {
+                    "schema_version": {"const": 4},
+                    "profile_id": {"const": "mw-manim-planar-camera-v1"},
+                    "output_role": {"const": "scene_video_contribution_without_audio_or_captions"},
+                    "binding": {"type": "object"},
+                    "clock": {"type": "object"},
+                    "render_profile": {"type": "object"},
+                    "canvas": {"type": "object"},
+                    "background": {"type": "object"},
+                    "camera": {"type": "object"},
+                    "reframe": {"type": "object"},
+                    "nodes": {
+                        "type": "array", "minItems": 1, "maxItems": 32,
+                        "items": {"type": "object"}
+                    }
+                },
+                "required": [
+                    "schema_version", "profile_id", "output_role", "binding",
+                    "clock", "render_profile", "canvas", "background",
+                    "camera", "reframe", "nodes"
+                ],
+                "additionalProperties": false
+            },
+            "profile": {
+                "type": "object",
+                "properties": {
+                    "width": {"const": 640},
+                    "height": {"const": 360},
+                    "frame_rate": {"const": 30}
+                },
+                "required": ["width", "height", "frame_rate"],
+                "additionalProperties": false
+            }
+        },
+        "required": ["plan", "profile"],
+        "additionalProperties": false
+    })
+}
+
 fn capability_catalog() -> Result<Vec<Capability>> {
     Ok(vec![
         capability(CapabilitySpec {
@@ -719,6 +1036,22 @@ fn capability_catalog() -> Result<Vec<Capability>> {
             dry_run: false,
             tags: &[
                 "manim",
+                "renderer",
+                "render",
+                "job",
+                "artifact-out:video/clip",
+            ],
+        }),
+        capability(CapabilitySpec {
+            name: "driver.manim-community.camera.render.start",
+            description: "Render a closed typed planar-camera scene using the original owner-authorized Manim Community Driver Host",
+            schemas: (camera_start_schema(), job_output_schema()),
+            risk: Risk::MutatingReversible,
+            idempotency: Idempotency::NonIdempotent,
+            dry_run: false,
+            tags: &[
+                "manim",
+                "camera",
                 "renderer",
                 "render",
                 "job",
@@ -778,7 +1111,7 @@ mod tests {
     #[test]
     fn catalog_never_exposes_python_or_shell_execution() {
         let caps = capability_catalog().unwrap();
-        assert_eq!(caps.len(), 5);
+        assert_eq!(caps.len(), 6);
         for capability in caps {
             assert!(
                 capability
@@ -791,6 +1124,305 @@ mod tests {
             assert!(!encoded.contains("shell"));
             assert!(!encoded.contains("command_line"));
         }
+    }
+
+    #[test]
+    fn static_capability_remains_closed_and_camera_has_distinct_nonidempotent_grant() {
+        let caps = capability_catalog().unwrap();
+        let static_cap = caps
+            .iter()
+            .find(|x| x.descriptor.name == "driver.manim-community.render.start")
+            .unwrap();
+        let camera = caps
+            .iter()
+            .find(|x| x.descriptor.name == "driver.manim-community.camera.render.start")
+            .unwrap();
+        let old = serde_json::to_string(&static_cap.descriptor).unwrap();
+        let new = serde_json::to_string(&camera.descriptor).unwrap();
+        assert!(old.contains("primitives"));
+        assert!(!old.contains("mw-manim-planar-camera-v1"));
+        assert!(!new.contains("primitives"));
+        assert!(new.contains("mw-manim-planar-camera-v1"));
+        assert!(!new.contains("python"));
+        assert!(!new.contains("shell"));
+        assert!(new.contains("render"));
+        assert_eq!(camera.descriptor.requires, vec![DRIVER_SCOPE]);
+        assert_eq!(camera.descriptor.idempotency, Idempotency::NonIdempotent);
+        assert_eq!(camera.descriptor.risk, Risk::MutatingReversible);
+        assert!(!camera.descriptor.dry_run);
+        let schema = camera_start_schema();
+        assert_eq!(schema["properties"]["plan"]["additionalProperties"], false);
+        assert_eq!(
+            schema["properties"]["profile"]["properties"]["frame_rate"]["const"],
+            30
+        );
+    }
+
+    fn original_planar_camera_request() -> CameraStartArgs {
+        // Actual canonical typed source, not imported scene.py. Mirrors the
+        // bounded 30fps two-object native source contract on original Manim.
+        let project = "10000000-0000-4000-8000-000000000001";
+        let generation = "10000000-0000-4000-8000-000000000002";
+        let deliverable = "10000000-0000-4000-8000-000000000003";
+        let scene = "20000000-0000-4000-8000-000000000001";
+        let data = json!({
+            "plan": {
+                "schema_version": 4,
+                "profile_id": "mw-manim-planar-camera-v1",
+                "output_role": "scene_video_contribution_without_audio_or_captions",
+                "binding": {
+                    "project_id": project, "generation": generation,
+                    "revision": 17, "scene_id": scene, "deliverable_id": deliverable
+                },
+                "clock": {
+                    "timeline_start": {"num": "0", "den": "1"},
+                    "duration": {"num": "1", "den": "1"},
+                    "frame_rate": {"num": "30", "den": "1"},
+                    "project_start_frame": 0, "project_end_frame_exclusive": 30,
+                    "local_start_frame": 0, "frame_count": 30
+                },
+                "render_profile": {"width": 640, "height": 360, "frame_rate": 30},
+                "canvas": {"width": 1920, "height": 1080,
+                           "coordinate_space": "project_pixels"},
+                "background": {"kind": "solid", "color": "#000000", "opacity": 1},
+                "camera": {"center_x": 1000.0, "center_y": 520.0,
+                           "zoom": 1.0, "rotation_deg": 0.0,
+                           "safe_margin": 0.05},
+                "reframe": {
+                    "id": "30000000-0000-4000-8000-000000000001",
+                    "scene_id": scene, "component_version": 2,
+                    "start_center_x": 960.0, "start_center_y": 540.0,
+                    "end_center_x": 1000.0, "end_center_y": 520.0,
+                    "duration_frames": 24
+                },
+                "nodes": [
+                    {
+                        "node_id":"40000000-0000-4000-8000-000000000001",
+                        "display_name":"Rectangle", "source_kind":"rectangle",
+                        "canonical_ordinal":0,"z_index":0,
+                        "x_px":420.0,"y_px":270.0,"width_px":270.0,
+                        "height_px":180.0,"fill_hex":"#E53935"
+                    },
+                    {
+                        "node_id":"40000000-0000-4000-8000-000000000002",
+                        "display_name":"Circle", "source_kind":"circle",
+                        "canonical_ordinal":1,"z_index":1,
+                        "x_px":1125.0,"y_px":540.0,"width_px":180.0,
+                        "height_px":180.0,"fill_hex":"#2BBBAD"
+                    }
+                ]
+            },
+            "profile": {"width": 640, "height": 360, "frame_rate": 30}
+        });
+        serde_json::from_value(data).unwrap()
+    }
+
+    #[test]
+    fn typed_camera_source_reaches_only_original_inert_trusted_compiler() {
+        let args = original_planar_camera_request();
+        let original_static = start_schema();
+        let camera_descriptor = camera_start_schema();
+        assert!(original_static["properties"]["plan"]["properties"]["primitives"].is_object());
+        assert!(camera_descriptor["properties"]["plan"]["properties"]["primitives"].is_null());
+
+        let prepared = prepare_camera_for_original_host(&args).unwrap();
+        assert!(!prepared.native_execution_performed);
+        assert!(!prepared.runtime_sample_pts_verified);
+        assert!(
+            prepared
+                .python_source
+                .contains("class MotionwrightScene(MovingCameraScene):")
+        );
+        assert!(prepared.python_source.contains("UpdateFromAlphaFunc"));
+        assert!(
+            prepared
+                .python_source
+                .contains("manim_camera_version_mismatch")
+        );
+        assert_eq!(
+            prepared.source_sha256,
+            hex::encode(Sha256::digest(prepared.python_source.as_bytes()))
+        );
+        let reopened: ManimCameraScenePlanV1 =
+            serde_json::from_slice(&prepared.plan_document).unwrap();
+        assert_eq!(reopened, args.plan);
+        assert_eq!(
+            prepared,
+            prepare_camera_for_original_host(&args).unwrap(),
+            "canonical source must deterministically compile before Host grant"
+        );
+    }
+
+    #[test]
+    fn typed_camera_source_rejects_wrong_version_profile_and_foreign_script() {
+        let fixture = original_planar_camera_request();
+        let mut out = fixture.clone();
+        out.profile.frame_rate = 24;
+        assert!(prepare_camera_for_original_host(&out).is_err());
+        let mut out = fixture.clone();
+        out.plan.schema_version = 3;
+        assert!(prepare_camera_for_original_host(&out).is_err());
+        let mut out = fixture.clone();
+        out.plan.reframe.duration_frames = 0;
+        assert!(prepare_camera_for_original_host(&out).is_err());
+        let mut out = fixture.clone();
+        out.plan.nodes[0].display_name = "__import__('os').system('bad')".into();
+        let safe = prepare_camera_for_original_host(&out).unwrap();
+        assert!(!safe.native_execution_performed);
+        assert!(!safe.python_source.contains("eval("));
+        let mut value = serde_json::to_value(&fixture).unwrap();
+        value["source"] = json!("from os import system");
+        assert!(serde_json::from_value::<CameraStartArgs>(value).is_err());
+        let mut value = serde_json::to_value(&fixture).unwrap();
+        value["plan"]["script"] = json!("user-controlled");
+        assert!(serde_json::from_value::<CameraStartArgs>(value).is_err());
+        let mut value = serde_json::to_value(&fixture).unwrap();
+        value["plan"]["nodes"][0]["source_kind"] = json!("text");
+        assert!(serde_json::from_value::<CameraStartArgs>(value).is_err());
+    }
+
+    fn verified_camera_getters_fixture(plan: &ManimCameraScenePlanV1, plan_sha256: &str) -> Value {
+        let samples = plan.expected_frame_samples().unwrap();
+        let count = samples.len();
+        let objects: Vec<_> = plan
+            .nodes
+            .iter()
+            .map(|node| {
+                let kind = match node.source_kind {
+                    motionwright_manim_profile::ManimSourceShapeKindV2::Rectangle => "rectangle",
+                    motionwright_manim_profile::ManimSourceShapeKindV2::Circle => "circle",
+                    _ => panic!("fixture has only closed rectangle/circle"),
+                };
+                json!({
+                    "node_id": node.node_id,
+                    "kind": kind,
+                    "name": format!("mw_{}", node.node_id.simple()),
+                    "world_center": [
+                        (node.x_px + node.width_px / 2.0 - 960.0) / 135.0,
+                        (540.0 - node.y_px - node.height_px / 2.0) / 135.0,
+                        0.0
+                    ],
+                    "width": node.width_px / 135.0,
+                    "height": node.height_px / 135.0,
+                    "z_index": node.z_index,
+                    "fill_hex": node.fill_hex,
+                    "fill_opacity": 1.0,
+                    "stroke_width": 0.0,
+                    "stroke_opacity": 0.0
+                })
+            })
+            .collect();
+        let frames: Vec<_> = samples
+            .into_iter()
+            .enumerate()
+            .map(|(i, sample)| {
+                json!({
+                    "index": i,
+                    "camera": {
+                        "frame_center": sample.world_frame_center,
+                        "frame_width": 128.0 / 9.0,
+                        "frame_height": 8.0,
+                        "pixel_width": 640,
+                        "pixel_height": 360,
+                        "frame_rate": 30.0
+                    },
+                    "objects": objects
+                })
+            })
+            .collect();
+        json!({
+            "schema_version": 1,
+            "profile_id": "mw-manim-planar-camera-v1",
+            "scene_class": SCENE_CLASS,
+            "plan_sha256": plan_sha256,
+            "binding": plan.binding,
+            "sample_count": count,
+            "callback_alphas": (0..count)
+                .map(|i| i as f64 / (count as f64 - 0.5))
+                .collect::<Vec<_>>(),
+            "frames": frames,
+            "decoded_video_verified": false,
+            "native_grants_verified_by_this_script": false
+        })
+    }
+
+    #[test]
+    fn native_camera_getter_proof_requires_every_pose_and_original_source() {
+        let args = original_planar_camera_request();
+        let source = prepare_camera_for_original_host(&args).unwrap();
+        let record = verified_camera_getters_fixture(&args.plan, &source.plan_sha256);
+        let bytes = serde_json::to_vec(&record).unwrap();
+        assert_eq!(
+            verify_camera_getters_bytes(&bytes, &args.plan, &source.plan_sha256).unwrap(),
+            hex::encode(Sha256::digest(&bytes))
+        );
+        assert!(verify_camera_getters_bytes(&bytes, &args.plan, &"0".repeat(64)).is_err());
+
+        let mut corrupt = record.clone();
+        corrupt["binding"]["revision"] = json!(999);
+        assert!(
+            verify_camera_getters_bytes(
+                &serde_json::to_vec(&corrupt).unwrap(),
+                &args.plan,
+                &source.plan_sha256
+            )
+            .is_err()
+        );
+
+        let mut corrupt = record.clone();
+        corrupt["frames"][18]["camera"]["frame_center"][0] = json!(0.0);
+        assert!(
+            verify_camera_getters_bytes(
+                &serde_json::to_vec(&corrupt).unwrap(),
+                &args.plan,
+                &source.plan_sha256
+            )
+            .is_err()
+        );
+
+        let mut corrupt = record.clone();
+        corrupt["frames"][8]["objects"][0]["fill_hex"] = json!("#FFFFFF");
+        assert!(
+            verify_camera_getters_bytes(
+                &serde_json::to_vec(&corrupt).unwrap(),
+                &args.plan,
+                &source.plan_sha256
+            )
+            .is_err()
+        );
+
+        let mut corrupt = record.clone();
+        corrupt["frames"].as_array_mut().unwrap().remove(15);
+        assert!(
+            verify_camera_getters_bytes(
+                &serde_json::to_vec(&corrupt).unwrap(),
+                &args.plan,
+                &source.plan_sha256
+            )
+            .is_err()
+        );
+
+        let mut corrupt = record.clone();
+        corrupt["callback_alphas"][12] = json!(1.0);
+        assert!(
+            verify_camera_getters_bytes(
+                &serde_json::to_vec(&corrupt).unwrap(),
+                &args.plan,
+                &source.plan_sha256
+            )
+            .is_err()
+        );
+
+        let mut corrupt = record;
+        corrupt["native_grants_verified_by_this_script"] = json!(true);
+        assert!(
+            verify_camera_getters_bytes(
+                &serde_json::to_vec(&corrupt).unwrap(),
+                &args.plan,
+                &source.plan_sha256
+            )
+            .is_err()
+        );
     }
 
     #[test]
