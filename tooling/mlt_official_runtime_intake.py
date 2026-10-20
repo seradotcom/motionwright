@@ -86,7 +86,7 @@ def capture_regular(path, limit):
     """Read one stable handle and preserve observed metadata, without granting trust."""
     path = Path(path)
     require(not path.is_symlink(), "symlink input")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     fd = os.open(path, flags)
     try:
         before = os.fstat(fd)

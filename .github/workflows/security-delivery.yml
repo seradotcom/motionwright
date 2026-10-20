@@ -84,6 +84,11 @@ jobs:
           mkdir -p ci-evidence
           python3 tooling/v01_glib_product_admission.py --output ci-evidence/v01-glib-patched-desktop-source.json
           python3 -m json.tool ci-evidence/v01-glib-patched-desktop-source.json >/dev/null
+      - name: Install hash-pinned custody test dependencies
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-input --no-cache-dir \
+            --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+          python3 -m pip check
       - name: Security policy regressions
         run: python3 -m unittest discover -s tooling/tests -p 'test_*.py'
       - name: Exact-source delivery manifest

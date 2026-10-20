@@ -7,6 +7,9 @@ use motionwright_domain::{
     BlendMode, CameraReframe, CanvasNode, Change, CoordinateSpace, NodeStyle, OutputColorSpace,
     OutputContainer, Project, RationalTime, RendererKind, RevisionStamp, VideoCodec, VisualToken,
 };
+use motionwright_native::manim_camera_projection::{
+    PreparedManimCameraProgramV1, prepare_saved_manim_camera_program_source_only,
+};
 use motionwright_service::StudioService;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -185,6 +188,35 @@ fn seed(database: &Path) -> FixtureResult<Project> {
     Ok(saved)
 }
 
+/// Export the same compiler bytes the existing coordinator and driver consume.
+/// Reopen the saved SQLite source; an imported plan or JSON label cannot replace it.
+fn prepare_program(
+    database: &Path,
+    project: &Project,
+) -> FixtureResult<PreparedManimCameraProgramV1> {
+    let service = StudioService::open(database)?;
+    let scene = project
+        .scenes
+        .first()
+        .ok_or("Saved camera scene is absent")?;
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|row| row.width == 640 && row.height == 360)
+        .ok_or("Saved 640x360 camera output is missing")?;
+    let compiled = prepare_saved_manim_camera_program_source_only(
+        &service,
+        project.id,
+        &RevisionStamp::from(project),
+        scene.id,
+        profile.id,
+    )?;
+    if service.project(project.id)? != *project {
+        return Err("Saved camera Project changed before compiler evidence export".into());
+    }
+    Ok(compiled)
+}
+
 fn usage() -> ! {
     eprintln!("usage: native-manim-camera-seed DATABASE_ABSOLUTE_NEW.sqlite3");
     std::process::exit(2);
@@ -205,6 +237,7 @@ fn main() -> FixtureResult<()> {
         .find(|row| row.width == 640 && row.height == 360)
         .ok_or("Saved 640x360 camera output is missing")?;
     let source = serde_json::to_vec(&project)?;
+    let prepared_program = prepare_program(&database, &project)?;
     println!(
         "{}",
         serde_json::to_string(&json!({
@@ -216,6 +249,7 @@ fn main() -> FixtureResult<()> {
             "deliverable_id": profile.id,
             "reframe_id": reframe.id,
             "source_project_sha256": hex::encode(Sha256::digest(source)),
+            "prepared_program": prepared_program,
             "frame_count": 120,
             "frame_rate_num": 30,
             "frame_rate_den": 1,
@@ -273,6 +307,65 @@ mod tests {
             .project(saved.id)
             .unwrap();
         assert_eq!(reopened, saved);
+    }
+
+    #[test]
+    fn exported_compiler_bytes_bind_the_saved_scene_without_starting_a_job() {
+        let scratch = tempfile::tempdir().unwrap();
+        let database = scratch.path().join("camera-program.sqlite3");
+        let saved = seed(&database).unwrap();
+        let program = prepare_program(&database, &saved).unwrap();
+        let source = &program.prepared.source;
+        assert_eq!(source.binding.project_id, saved.id);
+        assert_eq!(source.binding.generation, saved.generation);
+        assert_eq!(source.binding.revision, saved.revision);
+        assert_eq!(source.binding.scene_id, saved.scenes[0].id);
+        assert_eq!(source.binding.deliverable_id, saved.deliverables[0].id);
+        let mut original_plan = serde_json::to_vec_pretty(source).unwrap();
+        original_plan.push(b'\n');
+        assert_eq!(program.trusted_compiler.plan_document, original_plan);
+        assert_eq!(
+            program.trusted_compiler.plan_sha256,
+            hex::encode(Sha256::digest(&original_plan))
+        );
+        assert_eq!(
+            program.trusted_compiler.source_sha256,
+            hex::encode(Sha256::digest(
+                program.trusted_compiler.python_source.as_bytes()
+            ))
+        );
+        assert!(!program.native_execution_performed);
+        assert!(!program.native_permissions_verified);
+        assert!(!program.trusted_compiler.runtime_sample_pts_verified);
+        let service = StudioService::open(&database).unwrap();
+        assert_eq!(service.project(saved.id).unwrap(), saved);
+        assert!(
+            service
+                .production_receipts(saved.id, 256)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn compiler_export_rejects_a_foreign_scene_or_stale_revision() {
+        let scratch = tempfile::tempdir().unwrap();
+        let database = scratch.path().join("camera-identity.sqlite3");
+        let saved = seed(&database).unwrap();
+        let mut foreign = saved.clone();
+        foreign.scenes[0].id = Uuid::now_v7();
+        assert!(prepare_program(&database, &foreign).is_err());
+        let mut stale = saved.clone();
+        stale.revision += 1;
+        assert!(prepare_program(&database, &stale).is_err());
+        let service = StudioService::open(&database).unwrap();
+        assert_eq!(service.project(saved.id).unwrap(), saved);
+        assert!(
+            service
+                .production_receipts(saved.id, 256)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

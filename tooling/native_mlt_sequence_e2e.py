@@ -7,6 +7,8 @@ FFV1/PCM Matroska lossless intermediary through semantic MLT, not an AAC master.
 """
 from __future__ import annotations
 
+import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -101,7 +103,7 @@ def inspect_decoded_ci_stereo(pcm: bytes, *, mode: str = "final-mp4") -> dict:
 
 
 def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict,
-                                          *, mode: str = "final-mp4") -> dict:
+                                          *, mode: str = "final-mp4", g2=None) -> dict:
     """Decode the real signed-off owner MP4 using fixed CI ffmpeg arguments;
     no application runtime, local backend or user-controlled filters.
     Temp disk output ensures even a hostile decoder cannot grow Python RAM.
@@ -127,7 +129,29 @@ def inspect_native_master_decoded_content(master: Path, ffmpeg: Path, env: dict,
         pcm = output.read((contract.pcm_frames + 1024) * 4 + 1)
         if len(pcm) != size:
             raise AssertionError("Decoded AV speaker bytes changed during bounded read")
+        if g2 is not None:
+            g2.inspect_pcm(pcm)
         return inspect_decoded_ci_stereo(pcm, mode=mode)
+
+
+def retain_native_master_packets(master: Path, ffprobe: Path, env: dict, g2) -> None:
+    """Keep the one original packet document without granting clock acceptance."""
+    try:
+        with tempfile.TemporaryFile() as output:
+            observed = subprocess.run(
+                [str(ffprobe), "-v", "error", "-select_streams", "a:0",
+                 "-show_streams", "-show_packets", "-of", "json", str(master)],
+                env=env, stdout=output, stderr=subprocess.PIPE, timeout=45, check=False,
+            )
+            output.seek(0, 2)
+            if observed.returncode != 0 or not 0 < output.tell() <= 1_048_576:
+                raise AssertionError("Original packet observation was not bounded and successful")
+            output.seek(0)
+            g2.retain_packet_document(output.read(1_048_577))
+    except (OSError, ValueError, AssertionError, subprocess.TimeoutExpired):
+        # This is a read-only witness failure after the native terminal; it
+        # cannot suppress retention/decoding of the same original master.
+        g2.secondary("original_packet_observation")
 
 
 def digest(path: Path) -> str:
@@ -221,11 +245,70 @@ def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -
     raise AssertionError("semwrightd did not expose the owner socket")
 
 
-def main() -> None:
+@contextmanager
+def native_owner_workspace(g2=None):
+    """Keep G2 owner originals in place for later sealed custody.
+
+    Ordinary runs retain their existing temporary-directory cleanup. A selected
+    G2 run records its workspace before any seed/native effect and never deletes
+    that workspace, including when the canonical command has an unknown result.
+    """
+    if g2 is None:
+        with tempfile.TemporaryDirectory(prefix="motionwright-native-av-") as raw:
+            yield raw
+        return
+    from native_mlt_g2_observation import new_json, admission
+    runner = admission.disposable_linux_runner()
+    root = Path(tempfile.mkdtemp(prefix="motionwright-native-av-g2-", dir=runner))
+    info = root.lstat()
+    if (root.parent != runner or root.resolve(strict=True) != root
+        or not root.is_dir() or root.is_symlink()):
+        raise AssertionError("G2 owner workspace is not a fresh canonical runner child")
+    identity = {
+        "schema": "motionwright.native.mlt-g2-owner-workspace/1",
+        "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN,
+        "run_id": g2.inputs["run_id"], "run_attempt": g2.inputs["run_attempt"],
+        "path": str(root), "device": info.st_dev, "inode": info.st_ino,
+        "uid": info.st_uid, "gid": info.st_gid,
+        "custody_policy": "retain_originals_in_place_for_sealing",
+        "native_effect_started": False,
+    }
+    new_json(g2.evidence_dir / "owner-workspace.json", identity)
+    primary = None
+    try:
+        yield str(root)
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            retained = root.lstat()
+            if ((retained.st_dev, retained.st_ino, retained.st_uid, retained.st_gid)
+                != (info.st_dev, info.st_ino, info.st_uid, info.st_gid) or not root.is_dir()
+                or root.is_symlink()):
+                raise AssertionError("G2 owner workspace identity changed before custody")
+            new_json(g2.evidence_dir / "owner-workspace-terminal.json", {
+                "schema": "motionwright.native.mlt-g2-owner-workspace-terminal/1",
+                "workspace": identity, "originals_retained": root.is_dir(),
+                "workspace_deleted": False,
+                "body_exception_type": None if primary is None else type(primary).__name__,
+                "native_success_inferred": False,
+            })
+        except Exception:
+            g2.secondary("owner_workspace_terminal_custody")
+            if primary is None:
+                raise
+
+
+def main(g2=None):
     exact_inputs()
+    if g2 is not None:
+        observed = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        if observed != GITHUB_SHA:
+            raise AssertionError("G2 checkout must equal the exact executing source")
     EVIDENCE.mkdir(parents=True, exist_ok=False)
 
-    with tempfile.TemporaryDirectory(prefix="motionwright-native-av-") as raw:
+    with native_owner_workspace(g2) as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
         paths: dict[str, Path] = {}
@@ -259,6 +342,10 @@ def main() -> None:
             SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BINS / "semwright-sandbox"),
         )
 
+        if g2 is not None:
+            env = g2.seed_environment(env)
+        elif any(key in env for key in ("MOTIONWRIGHT_MLT_ORIGINAL_WAV", "MOTIONWRIGHT_MLT_ORIGINAL_WAV_SHA256")):
+            raise AssertionError("An original WAV requires the explicit G2 input envelope")
         database = paths["motionwright-data"] / "motionwright.sqlite3"
         seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
         if ((seeded["width"], seeded["height"]) != (CONTRACT.width, CONTRACT.height)
@@ -560,16 +647,17 @@ def main() -> None:
             )
 
             try:
-                result = run_json(
-                    [
-                        str(MW_BIN),
-                        "assemble",
-                        str(database),
-                        str(connection_path),
-                        str(EVIDENCE / "native-multisegment-timeline-evidence.json"),
-                    ],
-                    env=env,
-                    timeout=1050,
+                def assemble_original():
+                    return run_json(
+                        [
+                            str(MW_BIN), "assemble", str(database), str(connection_path),
+                            str(EVIDENCE / "native-multisegment-timeline-evidence.json"),
+                        ],
+                        env=env, timeout=1050,
+                    )
+                result = (
+                    g2.run_original(assemble_original, daemon.pid, paths["output"])
+                    if g2 is not None else assemble_original()
                 )
             except (AssertionError, subprocess.TimeoutExpired):
                 # The pinned renderer's raw failure receipt contains a local
@@ -733,6 +821,9 @@ def main() -> None:
                     or digest(master) != result.get("master_artifact_sha256")
                     or digest(master) != av_receipt["master"]["artifact"]["sha256"]):
                     raise AssertionError("Actual MP4 bytes do not match both native receipts")
+                if g2 is not None:
+                    g2.retain_master(master, result["master_artifact_sha256"], result["master_artifact_bytes"])
+                    retain_native_master_packets(master, ffprobe, env, g2)
                 mux_probe = subprocess.run(
                     [
                         str(ffprobe), "-v", "error", "-count_frames",
@@ -762,7 +853,7 @@ def main() -> None:
                     raise AssertionError("MLT native decoded PCM audit is missing or changed")
                 # The actual MP4, not the receipt or source WAV, must retain
                 # the authored, distinct 400/600 Hz left/right test signals.
-                decoded_content = inspect_native_master_decoded_content(master, ffmpeg, env, mode=MODE)
+                decoded_content = inspect_native_master_decoded_content(master, ffmpeg, env, mode=MODE, g2=g2)
                 write_private_json(EVIDENCE / "decoded-stereo-content-proof.json", decoded_content)
                 retained_source = retain_native_master_source(
                     paths["output"], EVIDENCE, av_receipt, MODE,
@@ -812,6 +903,8 @@ def main() -> None:
                         },
                         "native_captioned_human_legibility": "NOT_RUN",
                     })
+            if g2 is not None:
+                master_check.update(g2.complete())
             write_private_json(
                 EVIDENCE / "result.json",
                 {
@@ -856,18 +949,28 @@ def main() -> None:
                     daemon.wait(timeout=5)
             log_stream.close()
 
-    print(
-        json.dumps(
-            {
-                "native_mlt_multisegment_e2e": "PASS",
-                "motionwright_sha": GITHUB_SHA,
-                "semwright_sha": PIN,
-                "evidence": str(EVIDENCE.relative_to(ROOT)),
-            },
-            sort_keys=True,
-        )
-    )
+    summary = {
+        "native_mlt_multisegment_e2e": "PASS",
+        "motionwright_sha": GITHUB_SHA,
+        "semwright_sha": PIN,
+        "evidence": str(EVIDENCE.relative_to(ROOT)),
+    }
+    if g2 is None:
+        print(json.dumps(summary, sort_keys=True))
+    return summary
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--g2-inputs", type=Path)
+    args = parser.parse_args()
+    if args.g2_inputs is None:
+        main()
+    else:
+        from native_mlt_g2_observation import G2Session
+        with G2Session.prepare(
+            args.g2_inputs, source_sha=GITHUB_SHA, semwright_sha=PIN, mode=MODE,
+        ) as session:
+            summary = main(session)
+        # A secondary custody failure cannot print an overall success line.
+        print(json.dumps(summary, sort_keys=True))

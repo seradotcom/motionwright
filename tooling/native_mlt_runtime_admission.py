@@ -172,7 +172,7 @@ def live_melt_pids() -> list[int]:
                 name = (pid / "comm").read_text(encoding="utf-8").strip()
             except (OSError, UnicodeDecodeError):
                 continue
-            if name == "melt":
+            if name in {"melt", "melt-7"}:
                 result.append(int(pid.name))
     return result
 

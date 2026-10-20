@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -99,7 +99,72 @@ fn write_synthetic_stereo_wav(path: &Path) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+const ORIGINAL_CI_WAV_SHA256: &str =
+    "66aeaa3aa6fff53834ab4003671ce79068bcbd6f631609f0f988b3ac9744ebe9";
+
+fn copy_original_stereo_wav(
+    source: &Path,
+    destination: &Path,
+    expected_sha256: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if expected_sha256 != ORIGINAL_CI_WAV_SHA256
+        || !source.is_absolute()
+        || source.ancestors().any(|path| {
+            fs::symlink_metadata(path)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(true)
+        })
+    {
+        return Err("Original CI WAV reference is not the locked regular source".into());
+    }
+    let mut input = fs::File::open(source)?;
+    let metadata = input.metadata()?;
+    if !metadata.is_file() || metadata.len() != 211_244 {
+        return Err("Original CI WAV exceeded the fixed source profile".into());
+    }
+    let mut bytes = Vec::with_capacity(211_244);
+    (&mut input).take(211_245).read_to_end(&mut bytes)?;
+    if bytes.len() != 211_244 || hex::encode(Sha256::digest(&bytes)) != expected_sha256 {
+        return Err("Original CI WAV bytes differ from the admitted artifact".into());
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    output.write_all(&bytes)?;
+    output.sync_all()?;
+    if fs::read(destination)? != bytes {
+        return Err("Original CI WAV staging readback changed".into());
+    }
+    Ok(())
+}
+
+fn selected_original_wav() -> Result<Option<(PathBuf, String)>, Box<dyn std::error::Error>> {
+    let source = std::env::var_os("MOTIONWRIGHT_MLT_ORIGINAL_WAV");
+    let digest = std::env::var_os("MOTIONWRIGHT_MLT_ORIGINAL_WAV_SHA256");
+    match (source, digest) {
+        (None, None) => Ok(None),
+        (Some(source), Some(digest)) => {
+            if std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref() != Ok("final-mp4")
+                || std::env::var("MOTIONWRIGHT_APPROVED_MLT_G2").as_deref() != Ok("1")
+                || std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+                || std::env::var("RUNNER_OS").as_deref() != Ok("Linux")
+            {
+                return Err("An original CI source requires the explicit Linux G2 envelope".into());
+            }
+            Ok(Some((
+                PathBuf::from(source),
+                digest
+                    .into_string()
+                    .map_err(|_| "Original CI WAV digest is not UTF-8")?,
+            )))
+        }
+        _ => Err("Original CI WAV path and digest must be supplied together".into()),
+    }
+}
+
 fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let original_wav = selected_original_wav()?;
     let service = StudioService::open(path)?;
     if !service.projects(2)?.is_empty() {
         return Err("Native multi-segment test DB must start empty".into());
@@ -169,7 +234,11 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         Ok("final-mp4" | "captioned-mp4")
     ) {
         let wav = path.with_extension("synthetic-owner-voice.wav");
-        write_synthetic_stereo_wav(&wav)?;
+        if let Some((source, expected_sha256)) = original_wav.as_ref() {
+            copy_original_stereo_wav(source, &wav, expected_sha256)?;
+        } else {
+            write_synthetic_stereo_wav(&wav)?;
+        }
         project = service
             .import_voice_file(
                 project.id,
@@ -598,5 +667,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             assemble(&database, &connection, &output).await
         }
         _ => Err("Unknown native MLT E2E command".into()),
+    }
+}
+
+#[cfg(test)]
+mod original_source_tests {
+    use super::*;
+
+    fn source(directory: &Path) -> PathBuf {
+        let path = directory.join("retained-original.wav");
+        write_synthetic_stereo_wav(&path).expect("deterministic source fixture");
+        assert_eq!(
+            hex::encode(Sha256::digest(fs::read(&path).unwrap())),
+            ORIGINAL_CI_WAV_SHA256
+        );
+        path
+    }
+
+    #[test]
+    fn copies_exact_admitted_bytes_without_regenerating_or_replacing_the_source() {
+        let root = tempfile::tempdir().unwrap();
+        let original = source(root.path());
+        let before = fs::read(&original).unwrap();
+        let destination = root.path().join("staged.wav");
+        copy_original_stereo_wav(&original, &destination, ORIGINAL_CI_WAV_SHA256).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), before);
+        assert_eq!(fs::read(&original).unwrap(), before);
+    }
+
+    #[test]
+    fn wrong_source_digest_cannot_create_staging_output() {
+        let root = tempfile::tempdir().unwrap();
+        let original = source(root.path());
+        let destination = root.path().join("staged.wav");
+        assert!(copy_original_stereo_wav(&original, &destination, &"0".repeat(64)).is_err());
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn changed_original_bytes_cannot_create_staging_output() {
+        let root = tempfile::tempdir().unwrap();
+        let original = source(root.path());
+        let mut changed = fs::read(&original).unwrap();
+        changed[211_243] ^= 1;
+        fs::write(&original, &changed).unwrap();
+        let destination = root.path().join("staged.wav");
+        assert!(copy_original_stereo_wav(&original, &destination, ORIGINAL_CI_WAV_SHA256).is_err());
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&original).unwrap(), changed);
+    }
+
+    #[test]
+    fn missing_reference_cannot_fall_back_to_generated_source() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("staged.wav");
+        assert!(
+            copy_original_stereo_wav(
+                &root.path().join("missing.wav"),
+                &destination,
+                ORIGINAL_CI_WAV_SHA256,
+            )
+            .is_err()
+        );
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn existing_destination_is_preserved() {
+        let root = tempfile::tempdir().unwrap();
+        let original = source(root.path());
+        let destination = root.path().join("staged.wav");
+        fs::write(&destination, b"previous retained bytes").unwrap();
+        assert!(copy_original_stereo_wav(&original, &destination, ORIGINAL_CI_WAV_SHA256).is_err());
+        assert_eq!(fs::read(destination).unwrap(), b"previous retained bytes");
     }
 }

@@ -131,8 +131,11 @@ def verified_private_scene(root: Path, source: str, pin: str, scene: str) -> byt
 
 
 def publish(root: Path, output: Path, source: str, pin: str,
-            scene: str, job_status: str) -> dict:
+            scene: str, job_status: str, profile: str = "static",
+            sealed_originals: Path | None = None) -> dict:
     require(scene in SCENES, "unsupported_native_scene")
+    require(profile in {"static", "camera120"}
+            and (profile == "static" or scene == "manim"), "unsupported_native_scene_profile")
     require(bool(SHA40.fullmatch(source)) and bool(SHA40.fullmatch(pin)),
             "native_scene_source_identity_invalid")
     require(job_status in {"success", "failure", "cancelled", "skipped"},
@@ -142,8 +145,14 @@ def publish(root: Path, output: Path, source: str, pin: str,
     dst = output.resolve()
     require(src != dst and src not in dst.parents and dst not in src.parents,
             "public_scene_overlaps_private_source")
-    media = (verified_private_scene(root, source, pin, scene)
-             if job_status == "success" else None)
+    camera = None
+    if job_status == "success" and profile == "camera120":
+        require(sealed_originals is not None, "original_camera_custody_required")
+        from native_manim_camera_evidence import verified_publication
+        media, camera = verified_publication(root, source, pin, sealed_originals)
+    else:
+        media = (verified_private_scene(root, source, pin, scene)
+                 if job_status == "success" else None)
     files = ([{
         "name": SCENES[scene]["media"],
         "sha256": digest(media),
@@ -163,6 +172,15 @@ def publish(root: Path, output: Path, source: str, pin: str,
         "installed_owner_acceptance": "NOT_RUN",
         "v01_release_authorized": False,
     }
+    if profile == "camera120":
+        receipt["camera"] = camera or {
+            "profile": "planar-camera-v1",
+            "decoded_frame_count": None,
+            "source_bound_two_axis_camera_motion": False,
+            "native_editable_reopen_verified": False,
+            "full_pixel_equality_verified": False,
+            "human_acceptance": False,
+        }
     output.mkdir(parents=True, exist_ok=False)
     if media is not None:
         (output / SCENES[scene]["media"]).write_bytes(media)
@@ -179,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--job-status", required=True)
+    parser.add_argument("--profile", choices=("static", "camera120"), default="static")
+    parser.add_argument("--sealed-originals", type=Path)
     args = parser.parse_args(argv)
     try:
         source_lock = strict_object(
@@ -186,7 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         pin = source_lock["dependencies"]["semwright"]["revision"]
         receipt = publish(args.evidence_root, args.output_root,
-                          args.source_sha, pin, args.scene, args.job_status)
+                          args.source_sha, pin, args.scene, args.job_status,
+                          args.profile, args.sealed_originals)
     except (PublicationError, OSError, KeyError, TypeError, ValueError) as exc:
         reason = exc.code if isinstance(exc, PublicationError) else "native_scene_publication_refused"
         print("native-scene-public-artifact=refused reason=" + reason, file=sys.stderr)
