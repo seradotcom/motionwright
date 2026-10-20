@@ -80,3 +80,28 @@ describe("canonical palette influences actual editorial SVG ink", () => {
     expect(inkTag([node], null).text).toContain('fill="#F2F4F3"');
   });
 });
+
+describe("parented Canvas editorial visibility", () => {
+  it("renders a saved child text even when its group parent has no SVG glyph", () => {
+    const group = rootText();
+    group.id = "018f0000-0000-7000-8000-0000000003a1";
+    group.kind = "group"; group.parent_id = null;
+    group.text = null; group.z_index = 1;
+    const child = rootText();
+    child.id = "018f0000-0000-7000-8000-0000000003a2";
+    child.parent_id = group.id;
+    child.text = "Nested original author line";
+    child.z_index = 5; child.style.fill = null;
+    const other = rootText();
+    other.id = "018f0000-0000-7000-8000-0000000003a3";
+    other.parent_id = null; other.text = "Lower global layer"; other.z_index = 2;
+    const html = renderToStaticMarkup(<CompositionStudy nodes={[child, other, group]} time={0}
+      background="#101820" ink="#F7EAD7" label="Parented editorial visual continuity"/>);
+    expect(html).toContain("Nested original author line");
+    expect(html).toContain('data-parent-id="' + group.id + '"');
+    expect(html).toContain('data-canvas-node-id="' + child.id + '"');
+    expect(html).toContain('fill="#F7EAD7"');
+    expect(html.indexOf("Lower global layer")).toBeLessThan(html.indexOf("Nested original author line"));
+    expect(html).toContain("Native Film");
+  });
+});

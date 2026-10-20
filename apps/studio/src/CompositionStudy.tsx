@@ -7,11 +7,12 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
   nodes: CanvasNode[]; width?:number; height?:number; time:number; background:string; label:string; ink?:string|null;
 }) {
   return <svg className="production-study" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}>
+    {nodes.some(node => node.parent_id !== null) && <desc>Parented Canvas subjects are shown at stored coordinates in this editorial preview. Native Film defines authoritative parent transforms and relations.</desc>}
     <rect width={width} height={height} fill={safePaint(background, "#0F1216")}/>
-    {nodes.filter(n => !n.parent_id).sort((a,b) => a.z_index-b.z_index).map(node => {
+    {nodes.filter(node => node.kind !== "group").sort((a,b) => a.z_index-b.z_index).map(node => {
       const t = previewTransform(node,time), size = node.style.font_size ?? 30;
       const rotation = `rotate(${t.rotation_deg} ${t.x+t.width/2} ${t.y+t.height/2})`;
-      return <g key={node.id} opacity={t.opacity} transform={rotation}>
+      return <g key={node.id} data-canvas-node-id={node.id} data-parent-id={node.parent_id ?? undefined} opacity={t.opacity} transform={rotation}>
         {node.kind === "text" ? <text x={t.x} y={t.y+size*.88} fill={node.style.fill == null ? safePaint(ink, "#F2F4F3") : safePaint(node.style.fill, "#F2F4F3")}
           fontFamily={node.style.font_family === "IBM Plex Mono" ? '"IBM Plex Mono", ui-monospace, monospace' : '"Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif'} fontSize={size} fontWeight={node.style.font_weight ?? 400}>
           {(node.text ?? "").split("\n").map((line,i) => <tspan key={i} x={t.x} dy={i===0?0:size*(node.style.line_height ?? 1.12)}>{line}</tspan>)}

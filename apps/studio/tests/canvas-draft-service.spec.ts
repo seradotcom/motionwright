@@ -1053,3 +1053,58 @@ test("Canvas relation add and remove preserve stable IDs and source intent throu
     await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
   }
 });
+
+test("saved parented Canvas text stays visible in real editorial study after service reopen", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    let project = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(project, "Independent synthetic scene"), child = scene.nodes[0];
+    evidence.initial = project; evidence.final = project;
+    await service.attachFixturePage(page, project.id); await page.goto("/");
+    await openCanvas(page, scene.name, child.name);
+    // Author the parent object through real Studio/SQLite rather than
+    // fabricating an in-memory relationship in the browser.
+    await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+    project = await checkpoint(service, page, evidence, project.id, project.revision + 1, "real second Canvas text parent");
+    const parent = sceneNamed(project, scene.name).nodes[1];
+    await selectNode(page, child.name);
+    await page.getByLabel("Canvas parent", { exact: true }).selectOption({ value: parent.id });
+    await page.getByLabel("Canvas z order", { exact: true }).fill("8");
+    await button(page, "Commit hierarchy").click();
+    const saved = await checkpoint(service, page, evidence, project.id, project.revision + 1, "parented original text saved");
+    expect(storedNode(saved, scene.id, child.id)).toMatchObject({
+      id: child.id, parent_id: parent.id, z_index: 8, text: child.text, style: child.style,
+    });
+    const savedJournal = await service.history(project.id, project.revision);
+    expect(savedJournal.map(item => item.change.type)).toEqual(["reparent_canvas_node"]);
+    const applyCount = applyRequests(service).length;
+    const inspect = async () => {
+      await button(page, "Production").click();
+      await page.getByLabel("Production working scene", { exact: true })
+        .selectOption({ value: scene.id });
+      await button(page, "Scoped changes").click();
+      const study = page.getByRole("img", { name: "Before scoped changes", exact: true });
+      await expect(study).toBeVisible();
+      const childSVG = study.locator('[data-canvas-node-id="' + child.id + '"]');
+      await expect(childSVG).toHaveAttribute("data-parent-id", parent.id);
+      await expect(childSVG.locator("text")).toContainText(child.text ?? "");
+      await expect(study).toContainText("Native Film");
+    };
+    await inspect();
+    await service.close(); await service.start(); await page.reload();
+    await revision(page, saved.revision);
+    await inspect();
+    expect(await service.project(saved.id)).toEqual(saved);
+    expect(await service.history(saved.id, project.revision)).toEqual(savedJournal);
+    expect(applyRequests(service)).toHaveLength(applyCount);
+    evidence.observations.push({ label: "parented_subject_remains_visible_in_editorial_svg_after_sqlite_reopen",
+      childId: child.id, parentId: parent.id, savedRevision: saved.revision,
+      expectedSvgLayerZ: 8, exactStoredProjectAndJournal: true,
+      nativeParentFidelity: "NOT_VERIFIED_A4" });
+  } finally {
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});
