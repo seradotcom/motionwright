@@ -128,6 +128,13 @@ impl Store {
         // captured set BEFORE publishing its first content-addressed member.
         // Never delete a foreign or pre-existing blob on failure.
         self.preflight_bundle_blob_destinations(&staged)?;
+        // An inspected project ID can be claimed by a second SQLite writer
+        // while these immutable media members are being staged. Recheck the
+        // authoritative destination before publishing the first CAS member,
+        // so a collision already visible at this boundary cannot orphan media.
+        // This is a bounded preflight, not a SQLite/filesystem transaction:
+        // another writer may still race after this query.
+        self.inspect_import(&manifest.backup)?;
         for captured in &staged {
             self.publish_file_import(captured)?;
         }
