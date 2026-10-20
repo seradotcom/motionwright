@@ -28,12 +28,18 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod blender_original;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
 #[cfg(test)]
 mod path_boundary_tests;
+mod receipt_custody;
 mod recovery;
+pub use blender_original::{
+    BlenderOriginalEdit, BlenderOriginalFile, BlenderOriginalJournal, BlenderOriginalPhase,
+    BlenderOriginalRequest,
+};
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
@@ -101,6 +107,20 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.material.create",
     "driver.blender.material.assign",
     "driver.blender.export.glb",
+    "driver.blender.scene.inspect",
+    "driver.blender.semantic.objects",
+    "driver.blender.semantic.relations",
+    "driver.blender.semantic.rename",
+    "driver.blender.semantic.custom.list",
+    "driver.blender.semantic.custom.set",
+    "driver.blender.semantic.object.create",
+    "driver.blender.semantic.datablock.create",
+    "driver.blender.semantic.relation.set",
+    "driver.blender.semantic.relation.unlink",
+    "driver.blender.semantic.property.get",
+    "driver.blender.semantic.property.set",
+    "driver.blender.file.save",
+    "driver.blender.file.open",
 ];
 
 const MANIM_COMMANDS: &[&str] = &[
@@ -1185,6 +1205,7 @@ fn verified_manim_camera_getter_digest(
 pub struct ProductionCoordinator {
     service: StudioService,
     client: ProductionClient,
+    receipt_custody: receipt_custody::ReceiptCustody,
 }
 
 impl ProductionCoordinator {
@@ -1192,7 +1213,16 @@ impl ProductionCoordinator {
         Ok(Self {
             service,
             client: ProductionClient::new(connection)?,
+            receipt_custody: receipt_custody::ReceiptCustody::default(),
         })
+    }
+
+    /// Private, non-durable custody of a terminal whose local append was not
+    /// confirmed. This can contain native payloads and storage paths; place it
+    /// only in the producer's existing private evidence, never public output.
+    /// Inspection neither acknowledges an effect nor permits a redispatch.
+    pub fn private_receipt_custody_snapshot(&self) -> Value {
+        self.receipt_custody.snapshot()
     }
 
     pub fn receipts(&self, project_id: Uuid, limit: usize) -> NativeResult<Vec<ProductionReceipt>> {
@@ -2276,6 +2306,7 @@ impl ProductionCoordinator {
         args: Value,
         mutation: bool,
     ) -> NativeResult<Value> {
+        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
         let project = self.service.project(project_id).map_err(storage_error)?;
         if expected.resource != project.resource_key()
             || expected.generation != project.generation
@@ -2332,6 +2363,12 @@ impl ProductionCoordinator {
             });
         }
 
+        // Capacity is claimed before the durable dispatch intent and native
+        // effect. Every pre-terminal abort releases this reservation by Drop.
+        let mut custody =
+            self.receipt_custody
+                .reserve(mutation, request_id, command, job_ref.as_deref())?;
+
         self.service
             .append_production_receipt(ProductionReceiptInput {
                 project_id,
@@ -2351,33 +2388,42 @@ impl ProductionCoordinator {
 
         match self.client.execute(command, args, mutation).await {
             Ok(result) => {
-                let receipt = self
+                // Retain the exact Broker result and identifier before the
+                // fallible append. The attempted stage is not a durable receipt.
+                custody.observe(ProductionReceiptInput {
+                    project_id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    request_id: request_id.into(),
+                    request_sha256: digest,
+                    command: command.into(),
+                    stage: "completed".into(),
+                    payload: json!({
+                        "result": result.value,
+                        "broker_request_id": result.request_id,
+                        "job_ref": job_ref
+                    }),
+                });
+                match self
                     .service
-                    .append_production_receipt(ProductionReceiptInput {
-                        project_id,
-                        generation: project.generation,
-                        revision: project.revision,
-                        request_id: request_id.into(),
-                        request_sha256: digest.clone(),
-                        command: command.into(),
-                        stage: "completed".into(),
-                        payload: json!({
-                            "result": result.value,
-                            "broker_request_id": result.request_id,
-                            "job_ref": job_ref.clone()
-                        }),
-                    })
-                    .map_err(|_| {
+                    .append_production_receipt(custody.attempted_receipt())
+                {
+                    Ok(receipt) => {
+                        custody.confirmed();
+                        Ok(json!({
+                            "replayed": false,
+                            "result": receipt.payload["result"],
+                            "receipt": receipt
+                        }))
+                    }
+                    Err(storage_error) => {
+                        custody.failed(storage_error);
                         let error = backend(
                             "Production completed but its local receipt could not be persisted",
                         );
-                        if mutation { error.uncertain() } else { error }
-                    })?;
-                Ok(json!({
-                    "replayed": false,
-                    "result": receipt.payload["result"],
-                    "receipt": receipt
-                }))
+                        Err(if mutation { error.uncertain() } else { error })
+                    }
+                }
             }
             Err(error) => {
                 let stage = if error.outcome_known {
@@ -2385,22 +2431,29 @@ impl ProductionCoordinator {
                 } else {
                     "outcome_unknown"
                 };
-                let _ = self
+                custody.observe(ProductionReceiptInput {
+                    project_id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    request_id: request_id.into(),
+                    request_sha256: digest,
+                    command: command.into(),
+                    stage: stage.into(),
+                    payload: json!({
+                        "error": &error,
+                        "mutation": mutation,
+                        "job_ref": job_ref
+                    }),
+                });
+                match self
                     .service
-                    .append_production_receipt(ProductionReceiptInput {
-                        project_id,
-                        generation: project.generation,
-                        revision: project.revision,
-                        request_id: request_id.into(),
-                        request_sha256: digest,
-                        command: command.into(),
-                        stage: stage.into(),
-                        payload: json!({
-                            "error": &error,
-                            "mutation": mutation,
-                            "job_ref": job_ref
-                        }),
-                    });
+                    .append_production_receipt(custody.attempted_receipt())
+                {
+                    Ok(_) => custody.confirmed(),
+                    Err(storage_error) => custody.failed(storage_error),
+                }
+                // An append failure must not replace the original typed
+                // native error or change its certainty.
                 Err(error)
             }
         }
@@ -3789,6 +3842,431 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             .unwrap();
         assert_eq!(replay["replayed"], json!(true));
         assert_eq!(replay["result"], first["result"]);
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap(),
+            receipts
+        );
+    }
+
+    #[cfg(unix)]
+    fn paused_custody_connection(
+        temp: &tempfile::TempDir,
+        resource: String,
+        envelope: &Envelope,
+    ) -> (ProductionConnection, PathBuf, PathBuf) {
+        let (mut connection, counter) = fake_transport_connection(
+            temp,
+            resource,
+            &serde_json::to_string(envelope).unwrap(),
+            "",
+            if envelope.ok { 0 } else { 19 },
+        );
+        let gate = temp.path().join("release-original-terminal");
+        let script = fs::read_to_string(&connection.executable).unwrap();
+        let marker = "\nprintf '%s' ";
+        assert_eq!(script.matches(marker).count(), 2, "fixture source drift");
+        let paused = script.replacen(
+            marker,
+            &format!(
+                "\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nprintf '%s' ",
+                gate.to_string_lossy().replace('\'', "'\\''")
+            ),
+            1,
+        );
+        fs::write(&connection.executable, paused).unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+        (connection, counter, gate)
+    }
+
+    #[cfg(unix)]
+    async fn custody_sqlite_append_failure(envelope: Envelope, mutation: bool) -> (Error, Value) {
+        // This uses the existing CLI fixture and two real SQLite stores. It
+        // does not run a Broker or a native application. The original intent
+        // commits before the fixture is allowed to return its terminal.
+        let (service, project, temp) = fixture_service();
+        let command = envelope.command.clone();
+        let (connection, counter, gate) =
+            paused_custody_connection(&temp, project.resource_key(), &envelope);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+        let clone = coordinator.clone();
+        let args = json!({"job_ref": "private-exact-job", "custody_fixture_only": true});
+        let expected = project.stamp();
+        let native = coordinator.execute(
+            project.id,
+            &expected,
+            "custody-append-attempt",
+            &command,
+            args.clone(),
+            mutation,
+        );
+        let replace_store = async {
+            timeout(Duration::from_secs(5), async {
+                loop {
+                    if fs::read(&counter).ok().as_deref() == Some(&b"invoked\n"[..]) {
+                        break;
+                    }
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("original CLI invocation did not reach the reply gate");
+            let receipts = service.production_receipts(project.id, 10).unwrap();
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].stage, "dispatching");
+            assert_eq!(receipts[0].payload["mutation"], json!(mutation));
+
+            // Replacing the same shared Store after dispatch gives the real
+            // terminal append a NotFound error without mocking the append API.
+            let replacement = Store::open(temp.path().join("empty-receipt-store.sqlite3")).unwrap();
+            let shared = service.store();
+            *shared.lock() = replacement;
+            fs::write(&gate, b"allow-original-terminal\n").unwrap();
+            receipts
+        };
+        let (terminal, original_receipts) = tokio::join!(native, replace_store);
+        let error = terminal.expect_err("an unconfirmed local append must not become success");
+        let snapshot = coordinator.private_receipt_custody_snapshot();
+        assert_eq!(snapshot, clone.private_receipt_custody_snapshot());
+        assert_eq!(snapshot["durable"], false);
+        assert_eq!(snapshot["pending_without_terminal"], 0);
+        assert_eq!(snapshot["entries"].as_array().unwrap().len(), 1);
+        let entry = &snapshot["entries"][0];
+        assert_eq!(entry["persistence"], "unconfirmed");
+        assert_eq!(entry["mutation"], json!(mutation));
+        assert_eq!(entry["attempted_receipt"]["project_id"], json!(project.id));
+        assert_eq!(
+            entry["attempted_receipt"]["generation"],
+            json!(project.generation)
+        );
+        assert_eq!(entry["attempted_receipt"]["revision"], project.revision);
+        assert_eq!(
+            entry["attempted_receipt"]["request_id"],
+            "custody-append-attempt"
+        );
+        assert_eq!(
+            entry["attempted_receipt"]["request_sha256"],
+            request_digest(&command, &args).unwrap()
+        );
+        assert_eq!(entry["attempted_receipt"]["command"], command);
+        assert_eq!(
+            entry["attempted_receipt"]["payload"]["job_ref"],
+            "private-exact-job"
+        );
+        assert_eq!(entry["storage_error"]["original_retained_in_memory"], true);
+        assert_eq!(
+            entry["storage_error"]["display"]["text_prefix"],
+            "project not found"
+        );
+        assert_eq!(entry["storage_error"]["debug"]["text_prefix"], "NotFound");
+        assert_eq!(entry["storage_error"]["display"]["truncated"], false);
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        drop(clone);
+        drop(coordinator);
+        drop(service);
+
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap(),
+            original_receipts
+        );
+        let recovered = ProductionCoordinator::new(reopened.clone(), connection).unwrap();
+        // In-memory custody is deliberately not invented after a restart.
+        assert_eq!(
+            recovered.private_receipt_custody_snapshot()["entries"],
+            json!([])
+        );
+        let retry = recovered
+            .execute(
+                project.id,
+                &expected,
+                "custody-append-attempt",
+                &command,
+                args,
+                mutation,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(retry.code, ErrorCode::Conflict);
+        assert_eq!(retry.outcome_known, !mutation);
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap(),
+            original_receipts
+        );
+        (error, snapshot)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_custody_preserves_completed_terminal_on_sqlite_append_failure() {
+        for (command, mutation) in [
+            ("driver.blender.collection.create", true),
+            ("driver.motion-canvas.composition.inspect", false),
+        ] {
+            let mut envelope = transport_reply(command);
+            envelope.request_id = "private-original-broker-id".into();
+            envelope.data =
+                Some(json!({"native_original": "private-terminal-sentinel", "integer": 17}));
+            let expected_result = json!({
+                "data": envelope.data.clone().unwrap(),
+                "execution": envelope.execution.clone(),
+                "warnings": envelope.warnings.clone(),
+                "provenance_checked": true,
+            });
+            let (error, snapshot) = custody_sqlite_append_failure(envelope, mutation).await;
+            assert_eq!(error.code, ErrorCode::BackendFailed);
+            assert_eq!(
+                error.message,
+                "Production completed but its local receipt could not be persisted"
+            );
+            assert_eq!(error.outcome_known, !mutation);
+            assert!(!serde_json::to_string(&error).unwrap().contains("private-"));
+            let attempt = &snapshot["entries"][0]["attempted_receipt"];
+            assert_eq!(attempt["stage"], "completed");
+            assert_eq!(attempt["payload"]["result"], expected_result);
+            assert_eq!(
+                attempt["payload"]["broker_request_id"],
+                "private-original-broker-id"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_custody_preserves_typed_error_when_its_append_also_fails() {
+        let command = "driver.blender.collection.create";
+        for original in [
+            Error::new(ErrorCode::ConsentRequired, "private-original-consent"),
+            Error::new(ErrorCode::BackendFailed, "private-original-native-error")
+                .uncertain()
+                .recipe_progress(1, command),
+        ] {
+            let mut envelope = transport_reply(command);
+            envelope.ok = false;
+            envelope.data = None;
+            envelope.error = Some(original.clone());
+            let (error, snapshot) = custody_sqlite_append_failure(envelope, true).await;
+            assert_eq!(
+                serde_json::to_value(&error).unwrap(),
+                serde_json::to_value(&original).unwrap()
+            );
+            let attempt = &snapshot["entries"][0]["attempted_receipt"];
+            assert_eq!(
+                attempt["stage"],
+                if original.outcome_known {
+                    "failed_known"
+                } else {
+                    "outcome_unknown"
+                }
+            );
+            assert_eq!(
+                attempt["payload"]["error"],
+                serde_json::to_value(original).unwrap()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_custody_capacity_rejection_precedes_intent_and_invocation() {
+        let (service, project, temp) = fixture_service();
+        let command = "driver.blender.collection.create";
+        let output = serde_json::to_string(&transport_reply(command)).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let clone = coordinator.clone();
+        let mut reservations = Vec::new();
+        while let Ok(reservation) = clone
+            .receipt_custody
+            .reserve(true, "occupied", command, None)
+        {
+            reservations.push(reservation);
+        }
+        assert!(!reservations.is_empty());
+        let state = clone.private_receipt_custody_snapshot();
+        assert!(
+            state["reserved_serialized_bytes"].as_u64().unwrap()
+                <= state["serialized_byte_limit"].as_u64().unwrap()
+        );
+        // The independent byte limit becomes binding before the slot limit.
+        assert!(reservations.len() < state["slot_limit"].as_u64().unwrap() as usize);
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "capacity-not-sent",
+                command,
+                json!({"name": "private-new-intent"}),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert!(error.outcome_known);
+        assert!(!counter.exists());
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+        drop(reservations);
+        assert_eq!(
+            coordinator.private_receipt_custody_snapshot()["reserved_slots"],
+            0
+        );
+        assert_eq!(
+            coordinator.private_receipt_custody_snapshot()["reserved_serialized_bytes"],
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_custody_releases_on_pre_dispatch_storage_rejection() {
+        let (service, project, temp) = fixture_service();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), "", "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "invalid-command-not-sent",
+                "\n",
+                json!({}),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.outcome_known);
+        assert!(!counter.exists());
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+        let snapshot = coordinator.private_receipt_custody_snapshot();
+        assert_eq!(snapshot["reserved_slots"], 0);
+        assert_eq!(snapshot["reserved_serialized_bytes"], 0);
+        assert_eq!(snapshot["entries"], json!([]));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_custody_clears_only_after_confirmed_append_and_replay_is_effect_free() {
+        let command = "driver.blender.collection.create";
+        let (service, project, temp) = fixture_service();
+        let output = serde_json::to_string(&transport_reply(command)).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let args = json!({"name": "custody-confirmed"});
+        let first = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "custody-confirmed",
+                command,
+                args.clone(),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first["receipt"]["stage"], "completed");
+        assert_eq!(first["replayed"], false);
+        assert_eq!(
+            coordinator.private_receipt_custody_snapshot()["reserved_slots"],
+            0
+        );
+        assert_eq!(
+            coordinator.private_receipt_custody_snapshot()["entries"],
+            json!([])
+        );
+        let second = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "custody-confirmed",
+                command,
+                args,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second["replayed"], true);
+        assert_eq!(second["result"], first["result"]);
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(
+            service.production_receipts(project.id, 10).unwrap().len(),
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn production_workflow_intent_matches_effective_client_mutation_after_reopen() {
+        let command = "workflow.record.start";
+        let (service, project, temp) = fixture_service();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), "{invalid", "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+        let args = json!({"synthetic_transport_only": true});
+        let error = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                "workflow-effective-mutation",
+                command,
+                args.clone(),
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::BackendFailed);
+        assert_eq!(
+            error.message,
+            "Semwright CLI returned an invalid response envelope"
+        );
+        assert!(!error.outcome_known);
+        let receipts = service.production_receipts(project.id, 10).unwrap();
+        assert_eq!(receipts.len(), 2);
+        let intent = receipts
+            .iter()
+            .find(|receipt| receipt.stage == "dispatching")
+            .unwrap();
+        assert_eq!(intent.payload["mutation"], true);
+        let terminal = receipts
+            .iter()
+            .find(|receipt| receipt.stage == "outcome_unknown")
+            .unwrap();
+        assert_eq!(terminal.payload["mutation"], true);
+        assert_eq!(
+            terminal.payload["error"],
+            serde_json::to_value(&error).unwrap()
+        );
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        drop(coordinator);
+        drop(service);
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        let recovered = ProductionCoordinator::new(reopened.clone(), connection).unwrap();
+        let retry = recovered
+            .execute(
+                project.id,
+                &project.stamp(),
+                "workflow-effective-mutation",
+                command,
+                args,
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(retry.code, ErrorCode::Conflict);
+        assert!(!retry.outcome_known);
         assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
         assert_eq!(
             reopened.production_receipts(project.id, 10).unwrap(),

@@ -7,6 +7,7 @@ realizes the bounded typed contribution, and independently parses the exported G
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -69,7 +71,7 @@ def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 60) -> dict
         ) from error
 
 
-def exact_inputs() -> None:
+def exact_inputs() -> dict:
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("native Blender E2E is GitHub-Actions-only")
     observed = subprocess.check_output(
@@ -90,9 +92,12 @@ def exact_inputs() -> None:
             raise SystemExit(f"missing exact acceptance input: {path}")
     if not shutil.which("bwrap"):
         raise SystemExit("bubblewrap is required; no unsandboxed fallback is accepted")
-    first = subprocess.check_output([str(BLENDER_BIN), "--version"], text=True).splitlines()[0]
+    version_output = subprocess.check_output([str(BLENDER_BIN), "--version"], text=True)
+    first = version_output.splitlines()[0]
     if first != "Blender 4.5.14 LTS":
         raise SystemExit(f"unexpected Blender runtime: {first}")
+    return {"semwright_revision": observed, "blender_version_output": version_output,
+            "blender_version": first}
 
 
 def semwright_version() -> str:
@@ -136,153 +141,156 @@ def parse_glb(path: Path) -> dict:
     return model
 
 
-def main() -> None:
-    exact_inputs()
-    EVIDENCE.mkdir(parents=True, exist_ok=False)
+def new_owner_paths(root: Path) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for name in [
+        "runtime",
+        "state",
+        "home",
+        "config",
+        "bin",
+        "workspace",
+        "scratch",
+        "motionwright-data",
+    ]:
+        path = root / name
+        path.mkdir(mode=0o700)
+        paths[name] = path
 
-    with tempfile.TemporaryDirectory(prefix="motionwright-native-blender-") as raw:
-        root = Path(raw).resolve()
-        root.chmod(0o700)
-        paths: dict[str, Path] = {}
-        for name in [
-            "runtime",
-            "state",
-            "home",
-            "config",
-            "bin",
-            "workspace",
-            "scratch",
-            "motionwright-data",
-        ]:
-            path = root / name
-            path.mkdir(mode=0o700)
-            paths[name] = path
+    return paths
 
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
-        }
-        env.update(
-            HOME=str(paths["home"]),
-            XDG_RUNTIME_DIR=str(paths["runtime"]),
-            XDG_STATE_HOME=str(paths["state"]),
-            RUST_BACKTRACE="1",
-            SEMWRIGHT_TEST_DRIVER_SANDBOX="1",
-            SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BINS / "semwright-sandbox"),
-            SEMWRIGHT_TEST_BLENDER_ROOT=str(BLENDER_ROOT),
+
+def owned_environment(paths: dict[str, Path]) -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
+    }
+    env.update(
+        HOME=str(paths["home"]),
+        XDG_RUNTIME_DIR=str(paths["runtime"]),
+        XDG_STATE_HOME=str(paths["state"]),
+        RUST_BACKTRACE="1",
+        SEMWRIGHT_TEST_DRIVER_SANDBOX="1",
+        SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BINS / "semwright-sandbox"),
+        SEMWRIGHT_TEST_BLENDER_ROOT=str(BLENDER_ROOT),
+    )
+
+    return env
+
+
+@contextmanager
+def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
+                    seeded: dict, *, required: set[str] | None = None):
+    driver = paths["bin"] / "semwright-blender-driver"
+    shutil.copyfile(SW_BINS / "semwright-blender-driver", driver)
+    driver.chmod(0o700)
+    session_runner = (SW_BINS / "semwright-blender-session-runner").resolve()
+    blender_bin = BLENDER_BIN.resolve()
+    font_config = Path("/etc/fonts").resolve()
+
+    manifest = {
+        "manifest_version": 1,
+        "protocol": 8,
+        "id": "blender",
+        "version": semwright_version(),
+        "publisher": "semwright",
+        "executable": str(driver),
+        "sha256": digest(driver),
+        "application": {
+            "desktop_id": "org.blender.Blender",
+            "process_names": ["blender"],
+            "supported_versions": ["4.5.14"],
+        },
+        "transport": "stdio_v1",
+        "mounts": [
+            {"root": "workspace", "read_only": False},
+            {"root": "blender-runtime", "read_only": True},
+            {"root": "scratch", "read_only": False},
+            {"root": "font-config", "read_only": True},
+        ],
+        "system_config": [],
+        "secrets": [],
+        "tools": [
+            {
+                "root": "blender-session-runner",
+                "name": "blender-session-runner",
+                "sha256": digest(session_runner),
+                "mounts": ["workspace", "blender-runtime", "scratch", "font-config"],
+                "dependencies": ["blender"],
+            },
+            {
+                "root": "blender-executable",
+                "name": "blender",
+                "sha256": digest(blender_bin),
+                "mounts": [],
+                "dependencies": [],
+            },
+        ],
+        "network": False,
+        "loopback_port": None,
+        "resources": {
+            "open_files": 256,
+            "processes": 64,
+            "cpu_seconds": 300,
+            "operation_cpu_seconds": 0,
+            "address_space_bytes": 4_294_967_296,
+            "file_size_bytes": 1_073_741_824,
+        },
+        "request_timeout_ms": 300_000,
+        "interfaces": {
+            "dynamic_capabilities": False,
+            "cooperative_cancellation": True,
+            "events": False,
+            "health": True,
+            "progress": True,
+            "artifacts": False,
+            "native_refs": False,
+            "host_tools": True,
+        },
+    }
+    manifest_path = paths["config"] / "blender-driver.json"
+    write_private_json(manifest_path, manifest)
+
+    grants = [
+        ("workspace", paths["workspace"], True),
+        ("font-config", font_config, False),
+        ("blender-runtime", BLENDER_ROOT, False),
+        ("scratch", paths["scratch"], True),
+        ("blender-session-runner", session_runner, False),
+        ("blender-executable", blender_bin, False),
+    ]
+    config_lines = [
+        f"drivers = [{json.dumps(str(manifest_path))}]",
+        "driver_network = false",
+        "",
+        "[policy]",
+        'profile = "workspace"',
+        'allow = ["driver:blender"]',
+    ]
+    for name, path, write in grants:
+        config_lines.extend(
+            [
+                "",
+                "[[policy.filesystem]]",
+                f"name = {json.dumps(name)}",
+                f"path = {json.dumps(str(path.resolve()))}",
+                "read = true",
+                f"write = {'true' if write else 'false'}",
+            ]
         )
+    config_path = paths["config"] / "owner.toml"
+    config_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
+    config_path.chmod(0o600)
 
-        database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
-        if seeded.get("mesh_count") != 2:
-            raise AssertionError(f"unexpected Blender seed: {seeded}")
-
-        driver = paths["bin"] / "semwright-blender-driver"
-        shutil.copyfile(SW_BINS / "semwright-blender-driver", driver)
-        driver.chmod(0o700)
-        session_runner = (SW_BINS / "semwright-blender-session-runner").resolve()
-        blender_bin = BLENDER_BIN.resolve()
-        font_config = Path("/etc/fonts").resolve()
-
-        manifest = {
-            "manifest_version": 1,
-            "protocol": 8,
-            "id": "blender",
-            "version": semwright_version(),
-            "publisher": "semwright",
-            "executable": str(driver),
-            "sha256": digest(driver),
-            "application": {
-                "desktop_id": "org.blender.Blender",
-                "process_names": ["blender"],
-                "supported_versions": ["4.5.14"],
-            },
-            "transport": "stdio_v1",
-            "mounts": [
-                {"root": "workspace", "read_only": False},
-                {"root": "blender-runtime", "read_only": True},
-                {"root": "scratch", "read_only": False},
-                {"root": "font-config", "read_only": True},
-            ],
-            "system_config": [],
-            "secrets": [],
-            "tools": [
-                {
-                    "root": "blender-session-runner",
-                    "name": "blender-session-runner",
-                    "sha256": digest(session_runner),
-                    "mounts": ["workspace", "blender-runtime", "scratch", "font-config"],
-                    "dependencies": ["blender"],
-                },
-                {
-                    "root": "blender-executable",
-                    "name": "blender",
-                    "sha256": digest(blender_bin),
-                    "mounts": [],
-                    "dependencies": [],
-                },
-            ],
-            "network": False,
-            "loopback_port": None,
-            "resources": {
-                "open_files": 256,
-                "processes": 64,
-                "cpu_seconds": 300,
-                "operation_cpu_seconds": 0,
-                "address_space_bytes": 4_294_967_296,
-                "file_size_bytes": 1_073_741_824,
-            },
-            "request_timeout_ms": 300_000,
-            "interfaces": {
-                "dynamic_capabilities": False,
-                "cooperative_cancellation": True,
-                "events": False,
-                "health": True,
-                "progress": True,
-                "artifacts": False,
-                "native_refs": False,
-                "host_tools": True,
-            },
-        }
-        manifest_path = paths["config"] / "blender-driver.json"
-        write_private_json(manifest_path, manifest)
-
-        grants = [
-            ("workspace", paths["workspace"], True),
-            ("font-config", font_config, False),
-            ("blender-runtime", BLENDER_ROOT, False),
-            ("scratch", paths["scratch"], True),
-            ("blender-session-runner", session_runner, False),
-            ("blender-executable", blender_bin, False),
-        ]
-        config_lines = [
-            f"drivers = [{json.dumps(str(manifest_path))}]",
-            "driver_network = false",
-            "",
-            "[policy]",
-            'profile = "workspace"',
-            'allow = ["driver:blender"]',
-        ]
-        for name, path, write in grants:
-            config_lines.extend(
-                [
-                    "",
-                    "[[policy.filesystem]]",
-                    f"name = {json.dumps(name)}",
-                    f"path = {json.dumps(str(path.resolve()))}",
-                    "read = true",
-                    f"write = {'true' if write else 'false'}",
-                ]
-            )
-        config_path = paths["config"] / "owner.toml"
-        config_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
-        config_path.chmod(0o600)
-
-        socket = paths["runtime"] / "broker.sock"
-        session = paths["runtime"] / "motionwright.session"
-        daemon_log = EVIDENCE / "semwrightd.log"
-        log_stream = daemon_log.open("wb")
+    socket = paths["runtime"] / "broker.sock"
+    session = paths["runtime"] / "motionwright.session"
+    daemon_log = evidence / "semwrightd.log"
+    log_stream = daemon_log.open("xb")
+    daemon_log.chmod(0o600)
+    daemon = None
+    state = {"cleanup_errors": []}
+    try:
         daemon = subprocess.Popen(
             [
                 str(SW_BINS / "semwrightd"),
@@ -297,80 +305,152 @@ def main() -> None:
             stderr=log_stream,
             start_new_session=True,
         )
-
-        try:
-            wait_for_socket(daemon, socket, daemon_log)
-            capabilities: list[dict] = []
-            offset = 0
-            catalog_revision = None
-            while True:
-                discovered = run_json(
-                    [
-                        str(SW_BINS / "semwright"),
-                        "--socket",
-                        str(socket),
-                        "--session-file",
-                        str(session),
-                        "--json",
-                        "capabilities",
-                        "search",
-                        "",
-                        "--provider",
-                        "driver:blender",
-                        "--limit",
-                        "100",
-                        "--offset",
-                        str(offset),
-                    ],
-                    env=env,
-                )
-                data = discovered.get("data", {})
-                revision = data.get("revision")
-                if catalog_revision is None:
-                    catalog_revision = revision
-                elif revision != catalog_revision:
-                    raise AssertionError("Blender capability catalog changed during discovery")
-                page = data.get("capabilities", [])
-                if not isinstance(page, list):
-                    raise AssertionError("Blender capability discovery returned a malformed page")
-                capabilities.extend(page)
-                next_offset = data.get("next_offset")
-                if next_offset is None:
-                    break
-                if not isinstance(next_offset, int) or next_offset <= offset:
-                    raise AssertionError("Blender capability discovery returned an invalid cursor")
-                offset = next_offset
-            ids = {item.get("id") for item in capabilities}
-            required = {
-                "driver.blender.collection.create",
-                "driver.blender.object.create",
-                "driver.blender.object.transform",
-                "driver.blender.collection.link",
-                "driver.blender.material.create",
-                "driver.blender.material.assign",
-                "driver.blender.export.glb",
-            }
-            if not required <= ids:
-                raise AssertionError(
-                    f"pinned Blender provider is missing Motionwright capabilities: {sorted(required - ids)}"
-                )
-            if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
-                raise AssertionError("Semwright did not create a private persistent session ticket")
-
-            connection_path = paths["config"] / "motionwright-connection.json"
-            write_private_json(
-                connection_path,
-                {
-                    "schema": "motionwright-semwright-connection/1",
-                    "executable": str((SW_BINS / "semwright").resolve()),
-                    "executable_sha256": digest(SW_BINS / "semwright"),
-                    "socket": str(socket),
-                    "session_file": str(session),
-                    "output_root": str(paths["workspace"]),
-                    "resource": seeded["resource"],
-                },
+        wait_for_socket(daemon, socket, daemon_log)
+        capabilities: list[dict] = []
+        offset = 0
+        catalog_revision = None
+        while True:
+            discovered = run_json(
+                [
+                    str(SW_BINS / "semwright"),
+                    "--socket",
+                    str(socket),
+                    "--session-file",
+                    str(session),
+                    "--json",
+                    "capabilities",
+                    "search",
+                    "",
+                    "--provider",
+                    "driver:blender",
+                    "--limit",
+                    "100",
+                    "--offset",
+                    str(offset),
+                ],
+                env=env,
             )
+            data = discovered.get("data", {})
+            revision = data.get("revision")
+            if catalog_revision is None:
+                catalog_revision = revision
+            elif revision != catalog_revision:
+                raise AssertionError("Blender capability catalog changed during discovery")
+            page = data.get("capabilities", [])
+            if not isinstance(page, list):
+                raise AssertionError("Blender capability discovery returned a malformed page")
+            capabilities.extend(page)
+            next_offset = data.get("next_offset")
+            if next_offset is None:
+                break
+            if not isinstance(next_offset, int) or next_offset <= offset:
+                raise AssertionError("Blender capability discovery returned an invalid cursor")
+            offset = next_offset
+        ids = {item.get("id") for item in capabilities}
+        required = required if required is not None else {
+            "driver.blender.collection.create",
+            "driver.blender.object.create",
+            "driver.blender.object.transform",
+            "driver.blender.collection.link",
+            "driver.blender.material.create",
+            "driver.blender.material.assign",
+            "driver.blender.export.glb",
+        }
+        if not required <= ids:
+            raise AssertionError(
+                f"pinned Blender provider is missing Motionwright capabilities: {sorted(required - ids)}"
+            )
+        if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
+            raise AssertionError("Semwright did not create a private persistent session ticket")
 
+        connection_path = paths["config"] / "motionwright-connection.json"
+        write_private_json(
+            connection_path,
+            {
+                "schema": "motionwright-semwright-connection/1",
+                "executable": str((SW_BINS / "semwright").resolve()),
+                "executable_sha256": digest(SW_BINS / "semwright"),
+                "socket": str(socket),
+                "session_file": str(session),
+                "output_root": str(paths["workspace"]),
+                "resource": seeded["resource"],
+            },
+        )
+
+        state.update({
+            "daemon": daemon, "connection": connection_path, "paths": paths,
+            "capabilities_checked": sorted(required),
+            "runtime_bindings": {
+                "blender_sha256": digest(blender_bin),
+                "driver_sha256": digest(driver),
+                "session_runner_sha256": digest(session_runner),
+                "semwright_sha256": digest(SW_BINS / "semwright"),
+                "semwrightd_sha256": digest(SW_BINS / "semwrightd"),
+            },
+        })
+        yield state
+    finally:
+        original = sys.exc_info()[1]
+        failures = state["cleanup_errors"]
+        if daemon is not None:
+            try:
+                if daemon.poll() is None:
+                    try:
+                        os.killpg(daemon.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        daemon.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(daemon.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        daemon.wait(timeout=5)
+                state["daemon_returncode"] = daemon.returncode
+            except BaseException as error:
+                failures.append("daemon:" + type(error).__name__ + ":" + str(error))
+        for operation, action in (("flush", log_stream.flush), ("close", log_stream.close)):
+            try:
+                action()
+            except BaseException as error:
+                failures.append("log:" + operation + ":" + type(error).__name__ + ":" + str(error))
+        if failures:
+            if original is not None:
+                try:
+                    original.native_context_cleanup = list(failures)
+                except BaseException:
+                    pass
+            else:
+                raise AssertionError("native Blender context cleanup was incomplete")
+
+def main() -> None:
+    mode = os.environ.get("MOTIONWRIGHT_BLENDER_SCOPE", "static-glb")
+    if mode == "original-scene":
+        from native_blender_original_evidence import run_original
+        run_original(sys.modules[__name__])
+        return
+    if mode != "static-glb":
+        raise SystemExit("unsupported native Blender verification scope")
+    exact_inputs()
+    EVIDENCE.mkdir(parents=True, exist_ok=False)
+
+    with tempfile.TemporaryDirectory(prefix="motionwright-native-blender-") as raw:
+        root = Path(raw).resolve()
+        root.chmod(0o700)
+        paths = new_owner_paths(root)
+        env = owned_environment(paths)
+        database = paths["motionwright-data"] / "motionwright.sqlite3"
+        seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
+        if seeded.get("mesh_count") != 2:
+            raise AssertionError(f"unexpected Blender seed: {seeded}")
+
+        with blender_context(paths, env, EVIDENCE, seeded) as context:
+            connection_path = context["connection"]
+            driver = paths["bin"] / "semwright-blender-driver"
+            blender_bin = BLENDER_BIN.resolve()
+            session_runner = (SW_BINS / "semwright-blender-session-runner").resolve()
+            required = context["capabilities_checked"]
             result = run_json(
                 [
                     str(MW_BIN),
@@ -433,21 +513,6 @@ def main() -> None:
                     "capabilities_checked": sorted(required),
                 },
             )
-        finally:
-            if daemon.poll() is None:
-                try:
-                    os.killpg(daemon.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    daemon.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(daemon.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    daemon.wait(timeout=5)
-            log_stream.close()
 
     print(
         json.dumps(
