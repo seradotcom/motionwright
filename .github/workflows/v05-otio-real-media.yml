@@ -418,9 +418,11 @@ jobs:
           sys.path.insert(0, str(Path("tooling/otio-media").resolve(strict=True)))
           import test_kdenlive_gui_e2e as tests
           import test_kdenlive_complete_g2_fixture as original_tests
+          import test_kdenlive_live_process as process_tests
           suite = unittest.TestSuite([
               unittest.defaultTestLoader.loadTestsFromModule(tests),
-              unittest.defaultTestLoader.loadTestsFromModule(original_tests)])
+              unittest.defaultTestLoader.loadTestsFromModule(original_tests),
+              unittest.defaultTestLoader.loadTestsFromModule(process_tests)])
           def ids(node):
               if isinstance(node, unittest.TestSuite):
                   for child in node:
@@ -428,13 +430,13 @@ jobs:
               else:
                   yield node.id()
           roster = list(ids(suite))
-          if len(roster) != 78 or len(set(roster)) != 78:
+          if len(roster) != 107 or len(set(roster)) != 107:
               raise SystemExit("Incomplete native GUI source-contract roster")
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           print(json.dumps({"tests_run": result.testsRun, "roster": roster,
                             "skips": len(result.skipped), "failures": len(result.failures),
                             "errors": len(result.errors), "native_execution": False}, sort_keys=True))
-          if (not result.wasSuccessful() or result.testsRun != 78 or result.skipped
+          if (not result.wasSuccessful() or result.testsRun != 107 or result.skipped
                   or result.expectedFailures or result.unexpectedSuccesses):
               raise SystemExit(1)
           PY

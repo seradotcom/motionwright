@@ -1,4 +1,4 @@
-"""Single-attempt native Kdenlive import, save, reopen, edit and OTIO export.
+"""Single-attempt native Kdenlive import, edit, save and edited-project reopen.
 
 Selected only on an admitted disposable Linux CI run. The existing Rust/OTIO
 fixture, live-process witness, native project readback and bounded cut preview
@@ -47,6 +47,7 @@ SOURCE_PATHS = (
     "tooling/otio-media/test_kdenlive_gui_e2e.py",
     "tooling/otio-media/kdenlive_complete_g2_fixture.py",
     "tooling/otio-media/kdenlive_live_process.py",
+    "tooling/otio-media/test_kdenlive_live_process.py",
     "tooling/otio-media/kdenlive_readback.py",
     "tooling/otio-media/bridge.py",
     "crates/domain/examples/otio_real_media_fixture.rs",
@@ -309,10 +310,13 @@ class NativeProcess(OwnedProcess):
 
     def witness(self, original: Path, original_sha: str, saved: Path,
                 saved_sha: str, reopen_input=None, reopen_sha=None) -> dict:
+        native_phase = {"import": "import", "reopen": "reopen",
+                        "reopen-edited": "reopen"}.get(self.phase)
+        require(native_phase is not None, "native_gui_witness_phase_unrecognized")
         with self.native_environment():
             result = live.inspect_live_native_kdenlive(
                 self.pid, self.binary, self.binary_sha, original, original_sha,
-                saved, saved_sha, phase=self.phase,
+                saved, saved_sha, phase=native_phase,
                 reopen_input=reopen_input, reopen_input_sha256=reopen_sha)
         require(result["original_Kdenlive_application_version"] == APPIMAGE_VERSION,
                 "native_gui_version_not_exact_distribution")
@@ -384,6 +388,38 @@ def run_route(appdir: Path, binary: Path, binary_sha: str,
     records.document("distinct-native-sessions.json", sessions)
     records.document("edited-ui-tree.json", {"rows": second.ui.tree()})
     second.close()
+    # Reopen the edited file in a third process and inspect a fresh native export.
+    reopened_otio = records.root / "reopened-edited.otio"
+    third = NativeProcess(appdir, binary, binary_sha, profile, records,
+                          "reopen-edited", reopen_input=edited)
+    third.ui.export_otio("reopen-edited.export", reopened_otio)
+    require(digest(edited, MAX_PROJECT) == edited_sha,
+            "native_gui_edited_project_changed_during_reopen")
+    final_readback = readback.inspect_saved_kdenlive(
+        edited, edited_sha, capsule, manifest_sha)
+    require(final_readback == edited_readback,
+            "native_gui_edited_project_readback_changed_on_reopen")
+    records.document("reopened-edited-readback.json", final_readback)
+    third_witness = third.witness(original, original_sha, edited, edited_sha,
+                                  reopen_input=edited, reopen_sha=edited_sha)
+    edited_sessions = live.compare_distinct_native_sessions(
+        second_witness, third_witness, expected_first_phase="reopen")
+    final_comparison = readback.compare_two_native_custody_snapshots(
+        initial_readback, final_readback)
+    reopened_request = {**request, "edited_otio": reopened_otio.name,
+                        "edited_sha256": digest(reopened_otio, MAX_OTIO)}
+    reopened_preview = preview_kdenlive_cut(
+        capsule, records.root, reopened_request, capsule / "source-project.json",
+        authorized_media_roots=(capsule,))
+    records.document("reopened-edited-cut-preview.json", reopened_preview)
+    check_edit(initial_readback, final_readback, final_comparison, reopened_preview)
+    records.document("reopened-edited-comparison.json", final_comparison)
+    records.document("edited-project-distinct-native-sessions.json", edited_sessions)
+    records.document("reopened-edited-ui-tree.json", {"rows": third.ui.tree()})
+    third.close()
+    require(digest(initial, MAX_PROJECT) == initial_sha
+            and digest(edited, MAX_PROJECT) == edited_sha,
+            "native_gui_saved_project_changed_after_reopen")
     require(digest(original, MAX_OTIO) == original_sha
             and digest(capsule / "bridge-manifest.json", MAX_OTIO) == manifest_sha
             and digest(binary, live.MAX_EXE_BYTES) == binary_sha,
@@ -392,7 +428,10 @@ def run_route(appdir: Path, binary: Path, binary_sha: str,
             "original_otio_sha256": original_sha,
             "received_otio_sha256": received_sha,
             "edited_otio_sha256": request["edited_sha256"],
-            "two_distinct_native_processes": True, "exact_end_trim_frames": 15}
+            "reopened_edited_otio_sha256": reopened_request["edited_sha256"],
+            "two_distinct_native_processes": True,
+            "three_distinct_native_processes": True,
+            "edited_native_project_reopened": True, "exact_end_trim_frames": 15}
 
 
 def finalize_records(records: Recorder, status: str, result: dict, context: dict) -> str:

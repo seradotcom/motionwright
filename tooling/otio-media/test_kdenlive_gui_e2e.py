@@ -842,5 +842,170 @@ class FirstpartyOriginalRetentionContracts(unittest.TestCase):
             self.assertFalse(retained.exists())
             run.assert_not_called()
 
+
+class EditedProjectReopenContracts(unittest.TestCase):
+    """A successful route must retain the saved edit after a separate reopen."""
+
+    def run_mocked_route(self, *, mutate_third=None, final_preview=None,
+                         third_close_error=None, changed_edited_bytes=False,
+                         changed_readback=False):
+        before, after, comparison, preview = admitted_edit()
+        final = copy.deepcopy(after)
+        if changed_readback:
+            final["observed_bound_editorial_clip_semantics"][2]["duration_frames"] = 30
+        root = Path("/synthetic/evidence")
+        capsule, appdir = Path("/synthetic/capsule"), Path("/synthetic/app")
+        binary, profile = appdir / "kdenlive", Path("/synthetic/profile")
+        initial, edited = root / "initial.kdenlive", root / "edited.kdenlive"
+        self.records = Mock(root=root)
+        self.processes = [Mock(), Mock(), Mock()]
+        self.receipts = []
+        for index, phase in enumerate(("import", "reopen", "reopen")):
+            reopen_input = None if index == 0 else initial if index == 1 else edited
+            saved = initial if index == 0 else edited
+            receipt = {
+                "schema": "motionwright.native.kdenlive-live-process/1",
+                "phase": phase, "pid": 201 + index,
+                "kernel_starttime_ticks": 1001 + index,
+                "actual_executable_sha256": "8" * 64,
+                "original_Kdenlive_application_version": runner.APPIMAGE_VERSION,
+                "source_original_OTIO_sha256": "3" * 64,
+                "saved_native_project_path": saved.as_posix(),
+                "saved_native_project_sha256": ("1" if index == 0 else "2") * 64,
+                "reopen_input_project_path": (
+                    None if reopen_input is None else reopen_input.as_posix()),
+                "reopen_input_project_sha256": (
+                    None if index == 0 else ("1" if index == 1 else "2") * 64),
+                "process_arguments": {
+                    "saved_project_was_an_exact_launch_argument": index > 0,
+                    "native_project_path_checked": (
+                        None if reopen_input is None else reopen_input.as_posix())},
+                "live_application_binary_and_pid_verified": True,
+            }
+            self.receipts.append(receipt)
+            self.processes[index].witness.return_value = receipt
+            self.processes[index].ui.tree.return_value = []
+        if mutate_third is not None:
+            mutate_third(self.receipts[2])
+        if third_close_error is not None:
+            self.processes[2].close.side_effect = third_close_error
+        hashes = {"initial.kdenlive": "1", "edited.kdenlive": "2",
+                  "timeline.otio": "3", "bridge-manifest.json": "4",
+                  "received.otio": "5", "edited.otio": "6",
+                  "reopened-edited.otio": "7", "kdenlive": "8"}
+        def digest(path, _limit):
+            if (changed_edited_bytes and path.name == "edited.kdenlive"
+                    and self.processes[2].ui.export_otio.called):
+                return "9" * 64
+            return hashes[path.name] * 64
+        with patch.object(runner, "NativeProcess", side_effect=self.processes) as launch, \
+             patch.object(runner, "digest", side_effect=digest), \
+             patch.object(runner.readback, "inspect_saved_kdenlive",
+                          side_effect=[before, after, final]) as inspect, \
+             patch.object(runner.readback, "compare_two_native_custody_snapshots",
+                          return_value=comparison) as compare, \
+             patch.object(runner, "preview_kdenlive_cut", side_effect=[
+                 preview, preview if final_preview is None else final_preview]) as cut:
+            self.launch, self.inspect, self.compare, self.cut = launch, inspect, compare, cut
+            return runner.run_route(appdir, binary, "8" * 64, capsule,
+                                    self.records, profile)
+
+    def test_saved_edit_is_reopened_exported_and_closed_in_a_third_native_process(self):
+        value = self.run_mocked_route()
+        self.assertTrue(value.get("three_distinct_native_processes"))
+        self.assertTrue(value.get("edited_native_project_reopened"))
+        self.assertEqual(value["reopened_edited_otio_sha256"], "7" * 64)
+        self.assertEqual(self.launch.call_count, 3)
+        self.assertEqual(self.launch.call_args.args[-1], "reopen-edited")
+        self.assertEqual(self.launch.call_args.kwargs["reopen_input"],
+                         Path("/synthetic/evidence/edited.kdenlive"))
+        third = self.processes[2]
+        third.ui.edit_third_clip.assert_not_called()
+        third.ui.save_as.assert_not_called()
+        third.ui.export_otio.assert_called_once_with(
+            "reopen-edited.export", Path("/synthetic/evidence/reopened-edited.otio"))
+        for process in self.processes:
+            process.close.assert_called_once_with()
+        self.assertEqual(self.inspect.call_count, 3)
+        self.assertEqual(self.compare.call_count, 2)
+        self.assertEqual(self.cut.call_count, 2)
+        self.assertEqual(self.cut.call_args.args[2]["edited_otio"], "reopened-edited.otio")
+        retained = dict(call.args for call in self.records.document.call_args_list)
+        self.assertFalse(retained["reopened-edited-cut-preview.json"]["edit_imported"])
+        self.assertFalse(
+            retained["edited-project-distinct-native-sessions.json"]["human_acceptance"])
+        self.assertEqual([item["phase"] for item in self.receipts],
+                         ["import", "reopen", "reopen"])
+
+    def test_foreign_or_reused_third_session_cannot_finish_the_route(self):
+        def foreign_path(receipt):
+            receipt["reopen_input_project_path"] = "/synthetic/foreign.kdenlive"
+            receipt["process_arguments"]["native_project_path_checked"] = (
+                "/synthetic/foreign.kdenlive")
+        mutations = [
+            foreign_path,
+            lambda receipt: receipt.update(reopen_input_project_sha256="9" * 64),
+            lambda receipt: receipt.update(pid=202, kernel_starttime_ticks=1002),
+            lambda receipt: receipt.update(kernel_starttime_ticks=1001),
+            lambda receipt: receipt.update(actual_executable_sha256="9" * 64),
+            lambda receipt: receipt.update(source_original_OTIO_sha256="9" * 64),
+            lambda receipt: receipt.update(phase="import"),
+        ]
+        for index, mutation in enumerate(mutations):
+            with self.subTest(index=index):
+                with self.assertRaises(runner.live.NativeKdenliveProcessRejected):
+                    self.run_mocked_route(mutate_third=mutation)
+                self.assertEqual(self.launch.call_count, 3)
+
+    def test_third_native_export_must_still_contain_the_exact_bounded_trim(self):
+        original = admitted_edit()[3]
+        lost_trim = copy.deepcopy(original)
+        lost_trim["native_change_proposals"] = []
+        wrong_scene = copy.deepcopy(original)
+        wrong_scene["native_change_proposals"][0]["scene_id"] = "scene-a"
+        wrong_duration = copy.deepcopy(original)
+        wrong_duration["native_change_proposals"][0]["duration"] = {"num": "1", "den": "1"}
+        for preview in (lost_trim, wrong_scene, wrong_duration):
+            with self.subTest(preview=preview):
+                with self.assertRaises(actions.GuiRejected):
+                    self.run_mocked_route(final_preview=preview)
+                self.assertEqual(self.launch.call_count, 3)
+
+    def test_unknown_third_terminal_is_not_success_or_an_automatic_retry(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.run_mocked_route(third_close_error=subprocess.TimeoutExpired(
+                "original reopened Kdenlive", 30))
+        self.assertEqual(self.launch.call_count, 3)
+        self.processes[2].close.assert_called_once_with()
+
+    def test_reopen_rejects_changed_edited_bytes_or_native_readback(self):
+        for changes in ({"changed_edited_bytes": True}, {"changed_readback": True}):
+            with self.subTest(changes=changes):
+                with self.assertRaises(actions.GuiRejected):
+                    self.run_mocked_route(**changes)
+                self.assertEqual(self.launch.call_count, 3)
+
+    def test_third_process_witness_keeps_reopen_phase_and_unique_record_name(self):
+        from contextlib import nullcontext
+        native = runner.NativeProcess.__new__(runner.NativeProcess)
+        native.phase, native.pid = "reopen-edited", 203
+        native.binary, native.binary_sha = Path("/synthetic/kdenlive"), "8" * 64
+        native.records = Mock()
+        native.native_environment = Mock(return_value=nullcontext())
+        witness = {"original_Kdenlive_application_version": runner.APPIMAGE_VERSION}
+        args = (Path("/synthetic/timeline.otio"), "3" * 64,
+                Path("/synthetic/edited.kdenlive"), "2" * 64)
+        with patch.object(runner.live, "inspect_live_native_kdenlive",
+                          return_value=witness) as inspect:
+            self.assertEqual(native.witness(*args, reopen_input=args[2],
+                                            reopen_sha=args[3]), witness)
+            self.assertEqual(inspect.call_args.kwargs["phase"], "reopen")
+            native.records.document.assert_called_once_with(
+                "reopen-edited-live-process.json", witness)
+            native.phase = "unknown"
+            with self.assertRaisesRegex(actions.GuiRejected, "phase_unrecognized"):
+                native.witness(*args)
+            inspect.assert_called_once()
+
 if __name__ == "__main__":
     unittest.main()
