@@ -5,10 +5,10 @@ Kdenlive >=25.04 has native OTIO import/export. This observer binds an actual
 saved .kdenlive XML project to the original Motionwright portable first-party
 media capsule and compares a separately reopened native project snapshot.
 
-THIS IS NOT A GUI/PROCESS RECEIPT. The native editor must be launched, OTIO
-imported, saved, closed, reopened in a distinct authorized process, edited,
-and OTIO exported by a separately admitted A6 G2 runner. This read-only
-observer neither opens an editor, writes a project, edits Motionwright
+THIS IS NOT AN APPLICATION-PROCESS RECEIPT. A separately authorized native
+integration runner must launch Kdenlive, import OTIO, save and close the
+project, reopen it in another process, edit and export OTIO. This read-only
+inspector neither opens the editor, writes a project, edits Motionwright
 source, calls Semwright nor grants media rights or human acceptance.
 """
 from __future__ import annotations

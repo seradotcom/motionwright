@@ -1,8 +1,8 @@
-"""Kdenlive native MLT XML readback fail-closed unit tests, not native GUI G2.
+"""Kdenlive native MLT XML readback and source-integrity unit tests.
 
-Test files are synthetic MLT XML and dummy media bytes. No test below
-launches Kdenlive or provides an external editor process receipt. Actual
-Kdenlive >=25.04 import/save/reopen/export remains A6's authorized G2.
+Fixtures contain synthetic MLT XML and source media bytes. These tests do
+not launch Kdenlive or provide native editor process evidence. Actual
+Kdenlive import/save/reopen/export requires a separate authorized app run.
 """
 from __future__ import annotations
 
