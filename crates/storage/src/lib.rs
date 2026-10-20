@@ -589,8 +589,26 @@ impl Store {
             fs::create_dir_all(parent)?;
         }
         checked_sqlite_storage_path(&path)?;
+        // On macOS /var and /tmp are built-in aliases to /private/var and
+        // /private/tmp. The checks above admit only these *exact* privileged
+        // roots, but SQLite NOFOLLOW still rejects the unresolved alias.
+        // Canonicalize the already-checked parent, never the SQLite leaf:
+        // this keeps the SQLite-native final-leaf no-follow protection.
+        #[cfg(target_os = "macos")]
+        let sqlite_path = {
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let leaf = path.file_name().ok_or_else(|| {
+                StorageError::UnsafeSourcePath("SQLite storage requires a filename".into())
+            })?;
+            fs::canonicalize(parent)?.join(leaf)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let sqlite_path = path.clone();
         let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        let mut conn = Connection::open_with_flags(&path, flags)?;
+        let mut conn = Connection::open_with_flags(&sqlite_path, flags)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         let observed_schema: u32 =
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
