@@ -17,10 +17,10 @@ const aspects=[
 ] as const;
 const previewId="00000000-0000-4000-8000-000000000005";
 type Props={
-  project:Project;scene:Scene|null;commit:(change:Change)=>Promise<void>;
+  project:Project;scene:Scene|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<void>;
   busy:boolean;playhead:number;onSeek:(n:number)=>void;onOpenCanvas:()=>void;
 };
-export default function ProductStageWorkbench({project,scene,commit,busy,playhead,onSeek,onOpenCanvas}:Props){
+export default function ProductStageWorkbench({project,scene,commit,busy,playhead,onSeek,onOpenCanvas,displayProfile}:Props){
   const stored=project.production_design?.stages?.find(stage=>stage.scene_id===scene?.id);
   const linked=project.production_design?.stage_capture_cards?.find(card=>card.stage_id===stored?.id);
   const sources=(project.production_design?.captures??[])
@@ -249,8 +249,8 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
       <div className={"production-preview-mat "+(aspect.height>aspect.width?"portrait":"")}>
         {loading?<p role="status">Preparing stage preview…</p>:
           preview.length?<CompositionStudy nodes={preview} width={aspect.width} height={aspect.height}
-            background={background} time={localTime} ink={inheritedTextInk(project.visual_language.palette)}
-            label={"ProductStage "+draft.frame+" "+aspect.label+", original graphic, editorial preview"}/>:
+            background={background} time={localTime} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+            label={"ProductStage "+draft.frame+" "+aspect.label+", selected output profile, editorial preview"}/>:
           <p role="status">Declare original-content rights to preview this stage.</p>}
       </div>
       <div className="production-transport">

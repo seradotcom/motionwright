@@ -1153,6 +1153,15 @@ test("saved localized profile text overrides the editorial SVG across two revisi
       const originalNode = svg.locator('[data-canvas-node-id="' + node.id + '"] text');
       await expect(originalNode).toHaveAttribute("data-text-origin", origin);
       await expect(originalNode).toContainText(expected);
+      // Camera reuses the same saved selected-profile text; no separate
+      // localization cache or independent variant authority is allowed.
+      await page.getByRole("navigation", { name: "Production tools" })
+        .getByRole("button", { name: "Camera", exact: true }).click();
+      const camera = page.getByRole("img", { name: /Planar camera at/ });
+      await expect(camera).toBeVisible();
+      const cameraNode = camera.locator('[data-canvas-node-id="' + node.id + '"] text');
+      await expect(cameraNode).toHaveAttribute("data-text-origin", origin);
+      await expect(cameraNode).toContainText(expected);
     }
     await page.getByRole("combobox", { name: "Editor preview timebase", exact: true }).selectOption(variant.id);
     await compareSelectedProfileText(firstOverride, "profile");
