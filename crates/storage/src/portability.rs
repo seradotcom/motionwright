@@ -121,6 +121,17 @@ impl Store {
         source: &Path,
         manifest: &ProjectBundleManifest,
     ) -> Result<Project> {
+        self.import_validated_bundle_after_check(source, manifest, || {})
+    }
+
+    // The seam lets a test drive a second SQLite writer exactly after the
+    // final destination inspection, at the CAS publication boundary.
+    fn import_validated_bundle_after_check(
+        &mut self,
+        source: &Path,
+        manifest: &ProjectBundleManifest,
+        after_check: impl FnOnce(),
+    ) -> Result<Project> {
         // Capture and validate every member before publishing even the first
         // member. A path can change after the earlier inspection.
         let staged = self.capture_bundle_blobs(source, manifest)?;
@@ -135,6 +146,7 @@ impl Store {
         // This is a bounded preflight, not a SQLite/filesystem transaction:
         // another writer may still race after this query.
         self.inspect_import(&manifest.backup)?;
+        after_check();
         for captured in &staged {
             self.publish_file_import(captured)?;
         }
@@ -804,6 +816,73 @@ mod tests {
         for blob in &manifest.blobs {
             assert!(bundle.join(&blob.relative_path).is_file());
         }
+    }
+
+    #[test]
+    fn late_sqlite_writer_cannot_claim_project_during_portable_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let (bundle, manifest) = bundle_fixture(directory.path());
+        assert_eq!(manifest.blobs.len(), 2);
+        let database = directory.path().join("target/state.sqlite3");
+        let mut target = Store::open(&database).unwrap();
+        let mut peer = Store::open(&database).unwrap();
+        peer.conn
+            .busy_timeout(Duration::from_millis(150))
+            .unwrap();
+
+        let inspected = target
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap();
+        assert_eq!(inspected.plan.blob_count, 2);
+        let mut competitor = Project::new("Second client destination").unwrap();
+        competitor.id = manifest.backup.project.id;
+
+        let stage = target.blob_root().join(".staging");
+        fs::create_dir_all(&stage).unwrap();
+        let foreign_capture = stage.join("untouched-other-capture.part");
+        fs::write(&foreign_capture, b"foreign capture must remain untouched").unwrap();
+
+        // Inject the other writer at the exact boundary between the final
+        // project-ID check and the first CAS publication. Merely rechecking
+        // the ID in a SELECT cannot protect this interval.
+        let mut other_writer = None;
+        let result = target.import_validated_bundle_after_check(&bundle, &manifest, || {
+            other_writer = Some(peer.create_project(&competitor));
+        });
+        let other_writer = other_writer.expect("boundary hook did not execute");
+        assert!(
+            matches!(
+                &other_writer,
+                Err(StorageError::Sql(rusqlite::Error::SqliteFailure(error, _)))
+                    if matches!(
+                        error.code,
+                        rusqlite::ErrorCode::DatabaseBusy
+                            | rusqlite::ErrorCode::DatabaseLocked
+                    )
+            ),
+            "second writer claimed the ID while portable CAS publication was admitted: {other_writer:?}"
+        );
+        let imported = result.expect("admitted source should commit after peer writer is blocked");
+        assert_eq!(target.load_project(imported.id).unwrap(), imported);
+        assert!(
+            peer.create_project(&competitor).is_err(),
+            "competing project overwrote the already committed import"
+        );
+        for blob in &manifest.blobs {
+            assert_eq!(
+                target.read_blob(&blob.sha256, blob.size_bytes).unwrap(),
+                fs::read(bundle.join(&blob.relative_path)).unwrap()
+            );
+        }
+        let staged_files: Vec<_> = fs::read_dir(&stage)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(staged_files, vec![foreign_capture.clone()]);
+        assert_eq!(
+            fs::read(foreign_capture).unwrap(),
+            b"foreign capture must remain untouched"
+        );
     }
 
     #[test]
