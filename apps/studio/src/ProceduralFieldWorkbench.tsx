@@ -8,7 +8,7 @@ import { defaultProceduralConfig, normalizedProceduralConfig, realizeProceduralF
 import type { ProceduralConfig } from "./proceduralField";
 
 const previewIdentity="00000000-0000-4000-8000-000000000095";
-type Props={project:Project;scene:Scene|null;commit:(change:Change)=>Promise<void>;busy:boolean;onOpenCanvas:()=>void};
+type Props={project:Project;scene:Scene|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<void>;busy:boolean;onOpenCanvas:()=>void};
 const dimensions=[
   ["seed","Integer seed",0,4294967295],
   ["count","Number of objects",1,64],
@@ -22,7 +22,7 @@ const dimensions=[
   ["reveal_step_frames","Entrance interval (frames; 0 disables)",0,10],
   ["reveal_duration_frames","Entrance fade length (frames)",1,60],
 ] as const;
-export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOpenCanvas}:Props){
+export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOpenCanvas,displayProfile}:Props){
   const stored=project.production_design?.procedural_fields?.find(field=>field.scene_id===scene?.id);
   const [draft,setDraft]=useState<ProceduralConfig>(()=>normalizedProceduralConfig(structuredClone(stored?.config??defaultProceduralConfig())));
   const [base,setBase]=useState(project.revision);
@@ -129,7 +129,7 @@ export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOp
       </label>
       {previewLoading?<p role="status">Evaluating bounded procedural preview…</p>
        :previewError?<p role="status">No preview until the field constraints are valid.</p>
-       :<CompositionStudy nodes={nodes} width={1920} height={1080} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)}
+       :<CompositionStudy nodes={nodes} width={1920} height={1080} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
           label={`Procedural editorial preview, ${draft.distribution} distribution, ${nodes.length} editable objects`}/>}
       <p className="mono">{draft.count} authored objects · seed {draft.seed} ·
         {stored?` attached field ${stored.id.slice(0,8)}…`:" not yet attached"} · no native render receipt</p>
