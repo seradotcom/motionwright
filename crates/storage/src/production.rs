@@ -1,8 +1,9 @@
 use crate::{Result, StorageError, Store};
-use motionwright_domain::DomainError;
+use motionwright_domain::{DomainError, Project};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -242,10 +243,61 @@ fn recovery_head(history: &[ProductionReceipt]) -> Result<Option<ProductionRecei
     Ok(previous.cloned())
 }
 
-fn append_record(
+#[derive(PartialEq, Eq)]
+struct ReceiptHistoryFingerprint {
+    count: u64,
+    last_sequence: Option<i64>,
+    sha256: [u8; 32],
+}
+
+// Protect every retained receipt in this project, across keys, providers and
+// generations. Stream raw SQLite fields so JSON normalization cannot hide an
+// extension's rewrite and memory does not grow with the complete history.
+fn receipt_history_fingerprint(
     conn: &rusqlite::Connection,
+    project_id: Uuid,
+    exclude: Option<Uuid>,
+) -> Result<ReceiptHistoryFingerprint> {
+    super::validate_production_receipt_order_integrity(conn, Some(project_id))?;
+    let mut statement = conn.prepare(
+        "SELECT r.receipt_id,r.project_id,r.generation,r.revision,r.request_id,
+                r.request_sha256,r.command,r.stage,r.payload_json,r.created_at,o.sequence
+         FROM production_receipts AS r
+         JOIN production_receipt_order AS o ON o.receipt_id=r.receipt_id
+         WHERE r.project_id=?1 AND (?2 IS NULL OR r.receipt_id<>?2)
+         ORDER BY o.sequence",
+    )?;
+    let mut rows = statement.query(params![
+        project_id.to_string(),
+        exclude.map(|id| id.to_string())
+    ])?;
+    let mut hash = Sha256::new();
+    hash.update(b"motionwright-production-receipt-history/1");
+    let mut count = 0_u64;
+    let mut last_sequence = None;
+    while let Some(row) = rows.next()? {
+        let sequence: i64 = row.get(10)?;
+        // payload_json stays a String within this tuple, not a parsed Value.
+        let bytes = serde_json::to_vec(&stored_receipt_row(row)?)?;
+        hash.update(sequence.to_le_bytes());
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(&bytes);
+        count += 1;
+        last_sequence = Some(sequence);
+    }
+    Ok(ReceiptHistoryFingerprint {
+        count,
+        last_sequence,
+        sha256: hash.finalize().into(),
+    })
+}
+
+fn append_record(
+    conn: &rusqlite::Transaction<'_>,
     input: ProductionReceiptInput,
+    current_project: &Project,
 ) -> Result<ProductionReceipt> {
+    let before = receipt_history_fingerprint(conn, input.project_id, None)?;
     let receipt = ProductionReceipt {
         id: Uuid::now_v7(),
         project_id: input.project_id,
@@ -277,9 +329,16 @@ fn append_record(
             &receipt.created_at,
         ],
     )?;
-    // An extension trigger can RAISE(IGNORE), omit our mapping, or alter the
-    // inserted row. Verify the complete postcondition before the caller commits.
-    super::validate_production_receipt_order_integrity(conn, Some(receipt.project_id))?;
+    // This comparison runs after every INSERT trigger. Only the requested
+    // receipt may be new; nested admissions or even valid-looking historical
+    // rewrites must roll back along with any extension audit side effects.
+    let after = receipt_history_fingerprint(conn, receipt.project_id, Some(receipt.id))?;
+    if after != before {
+        return Err(StorageError::InvalidBackup(
+            "recording a receipt changed the retained project receipt history".into(),
+        ));
+    }
+    // An extension can also RAISE(IGNORE) or alter the requested row itself.
     let persisted = query_receipts(
         conn,
         "SELECT r.receipt_id,r.project_id,r.generation,r.revision,r.request_id,
@@ -293,6 +352,28 @@ fn append_record(
         return Err(StorageError::InvalidBackup(
             "receipt and its commit-order mapping were not atomically recorded".into(),
         ));
+    }
+    let sequence = receipt_anchor(conn, receipt.project_id, receipt.id)?;
+    if before.last_sequence.is_some_and(|prior| sequence <= prior) {
+        return Err(StorageError::InvalidBackup(
+            "new receipt ordinal does not follow the retained history".into(),
+        ));
+    }
+    if super::load_project_from_row(conn, receipt.project_id)? != *current_project {
+        return Err(StorageError::InvalidBackup(
+            "project authority changed while recording a production receipt".into(),
+        ));
+    }
+    if is_recovery_command(&receipt.command)
+        && recovery_head(&request_history(
+            conn,
+            receipt.project_id,
+            &receipt.request_id,
+        )?)?
+        .as_ref()
+            != Some(&receipt)
+    {
+        return Err(StorageError::RequestReuse);
     }
     Ok(receipt)
 }
@@ -392,7 +473,7 @@ impl Store {
             ))
         })?;
         data.insert("attempt".into(), serde_json::json!(attempt));
-        let receipt = append_record(&tx, input)?;
+        let receipt = append_record(&tx, input, &current)?;
         tx.commit()?;
         Ok(receipt)
     }
@@ -452,7 +533,7 @@ impl Store {
                 return Err(StorageError::RequestReuse);
             }
         }
-        let receipt = append_record(&tx, input)?;
+        let receipt = append_record(&tx, input, &current)?;
         tx.commit()?;
         Ok(receipt)
     }

@@ -24,6 +24,32 @@ snapshot. Missing, foreign or forward cursors are errors; they cannot silently
 widen a page or claim that an incomplete history is empty. The watermark remains
 the head receipt UUID plus count. Its UUID may decrease lexicographically.
 
+## Post-trigger transaction authority
+
+Receipt insertion is private to an owning SQLite transaction. After all extension
+triggers finish, the operation must still represent exactly the requested append.
+A streaming SHA-256 fingerprint, count and last ordinal cover every preexisting
+receipt in the current project, across providers, request keys and generations.
+The fingerprint uses persisted string fields, including the original payload
+JSON text, with explicit field-tuple lengths and ordinal boundaries.
+
+Excluding only the requested new UUID, the final fingerprint must equal the
+initial one. The new row and mapping must exist unchanged, its ordinal must
+follow retained history, and the loaded Project must equal the value admitted
+before insertion. A recovery chain must end in exactly the newly inserted
+receipt. A failed postcondition rolls back the receipt, nested writes and any
+audit writes made by that statement.
+
+This rejects a trigger that inserts a recovery terminal or a new dispatch,
+changes a historical proof while leaving its state superficially valid, or
+changes project authority during admission. A trigger that only records an
+ordinary extension audit row remains supported in either creation order.
+
+Fingerprinting uses memory proportional to the largest serialized receipt,
+with two linear history reads. It protects the current project's persisted
+receipts and loaded Project; it is not confinement of arbitrary SQL extensions
+across unrelated projects or an OS-level integrity guarantee.
+
 ## Service and SDK consumers
 
 The service first validates the complete newest-first receipt snapshot against
@@ -81,7 +107,11 @@ history editing. Inconsistent recovery transitions remain visible in audit pages
 but cannot supply completed proof or retry authority.
 
 Reserved names are checked across object kinds without case sensitivity.
-Existing schema 3 mappings are validated rather than silently rebuilt. Missing,
+A supported schema 3 must have exactly one canonical object for each name:
+a valid table or index cannot hide a same-name extension trigger, nor can the
+mapping trigger hide a same-name extension table. Earlier schemas require zero
+reserved objects before migration. Existing schema 3 mappings are validated
+rather than silently rebuilt. Missing,
 orphaned or wrong-project mappings cause an error. Normal application receipts
 are immutable; external project reassignment is not adopted.
 
@@ -130,6 +160,15 @@ package; no product storage mutation interface is exported. Both new cases
 failed in [run 39508925559](https://github.com/seradotcom/motionwright/actions/runs/39508925559):
 143 existing native unit tests passed, two failed, zero were ignored. The valid
 continuation was rejected by UUID comparison and the older job appeared first.
+
+The post-trigger and schema-name test-only source
+7f472aab9ce83bec005b64a3e4bba0df868379a1 reproduced ten failures in
+[run 39510360779](https://github.com/seradotcom/motionwright/actions/runs/39510360779):
+25 production storage tests passed, ten failed and none were ignored. Both
+trigger creation orders returned an inadmissible claim; the retained-v2 order
+left a retryable failure as its canonical head. Historical proof, nested keys,
+project revision and all three reserved-name collisions also failed their
+negative assertions. The ordinary audit-only extension control passed.
 
 The corrected source must run the identical regression bodies, all schema
 migration tests, applicable service/native consumers and strict linting:

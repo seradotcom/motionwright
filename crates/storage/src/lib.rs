@@ -461,19 +461,24 @@ fn normalized_schema_sql(sql: &str) -> String {
 
 fn validate_production_receipt_order_layout(conn: &Connection, version: u32) -> Result<()> {
     for (name, expected_kind, expected_sql) in PRODUCTION_RECEIPT_ORDER_SCHEMA {
-        let existing: Option<(String, String)> = conn
-            .query_row(
-                "SELECT type,sql FROM sqlite_master WHERE name=?1 COLLATE NOCASE",
-                [name],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        match existing {
-            None if version < 3 => {}
-            Some((kind, sql))
+        // Triggers have a different SQLite name namespace from tables and
+        // indexes. Inspect cardinality across every object kind, not one row.
+        let existing = {
+            let mut statement = conn.prepare(
+                "SELECT type,sql FROM sqlite_master WHERE name=?1 COLLATE NOCASE LIMIT 2",
+            )?;
+            statement
+                .query_map([name], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        match existing.as_slice() {
+            [] if version < 3 => {}
+            [(kind, Some(sql))]
                 if version >= 3
-                    && kind == expected_kind
-                    && normalized_schema_sql(&sql) == normalized_schema_sql(expected_sql) => {}
+                    && kind.as_str() == expected_kind
+                    && normalized_schema_sql(sql) == normalized_schema_sql(expected_sql) => {}
             _ => {
                 return Err(StorageError::InvalidBackup(
                     "receipt commit-order schema is missing, incompatible or reserved by an extension"
