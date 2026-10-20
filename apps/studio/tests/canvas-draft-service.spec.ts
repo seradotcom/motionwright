@@ -725,3 +725,331 @@ test("another tab restores foreign input explicitly and changed recovery bytes c
       [() => page.close(), ...(second ? [() => second!.close()] : [])]);
   }
 });
+
+test("lost reply after real Canvas commit cannot replay the already saved operation", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  const original = service.invoke.bind(service);
+  let swallowed = false;
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    evidence.initial = initial; evidence.final = initial;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+    const savedText = "  First committed text despite lost transport acknowledgment  ";
+    service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const result = await original<T>(command, args);
+      const request = args.request as ApplyArgs["request"] | undefined;
+      if (command === "apply_change" && request?.change.type === "update_canvas_text" && !swallowed) {
+        swallowed = true;
+        throw new Error("synthetic transport lost its reply after real SQLite commit");
+      }
+      return result;
+    };
+    await input(page, "text").fill(savedText);
+    await button(page, "Commit text").click();
+    await expect(page.getByRole("region", { name: "Unconfirmed Canvas submission", exact: true })).toBeVisible();
+    await expect(button(page, "Commit text")).toBeDisabled();
+    const actuallySaved = await service.project(initial.id);
+    evidence.final = actuallySaved;
+    evidence.checkpoints.push({ label: "write persisted before the lost reply", project: actuallySaved });
+    expect(actuallySaved.revision).toBe(initial.revision + 1);
+    expect(storedNode(actuallySaved, scene.id, target.id).text).toBe(savedText);
+    const storedJournal = await service.history(initial.id, initial.revision);
+    expect(storedJournal).toHaveLength(1);
+    expect(storedJournal[0].change.type).toBe("update_canvas_text");
+    expect(applyRequests(service)).toHaveLength(1);
+    await button(page, "Brief").click();
+    await openCanvas(page, scene.name, target.name);
+    await expect(page.getByRole("region", { name: "Unconfirmed Canvas submission", exact: true })).toBeVisible();
+    expect(applyRequests(service)).toHaveLength(1);
+    await page.reload();
+    await openCanvas(page, scene.name, target.name);
+    await revision(page, initial.revision + 1);
+    await expect(input(page, "text")).toHaveValue(savedText);
+    await expect(button(page, "Commit text")).toBeDisabled();
+    expect(await service.project(initial.id)).toEqual(actuallySaved);
+    expect(await service.history(initial.id, initial.revision)).toEqual(storedJournal);
+    expect(applyRequests(service)).toHaveLength(1);
+    evidence.observations.push({ label: "real_commit_unknown_reply_readback_no_replay", projectId: initial.id,
+      savedRevision: actuallySaved.revision, applyCount: 1, simulatedFailure: "reply_only" });
+  } finally {
+    service.invoke = original;
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});
+
+test("Canvas pointer readback is required before real-service commit and explicit reload restores draft", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    evidence.initial = initial; evidence.final = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+    await page.evaluate(() => {
+      const state = window as Window & { __denyCanvasPointer?: boolean };
+      state.__denyCanvasPointer = true;
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key: string, raw: string) {
+        if (this === window.sessionStorage && key.startsWith("motionwright.canvas-session.v1:") && state.__denyCanvasPointer)
+          return;
+        return original.call(this, key, raw);
+      };
+    });
+    const authored = "  Draft surviving a silent session pointer failure  ";
+    await input(page, "text").fill(authored);
+    await expect(page.getByRole("alert", { name: "Canvas draft backup warning", exact: true }))
+      .toContainText("session pointer could not be verified");
+    await button(page, "Commit text").click();
+    expect(applyRequests(service)).toHaveLength(0);
+    expect(await service.project(initial.id)).toEqual(initial);
+    expect(await service.history(initial.id, initial.revision)).toEqual([]);
+    const copy = await page.evaluate((text) => {
+      for (let index = 0; index < localStorage.length; index++) {
+        const key = localStorage.key(index);
+        if (!key?.startsWith("motionwright.canvas-draft.v1:")) continue;
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const value = JSON.parse(raw) as { writerId: string; draft: { fields: { text: { raw: string } } } | null };
+        if (value.draft?.fields.text.raw === text) return { writerId: value.writerId, key, raw };
+      }
+      return null;
+    }, authored);
+    expect(copy).not.toBeNull();
+    if (!copy) throw new Error("The local Canvas author copy was not retained.");
+    await page.reload();
+    await openCanvas(page, scene.name, target.name);
+    await expect(input(page, "text")).not.toHaveValue(authored);
+    await page.getByText("Local Canvas recovery copies", { exact: true }).click();
+    await button(page, "Restore Canvas draft " + copy.writerId).click();
+    await expect(input(page, "text")).toHaveValue(authored);
+    expect(applyRequests(service)).toHaveLength(0);
+    await button(page, "Commit text").click();
+    const final = await checkpoint(service, page, evidence, initial.id, initial.revision + 1,
+      "Restored local author input deliberately committed");
+    expect(storedNode(final, scene.id, target.id).text).toBe(authored);
+    const journal = await service.history(initial.id, initial.revision);
+    expect(journal).toHaveLength(1);
+    expect(journal[0].change.type).toBe("update_canvas_text");
+    expect(applyRequests(service)).toHaveLength(1);
+    await service.close(); await service.start();
+    await page.reload(); await openCanvas(page, scene.name, target.name);
+    await revision(page, final.revision);
+    expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id, initial.revision)).toEqual(journal);
+    expect(applyRequests(service)).toHaveLength(1);
+    evidence.observations.push({
+      label: "silent_pointer_failure_did_not_apply_and_explicit_restore_committed_once",
+      retainedWriter: copy.writerId, restoredText: authored, revision: final.revision,
+      originalApplyCount: 0, finalApplyCount: 1,
+    });
+  } finally {
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});
+
+test("authored Canvas style persists across two real revisions and reopen without losing uncommitted typography", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    evidence.initial = initial; evidence.final = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+
+    await page.getByLabel("Canvas fill", { exact: true }).fill("#F7EAD7");
+    await page.getByLabel("Canvas font size", { exact: true }).fill("1e");
+    await expect(button(page, "Commit style")).toBeDisabled();
+    await button(page, "Brief").click();
+    await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas fill", { exact: true })).toHaveValue("#F7EAD7");
+    await expect(page.getByLabel("Canvas font size", { exact: true })).toHaveValue("1e");
+    await page.reload(); await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas fill", { exact: true })).toHaveValue("#F7EAD7");
+    await expect(page.getByLabel("Canvas font size", { exact: true })).toHaveValue("1e");
+    expect(applyRequests(service)).toHaveLength(0);
+    expect(await service.project(initial.id)).toEqual(initial);
+
+    await page.getByLabel("Canvas font size", { exact: true }).fill("64");
+    await button(page, "Commit style").click();
+    const first = await checkpoint(service, page, evidence, initial.id, initial.revision + 1, "saved original palette and typography");
+    const firstNode = storedNode(first, scene.id, target.id);
+    expect(firstNode.style.fill).toBe("#F7EAD7");
+    expect(firstNode.style.font_size).toBe(64);
+    expect(firstNode.style.stroke).toBe(target.style.stroke);
+    expect(firstNode.text).toBe(target.text);
+    expect(firstNode.id).toBe(target.id);
+    expect((await service.history(initial.id,initial.revision)).map(event=>event.change.type)).toEqual(["update_canvas_style"]);
+
+    await page.getByLabel("Canvas fill", { exact: true }).fill("#1A7D83");
+    await page.getByLabel("Canvas line height", { exact: true }).fill("1e");
+    await button(page, "Brief").click(); await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas fill", { exact: true })).toHaveValue("#1A7D83");
+    await expect(page.getByLabel("Canvas line height", { exact: true })).toHaveValue("1e");
+    await page.getByLabel("Canvas line height", { exact: true }).fill("1.4");
+    await button(page, "Commit style").click();
+    const final = await checkpoint(service, page, evidence, initial.id, initial.revision + 2, "second style revision");
+    expect(storedNode(final, scene.id, target.id).style).toEqual({
+      ...firstNode.style, fill: "#1A7D83", line_height: 1.4,
+    });
+    const journal = await service.history(initial.id,initial.revision);
+    expect(journal.map(event=>event.revision)).toEqual([initial.revision+1,initial.revision+2]);
+    expect(journal.map(event=>event.change.type)).toEqual(["update_canvas_style","update_canvas_style"]);
+    expect(applyRequests(service)).toHaveLength(2);
+    await service.close(); await service.start(); await page.reload();
+    await openCanvas(page, scene.name, target.name);
+    await revision(page, final.revision);
+    await expect(page.getByLabel("Canvas fill", { exact: true })).toHaveValue("#1A7D83");
+    await expect(page.getByLabel("Canvas font size", { exact: true })).toHaveValue("64");
+    await expect(page.getByLabel("Canvas line height", { exact: true })).toHaveValue("1.4");
+    expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id,initial.revision)).toEqual(journal);
+    evidence.observations.push({label:"style_two_revisions_exact_sqlite_reopen",saved:final.revision,nodeId:target.id,
+      preservedText:target.text,applyCount:2});
+  } finally {
+    await retainEvidence(testInfo,[service],evidence,[()=>page.close()]);
+  }
+});
+
+test("Canvas hierarchy retains parent and raw Z through two real revisions and a service restart", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    let initial = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    evidence.initial = initial; evidence.final = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+    // The bootstrap fixture has one object. Author the second through the
+    // real Studio command, so both parent and child exist in SQLite.
+    await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+    initial = await checkpoint(service, page, evidence, initial.id, initial.revision + 1, "authored second Canvas object");
+    const other = sceneNamed(initial, scene.name).nodes[1];
+    await selectNode(page, target.name);
+    const beforeHierarchy = applyRequests(service).length;
+
+    await page.getByLabel("Canvas parent", { exact: true }).selectOption({ value: other.id });
+    await page.getByLabel("Canvas z order", { exact: true }).fill("1e");
+    await expect(button(page, "Commit hierarchy")).toBeDisabled();
+    await button(page, "Brief").click();
+    await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas parent", { exact: true })).toHaveValue(other.id);
+    await expect(page.getByLabel("Canvas z order", { exact: true })).toHaveValue("1e");
+    await page.reload(); await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas parent", { exact: true })).toHaveValue(other.id);
+    await expect(page.getByLabel("Canvas z order", { exact: true })).toHaveValue("1e");
+    expect(applyRequests(service)).toHaveLength(beforeHierarchy);
+    expect(await service.project(initial.id)).toEqual(initial);
+
+    await page.getByLabel("Canvas z order", { exact: true }).fill("6");
+    await button(page, "Commit hierarchy").click();
+    const first = await checkpoint(service, page, evidence, initial.id, initial.revision + 1, "saved reparent and exact Z");
+    expect(storedNode(first, scene.id, target.id)).toMatchObject({
+      id: target.id, parent_id: other.id, z_index: 6, text: target.text, style: target.style,
+    });
+    expect((await service.history(initial.id,initial.revision)).map(event=>event.change.type))
+      .toEqual(["reparent_canvas_node"]);
+
+    await page.getByLabel("Canvas parent", { exact: true }).selectOption({ value: "" });
+    await page.getByLabel("Canvas z order", { exact: true }).fill("9");
+    await button(page, "Commit hierarchy").click();
+    const final = await checkpoint(service, page, evidence, initial.id, initial.revision + 2, "saved scene root and later Z");
+    expect(storedNode(final, scene.id, target.id)).toMatchObject({
+      id: target.id, parent_id: null, z_index: 9, text: target.text, style: target.style,
+    });
+    const journal = await service.history(initial.id,initial.revision);
+    expect(journal.map(event=>event.revision)).toEqual([initial.revision+1,initial.revision+2]);
+    expect(journal.map(event=>event.change.type)).toEqual(["reparent_canvas_node","reparent_canvas_node"]);
+    expect(applyRequests(service)).toHaveLength(beforeHierarchy + 2);
+    await service.close(); await service.start(); await page.reload();
+    await openCanvas(page, scene.name, target.name); await revision(page, final.revision);
+    await expect(page.getByLabel("Canvas parent", { exact: true })).toHaveValue("");
+    await expect(page.getByLabel("Canvas z order", { exact: true })).toHaveValue("9");
+    expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id,initial.revision)).toEqual(journal);
+    evidence.observations.push({ label: "hierarchy_two_revisions_full_reopen", finalRevision: final.revision,
+      originalNodeId: target.id, originalText: target.text, applyCount: beforeHierarchy + 2 });
+  } finally {
+    await retainEvidence(testInfo,[service],evidence,[()=>page.close()]);
+  }
+});
+
+test("Canvas relation add and remove preserve stable IDs and source intent through reopen", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    let baseline = (await service.fixtureBootstrap()).project;
+    const scene = sceneNamed(baseline, "Independent synthetic scene"), target = scene.nodes[0];
+    evidence.initial = baseline; evidence.final = baseline;
+    await service.attachFixturePage(page, baseline.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+    await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+    baseline = await checkpoint(service, page, evidence, baseline.id, baseline.revision + 1, "second object created for relation");
+    const other = sceneNamed(baseline, scene.name).nodes[1];
+    await selectNode(page, target.name);
+    const preexistingApplyCount = applyRequests(service).length;
+
+    await page.getByLabel("Canvas relation kind", { exact: true }).selectOption("align_right");
+    await page.getByLabel("Canvas relation target", { exact: true }).selectOption(other.id);
+    await button(page, "Brief").click();
+    await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas relation kind", { exact: true })).toHaveValue("align_right");
+    await expect(page.getByLabel("Canvas relation target", { exact: true })).toHaveValue(other.id);
+    await page.reload(); await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas relation kind", { exact: true })).toHaveValue("align_right");
+    await expect(page.getByLabel("Canvas relation target", { exact: true })).toHaveValue(other.id);
+    expect(applyRequests(service)).toHaveLength(preexistingApplyCount);
+    expect(await service.project(baseline.id)).toEqual(baseline);
+
+    await button(page, "Add canvas relation").click();
+    const linked = await checkpoint(service, page, evidence, baseline.id, baseline.revision + 1, "authored semantic relation");
+    const savedRelation = storedNode(linked, scene.id, target.id).relations[0];
+    expect(storedNode(linked, scene.id, target.id).relations).toHaveLength(1);
+    expect(savedRelation).toMatchObject({ kind: "align_right", target_id: other.id });
+    expect(savedRelation.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(storedNode(linked, scene.id, target.id).text).toBe(target.text);
+    expect((await service.history(baseline.id, baseline.revision)).map(e => e.change.type))
+      .toEqual(["set_canvas_relations"]);
+
+    await page.getByLabel("Canvas relation kind", { exact: true }).selectOption("align_right");
+    await page.getByLabel("Canvas relation target", { exact: true }).selectOption(other.id);
+    await expect(button(page, "Add canvas relation")).toBeDisabled();
+    expect(applyRequests(service)).toHaveLength(preexistingApplyCount + 1);
+    // Removing the existing ID is explicit. The duplicate composer choice
+    // remains authored input and is not automatically submitted.
+    await button(page, "Remove relation " + savedRelation.id).click();
+    const unlinked = await checkpoint(service, page, evidence, baseline.id, baseline.revision + 2, "removed exact relation ID");
+    expect(storedNode(unlinked, scene.id, target.id).relations).toEqual([]);
+    expect(storedNode(unlinked, scene.id, target.id).text).toBe(target.text);
+    const journal = await service.history(baseline.id, baseline.revision);
+    expect(journal.map(event => event.revision)).toEqual([baseline.revision + 1, baseline.revision + 2]);
+    expect(journal.map(event => event.change.type)).toEqual(["set_canvas_relations", "set_canvas_relations"]);
+    expect(applyRequests(service)).toHaveLength(preexistingApplyCount + 2);
+    await service.close(); await service.start(); await page.reload();
+    await openCanvas(page, scene.name, target.name); await revision(page, unlinked.revision);
+    expect(await service.project(baseline.id)).toEqual(unlinked);
+    expect(await service.history(baseline.id, baseline.revision)).toEqual(journal);
+    expect(applyRequests(service)).toHaveLength(preexistingApplyCount + 2);
+    evidence.observations.push({
+      label: "relations_two_exact_saved_revisions_and_reopen", id: savedRelation.id,
+      originallyTargetedObject: other.id, originalTextPreserved: target.text,
+      finalRevision: unlinked.revision, actionCount: 2,
+    });
+  } finally {
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});

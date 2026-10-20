@@ -23,8 +23,10 @@ import VisualLanguageEditor from "./VisualLanguageEditor";
 import {
   CANVAS_DRAFT_PREFIX, CANVAS_FIELD_LABELS, CANVAS_TRANSFORM_FIELDS, canvasContextConflicts, canvasDraftConflicts, canvasDraftHasWork,
   canvasDraftScope, canvasFieldHasInput, canvasFieldIssue, canvasGroupIssue, canvasNumber,
-  canvasSubmissionMatches, createCanvasDraft, decodeCanvasRecovery, discardCanvasRecovery, editCanvasField, prepareCanvasSubmission,
+  canvasSubmissionMatches, createCanvasDraft, decodeCanvasRecovery, discardCanvasRecovery, editCanvasField,
+  prepareCanvasSubmission, prepareCanvasRelationSubmission, canvasRelationIssue,
   readCanvasRecoveries, reconcileCanvasDraft, releaseCanvasSubmission, resolveCanvasField, reviewCanvasContext, writeCanvasRecovery,
+  writeCanvasSessionPointer,
 } from "./canvasWorkspaceDraft";
 import type { CanvasDraftField, CanvasDraftGroup, CanvasRecoveryEntry, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
 
@@ -167,7 +169,16 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       }
       writer.lastRaw = writeCanvasRecovery(window.localStorage, { schema: "motionwright.canvas-recovery/1", scope,
         writerId: writer.writerId, updatedAt: Date.now(), draft: canvasDraftHasWork(next) ? next : null }, writer.lastRaw);
-      try { window.sessionStorage.setItem(CANVAS_SESSION_PREFIX + scope, writer.writerId); } catch { /* The local copy is still durable. */ }
+      try { writeCanvasSessionPointer(window.sessionStorage, CANVAS_SESSION_PREFIX + scope, writer.writerId); }
+      catch (reason) {
+        // The durable record is not lost, but a reload cannot identify its
+        // window without the pointer. Do not grant a mutation until recovery
+        // has been confirmed; explicit Restore remains available.
+        if (mounted.current) setBackupError("Canvas input was saved locally but its session pointer could not be verified. "
+          + "Reload requires an explicit Restore from Local Canvas recovery copies. "
+          + (reason instanceof Error ? reason.message : String(reason)));
+        return false;
+      }
       if (mounted.current) setBackupError(null);
       return true;
     } catch (reason) {
@@ -214,7 +225,7 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
   function edit(field: CanvasDraftField, raw: string) {
     setError(null); setNotice(null); replace(editCanvasField(session.current.draft, field, raw));
   }
-  async function save(group: CanvasDraftGroup) {
+  async function save(group: Exclude<CanvasDraftGroup, "relations">) {
     if (inFlight.current) return;
     let attempt: ReturnType<typeof prepareCanvasSubmission>;
     try { attempt = prepareCanvasSubmission(session.current.draft, projectRef.current, group, crypto.randomUUID()); }
@@ -232,11 +243,40 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       // Project acknowledges this input; a resolved promise is insufficient.
       if (mounted.current) observe(projectRef.current);
     } catch (reason) {
-      replace(releaseCanvasSubmission(session.current.draft, attempt.submission.id));
-      if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason)) + " Your Canvas input has been kept.");
+      // A lost response is not evidence that the service rejected the command.
+      // Keep the exact submitted snapshot in recovery, blocking replay until
+      // the saved revision acknowledges it or the author reviews explicitly.
+      if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason))
+        + " The Canvas result is unconfirmed. Reload to inspect the saved revision; no automatic retry will occur.");
     } finally {
       inFlight.current = false; if (mounted.current) setPending(false);
     }
+  }
+  async function changeRelation(operation: "add" | "remove", relationId?: string) {
+    if (inFlight.current) return;
+    let attempt: ReturnType<typeof prepareCanvasRelationSubmission>;
+    try {
+      attempt = prepareCanvasRelationSubmission(session.current.draft, projectRef.current,
+        operation, crypto.randomUUID(), relationId);
+    } catch (reason) {
+      if (mounted.current) setError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
+    // Stable identities and the exact proposed list are retained before the
+    // service receives the change. The snapshot is never an automatic replay.
+    if (!replace(attempt.draft)) {
+      replace(releaseCanvasSubmission(session.current.draft, attempt.submission.id));
+      if (mounted.current) setError("Canvas relation recovery could not be retained. Nothing was sent.");
+      return;
+    }
+    inFlight.current = true; setPending(true); setError(null); setNotice(null);
+    try {
+      await commit(attempt.change);
+      if (mounted.current) observe(projectRef.current);
+    } catch (reason) {
+      if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason))
+        + " The relation result is unconfirmed. Review the saved list before attempting another change.");
+    } finally { inFlight.current = false; if (mounted.current) setPending(false); }
   }
   function resolve(field: CanvasDraftField, choice: "saved" | "draft") {
     if (inFlight.current) return;
@@ -373,6 +413,11 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       {canvasFieldIssue("text", draft.fields.text.raw) && <span id={fieldId("text") + "-error"} className="production-error">{canvasFieldIssue("text", draft.fields.text.raw)}</span>}
     </label>
     <button className="button full" type="button" onClick={() => void save("text")} disabled={pending || textIssue !== null} title={textIssue ?? undefined}>Commit text</button>
+    <CanvasStructureEditor scene={scene} node={node} commit={commit} draft={draft}
+      edit={edit} saveStyle={() => void save("style")} styleIssue={canvasGroupIssue(draft,project,"style")}
+      saveHierarchy={() => void save("hierarchy")} hierarchyIssue={canvasGroupIssue(draft,project,"hierarchy")}
+      relation={(operation, id) => void changeRelation(operation, id)}
+      relationIssue={canvasRelationIssue(draft,project,"add")} pending={pending}/>
     {canvasDraftHasWork(draft) && <button className="button full" type="button" disabled={pending} onClick={() => {
       replace(createCanvasDraft(projectRef.current, scene.id, node.id));
       setError(null); setNotice("Discarded this object's local input. The saved project and other object drafts are unchanged.");
@@ -1029,7 +1074,6 @@ export default function CanvasWorkspace({
                 </label>
               </div>
 
-              <CanvasStructureEditor scene={scene} node={selectedNode} commit={commit} />
             </>
           )}
           <TypographySafetyReview

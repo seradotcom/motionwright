@@ -3,6 +3,7 @@ import { ArrowUpRight, RefreshCw, Save } from "lucide-react";
 import type { Change, Project, Scene } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
+import { inheritedTextInk } from "./canvasInheritedInk";
 import { CAMERA_REFRAME_VERSION, cameraPreviewOffset, validateCameraReframe } from "./cameraReframe";
 import type { CameraReframe } from "./cameraReframe";
 type Props={project:Project;scene:Scene|null;busy:boolean;
@@ -122,7 +123,7 @@ export default function CameraReframeWorkbench({project,scene,busy,commit,playhe
         <span>1920 × 1080 original Canvas · editorial preview only</span></div></div>
       <div className="production-preview-mat">
         {preview.length?<CompositionStudy nodes={preview} width={1920} height={1080}
-          time={localTime} background={background}
+          time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)}
           label={"Planar camera at "+localTime.toFixed(3)+" seconds, original graphic"}/>:
           <p role="status">Add a semantic Canvas object to preview the move.</p>}
       </div>
