@@ -383,7 +383,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             ffmpeg dbus-x11 xvfb xauth openbox xdotool \
-            python3.12-venv python3-gi gir1.2-atspi-2.0 at-spi2-core libxcb-cursor0
+            python3.12-venv python3-gi gir1.2-atspi-2.0 at-spi2-core libxcb-cursor0 libopengl0
+          /usr/bin/python3.12 -c 'import ctypes; ctypes.CDLL("libOpenGL.so.0")'
           /usr/bin/python3.12 -m venv --system-site-packages "$RUNNER_TEMP/kdenlive-gui-python"
           "$RUNNER_TEMP/kdenlive-gui-python/bin/python" -m pip install \
             --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
