@@ -28,7 +28,11 @@ def capsule(root: Path, *, missing: bool = False) -> tuple[Path, str]:
     bundle = root / "capsule"
     (bundle / "media").mkdir(parents=True)
     (bundle / "media" / f"{MEDIA_SHA}.mp4").write_bytes(MEDIA_BYTES)
-    row = {"source_sha256": MEDIA_SHA, "path": f"media/{MEDIA_SHA}.mp4"}
+    row = {
+        "scene_id": "scene-original-1",
+        "source_sha256": MEDIA_SHA, "path": f"media/{MEDIA_SHA}.mp4",
+        "source_start_frame": 0, "duration_frames": 30, "source_fps": 30,
+    }
     manifest = {
         "schema": "motionwright.otio-portable-media-bridge/1",
         "output_profile": "portable-media-cut-v2",
@@ -132,9 +136,80 @@ class KdenliveNativeReadbackTests(unittest.TestCase):
                 "reopened.kdenlive",
             )
             a = inspect_saved_kdenlive(project, sha, bundle, seal)
-            b = inspect_saved_kdenlive(reopened, reopen_sha, bundle, seal)
-            with self.assertRaisesRegex(KdenliveReadbackRejected, "lost_source_or_frame_clock"):
-                compare_two_native_custody_snapshots(a, b)
+            self.assertEqual(a["native_saved_frame_rate"], "30/1")
+            with self.assertRaisesRegex(
+                KdenliveReadbackRejected, "inpoint_or_SHA_no_longer_bound"
+            ):
+                inspect_saved_kdenlive(reopened, reopen_sha, bundle, seal)
+
+    def test_first_Kdenlive_import_may_not_claim_original_authored_reorder(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            bundle, seal, project, sha = self.scene(Path(scratch))
+            observed = inspect_saved_kdenlive(project, sha, bundle, seal)
+            observed["original_capsule_scene_order"] = ["another-original-scene"]
+            with self.assertRaisesRegex(
+                KdenliveReadbackRejected, "first_import_reordered"
+            ):
+                compare_two_native_custody_snapshots(observed, observed)
+
+    def test_native_end_trim_survives_reopening_without_creating_new_source(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            bundle, seal, original, original_sha = self.scene(Path(scratch))
+            original_readback = inspect_saved_kdenlive(
+                original, original_sha, bundle, seal
+            )
+            cut = mlt_xml(media_name=f"media/{MEDIA_SHA}.mp4").replace(
+                b'<entry producer="chain1" in="0" out="29"/>',
+                b'<entry producer="chain1" in="0" out="14"/>', 1,
+            )
+            reopened, reopened_sha = native_file(bundle, cut, "reopened.kdenlive")
+            later = inspect_saved_kdenlive(reopened, reopened_sha, bundle, seal)
+            change = compare_two_native_custody_snapshots(original_readback, later)
+            self.assertEqual(change["bounded_native_end_trims_observed"], [{
+                "scene_id": "scene-original-1",
+                "initial_duration_frames": 30,
+                "reopened_duration_frames": 15,
+            }])
+            self.assertEqual(change["reopened_native_scene_order"],
+                             ["scene-original-1"])
+            self.assertFalse(change["external_editor_or_human_acceptance"])
+
+    def test_native_clip_source_inpoint_shift_must_not_be_accepted_as_trim(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            bundle, seal = capsule(Path(scratch))
+            wrong = mlt_xml(media_name=f"media/{MEDIA_SHA}.mp4").replace(
+                b'<entry producer="chain1" in="0" out="29"/>',
+                b'<entry producer="chain1" in="1" out="29"/>', 1,
+            )
+            project, sha = native_file(bundle, wrong)
+            with self.assertRaisesRegex(
+                KdenliveReadbackRejected, "inpoint_or_SHA_no_longer_bound"
+            ):
+                inspect_saved_kdenlive(project, sha, bundle, seal)
+
+    def test_native_clip_duration_extension_is_not_a_bounded_end_trim(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            bundle, seal = capsule(Path(scratch))
+            extended = mlt_xml(media_name=f"media/{MEDIA_SHA}.mp4").replace(
+                b'<entry producer="chain1" in="0" out="29"/>',
+                b'<entry producer="chain1" in="0" out="39"/>', 1,
+            )
+            project, sha = native_file(bundle, extended)
+            with self.assertRaisesRegex(
+                KdenliveReadbackRejected, "duration_extended"
+            ):
+                inspect_saved_kdenlive(project, sha, bundle, seal)
+
+    def test_exact_original_MLT_inclusive_timecode_clock_and_rounding(self):
+        from kdenlive_readback import original_mlt_frame
+        self.assertEqual(original_mlt_frame("29", 30), 29)
+        self.assertEqual(original_mlt_frame("00:00:00.967", 30), 29)
+        self.assertEqual(original_mlt_frame("00:00:00:29", 30), 29)
+        self.assertEqual(original_mlt_frame("00:00:01.000", 30), 30)
+        for bad in ("00:00:00.968", "00:00:00:30", "0:0:0.0", "-1", "NaN"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(KdenliveReadbackRejected):
+                    original_mlt_frame(bad, 30)
 
     def test_original_explicit_missing_reference_cannot_be_promoted_to_full_NLE(self):
         with tempfile.TemporaryDirectory() as scratch:
