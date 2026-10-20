@@ -288,8 +288,21 @@ impl Store {
         backup: ProjectBackup,
         destination: &Path,
     ) -> Result<ProjectBundleManifest> {
-        if destination.exists() {
-            return Err(StorageError::DestinationExists);
+        self.export_captured_bundle_before_publication(backup, destination, |_| {})
+    }
+
+    // Interleave an independent destination creator after all content is staged.
+    // The public API supplies a no-op; the actual publication operation is shared.
+    fn export_captured_bundle_before_publication(
+        &self,
+        backup: ProjectBackup,
+        destination: &Path,
+        before_publication: impl FnOnce(&Path),
+    ) -> Result<ProjectBundleManifest> {
+        match fs::symlink_metadata(destination) {
+            Ok(_) => return Err(StorageError::DestinationExists),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
         validate_backup(&backup)?;
         ensure_backup_secret_free(&backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
@@ -344,8 +357,21 @@ impl Store {
             });
         }
         ensure_secret_free_bytes(&manifest_bytes, "portable bundle metadata")?;
-        let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+        let destination_name = destination.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "bundle destination must name a new directory",
+            )
+        })?;
+        let parent = destination
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
+        // Resolve the existing parent once, before creating either entry.
+        // Windows canonical paths retain long-path and Unicode support at FFI.
+        let parent = fs::canonicalize(parent)?;
+        let publication_destination = parent.join(destination_name);
         let staging = parent.join(format!(".motionwright-export-{}", Uuid::now_v7()));
         fs::create_dir(&staging)?;
         let mut owned_stage = BundleExportStage(Some(staging.clone()));
@@ -379,10 +405,66 @@ impl Store {
         manifest_file.flush()?;
         manifest_file.sync_all()?;
         drop(manifest_file);
-        fs::rename(&staging, destination)?;
+        before_publication(&staging);
+        publish_bundle_directory(&staging, &publication_destination)?;
         owned_stage.0 = None;
         Ok(manifest)
     }
+}
+
+/// Publish the complete sibling directory only if its destination is still free.
+/// Unsupported filesystem operations are errors; there is no replacing fallback.
+fn publish_bundle_directory(staging: &Path, destination: &Path) -> Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let result = {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        renameat_with(CWD, staging, CWD, destination, RenameFlags::NOREPLACE)
+            .map_err(std::io::Error::from)
+    };
+    #[cfg(windows)]
+    let result = {
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        let source = bundle_windows_path(staging)?;
+        let target = bundle_windows_path(destination)?;
+        // SAFETY: both checked buffers have no interior NUL and own their final
+        // terminator. They remain alive for the synchronous call. Flags zero
+        // prohibit replacement, deferred moves and cross-volume copy fallback.
+        let moved = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0) };
+        if moved == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let result = {
+        let _ = (staging, destination);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "exclusive bundle directory publication is unsupported on this platform",
+        ))
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(StorageError::DestinationExists)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(windows)]
+fn bundle_windows_path(path: &Path) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut encoded: Vec<_> = path.as_os_str().encode_wide().collect();
+    if encoded.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "bundle publication path contains an interior NUL",
+        ));
+    }
+    encoded.push(0);
+    Ok(encoded)
 }
 
 /// Only the directory created for this attempt is removed on failure.
@@ -579,6 +661,312 @@ mod tests {
             .export_project_bundle_at(project.id, &project.stamp(), &bundle)
             .unwrap();
         (bundle, manifest)
+    }
+
+    fn bundle_export_source(root: &Path) -> (Store, ProjectBackup, Vec<(String, Vec<u8>)>) {
+        let (bundle, manifest) = bundle_fixture(root);
+        let bytes = manifest
+            .blobs
+            .iter()
+            .map(|blob| {
+                (
+                    blob.sha256.clone(),
+                    fs::read(bundle.join(&blob.relative_path)).unwrap(),
+                )
+            })
+            .collect();
+        let mut store = Store::open(root.join("source/state.sqlite3")).unwrap();
+        let project = &manifest.backup.project;
+        let backup = store
+            .export_project_at(project.id, &project.stamp())
+            .unwrap();
+        (store, backup, bytes)
+    }
+
+    #[test]
+    fn bundle_export_rejects_empty_destination_created_at_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, backup, sources) = bundle_export_source(directory.path());
+        let before = snapshot(&store);
+        let output_parent = directory.path().join("outputs");
+        fs::create_dir(&output_parent).unwrap();
+        let foreign_stage = output_parent.join(".motionwright-export-other-owner");
+        fs::create_dir(&foreign_stage).unwrap();
+        fs::write(foreign_stage.join("sentinel"), b"other export").unwrap();
+        let destination = output_parent.join("backup");
+        let mut peer_metadata = None;
+        let mut own_staging = None;
+        let result =
+            store.export_captured_bundle_before_publication(backup, &destination, |staging| {
+                assert!(staging.join("manifest.json").is_file());
+                assert!(!destination.exists());
+                own_staging = Some(staging.to_path_buf());
+                let peer_destination = destination.clone();
+                peer_metadata = Some(
+                    std::thread::spawn(move || {
+                        fs::create_dir(&peer_destination).unwrap();
+                        fs::symlink_metadata(&peer_destination).unwrap()
+                    })
+                    .join()
+                    .unwrap(),
+                );
+            });
+        let peer_metadata = peer_metadata.expect("publication boundary did not run");
+        assert!(peer_metadata.is_dir());
+        assert!(
+            result.is_err(),
+            "export replaced the peer's empty directory; manifest_published={}",
+            destination.join("manifest.json").exists()
+        );
+        assert!(fs::read_dir(&destination).unwrap().next().is_none());
+        let retained = fs::symlink_metadata(&destination).unwrap();
+        assert!(retained.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                (retained.dev(), retained.ino()),
+                (peer_metadata.dev(), peer_metadata.ino()),
+                "the destination must be the peer's original directory"
+            );
+        }
+        assert!(!own_staging.unwrap().exists());
+        assert_eq!(
+            fs::read(foreign_stage.join("sentinel")).unwrap(),
+            b"other export"
+        );
+        assert_eq!(snapshot(&store), before);
+        for (digest, bytes) in sources {
+            assert_eq!(store.read_blob(&digest, bytes.len() as u64).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn bundle_export_rejects_file_created_at_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, backup, _) = bundle_export_source(directory.path());
+        let before = snapshot(&store);
+        let destination = directory.path().join("peer-file");
+        let mut own_staging = None;
+        let result =
+            store.export_captured_bundle_before_publication(backup, &destination, |staging| {
+                own_staging = Some(staging.to_path_buf());
+                let peer_destination = destination.clone();
+                std::thread::spawn(move || {
+                    let mut file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(peer_destination)
+                        .unwrap();
+                    file.write_all(b"foreign destination bytes").unwrap();
+                    file.sync_all().unwrap();
+                })
+                .join()
+                .unwrap();
+            });
+        assert!(result.is_err(), "a peer file must never be replaced");
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"foreign destination bytes"
+        );
+        assert!(!own_staging.unwrap().exists());
+        assert_eq!(snapshot(&store), before);
+    }
+
+    #[test]
+    fn bundle_export_preserves_preexisting_destinations() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, backup, _) = bundle_export_source(directory.path());
+        let before = snapshot(&store);
+        for kind in ["empty-directory", "populated-directory", "regular-file"] {
+            let destination = directory.path().join(kind);
+            if kind == "regular-file" {
+                fs::write(&destination, b"preexisting file").unwrap();
+            } else {
+                fs::create_dir(&destination).unwrap();
+                if kind == "populated-directory" {
+                    fs::write(destination.join("sentinel"), b"preexisting directory").unwrap();
+                }
+            }
+            let result = store.export_project_bundle_at(
+                backup.project.id,
+                &backup.project.stamp(),
+                &destination,
+            );
+            assert!(matches!(result, Err(StorageError::DestinationExists)));
+            match kind {
+                "regular-file" => {
+                    assert_eq!(fs::read(&destination).unwrap(), b"preexisting file");
+                }
+                "populated-directory" => {
+                    assert_eq!(
+                        fs::read(destination.join("sentinel")).unwrap(),
+                        b"preexisting directory"
+                    );
+                }
+                _ => assert!(fs::read_dir(&destination).unwrap().next().is_none()),
+            }
+        }
+        assert_eq!(snapshot(&store), before);
+        assert!(!fs::read_dir(directory.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".motionwright-export-")
+        }));
+    }
+
+    #[test]
+    fn bundle_export_unclaimed_destination_restores_complete_original_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, backup, sources) = bundle_export_source(directory.path());
+        let before = snapshot(&store);
+        let destination = directory.path().join("unclaimed-backup");
+        let manifest = store
+            .export_project_bundle_at(backup.project.id, &backup.project.stamp(), &destination)
+            .unwrap();
+        assert_eq!(manifest.backup.project, backup.project);
+        assert_eq!(manifest.backup.events, backup.events);
+        assert_eq!(snapshot(&store), before);
+        let database = directory.path().join("restored/state.sqlite3");
+        let mut target = Store::open(&database).unwrap();
+        let inspected = target
+            .inspect_project_bundle_with_fingerprint(&destination)
+            .unwrap();
+        let imported = target
+            .import_project_bundle_inspected(&destination, &inspected.fingerprint)
+            .unwrap();
+        let mut expected = backup.project;
+        assert_ne!(expected.generation, imported.generation);
+        expected.generation = imported.generation;
+        expected.updated_at = imported.updated_at;
+        assert_eq!(imported, expected);
+        drop(target);
+        let mut reopened = Store::open(&database).unwrap();
+        assert_eq!(reopened.load_project(imported.id).unwrap(), imported);
+        assert_eq!(
+            reopened
+                .export_project_at(imported.id, &imported.stamp())
+                .unwrap()
+                .events,
+            backup.events
+        );
+        for (digest, bytes) in sources {
+            assert_eq!(
+                reopened.read_blob(&digest, bytes.len() as u64).unwrap(),
+                bytes
+            );
+            assert_eq!(store.read_blob(&digest, bytes.len() as u64).unwrap(), bytes);
+        }
+        assert!(!fs::read_dir(directory.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".motionwright-export-")
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundle_export_preserves_dangling_symlink_created_at_publication() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let directory = tempfile::tempdir().unwrap();
+        let (store, backup, _) = bundle_export_source(directory.path());
+        let destination = directory.path().join("peer-link");
+        let missing = directory.path().join("never-created");
+        let mut peer_identity = None;
+        let result = store.export_captured_bundle_before_publication(backup, &destination, |_| {
+            symlink(&missing, &destination).unwrap();
+            let metadata = fs::symlink_metadata(&destination).unwrap();
+            peer_identity = Some((metadata.dev(), metadata.ino()));
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read_link(&destination).unwrap(), missing);
+        let retained = fs::symlink_metadata(&destination).unwrap();
+        assert!(retained.file_type().is_symlink());
+        assert_eq!(Some((retained.dev(), retained.ino())), peer_identity);
+        assert!(!missing.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundle_export_windows_long_unicode_destination_remains_operational() {
+        use std::os::windows::ffi::OsStrExt;
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, backup, sources) = bundle_export_source(directory.path());
+        let ordinary_root = directory
+            .path()
+            .to_str()
+            .expect("test temporary path must be Unicode")
+            .strip_prefix(r"\\?\")
+            .unwrap_or_else(|| directory.path().to_str().unwrap());
+        let mut parent = PathBuf::from(ordinary_root).join("respaldo con espacios");
+        while parent.as_os_str().encode_wide().count() < 300 {
+            parent.push("carpeta para proyecto \u{65e5}\u{672c}\u{8a9e}");
+        }
+        let destination = parent.join("exportaci\u{f3}n completa");
+        assert!(!destination.to_string_lossy().starts_with(r"\\?\"));
+        assert!(destination.as_os_str().encode_wide().count() > 260);
+        let exported = store
+            .export_project_bundle_at(backup.project.id, &backup.project.stamp(), &destination)
+            .unwrap();
+        assert_eq!(exported.backup.project, backup.project);
+        let database = directory.path().join("long-path-restored/state.sqlite3");
+        let mut target = Store::open(&database).unwrap();
+        let inspected = target
+            .inspect_project_bundle_with_fingerprint(&destination)
+            .unwrap();
+        let restored = target
+            .import_project_bundle_inspected(&destination, &inspected.fingerprint)
+            .unwrap();
+        drop(target);
+        let reopened = Store::open(&database).unwrap();
+        assert_eq!(reopened.load_project(restored.id).unwrap(), restored);
+        assert_eq!(restored.assets, backup.project.assets);
+        for (digest, bytes) in sources {
+            assert_eq!(
+                reopened.read_blob(&digest, bytes.len() as u64).unwrap(),
+                bytes
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundle_export_windows_nul_paths_fail_before_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("original-stage");
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("sentinel"), b"owned original bytes").unwrap();
+        let destination = directory.path().join("must-not-be-created");
+        for invalid_source in [true, false] {
+            let invalid = PathBuf::from(format!(
+                "{}\0suffix",
+                if invalid_source {
+                    &staging
+                } else {
+                    &destination
+                }
+                .display()
+            ));
+            let (source, target) = if invalid_source {
+                (invalid.as_path(), destination.as_path())
+            } else {
+                (staging.as_path(), invalid.as_path())
+            };
+            assert!(matches!(
+                publish_bundle_directory(source, target),
+                Err(StorageError::Io(error))
+                    if error.kind() == std::io::ErrorKind::InvalidInput
+            ));
+            assert_eq!(
+                fs::read(staging.join("sentinel")).unwrap(),
+                b"owned original bytes"
+            );
+            assert!(!destination.exists());
+        }
     }
 
     #[test]
