@@ -16,6 +16,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -535,6 +536,154 @@ def actual_all180_original_RGB_digests(video: Path, ffmpeg: str) -> dict:
     return original
 
 
+def parse_rgb_psnr_observations(raw: bytes, *, count: int = 180) -> dict:
+    """Observe exactly all source PNG vs H264 RGB frames without a PASS floor.
+
+    FFmpeg's psnr filter compares decoded RGB (gbrp) after dropping PNG
+    alpha. Neither pixel-perfect equality nor any arbitrary lossy-video
+    quality threshold is inferred from this descriptive metrology.
+    """
+    require(0 < len(raw) <= 128 * 1024,
+            "original_Film180_RGB_PSN_metrics_receipt_outside_budget")
+    try:
+        source = raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise Film180G2Rejected("original_Film180_RGB_PSN_stats_not_ASCII") from exc
+    mse, psnr, infinite = [], [], 0
+    for expected_index, line in enumerate(source.splitlines(), start=1):
+        require(expected_index <= count and line.strip(),
+                "original_Film180_RGB_PSN_stats_duplicate_or_extra_frames")
+        row = {}
+        for pair in line.split():
+            require(":" in pair, "native_RGB_PSN_stats_field_malformed")
+            key, value = pair.split(":", 1)
+            require(key and key not in row,
+                    "native_RGB_PSN_stats_duplicate_metric")
+            row[key] = value
+        require(set(("n", "mse_avg", "psnr_avg")).issubset(row),
+                "native_RGB_PSN_metrics_missing")
+        try:
+            index = int(row["n"])
+            mse_value = float(row["mse_avg"])
+            psnr_value = float(row["psnr_avg"])
+        except ValueError as exc:
+            raise Film180G2Rejected("native_RGB_PSN_metric_non_numeric") from exc
+        require(index == expected_index
+                and math.isfinite(mse_value) and mse_value >= 0
+                and not math.isnan(psnr_value) and psnr_value >= 0,
+                "native_RGB_PSN_index_or_quality_metric_invalid")
+        if math.isinf(psnr_value):
+            infinite += 1
+        else:
+            psnr.append(psnr_value)
+        mse.append(mse_value)
+    require(len(mse) == count,
+            "original_Film180_native_RGB_PSN_missing_or_extra_frames")
+    return {
+        "schema": "motionwright.native.film180.RGB-native-to-H264-PSNR/1",
+        "observed_frame_count": count,
+        "observed_RGB_mse_min": min(mse),
+        "observed_RGB_mse_max": max(mse),
+        "observed_RGB_mse_mean": round(sum(mse) / count, 6),
+        "observed_RGB_psnr_min_finite": min(psnr) if psnr else None,
+        "observed_RGB_psnr_mean_finite":
+            round(sum(psnr) / len(psnr), 6) if psnr else None,
+        "observed_identical_RGB_frame_count": infinite,
+        "all_frame_comparisons_performed": True,
+        "native_PNG_alpha_channel_compared": False,
+        "H264_lossy_quality_accepted_by_this_observer": False,
+        "pixel_perfect_or_visual_human_acceptance": False,
+    }
+
+
+def original_png_color_types(frame_dir: Path) -> dict:
+    """Record native PNG alpha presence without equating it to H264 RGB."""
+    require(frame_dir.is_absolute() and frame_dir.is_dir()
+            and not frame_dir.is_symlink(),
+            "native_original_PNG_source_frames_not_an_absolute_directory")
+    counts = {}
+    for index in range(180):
+        path = frame_dir / f"{index:06}.png"
+        require(path.is_file() and not path.is_symlink(),
+                "original_native_PNG_color_type_frame_missing")
+        with path.open("rb") as source:
+            header = source.read(26)
+        require(len(header) == 26
+                and header[:8] == b"\x89PNG\r\n\x1a\n"
+                and header[12:16] == b"IHDR"
+                and int.from_bytes(header[16:20], "big") == 1920
+                and int.from_bytes(header[20:24], "big") == 1080
+                and header[25] in (0, 2, 3, 4, 6),
+                "native_original_PNG_IHDR_type_or_geometry_unverified")
+        key = str(header[25])
+        counts[key] = counts.get(key, 0) + 1
+    return {
+        "native_source_PNG_color_type_counts": counts,
+        "native_RGBA_or_greyscale_alpha_PNG_frames":
+            sum(counts.get(x, 0) for x in ("4", "6")),
+        "all180_PNG_IHDR_geometry_verified": True,
+        "native_alpha_preserved_in_H264": False,
+    }
+
+
+def native_png_vs_h264_observations(
+    output_root: Path, motion: dict, master_path: Path,
+    owner_evidence: Path, stage: str, ffmpeg: str = "ffmpeg",
+) -> dict:
+    """Read only original PNG+MP4, write one new bounded FFmpeg stats file.
+
+    No 1.1 GiB raw RGB stream is stored. No quality threshold is invented.
+    This observation follows independently verified hashes for both inputs.
+    """
+    require(stage in {"original", "edited"}, "PSN_observation_source_stage_not_admitted")
+    require(output_root.is_absolute() and output_root.is_dir()
+            and owner_evidence.is_absolute()
+            and owner_evidence.is_dir()
+            and not owner_evidence.is_symlink(),
+            "original_RGB_PSN_input_or_evidence_not_owner_bounded")
+    segments = motion.get("segments")
+    require(type(segments) is list and len(segments) == 1,
+            "RGB_PSN_original_single_Film_segment_missing")
+    artifact = segments[0].get("artifact", {})
+    dirname = artifact.get("directory")
+    require(type(dirname) is str
+            and re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", dirname) is not None
+            and dirname not in (".", ".."),
+            "RGB_PSN_frame_root_not_original_owner_directory")
+    frames = output_root / dirname / "frames"
+    colors = original_png_color_types(frames)
+    stats = owner_evidence / f"{stage}-film180-allframe-RGB-PSNR.stats"
+    require(not stats.exists() and not stats.is_symlink()
+            and re.fullmatch(r"/[A-Za-z0-9_./-]{1,190}", str(stats)) is not None,
+            "RGB_PSN_original_stats_owner_path_not_fresh")
+    filter_code = (
+        "[0:v]format=gbrp[reference];"
+        "[1:v]format=gbrp[encoded];"
+        "[reference][encoded]psnr="
+        f"stats_file={stats}:stats_version=1[observed]"
+    )
+    result = subprocess.run(
+        [ffmpeg, "-nostdin", "-v", "error",
+         "-framerate", "30", "-start_number", "0",
+         "-i", str(frames / "%06d.png"),
+         "-i", str(master_path),
+         "-filter_complex", filter_code, "-map", "[observed]",
+         "-an", "-f", "null", "-"],
+        capture_output=True, timeout=2 * MEDIA_TIMEOUT, check=True,
+    )
+    require(len(result.stdout) <= 4096 and len(result.stderr) <= 8192
+            and stats.is_file() and stats.stat().st_size <= 128 * 1024,
+            "RGB_PSN_FFmpeg_source_comparison_not_bounded")
+    report = parse_rgb_psnr_observations(stats.read_bytes())
+    report.update(colors)
+    report["original_native_source_Film_manifest_sha256"] = digest(
+        output_root / dirname / "artifact-manifest.json")
+    report["H264_master_sha256"] = digest(master_path)
+    report["full_RGB_PSN_metrics_sha256"] = digest(stats)
+    report["no_H264_quality_floor_assumed"] = True
+    return report
+
+
 def original_frame_difference(ffmpeg: str, first: Path, second: Path,
                               *, number: int = 110) -> dict:
     from native_film180_media_readback import WIDTH, HEIGHT, difference_count
@@ -728,6 +877,11 @@ def stage_and_decode(paths: dict[str, Path], connection: Path,
     all_frames = actual_all180_original_RGB_digests(original_mp4, "ffmpeg")
     all_frames_path = evidence / f"{stage}-all180-decoded-original-RGB24.json"
     write_private_json(all_frames_path, all_frames)
+    lossy_rgb = native_png_vs_h264_observations(
+        paths["output"], film, original_mp4, evidence, stage,
+    )
+    color_comparison = evidence / f"{stage}-native-PNG-versus-H264-RGB-observation.json"
+    write_private_json(color_comparison, lossy_rgb)
     return {
         "stage": stage, "source_project_SHA": digest(project_file),
         "original_audio_SHA": source_sha,
@@ -736,6 +890,8 @@ def stage_and_decode(paths: dict[str, Path], connection: Path,
         "independent_content_sha": digest(readback),
         "decoded_all180_RGB_manifest_sha256": digest(all_frames_path),
         "all_original_180_video_frames_decoded": all_frames["source_frame_count"] == 180,
+        "all180_native_PNG_vs_H264_RGB_observation_sha256": digest(color_comparison),
+        "H264_human_perceptual_quality_acceptance": False,
         "original_H264_png_pixel_equality_claim": False,
         "actual_loaded_repaired_MLT_module": loaded_module["actual_mapped_original_MLT_module_sha256"],
         "physical_native_media_witness": "PASS",

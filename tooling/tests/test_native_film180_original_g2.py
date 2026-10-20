@@ -256,6 +256,90 @@ class Film180G2SourceTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.Film180G2Rejected, "index_pts_size"):
             runner.parse_original_180_framemd5(truncated_pixels)
 
+    @staticmethod
+    def synthetic_RGB_loss_report(
+        *, frame_count: int = 180, wrong_index: bool = False,
+        duplicate_metric: bool = False, infinite: bool = False,
+    ) -> bytes:
+        lines = []
+        for frame in range(1, frame_count + 1):
+            n = 1 if (wrong_index and frame == 90) else frame
+            mse = "0.000" if infinite and frame == 12 else "1.421"
+            psnr = "inf" if infinite and frame == 12 else "46.60"
+            extra = " psnr_avg:46.60" if duplicate_metric and frame == 90 else ""
+            lines.append(
+                f"n:{n} mse_avg:{mse} mse_r:1.2 mse_g:1.4 mse_b:1.8"
+                f" psnr_avg:{psnr}{extra}"
+            )
+        return ("\n".join(lines) + "\n").encode("ascii")
+
+    def test_full_180_native_png_against_H264_RGB_loss_stats_are_observational(self):
+        report = runner.parse_rgb_psnr_observations(self.synthetic_RGB_loss_report())
+        self.assertEqual(report["observed_frame_count"], 180)
+        self.assertEqual(report["observed_RGB_mse_mean"], 1.421)
+        self.assertEqual(report["observed_RGB_psnr_min_finite"], 46.60)
+        self.assertFalse(report["native_PNG_alpha_channel_compared"])
+        self.assertFalse(report["H264_lossy_quality_accepted_by_this_observer"])
+
+    def test_infinite_native_RGB_psnr_does_not_generate_invalid_float_json(self):
+        report = runner.parse_rgb_psnr_observations(
+            self.synthetic_RGB_loss_report(infinite=True),
+        )
+        self.assertEqual(report["observed_identical_RGB_frame_count"], 1)
+        self.assertEqual(report["observed_frame_count"], 180)
+        self.assertNotIn("Infinity", json.dumps(report, allow_nan=False))
+
+    def test_psnr_missing_forged_repeated_or_corrupt_frame_does_not_pass(self):
+        for label, raw in (
+            ("missing", self.synthetic_RGB_loss_report(frame_count=179)),
+            ("duplicated", self.synthetic_RGB_loss_report(wrong_index=True)),
+            ("metric", self.synthetic_RGB_loss_report(duplicate_metric=True)),
+            ("nonnumeric", self.synthetic_RGB_loss_report().replace(
+                b"mse_avg:1.421", b"mse_avg:unverified", 1,
+            )),
+            ("zero", self.synthetic_RGB_loss_report().replace(
+                b"n:1 mse_avg:1.421", b"n:1 mse_avg:-1.0", 1,
+            )),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaises(runner.Film180G2Rejected):
+                    runner.parse_rgb_psnr_observations(raw)
+
+    @staticmethod
+    def native_png_IHDR(*, width: int = 1920, height: int = 1080,
+                        color_type: int = 6) -> bytes:
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + b"\x00\x00\x00\x0dIHDR"
+            + width.to_bytes(4, "big")
+            + height.to_bytes(4, "big")
+            + b"\x08"
+            + bytes([color_type])
+        )
+
+    def test_native_RGBA_source_alpha_is_explicitly_excluded_from_H264_RGB(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "frames"
+            directory.mkdir()
+            header = self.native_png_IHDR(color_type=6)
+            for index in range(180):
+                (directory / f"{index:06}.png").write_bytes(header)
+            report = runner.original_png_color_types(directory)
+            self.assertEqual(report["native_source_PNG_color_type_counts"], {"6": 180})
+            self.assertEqual(report["native_RGBA_or_greyscale_alpha_PNG_frames"], 180)
+            self.assertFalse(report["native_alpha_preserved_in_H264"])
+
+    def test_native_IHDR_missing_or_wrong_geometry_fails_before_FFmpeg(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "frames"
+            directory.mkdir()
+            original = self.native_png_IHDR(color_type=2)
+            for index in range(180):
+                (directory / f"{index:06}.png").write_bytes(original)
+            (directory / "000090.png").write_bytes(self.native_png_IHDR(width=500))
+            with self.assertRaisesRegex(runner.Film180G2Rejected, "IHDR"):
+                runner.original_png_color_types(directory)
+
     def test_source_binding_is_closed_to_new_operation_stage_names(self):
         self.assertEqual(runner.ORIGINAL_AUDIO_OWNER_NAME, "firstparty-film180-source.wav")
         self.assertEqual(runner.STAGE_TIMEOUT, 1500)
