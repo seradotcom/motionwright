@@ -1,8 +1,8 @@
 //! Source-only tests for the exact closed Manim Community planar camera profile.
 //! New native renderer, dispatch or source compiler behavior is NOT assumed.
 use motionwright_manim_profile::{
-    ManimCanvasV2, ManimFrameClockV2, ManimMatteV2, ManimOutputRoleV2, ManimRenderProfile,
-    ManimSceneBindingV2, ManimSourceShapeKindV2, ManimStaticShapeV2,
+    MAX_SOURCE_ENTRY_BYTES_V2, ManimCanvasV2, ManimFrameClockV2, ManimMatteV2, ManimOutputRoleV2,
+    ManimRenderProfile, ManimSceneBindingV2, ManimSourceShapeKindV2, ManimStaticShapeV2,
 };
 use semwright_media_time::Rational;
 use uuid::Uuid;
