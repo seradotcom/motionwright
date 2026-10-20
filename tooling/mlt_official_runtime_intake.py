@@ -40,7 +40,13 @@ ARCHIVE_SIGNING_FINGERPRINT = "F6ECB3762474EDA9D21B7022871920D1991BC93C"
 SIGNING_AUTHORITY_URL = "https://wiki.ubuntu.com/Security/FAQ#GPG_Keys"
 PACKAGE_MEMBERS = {
     "libmlt7": ("original_module", "/usr/lib/x86_64-linux-gnu/mlt-7/libmltavformat.so"),
-    "melt": ("melt", "/usr/bin/melt"),
+    "melt": ("melt", "/usr/bin/melt-7"),
+}
+# This fixed package exposes its ordinary ELF through one signed, relative
+# alias. Verify that archive relationship without following filesystem links.
+PACKAGE_ALIASES = {
+    "/usr/bin/melt-7": {"archive_path": "usr/bin/melt",
+                       "linkname": "melt-7", "target_path": "usr/bin/melt-7"},
 }
 LIMIT_METADATA = 4 * 1024 * 1024
 LIMIT_COMPRESSED = 64 * 1024 * 1024
@@ -404,7 +410,11 @@ def extract_regular_member(tar_data, installed_path):
     target = installed_path.removeprefix("/")
     require(installed_path in {p for _, p in PACKAGE_MEMBERS.values()}, "member not allowlisted")
     seen, result, total, last_end = set(), None, 0, 0
+    alias = PACKAGE_ALIASES.get(installed_path)
+    alias_seen = False
     parents = set(PurePosixPath(target).parents)
+    if alias is not None:
+        parents.update(PurePosixPath(alias["archive_path"]).parents)
     try:
         with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:") as archive:
             for member in archive:
@@ -427,6 +437,13 @@ def extract_regular_member(tar_data, installed_path):
                 require(total <= LIMIT_TAR, "expanded archive size limit")
                 if PurePosixPath(name) in parents:
                     require(member.isdir(), "archive target parent is not a directory")
+                if alias is not None and name == alias["archive_path"]:
+                    require(member.type == tarfile.SYMTYPE and member.size == 0 and
+                            not member.sparse and member.linkname == alias["linkname"] and
+                            (PurePosixPath(name).parent / member.linkname).as_posix() ==
+                            alias["target_path"], "package executable alias differs")
+                    alias_seen = True
+                    continue
                 if name != target:
                     continue
                 require(member.type in (tarfile.REGTYPE, tarfile.AREGTYPE) and
@@ -442,6 +459,7 @@ def extract_regular_member(tar_data, installed_path):
     require(len(tar_data) % 512 == 0 and len(tar_data) - last_end >= 1024 and
             not any(tar_data[last_end:]), "truncated, concatenated or trailing tar data")
     require(result is not None, "expected package member absent")
+    require(alias is None or alias_seen, "expected package executable alias absent")
     require(len(result) >= 64 and result[:7] == b"\x7fELF\x02\x01\x01" and
             int.from_bytes(result[18:20], "little") == 62 and
             int.from_bytes(result[16:18], "little") in (2, 3) and
@@ -463,6 +481,8 @@ def build_receipt(context, release, signatures, files, packages, members, keyrin
         require(row["installed_path"] == installed_path and HEX64.fullmatch(row["sha256"]),
                 "runtime binding differs")
         require(row["package_sha256"] == packages[name]["sha256"], "member package binding differs")
+        require(row.get("archive_alias") == PACKAGE_ALIASES.get(installed_path),
+                "member archive alias binding differs")
         bindings[binding] = {"installed_path": installed_path, "sha256": row["sha256"]}
     return {"schema": SCHEMA, "scope": "signed-distribution-files-only",
             "source_authentication": "PASS", "context": context,
@@ -573,6 +593,7 @@ def collect(root, context):
         exclusive(destination, member)
         members[name] = {**descriptor(destination, root, LIMIT_MEMBER),
                          "installed_path": installed_path, "package_sha256": selection["sha256"],
+                         "archive_alias": PACKAGE_ALIASES.get(installed_path),
                          "member_type": "regular", "architecture_header": "ELF64-LSB-x86_64"}
         tracked[destination] = (members[name], LIMIT_MEMBER)
         remember(name + "_data_tar", data_tar, LIMIT_TAR)

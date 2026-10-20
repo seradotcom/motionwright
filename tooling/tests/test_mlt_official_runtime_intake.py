@@ -102,7 +102,8 @@ def runtime_tar(extra=(), target_data=None, target_type=tarfile.REGTYPE):
     entries = [(".", b"", tarfile.DIRTYPE, ""),
                ("./usr", b"", tarfile.DIRTYPE, ""),
                ("./usr/bin", b"", tarfile.DIRTYPE, ""),
-               ("./usr/bin/melt", elf() if target_data is None else target_data, target_type, "other")]
+               ("./usr/bin/melt-7", elf() if target_data is None else target_data, target_type, "other"),
+               ("./usr/bin/melt", b"", tarfile.SYMTYPE, "melt-7")]
     return tar_entries(entries + list(extra))
 
 
@@ -311,36 +312,36 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
         for candidate in (raw + raw, raw + b"extra", raw[:-1]):
             with self.subTest(size=len(candidate)):
                 with self.assertRaises(intake.IntakeError):
-                    intake.extract_regular_member(candidate, "/usr/bin/melt")
+                    intake.extract_regular_member(candidate, "/usr/bin/melt-7")
 
     def test_only_the_unique_regular_amd64_member_is_returned(self):
         raw = runtime_tar(extra=[("./unrelated", b"ignored", tarfile.REGTYPE, "")])
-        self.assertEqual(intake.extract_regular_member(raw, "/usr/bin/melt"), elf())
+        self.assertEqual(intake.extract_regular_member(raw, "/usr/bin/melt-7"), elf())
 
     def test_symbolic_and_hardlink_targets_are_never_followed(self):
         for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):
             with self.subTest(kind=kind):
                 with self.assertRaises(intake.IntakeError):
-                    intake.extract_regular_member(runtime_tar(target_type=kind), "/usr/bin/melt")
+                    intake.extract_regular_member(runtime_tar(target_type=kind), "/usr/bin/melt-7")
 
     def test_duplicate_canonical_archive_member_is_rejected(self):
-        raw = runtime_tar(extra=[("usr/bin/melt", elf(), tarfile.REGTYPE, "")])
+        raw = runtime_tar(extra=[("usr/bin/melt-7", elf(), tarfile.REGTYPE, "")])
         with self.assertRaises(intake.IntakeError):
-            intake.extract_regular_member(raw, "/usr/bin/melt")
+            intake.extract_regular_member(raw, "/usr/bin/melt-7")
 
     def test_traversal_absolute_and_control_archive_paths_are_rejected(self):
         for path in ("../outside", "/outside", "usr/../outside", "usr\\outside", "bad\nname"):
             with self.subTest(path=path):
                 raw = runtime_tar(extra=[(path, b"x", tarfile.REGTYPE, "")])
                 with self.assertRaises(intake.IntakeError):
-                    intake.extract_regular_member(raw, "/usr/bin/melt")
+                    intake.extract_regular_member(raw, "/usr/bin/melt-7")
 
     def test_target_parent_links_are_rejected(self):
         entries = [("usr", b"", tarfile.DIRTYPE, ""),
                    ("usr/bin", b"", tarfile.SYMTYPE, "elsewhere"),
-                   ("usr/bin/melt", elf(), tarfile.REGTYPE, "")]
+                   ("usr/bin/melt-7", elf(), tarfile.REGTYPE, "")]
         with self.assertRaises(intake.IntakeError):
-            intake.extract_regular_member(tar_entries(entries), "/usr/bin/melt")
+            intake.extract_regular_member(tar_entries(entries), "/usr/bin/melt-7")
 
     def test_missing_wrong_architecture_and_non_elf_targets_fail(self):
         bad_arch = bytearray(elf())
@@ -350,16 +351,16 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
         for raw in candidates:
             with self.subTest(size=len(raw)):
                 with self.assertRaises(intake.IntakeError):
-                    intake.extract_regular_member(raw, "/usr/bin/melt")
+                    intake.extract_regular_member(raw, "/usr/bin/melt-7")
 
     def test_tar_and_member_size_limits_are_enforced(self):
         raw = runtime_tar()
         with mock.patch.object(intake, "LIMIT_MEMBER", 64):
             with self.assertRaises(intake.IntakeError):
-                intake.extract_regular_member(raw, "/usr/bin/melt")
+                intake.extract_regular_member(raw, "/usr/bin/melt-7")
         with mock.patch.object(intake, "LIMIT_TAR", len(raw) - 1):
             with self.assertRaises(intake.IntakeError):
-                intake.extract_regular_member(raw, "/usr/bin/melt")
+                intake.extract_regular_member(raw, "/usr/bin/melt-7")
 
     def test_existing_output_is_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -422,7 +423,9 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
     def test_runtime_bindings_are_closed_and_never_claim_native_execution(self):
         selected = intake.select_packages(packages())
         members = {
-            name: {"installed_path": path, "sha256": sha(elf()), "package_sha256": selected[name]["sha256"]}
+            name: {"installed_path": path, "sha256": sha(elf()),
+                   "package_sha256": selected[name]["sha256"],
+                   "archive_alias": intake.PACKAGE_ALIASES.get(path)}
             for name, (_, path) in intake.PACKAGE_MEMBERS.items()
         }
         signatures = intake.parse_signature_status(signature(), 0, NOW)
@@ -610,7 +613,9 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
     def test_receipt_rejects_missing_authority_or_mismatched_keyring_snapshot(self):
         selected = intake.select_packages(packages())
         members = {
-            name: {"installed_path": path, "sha256": sha(elf()), "package_sha256": selected[name]["sha256"]}
+            name: {"installed_path": path, "sha256": sha(elf()),
+                   "package_sha256": selected[name]["sha256"],
+                   "archive_alias": intake.PACKAGE_ALIASES.get(path)}
             for name, (_, path) in intake.PACKAGE_MEMBERS.items()
         }
         signatures = intake.parse_signature_status(signature(), 0, NOW)
@@ -695,6 +700,84 @@ class AuthenticatedXzStreamTests(unittest.TestCase):
                 with self.assertRaises(intake.IntakeError):
                     intake.expand_index(compressed, self.binding(compressed, b"x"))
 
+
+
+
+class OfficialMeltAliasTests(unittest.TestCase):
+    def test_official_melt_alias_binds_only_the_canonical_regular_elf(self):
+        data = intake.extract_regular_member(runtime_tar(), "/usr/bin/melt-7")
+        self.assertEqual(data, elf())
+        self.assertEqual(intake.PACKAGE_MEMBERS["melt"][1], "/usr/bin/melt-7")
+
+    def test_old_alias_is_not_an_allowlisted_regular_executable(self):
+        with self.assertRaises(intake.IntakeError):
+            intake.extract_regular_member(runtime_tar(), "/usr/bin/melt")
+
+    def test_missing_official_alias_cannot_silently_change_the_package_profile(self):
+        raw = tar_entries([("usr/bin/melt-7", elf(), tarfile.REGTYPE, "")])
+        with self.assertRaises(intake.IntakeError):
+            intake.extract_regular_member(raw, "/usr/bin/melt-7")
+
+    def test_alias_with_an_alternate_relative_target_is_rejected(self):
+        self.assert_bad_alias(tarfile.SYMTYPE, "another-melt")
+
+    def test_alias_with_an_absolute_target_is_rejected(self):
+        self.assert_bad_alias(tarfile.SYMTYPE, "/usr/bin/melt-7")
+
+    def test_alias_with_traversal_or_normalized_target_is_rejected(self):
+        for link in ("../bin/melt-7", "./melt-7", "../../outside", "other/../melt-7"):
+            with self.subTest(link=link):
+                self.assert_bad_alias(tarfile.SYMTYPE, link)
+
+    def test_alias_cannot_be_a_hardlink(self):
+        self.assert_bad_alias(tarfile.LNKTYPE, "melt-7")
+
+    def test_alias_cannot_be_an_ordinary_file(self):
+        self.assert_bad_alias(tarfile.REGTYPE, "")
+
+    def test_duplicate_alias_under_equivalent_tar_path_is_rejected(self):
+        raw = runtime_tar(extra=[("usr/bin/melt", b"", tarfile.SYMTYPE, "melt-7")])
+        with self.assertRaises(intake.IntakeError):
+            intake.extract_regular_member(raw, "/usr/bin/melt-7")
+
+    def test_alias_never_recursively_resolves_a_second_link(self):
+        raw = tar_entries([("usr/bin/melt", b"", tarfile.SYMTYPE, "melt-7"),
+                           ("usr/bin/melt-7", b"", tarfile.SYMTYPE, "melt-final"),
+                           ("usr/bin/melt-final", elf(), tarfile.REGTYPE, "")])
+        with self.assertRaises(intake.IntakeError):
+            intake.extract_regular_member(raw, "/usr/bin/melt-7")
+
+    def test_module_member_remains_an_ordinary_file_without_an_executable_alias(self):
+        path = intake.PACKAGE_MEMBERS["libmlt7"][1]
+        raw = tar_entries([(path.removeprefix("/"), elf(), tarfile.REGTYPE, "")])
+        self.assertEqual(intake.extract_regular_member(raw, path), elf())
+
+    def test_receipt_cannot_omit_or_retarget_the_signed_alias(self):
+        selected = intake.select_packages(packages())
+        signatures = intake.parse_signature_status(signature(), 0, NOW)
+        keyring_pin = pin(b"retained keyring bytes")
+        observation = {"path": str(intake.KEYRING), **keyring_pin}
+        for altered in (None, {}, {"archive_path": "usr/bin/melt",
+                                   "linkname": "elsewhere",
+                                   "target_path": "usr/bin/elsewhere"}):
+            members = {
+                name: {"installed_path": path, "sha256": sha(elf()),
+                       "package_sha256": selected[name]["sha256"],
+                       "archive_alias": intake.PACKAGE_ALIASES.get(path)}
+                for name, (_, path) in intake.PACKAGE_MEMBERS.items()
+            }
+            members["melt"]["archive_alias"] = altered
+            with self.subTest(alias=altered):
+                with self.assertRaises(intake.IntakeError):
+                    intake.build_receipt({}, {}, signatures, {"keyring": keyring_pin},
+                                         selected, members, observation)
+
+    def assert_bad_alias(self, kind, link):
+        raw = tar_entries([("usr/bin/melt-7", elf(), tarfile.REGTYPE, ""),
+                           ("usr/bin/melt", elf() if kind == tarfile.REGTYPE else b"",
+                            kind, link)])
+        with self.assertRaises(intake.IntakeError):
+            intake.extract_regular_member(raw, "/usr/bin/melt-7")
 
 if __name__ == "__main__":
     unittest.main()
