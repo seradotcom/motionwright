@@ -53,13 +53,20 @@ mod production {
                 }
             }
 
+            fn expected_code(self) -> ErrorCode {
+                match self {
+                    Self::MissingVoice => ErrorCode::Unsupported,
+                    Self::UnknownAlignment => ErrorCode::InvalidArgument,
+                }
+            }
+
             fn expected_message(self) -> &'static str {
                 match self {
                     Self::MissingVoice => {
                         "Native caption burn-in requires one explicitly selected voice track"
                     }
                     Self::UnknownAlignment => {
-                        "UNKNOWN caption timing cannot become a visible native cue"
+                        "Caption transcript/cut projection is not admissible: invalid project: caption export requires known transcript timing evidence"
                     }
                 }
             }
@@ -252,6 +259,17 @@ mod production {
                 }
                 Case::UnknownAlignment => {
                     assert_eq!(project.audio.transcript.len(), 1);
+                    let source_error = motionwright_domain::transcript_for_profile(
+                        &project,
+                        &project.deliverables[0],
+                    )
+                    .expect_err("UNKNOWN alignment must remain ineligible for caption export");
+                    assert_eq!(
+                        source_error,
+                        motionwright_domain::DomainError::Invalid(
+                            "caption export requires known transcript timing evidence".into(),
+                        ),
+                    );
                     assert!(matches!(
                         project.audio.transcript[0].alignment,
                         AlignmentEvidence::Unknown
@@ -447,7 +465,7 @@ mod production {
                 "The public request changed saved source semantics"
             );
             let error = result.expect_err("Unresolved narration must not yield master evidence");
-            assert_eq!(error.code, ErrorCode::Unsupported);
+            assert_eq!(error.code, case.expected_code());
             assert_eq!(error.message, case.expected_message());
             assert!(
                 error.outcome_known,
