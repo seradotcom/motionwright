@@ -2592,7 +2592,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(accepted["replayed"], false);
-        assert_eq!(accepted["result"]["job_ref"], "job-native-1");
+        assert_eq!(accepted["result"]["data"]["job_ref"], "job-native-1");
         assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
         assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
 
