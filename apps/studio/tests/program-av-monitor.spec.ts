@@ -42,6 +42,18 @@ test("Program AV monitor reads exact source token only for matching scene, profi
   const first = boot.project.scenes[0];
   const second = boot.project.scenes[1];
   const profile = boot.project.deliverables[0];
+  // Synthetic Canvas source outside the two-scene native grant. The transition
+  // exercises representation selection, not decoded media or render fidelity.
+  const outsideCut = boot.project.scenes[2];
+  outsideCut.name = "Canvas outside the rendered cut";
+  outsideCut.renderer = "motion-canvas";
+  outsideCut.nodes = [{
+    ...structuredClone(first.nodes[0]),
+    id: outsideCut.nodes[0].id,
+    name: "Unrendered Canvas headline",
+    text: "Design outside the rendered cut.",
+  }];
+  profile.included_scene_ids = [first.id, second.id];
   const voiceId = "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb";
   const assetId = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
   const audioHash = "a".repeat(64);
@@ -200,12 +212,41 @@ test("Program AV monitor reads exact source token only for matching scene, profi
   await expect(program.getByRole("button", { name: "Review final AV" })).toHaveCount(0);
   await page.getByLabel("Editor preview timebase").selectOption(profile.id);
   await expect(program.getByRole("region", { name: "Native master playback review" })).toHaveCount(0);
+  const readsBeforeResume = await page.evaluate(() => (
+    window as unknown as { __AV_MONITOR_READS__: Array<unknown> }
+  ).__AV_MONITOR_READS__.length);
   await program.getByRole("button", { name: "Review final AV" }).click();
+  await expect(program.getByRole("region", { name: "Native master playback review" })).toBeVisible();
+  await expect.poll(async () => page.evaluate(() => (
+    window as unknown as { __AV_MONITOR_READS__: Array<unknown> }
+  ).__AV_MONITOR_READS__.length)).toBeGreaterThan(readsBeforeResume);
+  // Keep the native opt-in active while selecting a Canvas scene for which
+  // no frame or AV grant exists. The source key and revision do not change.
+  const readsBeforeOutsideCut = await page.evaluate(() => (
+    window as unknown as { __AV_MONITOR_READS__: Array<unknown> }
+  ).__AV_MONITOR_READS__.length);
+  await page.locator(".tree-row").filter({ hasText: outsideCut.name }).click();
+  await expect(program.getByRole("region", { name: "Native master playback review" })).toHaveCount(0);
+  await expect(program.getByRole("button", { name: "Review final AV" })).toHaveCount(0);
+  const editorial = program.getByRole("img", { name: "Program Canvas editorial study: not native output", exact: true });
+  await expect(editorial).toBeVisible();
+  await expect(editorial.locator('[data-canvas-node-id="' + outsideCut.nodes[0].id + '"] text'))
+    .toHaveText("Design outside the rendered cut.");
+  await expect(program).toContainText("Design representation");
+  const monitor = program.getByLabel("Saved Canvas editorial design monitor", { exact: true });
+  await expect(monitor).toHaveAttribute("data-output-cut-scope", "excluded");
+  await expect(monitor.getByRole("status")).toContainText("SCENE EXCLUDED FROM SELECTED OUTPUT CUT");
+  await expect(page.locator(".revision-chip").first()).toHaveText(originalRevision);
+  expect(await page.evaluate(() => (
+    window as unknown as { __AV_MONITOR_READS__: Array<unknown> }
+  ).__AV_MONITOR_READS__.length)).toBe(readsBeforeOutsideCut);
+
+  await page.locator(".tree-row").filter({ hasText: first.name }).click();
   await expect(program.getByRole("region", { name: "Native master playback review" })).toBeVisible();
   await program.getByRole("button", { name: "Show design" }).click();
   await expect(program.getByRole("region", { name: "Native master playback review" })).toHaveCount(0);
 
-  await page.locator(".tree-row").filter({ hasText: "Semwright acts natively" }).click();
+  await page.locator(".tree-row").filter({ hasText: outsideCut.name }).click();
   await expect(program.getByRole("button", { name: "Review final AV" })).toHaveCount(0);
   await page.locator(".tree-row").filter({ hasText: first.name }).click();
   await expect(program.getByRole("button", { name: "Review final AV" })).toBeVisible();

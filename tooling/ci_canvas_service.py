@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Canvas browser contracts against the freshly built SQLite service."""
+"""Run Canvas and Program browser contracts against the freshly built SQLite service."""
 from __future__ import annotations
 
 import argparse
@@ -31,11 +31,19 @@ CANVAS_TITLES = (
     "Canvas removal committed with a lost reply stays unknown until real SQLite reopen and never replays",
     "Canvas removal sends nothing when its record cannot be retained and verified",
     "Canvas removal sends nothing when its pointer cannot be retained and verified",
+    "saved parented Canvas text stays visible in real editorial study after service reopen",
+    "saved localized profile text overrides the editorial SVG across two revisions and reopening",
 )
 INK_TITLE = "a saved ink token changes the actual SVG text paint across revisions and reopen"
+PROGRAM_TITLES = (
+    "Timeline Program renders actual saved Canvas text, style and selected locale through revisions and restart",
+    "a real saved partial cut excludes an editable Program scene until an explicit full-sequence revision",
+    "real SQLite profile cut with stale localized text shows only the excluded original source after reopen",
+)
 SELECTIONS = (
     ("canvas", "canvas-draft-service.spec.ts", CANVAS_TITLES),
     ("ink", "visual-language-draft-service.spec.ts", (INK_TITLE,)),
+    ("program", "program-design-service.spec.ts", PROGRAM_TITLES),
 )
 
 
@@ -115,6 +123,7 @@ def source_observation(repo):
         "apps/studio/tests/support/scopedChangeService.ts",
         "apps/studio/tests/canvas-draft-service.spec.ts",
         "apps/studio/tests/visual-language-draft-service.spec.ts",
+        "apps/studio/tests/program-design-service.spec.ts",
         "tooling/ci_canvas_service.py",
     )
     files = {}
@@ -199,7 +208,7 @@ def main():
             if label == "ink":
                 argv += ["--grep", re.escape(INK_TITLE) + "$"]
             command = execute(argv, repo / "apps/studio", case_env, output, label,
-                              1800 if label == "canvas" else 180)
+                              1800 if label == "canvas" else 600 if label == "program" else 180)
             selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
             report["selections"].append(selection)
             try:

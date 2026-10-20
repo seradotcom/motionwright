@@ -6,7 +6,7 @@ import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { CAMERA_REFRAME_VERSION, cameraPreviewOffset, validateCameraReframe } from "./cameraReframe";
 import type { CameraReframe } from "./cameraReframe";
-type Props={project:Project;scene:Scene|null;busy:boolean;
+type Props={project:Project;scene:Scene|null;busy:boolean;displayProfile?:Project["deliverables"][number]|null;
   commit:(change:Change)=>Promise<void>;playhead:number;
   onSeek:(time:number)=>void;onOpenCanvas:()=>void;};
 function newDraft(scene:Scene|null):CameraReframe{
@@ -17,7 +17,7 @@ function newDraft(scene:Scene|null):CameraReframe{
     end_center_y:center.center_y+4,duration_frames:90};
 }
 function message(error:unknown):string{return error instanceof Error?error.message:String(error);}
-export default function CameraReframeWorkbench({project,scene,busy,commit,playhead,onSeek,onOpenCanvas}:Props){
+export default function CameraReframeWorkbench({project,scene,busy,commit,playhead,onSeek,onOpenCanvas,displayProfile}:Props){
   const stored=project.production_design?.camera_reframes?.find(reframe=>reframe.scene_id===scene?.id);
   const [draft,setDraft]=useState<CameraReframe>(()=>structuredClone(stored??newDraft(scene)));
   const [base,setBase]=useState(project.revision);
@@ -123,8 +123,8 @@ export default function CameraReframeWorkbench({project,scene,busy,commit,playhe
         <span>1920 × 1080 original Canvas · editorial preview only</span></div></div>
       <div className="production-preview-mat">
         {preview.length?<CompositionStudy nodes={preview} width={1920} height={1080}
-          time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)}
-          label={"Planar camera at "+localTime.toFixed(3)+" seconds, original graphic"}/>:
+          time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+          label={"Planar camera at "+localTime.toFixed(3)+" seconds, selected output profile editorial study"}/>:
           <p role="status">Add a semantic Canvas object to preview the move.</p>}
       </div>
       <div className="production-transport">
