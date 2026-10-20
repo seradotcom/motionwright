@@ -139,19 +139,18 @@ impl Store {
         // captured set BEFORE publishing its first content-addressed member.
         // Never delete a foreign or pre-existing blob on failure.
         self.preflight_bundle_blob_destinations(&staged)?;
-        // An inspected project ID can be claimed by a second SQLite writer
-        // while these immutable media members are being staged. Recheck the
-        // authoritative destination before publishing the first CAS member,
-        // so a collision already visible at this boundary cannot orphan media.
-        // This is a bounded preflight, not a SQLite/filesystem transaction:
-        // another writer may still race after this query.
-        self.inspect_import(&manifest.backup)?;
-        after_check();
-        for captured in &staged {
-            self.publish_file_import(captured)?;
-        }
-        drop(staged);
-        self.import_project(&manifest.backup)
+        // The final project-ID check and the CAS publication share the same
+        // IMMEDIATE SQLite writer transaction. A peer cannot insert the same
+        // project ID after the check but before the project/journal commit.
+        // This serializes database writers; it does NOT make CAS and SQLite
+        // crash-atomic if publication or commit is interrupted.
+        self.import_project_with_publication(&manifest.backup, |blob_root| {
+            after_check();
+            for captured in &staged {
+                file_import::publish_file_import_under_root(blob_root, captured)?;
+            }
+            Ok(())
+        })
     }
 
     fn preflight_bundle_blob_destinations(&self, staged: &[StagedFileImport]) -> Result<()> {
@@ -826,9 +825,7 @@ mod tests {
         let database = directory.path().join("target/state.sqlite3");
         let mut target = Store::open(&database).unwrap();
         let mut peer = Store::open(&database).unwrap();
-        peer.conn
-            .busy_timeout(Duration::from_millis(150))
-            .unwrap();
+        peer.conn.busy_timeout(Duration::from_millis(150)).unwrap();
 
         let inspected = target
             .inspect_project_bundle_with_fingerprint(&bundle)
