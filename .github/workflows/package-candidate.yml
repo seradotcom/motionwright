@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Candidate packages, Windows contracts or first-use, or isolated NSIS source and compiler checks
+        description: Candidate packages, Windows contracts, or isolated NSIS source, compiler and lifecycle checks
         required: true
         type: choice
         default: all
@@ -15,6 +15,7 @@ on:
           - windows_installed
           - nsis_source
           - nsis_compile
+          - nsis_lifecycle
   pull_request:
     paths:
       - "apps/desktop/**"
@@ -23,6 +24,8 @@ on:
       - "tooling/package_receipt.py"
       - "tooling/nsis_owned_files.py"
       - "tooling/tests/test_nsis_owned_files.py"
+      - "tooling/windows_installer_lifecycle.py"
+      - "tooling/tests/test_windows_installer_lifecycle.py"
       - "docs/reliability/windows-uninstall-integrity.md"
       - "tooling/v01_glib_product_admission.py"
       - "tooling/upstream-crates/**"
@@ -58,6 +61,8 @@ on:
       - "tooling/package_receipt.py"
       - "tooling/nsis_owned_files.py"
       - "tooling/tests/test_nsis_owned_files.py"
+      - "tooling/windows_installer_lifecycle.py"
+      - "tooling/tests/test_windows_installer_lifecycle.py"
       - "docs/reliability/windows-uninstall-integrity.md"
       - "tooling/v01_glib_product_admission.py"
       - "tooling/upstream-crates/**"
@@ -94,6 +99,8 @@ env:
 jobs:
   receipt-policy:
     runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -169,7 +176,7 @@ jobs:
               "nsis_compilation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_install_acceptance": "NOT_RUN",
           }
-          output = ROOT / "ci-evidence/nsis-linux-source-tests.json"
+          output = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-linux-source-tests/receipt.json"
           output.parent.mkdir(exist_ok=True)
           with output.open("x", encoding="utf-8", newline="\n") as stream:
               json.dump(record, stream, indent=2, sort_keys=True)
@@ -180,12 +187,112 @@ jobs:
           print("nsis-linux-source-tests=" + ("PASS" if ok else "FAIL") + " required=17 skips=0")
           raise SystemExit(0 if ok else 1)
           PY
+      - name: Require forty lifecycle contracts through both existing runner entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import ast
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(ROOT / "tooling"))
+          from release_manifest import write_new_manifest
+          from windows_installer_lifecycle import require, source_observation
+
+          SOURCE = os.environ["GITHUB_SHA"]
+          before = source_observation(ROOT, SOURCE)
+          output = Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-lifecycle-contracts"
+          output.mkdir(parents=True)
+          report = output / "receipt.json"
+          completed = subprocess.run([
+              sys.executable, "-B", "-I", "-S", "tooling/ci_test_runner.py",
+              "--repo", str(ROOT), "--test-directory", "tooling/tests",
+              "--pattern", "test_windows_installer_lifecycle.py", "--mode", "both",
+              "--report", str(report), "--expected-source", SOURCE,
+              "--require-complete", "--timeout", "180"], cwd=ROOT, check=False)
+          require(completed.returncode == 0, "lifecycle_contract_runner_failed")
+          receipt = json.loads(report.read_bytes())
+          test_path = "tooling/tests/test_windows_installer_lifecycle.py"
+          tree = ast.parse((ROOT / test_path).read_bytes())
+          classes = [item for item in tree.body if isinstance(item, ast.ClassDef)
+                     and item.name == "WindowsLifecycleTests"]
+          require(len(classes) == 1, "lifecycle_contract_class_count")
+          methods = [item.name for item in classes[0].body
+                     if isinstance(item, ast.FunctionDef) and item.name.startswith("test_")]
+          all_methods = [item.name for item in ast.walk(tree)
+                         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         and item.name.startswith("test_")]
+          require(len(methods) == len(set(methods)) == len(all_methods) == 52
+                  and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                              and item.name == "load_tests" for item in ast.walk(tree)),
+                  "lifecycle_contract_inventory_changed")
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          entries = ["discovery:test_windows_installer_lifecycle.py",
+                     "dotted:tooling.tests.test_windows_installer_lifecycle"]
+          require(receipt.get("status") == "PASS" and receipt.get("exit_code") == 0
+                  and receipt.get("require_complete") is True
+                  and receipt.get("executed_source_sha") == SOURCE
+                  and receipt.get("tree_sha") == before["tree"]
+                  and not receipt.get("source_postcheck_error")
+                  and [step.get("entry_point") for step in receipt.get("steps", [])] == entries
+                  and receipt.get("test_definition_sha256") == {test_path: digest(ROOT / test_path)}
+                  and receipt.get("runner_sha256") == digest(ROOT / "tooling/ci_test_runner.py"),
+                  "lifecycle_contract_receipt_identity")
+          for key in ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB"):
+              require(receipt.get("github", {}).get(key) == os.environ[key],
+                      "lifecycle_contract_receipt_job")
+          inventory = {}
+          for index, step in enumerate(receipt["steps"]):
+              counts = step.get("counts", {})
+              require(step.get("status") == "PASS" and step.get("exit_code") == 0
+                      and counts.get("terminal_status") == "OK"
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 52
+                      and type(counts.get("passed")) is int and counts["passed"] == 52
+                      and all(type(counts.get(key)) is int and counts[key] == 0 for key in
+                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
+                      "lifecycle_contract_omission")
+              for stream in ("stdout", "stderr"):
+                  path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
+                  require(step.get(stream) == {"file": path.name, "sha256": digest(path)},
+                          "lifecycle_contract_log_binding")
+              raw = report.with_name(f"{report.stem}-{index:02d}-stderr.log").read_text(encoding="utf-8")
+              observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
+              module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
+              expected = {f"{module}.WindowsLifecycleTests.{method}" for method in methods}
+              require(len(observed) == 52 and set(observed) == expected,
+                      "lifecycle_contract_original_names")
+              inventory[step["entry_point"]] = sorted(observed)
+          after = source_observation(ROOT, SOURCE)
+          require(after == before, "lifecycle_contract_source_changed")
+          write_new_manifest(ROOT, output / "readback.json", {
+              "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
+              "source_before": before, "source_after": after, "receipt_sha256": digest(report),
+              "github": receipt["github"], "entrypoint_methods": inventory,
+              "unique_controls": 52, "entrypoints": 2, "skipped": 0,
+              "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
+              "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
+              "human_acceptance": "NOT_RUN", "release_published": False})
+          PY
+      - name: Retain exact lifecycle contract receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-nsis-lifecycle-contracts-linux
+          path: ${{ runner.temp }}/motionwright-nsis-lifecycle-contracts/*
+          if-no-files-found: warn
       - name: Retain the exact Linux NSIS source-test result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-nsis-linux-source-tests
-          path: ci-evidence/nsis-linux-source-tests.json
+          path: ${{ runner.temp }}/mw-nsis-linux-source-tests/receipt.json
           if-no-files-found: warn
 
   nsis-source-windows:
@@ -262,7 +369,7 @@ jobs:
               "nsis_compilation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_install_acceptance": "NOT_RUN",
           }
-          output = ROOT / "ci-evidence/nsis-windows-source-tests.json"
+          output = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-windows-source-tests/receipt.json"
           output.parent.mkdir(exist_ok=True)
           with output.open("x", encoding="utf-8", newline="\n") as stream:
               json.dump(record, stream, indent=2, sort_keys=True)
@@ -274,16 +381,117 @@ jobs:
           raise SystemExit(0 if ok else 1)
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'The Windows source-bound NSIS gate failed' }
+      - name: Require forty lifecycle contracts through both existing runner entrypoints
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import ast
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(ROOT / "tooling"))
+          from release_manifest import write_new_manifest
+          from windows_installer_lifecycle import require, source_observation
+
+          SOURCE = os.environ["GITHUB_SHA"]
+          before = source_observation(ROOT, SOURCE)
+          output = Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-lifecycle-contracts"
+          output.mkdir(parents=True)
+          report = output / "receipt.json"
+          completed = subprocess.run([
+              sys.executable, "-B", "-I", "-S", "tooling/ci_test_runner.py",
+              "--repo", str(ROOT), "--test-directory", "tooling/tests",
+              "--pattern", "test_windows_installer_lifecycle.py", "--mode", "both",
+              "--report", str(report), "--expected-source", SOURCE,
+              "--require-complete", "--timeout", "180"], cwd=ROOT, check=False)
+          require(completed.returncode == 0, "lifecycle_contract_runner_failed")
+          receipt = json.loads(report.read_bytes())
+          test_path = "tooling/tests/test_windows_installer_lifecycle.py"
+          tree = ast.parse((ROOT / test_path).read_bytes())
+          classes = [item for item in tree.body if isinstance(item, ast.ClassDef)
+                     and item.name == "WindowsLifecycleTests"]
+          require(len(classes) == 1, "lifecycle_contract_class_count")
+          methods = [item.name for item in classes[0].body
+                     if isinstance(item, ast.FunctionDef) and item.name.startswith("test_")]
+          all_methods = [item.name for item in ast.walk(tree)
+                         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         and item.name.startswith("test_")]
+          require(len(methods) == len(set(methods)) == len(all_methods) == 52
+                  and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                              and item.name == "load_tests" for item in ast.walk(tree)),
+                  "lifecycle_contract_inventory_changed")
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          entries = ["discovery:test_windows_installer_lifecycle.py",
+                     "dotted:tooling.tests.test_windows_installer_lifecycle"]
+          require(receipt.get("status") == "PASS" and receipt.get("exit_code") == 0
+                  and receipt.get("require_complete") is True
+                  and receipt.get("executed_source_sha") == SOURCE
+                  and receipt.get("tree_sha") == before["tree"]
+                  and not receipt.get("source_postcheck_error")
+                  and [step.get("entry_point") for step in receipt.get("steps", [])] == entries
+                  and receipt.get("test_definition_sha256") == {test_path: digest(ROOT / test_path)}
+                  and receipt.get("runner_sha256") == digest(ROOT / "tooling/ci_test_runner.py"),
+                  "lifecycle_contract_receipt_identity")
+          for key in ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB"):
+              require(receipt.get("github", {}).get(key) == os.environ[key],
+                      "lifecycle_contract_receipt_job")
+          inventory = {}
+          for index, step in enumerate(receipt["steps"]):
+              counts = step.get("counts", {})
+              require(step.get("status") == "PASS" and step.get("exit_code") == 0
+                      and counts.get("terminal_status") == "OK"
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 52
+                      and type(counts.get("passed")) is int and counts["passed"] == 52
+                      and all(type(counts.get(key)) is int and counts[key] == 0 for key in
+                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
+                      "lifecycle_contract_omission")
+              for stream in ("stdout", "stderr"):
+                  path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
+                  require(step.get(stream) == {"file": path.name, "sha256": digest(path)},
+                          "lifecycle_contract_log_binding")
+              raw = report.with_name(f"{report.stem}-{index:02d}-stderr.log").read_text(encoding="utf-8")
+              observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
+              module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
+              expected = {f"{module}.WindowsLifecycleTests.{method}" for method in methods}
+              require(len(observed) == 52 and set(observed) == expected,
+                      "lifecycle_contract_original_names")
+              inventory[step["entry_point"]] = sorted(observed)
+          after = source_observation(ROOT, SOURCE)
+          require(after == before, "lifecycle_contract_source_changed")
+          write_new_manifest(ROOT, output / "readback.json", {
+              "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
+              "source_before": before, "source_after": after, "receipt_sha256": digest(report),
+              "github": receipt["github"], "entrypoint_methods": inventory,
+              "unique_controls": 52, "entrypoints": 2, "skipped": 0,
+              "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
+              "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
+              "human_acceptance": "NOT_RUN", "release_published": False})
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS lifecycle gate failed' }
+      - name: Retain exact lifecycle contract receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-nsis-lifecycle-contracts-windows
+          path: ${{ runner.temp }}/motionwright-nsis-lifecycle-contracts/*
+          if-no-files-found: warn
       - name: Retain the exact Windows NSIS source-test result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-nsis-windows-source-tests
-          path: ci-evidence/nsis-windows-source-tests.json
+          path: ${{ runner.temp }}/mw-nsis-windows-source-tests/receipt.json
           if-no-files-found: warn
 
   linux:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle')
     needs: receipt-policy
     runs-on: ubuntu-24.04
     steps:
@@ -448,7 +656,7 @@ jobs:
           if-no-files-found: error
 
   windows-contracts:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle')
     runs-on: windows-latest
     timeout-minutes: 10
     env:
@@ -523,9 +731,9 @@ jobs:
           dynamic_loaders = [node for node in ast.walk(source_tree)
                              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and node.name == "load_tests"]
-          if (len(source_methods) != 18 or len(methods) != 18
-                  or len(all_methods) != 18 or dynamic_loaders):
-              raise SystemExit("The reviewed Windows contract requires exactly 18 unique static source methods")
+          if (len(source_methods) != 34 or len(methods) != 34
+                  or len(all_methods) != 34 or dynamic_loaders):
+              raise SystemExit("The reviewed Windows contract requires exactly 34 unique static source methods")
           expected_entries = ["discovery:test_windows_cold_start.py", "dotted:tooling.tests.test_windows_cold_start"]
           if (receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
                   or receipt.get("require_complete") is not True
@@ -546,11 +754,11 @@ jobs:
               counts = step.get("counts", {})
               if (step.get("status") != "PASS" or type(step.get("exit_code")) is not int or step["exit_code"] != 0
                       or counts.get("terminal_status") != "OK"
-                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 18
-                      or type(counts.get("passed")) is not int or counts["passed"] != 18
+                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 34
+                      or type(counts.get("passed")) is not int or counts["passed"] != 34
                       or any(type(counts.get(key)) is not int or counts[key] != 0 for key in
                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                  raise SystemExit("Windows unit entry point did not complete 18 controls without omissions")
+                  raise SystemExit("Windows unit entry point did not complete 34 controls without omissions")
               for stream in ("stdout", "stderr"):
                   path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
                   if step.get(stream) != {"file": path.name, "sha256": digest(path)}:
@@ -560,8 +768,8 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
               module = "test_windows_cold_start" if index == 0 else "tooling.tests.test_windows_cold_start"
               expected = {f"{module}.{class_name}.{method}" for method in methods}
-              if len(observed) != 18 or set(observed) != expected:
-                  raise SystemExit("Original verbose output does not contain each of the 18 source controls exactly once")
+              if len(observed) != 34 or set(observed) != expected:
+                  raise SystemExit("Original verbose output does not contain each of the 34 source controls exactly once")
               method_inventory[step["entry_point"]] = sorted(observed)
           source_inputs = {name: digest(root / name) for name in (
               test_path, "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
@@ -571,14 +779,14 @@ jobs:
                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                     "receipt_sha256": digest(report), "github": receipt["github"],
                     "source_inputs_sha256": source_inputs, "entrypoint_methods": method_inventory,
-                    "unique_source_controls": 18, "entrypoints": 2, "skipped": 0,
+                    "unique_source_controls": 34, "entrypoints": 2, "skipped": 0,
                     "scope": "Synthetic G1: temporary SQLite/receipt fixtures and mocked native transport",
                     "installed_application_execution": False, "native_ui_execution": False,
                     "formal_acceptance": False, "release_verdict": False}
           with report.with_name("contract-readback.json").open("x", encoding="utf-8", newline="\n") as handle:
               json.dump(result, handle, indent=2, sort_keys=True)
               handle.write("\n")
-          print("windows-unit-contracts=PASS unique=18 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
+          print("windows-unit-contracts=PASS unique=34 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
           '@
           $readbackPath = Join-Path "$proofDir" 'verify-contract-readback.py'
           [System.IO.File]::WriteAllText($readbackPath, $readback, [System.Text.UTF8Encoding]::new($false))
@@ -609,7 +817,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle')
     needs: [receipt-policy, windows-contracts, nsis-source-windows]
     runs-on: windows-latest
     steps:
@@ -720,9 +928,10 @@ jobs:
           if-no-files-found: error
 
   windows-update:
-    # This separately selected compiler fixture never launches its installer.
-    # Its setup is outside the normal candidate attestation subjects.
-    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'nsis_compile'
+    # The compiler scope never launches an installer. The lifecycle scope is
+    # a separately selected, one-shot upgrade of disposable versioned fixtures.
+    # Neither fixture is a normal candidate attestation subject.
+    if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'nsis_compile' || inputs.verification_scope == 'nsis_lifecycle')
     needs: [receipt-policy, nsis-source-windows]
     runs-on: windows-latest
     timeout-minutes: 60
@@ -875,13 +1084,45 @@ jobs:
           raise SystemExit(0 if ok else 1)
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS gate failed' }
+      - name: Retain the isolated 0.1.1 fixture build overlay
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          import tomllib
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(ROOT / "tooling"))
+          from release_manifest import write_new_manifest
+          from windows_installer_lifecycle import require, source_observation
+
+          before = source_observation(ROOT, os.environ["GITHUB_SHA"])
+          config = json.loads((ROOT / "apps/desktop/src-tauri/tauri.conf.json").read_bytes())
+          workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+          require(config["version"] == workspace["workspace"]["package"]["version"] == "0.1.0",
+                  "fixture_source_version_not_the_reviewed_predecessor")
+          output = ROOT / "ci-evidence/windows-nsis-update-version-overlay.json"
+          output.parent.mkdir(exist_ok=True)
+          write_new_manifest(ROOT, output, {"version": "0.1.1"})
+          require(source_observation(ROOT, os.environ["GITHUB_SHA"]) == before,
+                  "fixture_overlay_changed_tracked_source")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
+              require(not any(char in str(output) for char in "\r\n"), "fixture_overlay_path")
+              environment.write("MW_NSIS_VERSION_OVERLAY=" + str(output) + "\n")
+          print("fixture_source_version=0.1.0 fixture_installer_version=0.1.1 PE=REQUIRES_OBSERVATION")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS lifecycle gate failed' }
       - name: Build the real application without producing a package
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           Push-Location apps/desktop
           try {
-            npm --prefix ../studio exec -- tauri build --no-bundle
+            npm --prefix ../studio exec -- tauri build --no-bundle --config "$env:MW_NSIS_VERSION_OVERLAY"
             if ($LASTEXITCODE -ne 0) { throw 'The unbundled application build failed' }
           } finally {
             Pop-Location
@@ -959,21 +1200,7 @@ jobs:
                   return json.loads(limited(response, 1024 * 1024))
 
 
-          SOURCE_PATHS = (
-              ".github/workflows/package-candidate.yml",
-              "apps/desktop/src-tauri/tauri.conf.json",
-              "apps/desktop/src-tauri/windows/installer.nsi",
-              "apps/desktop/src-tauri/windows/uninstall-ownership.nsh",
-              "tooling/nsis_owned_files.py",
-              "tooling/tests/test_nsis_owned_files.py",
-              "tooling/package_receipt.py",
-              "tooling/release_manifest.py",
-              "tooling/candidate_smoke.py",
-              "tooling/windows_cold_start.py",
-              "apps/studio/package.json",
-              "apps/studio/package-lock.json",
-              "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json",
-          )
+          from windows_installer_lifecycle import SOURCE_PATHS, read_pe_versions, require_pe_version
 
           def source_bytes(relative):
               require(relative in SOURCE_PATHS, "source_path_outside_the_explicit_gate_set")
@@ -1138,6 +1365,13 @@ jobs:
           require(identity(seven) == seven_before, "static_extraction_tool_changed")
 
           config = json.loads(source_bytes("apps/desktop/src-tauri/tauri.conf.json"))
+          version_overlay_path = ROOT / "ci-evidence/windows-nsis-update-version-overlay.json"
+          version_overlay_identity = identity(version_overlay_path)
+          version_overlay = json.loads(version_overlay_path.read_bytes())
+          require(version_overlay == {"version": "0.1.1"}
+                  and config["version"] == "0.1.0", "fixture_version_overlay_invalid")
+          fixture_version = version_overlay["version"]
+
           windows = config["bundle"]["windows"]
           require(config["productName"] == "Motionwright" and config["identifier"] == "com.seradotcom.motionwright"
                   and config.get("mainBinaryName", "motionwright-desktop") == "motionwright-desktop"
@@ -1151,6 +1385,10 @@ jobs:
           main = ROOT / "target/release/motionwright-desktop.exe"
           main_before = identity(main)
           require(main_before["sha256"] != FIXED["main"]["sha256"], "new_main_is_not_a_distinct_build")
+          previous_pe = read_pe_versions(INPUT / "previous-main.exe")
+          current_pe = read_pe_versions(main)
+          require_pe_version(previous_pe, "0.1.0", identity(INPUT / "previous-main.exe"))
+          require_pe_version(current_pe, fixture_version, main_before)
 
           require(not config["bundle"].get("externalBin") and not config["bundle"].get("resources"),
                   "the_render_fixture_must_not_replace_configured_application_payloads")
@@ -1178,7 +1416,7 @@ jobs:
           require(expected_fixture["mw-ci-current-sidecar.exe"]["sha256"]
                   != expected_fixture["mw-ci-previous-sidecar.exe"]["sha256"],
                   "the_two_render_sidecars_need_distinct_literal_bytes")
-          overlay = {"bundle": {"resources": resource_inputs, "externalBin": external_inputs}}
+          overlay = {"version": fixture_version, "bundle": {"resources": resource_inputs, "externalBin": external_inputs}}
           overlay_path = INPUT / "render-overlay.json"
           overlay_raw = (json.dumps(overlay, indent=2, sort_keys=True) + "\n").encode("utf-8")
           write_new(overlay_path, overlay_raw)
@@ -1219,7 +1457,7 @@ jobs:
               "schema": "motionwright.nsis-predecessor/1",
               "identity": {"application": "Motionwright", "bundle_id": config["identifier"], "arch": "x64"},
               "version": "0.1.0", "source_sha": FIXED["source"], "source_tree": FIXED["tree"],
-              "target": {"version": config["version"], "main_sha256": main_before["sha256"]},
+              "target": {"version": fixture_version, "main_sha256": main_before["sha256"]},
               "package": {"path": "previous-setup.exe", "bytes": FIXED["package"]["bytes"],
                           "sha256": FIXED["package"]["sha256"]},
               "capture_receipt": {"path": "previous-capture-receipt.json", "bytes": FIXED["receipt"]["bytes"],
@@ -1239,7 +1477,7 @@ jobs:
           probe.mkdir()
           admitted = emit_predecessor_include(
               probe / "mw-predecessor.nsh", application="Motionwright",
-              bundle_id=config["identifier"], arch="x64", target_version=config["version"],
+              bundle_id=config["identifier"], arch="x64", target_version=fixture_version,
               target_main_sha256=main_before["sha256"],
               environment={"MW_NSIS_PREDECESSOR_MANIFEST": str(profile_path),
                            "MW_NSIS_PREDECESSOR_MANIFEST_SHA256": profile_sha})
@@ -1252,6 +1490,10 @@ jobs:
               "schema": "motionwright-windows-nsis-update-inputs/1", "source_sha": SOURCE,
               "source_before": source_before, "source_after": source_after,
               "profile_sha256": profile_sha, "profile": profile, "new_main_before_bundle": main_before,
+              "source_version": config["version"],
+              "version_overlay": version_overlay_identity,
+              "version_scope": "ISOLATED_INSTALLER_AND_PE_FIXTURE",
+              "previous_pe_version": previous_pe, "current_pe_version": current_pe,
               "render_overlay": overlay_identity, "expected_fixture_payloads": expected_fixture,
               "fixture_scope": "two_resources_and_two_nonexecuted_pe_sidecars_only",
               "previous_package_archive": package_admission, "previous_evidence_archive": evidence_admission,
@@ -1331,20 +1573,9 @@ jobs:
           EVIDENCE = ROOT / "ci-evidence"
           PROOF = EVIDENCE / "windows-nsis-update-compiled.json"
 
-          SOURCE_PATHS = (
-              ".github/workflows/package-candidate.yml",
-              "apps/desktop/src-tauri/tauri.conf.json",
-              "apps/desktop/src-tauri/windows/installer.nsi",
-              "apps/desktop/src-tauri/windows/uninstall-ownership.nsh",
-              "tooling/nsis_owned_files.py",
-              "tooling/tests/test_nsis_owned_files.py",
-              "tooling/package_receipt.py",
-              "tooling/release_manifest.py",
-              "tooling/candidate_smoke.py",
-              "tooling/windows_cold_start.py",
-              "apps/studio/package.json",
-              "apps/studio/package-lock.json",
-              "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json",
+          from windows_installer_lifecycle import (
+              SOURCE_PATHS, read_pe_versions, require_pe_version,
+              validate_rendered_resource_directories,
           )
 
           def require(ok, code):
@@ -1516,16 +1747,27 @@ jobs:
           config = json.loads(source_bytes("apps/desktop/src-tauri/tauri.conf.json"))
           identity_defines = {
               "PRODUCTNAME": "Motionwright", "BUNDLEID": config["identifier"],
-              "ARCH": "x64", "INSTALLMODE": "currentUser", "VERSION": config["version"],
+              "ARCH": "x64", "INSTALLMODE": "currentUser", "VERSION": inputs["profile"]["target"]["version"],
               "MAINBINARYNAME": "motionwright-desktop",
           }
           require(all(define(rendered, key) == value for key, value in identity_defines.items()),
                   "compiled_application_identity_invalid")
+          version_overlay_path = ROOT / "ci-evidence/windows-nsis-update-version-overlay.json"
+          require(identity(version_overlay_path) == inputs["version_overlay"]
+                  and json.loads(version_overlay_path.read_bytes())
+                  == {"version": inputs["profile"]["target"]["version"]}
+                  and inputs["version_scope"] == "ISOLATED_INSTALLER_AND_PE_FIXTURE"
+                  and inputs["source_version"] == config["version"],
+                  "compiled_fixture_version_overlay_changed")
           main_source = Path(literal(define(rendered, "MAINBINARYSRCPATH")))
           require(main_source == ROOT / "target/release/motionwright-desktop.exe",
                   "compiled_main_path_not_the_built_target")
           require(identity(main_source) == inputs["new_main_before_bundle"],
                   "no_binary_patching_did_not_preserve_the_pinned_main_bytes")
+          actual_pe = read_pe_versions(main_source)
+          require_pe_version(actual_pe, inputs["profile"]["target"]["version"],
+                             inputs["new_main_before_bundle"])
+          require(actual_pe == inputs["current_pe_version"], "compiled_pe_metadata_changed")
           cli_root = ROOT / "apps/studio/node_modules/@tauri-apps"
           for name, expected in inputs["installed_cli_inputs"].items():
               require(identity(cli_root / name) == expected, "compiled_cli_input_changed")
@@ -1596,6 +1838,8 @@ jobs:
                       relative = _relative(literal(relative), "compiled install destination")
                   installed_calls.append((relative, symbol))
           require(installed_calls == entries, "compiled_lookup_and_install_inventories_differ")
+          validate_rendered_resource_directories(rendered, [
+              relative for relative, symbol in entries if symbol.startswith("MW_RESOURCE_")])
 
           retained = EVIDENCE / "windows-nsis-update-compiled-inputs"
           retained.mkdir()
@@ -1704,10 +1948,429 @@ jobs:
             ci-evidence/windows-nsis-update-candidate.json
             ci-evidence/windows-nsis-update-inputs.json
             ci-evidence/windows-nsis-update-compiled.json
+            ci-evidence/windows-nsis-update-version-overlay.json
             ci-evidence/windows-nsis-update-compiled-inputs/*
             ci-evidence/windows-nsis-update-compiled-diagnostics/*
             ci-evidence/nsis-windows-junction-test.json
           if-no-files-found: error
+      - name: Observe one distinct-version fixture install, upgrade and uninstall
+        if: inputs.verification_scope == 'nsis_lifecycle'
+        timeout-minutes: 18
+        env:
+          MW_NSIS_LIFECYCLE_SCOPE: ${{ inputs.verification_scope }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import ctypes
+          from ctypes import wintypes
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import uuid
+
+          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(ROOT / "tooling"))
+          import candidate_smoke
+          from nsis_owned_files import _capture
+          from release_manifest import write_new_manifest
+          from windows_cold_start import (
+              known_databases, native_windows_launch_environment,
+              run_installed_relaunch, select_first_use_contract, write_sanitized_failure_record,
+          )
+          from windows_installer_lifecycle import (
+              bound_file, bound_json, capture_snapshot, custody_error, file_identity,
+              file_map, family_map, installed_registry,
+              observed_terminal, require, retained_ref, retain_observed_result,
+              source_observation, validate_inputs, validate_lifecycle,
+          )
+
+          SOURCE = os.environ["GITHUB_SHA"]
+          RUN = {"repository": os.environ["GITHUB_REPOSITORY"],
+                 "run_id": int(os.environ["GITHUB_RUN_ID"]),
+                 "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])}
+          require(os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true"
+                  and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                  and os.environ.get("MW_NSIS_LIFECYCLE_SCOPE") == "nsis_lifecycle",
+                  "lifecycle_requires_explicit_disposable_windows_workflow")
+          require(RUN["run_attempt"] == 1, "lifecycle_does_not_replay_a_rerun")
+          before_source = source_observation(ROOT, SOURCE)
+          EVIDENCE = ROOT / "ci-evidence/windows-nsis-lifecycle"
+          EVIDENCE.mkdir()
+          INPUT = EVIDENCE / "inputs"
+          INPUT.mkdir()
+          WORK = Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-guarded-update"
+          CHILD_ENV = native_windows_launch_environment(os.environ)
+          for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+              CHILD_ENV.pop(name, None)
+
+          def publish(name, value):
+              write_new_manifest(EVIDENCE, EVIDENCE / name, value)
+              return retained_ref(EVIDENCE, EVIDENCE / name)
+
+          def capture_input(role, original):
+              destination = INPUT / role / original.name
+              destination.parent.mkdir()
+              expected = file_identity(original)
+              digest, size, unused = _capture(original, destination)
+              require({"bytes": size, "sha256": digest} == expected
+                      and file_identity(original) == expected, "lifecycle_input_changed")
+              return retained_ref(EVIDENCE, destination)
+
+          # Capture the same originals used by the compiler gate. This does not replace
+          # their NOT_RUN fields or turn a compiler receipt into installed evidence.
+          setups = list((ROOT / "target/release/bundle/nsis").glob("*-setup.exe"))
+          require(len(setups) == 1, "lifecycle_setup_count")
+          paths = {
+              "compiled": ROOT / "ci-evidence/windows-nsis-update-compiled.json",
+              "inputs": ROOT / "ci-evidence/windows-nsis-update-inputs.json",
+              "candidate": ROOT / "ci-evidence/windows-nsis-update-candidate.json",
+              "profile": WORK / "input/predecessor.json",
+              "rendered": ROOT / "target/release/nsis/x64/installer.nsi",
+              "previous_setup": WORK / "input/previous-setup.exe",
+              "current_setup": setups[0],
+              "previous_capture": WORK / "input/previous-capture-receipt.json",
+              "previous_main": WORK / "input/previous-main.exe",
+              "current_main": ROOT / "target/release/motionwright-desktop.exe",
+              "version_overlay": ROOT / "ci-evidence/windows-nsis-update-version-overlay.json",
+          }
+          refs = {role: capture_input(role, original) for role, original in paths.items()}
+          admission = {"schema": "motionwright.windows-lifecycle-inputs/1",
+              "source_sha": SOURCE, "source_tree": before_source["tree"],
+              "run": RUN, "refs": refs}
+          admission_ref = publish("admission.json", admission)
+          verified = validate_inputs(EVIDENCE, admission, SOURCE, RUN)
+          project_contract = select_first_use_contract(
+              verified["previous_source"],
+              verified["previous_payloads"]["motionwright-desktop.exe"]["sha256"],
+          )
+          require(verified["source_before"] == before_source, "lifecycle_compiler_source_changed")
+          publish("admitted-inputs-and-pe.json", verified)
+
+          # The retained predecessor receipt is validated against its own source metadata,
+          # not the current dependency lock. No old code is loaded or executed here.
+          profile = bound_json(EVIDENCE, refs["profile"])
+          previous_capture = bound_json(EVIDENCE, refs["previous_capture"])
+          old_source = profile["source_sha"]
+          fetch = subprocess.run(
+              ["git", "--no-replace-objects", "fetch", "--no-tags", "--depth=1", "origin", old_source],
+              cwd=ROOT, env=CHILD_ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+              timeout=90, check=False)
+          require(fetch.returncode == 0, "predecessor_source_fetch_failed")
+          old_tree = subprocess.run(
+              ["git", "--no-replace-objects", "rev-parse", old_source + "^{tree}"],
+              cwd=ROOT, env=CHILD_ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+              timeout=15, check=True).stdout.decode("ascii").strip()
+          require(old_tree == profile["source_tree"], "predecessor_source_tree_mismatch")
+          metadata = EVIDENCE / "previous-source-metadata"
+          metadata.mkdir()
+          metadata_files = {}
+          for relative in ("SOURCE_LOCK.json", "Cargo.toml", "apps/desktop/src-tauri/tauri.conf.json"):
+              data = subprocess.run(
+                  ["git", "--no-replace-objects", "show", old_source + ":" + relative],
+                  cwd=ROOT, env=CHILD_ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                  timeout=15, check=True).stdout
+              require(0 < len(data) <= 1024 * 1024, "predecessor_metadata_size")
+              output = metadata.joinpath(*relative.split("/"))
+              output.parent.mkdir(parents=True, exist_ok=True)
+              with output.open("xb") as stream:
+                  require(stream.write(data) == len(data), "predecessor_metadata_short_write")
+                  stream.flush()
+                  os.fsync(stream.fileno())
+              metadata_files[relative] = retained_ref(EVIDENCE, output)
+          publish("previous-source-metadata.json", {
+              "source_sha": old_source, "source_tree": old_tree, "files": metadata_files,
+              "old_source_code_execution": "NOT_RUN"})
+          old_config = json.loads((metadata / "apps/desktop/src-tauri/tauri.conf.json").read_bytes())
+          require(old_config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser",
+                  "predecessor_must_not_delegate_to_elevation")
+          previous_candidate_ref = publish("previous-candidate.json", previous_capture["candidate"])
+          # Keep the literal filename required by the unchanged candidate smoke reader.
+          old_filename = previous_capture["candidate"]["artifacts"][0]["filename"]
+          require(old_filename == "Motionwright_0.1.0_x64-setup.exe", "predecessor_filename")
+          old_setup = EVIDENCE / old_filename
+          _capture(bound_file(EVIDENCE, refs["previous_setup"]), old_setup)
+          require(file_identity(old_setup) == verified["previous_setup"], "predecessor_smoke_setup_binding")
+
+          require("APPDATA" in CHILD_ENV and "LOCALAPPDATA" in CHILD_ENV,
+                  "native_appdata_missing")
+          roots = [Path(CHILD_ENV["APPDATA"]), Path(CHILD_ENV["LOCALAPPDATA"])]
+          require(not known_databases(roots), "fixture_project_store_already_present")
+          database = roots[0] / "com.seradotcom.motionwright/motionwright.sqlite3"
+          install_root = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-lifecycle-install"
+          require(not install_root.exists() and install_root.is_absolute()
+                  and not any(char in str(install_root) for char in '"\r\n\0'),
+                  "fixture_install_root_not_fresh")
+          project_origin = None
+          operations = []
+          failure = None
+          record_ref = None
+          result = None
+
+          # The identity is read from the handle returned by this one Popen invocation,
+          # not from a PID search that could attach to another installer.
+          def process_identity(process):
+              kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+              kernel.GetProcessTimes.argtypes = [
+                  wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+                  ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
+                  ctypes.POINTER(wintypes.FILETIME)]
+              kernel.GetProcessTimes.restype = wintypes.BOOL
+              creation, exited, kernel_time, user_time = (wintypes.FILETIME() for unused in range(4))
+              require(kernel.GetProcessTimes(
+                  wintypes.HANDLE(int(process._handle)), ctypes.byref(creation),
+                  ctypes.byref(exited), ctypes.byref(kernel_time), ctypes.byref(user_time)),
+                  "installer_process_creation_unavailable")
+              stamp = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+              require(process.pid > 0 and stamp > 0, "installer_process_identity_invalid")
+              return {"pid": process.pid, "creation_filetime": stamp}
+
+          def observe_phase(phase, executable, command, arguments):
+              oid = str(uuid.uuid4())
+              executable_before = file_identity(executable)
+              baseline = capture_snapshot(EVIDENCE, snapshot_name=phase + "-before",
+                  operation=oid, position="before", install_root=install_root,
+                  database=database, registry_keys=verified["registry_keys"],
+                  first_use_contract=project_contract)
+              if phase == "install":
+                  initial = bound_json(EVIDENCE, baseline)
+                  require(not initial["installed"]
+                          and all(all(value is None for value in row.values())
+                                  for row in initial["registry"].values())
+                          and all(value is None for value in initial["sqlite_family"].values()),
+                          "initial_fixture_namespace_not_empty")
+              elif phase == "upgrade":
+                  initial = bound_json(EVIDENCE, baseline)
+                  require(all(file_map(initial).get(path) == value
+                              for path, value in verified["previous_payloads"].items()),
+                          "predecessor_bytes_changed_before_upgrade")
+                  installed_registry(initial, verified["registry_keys"][0], verified["previous_version"])
+                  require(project_origin is not None and initial["project"] is not None
+                          and initial["project"] == bound_json(EVIDENCE, project_origin)["project"],
+                          "real_project_baseline_missing")
+              else:
+                  initial = bound_json(EVIDENCE, baseline)
+                  previous = bound_json(EVIDENCE, operations[-1]["after"])
+                  require(file_map(initial) == file_map(previous)
+                          and family_map(initial) == family_map(previous)
+                          and initial["project"] == previous["project"]
+                          and initial["registry"] == previous["registry"],
+                          "uninstall_does_not_continue_the_observed_upgrade")
+              require(source_observation(ROOT, SOURCE) == before_source,
+                      "source_changed_before_installer_effect")
+              require(file_identity(executable) == executable_before, "effect_executable_changed")
+              # NSIS /D= and _?= must be last and unquoted, including paths with spaces.
+              # Only the fixed executable and flags are quoted by list2cmdline.
+              command_line = subprocess.list2cmdline([str(executable), *arguments[:-1]]) + " " + arguments[-1]
+              publish(phase + "-intent.json", {
+                  "schema": "motionwright.windows-lifecycle-intent/1",
+                  "source_sha": SOURCE, "run": RUN, "operation_id": oid,
+                  "phase": phase, "command": command, "executable": executable_before,
+                  "arguments": arguments, "launch_limit": 1, "replay_authorized": False})
+              process = None
+              identity_value = None
+              secondary = []
+              # Even launch/wait uncertainty is a terminal UNKNOWN; it cannot authorize
+              # another launch. No kill, recovery launch, polling launch, or retry exists.
+              original = observed_terminal(None)
+              try:
+                  process = subprocess.Popen(
+                      command_line, executable=str(executable), cwd=str(executable.parent),
+                      env=CHILD_ENV, stdin=subprocess.DEVNULL,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  try:
+                      identity_value = process_identity(process)
+                  except Exception as error:
+                      secondary.append(custody_error("process_identity", error))
+                  try:
+                      code = process.wait(timeout=180)
+                      original = observed_terminal(code)
+                  except subprocess.TimeoutExpired:
+                      original = observed_terminal(None, timed_out=True)
+                  except Exception as error:
+                      secondary.append(custody_error("installer_wait", error))
+              except Exception as error:
+                  secondary.append(custody_error("installer_launch", error))
+              context = {"operation_id": oid, "process": identity_value,
+                         "executable": executable_before, "source_sha": SOURCE, "run": RUN}
+              def after_observation():
+                  # A live or unobserved terminal cannot provide a quiescent snapshot.
+                  require(original["exit_code"] is not None, "installer_terminal_not_quiescent")
+                  reference = capture_snapshot(EVIDENCE, snapshot_name=phase + "-after",
+                      operation=oid, position="after", install_root=install_root,
+                      database=database, registry_keys=verified["registry_keys"],
+                      first_use_contract=project_contract)
+                  # Exit zero is only the original process result. Before another effect,
+                  # require the same observable invariants the final consumer rechecks.
+                  prior = bound_json(EVIDENCE, baseline)
+                  actual = bound_json(EVIDENCE, reference)
+                  old, current = verified["previous_payloads"], verified["current_payloads"]
+                  key = verified["registry_keys"][0]
+                  if phase == "install":
+                      require(file_map(actual) == old, "previous_install_inventory")
+                      installed_registry(actual, key, verified["previous_version"])
+                      require(all(value is None for value in family_map(actual).values()),
+                              "installer_created_unexpected_project_store")
+                  elif phase == "upgrade":
+                      before_files, after_files = file_map(prior), file_map(actual)
+                      require(all(before_files.get(path) == value for path, value in old.items()),
+                              "predecessor_bytes_changed_before_upgrade")
+                      foreign = {path: value for path, value in before_files.items() if path not in old}
+                      require(bool(foreign) and not (set(foreign) & set(current)),
+                              "foreign_fixture_missing_or_conflicting")
+                      require(all(after_files.get(path) == value for path, value in current.items())
+                              and all(after_files.get(path) == value for path, value in foreign.items())
+                              and set(after_files) == set(current) | set(foreign) | {"uninstall.exe"}
+                              and after_files["uninstall.exe"] != old["uninstall.exe"],
+                              "upgrade_payload_or_foreign_preservation")
+                      installed_registry(actual, key, verified["fixture_installer_version"])
+                      require(family_map(prior) == family_map(actual)
+                              and prior["project"] == actual["project"] and actual["project"] is not None,
+                              "upgrade_project_changed")
+                  else:
+                      previous = bound_json(EVIDENCE, operations[-1]["after"])
+                      require(file_map(prior) == file_map(previous)
+                              and family_map(prior) == family_map(previous)
+                              and prior["project"] == previous["project"]
+                              and prior["registry"] == previous["registry"],
+                              "uninstall_does_not_continue_the_observed_upgrade")
+                      foreign = {path: value for path, value in file_map(prior).items()
+                                 if path not in current and path != "uninstall.exe"}
+                      require(file_map(actual) == {**foreign, "uninstall.exe": file_map(prior)["uninstall.exe"]}
+                              and family_map(prior) == family_map(actual)
+                              and prior["project"] == actual["project"],
+                              "uninstall_payload_or_project_preservation")
+                      require(all(row[key] is None for row in actual["registry"].values()),
+                              "uninstall_registration_retained")
+                      product = verified["registry_keys"][1]
+                      require(all(prior["registry"][view][product] == actual["registry"][view][product]
+                                  for view in ("32", "64")), "uninstall_product_metadata_changed")
+                  return reference
+              retained = retain_observed_result(
+                  EVIDENCE, phase, original, after_observation, context=context)
+              row = {"phase": phase, "operation_id": oid, "launch_count": 1,
+                     "command": command, "process": identity_value,
+                     "executable": executable_before, "terminal": retained["original_terminal"],
+                     "terminal_receipt": None,
+                     "custody_errors": retained["custody_errors"] + secondary,
+                     "before": baseline, "after": retained["observation"]}
+              # Append the original in memory before any further readback can fail.
+              operations.append(row)
+              try:
+                  row["terminal_receipt"] = retained_ref(EVIDENCE, EVIDENCE / (phase + "-terminal.json"))
+              except Exception as error:
+                  row["custody_errors"].append(custody_error("terminal_readback", error))
+              publish(phase + "-operation.json", row)
+              require(row["terminal"]["state"] == "ACK" and not row["custody_errors"],
+                      "installer_effect_or_custody_incomplete")
+              require(file_identity(executable) == executable_before,
+                      "effect_executable_changed_after_terminal")
+              return row
+
+          try:
+              observe_phase("install", bound_file(EVIDENCE, refs["previous_setup"]),
+                            "nsis_install_previous", ["/S", "/D=" + str(install_root)])
+              installed = install_root / "motionwright-desktop.exe"
+              old_root = candidate_smoke.ROOT
+              try:
+                  candidate_smoke.ROOT = metadata
+                  smoke = candidate_smoke.build_receipt(
+                      candidate_receipt=bound_file(EVIDENCE, previous_candidate_ref),
+                      artifact=old_setup, installed_binary=installed,
+                      kind="nsis", method="nsis_silent_current_user")
+              finally:
+                  candidate_smoke.ROOT = old_root
+              smoke_ref = publish("previous-installed-smoke.json", smoke)
+              project_output = EVIDENCE / "previous-real-project.json"
+              app_scratch = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-lifecycle-real-project"
+              try:
+                  run_installed_relaunch(
+                      executable=installed, smoke_receipt=bound_file(EVIDENCE, smoke_ref),
+                      expected_sha=old_source, scratch=app_scratch, output=project_output,
+                      first_use_contract=project_contract)
+              except Exception as error:
+                  try:
+                      write_sanitized_failure_record(
+                          output=project_output, scratch=app_scratch, expected_sha=old_source, error=error)
+                  except Exception:
+                      pass
+                  raise
+              project_origin = retained_ref(EVIDENCE, project_output)
+              require(known_databases(roots) == [database], "actual_project_store_path_not_the_fixed_fixture")
+              foreign = install_root / "user-created-foreign.txt"
+              with foreign.open("xb") as stream:
+                  body = b"Fixture-owned user data: preserve during update and uninstall.\n"
+                  require(stream.write(body) == len(body), "foreign_fixture_short_write")
+                  stream.flush()
+                  os.fsync(stream.fileno())
+              observe_phase("upgrade", bound_file(EVIDENCE, refs["current_setup"]),
+                            "nsis_upgrade_current", ["/S", "/UPDATE", "/D=" + str(install_root)])
+              observe_phase("uninstall", install_root / "uninstall.exe",
+                            "nsis_uninstall_current_in_place", ["/S", "_?=" + str(install_root)])
+          except Exception as error:
+              failure = custody_error("lifecycle_sequence", error)
+          finally:
+              record = {"schema": "motionwright.windows-installer-lifecycle/1",
+                  "source_sha": SOURCE, "source_tree": before_source["tree"], "run": RUN,
+                  "admission_sha256": admission_ref["sha256"],
+                  "scope": "DISPOSABLE_WINDOWS_FIXTURE_UPGRADE",
+                  "operations": operations, "project_origin": project_origin,
+                  "interruption": {"status": "NOT_RUN",
+                                  "reason": "OBSERVABLE_PID_START_GUID_CHECKPOINT_REQUIRED"},
+                  "claims": {"human_acceptance": "NOT_RUN", "published_product_upgrade": "NOT_CLAIMED",
+                             "release_published": False}}
+              try:
+                  record_ref = publish("record.json", record)
+              except Exception as error:
+                  # Never overwrite a possibly committed record or repeat an installer.
+                  failure = failure or custody_error("record_publication", error)
+              if record_ref is not None:
+                  try:
+                      result = validate_lifecycle(EVIDENCE, record, verified, admission_ref["sha256"])
+                      require(source_observation(ROOT, SOURCE) == before_source,
+                              "source_changed_during_lifecycle")
+                      publish("result.json", {
+                          "schema": "motionwright.windows-lifecycle-verification/1",
+                          "source_before": before_source,
+                          "source_after": source_observation(ROOT, SOURCE),
+                          "admission": admission_ref, "record": record_ref, "result": result})
+                  except Exception as error:
+                      failure = failure or custody_error("lifecycle_verification", error)
+              if failure is not None:
+                  try:
+                      publish("diagnostic.json", {
+                          "schema": "motionwright.windows-lifecycle-workflow-diagnostic/1",
+                          "failure": failure,
+                          "originals": [{"phase": row["phase"], "terminal": row["terminal"],
+                                         "custody_errors": row["custody_errors"]} for row in operations],
+                          "source_sha": SOURCE, "run": RUN, "installer_replays": 0,
+                          "human_acceptance": "NOT_RUN", "release_published": False})
+                  except Exception:
+                      try:
+                          sys.stderr.write("windows-lifecycle=INCOMPLETE diagnostic_publication=UNKNOWN\n")
+                          sys.stderr.flush()
+                      except Exception:
+                          pass
+          ok = (failure is None and result is not None
+                and result["status"] == "SOURCE_BOUND_FIXTURE_OBSERVATIONS")
+          try:
+              sys.stdout.write("windows-lifecycle=" + ("SOURCE_BOUND_FIXTURE_OBSERVATIONS" if ok else "INCOMPLETE")
+                               + " human=NOT_RUN interruption=NOT_RUN\n")
+              sys.stdout.flush()
+          except Exception:
+              pass
+          raise SystemExit(0 if ok else 1)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS lifecycle gate failed' }
+      - name: Retain original lifecycle observations even after ERROR or UNKNOWN
+        if: always() && inputs.verification_scope == 'nsis_lifecycle'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-nsis-lifecycle-original
+          path: ci-evidence/windows-nsis-lifecycle/**
+          if-no-files-found: warn
       - name: Retain available compiler gate receipts after failure or cancellation
         if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1720,7 +2383,7 @@ jobs:
           if-no-files-found: warn
 
   macos:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle')
     needs: receipt-policy
     runs-on: macos-latest
     steps:

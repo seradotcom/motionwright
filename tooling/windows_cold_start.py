@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 from contextlib import closing
+from collections import deque
 import hashlib
 import json
 import os
@@ -26,6 +27,11 @@ SHA64 = re.compile(r"[0-9a-f]{64}\Z")
 MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 EXPECTED_FIRST_UI_TITLE = "motionwright ci first use"
 EXPECTED_SCHEMA = 2
+CURRENT_FIRST_USE_CONTRACT = "explicit-project-library/1"
+LEGACY_FIRST_USE_CONTRACT = "automatic-project-679cc48b/1"
+LEGACY_FIRST_USE_SOURCE = "679cc48baf7c6f9bb4a0b803508c9b2a9891d944"
+LEGACY_FIRST_USE_BINARY = "4c1f8f492a505340ec3ca8e521254ff753a01875c92052a48c0dc42ad1314de8"
+LEGACY_FIRST_USE_TITLE = "Untitled Motion Project"
 
 
 class ColdStartError(RuntimeError):
@@ -86,7 +92,118 @@ def check_installed_candidate(receipt_file: Path, executable: Path, source_sha: 
     return {"source_sha": source_sha, "installed_binary_sha256": digest}
 
 
-def read_project_snapshot(database: Path) -> dict:
+def select_first_use_contract(source_sha: str, binary_sha256: str) -> str:
+    """Select the shipped predecessor only by its admitted source/binary pair."""
+    require(isinstance(source_sha, str) and SHA40.fullmatch(source_sha) is not None
+            and isinstance(binary_sha256, str) and SHA64.fullmatch(binary_sha256) is not None,
+            "First-use source and binary identity are malformed")
+    if source_sha == LEGACY_FIRST_USE_SOURCE or binary_sha256 == LEGACY_FIRST_USE_BINARY:
+        require(source_sha == LEGACY_FIRST_USE_SOURCE
+                and binary_sha256 == LEGACY_FIRST_USE_BINARY,
+                "Automatic-project predecessor source and binary do not match")
+        return LEGACY_FIRST_USE_CONTRACT
+    return CURRENT_FIRST_USE_CONTRACT
+
+
+def _first_use_title(contract: str) -> str:
+    require(type(contract) is str
+            and contract in {CURRENT_FIRST_USE_CONTRACT, LEGACY_FIRST_USE_CONTRACT},
+            "First-use bootstrap contract is unsupported")
+    return (LEGACY_FIRST_USE_TITLE if contract == LEGACY_FIRST_USE_CONTRACT
+            else EXPECTED_FIRST_UI_TITLE)
+
+
+_PROJECT_READ_REASONS = frozenset({
+    "Installed application did not persist a regular SQLite database",
+    "Installed project database violates first-use size bounds",
+    "Installed SQLite project integrity check failed",
+    "Installed SQLite project schema does not match its source contract",
+    "Installed desktop did not produce a valid project store",
+    "Installed fresh-run project count is not exactly one",
+    "Installed first-use project JSON is too large",
+    "Installed first-use project identity is malformed",
+    "SQLite source project identity conflicts with saved JSON",
+    "Installed first-use project was not initialized as expected",
+})
+
+
+def _safe_reader_error(error: BaseException) -> dict:
+    reason = str(error) if isinstance(error, ColdStartError) else ""
+    cause = error.__cause__
+    code = getattr(cause, "sqlite_errorcode", None) if isinstance(cause, sqlite3.Error) else None
+    name = getattr(cause, "sqlite_errorname", None) if isinstance(cause, sqlite3.Error) else None
+    return {
+        "type": "ColdStartError" if isinstance(error, ColdStartError) else "OTHER",
+        "reason": reason if reason in _PROJECT_READ_REASONS else "UNCLASSIFIED_PROJECT_READ_ERROR",
+        "sqlite_errorcode": code if type(code) is int and 0 <= code <= 65535 else None,
+        "sqlite_errorname": name if isinstance(name, str)
+            and re.fullmatch(r"SQLITE_[A-Z0-9_]{1,64}", name) else None,
+    }
+
+
+class _BootObservations:
+    """Bounded technical observations; never retains paths, titles or raw HWNDs."""
+
+    def __init__(self, contract: str):
+        _first_use_title(contract)
+        self.contract = contract
+        self.samples = deque(maxlen=16)
+        self.sample_count = 0
+        self.visible_hwnd_seen = False
+        self.database_seen = False
+        self.project_snapshot_seen = False
+        self.ui_creation_reserved = False
+        self.last_reader_error: BaseException | None = None
+        self.cleanup_error: BaseException | None = None
+
+    def sample(self, elapsed: float, hwnd: bool | None, databases: int | None,
+               reader: str, error: BaseException | None = None) -> None:
+        require((hwnd is None or type(hwnd) is bool)
+                and (databases is None or type(databases) is int and databases >= 0)
+                and reader in {"NOT_ATTEMPTED", "ERROR", "READY"},
+                "Cold-start observation is malformed")
+        self.sample_count = min(self.sample_count + 1, 2 ** 31 - 1)
+        self.visible_hwnd_seen |= hwnd is True
+        self.database_seen |= databases is not None and databases > 0
+        self.project_snapshot_seen |= reader == "READY"
+        if error is not None:
+            self.last_reader_error = error
+        self.samples.append({
+            "elapsed_ms": max(0, min(int(elapsed * 1000), 2 ** 31 - 1)),
+            "visible_hwnd": hwnd,
+            "database_count_capped_at_two": min(databases, 2) if databases is not None else None,
+            "project_reader": reader,
+        })
+
+    def snapshot(self) -> dict:
+        return {
+            "schema": "motionwright.windows-cold-start-observations/1",
+            "first_use_contract": self.contract,
+            "sample_limit": 16,
+            "sample_count": self.sample_count,
+            "samples": [dict(row) for row in self.samples],
+            "visible_hwnd_seen": self.visible_hwnd_seen,
+            "database_seen": self.database_seen,
+            "project_snapshot_seen": self.project_snapshot_seen,
+            "ui_creation_reserved": self.ui_creation_reserved,
+            "last_reader_error": (_safe_reader_error(self.last_reader_error)
+                                  if self.last_reader_error is not None else None),
+            "cleanup_error": ("PROCESS_CLEANUP_UNCONFIRMED"
+                              if self.cleanup_error is not None else None),
+        }
+
+    def attach(self, error: BaseException) -> None:
+        # Diagnostic attachment cannot replace the original failure.
+        try:
+            error.boot_observations = self
+        except Exception:
+            pass
+
+
+def read_project_snapshot(
+    database: Path, *, first_use_contract: str = CURRENT_FIRST_USE_CONTRACT,
+) -> dict:
+    expected_title = _first_use_title(first_use_contract)
     require(database.is_file() and not database.is_symlink(),
             "Installed application did not persist a regular SQLite database")
     require(0 < database.stat().st_size < 64 * 1024 * 1024,
@@ -95,6 +212,8 @@ def read_project_snapshot(database: Path) -> dict:
         with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=3)) as db:
             require(db.execute("PRAGMA quick_check").fetchone() == ("ok",),
                     "Installed SQLite project integrity check failed")
+            require(db.execute("PRAGMA user_version").fetchone() == (EXPECTED_SCHEMA,),
+                    "Installed SQLite project schema does not match its source contract")
             rows = db.execute(
                 "SELECT id, generation, revision, title, document_json FROM projects ORDER BY id"
             ).fetchall()
@@ -117,7 +236,7 @@ def read_project_snapshot(database: Path) -> dict:
             and doc.get("revision") == revision
             and doc.get("title") == title,
             "SQLite source project identity conflicts with saved JSON")
-    require(title == EXPECTED_FIRST_UI_TITLE and type(revision) is int and revision >= 0,
+    require(title == expected_title and type(revision) is int and revision >= 0,
             "Installed first-use project was not initialized as expected")
     return {
         "project_id": project_id,
@@ -259,7 +378,9 @@ def graceful_close(hwnd: int, process: subprocess.Popen[bytes]) -> None:
 def boot_once(
     binary: Path, env: dict[str, str], database_roots: list[Path],
     log_path: Path, expected_db: Path | None = None, seconds: int = 55,
+    first_use_contract: str = CURRENT_FIRST_USE_CONTRACT,
 ) -> tuple[dict, Path, int]:
+    observations = _BootObservations(first_use_contract)
     creation_sent = False
     with log_path.open("xb") as log:
         process = subprocess.Popen(
@@ -272,33 +393,45 @@ def boot_once(
             creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
         started = time.monotonic()
+        primary_error: BaseException | None = None
         try:
             while time.monotonic() - started < seconds:
                 if process.poll() is not None:
+                    observations.sample(time.monotonic() - started, None, None, "NOT_ATTEMPTED")
                     raise ColdStartError(
                         "Installed desktop exited before a persistent project and real HWND existed "
                         f"(exit_code={process.returncode})"
                     )
                 observed = known_databases(database_roots)
                 if len(observed) > 1:
+                    observations.sample(time.monotonic() - started, None, len(observed), "NOT_ATTEMPTED")
                     raise ColdStartError("Installed desktop created multiple candidate project stores")
                 hwnd = windows_motionwright_window(process.pid)
+                observations.sample(time.monotonic() - started, hwnd is not None,
+                                    len(observed), "NOT_ATTEMPTED")
                 if hwnd is not None and observed:
                     database = observed[0]
-                    if expected_db is None and not creation_sent and _empty_library_ready(database):
-                        # This flag is set before action: an uncertain result
-                        # must never cause a second Create on the same launch.
+                    if (first_use_contract == CURRENT_FIRST_USE_CONTRACT
+                            and expected_db is None and not creation_sent
+                            and _empty_library_ready(database)):
+                        # This reservation precedes the sole native action.
+                        # An uncertain reply never permits another Create.
                         creation_sent = True
+                        observations.ui_creation_reserved = True
                         _create_first_project_in_native_window(hwnd)
                     if expected_db is not None and database != expected_db:
                         raise ColdStartError("Relaunched desktop switched to another project database")
                     try:
-                        snapshot = read_project_snapshot(database)
-                    except ColdStartError:
-                        # The real installed app may still be writing its first
-                        # SQLite transaction. Do not synthesize an observed store.
+                        snapshot = read_project_snapshot(
+                            database, first_use_contract=first_use_contract,
+                        )
+                    except ColdStartError as error:
+                        # Retain the exact reader failure while allowing a
+                        # still-uncommitted first SQLite transaction to finish.
+                        observations.sample(time.monotonic() - started, True, 1, "ERROR", error)
                         time.sleep(0.3)
                         continue
+                    observations.sample(time.monotonic() - started, True, 1, "READY")
                     require(process.poll() is None,
                             "Installed desktop terminated during first-use source readback")
                     graceful_close(hwnd, process)
@@ -307,10 +440,20 @@ def boot_once(
             raise ColdStartError(
                 "Installed desktop did not create a real titled HWND and committed project within its deadline"
             )
+        except BaseException as error:
+            primary_error = error
+            observations.attach(error)
+            raise
         finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=12)
+            try:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=12)
+            except BaseException as error:
+                observations.cleanup_error = error
+                if primary_error is None:
+                    observations.attach(error)
+                    raise
 
 
 def validate_evidence_paths(scratch: Path, output: Path) -> None:
@@ -334,6 +477,7 @@ def native_windows_launch_environment(source: dict[str, str]) -> dict[str, str]:
 def run_installed_relaunch(
     *, executable: Path, smoke_receipt: Path, expected_sha: str,
     scratch: Path, output: Path,
+    first_use_contract: str = CURRENT_FIRST_USE_CONTRACT,
 ) -> dict:
     require(os.name == "nt" and os.getenv("GITHUB_ACTIONS") == "true",
             "Installed Windows GUI bootstrap is restricted to a disposable GitHub Windows runner")
@@ -341,6 +485,9 @@ def run_installed_relaunch(
     require(not scratch.exists(), "Installed bootstrap scratch must be newly created")
     require(not output.exists(), "Installed bootstrap evidence must not be overwritten")
     source = check_installed_candidate(smoke_receipt, executable, expected_sha)
+    require(first_use_contract == select_first_use_contract(
+        source["source_sha"], source["installed_binary_sha256"],
+    ), "First-use contract conflicts with the installed source and binary")
     scratch.mkdir(parents=True, exist_ok=False)
     # Keep the real, disposable hosted-runner Windows account. WebView2's
     # Known Folders, COM activation and user-data storage are not modeled by
@@ -352,10 +499,12 @@ def run_installed_relaunch(
     require(not known_databases(roots),
             "GitHub runner already contains an application project store before cold launch")
     first, db_path, first_seconds = boot_once(
-        executable, environment, roots, scratch / "first-launch.log"
+        executable, environment, roots, scratch / "first-launch.log",
+        first_use_contract=first_use_contract,
     )
     second, repeated_path, second_seconds = boot_once(
-        executable, environment, roots, scratch / "relaunch.log", expected_db=db_path
+        executable, environment, roots, scratch / "relaunch.log", expected_db=db_path,
+        first_use_contract=first_use_contract,
     )
     require(db_path == repeated_path and first == second,
             "Installed Windows relaunch replaced or mutated the first saved project")
@@ -366,6 +515,7 @@ def run_installed_relaunch(
         "schema": "motionwright-windows-nsis-cold-relaunch/1",
         "source_sha": source["source_sha"],
         "installed_binary_sha256": source["installed_binary_sha256"],
+        "first_use_contract": first_use_contract,
         "installed_nsis_candidate": True,
         "first_launch_real_visible_hwnd": True,
         "second_launch_real_visible_hwnd": True,
@@ -434,6 +584,9 @@ def write_sanitized_failure_record(
         "native_provider_authority": "NOT_CONFIGURED",
         "human_install_acceptance": "NOT_RUN",
     }
+    observations = getattr(error, "boot_observations", None)
+    if isinstance(observations, _BootObservations):
+        record["observations"] = observations.snapshot()
     diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
     with diagnostic_path.open("x", encoding="utf-8") as handle:
         json.dump(record, handle, sort_keys=True, indent=2)

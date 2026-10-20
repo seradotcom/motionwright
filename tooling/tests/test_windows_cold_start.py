@@ -5,9 +5,10 @@ The GitHub-only job supplies the installed executable and actual OS HWND.
 """
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -38,6 +39,7 @@ def project_db(target: Path, *, title: str = TITLE, duplicate: bool = False,
         "title": title,
     }
     with closing(sqlite3.connect(target)) as db:
+        db.execute("PRAGMA user_version=2")
         db.execute("""
             CREATE TABLE projects (
                 id TEXT PRIMARY KEY, generation TEXT, revision INTEGER,
@@ -94,6 +96,45 @@ def candidate_fixture(root: Path) -> tuple[Path, Path, str]:
     path = root / "installed-smoke.json"
     path.write_text(json.dumps(receipt))
     return executable, path, source_sha
+
+
+class _BootProcess:
+    pid = 4321
+
+    def __init__(self):
+        self.returncode = None
+        self.kill_calls = 0
+        self.cleanup_failure = None
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.kill_calls += 1
+        if self.cleanup_failure is not None:
+            raise self.cleanup_failure
+        self.returncode = -9
+
+    def wait(self, timeout):
+        return self.returncode
+
+
+@contextmanager
+def mocked_boot(*, hwnd=123456, process=None, create_effect=None):
+    """Synthetic transport only; SQLite files/readers remain real."""
+    process = process or _BootProcess()
+
+    def close(unused_hwnd, child):
+        child.returncode = 0
+
+    with patch.object(windows.subprocess, "Popen", return_value=process) as launch, \
+            patch.object(windows, "windows_motionwright_window", return_value=hwnd), \
+            patch.object(windows, "_create_first_project_in_native_window",
+                         side_effect=create_effect) as create, \
+            patch.object(windows, "graceful_close", side_effect=close), \
+            patch.object(windows.time, "monotonic", side_effect=itertools.count(0, 0.25)), \
+            patch.object(windows.time, "sleep"):
+        yield process, launch, create
 
 
 class WindowsCandidateUnitTests(unittest.TestCase):
@@ -314,6 +355,278 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         receipt.write_text(json.dumps(item))
         with self.assertRaisesRegex(windows.ColdStartError, "bundle"):
             windows.check_installed_candidate(receipt, exe, sha)
+
+
+    def test_predecessor_contract_requires_the_exact_source_and_installed_binary_pair(self):
+        self.assertEqual(windows.select_first_use_contract(
+            windows.LEGACY_FIRST_USE_SOURCE, windows.LEGACY_FIRST_USE_BINARY,
+        ), windows.LEGACY_FIRST_USE_CONTRACT)
+        self.assertEqual(windows.select_first_use_contract("a" * 40, "b" * 64),
+                         windows.CURRENT_FIRST_USE_CONTRACT)
+        for source, binary in (
+            (windows.LEGACY_FIRST_USE_SOURCE, "b" * 64),
+            ("a" * 40, windows.LEGACY_FIRST_USE_BINARY),
+            (True, windows.LEGACY_FIRST_USE_BINARY),
+            (windows.LEGACY_FIRST_USE_SOURCE, "invalid"),
+        ):
+            with self.subTest(source=source, binary=binary), self.assertRaises(windows.ColdStartError):
+                windows.select_first_use_contract(source, binary)
+
+    def test_legacy_real_sqlite_reopen_preserves_identity_revision_schema_and_exact_content(self):
+        database = self.root / "legacy.sqlite3"
+        document = project_db(database, title=windows.LEGACY_FIRST_USE_TITLE)
+        original = database.read_bytes()
+        first = windows.read_project_snapshot(
+            database, first_use_contract=windows.LEGACY_FIRST_USE_CONTRACT,
+        )
+        # Every call opens and closes its own genuine read-only SQLite connection.
+        second = windows.read_project_snapshot(
+            database, first_use_contract=windows.LEGACY_FIRST_USE_CONTRACT,
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first["project_id"], document["id"])
+        self.assertEqual(first["generation"], document["generation"])
+        self.assertEqual(first["revision"], document["revision"])
+        self.assertEqual(first["document_sha256"],
+                         hashlib.sha256(json.dumps(document).encode()).hexdigest())
+        self.assertEqual(database.read_bytes(), original)
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (2,))
+
+    def test_current_and_legacy_contracts_never_accept_each_others_title(self):
+        for index, (title, contract) in enumerate((
+            (windows.LEGACY_FIRST_USE_TITLE, windows.CURRENT_FIRST_USE_CONTRACT),
+            (TITLE, windows.LEGACY_FIRST_USE_CONTRACT),
+            ("Previously edited project", windows.LEGACY_FIRST_USE_CONTRACT),
+        )):
+            database = self.root / (str(index) + ".sqlite3")
+            project_db(database, title=title)
+            with self.subTest(contract=contract, title=title), self.assertRaisesRegex(
+                windows.ColdStartError, "initialized",
+            ):
+                windows.read_project_snapshot(database, first_use_contract=contract)
+        with self.assertRaisesRegex(windows.ColdStartError, "unsupported"):
+            windows.read_project_snapshot(database, first_use_contract=True)
+
+    def test_both_bootstrap_contracts_require_schema_two(self):
+        for index, (title, contract) in enumerate((
+            (TITLE, windows.CURRENT_FIRST_USE_CONTRACT),
+            (windows.LEGACY_FIRST_USE_TITLE, windows.LEGACY_FIRST_USE_CONTRACT),
+        )):
+            database = self.root / (str(index) + ".sqlite3")
+            project_db(database, title=title)
+            for version in (0, 1, 3):
+                with closing(sqlite3.connect(database)) as connection, connection:
+                    connection.execute("PRAGMA user_version=" + str(version))
+                with self.subTest(contract=contract, schema=version), self.assertRaisesRegex(
+                    windows.ColdStartError, "schema",
+                ):
+                    windows.read_project_snapshot(database, first_use_contract=contract)
+
+    def test_legacy_contract_keeps_row_identity_and_unique_project_requirements(self):
+        for index, options in enumerate(({"forged_generation": True}, {"duplicate": True})):
+            database = self.root / (str(index) + ".sqlite3")
+            project_db(database, title=windows.LEGACY_FIRST_USE_TITLE, **options)
+            with self.assertRaises(windows.ColdStartError):
+                windows.read_project_snapshot(
+                    database, first_use_contract=windows.LEGACY_FIRST_USE_CONTRACT,
+                )
+
+    def test_legacy_boot_and_reopen_never_activate_the_new_library_create_control(self):
+        database = self.root / "com.seradotcom.motionwright" / "motionwright.sqlite3"
+        project_db(database, title=windows.LEGACY_FIRST_USE_TITLE)
+        original = database.read_bytes()
+        with mocked_boot() as (_, launch, create):
+            first, actual, _ = windows.boot_once(
+                self.root / "fixture.exe", {}, [self.root], self.root / "first.log",
+                first_use_contract=windows.LEGACY_FIRST_USE_CONTRACT,
+            )
+            launch.assert_called_once()
+            create.assert_not_called()
+        with mocked_boot() as (_, launch, create):
+            second, reopened, _ = windows.boot_once(
+                self.root / "fixture.exe", {}, [self.root], self.root / "second.log",
+                expected_db=actual, first_use_contract=windows.LEGACY_FIRST_USE_CONTRACT,
+            )
+            launch.assert_called_once()
+            create.assert_not_called()
+        self.assertEqual(first, second)
+        self.assertEqual(actual, reopened)
+        self.assertEqual(database.read_bytes(), original)
+
+    def test_empty_legacy_store_never_falls_back_to_current_ui_creation(self):
+        database = self.root / "motionwright.sqlite3"
+        project_db(database, title=windows.LEGACY_FIRST_USE_TITLE)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DELETE FROM projects")
+        with mocked_boot() as (_, launch, create), self.assertRaises(windows.ColdStartError) as ctx:
+            windows.boot_once(
+                self.root / "fixture.exe", {}, [self.root], self.root / "empty.log",
+                seconds=3, first_use_contract=windows.LEGACY_FIRST_USE_CONTRACT,
+            )
+        launch.assert_called_once()
+        create.assert_not_called()
+        observed = ctx.exception.boot_observations.snapshot()
+        self.assertFalse(observed["ui_creation_reserved"])
+        self.assertEqual(observed["last_reader_error"]["reason"],
+                         "Installed fresh-run project count is not exactly one")
+
+    def test_current_boot_reserves_one_ui_create_and_reads_the_real_committed_fixture(self):
+        database = self.root / "motionwright.sqlite3"
+        project_db(database)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DELETE FROM projects")
+
+        def commit_fixture(unused_hwnd):
+            ident, generation = str(uuid.uuid4()), str(uuid.uuid4())
+            document = {"id": ident, "generation": generation, "revision": 1, "title": TITLE}
+            with closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute("INSERT INTO projects VALUES (?,?,?,?,?)",
+                                   (ident, generation, 1, TITLE, json.dumps(document)))
+
+        with mocked_boot(create_effect=commit_fixture) as (_, launch, create):
+            result, actual, _ = windows.boot_once(
+                self.root / "fixture.exe", {}, [self.root], self.root / "current.log",
+            )
+        launch.assert_called_once()
+        create.assert_called_once_with(123456)
+        self.assertEqual(actual, database)
+        self.assertEqual(result, windows.read_project_snapshot(database))
+
+    def test_uncertain_ui_create_keeps_original_error_and_never_replays(self):
+        database = self.root / "motionwright.sqlite3"
+        project_db(database)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DELETE FROM projects")
+        original = windows.ColdStartError("Native accessible project-creation action was not confirmed")
+        with mocked_boot(create_effect=original) as (_, launch, create):
+            with self.assertRaises(windows.ColdStartError) as ctx:
+                windows.boot_once(
+                    self.root / "fixture.exe", {}, [self.root], self.root / "unknown.log",
+                )
+        self.assertIs(ctx.exception, original)
+        launch.assert_called_once()
+        create.assert_called_once()
+        observed = original.boot_observations.snapshot()
+        self.assertTrue(observed["ui_creation_reserved"])
+        self.assertFalse(observed["project_snapshot_seen"])
+
+    def test_timeout_distinguishes_visible_hwnd_from_rejected_real_sqlite_snapshot(self):
+        database = self.root / "motionwright.sqlite3"
+        project_db(database, title=windows.LEGACY_FIRST_USE_TITLE)
+        with mocked_boot() as (_, launch, create), self.assertRaises(windows.ColdStartError) as ctx:
+            windows.boot_once(
+                self.root / "fixture.exe", {}, [self.root], self.root / "wrong-title.log",
+                seconds=3,
+            )
+        launch.assert_called_once()
+        create.assert_not_called()
+        observed = ctx.exception.boot_observations.snapshot()
+        self.assertTrue(observed["visible_hwnd_seen"])
+        self.assertTrue(observed["database_seen"])
+        self.assertFalse(observed["project_snapshot_seen"])
+        self.assertEqual(observed["last_reader_error"]["reason"],
+                         "Installed first-use project was not initialized as expected")
+        self.assertTrue(any(row["project_reader"] == "ERROR" for row in observed["samples"]))
+        self.assertNotIn("123456", json.dumps(observed))
+
+    def test_timeout_without_hwnd_or_database_does_not_invent_reader_failure(self):
+        with mocked_boot(hwnd=None) as (_, launch, create), self.assertRaises(windows.ColdStartError) as ctx:
+            windows.boot_once(
+                self.root / "fixture.exe", {}, [self.root], self.root / "absent.log",
+                seconds=3,
+            )
+        launch.assert_called_once()
+        create.assert_not_called()
+        observed = ctx.exception.boot_observations.snapshot()
+        self.assertFalse(observed["visible_hwnd_seen"])
+        self.assertFalse(observed["database_seen"])
+        self.assertIsNone(observed["last_reader_error"])
+        self.assertTrue(all(row["project_reader"] == "NOT_ATTEMPTED" for row in observed["samples"]))
+
+    def test_boot_observations_are_bounded_and_redact_unclassified_reader_errors(self):
+        observed = windows._BootObservations(windows.CURRENT_FIRST_USE_CONTRACT)
+        private = windows.ColdStartError("C:\\private\\project.json must not be public")
+        for index in range(100):
+            observed.sample(index / 10, index == 0, 1, "ERROR", private)
+        snapshot = observed.snapshot()
+        self.assertEqual(len(snapshot["samples"]), 16)
+        self.assertEqual(snapshot["sample_count"], 100)
+        self.assertTrue(snapshot["visible_hwnd_seen"])
+        self.assertEqual(snapshot["last_reader_error"]["reason"], "UNCLASSIFIED_PROJECT_READ_ERROR")
+        self.assertNotIn("private", json.dumps(snapshot))
+        self.assertEqual(snapshot["samples"][0]["elapsed_ms"], 8400)
+
+    def test_original_timeout_survives_process_cleanup_failure(self):
+        process = _BootProcess()
+        process.cleanup_failure = OSError("private cleanup failure")
+        with mocked_boot(hwnd=None, process=process) as (_, launch, create):
+            with self.assertRaisesRegex(windows.ColdStartError, "deadline") as ctx:
+                windows.boot_once(
+                    self.root / "fixture.exe", {}, [self.root], self.root / "cleanup.log",
+                    seconds=3,
+                )
+        launch.assert_called_once()
+        create.assert_not_called()
+        self.assertEqual(process.kill_calls, 1)
+        projected = ctx.exception.boot_observations.snapshot()
+        self.assertEqual(projected["cleanup_error"], "PROCESS_CLEANUP_UNCONFIRMED")
+        self.assertNotIn("private", json.dumps(projected))
+
+    def test_multiple_database_roots_fail_before_any_create_or_project_read(self):
+        project_db(self.root / "roaming" / "motionwright.sqlite3")
+        project_db(self.root / "local" / "motionwright.sqlite3")
+        with mocked_boot() as (_, launch, create), self.assertRaisesRegex(
+            windows.ColdStartError, "multiple",
+        ) as ctx:
+            windows.boot_once(
+                self.root / "fixture.exe", {}, [self.root / "roaming", self.root / "local"],
+                self.root / "multiple.log",
+            )
+        launch.assert_called_once()
+        create.assert_not_called()
+        sample = ctx.exception.boot_observations.snapshot()["samples"][-1]
+        self.assertEqual(sample["database_count_capped_at_two"], 2)
+        self.assertIsNone(sample["visible_hwnd"])
+        self.assertEqual(sample["project_reader"], "NOT_ATTEMPTED")
+
+    def test_early_exit_remains_distinct_from_window_or_reader_observations(self):
+        process = _BootProcess()
+        process.returncode = 7
+        with mocked_boot(process=process) as (_, launch, create), self.assertRaisesRegex(
+            windows.ColdStartError, "exit_code=7",
+        ) as ctx:
+            windows.boot_once(
+                self.root / "fixture.exe", {}, [self.root], self.root / "exited.log",
+            )
+        launch.assert_called_once()
+        create.assert_not_called()
+        sample = ctx.exception.boot_observations.snapshot()["samples"][-1]
+        self.assertIsNone(sample["visible_hwnd"])
+        self.assertIsNone(sample["database_count_capped_at_two"])
+        self.assertEqual(process.kill_calls, 0)
+
+    def test_failure_record_keeps_bounded_observations_without_raw_window_or_paths(self):
+        observations = windows._BootObservations(windows.LEGACY_FIRST_USE_CONTRACT)
+        original = windows.ColdStartError("Installed first-use project was not initialized as expected")
+        observations.sample(1.2, True, 1, "ERROR", original)
+        observations.attach(original)
+        output = self.root / "diagnostic" / "proof.json"
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
+            windows.write_sanitized_failure_record(
+                output=output, scratch=self.root / "no-raw-logs",
+                expected_sha=windows.LEGACY_FIRST_USE_SOURCE, error=original,
+            )
+        diagnostic = output.with_name("windows-nsis-cold-relaunch-diagnostic.json")
+        if os.name != "nt":
+            self.assertFalse(diagnostic.exists())
+            return
+        result = json.loads(diagnostic.read_bytes())
+        self.assertEqual(result["result"], "FAIL")
+        self.assertEqual(result["observations"], observations.snapshot())
+        self.assertFalse(result["raw_application_logs_uploaded"])
+        self.assertNotIn(str(self.root), diagnostic.read_text())
+        self.assertEqual(result["human_install_acceptance"], "NOT_RUN")
 
 
 if __name__ == "__main__":
