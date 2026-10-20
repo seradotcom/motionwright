@@ -313,11 +313,207 @@ fn service_fixture_bundle(
     (bundle, project, originals)
 }
 
+struct OperationalBackupFixture {
+    bundle: std::path::PathBuf,
+    project: Project,
+    sources: Vec<(String, Vec<u8>)>,
+    main_branch: Uuid,
+    alternate_branch: Uuid,
+    alternate_scenes: Vec<motionwright_domain::Scene>,
+    events: Vec<motionwright_storage::ProjectEvent>,
+}
+
+fn apply_portable_change(
+    service: &StudioService,
+    project: &Project,
+    request: &str,
+    change: Change,
+) -> Project {
+    let outcome = service
+        .apply(project.id, &project.stamp(), request, &change)
+        .unwrap();
+    assert!(!outcome.replayed);
+    assert_eq!(outcome.previous_revision, project.revision);
+    assert_eq!(outcome.project.id, project.id);
+    assert_eq!(outcome.project.generation, project.generation);
+    assert_eq!(outcome.project.revision, project.revision + 1);
+    outcome.project
+}
+
+fn operational_backup_fixture(root: &Path) -> OperationalBackupFixture {
+    let (_, initial, sources) = service_fixture_bundle(root, "source", "asset-seed");
+    let source_path = root.join("source/state.sqlite3");
+    let source = StudioService::open(&source_path).unwrap();
+    let mut project = source.project(initial.id).unwrap();
+    assert_eq!(project, initial);
+    project = apply_portable_change(
+        &source,
+        &project,
+        "add-opening",
+        Change::AddScene {
+            name: "Opening".into(),
+            objective: "Main opening".into(),
+            duration_seconds: 2,
+        },
+    );
+    project = apply_portable_change(
+        &source,
+        &project,
+        "add-closing",
+        Change::AddScene {
+            name: "Closing".into(),
+            objective: "Main closing".into(),
+            duration_seconds: 3,
+        },
+    );
+    let main_branch = project.active_branch;
+    let main_scenes = project.scenes.clone();
+    let opening = main_scenes[0].id;
+    let closing = main_scenes[1].id;
+    project = apply_portable_change(
+        &source,
+        &project,
+        "create-alternate",
+        Change::CreateBranch {
+            name: "Alternate take".into(),
+        },
+    );
+    let alternate_branch = project
+        .branches
+        .iter()
+        .find(|branch| branch.name == "Alternate take")
+        .unwrap()
+        .id;
+    assert_ne!(alternate_branch, main_branch);
+    project = apply_portable_change(
+        &source,
+        &project,
+        "checkout-alternate",
+        Change::CheckoutBranch {
+            branch_id: alternate_branch,
+        },
+    );
+    project = apply_portable_change(
+        &source,
+        &project,
+        "alternate-narration",
+        Change::UpdateSceneObjective {
+            scene_id: closing,
+            objective: "Alternate closing before opening".into(),
+        },
+    );
+    project = apply_portable_change(
+        &source,
+        &project,
+        "alternate-order",
+        Change::MoveScene {
+            scene_id: closing,
+            to_index: 0,
+        },
+    );
+    assert_eq!(project.active_branch, alternate_branch);
+    assert_eq!(project.scenes[0].id, closing);
+    assert_eq!(project.scenes[1].id, opening);
+    assert_eq!(
+        project.scenes[0].objective,
+        "Alternate closing before opening"
+    );
+    let alternate_scenes = project.scenes.clone();
+    project = apply_portable_change(
+        &source,
+        &project,
+        "return-to-main",
+        Change::CheckoutBranch {
+            branch_id: main_branch,
+        },
+    );
+    assert_eq!(project.active_branch, main_branch);
+    assert_eq!(project.scenes, main_scenes);
+    assert_eq!(project.assets, initial.assets);
+    assert_eq!(project.branches.len(), 2);
+    assert_eq!(project.revision, 9);
+
+    // The export must use persisted state, including the inactive workspace.
+    drop(source);
+    let reopened = StudioService::open(&source_path).unwrap();
+    let persisted = reopened.project(project.id).unwrap();
+    assert_eq!(persisted, project);
+    let backup = reopened
+        .export_project_at(persisted.id, &persisted.stamp())
+        .unwrap();
+    assert_eq!(backup.project, persisted);
+    assert_eq!(backup.events.len() as u64, persisted.revision);
+    let bundle = root.join("portable");
+    let manifest = reopened
+        .export_project_bundle_at(persisted.id, &persisted.stamp(), &bundle)
+        .unwrap();
+    // Independent exports have their own exported_at, but the same snapshot.
+    assert_eq!(manifest.backup.project, backup.project);
+    assert_eq!(manifest.backup.events, backup.events);
+    assert_eq!(manifest.backup.format_version, backup.format_version);
+    assert_eq!(
+        manifest.backup.source_storage_schema,
+        backup.source_storage_schema
+    );
+    assert_eq!(manifest.backup.payload_sha256, backup.payload_sha256);
+    // Inspection checks destination admission, so it needs an empty store.
+    let inspector = StudioService::open(root.join("export-inspection/state.sqlite3")).unwrap();
+    assert_eq!(
+        inspector
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap()
+            .plan
+            .blob_count,
+        sources.len()
+    );
+    drop(inspector);
+    let source_files = {
+        let shared = reopened.store();
+        let store = shared.lock();
+        sources
+            .iter()
+            .map(|(digest, bytes)| {
+                assert_eq!(store.read_blob(digest, 4096).unwrap(), *bytes);
+                store.verified_blob_path(digest).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    drop(reopened);
+
+    // Only the two verified CAS files of this isolated fixture are removed.
+    // The original input files were already removed by service_fixture_bundle.
+    let owned_source = root.join("source").canonicalize().unwrap();
+    for path in source_files {
+        assert!(path.canonicalize().unwrap().starts_with(&owned_source));
+        fs::remove_file(&path).unwrap();
+        assert!(!path.exists());
+    }
+    for index in 0..sources.len() {
+        assert!(!root.join(format!("source-{index}.bin")).exists());
+    }
+    OperationalBackupFixture {
+        bundle,
+        project: persisted,
+        sources,
+        main_branch,
+        alternate_branch,
+        alternate_scenes,
+        events: backup.events,
+    }
+}
+
 #[test]
 fn service_inspected_bundle_transfers_real_cas_and_reopens_without_operational_receipts() {
     let directory = tempfile::tempdir().unwrap();
-    let (bundle, original, sources) =
-        service_fixture_bundle(directory.path(), "source", "portable");
+    let OperationalBackupFixture {
+        bundle,
+        project: original,
+        sources,
+        main_branch,
+        alternate_branch,
+        alternate_scenes,
+        events,
+    } = operational_backup_fixture(directory.path());
     let target_path = directory.path().join("target/state.sqlite3");
     let target = StudioService::open(&target_path).unwrap();
     let inspected = target
@@ -334,6 +530,7 @@ fn service_inspected_bundle_transfers_real_cas_and_reopens_without_operational_r
         .unwrap(),
         inspected.fingerprint,
     );
+    assert!(target.projects(10).unwrap().is_empty());
     {
         let shared = target.store();
         let store = shared.lock();
@@ -347,19 +544,18 @@ fn service_inspected_bundle_transfers_real_cas_and_reopens_without_operational_r
     let imported = target
         .import_project_bundle_inspected(&bundle, &inspected.fingerprint)
         .unwrap();
-    assert_eq!(imported.id, original.id);
+    assert!(!imported.generation.is_nil());
     assert_ne!(imported.generation, original.generation);
-    assert_eq!(imported.revision, original.revision);
-    assert_eq!(imported.assets, original.assets);
-    assert_eq!(imported.scenes, original.scenes);
-    assert_eq!(imported.branches, original.branches);
+    let mut expected = original.clone();
+    expected.generation = imported.generation;
+    expected.updated_at = imported.updated_at;
+    assert_eq!(imported, expected);
     assert_eq!(
         target
             .export_project_at(imported.id, &imported.stamp())
             .unwrap()
-            .events
-            .len(),
-        2
+            .events,
+        events
     );
     assert!(matches!(
         target.import_project_bundle_inspected(&bundle, &inspected.fingerprint),
@@ -379,10 +575,64 @@ fn service_inspected_bundle_transfers_real_cas_and_reopens_without_operational_r
             .unwrap()
             .is_none()
     );
-    let shared = reopened.store();
+    {
+        let shared = reopened.store();
+        let store = shared.lock();
+        for (digest, bytes) in &sources {
+            assert_eq!(store.read_blob(digest, 4096).unwrap(), *bytes);
+        }
+    }
+    let alternate = apply_portable_change(
+        &reopened,
+        &imported,
+        "restored-checkout-alternate",
+        Change::CheckoutBranch {
+            branch_id: alternate_branch,
+        },
+    );
+    assert_eq!(alternate.active_branch, alternate_branch);
+    assert_eq!(alternate.scenes, alternate_scenes);
+    assert_eq!(alternate.assets, original.assets);
+    let closing = alternate_scenes[0].id;
+    let edited = apply_portable_change(
+        &reopened,
+        &alternate,
+        "edit-restored-alternate",
+        Change::UpdateSceneObjective {
+            scene_id: closing,
+            objective: "Edited after backup restore".into(),
+        },
+    );
+    assert_eq!(edited.scenes[0].id, closing);
+    assert_eq!(edited.scenes[0].objective, "Edited after backup restore");
+    drop(reopened);
+
+    let restarted = StudioService::open(&target_path).unwrap();
+    assert_eq!(restarted.project(edited.id).unwrap(), edited);
+    let main = apply_portable_change(
+        &restarted,
+        &edited,
+        "restored-checkout-main",
+        Change::CheckoutBranch {
+            branch_id: main_branch,
+        },
+    );
+    assert_eq!(main.active_branch, main_branch);
+    assert_eq!(main.scenes, original.scenes);
+    let alternate_again = apply_portable_change(
+        &restarted,
+        &main,
+        "restored-checkout-edited-alternate",
+        Change::CheckoutBranch {
+            branch_id: alternate_branch,
+        },
+    );
+    assert_eq!(alternate_again.scenes, edited.scenes);
+    assert_eq!(alternate_again.assets, original.assets);
+    let shared = restarted.store();
     let store = shared.lock();
-    for (digest, bytes) in sources {
-        assert_eq!(store.read_blob(&digest, 4096).unwrap(), bytes);
+    for (digest, bytes) in &sources {
+        assert_eq!(store.read_blob(digest, 4096).unwrap(), *bytes);
     }
 }
 
