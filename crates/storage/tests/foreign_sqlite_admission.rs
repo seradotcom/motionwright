@@ -59,6 +59,38 @@ fn foreign_unversioned_sqlite_is_not_replaced_or_extended() {
 }
 
 #[test]
+fn foreign_view_only_sqlite_is_not_mistaken_for_an_empty_database() {
+    let dir = tempfile::tempdir().unwrap();
+    reject_foreign(
+        &dir.path().join("view-only.sqlite3"),
+        "CREATE VIEW accounting_summary AS SELECT 42 AS revenue;",
+        0,
+    );
+}
+
+#[test]
+fn existing_sqlite_with_no_user_schema_objects_can_initialize_normally() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("empty.sqlite3");
+    let existing = Connection::open(&path).unwrap();
+    existing.pragma_update(None, "user_version", 0).unwrap();
+    drop(existing);
+
+    let mut project_store = Store::open(&path).unwrap();
+    let project = project_store
+        .create_named_project("Genuine empty SQLite")
+        .unwrap();
+    drop(project_store);
+    assert_eq!(
+        Store::open(&path)
+            .unwrap()
+            .load_project(project.id)
+            .unwrap(),
+        project
+    );
+}
+
+#[test]
 fn foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected() {
     for version in [1, STORAGE_SCHEMA_VERSION] {
         let dir = tempfile::tempdir().unwrap();
