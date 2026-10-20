@@ -3,6 +3,7 @@ import { ArrowUpRight, RefreshCw, Save } from "lucide-react";
 import type { CanvasNode, Change, Project, Scene } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
+import { inheritedTextInk } from "./canvasInheritedInk";
 import { sameValue } from "./creativeProduction";
 import {
   defaultProductStageConfig, realizeProductStage, validateProductStageConfig,
@@ -248,7 +249,7 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
       <div className={"production-preview-mat "+(aspect.height>aspect.width?"portrait":"")}>
         {loading?<p role="status">Preparing stage preview…</p>:
           preview.length?<CompositionStudy nodes={preview} width={aspect.width} height={aspect.height}
-            background={background} time={localTime}
+            background={background} time={localTime} ink={inheritedTextInk(project.visual_language.palette)}
             label={"ProductStage "+draft.frame+" "+aspect.label+", original graphic, editorial preview"}/>:
           <p role="status">Declare original-content rights to preview this stage.</p>}
       </div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Eye, Plus, Trash2 } from "lucide-react";
 import { previewCreativePatch } from "./api";
 import CompositionStudy from "./CompositionStudy";
+import { inheritedTextInk } from "./canvasInheritedInk";
 import { previewCreativePatchUndo } from "./creativeUndo";
 import { nativeRepairDraftIsCurrent } from "./nativeReviewRepair";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
@@ -276,8 +277,8 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
           <p>Prepared for revision {activeReview!.revision}. Changing the proposal requires a new preview.</p></div>}
       </section>
     </div>
-    {scene && <><div className="production-compare-grid"><figure><figcaption>BEFORE · current project</figcaption><CompositionStudy nodes={scene.nodes} time={time} background={background} label="Before scoped changes"/></figure>
-      <figure><figcaption>AFTER · {undoTarget ? "uncommitted undo" : "uncommitted proposal"}</figcaption><CompositionStudy nodes={resultNodes} time={time} background={background} label="After scoped changes"/></figure></div>
+    {scene && <><div className="production-compare-grid"><figure><figcaption>BEFORE · current project</figcaption><CompositionStudy nodes={scene.nodes} time={time} background={background} ink={inheritedTextInk(project.visual_language.palette)} label="Before scoped changes"/></figure>
+      <figure><figcaption>AFTER · {undoTarget ? "uncommitted undo" : "uncommitted proposal"}</figcaption><CompositionStudy nodes={resultNodes} time={time} background={background} ink={inheritedTextInk(project.visual_language.palette)} label="After scoped changes"/></figure></div>
       <div className="production-transport"><span className="mono">{time.toFixed(3)} s</span><input aria-label="Comparison playhead" type="range" min={0} max={seconds(scene.duration)} step={1 / 30} value={time}
         onChange={event => onSeek(seconds(scene.start) + Number(event.target.value))}/></div>
       <p className="production-help">Both sides share the application playhead. This bounded study draws flat text, shapes and circles; parenting, imported media and advanced paint effects must be reviewed in native frames.</p></>}

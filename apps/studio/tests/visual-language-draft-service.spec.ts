@@ -116,7 +116,10 @@ async function storageFault(page: Page, mode: "off" | "all_visual_writes" | "cle
   }, { prefix: visualPrefix, mode });
 }
 async function uiSources() {
-  const names = ["VisualLanguageEditor.tsx", "visualLanguageDraft.ts", "CanvasWorkspace.tsx", "App.tsx"];
+  const names = ["VisualLanguageEditor.tsx", "visualLanguageDraft.ts", "CanvasWorkspace.tsx", "App.tsx",
+    "CompositionStudy.tsx", "ExpandedStudy.tsx", "canvasInheritedInk.ts", "CameraReframeWorkbench.tsx",
+    "CreativePatchWorkbench.tsx", "ProceduralFieldWorkbench.tsx", "ProductStageWorkbench.tsx",
+    "ProductionDesignWorkspace.tsx"];
   return Promise.all(names.map(async name => ({ path: "apps/studio/src/" + name,
     sha256: digest(await readFile(new URL("../src/" + name, import.meta.url))) })));
 }
@@ -771,3 +774,73 @@ test("keyboard Reset and Keep preserve the old copy and a failed clean checkpoin
   proof.observations.push({ retained_old_copy_sha256: digest(Buffer.from(protectedRaw!)), clean_checkpoint_writer: clean.value.writerId,
     keyboard_cancel_focus_restored: true, reset_recovery_then_reopen_clean: true, saved_revision: saved.revision });
 }));
+
+test("a saved ink token changes the actual SVG text paint across revisions and reopen", async ({ page }, info) =>
+  scenario(page, info, async proof => {
+    const authoredScene = proof.initial.scenes.find(scene =>
+      scene.nodes.some(node => node.kind === "text" && !node.parent_id));
+    if (!authoredScene) throw new Error("No original root text in this real service Project.");
+    const authoredText = authoredScene.nodes.find(node => node.kind === "text" && !node.parent_id)!;
+    proof.intentions.push({ concept: "real_project_palette_inherited_ink", sourceNodeId: authoredText.id,
+      explicitOriginalFill: authoredText.style.fill, authorInk1: "#F7EAD7", authorInk2: "#D8C2A0" });
+    const textFill = page.getByLabel("Canvas fill", { exact: true });
+    await textFill.fill("");
+    await button(page, "Commit style").click();
+    const noFill = await currentAfterUi(proof, proof.initial.revision + 1, "original text explicit fill removed");
+    expect(noFill.scenes.find(scene => scene.id === authoredScene.id)?.nodes.find(node => node.id === authoredText.id)?.style.fill)
+      .toBeNull();
+
+    await field(page, "Palette tokens value 1").fill("#F7EAD7");
+    await visualCommit(page).click();
+    const firstInk = await currentAfterUi(proof, noFill.revision + 1, "authored warm ink committed");
+    expect(firstInk.visual_language.palette[0]).toMatchObject({ name: "ink", value: "#F7EAD7" });
+
+    async function beforeTextSvgFill(): Promise<string | null> {
+      await button(page, "Production").click();
+      await page.getByLabel("Production working scene", { exact: true })
+        .selectOption({ value: authoredScene.id });
+      await button(page, "Scoped changes").click();
+      const svg = page.getByRole("img", { name: "Before scoped changes", exact: true });
+      await expect(svg).toBeVisible();
+      const text = svg.locator("text").first();
+      await expect(text).toBeVisible();
+      return text.getAttribute("fill");
+    }
+    expect(await beforeTextSvgFill()).toBe("#F7EAD7");
+
+    await openCanvas(page);
+    await field(page, "Palette tokens value 1").fill("#D8C2A0");
+    await visualCommit(page).click();
+    const secondInk = await currentAfterUi(proof, firstInk.revision + 1, "second authored ink is saved");
+    expect(secondInk.visual_language.palette[0].value).toBe("#D8C2A0");
+    expect(await beforeTextSvgFill()).toBe("#D8C2A0");
+
+    await openCanvas(page);
+    await page.getByLabel("Canvas fill", { exact: true }).fill("#A1B2C3");
+    await button(page, "Commit style").click();
+    const final = await currentAfterUi(proof, secondInk.revision + 1, "explicit object ink overrides project palette");
+    expect(final.scenes.find(scene => scene.id === authoredScene.id)?.nodes.find(node => node.id === authoredText.id)?.style.fill)
+      .toBe("#A1B2C3");
+    expect(await beforeTextSvgFill()).toBe("#A1B2C3");
+
+    const journal = await proof.service.history(proof.initial.id, proof.initial.revision);
+    expect(journal.map(event => event.change.type)).toEqual([
+      "update_canvas_style", "set_visual_language", "set_visual_language", "update_canvas_style",
+    ]);
+    expect(applied(proof.service)).toHaveLength(4);
+    await proof.service.close();
+    await proof.service.start();
+    await page.reload();
+    await reopenSaved(page, final);
+    expect(await beforeTextSvgFill()).toBe("#A1B2C3");
+    expect(await proof.service.project(proof.initial.id)).toEqual(final);
+    expect(await proof.service.history(proof.initial.id, proof.initial.revision)).toEqual(journal);
+    expect(applied(proof.service)).toHaveLength(4);
+    proof.observations.push({ label: "real_saved_ink_affects_actual_SVG_before_composition",
+      project: final.id, revision: final.revision, textNode: authoredText.id,
+      projectPalette: final.visual_language.palette[0].value, renderedExplicitInk: "#A1B2C3",
+      earlierRenderedInheritedInk: ["#F7EAD7", "#D8C2A0"],
+      postRestartProjectAndJournalEqual: true,
+      excludes: ["native_Film_pixels", "installed_fonts", "human_approval"],
+    });
+  }));
