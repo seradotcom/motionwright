@@ -60,6 +60,22 @@ fn invalid_import(message: impl Into<String>) -> StorageError {
     DomainError::Invalid(message.into()).into()
 }
 
+// XML namespace prefixes are lexical aliases. An SVG element may be
+// written <s:svg> or <s:script> even though its expanded element name is
+// still SVG/script. This deliberately conservative lexical scan is not an
+// XML renderer; it only identifies element local names for admission.
+fn has_xml_element_local_name(text: &str, local_names: &[&str]) -> bool {
+    text.split('<').skip(1).any(|after_lt| {
+        let after_lt = after_lt.strip_prefix('/').unwrap_or(after_lt);
+        let name = after_lt
+            .split(|ch: char| ch.is_whitespace() || matches!(ch, '/' | '>'))
+            .next()
+            .unwrap_or("");
+        let local_name = name.rsplit(':').next().unwrap_or("");
+        local_names.contains(&local_name)
+    })
+}
+
 fn source_looks_like_svg(source: &Path, media_type: &str) -> StorageResult<bool> {
     // An XML/SVG document can be encoded as UTF-16/UTF-32, including without
     // a BOM when its initial characters are ASCII XML/whitespace. Treating its
@@ -180,7 +196,14 @@ fn source_looks_like_svg(source: &Path, media_type: &str) -> StorageResult<bool>
             }
             result
         };
-        return Ok(decoded.to_ascii_lowercase().contains("<svg"));
+        // The root can use an XML namespace prefix (for example <s:svg>),
+        // which cannot be identified by searching for the literal "<svg".
+        // A detected encoded SVG is rejected by the UTF-8-only SVG
+        // validation below; ordinary UTF-16 text without SVG stays valid.
+        return Ok(has_xml_element_local_name(
+            &decoded.to_ascii_lowercase(),
+            &["svg"],
+        ));
     }
 
     // Search the actual staged bytes, not only their first 16 KiB. A legal
@@ -198,7 +221,10 @@ fn source_looks_like_svg(source: &Path, media_type: &str) -> StorageResult<bool>
     loop {
         let read = input.read(&mut chunk)?;
         if read == 0 {
-            return Ok(false);
+            // A namespace-qualified SVG root may never contain the literal
+            // "<svg" marker. Send any XML-like source through bounded UTF-8
+            // active-markup admission rather than trusting a raster MIME.
+            return Ok(xml_like);
         }
         let offset = if first_chunk && chunk[..read].starts_with(&[0xef, 0xbb, 0xbf]) {
             3 // Ignore one UTF-8 BOM only at the source beginning.
@@ -330,6 +356,10 @@ fn validate_importable_asset(
         "@import",
     ];
     if blocked.iter().any(|marker| lowered.contains(marker))
+        || has_xml_element_local_name(
+            &lowered,
+            &["script", "foreignobject", "iframe", "object", "embed"],
+        )
         || has_event_handler(&lowered)
         || has_external_href(&lowered)
     {
