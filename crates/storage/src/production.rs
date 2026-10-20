@@ -264,16 +264,6 @@ impl Store {
             return Err(StorageError::RequestReuse);
         }
 
-        // A caller's preflight may predate a peer commit. A new dispatch must
-        // still match the head while this transaction holds the write lock.
-        // Observations of an admitted request retain their original revision.
-        if input.stage == "dispatching" && input.revision != current.revision {
-            return Err(StorageError::Conflict {
-                expected: input.revision,
-                actual: current.revision,
-            });
-        }
-
         let receipt = ProductionReceipt {
             id: Uuid::now_v7(),
             project_id: input.project_id,
