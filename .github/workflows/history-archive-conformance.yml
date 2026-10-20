@@ -1,0 +1,173 @@
+name: Exact H03 history archive and conformance contracts
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/history-archive-conformance.yml'
+      - 'tooling/conformance_history_guard.py'
+      - 'tooling/tests/test_conformance_history_guard.py'
+      - 'tooling/conformance_policy.py'
+      - 'tooling/tests/test_conformance_policy.py'
+      - 'tooling/ci_test_runner.py'
+      - 'docs/acceptance/history-archive-format.md'
+      - 'docs/acceptance/requirements-status.json'
+      - 'docs/acceptance/acceptance-status.json'
+      - 'docs/acceptance/technical-evidence.json'
+      - 'docs/creative-production/requirements-status.json'
+  pull_request:
+    paths:
+      - '.github/workflows/history-archive-conformance.yml'
+      - 'tooling/conformance_history_guard.py'
+      - 'tooling/tests/test_conformance_history_guard.py'
+      - 'tooling/conformance_policy.py'
+      - 'tooling/tests/test_conformance_policy.py'
+      - 'tooling/ci_test_runner.py'
+      - 'docs/acceptance/history-archive-format.md'
+      - 'docs/acceptance/requirements-status.json'
+      - 'docs/acceptance/acceptance-status.json'
+      - 'docs/acceptance/technical-evidence.json'
+      - 'docs/creative-production/requirements-status.json'
+
+permissions:
+  contents: read
+
+# This job is never a global required check on unselected paths. No G2 native
+# operation is inferred by its success; A5 owns the historical ledger verdict.
+concurrency:
+  group: history-archive-source-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  history-source-contracts:
+    name: H03 source-bound history and conformance G1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_HISTORY_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: Bind actual history inputs to regular original Git blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/history-source-$MW_HISTORY_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$out"
+          echo "MW_HISTORY_OUTPUT=$out" >> "$GITHUB_ENV"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,re,stat,subprocess
+          repo=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          head=os.environ["MW_HISTORY_SHA"]
+          assert re.fullmatch(r"[0-9a-f]{40}",head)
+          env={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
+          env.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,
+                     GIT_CONFIG_GLOBAL=os.devnull,GIT_GRAFT_FILE=os.devnull,
+                     GIT_OPTIONAL_LOCKS="0",GIT_NO_LAZY_FETCH="1")
+          def git(*args):
+              p=subprocess.run(["git","--no-replace-objects","-C",str(repo),*args],
+                               env=env,capture_output=True,check=True,timeout=30)
+              return p.stdout
+          assert git("rev-parse","HEAD").decode().strip()==head
+          assert not git("status","--porcelain=v1","--untracked-files=all")
+          assert not git("ls-files","--others","--ignored","--exclude-standard","-z")
+          inputs=("tooling/conformance_history_guard.py",
+                  "tooling/tests/test_conformance_history_guard.py",
+                  "tooling/conformance_policy.py",
+                  "tooling/tests/test_conformance_policy.py",
+                  "tooling/ci_test_runner.py",
+                  ".github/workflows/history-archive-conformance.yml")
+          mappings={}
+          for path in inputs:
+              entry=git("ls-tree","-z",head,"--",path).split(b"\0")
+              assert len(entry)==2 and entry[-1]==b""
+              meta,name=entry[0].split(b"\t",1)
+              mode,typ,oid=meta.split()
+              assert mode in (b"100644",b"100755") and typ==b"blob"
+              assert name.decode()==path
+              src=git("cat-file","blob",oid.decode())
+              assert 0<len(src)<=2_000_000
+              assert hashlib.sha1(b"blob "+str(len(src)).encode()+b"\0"+src).hexdigest()==oid.decode()
+              actual=repo/path
+              assert actual.is_file() and not actual.is_symlink()
+              assert stat.S_ISREG(actual.stat().st_mode) and actual.read_bytes()==src
+              mappings[path]={"sha256":hashlib.sha256(src).hexdigest(),"git_blob_oid":oid.decode()}
+          report={"schema":"motionwright.A6.H03.source-G1/1",
+                  "source_sha":head,
+                  "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
+                  "run_id":os.environ["GITHUB_RUN_ID"],
+                  "run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+                  "source_blobs":mappings,
+                  "private_ledger_content_uploaded":False,
+                  "human_acceptance":False,
+                  "release_authorized":False}
+          target=pathlib.Path(os.environ["RUNNER_TEMP"])/(
+              "history-source-"+head+"-"+os.environ["GITHUB_RUN_ID"]+"-"+os.environ["GITHUB_RUN_ATTEMPT"])
+          with (target/"source-inputs.json").open("x") as output:
+              json.dump(report,output,sort_keys=True,indent=2)
+              output.write("\n")
+          PY
+      - name: Run exact H03 history and conformance contracts in both entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -I -S tooling/ci_test_runner.py --repo .             --test-directory tooling/tests             --pattern test_conformance_history_guard.py             --pattern test_conformance_policy.py             --mode both --expected-source "$MW_HISTORY_SHA"             --report "$MW_HISTORY_OUTPUT/g1-receipt.json" --require-complete
+      - name: Reconcile original source and complete no-skip outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B tooling/source_policy.py > "$MW_HISTORY_OUTPUT/source-policy.stdout.log"             2> "$MW_HISTORY_OUTPUT/source-policy.stderr.log"
+          python3 -B tooling/acceptance_policy.py > "$MW_HISTORY_OUTPUT/acceptance-policy.stdout.log"             2> "$MW_HISTORY_OUTPUT/acceptance-policy.stderr.log"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ["MW_HISTORY_OUTPUT"])
+          src=json.loads((root/"source-inputs.json").read_text())
+          rec=json.loads((root/"g1-receipt.json").read_text())
+          assert src["source_sha"]==rec["executed_source_sha"]==os.environ["GITHUB_SHA"]
+          assert src["tree_sha"]==rec["tree_sha"]
+          assert rec["status"]=="PASS" and rec["exit_code"]==0 and rec["require_complete"] is True
+          expected={"discovery:test_conformance_history_guard.py":43,
+                    "dotted:tooling.tests.test_conformance_history_guard":43,
+                    "discovery:test_conformance_policy.py":51,
+                    "dotted:tooling.tests.test_conformance_policy":51}
+          assert len(rec["steps"])==len(expected)==4
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          for step in rec["steps"]:
+              assert step["entry_point"] in expected
+              c=step["counts"]
+              assert step["status"]=="PASS" and step["exit_code"]==0
+              assert c["tests_run"]==c["passed"]==expected.pop(step["entry_point"])
+              assert c["terminal_status"]=="OK"
+              assert all(c[k]==0 for k in ("errors","failures","skipped",
+                                          "expected_failures","unexpected_successes"))
+              for stream in ("stdout","stderr"):
+                  assert sha(root/step[stream]["file"])==step[stream]["sha256"]
+          assert not expected
+          for policy in ("source-policy","acceptance-policy"):
+              assert (root/(policy+".stderr.log")).read_bytes()==b""
+          with (root/"history-g1-acceptance-limits.json").open("x") as output:
+              json.dump({"schema":"motionwright.A6.H03.test-scope/1",
+                         "source_sha":src["source_sha"],"tree_sha":src["tree_sha"],
+                         "synthetic_H03_history_methods":86,
+                         "synthetic_conformance_policy_methods":102,
+                         "omitted":0,"passed":188,
+                         "all_396_real_private_historical_records_assessed":False,
+                         "A5_formal_acceptance":False,"human_approval":False,
+                         "release_authorized":False},output,indent=2)
+              output.write("\n")
+          PY
+      - name: Preserve original sanitized H03 source evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: history-g1-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/history-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
