@@ -59,7 +59,8 @@ jobs:
 
           folder="tooling/mlt-audio-diagnostic"
           names={"audio_tap.h","instrument_consumer.py","verify_trace.py",
-                 "test_verify_trace.py","test_audio_tap.c","README.md"}
+                 "test_verify_trace.py","test_audio_tap.c","README.md",
+                 "repair_planar_source.py","test_planar_padding.c","test_repair_planar_source.py"}
           require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,"wrong worktree")
           require(git("rev-parse","HEAD").decode().strip()==expected,"HEAD differs from requested SHA")
           require(not git("status","--porcelain=v1","--untracked-files=all","--",folder),"diagnostic sources changed or untracked")
