@@ -148,7 +148,8 @@ def parse_maps(text: str, expected_path: str, device: tuple[int, int],
     }
 
 
-def verified_melt_cmdline(payload: bytes, expected_output: str) -> dict:
+def verified_melt_cmdline(payload: bytes, expected_output: str, *,
+                          relative_cwd: str | None = None) -> dict:
     require(0 < len(payload) <= MAX_CMDLINE and payload.endswith(b"\0"),
             "melt_original_process_argv_missing_or_unbounded")
     require(6 < len(expected_output) <= 4096
@@ -169,12 +170,22 @@ def verified_melt_cmdline(payload: bytes, expected_output: str) -> dict:
         argv[i + 1] for i, item in enumerate(argv[:-1])
         if item == "-consumer"
     ]
-    require(consumers == ["avformat:" + expected_output],
+    selected_argument = expected_output
+    if relative_cwd is not None:
+        require(re.fullmatch(r"/tmp/semwright-video-[0-9a-f]{32}", relative_cwd) is not None
+                and expected_output == relative_cwd + "/partial.mp4",
+                "relative_melt_consumer_requires_exact_private_cwd")
+        if consumers == ["avformat:partial.mp4"]:
+            selected_argument = "partial.mp4"
+    require(consumers == ["avformat:" + selected_argument],
             "live_melt_consumer_does_not_target_the_original_output")
     return {
         "bounded_arg_count": len(argv),
         "actual_original_MLT_consumer": "avformat",
         "selected_original_output_path": expected_output,
+        **({"actual_consumer_argument": selected_argument,
+            "relative_cwd_binding_required": selected_argument == "partial.mp4"}
+           if relative_cwd is not None else {}),
     }
 
 
@@ -216,9 +227,35 @@ def parse_process_starttime(raw: bytes) -> int:
 
 
 
+
+@contextmanager
+def _verified_host_sealed_melt(proc: Path, expected: str):
+    """Bind the original process executable to the one Host-sealed melt entry.
+
+    Only the kernel's PID-root link is followed. The fixed namespace components
+    must remain ordinary directories/files, and the executable descriptor must
+    be the inode exposed by that same live process's exe link.
+    """
+    for directory in (proc / "root" / "plugin", proc / "root" / "plugin" / "tools"):
+        require(directory.is_dir() and not directory.is_symlink(),
+                "host_sealed_melt_namespace_directory_invalid")
+    path = proc / "root" / "plugin" / "tools" / "melt"
+    with _verified_binary(path, expected, MAX_MELT) as executable:
+        initial = executable["stat"]
+        require(stat.S_IMODE(initial.st_mode) == 0o500
+                and initial.st_uid == proc.stat().st_uid,
+                "host_sealed_melt_owner_or_mode_changed")
+        require(_binary_generation((proc / "exe").stat()) == _binary_generation(initial),
+                "host_sealed_melt_is_not_the_live_executable")
+        yield executable
+        require(_binary_generation((proc / "exe").stat()) == _binary_generation(initial),
+                "host_sealed_melt_live_executable_changed")
+
+
 def inspect_live_original(pid: int, melt_path: Path, melt_sha: str,
                           module_path: Path, module_sha: str,
-                          expected_output_path: str) -> dict:
+                          expected_output_path: str, *,
+                          host_sealed_melt: bool = False) -> dict:
     require(sys.platform == "linux", "live_native_module_attestation_linux_only")
     require(type(pid) is int and 1 < pid < 2**30,
             "native_melt_pid_invalid")
@@ -230,9 +267,27 @@ def inspect_live_original(pid: int, melt_path: Path, melt_sha: str,
     require(proc.is_dir(), "original_native_melt_process_not_live")
     process_start = parse_process_starttime((proc / "stat").read_bytes())
     actual_melt = os.readlink(proc / "exe")
-    require(actual_melt == str(melt_path.resolve(strict=True)),
-            "original_native_melt_process_executable_mismatch")
-    with _verified_binary(melt_path.resolve(strict=True), melt_sha, MAX_MELT) as exe, \
+    require(type(host_sealed_melt) is bool, "host_sealed_melt_mode_invalid")
+    if host_sealed_melt:
+        require(melt_path == Path("/usr/bin/melt-7"),
+                "host_sealed_melt_requires_admitted_official_executable")
+        cwd_link = os.readlink(proc / "cwd")
+        cwd = expected_output_path.rpartition("/")[0]
+        require(re.fullmatch(r"/tmp/semwright-video-[0-9a-f]{32}", cwd) is not None
+                and expected_output_path == cwd + "/partial.mp4",
+                "host_sealed_melt_private_output_changed")
+        cwd_identity = (proc / "cwd").stat()
+        namespace_cwd = proc / "root" / cwd.lstrip("/")
+        require(namespace_cwd.is_dir() and not namespace_cwd.is_symlink()
+                and (namespace_cwd.stat().st_dev, namespace_cwd.stat().st_ino)
+                    == (cwd_identity.st_dev, cwd_identity.st_ino),
+                "host_sealed_melt_cwd_namespace_changed")
+        executable_context = _verified_host_sealed_melt(proc, melt_sha)
+    else:
+        require(actual_melt == str(melt_path.resolve(strict=True)),
+                "original_native_melt_process_executable_mismatch")
+        executable_context = _verified_binary(melt_path.resolve(strict=True), melt_sha, MAX_MELT)
+    with executable_context as exe, \
             _verified_binary(module_path, module_sha, MAX_MODULE) as module:
         # The mapping must refer to the descriptor whose bytes were hashed,
         # not a later generation obtained by looking up the pathname again.
@@ -245,7 +300,8 @@ def inspect_live_original(pid: int, melt_path: Path, melt_sha: str,
             module_stat.st_ino,
         )
         cmdline = verified_melt_cmdline(
-            (proc / "cmdline").read_bytes(), expected_output_path
+            (proc / "cmdline").read_bytes(), expected_output_path,
+            **({"relative_cwd": cwd} if host_sealed_melt else {}),
         )
         env = verified_restricted_environment((proc / "environ").read_bytes())
         second_start = parse_process_starttime((proc / "stat").read_bytes())
@@ -253,11 +309,25 @@ def inspect_live_original(pid: int, melt_path: Path, melt_sha: str,
                 "live_native_MLT_PID_changed_during_observation")
         require(os.readlink(proc / "exe") == actual_melt,
                 "live_native_melt_executable_changed_during_observation")
+        if host_sealed_melt:
+            after_cwd = (proc / "cwd").stat()
+            require(os.readlink(proc / "cwd") == cwd_link
+                    and (after_cwd.st_dev, after_cwd.st_ino)
+                        == (cwd_identity.st_dev, cwd_identity.st_ino),
+                    "host_sealed_melt_cwd_changed_during_observation")
         # Both descriptors remain open until the final generation checks on
         # context exit. A changed file prevents this receipt from returning.
         return {
             "schema": "motionwright.native.mlt-loaded-consumer/1",
             "actual_live_melt_pid": pid,
+            **({"actual_process_executable_scope": "host-sealed-melt",
+                "actual_process_executable_namespace_path": "/plugin/tools/melt",
+                "actual_process_executable_device": exe["stat"].st_dev,
+                "actual_process_executable_inode": exe["stat"].st_ino,
+                "actual_process_cwd": cwd,
+                "actual_process_cwd_device": cwd_identity.st_dev,
+                "actual_process_cwd_inode": cwd_identity.st_ino}
+               if host_sealed_melt else {}),
             "original_melt_sha256": exe["sha256"],
             "original_repaired_avformat_module_sha256": module["sha256"],
             "source_compiler_module_sha256_must_be_attested_separately": True,

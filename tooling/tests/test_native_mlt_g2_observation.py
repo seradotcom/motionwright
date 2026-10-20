@@ -51,6 +51,12 @@ class ObserverDouble:
         if self.stop_error:
             raise self.stop_error
 
+    def retain_intermediate(self, _evidence):
+        pass
+
+    def close(self):
+        pass
+
     def require_one(self, master):
         raise g2.G2Unverified("test original live witness absent")
 
@@ -275,6 +281,7 @@ class ObserverIdentityTests(unittest.TestCase):
             master.write_bytes(b"test double")
             observer = object.__new__(g2.LiveObserver)
             observer.fatal = False
+            observer.namespace_masters = {}
             observer.candidates = set()
             observer.receipts = {}
             with self.assertRaises(g2.G2Unverified):

@@ -39,6 +39,9 @@ on:
       - 'tooling/tests/test_native_mlt_owner_workspace.py'
       - 'tooling/tests/test_native_mlt_g2_custody.py'
       - 'tooling/tests/test_native_mlt_g2_observation.py'
+      - 'tooling/tests/test_native_mlt_live_observer_diagnostics.py'
+      - 'tooling/tests/test_native_mlt_host_tool_observation.py'
+      - 'tooling/tests/test_native_mlt_loaded_module.py'
       - 'tooling/tests/test_native_mlt_executable_alias.py'
       - 'tooling/tests/test_native_mlt_ci_audio.py'
       - 'tooling/native_mlt_caption_pixels.py'
@@ -130,6 +133,9 @@ jobs:
             --pattern test_native_mlt_owner_workspace.py \
             --pattern test_native_mlt_g2_custody.py \
             --pattern test_native_mlt_g2_observation.py \
+            --pattern test_native_mlt_live_observer_diagnostics.py \
+            --pattern test_native_mlt_host_tool_observation.py \
+            --pattern test_native_mlt_loaded_module.py \
             --pattern test_native_mlt_executable_alias.py \
             --pattern test_native_mlt_compiler_intake.py
           "$CUSTODY_PYTHON" -B -E -s - "$report" <<'PY'
@@ -143,6 +149,9 @@ jobs:
               "dotted:tooling.tests.test_native_mlt_owner_workspace": 8,
               "dotted:tooling.tests.test_native_mlt_g2_custody": 27,
               "dotted:tooling.tests.test_native_mlt_g2_observation": 23,
+              "dotted:tooling.tests.test_native_mlt_live_observer_diagnostics": 30,
+              "dotted:tooling.tests.test_native_mlt_host_tool_observation": 44,
+              "dotted:tooling.tests.test_native_mlt_loaded_module": 18,
               "dotted:tooling.tests.test_native_mlt_executable_alias": 24,
               "dotted:tooling.tests.test_native_mlt_compiler_intake": 24,
           }
