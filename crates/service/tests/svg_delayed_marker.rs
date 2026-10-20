@@ -227,6 +227,107 @@ fn utf16_and_utf32_disguised_active_svg_never_becomes_raster_cas() {
 }
 
 #[test]
+fn namespace_qualified_active_svg_never_enters_raster_cas_or_journal() {
+    // XML namespaces preserve the SVG element's expanded name even when a
+    // tag's lexical name is prefixed (for example, <s:script>).
+    let prefixed =
+        r#"<s:svg xmlns:s="http://www.w3.org/2000/svg"><s:script>void 0</s:script></s:svg>"#;
+    let cases = [
+        (
+            "qualified_script",
+            br#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg"><s:script>void 0</s:script></svg>"#.to_vec(),
+        ),
+        ("qualified_svg_root", prefixed.as_bytes().to_vec()),
+        (
+            "qualified_foreign_object",
+            br#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg" xmlns:h="http://www.w3.org/1999/xhtml"><s:foreignObject width="10" height="10"><h:iframe src="about:blank"/></s:foreignObject></svg>"#.to_vec(),
+        ),
+        (
+            "qualified_xml_declaration",
+            format!(r#"<?xml version="1.0" encoding="UTF-8"?>{prefixed}"#).into_bytes(),
+        ),
+        (
+            "qualified_utf16_bom",
+            encoded_utf16_xml(prefixed, true, true),
+        ),
+    ];
+    for (case, bytes) in cases {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("project.sqlite3");
+        let source = root.path().join("untrusted.png");
+        fs::write(&source, &bytes).unwrap();
+        let digest = hex::encode(Sha256::digest(&bytes));
+        let service = StudioService::open(&database).unwrap();
+        let project = service.create_project("Namespace SVG guard").unwrap();
+        let before = service.export_project(project.id).unwrap();
+        let result = service.import_asset_file(
+            project.id,
+            &project.stamp(),
+            &format!("namespaced-svg-{case}"),
+            &source,
+            "untrusted.png".into(),
+            "image/png".into(),
+        );
+        assert!(result.is_err(), "namespace-qualified SVG admitted: {case}");
+        let after = service.export_project(project.id).unwrap();
+        assert_eq!(after.project, before.project, "case={case}");
+        assert_eq!(after.events, before.events, "case={case}");
+        assert_eq!(after.payload_sha256, before.payload_sha256, "case={case}");
+        assert!(
+            service.store().lock().verify_blob(&digest).is_err(),
+            "active namespace CAS published: {case}"
+        );
+        drop(service);
+        let reopened = StudioService::open(&database).unwrap();
+        assert_eq!(
+            reopened.project(project.id).unwrap(),
+            project,
+            "case={case}"
+        );
+        let staging = root.path().join("blobs/.staging");
+        assert!(
+            fs::read_dir(&staging).unwrap().next().is_none(),
+            "rejected namespace left staged bytes: {case}"
+        );
+        assert_eq!(fs::read(&source).unwrap(), bytes, "case={case}");
+    }
+}
+
+#[test]
+fn static_namespace_qualified_svg_path_still_imports_without_rewriting() {
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("project.sqlite3");
+    let source = root.path().join("good.png");
+    let original = br#"<s:svg xmlns:s="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><s:path d="M0 0h4v4H0z"/></s:svg>"#;
+    fs::write(&source, original).unwrap();
+    let service = StudioService::open(&database).unwrap();
+    let project = service.create_project("Safe qualified SVG").unwrap();
+    let imported = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "safe-qualified-svg",
+            &source,
+            "good.png".into(),
+            "image/png".into(),
+        )
+        .unwrap();
+    let digest = hex::encode(Sha256::digest(original));
+    assert_eq!(imported.project.revision, project.revision + 1);
+    assert_eq!(
+        service.store().lock().read_blob(&digest, 4096).unwrap(),
+        original
+    );
+    drop(service);
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(reopened.project(project.id).unwrap(), imported.project);
+    assert_eq!(
+        reopened.store().lock().read_blob(&digest, 4096).unwrap(),
+        original
+    );
+}
+
+#[test]
 fn legitimate_utf16_plain_text_without_svg_remains_importable() {
     let root = tempfile::tempdir().unwrap();
     let database = root.path().join("project.sqlite3");
