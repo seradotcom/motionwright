@@ -64,6 +64,40 @@ def fixture_seed():
     }
 
 
+def fixture_source_cycle():
+    """Synthetic source-cycle document; no SQLite, carrier or native receipt."""
+    seed = fixture_seed()
+    program = seed["prepared_program"]
+    plan = program["prepared"]["source"]
+    plan["binding"]["revision"] = 10
+    plan["reframe"]["end_center_x"] = 1040.0
+    plan["camera"]["center_x"] = 1040.0
+    raw = encoded(plan)
+    program["trusted_compiler"]["plan_document"] = list(raw)
+    program["trusted_compiler"]["plan_sha256"] = camera.sha(raw)
+    return {
+        "schema": "motionwright.manim.camera.source-cycle/1",
+        "phase": "source-cycle-edit",
+        **{key: IDS[key] for key in ("project_id", "scene_id", "deliverable_id")},
+        "canonical_stamp": {"resource": "project:" + IDS["project_id"],
+                            "generation": IDS["generation"], "revision": 10},
+        "source_project_sha256": "5" * 64,
+        "fresh_sqlite_readback": True, "source_changed_by_example": True,
+        "import_staging_files_removed": True,
+        "native_execution_performed": False, "native_compiler_registered": False,
+        "provider_dispatch_performed": False, "new_render_job_created": False,
+        "imported_source_authority_used": False,
+        "fresh_registered_source_reopen_verified": False,
+        "native_video_frame_content_verified": False, "human_acceptance": False,
+        "prepared_program": program,
+        "current_source_inspection": {
+            "current_binding": copy.deepcopy(plan["binding"]),
+            "current_plan": copy.deepcopy(plan),
+            "native_execution_performed": False, "imported_source_authority_used": False,
+        },
+    }
+
+
 class FakeCustody:
     """A local failpoint engine; never a cryptographic or native success claim."""
     def __init__(self):
@@ -127,9 +161,9 @@ class CameraOriginalCustodyTests(unittest.TestCase):
             RECIPIENT, context or CONTEXT, engine=self.engine,
         )
 
-    def fixture_render(self):
-        seed = fixture_seed()
-        prepared = camera.prepare_seed(seed, self.evidence)
+    def fixture_render(self, *, seed=None, fixture="original"):
+        seed = fixture_seed() if seed is None else seed
+        prepared = camera.prepare_seed(seed, self.evidence, fixture=fixture)
         token = "a" * 32
         relative = f"videos/mw_{token}/360p30/mw_{token}.mp4"
         media = b"\x00\x00\x00\x18ftypunit-fixture-not-a-native-video"
@@ -142,7 +176,7 @@ class CameraOriginalCustodyTests(unittest.TestCase):
             "receipt_read_error": None, "request_id": "unit-request",
             "result": {
                 "native_driver": "driver:manim-community", "renderer": "manim-community",
-                "scene_id": IDS["scene_id"], "project_revision": 7,
+                "scene_id": IDS["scene_id"], "project_revision": prepared["binding"]["revision"],
                 "plan_sha256": prepared["plan_sha256"],
                 "profile": {"width": 640, "height": 360, "frame_rate": 30},
                 "job_ref": "manim-" + token, "artifact": artifact,
@@ -154,7 +188,7 @@ class CameraOriginalCustodyTests(unittest.TestCase):
         ):
             native[name] = {"request_id": "unit-request" + suffix, "command": command,
                             "stage": "completed", "project_id": IDS["project_id"],
-                            "generation": IDS["generation"], "revision": 7}
+                            "generation": IDS["generation"], "revision": prepared["binding"]["revision"]}
         path = self.output / relative
         path.parent.mkdir(parents=True)
         path.write_bytes(media)
@@ -174,20 +208,22 @@ class CameraOriginalCustodyTests(unittest.TestCase):
         }
         return native, prepared, decoded
 
-    def finish(self, native, prepared):
+    def finish(self, native, prepared, *, fixture="original"):
         return camera.finish_render(native, prepared, self.evidence, self.output, self.work,
-                                    SOURCE, PIN, "ffprobe-not-started", "ffmpeg-not-started")
+                                    SOURCE, PIN, "ffprobe-not-started", "ffmpeg-not-started",
+                                    fixture=fixture)
 
-    def complete_fixture(self):
-        native, prepared, decoded = self.fixture_render()
+    def complete_fixture(self, *, seed=None, fixture="original"):
+        native, prepared, decoded = self.fixture_render(seed=seed, fixture=fixture)
         with mock.patch.object(camera, "verify_pixels", return_value=decoded) as decoder:
             with self.session() as current:
                 observed = current.once(lambda: native)
-                self.finish(observed, prepared)
+                self.finish(observed, prepared, fixture=fixture)
             decoder.assert_called_once_with(
                 prepared["plan_path"], prepared["plan_sha256"],
                 self.evidence / camera.MEDIA_NAME, native["result"]["artifact"]["sha256"],
-                "ffprobe-not-started", "ffmpeg-not-started")
+                "ffprobe-not-started", "ffmpeg-not-started",
+                **({} if fixture == "original" else {"fixture": fixture}))
         return native, prepared
 
     def test_plan_bytes_are_retained_without_python_reserialization(self):
@@ -358,6 +394,71 @@ class CameraOriginalCustodyTests(unittest.TestCase):
         self.assertFalse(result["camera"]["native_editable_reopen_verified"])
         self.assertFalse(result["camera"]["human_acceptance"])
         self.assertFalse(result["v01_release_authorized"])
+
+    def test_original_publication_default_and_explicit_fixture_are_identical(self):
+        self.complete_fixture()
+        original = camera.verified_publication(
+            self.evidence, SOURCE, PIN, self.sealed / "originals.mwci")
+        explicit = camera.verified_publication(
+            self.evidence, SOURCE, PIN, self.sealed / "originals.mwci", fixture="original")
+        self.assertEqual(original, explicit)
+        self.assertFalse(original[1]["native_editable_reopen_verified"])
+        self.assertFalse(original[1]["human_acceptance"])
+
+    def test_source_cycle_publication_requires_explicit_edited1040(self):
+        self.complete_fixture(seed=fixture_source_cycle(), fixture="edited1040")
+        for options in ({}, {"fixture": "original"}, {"fixture": "edited1012"}):
+            with self.subTest(options=options):
+                with self.assertRaises(camera.CameraEvidenceError):
+                    camera.verified_publication(
+                        self.evidence, SOURCE, PIN, self.sealed / "originals.mwci", **options)
+        media, public = camera.verified_publication(
+            self.evidence, SOURCE, PIN, self.sealed / "originals.mwci", fixture="edited1040")
+        self.assertEqual(media, (self.evidence / camera.MEDIA_NAME).read_bytes())
+        self.assertFalse(public["native_editable_reopen_verified"])
+        self.assertFalse(public["full_pixel_equality_verified"])
+        self.assertFalse(public["human_acceptance"])
+        self.assertEqual(json.loads((self.evidence / "result.json").read_bytes())[
+            "native_effect_invocations"], 1)
+
+    def test_source_cycle_preparation_rejects_wrong_contract_and_binding_before_intent(self):
+        wrong_phase = fixture_source_cycle()
+        wrong_phase["phase"] = "source-cycle-readback"
+        wrong_resource = fixture_source_cycle()
+        wrong_resource["canonical_stamp"]["resource"] = "project:" + IDS["scene_id"]
+        stale_stamp = fixture_source_cycle()
+        stale_stamp["canonical_stamp"]["revision"] += 1
+        changed_plan = fixture_source_cycle()
+        changed_plan["current_source_inspection"]["current_plan"]["camera"]["center_x"] = 1000.0
+        for seed, fixture, error in (
+            (fixture_source_cycle(), "original", "camera_seed_contract"),
+            (fixture_seed(), "edited1040", "camera_source_cycle_contract"),
+            (fixture_source_cycle(), "edited1012", "camera_fixture_profile"),
+            (wrong_phase, "edited1040", "camera_source_cycle_contract"),
+            (wrong_resource, "edited1040", "camera_source_cycle_stamp"),
+            (stale_stamp, "edited1040", "camera_source_cycle_inspection"),
+            (changed_plan, "edited1040", "camera_source_cycle_inspection"),
+        ):
+            with self.subTest(fixture=fixture, error=error):
+                with self.assertRaisesRegex(camera.CameraEvidenceError, error):
+                    camera.prepare_seed(seed, self.evidence, fixture=fixture)
+        self.assertEqual(list(self.evidence.iterdir()), [])
+
+    def test_source_cycle_publication_rechecks_endpoint_even_with_matching_plan_digest(self):
+        self.complete_fixture(seed=fixture_source_cycle(), fixture="edited1040")
+        plan_path = self.evidence / "compiled-camera-plan.json"
+        plan = json.loads(plan_path.read_bytes())
+        plan["reframe"]["end_center_x"] = 1000.0
+        plan["camera"]["center_x"] = 1000.0
+        raw = encoded(plan)
+        plan_path.write_bytes(raw)
+        result_path = self.evidence / "result.json"
+        result = json.loads(result_path.read_bytes())
+        result["plan_sha256"] = camera.sha(raw)
+        result_path.write_bytes(encoded(result))
+        with self.assertRaisesRegex(AssertionError, "camera endpoints"):
+            camera.verified_publication(
+                self.evidence, SOURCE, PIN, self.sealed / "originals.mwci", fixture="edited1040")
 
     def test_missing_ciphertext_blocks_camera_publication(self):
         self.complete_fixture()
