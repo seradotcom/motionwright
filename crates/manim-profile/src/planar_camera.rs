@@ -404,6 +404,225 @@ pub fn compile_camera_program_source_only(
 /// one output sample is at i/fps (not at a frame midpoint); the final alpha=1
 /// is a terminal editing pose, never an extra decoded frame. The reader must
 /// independently verify all native camera/object getters and media PTS.
+use super::{MAX_SOURCE_BUNDLE_BYTES_V2, ManimSourceClosureV1, ManimSourceEntryV1};
+use std::collections::BTreeMap;
+
+pub const CAMERA_SOURCE_MIME_V1: &str =
+    "application/vnd.motionwright.manim-planar-camera-source+zip";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManimCameraSourcePackageV1 {
+    pub plan: ManimCameraScenePlanV1,
+    pub entries: BTreeMap<String, Vec<u8>>,
+    pub closure: ManimSourceClosureV1,
+}
+
+fn camera_source_rows(entries: &BTreeMap<String, Vec<u8>>) -> Vec<ManimSourceEntryV1> {
+    entries
+        .iter()
+        .map(|(path, bytes)| ManimSourceEntryV1 {
+            path: path.clone(),
+            bytes: bytes.len() as u64,
+            sha256: super::source_digest(bytes),
+        })
+        .collect()
+}
+
+/// Preserve the admitted typed camera source and its fixed generated program.
+/// This package is inert data, not a grant or evidence of native execution.
+pub fn camera_source_package_v1(
+    plan: &ManimCameraScenePlanV1,
+) -> Checked<ManimCameraSourcePackageV1> {
+    let prepared = compile_camera_program_source_only(plan)?;
+    let config = super::source_json(&serde_json::json!({
+        "schema_version": 1,
+        "profile_id": CAMERA_PROFILE_V1,
+        "compiler_id": CAMERA_COMPILER_V1,
+        "runtime": {"family": "manim-community", "version": "0.21.0", "renderer": "cairo"},
+        "output_role": plan.output_role,
+        "render_profile": plan.render_profile,
+        "clock": plan.clock,
+        "canvas": plan.canvas,
+        "background": plan.background,
+        "native_execution_performed": false,
+        "runtime_sample_pts_verified": false
+    }))?;
+    let assets_lock = super::source_json(&serde_json::json!({
+        "schema_version": 1, "profile_id": CAMERA_PROFILE_V1, "assets": [],
+        "external_asset_usage": "none", "external_rights_certified": false
+    }))?;
+    let plan_sha256 = prepared.plan_sha256;
+    let source_sha256 = prepared.source_sha256;
+    let config_sha256 = super::source_digest(&config);
+    let assets_lock_sha256 = super::source_digest(&assets_lock);
+    let mut entries = BTreeMap::from([
+        ("plan.json".into(), prepared.plan_document),
+        ("scene.py".into(), prepared.python_source.into_bytes()),
+        ("render-config.json".into(), config),
+        ("assets.lock.json".into(), assets_lock),
+    ]);
+    let manifest = super::source_json(&serde_json::json!({
+        "schema_version": 1,
+        "bundle_kind": "motionwright.manim.planar_camera.editable_source",
+        "mime_type": CAMERA_SOURCE_MIME_V1,
+        "profile_id": CAMERA_PROFILE_V1,
+        "plan_schema_version": CAMERA_SCHEMA_V1,
+        "compiler_id": CAMERA_COMPILER_V1,
+        "encoding_id": "serde-json-pretty-rational-strings-zip9-stored-v1",
+        "plan_sha256": plan_sha256, "source_sha256": source_sha256,
+        "config_sha256": config_sha256, "assets_lock_sha256": assets_lock_sha256,
+        "entries": camera_source_rows(&entries),
+        "typed_source_controls": [
+            "reframe.start_center_x", "reframe.start_center_y",
+            "reframe.end_center_x", "reframe.end_center_y",
+            "reframe.duration_frames", "camera.safe_margin"
+        ],
+        "canonical_import_controls": ["reframe.end_center_x"],
+        "derived_controls": {
+            "camera.center_x": "reframe.end_center_x",
+            "camera.center_y": "reframe.end_center_y"
+        },
+        "limitations": [
+            "The admitted camera moves linearly between its typed centers.",
+            "Zoom is fixed at 1 and rotation at 0 degrees.",
+            "Only the validated flat rectangle and circle subset is admitted.",
+            "Output is an opaque scene contribution without audio or captions.",
+            "Imported Python is preserved as source bytes, never executed.",
+            "Native rendering and reopening require independent receipts."
+        ],
+        "native_render_verified": false, "native_reopen_verified": false,
+        "canonical_import_applied": false
+    }))?;
+    let manifest_sha256 = super::source_digest(&manifest);
+    entries.insert("manifest.json".into(), manifest);
+    let closure = ManimSourceClosureV1 {
+        plan_schema_version: CAMERA_SCHEMA_V1,
+        compiler_contract_id: CAMERA_COMPILER_V1.into(),
+        plan_sha256,
+        source_sha256,
+        config_sha256,
+        assets_lock_sha256,
+        manifest_sha256,
+        entries: camera_source_rows(&entries),
+    };
+    super::encode_source_entries(&entries)?;
+    Ok(ManimCameraSourcePackageV1 {
+        plan: plan.clone(),
+        entries,
+        closure,
+    })
+}
+
+pub fn camera_source_bundle_v1(plan: &ManimCameraScenePlanV1) -> Checked<Vec<u8>> {
+    super::encode_source_entries(&camera_source_package_v1(plan)?.entries)
+}
+
+/// Inspect a bounded stored archive without extraction or execution.
+/// Only the typed plan is read. Every other byte must equal its trusted,
+/// deterministic regeneration, including archive metadata and entry order.
+pub fn inspect_camera_source_bundle_v1(bytes: &[u8]) -> Checked<ManimCameraSourcePackageV1> {
+    use std::io::{Cursor, Read};
+    require(
+        !bytes.is_empty() && bytes.len() <= MAX_SOURCE_BUNDLE_BYTES_V2,
+        "manim_camera_source_bundle_budget",
+    )?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|_| refuse("manim_camera_source_zip_invalid"))?;
+    require(
+        archive.len() == 5 && archive.comment().is_empty(),
+        "manim_camera_source_zip_shape",
+    )?;
+    let allowed = [
+        "assets.lock.json",
+        "manifest.json",
+        "plan.json",
+        "render-config.json",
+        "scene.py",
+    ];
+    let mut names = BTreeSet::new();
+    let mut plan_document = None;
+    let mut total = 0_usize;
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|_| refuse("manim_camera_source_entry_invalid"))?;
+        let name = file
+            .name()
+            .map_err(|_| refuse("manim_camera_source_entry_name_invalid"))?
+            .into_owned();
+        require(
+            allowed.contains(&name.as_str()) && names.insert(name.clone()),
+            "manim_camera_source_entry_unknown_or_duplicate",
+        )?;
+        require(
+            file.is_file()
+                && !file.is_symlink()
+                && !file.encrypted()
+                && file.compression() == zip::CompressionMethod::Stored
+                && file.comment().is_empty()
+                && file.size() > 0
+                && file.size() <= MAX_SOURCE_ENTRY_BYTES_V2 as u64,
+            "manim_camera_source_entry_not_admitted",
+        )?;
+        total = total
+            .checked_add(file.size() as usize)
+            .ok_or_else(|| refuse("manim_camera_source_bundle_budget"))?;
+        require(
+            total <= MAX_SOURCE_BUNDLE_BYTES_V2,
+            "manim_camera_source_bundle_budget",
+        )?;
+        if name == "plan.json" {
+            let expected_size = file.size();
+            let mut document = Vec::new();
+            file.by_ref()
+                .take(MAX_SOURCE_ENTRY_BYTES_V2 as u64 + 1)
+                .read_to_end(&mut document)
+                .map_err(|_| refuse("manim_camera_source_plan_read_failed"))?;
+            require(
+                document.len() <= MAX_SOURCE_ENTRY_BYTES_V2
+                    && document.len() as u64 == expected_size,
+                "manim_camera_source_plan_size_mismatch",
+            )?;
+            plan_document = Some(document);
+        }
+    }
+    let document = plan_document.ok_or_else(|| refuse("manim_camera_source_plan_missing"))?;
+    let plan: ManimCameraScenePlanV1 = serde_json::from_slice(&document)
+        .map_err(|_| refuse("manim_camera_source_plan_invalid"))?;
+    let package = camera_source_package_v1(&plan)?;
+    let canonical = super::encode_source_entries(&package.entries)?;
+    require(
+        canonical.as_slice() == bytes,
+        "manim_camera_source_bundle_not_canonical",
+    )?;
+    Ok(package)
+}
+
+/// Rebind preserved source only when the current typed content is identical.
+/// The caller independently establishes current Project authority. This
+/// function never applies edits or grants permission.
+pub fn rebind_camera_source_v1(
+    origin: &ManimCameraSourcePackageV1,
+    current: &ManimCameraScenePlanV1,
+) -> Checked<ManimCameraSourcePackageV1> {
+    let canonical_origin = camera_source_package_v1(&origin.plan)?;
+    require(
+        origin.entries == canonical_origin.entries && origin.closure == canonical_origin.closure,
+        "manim_camera_source_origin_not_canonical",
+    )?;
+    current.validate_source_only()?;
+    let mut rebound = origin.plan.clone();
+    rebound.binding.generation = current.binding.generation;
+    rebound.binding.revision = current.binding.revision;
+    // Numeric equality alone collapses signed zero, while the source and its
+    // closure retain the exact serialized representation of every control.
+    require(
+        super::source_json(&rebound)? == super::source_json(current)?,
+        "manim_camera_source_rebind_content_or_identity_drift",
+    )?;
+    camera_source_package_v1(&rebound)
+}
+
 const CAMERA_NATIVE_PROGRAM_V1: &str = r###"
 from manim import Circle, Rectangle, MovingCameraScene, UpdateFromAlphaFunc, VGroup, config, linear
 from manim import __version__ as _manim_version
@@ -710,5 +929,235 @@ mod source_contract_tests {
         let mut value = serde_json::to_value(&bad).unwrap();
         value["clock"]["frame_count"] = serde_json::json!(true);
         assert!(serde_json::from_value::<ManimCameraScenePlanV1>(value).is_err());
+    }
+
+    #[test]
+    fn camera_source_bundle_roundtrip_preserves_five_canonical_entries() {
+        let plan = fixture();
+        let compiled = compile_camera_program_source_only(&plan).unwrap();
+        let source = camera_source_package_v1(&plan).unwrap();
+        let bytes = camera_source_bundle_v1(&plan).unwrap();
+        assert_eq!(
+            source
+                .entries
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "assets.lock.json",
+                "manifest.json",
+                "plan.json",
+                "render-config.json",
+                "scene.py",
+            ]
+        );
+        assert_eq!(source.closure.entries.len(), 5);
+        assert_eq!(source.closure.plan_sha256, compiled.plan_sha256);
+        assert_eq!(source.closure.source_sha256, compiled.source_sha256);
+        assert_eq!(source.entries["plan.json"], compiled.plan_document);
+        assert_eq!(
+            source.entries["scene.py"],
+            compiled.python_source.as_bytes()
+        );
+        assert_eq!(inspect_camera_source_bundle_v1(&bytes).unwrap(), source);
+        assert_eq!(camera_source_bundle_v1(&plan).unwrap(), bytes);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&source.entries["manifest.json"]).unwrap();
+        assert_eq!(manifest["native_render_verified"], false);
+        assert_eq!(manifest["native_reopen_verified"], false);
+        assert_eq!(manifest["canonical_import_applied"], false);
+    }
+
+    #[test]
+    fn camera_source_bundle_preserves_semantics_and_inert_names() {
+        let mut plan = fixture();
+        plan.nodes[0].display_name = "\"; __import__('os').system('not-executable') #".into();
+        let source = camera_source_package_v1(&plan).unwrap();
+        let reopened =
+            inspect_camera_source_bundle_v1(&camera_source_bundle_v1(&plan).unwrap()).unwrap();
+        assert_eq!(reopened.plan, plan);
+        assert_eq!(
+            reopened.plan.expected_frame_samples().unwrap(),
+            plan.expected_frame_samples().unwrap()
+        );
+        let generated = String::from_utf8(source.entries["scene.py"].clone()).unwrap();
+        assert!(generated.ends_with(CAMERA_NATIVE_PROGRAM_V1));
+        assert_eq!(
+            generated,
+            compile_camera_program_source_only(&plan)
+                .unwrap()
+                .python_source
+        );
+    }
+
+    #[test]
+    fn camera_source_bundle_rejects_alteration_of_every_entry() {
+        let source = camera_source_package_v1(&fixture()).unwrap();
+        for name in source.entries.keys() {
+            let mut altered = source.entries.clone();
+            altered.get_mut(name).unwrap().push(b'\n');
+            let bytes = super::super::encode_source_entries(&altered).unwrap();
+            assert!(
+                inspect_camera_source_bundle_v1(&bytes).is_err(),
+                "altered entry: {name}"
+            );
+        }
+        let mut altered = source.entries.clone();
+        altered.insert(
+            "scene.py".into(),
+            b"raise RuntimeError('untrusted imported Python')\n".to_vec(),
+        );
+        let bytes = super::super::encode_source_entries(&altered).unwrap();
+        assert!(inspect_camera_source_bundle_v1(&bytes).is_err());
+    }
+
+    fn replace_camera_zip_test_name(bytes: &mut [u8], old: &[u8], new: &[u8]) {
+        assert_eq!(old.len(), new.len());
+        let mut replaced = 0;
+        for index in 0..=bytes.len() - old.len() {
+            if &bytes[index..index + old.len()] == old {
+                bytes[index..index + old.len()].copy_from_slice(new);
+                replaced += 1;
+            }
+        }
+        assert_eq!(replaced, 2);
+    }
+
+    #[test]
+    fn camera_source_bundle_rejects_duplicate_traversal_extra_and_trailing() {
+        let plan = fixture();
+        let source = camera_source_package_v1(&plan).unwrap();
+        let mut renamed = source.entries.clone();
+        renamed.remove("scene.py");
+        renamed.insert("copy.json".into(), source.entries["plan.json"].clone());
+        let original = super::super::encode_source_entries(&renamed).unwrap();
+        let mut duplicate = original.clone();
+        replace_camera_zip_test_name(&mut duplicate, b"copy.json", b"plan.json");
+        assert!(inspect_camera_source_bundle_v1(&duplicate).is_err());
+        let mut traversal = original;
+        replace_camera_zip_test_name(&mut traversal, b"copy.json", b"../x.json");
+        assert!(inspect_camera_source_bundle_v1(&traversal).is_err());
+        let mut extra = source.entries.clone();
+        extra.insert("extra.json".into(), b"{}\n".to_vec());
+        assert!(
+            inspect_camera_source_bundle_v1(&super::super::encode_source_entries(&extra).unwrap())
+                .is_err()
+        );
+        let mut trailing = camera_source_bundle_v1(&plan).unwrap();
+        assert!(inspect_camera_source_bundle_v1(&trailing[..trailing.len() - 16]).is_err());
+        trailing.extend_from_slice(b"\ntrailing-data");
+        assert!(inspect_camera_source_bundle_v1(&trailing).is_err());
+    }
+
+    #[test]
+    fn camera_source_bundle_rejects_unsupported_schema_and_budget() {
+        let source = camera_source_package_v1(&fixture()).unwrap();
+        let mut entries = source.entries.clone();
+        let mut value: serde_json::Value = serde_json::from_slice(&entries["plan.json"]).unwrap();
+        value["schema_version"] = serde_json::json!(CAMERA_SCHEMA_V1 + 1);
+        entries.insert(
+            "plan.json".into(),
+            super::super::source_json(&value).unwrap(),
+        );
+        let bytes = super::super::encode_source_entries(&entries).unwrap();
+        assert!(inspect_camera_source_bundle_v1(&bytes).is_err());
+        assert!(inspect_camera_source_bundle_v1(&[]).is_err());
+        assert!(inspect_camera_source_bundle_v1(&vec![0; MAX_SOURCE_BUNDLE_BYTES_V2 + 1]).is_err());
+    }
+
+    #[test]
+    fn camera_source_rebind_only_changes_generation_and_revision() {
+        let origin = camera_source_package_v1(&fixture()).unwrap();
+        let before = origin.clone();
+        let mut current = origin.plan.clone();
+        current.binding.generation = Uuid::from_u128(0x90000000000040008000000000000001);
+        current.binding.revision += 1;
+        let rebound = rebind_camera_source_v1(&origin, &current).unwrap();
+        assert_eq!(rebound.plan, current);
+        assert_eq!(origin, before);
+        assert_ne!(rebound.closure.plan_sha256, origin.closure.plan_sha256);
+        assert_eq!(
+            inspect_camera_source_bundle_v1(&camera_source_bundle_v1(&current).unwrap()).unwrap(),
+            rebound
+        );
+        let mut foreign = current.clone();
+        foreign.binding.project_id = Uuid::from_u128(0x90000000000040008000000000000002);
+        assert!(rebind_camera_source_v1(&origin, &foreign).is_err());
+        let mut foreign = current.clone();
+        foreign.binding.deliverable_id = Uuid::from_u128(0x90000000000040008000000000000003);
+        assert!(rebind_camera_source_v1(&origin, &foreign).is_err());
+        let mut foreign = current.clone();
+        foreign.binding.scene_id = Uuid::from_u128(0x90000000000040008000000000000004);
+        foreign.reframe.scene_id = foreign.binding.scene_id;
+        assert!(rebind_camera_source_v1(&origin, &foreign).is_err());
+        let mut drift = current;
+        drift.reframe.end_center_x = 1012.0;
+        drift.camera.center_x = 1012.0;
+        assert!(drift.validate_source_only().is_ok());
+        assert!(rebind_camera_source_v1(&origin, &drift).is_err());
+        let mut tampered = origin.clone();
+        tampered.entries.get_mut("scene.py").unwrap().push(b'\n');
+        assert!(rebind_camera_source_v1(&tampered, &origin.plan).is_err());
+        let mut tampered = origin.clone();
+        tampered.closure.source_sha256 = "0".repeat(64);
+        assert!(rebind_camera_source_v1(&tampered, &origin.plan).is_err());
+    }
+
+    #[test]
+    fn camera_source_rebind_rejects_signed_zero_representation_drift() {
+        for (original_zero, changed_zero) in [(-0.0, 0.0), (0.0, -0.0)] {
+            let mut authored = fixture();
+            authored.camera.rotation_deg = original_zero;
+            let origin = camera_source_package_v1(&authored).unwrap();
+            let mut current = authored;
+            current.binding.revision += 1;
+            let rebound = rebind_camera_source_v1(&origin, &current).unwrap();
+            assert_eq!(
+                rebound.closure.plan_sha256,
+                compile_camera_program_source_only(&current)
+                    .unwrap()
+                    .plan_sha256
+            );
+
+            current.camera.rotation_deg = changed_zero;
+            assert!(current.validate_source_only().is_ok());
+            assert_eq!(origin.plan.camera.rotation_deg, current.camera.rotation_deg);
+            assert_ne!(
+                rebound.closure.plan_sha256,
+                compile_camera_program_source_only(&current)
+                    .unwrap()
+                    .plan_sha256
+            );
+            assert!(rebind_camera_source_v1(&origin, &current).is_err());
+        }
+    }
+
+    #[test]
+    fn camera_source_edit_creates_new_source_and_preserves_original_bytes() {
+        let plan = fixture();
+        let original_bytes = camera_source_bundle_v1(&plan).unwrap();
+        let original = inspect_camera_source_bundle_v1(&original_bytes).unwrap();
+        let mut edited = original.plan.clone();
+        edited.reframe.end_center_x = 1012.0;
+        edited.camera.center_x = 1012.0;
+        edited.binding.revision += 1;
+        let edited_bytes = camera_source_bundle_v1(&edited).unwrap();
+        let reopened = inspect_camera_source_bundle_v1(&edited_bytes).unwrap();
+        assert_eq!(reopened.plan, edited);
+        assert_eq!(reopened.plan.nodes, plan.nodes);
+        assert_ne!(edited_bytes, original_bytes);
+        assert_ne!(reopened.closure.plan_sha256, original.closure.plan_sha256);
+        assert_ne!(
+            reopened.closure.source_sha256,
+            original.closure.source_sha256
+        );
+        assert_eq!(
+            inspect_camera_source_bundle_v1(&original_bytes).unwrap(),
+            original
+        );
+        assert_eq!(
+            camera_source_bundle_v1(&original.plan).unwrap(),
+            original_bytes
+        );
     }
 }

@@ -2,14 +2,12 @@
 //! New native renderer, dispatch or source compiler behavior is NOT assumed.
 use motionwright_manim_profile::{
     MAX_SOURCE_ENTRY_BYTES_V2, ManimCanvasV2, ManimFrameClockV2, ManimMatteV2, ManimOutputRoleV2,
-    ManimProfileError, ManimRenderProfile, ManimSceneBindingV2, ManimSourceShapeKindV2,
-    ManimStaticShapeV2,
+    ManimRenderProfile, ManimSceneBindingV2, ManimSourceShapeKindV2, ManimStaticShapeV2,
 };
 use semwright_media_time::Rational;
 use uuid::Uuid;
 
-#[path = "../../manim-profile/src/planar_camera.rs"]
-mod camera_source;
+use motionwright_manim_profile::planar_camera as camera_source;
 
 #[cfg(test)]
 mod production {
@@ -542,20 +540,22 @@ mod production {
             .project
     }
 
-    #[test]
-    fn sqlite_camera_source_reopens_edit_recompiles_and_reopens_without_silent_authority() {
+    struct SavedCameraFixture {
+        directory: tempfile::TempDir,
+        database: std::path::PathBuf,
+        service: motionwright_service::StudioService,
+        project: motionwright_domain::Project,
+        scene_id: Uuid,
+        deliverable_id: Uuid,
+    }
+
+    fn saved_camera_fixture() -> SavedCameraFixture {
         use motionwright_domain::{
             BlendMode, CameraReframe, CanvasNode, Change, CoordinateSpace, NodeStyle,
-            OutputColorSpace, OutputContainer, RationalTime, RendererKind, RevisionStamp,
-            VideoCodec,
-        };
-        use motionwright_native::manim_camera_projection::{
-            author_one_camera_endpoint_edit, prepare_saved_manim_camera_program_source_only,
+            OutputColorSpace, OutputContainer, RationalTime, RendererKind, VideoCodec,
         };
         use motionwright_service::StudioService;
-        use semwright_native_sdk::ErrorCode;
         use std::collections::BTreeSet;
-
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("original-manim-camera.sqlite3");
         let service = StudioService::open(&database).unwrap();
@@ -669,6 +669,32 @@ mod production {
             },
         );
         project.validate().unwrap();
+        SavedCameraFixture {
+            directory: dir,
+            database,
+            service,
+            project,
+            scene_id,
+            deliverable_id,
+        }
+    }
+
+    #[test]
+    fn sqlite_camera_source_reopens_edit_recompiles_and_reopens_without_silent_authority() {
+        use motionwright_domain::RevisionStamp;
+        use motionwright_native::manim_camera_projection::{
+            author_one_camera_endpoint_edit, prepare_saved_manim_camera_program_source_only,
+        };
+        use motionwright_service::StudioService;
+        use semwright_native_sdk::ErrorCode;
+        let SavedCameraFixture {
+            directory: _directory,
+            database,
+            service,
+            project,
+            scene_id,
+            deliverable_id,
+        } = saved_camera_fixture();
         let stamp_before = RevisionStamp::from(&project);
         let prepared = prepare_saved_manim_camera_program_source_only(
             &service,
@@ -785,5 +811,545 @@ mod production {
                 .is_empty(),
             "Source-only CameraReframe must not invent Host receipts"
         );
+    }
+
+    fn attach_camera_source(
+        fixture: &SavedCameraFixture,
+        project: &motionwright_domain::Project,
+        bytes: &[u8],
+        name: &str,
+    ) -> (motionwright_domain::Project, Uuid) {
+        use camera_source::CAMERA_SOURCE_MIME_V1;
+        use motionwright_domain::RevisionStamp;
+        let path = fixture.directory.path().join(format!("{name}.mwcam.zip"));
+        std::fs::write(&path, bytes).unwrap();
+        let attached = fixture
+            .service
+            .import_asset_file(
+                project.id,
+                &RevisionStamp::from(project),
+                &format!("attach-camera-source-{name}"),
+                &path,
+                name.into(),
+                CAMERA_SOURCE_MIME_V1.into(),
+            )
+            .unwrap()
+            .project;
+        let asset_id = attached
+            .assets
+            .iter()
+            .find(|asset| asset.name == name)
+            .unwrap()
+            .id;
+        // Subsequent inspection must use persisted CAS bytes, not this input.
+        std::fs::remove_file(path).unwrap();
+        (attached, asset_id)
+    }
+
+    fn fixture_camera_bundle(fixture: &SavedCameraFixture) -> Vec<u8> {
+        motionwright_native::manim_camera_projection::export_saved_manim_camera_source_bundle(
+            &fixture.service,
+            fixture.project.id,
+            &motionwright_domain::RevisionStamp::from(&fixture.project),
+            fixture.scene_id,
+            fixture.deliverable_id,
+        )
+        .unwrap()
+    }
+
+    fn edited_camera_plan(bytes: &[u8]) -> ManimCameraScenePlanV1 {
+        let mut plan = camera_source::inspect_camera_source_bundle_v1(bytes)
+            .unwrap()
+            .plan;
+        plan.reframe.end_center_x = 1012.0;
+        plan.camera.center_x = 1012.0;
+        plan
+    }
+
+    #[test]
+    fn sqlite_camera_package_survives_file_removal_edit_and_two_reopens() {
+        use camera_source::{camera_source_bundle_v1, inspect_camera_source_bundle_v1};
+        use motionwright_domain::RevisionStamp;
+        use motionwright_native::manim_camera_projection::{
+            export_saved_manim_camera_source_bundle, inspect_saved_manim_camera_source,
+            preview_saved_manim_camera_endpoint_edit,
+        };
+        use motionwright_service::StudioService;
+        use sha2::{Digest, Sha256};
+
+        let fixture = saved_camera_fixture();
+        let bytes = fixture_camera_bundle(&fixture);
+        let original = inspect_camera_source_bundle_v1(&bytes).unwrap();
+        let edited_bytes = camera_source_bundle_v1(&edited_camera_plan(&bytes)).unwrap();
+        let (attached, original_id) =
+            attach_camera_source(&fixture, &fixture.project, &bytes, "original");
+        let (attached, edited_id) =
+            attach_camera_source(&fixture, &attached, &edited_bytes, "edited");
+        let expected = RevisionStamp::from(&attached);
+        drop(fixture.service);
+
+        let reopened = StudioService::open(&fixture.database).unwrap();
+        assert_eq!(reopened.project(attached.id).unwrap(), attached);
+        let inspected =
+            inspect_saved_manim_camera_source(&reopened, attached.id, &expected, original_id)
+                .unwrap();
+        assert_eq!(inspected.source_sha256, hex::encode(Sha256::digest(&bytes)));
+        assert_eq!(inspected.origin_binding, original.plan.binding);
+        assert_eq!(inspected.current_binding.revision, attached.revision);
+        assert!(inspected.revision_only_rebound);
+        assert!(!inspected.native_execution_performed);
+        assert!(!inspected.imported_source_authority_used);
+
+        let preview = preview_saved_manim_camera_endpoint_edit(
+            &reopened,
+            attached.id,
+            &expected,
+            original_id,
+            edited_id,
+        )
+        .unwrap();
+        assert_eq!(preview.expected, expected);
+        assert!(!preview.native_execution_performed);
+        assert!(!preview.imported_source_authority_used);
+        assert_eq!(reopened.project(attached.id).unwrap(), attached);
+        assert_ne!(preview.original_source_sha256, preview.edited_source_sha256);
+        let updated = reopened
+            .apply(
+                attached.id,
+                &preview.expected,
+                "import-one-camera-endpoint",
+                &preview.change,
+            )
+            .unwrap()
+            .project;
+        assert_eq!(updated.revision, attached.revision + 1);
+        assert_eq!(updated.id, attached.id);
+        assert_eq!(updated.generation, attached.generation);
+        assert_eq!(updated.scenes[0].nodes, attached.scenes[0].nodes);
+        assert_eq!(updated.assets, attached.assets);
+        assert_eq!(updated.deliverables, attached.deliverables);
+        assert_eq!(updated.visual_language, attached.visual_language);
+        assert_eq!(updated.scenes[0].camera.center_x, 1012.0);
+        assert_eq!(
+            updated.production_design.camera_reframes[0].end_center_x,
+            1012.0
+        );
+        let next_stamp = RevisionStamp::from(&updated);
+        let next_bytes = export_saved_manim_camera_source_bundle(
+            &reopened,
+            updated.id,
+            &next_stamp,
+            fixture.scene_id,
+            fixture.deliverable_id,
+        )
+        .unwrap();
+        let next = inspect_camera_source_bundle_v1(&next_bytes).unwrap();
+        assert_ne!(next.closure.source_sha256, original.closure.source_sha256);
+        let inspected_edit =
+            inspect_saved_manim_camera_source(&reopened, updated.id, &next_stamp, edited_id)
+                .unwrap();
+        assert_eq!(inspected_edit.current_plan, next.plan);
+        assert_eq!(inspected_edit.current_closure, next.closure);
+        assert!(
+            inspect_saved_manim_camera_source(&reopened, updated.id, &next_stamp, original_id,)
+                .is_err(),
+            "historical source must not silently describe changed controls"
+        );
+        let handle = reopened.store();
+        assert_eq!(
+            handle
+                .lock()
+                .read_blob(
+                    &preview.original_source_sha256,
+                    motionwright_manim_profile::MAX_SOURCE_BUNDLE_BYTES_V2 as u64,
+                )
+                .unwrap(),
+            bytes
+        );
+        assert!(
+            reopened
+                .production_receipts(updated.id, 32)
+                .unwrap()
+                .is_empty()
+        );
+        drop(handle);
+        drop(reopened);
+
+        let reopened_again = StudioService::open(&fixture.database).unwrap();
+        assert_eq!(reopened_again.project(updated.id).unwrap(), updated);
+        let final_source =
+            inspect_saved_manim_camera_source(&reopened_again, updated.id, &next_stamp, edited_id)
+                .unwrap();
+        assert_eq!(final_source.current_plan, next.plan);
+        assert_eq!(final_source.current_closure, next.closure);
+        assert!(
+            reopened_again
+                .production_receipts(updated.id, 32)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn camera_source_import_rejects_foreign_identity_other_controls_and_archive_drift() {
+        use camera_source::camera_source_bundle_v1;
+        use motionwright_domain::RevisionStamp;
+        use motionwright_native::manim_camera_projection::preview_saved_manim_camera_endpoint_edit;
+        use semwright_native_sdk::ErrorCode;
+
+        let fixture = saved_camera_fixture();
+        let bytes = fixture_camera_bundle(&fixture);
+        let (mut current, original_id) =
+            attach_camera_source(&fixture, &fixture.project, &bytes, "original");
+        let edited = edited_camera_plan(&bytes);
+        let mut variants = Vec::new();
+        let mut foreign = edited.clone();
+        foreign.binding.project_id = Uuid::new_v4();
+        variants.push((
+            "foreign-project",
+            camera_source_bundle_v1(&foreign).unwrap(),
+        ));
+        let mut foreign = edited.clone();
+        foreign.binding.scene_id = Uuid::new_v4();
+        foreign.reframe.scene_id = foreign.binding.scene_id;
+        variants.push(("foreign-scene", camera_source_bundle_v1(&foreign).unwrap()));
+        let mut foreign = edited.clone();
+        foreign.binding.deliverable_id = Uuid::new_v4();
+        variants.push((
+            "foreign-deliverable",
+            camera_source_bundle_v1(&foreign).unwrap(),
+        ));
+        let mut other = edited.clone();
+        other.reframe.id = Uuid::new_v4();
+        variants.push(("different-camera", camera_source_bundle_v1(&other).unwrap()));
+        let mut other = edited.clone();
+        other.nodes[0].fill_hex = "#123456".into();
+        variants.push(("different-style", camera_source_bundle_v1(&other).unwrap()));
+        let mut other = edited.clone();
+        other.nodes[0].x_px += 12.0;
+        variants.push((
+            "different-object-position",
+            camera_source_bundle_v1(&other).unwrap(),
+        ));
+        let mut other = edited.clone();
+        other.reframe.duration_frames -= 1;
+        variants.push((
+            "different-move-duration",
+            camera_source_bundle_v1(&other).unwrap(),
+        ));
+        let mut other = edited.clone();
+        other.reframe.end_center_y += 2.0;
+        other.camera.center_y += 2.0;
+        variants.push((
+            "different-camera-y",
+            camera_source_bundle_v1(&other).unwrap(),
+        ));
+        let mut changed_archive = camera_source_bundle_v1(&edited).unwrap();
+        changed_archive.extend_from_slice(b"untrusted trailing payload");
+        variants.push(("archive-drift", changed_archive));
+
+        for (name, variant) in variants {
+            let (attached, edited_id) = attach_camera_source(&fixture, &current, &variant, name);
+            current = attached;
+            let error = preview_saved_manim_camera_endpoint_edit(
+                &fixture.service,
+                current.id,
+                &RevisionStamp::from(&current),
+                original_id,
+                edited_id,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported, "{name}: {error}");
+            assert_eq!(
+                fixture.service.project(current.id).unwrap(),
+                current,
+                "{name}"
+            );
+        }
+        let (unchanged, no_op_id) = attach_camera_source(&fixture, &current, &bytes, "no-op");
+        let error = preview_saved_manim_camera_endpoint_edit(
+            &fixture.service,
+            unchanged.id,
+            &RevisionStamp::from(&unchanged),
+            original_id,
+            no_op_id,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(fixture.service.project(unchanged.id).unwrap(), unchanged);
+        assert!(
+            fixture
+                .service
+                .production_receipts(unchanged.id, 32)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn camera_source_preview_obeys_current_revision_and_existing_scene_locks() {
+        use camera_source::camera_source_bundle_v1;
+        use motionwright_domain::{Change, LockKind, RevisionStamp};
+        use motionwright_native::manim_camera_projection::preview_saved_manim_camera_endpoint_edit;
+        use semwright_native_sdk::ErrorCode;
+
+        let fixture = saved_camera_fixture();
+        let bytes = fixture_camera_bundle(&fixture);
+        let edited_bytes = camera_source_bundle_v1(&edited_camera_plan(&bytes)).unwrap();
+        let (attached, original_id) =
+            attach_camera_source(&fixture, &fixture.project, &bytes, "original");
+        let (attached, edited_id) =
+            attach_camera_source(&fixture, &attached, &edited_bytes, "edited");
+        let original_stamp = RevisionStamp::from(&attached);
+        let pending = preview_saved_manim_camera_endpoint_edit(
+            &fixture.service,
+            attached.id,
+            &original_stamp,
+            original_id,
+            edited_id,
+        )
+        .unwrap();
+        let locked = studio_apply(
+            &fixture.service,
+            &attached,
+            Change::SetLock {
+                resource: format!("scene:{}", fixture.scene_id),
+                kind: LockKind::Position,
+                note: "Camera source cannot bypass an existing scene lock".into(),
+            },
+        );
+        assert!(
+            fixture
+                .service
+                .apply(
+                    locked.id,
+                    &pending.expected,
+                    "camera-source-preview-before-lock",
+                    &pending.change,
+                )
+                .is_err(),
+            "a prepared source edit must recheck the actual saved revision at apply"
+        );
+        assert_eq!(
+            preview_saved_manim_camera_endpoint_edit(
+                &fixture.service,
+                locked.id,
+                &original_stamp,
+                original_id,
+                edited_id,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::StaleReference
+        );
+        assert_eq!(
+            preview_saved_manim_camera_endpoint_edit(
+                &fixture.service,
+                locked.id,
+                &RevisionStamp::from(&locked),
+                original_id,
+                edited_id,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(fixture.service.project(locked.id).unwrap(), locked);
+        assert!(
+            fixture
+                .service
+                .production_receipts(locked.id, 32)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_camera_source_readback_binds_exact_plan_archive_and_job_filename() {
+        use camera_source::{
+            CAMERA_SOURCE_MIME_V1, camera_source_bundle_v1, camera_source_package_v1,
+        };
+        use motionwright_native::manim_camera_projection::verify_rendered_manim_camera_source;
+        use sha2::{Digest, Sha256};
+        let fixture = saved_camera_fixture();
+        let bytes = fixture_camera_bundle(&fixture);
+        let plan = camera_source::inspect_camera_source_bundle_v1(&bytes)
+            .unwrap()
+            .plan;
+        let package = camera_source_package_v1(&plan).unwrap();
+        let root = fixture.directory.path().join("native-output");
+        std::fs::create_dir(&root).unwrap();
+        let token = "0123456789abcdef0123456789abcdef";
+        let quality = plan.render_profile.quality_directory();
+        let video_path = format!("videos/mw_{token}/{quality}/mw_{token}.mp4");
+        let video = video_path.as_str();
+        let source = "mw_0123456789abcdef0123456789abcdef.mwcam.zip";
+        std::fs::write(root.join(source), &bytes).unwrap();
+        let artifact = serde_json::json!({"camera_source": {
+            "relative_path": source,
+            "sha256": hex::encode(Sha256::digest(&bytes)),
+            "bytes": bytes.len(),
+            "media_type": CAMERA_SOURCE_MIME_V1,
+            "closure": package.closure,
+        }});
+        let verified = verify_rendered_manim_camera_source(&root, video, &plan, &artifact).unwrap();
+        assert_eq!(verified["relative_path"], source);
+        assert!(verified["verified_path"].as_str().is_some());
+
+        let mut changed_descriptor = artifact.clone();
+        changed_descriptor["camera_source"]["relative_path"] =
+            serde_json::json!("../other.mwcam.zip");
+        assert!(
+            verify_rendered_manim_camera_source(&root, video, &plan, &changed_descriptor).is_err()
+        );
+        for foreign_video in [
+            format!("mw_{token}.mp4"),
+            format!("../{video}"),
+            format!("videos/../{quality}/mw_{token}.mp4"),
+            format!("videos/mw_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/{quality}/mw_{token}.mp4"),
+            format!("videos/mw_{token}/{quality}/mw_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4"),
+            format!("videos/mw_{token}/1p1/mw_{token}.mp4"),
+            video.replace('/', "\\"),
+            format!("{video}/extra.mp4"),
+        ] {
+            assert!(
+                verify_rendered_manim_camera_source(&root, &foreign_video, &plan, &artifact)
+                    .is_err(),
+                "foreign video path: {foreign_video}"
+            );
+        }
+        let edited_plan = edited_camera_plan(&bytes);
+        assert!(
+            verify_rendered_manim_camera_source(&root, video, &edited_plan, &artifact).is_err()
+        );
+        let foreign_bytes = camera_source_bundle_v1(&edited_plan).unwrap();
+        std::fs::write(root.join(source), foreign_bytes).unwrap();
+        assert!(verify_rendered_manim_camera_source(&root, video, &plan, &artifact).is_err());
+    }
+
+    #[test]
+    fn camera_source_inspection_rejects_unattached_wrong_type_and_missing_cas_assets() {
+        use camera_source::CAMERA_SOURCE_MIME_V1;
+        use motionwright_domain::{Asset, Change, RevisionStamp};
+        use motionwright_native::manim_camera_projection::inspect_saved_manim_camera_source;
+        use semwright_native_sdk::ErrorCode;
+        let fixture = saved_camera_fixture();
+        let bytes = fixture_camera_bundle(&fixture);
+        let (mut current, original_id) =
+            attach_camera_source(&fixture, &fixture.project, &bytes, "original");
+        let digest = current
+            .assets
+            .iter()
+            .find(|asset| asset.id == original_id)
+            .unwrap()
+            .content_sha256
+            .clone();
+        assert_eq!(
+            inspect_saved_manim_camera_source(
+                &fixture.service,
+                current.id,
+                &RevisionStamp::from(&current),
+                Uuid::new_v4(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidArgument
+        );
+        for (name, media_type, content_sha256, code) in [
+            (
+                "wrong-type",
+                "application/octet-stream",
+                digest.clone(),
+                ErrorCode::Unsupported,
+            ),
+            (
+                "missing-digest",
+                CAMERA_SOURCE_MIME_V1,
+                None,
+                ErrorCode::InvalidArgument,
+            ),
+        ] {
+            let id = Uuid::new_v4();
+            current = studio_apply(
+                &fixture.service,
+                &current,
+                Change::AddAsset {
+                    asset: Asset {
+                        id,
+                        name: name.into(),
+                        media_type: media_type.into(),
+                        content_sha256,
+                        source_revision: None,
+                    },
+                },
+            );
+            assert_eq!(
+                inspect_saved_manim_camera_source(
+                    &fixture.service,
+                    current.id,
+                    &RevisionStamp::from(&current),
+                    id,
+                )
+                .unwrap_err()
+                .code,
+                code,
+                "{name}"
+            );
+            assert_eq!(fixture.service.project(current.id).unwrap(), current);
+        }
+        assert!(
+            inspect_saved_manim_camera_source(
+                &fixture.service,
+                current.id,
+                &RevisionStamp::from(&current),
+                original_id,
+            )
+            .is_ok()
+        );
+
+        // The service rejects a new reference to absent bytes before admitting
+        // the edit. Exercise that guard without bypassing canonical storage.
+        let rejected = fixture.service.apply(
+            current.id,
+            &RevisionStamp::from(&current),
+            "camera-source-missing-blob-reference",
+            &Change::AddAsset {
+                asset: Asset {
+                    id: Uuid::new_v4(),
+                    name: "missing-blob-reference".into(),
+                    media_type: CAMERA_SOURCE_MIME_V1.into(),
+                    content_sha256: Some("a".repeat(64)),
+                    source_revision: None,
+                },
+            },
+        );
+        assert!(matches!(
+            rejected,
+            Err(motionwright_storage::StorageError::BlobMissing { .. })
+        ));
+        assert_eq!(fixture.service.project(current.id).unwrap(), current);
+
+        // A previously imported blob can disappear after admission. Remove
+        // only this fixture's verified CAS file and retain the saved reference.
+        let blob_path = fixture
+            .service
+            .store()
+            .lock()
+            .verified_blob_path(digest.as_deref().unwrap())
+            .unwrap();
+        assert!(blob_path.starts_with(fixture.directory.path()));
+        std::fs::remove_file(blob_path).unwrap();
+        assert_eq!(
+            inspect_saved_manim_camera_source(
+                &fixture.service,
+                current.id,
+                &RevisionStamp::from(&current),
+                original_id,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(fixture.service.project(current.id).unwrap(), current);
     }
 }

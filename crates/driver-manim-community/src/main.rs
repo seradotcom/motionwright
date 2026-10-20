@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use motionwright_manim_profile::{
-    ManimRenderProfile, ManimScenePlan, SCENE_CLASS, compile_manim_python,
+    MAX_SOURCE_BUNDLE_BYTES_V2, ManimRenderProfile, ManimScenePlan, ManimSourceClosureV1,
+    SCENE_CLASS, compile_manim_python,
     planar_camera::{
-        ManimCameraScenePlanV1, PreparedCameraProgramV1, compile_camera_program_source_only,
+        CAMERA_SOURCE_MIME_V1, ManimCameraScenePlanV1, PreparedCameraProgramV1,
+        camera_source_bundle_v1, camera_source_package_v1, compile_camera_program_source_only,
     },
     validate_plan,
 };
@@ -87,6 +89,18 @@ struct JobArgs {
     job_ref: String,
 }
 
+/// Portable source data from the same trusted compilation as the native job.
+/// This descriptor does not authorize execution or assert visual acceptance.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CameraSourceArtifact {
+    relative_path: String,
+    sha256: String,
+    bytes: u64,
+    media_type: &'static str,
+    closure: ManimSourceClosureV1,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RenderArtifact {
@@ -102,6 +116,8 @@ struct RenderArtifact {
     /// A public MP4 alone never proves that all camera poses were applied.
     #[serde(skip_serializing_if = "Option::is_none")]
     camera_getters_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    camera_source: Option<CameraSourceArtifact>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +158,8 @@ struct RenderJob {
     /// Kept only in the original Driver Host's bounded job lifetime. Imported
     /// source/ZIP cannot assert this typed source identity.
     camera_plan: Option<ManimCameraScenePlanV1>,
+    camera_source: Option<CameraSourceArtifact>,
+    source_custody_error: Option<String>,
 }
 
 struct ManimCommunityDriver {
@@ -355,7 +373,7 @@ fn strict_job_ref(value: &str) -> Result<()> {
 }
 
 fn job_view(job_ref: &str, job: &RenderJob) -> Value {
-    json!({
+    let mut value = json!({
         "job_ref": job_ref,
         "state": job.phase.as_str(),
         "source_file": job.source_file,
@@ -363,7 +381,14 @@ fn job_view(job_ref: &str, job: &RenderJob) -> Value {
         "profile": job.profile,
         "artifact": job.artifact,
         "diagnostic": job.diagnostic,
-    })
+    });
+    if let Some(source) = &job.camera_source {
+        value["camera_source_artifact"] = json!(source);
+    }
+    if let Some(error) = &job.source_custody_error {
+        value["source_custody_error"] = json!(error);
+    }
+    value
 }
 
 fn safe_output_file(root: &Path, relative: &str) -> Result<(PathBuf, u64)> {
@@ -417,6 +442,126 @@ fn sha256_file(path: &Path) -> Result<String> {
         hasher.update(&bytes[..count]);
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn camera_source_relative(source_file: &str) -> Result<String> {
+    let token = source_file
+        .strip_prefix("mw_")
+        .and_then(|name| name.strip_suffix(".py"))
+        .filter(|token| {
+            token.len() == 32
+                && token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| invalid("Manim camera source filename is not bound to its native job"))?;
+    Ok(format!("mw_{token}.mwcam.zip"))
+}
+
+fn bounded_camera_file(root: &Path, relative: &str, maximum: usize) -> Result<Vec<u8>> {
+    let (path, size) = safe_output_file(root, relative)?;
+    if size > maximum as u64 {
+        return Err(invalid("Manim camera source exceeds its byte budget"));
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    let mut file = fs::File::open(&path)?;
+    if !file.metadata()?.is_file() || file.metadata()?.len() != size {
+        return Err(invalid("Manim camera source changed before bounded read"));
+    }
+    std::io::Read::by_ref(&mut file)
+        .take(maximum as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    let (after_path, after_size) = safe_output_file(root, relative)?;
+    if bytes.len() as u64 != size
+        || file.metadata()?.len() != size
+        || after_path != path
+        || after_size != size
+    {
+        return Err(invalid("Manim camera source changed during bounded read"));
+    }
+    Ok(bytes)
+}
+
+fn expected_camera_source(
+    source_file: &str,
+    plan: &ManimCameraScenePlanV1,
+    plan_sha256: &str,
+) -> Result<(CameraSourceArtifact, Vec<u8>, Vec<u8>)> {
+    let package = camera_source_package_v1(plan).map_err(map_profile_error)?;
+    if package.closure.plan_sha256 != plan_sha256 {
+        return Err(invalid(
+            "Manim camera source belongs to a different compiled plan",
+        ));
+    }
+    let bytes = camera_source_bundle_v1(plan).map_err(map_profile_error)?;
+    let source = package
+        .entries
+        .get("scene.py")
+        .ok_or_else(|| invalid("Closed Manim camera package has no generated program"))?
+        .clone();
+    let artifact = CameraSourceArtifact {
+        relative_path: camera_source_relative(source_file)?,
+        sha256: hex::encode(Sha256::digest(&bytes)),
+        bytes: bytes.len() as u64,
+        media_type: CAMERA_SOURCE_MIME_V1,
+        closure: package.closure,
+    };
+    Ok((artifact, bytes, source))
+}
+
+fn retain_camera_source(
+    work_root: &Path,
+    output_root: &Path,
+    source_file: &str,
+    plan: &ManimCameraScenePlanV1,
+    plan_sha256: &str,
+) -> Result<CameraSourceArtifact> {
+    let (artifact, bundle, expected_source) =
+        expected_camera_source(source_file, plan, plan_sha256)?;
+    if bounded_camera_file(work_root, source_file, MAX_SOURCE_BYTES)? != expected_source {
+        return Err(invalid(
+            "Generated Manim source differs from the original typed camera plan",
+        ));
+    }
+    let path = output_root.join(&artifact.relative_path);
+    let mut output = OpenOptions::new().write(true).create_new(true).open(path)?;
+    output.write_all(&bundle)?;
+    output.sync_all()?;
+    if bounded_camera_file(
+        output_root,
+        &artifact.relative_path,
+        MAX_SOURCE_BUNDLE_BYTES_V2,
+    )? != bundle
+    {
+        return Err(invalid(
+            "Manim camera source carrier failed original byte readback",
+        ));
+    }
+    Ok(artifact)
+}
+
+fn verify_retained_camera_source(
+    work_root: &Path,
+    output_root: &Path,
+    source_file: &str,
+    plan: &ManimCameraScenePlanV1,
+    plan_sha256: &str,
+    recorded: Option<&CameraSourceArtifact>,
+) -> Result<CameraSourceArtifact> {
+    let (expected, bundle, python) = expected_camera_source(source_file, plan, plan_sha256)?;
+    if recorded != Some(&expected)
+        || bounded_camera_file(work_root, source_file, MAX_SOURCE_BYTES)? != python
+        || bounded_camera_file(
+            output_root,
+            &expected.relative_path,
+            MAX_SOURCE_BUNDLE_BYTES_V2,
+        )? != bundle
+    {
+        return Err(invalid(
+            "Manim camera source custody no longer matches its original native job",
+        ));
+    }
+    Ok(expected)
 }
 
 impl ManimCommunityDriver {
@@ -528,6 +673,18 @@ impl ManimCommunityDriver {
             .open(&source_path)?;
         file.write_all(source.as_bytes())?;
         file.sync_all()?;
+        let camera_source = camera_plan
+            .as_ref()
+            .map(|plan| {
+                retain_camera_source(
+                    &self.work_root,
+                    &self.output_root,
+                    &source_file,
+                    plan,
+                    &plan_sha256,
+                )
+            })
+            .transpose()?;
 
         let literal = |value: String| RuntimeToolArg::Literal { value };
         let host_job = context
@@ -597,6 +754,8 @@ impl ManimCommunityDriver {
                 artifact: None,
                 diagnostic: None,
                 camera_plan,
+                camera_source,
+                source_custody_error: None,
             },
         );
         Ok(job_view(
@@ -660,6 +819,26 @@ impl ManimCommunityDriver {
                     };
                     let (path, bytes) = safe_output_file(&self.output_root, &job.output_relative)?;
                     let sha256 = sha256_file(&path)?;
+                    let camera_source = if let Some(plan) = &job.camera_plan {
+                        match verify_retained_camera_source(
+                            &self.work_root,
+                            &self.output_root,
+                            &job.source_file,
+                            plan,
+                            &job.plan_sha256,
+                            job.camera_source.as_ref(),
+                        ) {
+                            Ok(source) => Some(source),
+                            Err(error) => {
+                                // The native render completed. Keep its video outcome
+                                // distinct from a failed editable-source readback.
+                                job.source_custody_error = Some(error.to_string());
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     job.artifact = Some(RenderArtifact {
                         relative_path: job.output_relative.clone(),
                         sha256,
@@ -670,6 +849,7 @@ impl ManimCommunityDriver {
                         frame_rate: job.profile.frame_rate,
                         plan_sha256: job.plan_sha256.clone(),
                         camera_getters_sha256,
+                        camera_source,
                     });
                     job.phase = JobPhase::Succeeded;
                 }
@@ -870,7 +1050,9 @@ fn job_output_schema() -> Value {
             "plan_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
             "profile":{"type":"object"},
             "artifact":{"type":["object","null"]},
-            "diagnostic":{"type":["string","null"]}
+            "diagnostic":{"type":["string","null"]},
+            "camera_source_artifact":{"type":"object"},
+            "source_custody_error":{"type":"string"}
         },
         "required":["job_ref","state","source_file","plan_sha256","profile","artifact","diagnostic"],
         "additionalProperties":false
@@ -1459,6 +1641,144 @@ mod tests {
         assert!(
             path.components()
                 .all(|part| matches!(part, Component::Normal(_)))
+        );
+    }
+    fn camera_source_fixture(
+        root: &Path,
+    ) -> (
+        PathBuf,
+        PathBuf,
+        String,
+        ManimCameraScenePlanV1,
+        PreparedCameraProgramV1,
+    ) {
+        let work = root.join("work");
+        let output = root.join("output");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(&output).unwrap();
+        let plan = original_planar_camera_request().plan;
+        let program = compile_camera_program_source_only(&plan).unwrap();
+        let name = "mw_0123456789abcdef0123456789abcdef.py".to_owned();
+        fs::write(work.join(&name), &program.python_source).unwrap();
+        (
+            fs::canonicalize(work).unwrap(),
+            fs::canonicalize(output).unwrap(),
+            name,
+            plan,
+            program,
+        )
+    }
+
+    #[test]
+    fn camera_source_carrier_is_the_original_job_plan_and_generated_program() {
+        let temp = tempfile::tempdir().unwrap();
+        let (work, output, name, plan, program) = camera_source_fixture(temp.path());
+        let source =
+            retain_camera_source(&work, &output, &name, &plan, &program.plan_sha256).unwrap();
+        let checked = verify_retained_camera_source(
+            &work,
+            &output,
+            &name,
+            &plan,
+            &program.plan_sha256,
+            Some(&source),
+        )
+        .unwrap();
+        assert_eq!(checked, source);
+        let bytes = fs::read(output.join(&source.relative_path)).unwrap();
+        let reopened =
+            motionwright_manim_profile::planar_camera::inspect_camera_source_bundle_v1(&bytes)
+                .unwrap();
+        assert_eq!(reopened.plan, plan);
+        assert_eq!(
+            reopened.entries["scene.py"],
+            program.python_source.as_bytes()
+        );
+        assert_eq!(source.closure.plan_sha256, program.plan_sha256);
+        assert_eq!(source.closure.source_sha256, program.source_sha256);
+        assert_eq!(source.bytes, bytes.len() as u64);
+    }
+
+    #[test]
+    fn camera_source_publish_rejects_foreign_program_and_preserves_existing_carrier() {
+        let temp = tempfile::tempdir().unwrap();
+        let (work, output, name, plan, program) = camera_source_fixture(temp.path());
+        fs::write(work.join(&name), b"untrusted source").unwrap();
+        assert!(retain_camera_source(&work, &output, &name, &plan, &program.plan_sha256).is_err());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+        fs::write(work.join(&name), &program.python_source).unwrap();
+        let path = output.join(camera_source_relative(&name).unwrap());
+        fs::write(&path, b"existing carrier").unwrap();
+        assert!(retain_camera_source(&work, &output, &name, &plan, &program.plan_sha256).is_err());
+        assert_eq!(fs::read(path).unwrap(), b"existing carrier");
+    }
+
+    #[test]
+    fn camera_source_readback_rejects_changed_carrier_program_and_foreign_plan() {
+        let temp = tempfile::tempdir().unwrap();
+        let (work, output, name, plan, program) = camera_source_fixture(temp.path());
+        let recorded =
+            retain_camera_source(&work, &output, &name, &plan, &program.plan_sha256).unwrap();
+        let path = output.join(&recorded.relative_path);
+        let original = fs::read(&path).unwrap();
+        fs::write(&path, b"corrupt").unwrap();
+        assert!(
+            verify_retained_camera_source(
+                &work,
+                &output,
+                &name,
+                &plan,
+                &program.plan_sha256,
+                Some(&recorded),
+            )
+            .is_err()
+        );
+        fs::write(&path, &original).unwrap();
+        fs::write(work.join(&name), b"edited Python").unwrap();
+        assert!(
+            verify_retained_camera_source(
+                &work,
+                &output,
+                &name,
+                &plan,
+                &program.plan_sha256,
+                Some(&recorded),
+            )
+            .is_err()
+        );
+        fs::write(work.join(&name), &program.python_source).unwrap();
+        let mut foreign = plan.clone();
+        foreign.binding.revision += 1;
+        assert!(
+            verify_retained_camera_source(
+                &work,
+                &output,
+                &name,
+                &foreign,
+                &program.plan_sha256,
+                Some(&recorded),
+            )
+            .is_err()
+        );
+        assert!(verify_retained_camera_source(
+            &work, &output, &name, &plan, &program.plan_sha256, None,
+        ).is_err());
+        assert_eq!(fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn camera_source_paths_are_bound_to_the_native_job_component() {
+        for path in [
+            "../mw_0123456789abcdef0123456789abcdef.py",
+            "foreign.py",
+            "mw_0123456789abcdef0123456789abcdef.py/extra",
+            "mw_0123456789ABCDEF0123456789ABCDEF.py",
+        ] {
+            assert!(camera_source_relative(path).is_err(), "{path}");
+        }
+        assert_eq!(
+            camera_source_relative("mw_0123456789abcdef0123456789abcdef.py").unwrap(),
+            "mw_0123456789abcdef0123456789abcdef.mwcam.zip",
         );
     }
 }
