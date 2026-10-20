@@ -968,17 +968,16 @@ impl ProductionCoordinator {
             ));
         }
         let plan = build_blender_original_scene_plan(&project, request.scene_id)?;
-        if let Some(edit) = &request.edit {
-            if !plan
+        if let Some(edit) = &request.edit
+            && !plan
                 .contribution
                 .objects
                 .iter()
                 .any(|object| object.node_id == edit.node_id)
-            {
-                return Err(invalid(
-                    "Original Blender edit does not identify a source Canvas node",
-                ));
-            }
+        {
+            return Err(invalid(
+                "Original Blender edit does not identify a source Canvas node",
+            ));
         }
         let first_request = format!("{}:{}:000001", request.request_id, request.phase.label());
         if self
