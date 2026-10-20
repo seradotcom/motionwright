@@ -33,7 +33,7 @@ permissions:
   contents: read
 
 # This job is never a global required check on unselected paths. No G2 native
-# operation is inferred by its success; A5 owns the historical ledger verdict.
+# operation is inferred by its success; Formal criterion assessment is managed separately from this source-only CI workflow.
 concurrency:
   group: history-archive-source-${{ github.ref }}
   cancel-in-progress: false
@@ -99,7 +99,7 @@ jobs:
               assert actual.is_file() and not actual.is_symlink()
               assert stat.S_ISREG(actual.stat().st_mode) and actual.read_bytes()==src
               mappings[path]={"sha256":hashlib.sha256(src).hexdigest(),"git_blob_oid":oid.decode()}
-          report={"schema":"motionwright.A6.H03.source-G1/1",
+          report={"schema":"motionwright.history-source-G1/1",
                   "source_sha":head,
                   "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
                   "run_id":os.environ["GITHUB_RUN_ID"],
@@ -153,13 +153,13 @@ jobs:
           for policy in ("source-policy","acceptance-policy"):
               assert (root/(policy+".stderr.log")).read_bytes()==b""
           with (root/"history-g1-acceptance-limits.json").open("x") as output:
-              json.dump({"schema":"motionwright.A6.H03.test-scope/1",
+              json.dump({"schema":"motionwright.history-test-scope/1",
                          "source_sha":src["source_sha"],"tree_sha":src["tree_sha"],
                          "synthetic_H03_history_methods":86,
                          "synthetic_conformance_policy_methods":102,
                          "omitted":0,"passed":188,
                          "all_396_real_private_historical_records_assessed":False,
-                         "A5_formal_acceptance":False,"human_approval":False,
+                         "formal_acceptance":False,"human_approval":False,
                          "release_authorized":False},output,indent=2)
               output.write("\n")
           PY
