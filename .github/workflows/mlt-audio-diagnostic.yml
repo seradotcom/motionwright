@@ -1,6 +1,12 @@
 name: MLT audio observer source checks
 on:
   workflow_dispatch:
+    inputs:
+      repaired_only_source_g1:
+        description: 'Build exact uninstrumented repaired-only MLT ELF; never install or render'
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - '.github/workflows/mlt-audio-diagnostic.yml'
@@ -791,6 +797,180 @@ jobs:
           with (public/"planar-repair-verification-receipt.json").open("x") as out:
               json.dump(result,out,indent=2)
               out.write("\n")
+          PY
+      - name: Build exact repaired-only uninstrumented MLT ELF (opt-in G1)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.repaired_only_source_g1 == true }}
+        run: |
+          set -euo pipefail
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,re,shutil,subprocess
+          work=pathlib.Path(os.environ["MW_DIAG_WORK"]).resolve(strict=True)
+          public=work/"public"
+          source_root=pathlib.Path(os.environ["MW_MLT_SOURCE"]).resolve(strict=True)
+          original=source_root/"src/modules/avformat/consumer_avformat.c"
+          repaired=work/"build/repair-prepared/repaired-consumer.c"
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          original_digest="c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
+          repaired_digest="246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"
+          assert os.environ["GITHUB_ACTIONS"]=="true" and os.environ["RUNNER_OS"]=="Linux"
+          assert os.environ.get("MOTIONWRIGHT_APPROVED_MLT_G2")!="1"
+          assert original.stat().st_size==96690 and sha(original)==original_digest
+          assert repaired.stat().st_size==98847 and sha(repaired)==repaired_digest
+          assert repaired_digest!="579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+          before=json.loads((public/"planar-repair-verification-receipt.json").read_text())
+          assert before["source_sha"]==os.environ["GITHUB_SHA"] and before["run_id"]==os.environ["GITHUB_RUN_ID"]
+          assert before["run_attempt"]==os.environ["GITHUB_RUN_ATTEMPT"]
+          assert before["constructor_C_sanitizers"]==before["planar_layout_C_sanitizers"]=="PASS"
+          assert before["actual_combined_consumer_module_compile"]=="PASS"
+          assert before["planar_C_layout_cases"]==12 and before["physical_runtime"]=="NOT_RUN"
+          source=work/"build/mlt-only-new-source"
+          target=work/"build/mlt-only-new-build"
+          assert not source.exists() and not target.exists()
+          shutil.copytree(source_root,source,symlinks=True)
+          compiled=source/"src/modules/avformat/consumer_avformat.c"
+          assert sha(compiled)==original_digest
+          compiled.write_bytes(repaired.read_bytes())
+          assert sha(compiled)==repaired_digest and compiled.stat().st_size==98847
+          options=re.findall(r"^option\((MOD_[A-Z0-9_]+) ",(source/"CMakeLists.txt").read_text(),re.M)
+          assert len(options)==len(set(options)) and "MOD_AVFORMAT" in options
+          config=["cmake","-S",str(source),"-B",str(target),"-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+                  "-DBUILD_TESTING=OFF","-DBUILD_DOCS=OFF","-DCLANG_FORMAT=OFF",
+                  "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
+          config+=["-D"+x+"="+("ON" if x=="MOD_AVFORMAT" else "OFF") for x in options]
+          with (public/"only-cmake-arguments.json").open("x") as f:json.dump(config,f,indent=2)
+          with (public/"only-cmake-configure.log").open("xb") as log:
+              subprocess.run(config,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=180)
+          with (public/"only-module-build.log").open("xb") as log:
+              subprocess.run(["cmake","--build",str(target),"--target","mltavformat","--parallel","2"],
+                             stdout=log,stderr=subprocess.STDOUT,check=True,timeout=420)
+          modules=list(target.rglob("libmltavformat.so"))
+          objects=list(target.rglob("consumer_avformat.c.o"))
+          assert len(modules)==len(objects)==1
+          module=modules[0].resolve(strict=True)
+          obj=objects[0].resolve(strict=True)
+          assert module.read_bytes().startswith(b"\x7fELF") and obj.read_bytes().startswith(b"\x7fELF")
+          compiles=target/"compile_commands.json"
+          link=target/"src/modules/avformat/CMakeFiles/mltavformat.dir/link.txt"
+          assert compiles.is_file() and link.is_file()
+          rows=json.loads(compiles.read_text())
+          selected=[row for row in rows if pathlib.Path(row["file"]).resolve(strict=True)==compiled]
+          assert len(selected)==1 and (selected[0].get("command") or selected[0].get("arguments"))
+          assert "Built target mltavformat" in (public/"only-module-build.log").read_text(errors="replace")
+          assert sha(compiled)==sha(repaired)==repaired_digest
+          for src,name in ((compiles,"only-compile_commands.json"),(link,"only-original-link.txt"),
+                           (obj,"only-consumer_avformat.c.o"),(module,"only-libmltavformat.so")):
+              dest=public/name
+              assert not dest.exists()
+              with dest.open("xb") as f:f.write(src.read_bytes())
+              assert sha(dest)==sha(src)
+          original_paths={"schema":"motionwright.A6.mlt.real-only-original-paths/1",
+                          "head":os.environ["GITHUB_SHA"],"run_id":os.environ["GITHUB_RUN_ID"],
+                          "attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+                          "original":str(original.resolve(strict=True)),
+                          "repaired":str(repaired.resolve(strict=True)),
+                          "compiled":str(compiled.resolve(strict=True)),
+                          "object":str(obj),"module":str(module),
+                          "compile_directory":selected[0]["directory"],
+                          "link_source_path":str(link),
+                          "original_C_SHA256":original_digest,"repaired_C_SHA256":repaired_digest,
+                          "object_sha256":sha(obj),"module_sha256":sha(module),
+                          "CMake_link_sha256":sha(link),
+                          "G2_installed":False,"physical_AAC_master":"NOT_RUN"}
+          with (public/"only-source-paths.json").open("x") as f:
+              json.dump(original_paths,f,indent=2);f.write("\n")
+          with (public/"only-loaded-libraries.txt").open("xb") as log:
+              subprocess.run(["ldd",str(module)],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=30)
+          assert "not found" not in (public/"only-loaded-libraries.txt").read_text()
+          print(json.dumps({"head":os.environ["GITHUB_SHA"],"repaired_only_elf":sha(module),
+                            "consumer_object":sha(obj),"native_module_installed":False}))
+          PY
+      - name: Bind repaired-only ELF to same-run C object and source oracle (opt-in G1)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.repaired_only_source_g1 == true }}
+        run: |
+          set -euo pipefail
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,subprocess,sys
+          public=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          read=lambda p:(public/p).read_bytes()
+          sha=lambda p:hashlib.sha256(read(p)).hexdigest()
+          previous=json.loads(read("planar-repair-verification-receipt.json"))
+          negative=json.loads(read("legacy-planar-negative.json"))
+          selected=json.loads(read("runtime-linux-selected.json"))
+          orig=json.loads(read("only-source-paths.json"))
+          assert previous["source_sha"]==selected["source_sha"]==orig["head"]==os.environ["GITHUB_SHA"]
+          assert previous["run_id"]==negative["run_id"]==orig["run_id"]==os.environ["GITHUB_RUN_ID"]
+          assert previous["run_attempt"]==negative["run_attempt"]==orig["attempt"]==os.environ["GITHUB_RUN_ATTEMPT"]
+          assert previous["constructor_C_sanitizers"]==previous["planar_layout_C_sanitizers"]=="PASS"
+          assert previous["planar_C_layout_cases"]==12 and previous["python_skipped"]==0
+          assert selected["status"]=="PASS_SELECTED_PLATFORM_G1" and selected["selected_count"]==13
+          assert selected["not_executed_on_this_platform"]==[]
+          assert negative["expected_rejection_observed"] is True and negative["case_count_reported"]==12
+          assert read("planar.stdout.log")==b"MLT_PLANAR_LAYOUT_PASS checks=12 source-layout-only, no native master\n"
+          assert read("planar.stderr.log")==b""
+          assert read("constructor.stdout.log")==b"audio tap constructors: PASS; codec is not opened; native production NOT_RUN\n"
+          assert "Built target mltavformat" in read("only-module-build.log").decode(errors="replace")
+          assert read("only-consumer_avformat.c.o").startswith(b"\x7fELF")
+          assert read("only-libmltavformat.so").startswith(b"\x7fELF")
+          assert orig["object_sha256"]==sha("only-consumer_avformat.c.o")
+          assert orig["module_sha256"]==sha("only-libmltavformat.so")
+          assert orig["CMake_link_sha256"]==sha("only-original-link.txt")
+          content={"schema":"motionwright.native.mlt.repaired-only-G1-C-oracle/1",
+                   "source_head":orig["head"],"run_id":orig["run_id"],"run_attempt":orig["attempt"],
+                   "original_source_sha256":orig["original_C_SHA256"],
+                   "repaired_source_sha256":orig["repaired_C_SHA256"],
+                   "compiled_consumer_object_sha256":orig["object_sha256"],
+                   "compiled_module_sha256":orig["module_sha256"],
+                   "source_constructor_ASAN_UBSAN":"PASS",
+                   "source_frame_oracle_result":"PASS",
+                   "legacy_U8P_zero_padding_negative":"CORRECTLY_REJECTED",
+                   "complete_MLT_consumer_compiler":"PASS",
+                   "source_frame_scope":"12 same-run source-layout memory cases, not physical AAC master",
+                   "actual_native_effect_performed":False,"module_installed":False,
+                   "original_evidence_sha256":{k:sha(k) for k in (
+                       "planar.stdout.log","legacy-planar-negative.json",
+                       "planar-repair-verification-receipt.json","only-module-build.log",
+                       "only-compile_commands.json","only-original-link.txt",
+                       "only-consumer_avformat.c.o","only-libmltavformat.so")}}
+          with (public/"only-C-oracle.json").open("x") as f:
+              json.dump(content,f,indent=2);f.write("\n")
+          script=["tooling/native_mlt_repair_only_compiler_receipt.py"]
+          args=[sys.executable,"-B","-I","-S",*script,
+                "--original-source",orig["original"],"--repaired-source",orig["repaired"],
+                "--compiled-source",orig["compiled"],"--consumer-object",orig["object"],
+                "--compiled-module",orig["module"],
+                "--compile-commands",str(public/"only-compile_commands.json"),
+                "--link-command",str(public/"only-original-link.txt"),
+                "--oracle-receipt",str(public/"only-C-oracle.json"),
+                "--receipt",str(public/"only-compiler-receipt.json")]
+          with (public/"only-attestor.stdout.log").open("xb") as stdout, \
+               (public/"only-attestor.stderr.log").open("xb") as stderr:
+              subprocess.run(args,stdout=stdout,stderr=stderr,check=True,timeout=60)
+          proof=json.loads(read("only-compiler-receipt.json"))
+          assert proof["schema"]=="motionwright.native.mlt.repaired-only-compiler-receipt/1"
+          assert proof["source_head"]==orig["head"]==os.environ["GITHUB_SHA"]
+          assert proof["run_id"]==os.environ["GITHUB_RUN_ID"] and proof["run_attempt"]==os.environ["GITHUB_RUN_ATTEMPT"]
+          assert proof["compiled_source_sha256"]==orig["repaired_C_SHA256"]
+          assert proof["compiled_module_sha256"]==orig["module_sha256"]==sha("only-libmltavformat.so")
+          assert proof["compiled_consumer_object_sha256"]==orig["object_sha256"]==sha("only-consumer_avformat.c.o")
+          assert proof["G1_oracle_receipt_sha256"]==sha("only-C-oracle.json")
+          assert proof["linker_command_sha256"]==sha("only-original-link.txt")
+          assert proof["compiler_commands_sha256"]==sha("only-compile_commands.json")
+          assert proof["compiled_consumer_object_linked"] is True
+          assert proof["instrumented_combined_source_compiled"] is False
+          assert proof["source_frame_oracle_result"]=="PASS"
+          assert proof["source_G1_attestation_not_a_loaded_module_or_media_PASS"] is True
+          assert proof["module_installed"] is False and proof["actual_native_effect_performed"] is False
+          with (public/"only-G1-summary.json").open("x") as f:
+              json.dump({"schema":"motionwright.A6.mlt.real-repaired-only-G1/1",
+                         "source_sha":orig["head"],"run_id":orig["run_id"],"attempt":orig["attempt"],
+                         "object_sha256":orig["object_sha256"],"module_sha256":orig["module_sha256"],
+                         "attestation_sha256":sha("only-compiler-receipt.json"),
+                         "original_C_oracle_sha256":sha("only-C-oracle.json"),
+                         "loaded_PID":"NOT_RUN","module_installed":False,
+                         "physical_AAC_master":"KNOWN_RED","release_authorized":False},f,indent=2)
+              f.write("\n")
+          print(json.dumps({"G1_repaired_only":"PASS_SOURCE_COMPILE_ONLY","head":orig["head"],
+                            "module_sha256":orig["module_sha256"],"physical_master":"RED"}))
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
