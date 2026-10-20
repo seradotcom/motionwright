@@ -910,6 +910,11 @@ impl StudioService {
         }
         let receipts = match expected.latest_id {
             Some(head) => store.production_receipts_before(project_id, head, before, limit)?,
+            None if before.is_some() => {
+                return Err(invalid_import(
+                    "A receipt cursor cannot resolve in an empty snapshot",
+                ));
+            }
             None => Vec::new(),
         };
         if store.production_receipt_watermark(project_id)? != *expected {
@@ -958,6 +963,9 @@ impl StudioService {
         {
             return Err(StorageError::ReceiptStreamChanged);
         }
+        // Storage pages are newest-first by durable ordinal. Only the
+        // completed, watermark-verified snapshot is reversed for projection.
+        receipts.reverse();
         Ok(jobs::derive_production_jobs_all(
             &receipts,
             project.generation,

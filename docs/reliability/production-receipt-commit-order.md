@@ -24,6 +24,23 @@ snapshot. Missing, foreign or forward cursors are errors; they cannot silently
 widen a page or claim that an incomplete history is empty. The watermark remains
 the head receipt UUID plus count. Its UUID may decrease lexicographically.
 
+## Service and SDK consumers
+
+The service first validates the complete newest-first receipt snapshot against
+its watermark and count, then reverses it once for ascending commit-order job
+projection. Projection never sorts observation authority by a display timestamp
+or UUID. The latest accepted observation also determines the job's list position;
+its original timestamp remains unchanged.
+
+Original-start binding, provider generation, ambiguous lineage and terminal
+state rules remain in force. A later failed status observation cannot be hidden
+by an earlier successful observation whose display date is in the future.
+
+The Native SDK preserves its public UUID cursor shape. It delegates cursor
+membership and ordinal bounds to storage, including a valid continuation whose
+UUID is greater than the newest receipt's UUID. Both service and SDK reject
+unresolvable cursors; an empty history cannot silently accept an anchor.
+
 ## Recovery attempts
 
 Only claim_recovery_stage admits an application-owned recovery attempt.
@@ -82,6 +99,7 @@ These tests support scoped clauses; they are not whole-criterion acceptance.
 | --- | --- | --- |
 | CR-JOBS-02 | Durable intent cannot be bypassed after reopen by changing a key | Pending same-key and renamed-key claims leave receipt count and watermark unchanged |
 | CR-JOBS-03 | Preserve request binding and admitted attempt authority | Late, missing and future attempt checkpoints are refused; existing request-binding tests remain |
+| CR-JOBS-06 | Complete local receipt snapshots remain ordered and changes require resynchronization | 270-row service and SDK pages preserve every retained receipt; stale watermarks are refused; external event-stream guarantees remain separate |
 | CR-JOBS-08 | A known failed retry consumes its attempt without resetting the 16-attempt ceiling | Attempt 2 failure advances to 3; this does not establish model/render/disk budgets |
 | CR-PROJECT-07 | Versioned, atomic receipt-order upgrade and future-schema refusal | NULL backfill rollback, reserved-object collision, concurrent migration and original future-version tests |
 | ACC-036 | Local storage layer of lost-result recovery | UNKNOWN or ambiguous retained history never grants a new blind dispatch; installed/native acceptance is separate |
@@ -97,21 +115,37 @@ The four additional attempt-authority regressions also failed on test-only sourc
 12 passed, twelve failed, zero ignored. These fixtures use real Store calls and
 isolated SQLite data; no system clock or native provider is changed.
 
+The service regression source a8ee3bf5ce5b138d7c3a2f65d1603a66a26b5f53
+reproduced three failures in
+[run 39508207967](https://github.com/seradotcom/motionwright/actions/runs/39508207967):
+a stale Running state replaced the later uncertain observation, jobs were ranked
+by their future display dates, and an empty history accepted an unresolvable
+cursor. The fourth test passed its complete 270-row snapshot, foreign/missing
+anchor and stale-watermark controls. No tests in that four-case suite were ignored.
+
+Native SDK regression source 160220b2e9c611a027fbde9ce1f226396108b38d adds
+real SQLite-backed pagination across the same clock inversion and a paginated
+job-order oracle. Its test-only rusqlite dependency reuses the existing workspace
+package; no product storage mutation interface is exported. Both new cases
+failed in [run 39508925559](https://github.com/seradotcom/motionwright/actions/runs/39508925559):
+143 existing native unit tests passed, two failed, zero were ignored. The valid
+continuation was rejected by UUID comparison and the older job appeared first.
+
 The corrected source must run the identical regression bodies, all schema
 migration tests, applicable service/native consumers and strict linting:
 
     cargo test --locked -p motionwright-storage production
     cargo test --locked -p motionwright-storage --test schema_migration_atomicity
     cargo test --locked -p motionwright-storage -p motionwright-service --all-targets
-    cargo test --locked -p motionwright-native production::tests --all-targets
+    cargo test --locked -p motionwright-native --all-targets
     cargo clippy --locked -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
 
 ## Integration obligations and evidence limits
 
-Job projections must preserve receipt commit order instead of re-sorting by
-timestamps. SDK cursors must delegate ordinal comparisons to storage. Installed
-startup validation must expect schema 3, and exact test rosters must include the
-new migration cases. Source-only review does not satisfy these consumer gates.
+Installed startup validation must expect schema 3, and exact test rosters must
+include the new migration cases. Source-only review does not satisfy installed
+consumer gates. Current binary validation and platform runs must retain their
+own source identity; older results cannot be transferred to the repaired SHA.
 
 Each runtime result must identify source SHA, run, job, attempt, selected test
 names, counts and omissions. Migration error rollback does not prove power-loss

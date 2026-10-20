@@ -465,11 +465,13 @@ impl ObservationProvider for MotionwrightObserver {
                             .ok()
                             .filter(|value| value.to_string() == *position)
                             .ok_or_else(|| Error::invalid("Malformed receipt keyset position"))?;
-                        if head.latest_id.is_none_or(|latest| before > latest) {
+                        if head.latest_id.is_none() {
                             return Err(Error::invalid(
-                                "Production receipt cursor exceeds the snapshot watermark",
+                                "A receipt cursor cannot address an empty snapshot",
                             ));
                         }
+                        // UUIDs identify receipts; storage resolves their
+                        // project-scoped durable ordinals and snapshot bounds.
                         Some(before)
                     }
                     None => None,

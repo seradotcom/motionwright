@@ -220,25 +220,20 @@ pub(crate) fn derive_production_jobs(
 
 /// Full locally persisted projection for snapshot-consistent Native SDK
 /// enumeration, separate from the unchanged bounded latest-window UI API.
+/// The caller supplies the complete snapshot in ascending durable commit order.
+/// UUIDs and display timestamps never establish observation authority.
 pub(crate) fn derive_production_jobs_all(
-    receipts: &[ProductionReceipt],
+    receipts_in_commit_order: &[ProductionReceipt],
     current_generation: Uuid,
     current_revision: u64,
 ) -> Vec<ProductionJobProjection> {
-    let mut ordered = receipts.to_vec();
-    ordered.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-
     // The original acknowledged start is an authority boundary. Each
     // provider/stamp/reference gets one original; a second start makes that
     // lineage ambiguous. Old 256-row UI windows are not authority.
     type JobScope = (String, String, Uuid, u64);
     let mut acknowledged_starts: BTreeMap<JobScope, Vec<(Option<u64>, &ProductionReceipt)>> =
         BTreeMap::new();
-    for receipt in &ordered {
+    for receipt in receipts_in_commit_order {
         let Some((provider, RenderCommand::Start)) = classify(&receipt.command) else {
             continue;
         };
@@ -280,9 +275,10 @@ pub(crate) fn derive_production_jobs_all(
             .push((provider_generation(wrapper), receipt));
     }
 
-    let mut jobs: BTreeMap<(String, Uuid, u64, String), ProductionJobProjection> = BTreeMap::new();
+    let mut jobs: BTreeMap<(String, Uuid, u64, String), (usize, ProductionJobProjection)> =
+        BTreeMap::new();
     let mut observed_starts = BTreeSet::new();
-    for receipt in &ordered {
+    for (position, receipt) in receipts_in_commit_order.iter().enumerate() {
         let Some((provider, kind)) = classify(&receipt.command) else {
             continue;
         };
@@ -366,7 +362,7 @@ pub(crate) fn derive_production_jobs_all(
             observed_starts.insert(start.id);
         }
 
-        let entry = jobs
+        let (last_position, entry) = jobs
             .entry((
                 provider.to_owned(),
                 receipt.generation,
@@ -375,27 +371,33 @@ pub(crate) fn derive_production_jobs_all(
             ))
             .or_insert_with(|| {
                 let initial_state = observed_state.unwrap_or(ProductionJobState::OutcomeUnknown);
-                ProductionJobProjection {
-                    job_ref: job_ref.clone(),
-                    provider: provider.to_owned(),
-                    root_request_id: root_receipt.request_id.clone(),
-                    generation: receipt.generation,
-                    revision: receipt.revision,
-                    state: initial_state,
-                    cancellation_requested,
-                    applicability: ProductionJobApplicability::Current,
-                    last_command: receipt.command.clone(),
-                    created_at: root_receipt.created_at.clone(),
-                    last_observed_at: receipt.created_at.clone(),
-                    local_observations: 0,
-                    provider_generation: None,
-                    progress: None,
-                    artifact_available: false,
-                    result_available: false,
-                    last_observation: ProductionObservationState::Observed,
-                }
+                (
+                    position,
+                    ProductionJobProjection {
+                        job_ref: job_ref.clone(),
+                        provider: provider.to_owned(),
+                        root_request_id: root_receipt.request_id.clone(),
+                        generation: receipt.generation,
+                        revision: receipt.revision,
+                        state: initial_state,
+                        cancellation_requested,
+                        applicability: ProductionJobApplicability::Current,
+                        last_command: receipt.command.clone(),
+                        created_at: root_receipt.created_at.clone(),
+                        last_observed_at: receipt.created_at.clone(),
+                        local_observations: 0,
+                        provider_generation: None,
+                        progress: None,
+                        artifact_available: false,
+                        result_available: false,
+                        last_observation: ProductionObservationState::Observed,
+                    },
+                )
             });
 
+        // Rank by the same accepted observation that updates metadata below,
+        // including observations deliberately recorded as uncertain.
+        *last_position = position;
         entry.last_command = receipt.command.clone();
         entry.last_observed_at = receipt.created_at.clone();
         entry.local_observations = entry.local_observations.saturating_add(1);
@@ -469,7 +471,7 @@ pub(crate) fn derive_production_jobs_all(
         }
     }
 
-    for job in jobs.values_mut() {
+    for (_, job) in jobs.values_mut() {
         job.applicability =
             if job.generation == current_generation && job.revision == current_revision {
                 ProductionJobApplicability::Current
@@ -479,13 +481,8 @@ pub(crate) fn derive_production_jobs_all(
     }
 
     let mut jobs: Vec<_> = jobs.into_values().collect();
-    jobs.sort_by(|left, right| {
-        right
-            .last_observed_at
-            .cmp(&left.last_observed_at)
-            .then_with(|| right.job_ref.cmp(&left.job_ref))
-    });
-    jobs
+    jobs.sort_by_key(|(position, _)| std::cmp::Reverse(*position));
+    jobs.into_iter().map(|(_, job)| job).collect()
 }
 
 #[cfg(test)]
