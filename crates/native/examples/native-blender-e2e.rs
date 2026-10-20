@@ -455,7 +455,14 @@ fn complete_original_receipts(
     if service.production_receipt_watermark(project_id)? != watermark {
         return Err("original Blender receipt snapshot changed after its final page".into());
     }
-    Ok(json!({"watermark": watermark, "receipts": receipts, "complete": true}))
+    Ok(json!({
+        "watermark": {
+            "latest_id": watermark.latest_id,
+            "count": watermark.count,
+        },
+        "receipts": receipts,
+        "complete": true,
+    }))
 }
 
 fn capture_original_custody(
@@ -701,8 +708,18 @@ mod original_tests {
         let project = service
             .create_project("Synthetic receipt snapshot")
             .unwrap();
+        let empty = complete_original_receipts(&service, project.id).unwrap();
+        assert_eq!(
+            empty,
+            json!({
+                "watermark": {"latest_id": null, "count": 0},
+                "receipts": [],
+                "complete": true,
+            })
+        );
+        let mut expected_ids = BTreeSet::new();
         for index in 0..270 {
-            service
+            let receipt = service
                 .append_production_receipt(ProductionReceiptInput {
                     project_id: project.id,
                     generation: project.generation,
@@ -714,6 +731,7 @@ mod original_tests {
                     payload: json!({"synthetic_contract_only": true, "index": index}),
                 })
                 .unwrap();
+            expected_ids.insert(receipt.id);
         }
         assert_eq!(
             service.production_receipts(project.id, 9999).unwrap().len(),
@@ -724,6 +742,10 @@ mod original_tests {
         let captured = complete_original_receipts(&reopened, project.id).unwrap();
         assert_eq!(captured["receipts"].as_array().unwrap().len(), 270);
         assert_eq!(captured["watermark"]["count"], json!(270));
+        assert_eq!(
+            captured["watermark"]["latest_id"],
+            json!(expected_ids.last().copied())
+        );
         assert_eq!(captured["complete"], json!(true));
         let indices = captured["receipts"]
             .as_array()
