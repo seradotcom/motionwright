@@ -311,7 +311,7 @@ jobs:
           sources=json.loads((public/"source-inputs.json").read_text())
           rec=json.loads((public/"runtime-selector-contracts.json").read_text())
           expected={"tooling/ci_mlt_runtime_selected.py":"8792a494b032e418d2be5d04a9817d40c8deb4e4b6e65450695c2d78e9e2bbe4",
-                    "tooling/native_mlt_runtime_admission.py":"d7f93cde54a1d2de721a2c466d6eec8f4333365ebc945225d224934a3bc8f859",
+                    "tooling/native_mlt_runtime_admission.py":"c5ae5194bf47758fd3dd63037cf652c9f952ab2f6f30a073d7a54fa38f1e37ec",
                     "tooling/native_mlt_repair_only_compiler_receipt.py":"03827c4451f52f51befc88f10a11f5b348803a4039d3ab49933af29032a2a577",
                     "tooling/tests/test_ci_mlt_runtime_selected.py":"f31591a9b7905a9a3c64d3b6ccf8a538dd398c0174ef217652ed049b63bae907",
                     "tooling/tests/test_native_mlt_runtime_admission.py":"d6d25be72a907b5f7344c920866189fbdba607ce839dc027fe50efacee8ef4ab",

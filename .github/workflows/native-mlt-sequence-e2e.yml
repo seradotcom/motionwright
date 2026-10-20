@@ -2,6 +2,18 @@ name: Native Motionwright MLT multisegment timeline
 
 on:
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Native verification selection
+        type: choice
+        options: [normal, repaired-g2]
+        default: normal
+        required: true
+      g2_admission:
+        description: Admitted source-artifact pins and public recovery key for repaired-g2
+        type: string
+        default: ''
+        required: false
   pull_request:
     paths:
       - 'SOURCE_LOCK.json'
@@ -13,6 +25,19 @@ on:
       - 'crates/native/**'
       - 'apps/studio/**'
       - 'tooling/native_mlt_sequence_e2e.py'
+      - 'tooling/ci_private_evidence.py'
+      - 'tooling/native_mlt_g2_custody.py'
+      - 'tooling/native_mlt_g2_observation.py'
+      - 'tooling/native_mlt_runtime_admission.py'
+      - 'tooling/native_mlt_loaded_module.py'
+      - 'tooling/mlt_official_runtime_intake.py'
+      - 'tooling/native_mlt_ci_pcm_envelope.py'
+      - 'tooling/native_pcm_source_fidelity.py'
+      - 'tooling/requirements/mlt-g2-custody.txt'
+      - 'tooling/tests/test_native_mlt_owner_workspace.py'
+      - 'tooling/tests/test_native_mlt_g2_custody.py'
+      - 'tooling/tests/test_native_mlt_g2_observation.py'
+      - 'tooling/tests/test_native_mlt_executable_alias.py'
       - 'tooling/tests/test_native_mlt_ci_audio.py'
       - 'tooling/native_mlt_caption_pixels.py'
       - 'tooling/tests/test_native_mlt_caption_pixels.py'
@@ -27,10 +52,11 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: native-mlt-sequence-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'repaired-g2' && 'native-mlt-repaired-g2-exclusive' || format('native-mlt-sequence-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'repaired-g2') }}
 
 defaults:
   run:
@@ -50,13 +76,82 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: ['pcm', 'video-only', 'final-mp4', 'captioned-mp4']
+        mode: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'repaired-g2' && '["final-mp4"]' || '["pcm","video-only","final-mp4","captioned-mp4"]') }}
     env:
       MOTIONWRIGHT_MLT_MODE: ${{ matrix.mode }}
+      MW_MLT_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'repaired-g2' && 'repaired-g2' || 'normal' }}
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+
+      - name: Verify optional original-attempt selection before effects
+        env:
+          REQUESTED_MLT_SCOPE: ${{ inputs.verification_scope || 'normal' }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_MLT_SCOPE" in normal|repaired-g2) ;; *) exit 2 ;; esac
+          if [[ "$MW_MLT_SCOPE" = 'repaired-g2' ]]; then
+            test "$GITHUB_EVENT_NAME" = 'workflow_dispatch'
+            test "$GITHUB_RUN_ATTEMPT" = '1'
+            test "$MOTIONWRIGHT_MLT_MODE" = 'final-mp4'
+          fi
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Install hash-pinned private-evidence cryptography
+        if: matrix.mode == 'final-mp4'
+        id: custody_python
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y python3.12-venv
+          /usr/bin/python3.12 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          venv="$RUNNER_TEMP/mw-mlt-custody-python-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$venv"
+          /usr/bin/python3.12 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir \
+            --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+          "$venv/bin/python" -m pip check
+          echo "python=$venv/bin/python" >> "$GITHUB_OUTPUT"
+
+      - name: Verify complete source-only G2 custody contracts
+        if: matrix.mode == 'final-mp4'
+        env:
+          CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/mw-mlt-g2-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/contracts.json"
+          "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete \
+            --expected-source "$GITHUB_SHA" --report "$report" \
+            --pattern test_native_mlt_owner_workspace.py \
+            --pattern test_native_mlt_g2_custody.py \
+            --pattern test_native_mlt_g2_observation.py \
+            --pattern test_native_mlt_executable_alias.py
+          "$CUSTODY_PYTHON" -B -E -s - "$report" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          result = json.loads(Path(sys.argv[1]).read_bytes())
+          assert result["status"] == "PASS" and result["exit_code"] == 0
+          assert result["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert "source_postcheck_error" not in result
+          expected = {
+              "dotted:tooling.tests.test_native_mlt_owner_workspace": 8,
+              "dotted:tooling.tests.test_native_mlt_g2_custody": 27,
+              "dotted:tooling.tests.test_native_mlt_g2_observation": 23,
+              "dotted:tooling.tests.test_native_mlt_executable_alias": 24,
+          }
+          assert {step["entry_point"] for step in result["steps"]} == set(expected)
+          assert len(result["steps"]) == len(expected)
+          for step in result["steps"]:
+              counts = step["counts"]
+              assert step["status"] == "PASS" and step["exit_code"] == 0
+              assert counts["terminal_status"] == "OK"
+              assert counts["tests_run"] == counts["passed"] == expected[step["entry_point"]]
+              assert all(counts[key] == 0 for key in (
+                  "errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
+          PY
 
       - name: Resolve exact Semwright source pin
         id: pin
@@ -102,6 +197,7 @@ jobs:
           cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
 
       - name: Install pinned native runtimes
+        if: env.MW_MLT_SCOPE != 'repaired-g2'
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -115,6 +211,19 @@ jobs:
             ffprobe -version | head -3
             bwrap --version
           } > verification/native-mlt-sequence-e2e/native-runtime-versions.txt
+
+      - name: Install admitted distribution versions for original G2
+        if: env.MW_MLT_SCOPE == 'repaired-g2'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap apparmor-profiles apparmor-utils \
+            libmlt7=7.22.0-1build6 melt=7.22.0-1build6 \
+            ffmpeg libpipewire-0.3-dev pkg-config clang
+          mkdir -p verification/native-mlt-sequence-e2e
+          dpkg-query -W -f='${Package} ${Version}\n' libmlt7 melt \
+            > verification/native-mlt-sequence-e2e/native-runtime-versions.txt
 
       - name: Configure disposable-runner Driver Host sandbox
         run: |
@@ -153,6 +262,25 @@ jobs:
           cargo build --locked -p motionwright-native --example native-mlt-sequence-e2e
           cargo test --locked -p motionwright-native mlt_timeline -- --nocapture
 
+      - name: Verify original-WAV staging contracts without native execution
+        if: matrix.mode == 'final-mp4'
+        env:
+          CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/mw-mlt-g2-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cargo test --locked -p motionwright-native --example native-mlt-sequence-e2e \
+            -- --nocapture 2>&1 | tee "$evidence/original-wav-rust.log"
+          "$CUSTODY_PYTHON" -B -E -s - "$evidence/original-wav-rust.log" <<'PY'
+          import re, sys
+          from pathlib import Path
+          log = Path(sys.argv[1]).read_text()
+          rows = re.findall(
+              r"(?m)^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",
+              log)
+          assert rows == [("5", "0", "0", "0", "0")]
+          PY
+
       - name: Test redacted native observation diagnostics
         run: python3 -m unittest discover -s tooling/tests -p 'test_mlt_failure_diagnostic.py' -v
 
@@ -162,12 +290,92 @@ jobs:
       - name: Reject forged or absent decoded caption pixels before native execution
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_mlt_caption_pixels.py' -v
 
-      - name: Produce exact two-segment native FFV1 intermediary through pinned Driver Host
+      - name: Retain admitted original G2 source artifacts
+        if: env.MW_MLT_SCOPE == 'repaired-g2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MW_MLT_G2_ADMISSION: ${{ inputs.g2_admission }}
+          CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
         run: |
           set -euo pipefail
-          python3 tooling/native_mlt_sequence_e2e.py | tee verification/native-mlt-sequence-e2e/run.log
+          "$CUSTODY_PYTHON" -B -E -s tooling/native_mlt_g2_custody.py prepare
+
+      - name: Admit reviewed module once and preserve privileged originals
+        if: env.MW_MLT_SCOPE == 'repaired-g2'
+        env:
+          CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+        run: |
+          set -euo pipefail
+          control="$RUNNER_TEMP/mw-mlt-g2-control-$GITHUB_RUN_ID-1"
+          installed="$RUNNER_TEMP/mw-mlt-g2-installation-$GITHUB_RUN_ID-1"
+          "$CUSTODY_PYTHON" -B -E -s tooling/native_mlt_g2_custody.py guard
+          original_sha="$("$CUSTODY_PYTHON" -B -E -s - "$control/records/dispatch.json" <<'PY'
+          import json, sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_bytes())["official_runtime"]["known_original_module_sha256"])
+          PY
+          )"
+          common_env=(
+            "PATH=/usr/sbin:/usr/bin:/sbin:/bin" "CI=true" "GITHUB_ACTIONS=true"
+            "RUNNER_OS=Linux" "RUNNER_TEMP=$RUNNER_TEMP" "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+            "GITHUB_SHA=$GITHUB_SHA" "GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=1"
+            "GITHUB_EVENT_NAME=workflow_dispatch" "MW_MLT_SCOPE=repaired-g2"
+            "MOTIONWRIGHT_APPROVED_MLT_G2=1" "PYTHONDONTWRITEBYTECODE=1"
+          )
+          set +e
+          sudo -n env -i "${common_env[@]}" "$CUSTODY_PYTHON" -B -E -s \
+            tooling/native_mlt_runtime_admission.py \
+            --original-source "$control/intake/original_c_source" \
+            --repaired-source "$control/intake/repaired_c_source" \
+            --compiled-module "$control/intake/compiled_module" \
+            --compiled-module-sha256 c97df9c4b1d33dd6ea0ad5745501a70734f883709480622b680b8fcd512f7404 \
+            --compiler-receipt "$control/intake/compiler_receipt_path" \
+            --compiler-receipt-sha256 0ec0d1a8fd000c3abd32f3b50d94fb20708b6d61327b216727b7a4551b202f75 \
+            --installed-original-sha256 "$original_sha" --admit \
+            --new-runner-private-evidence "$installed" \
+            > "$control/logs/admission.stdout" 2> "$control/logs/admission.stderr"
+          admission_exit=$?
+          sudo -n env -i "${common_env[@]}" "$CUSTODY_PYTHON" -B -E -s \
+            tooling/native_mlt_g2_custody.py handoff --uid "$(id -u)" --gid "$(id -g)" \
+            > "$control/logs/handoff.stdout" 2> "$control/logs/handoff.stderr"
+          handoff_exit=$?
+          set -e
+          "$CUSTODY_PYTHON" -B -E -s - "$control" "$admission_exit" "$handoff_exit" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tooling")
+          from ci_private_evidence import new_json
+          new_json(Path(sys.argv[1]) / "records/admission-exit.json",
+                   {"admission_exit_code": int(sys.argv[2]), "handoff_exit_code": int(sys.argv[3]),
+                    "automatic_retry": False, "producer_executed_as_root": False})
+          PY
+          test "$admission_exit" -eq 0
+          test "$handoff_exit" -eq 0
+          "$CUSTODY_PYTHON" -B -E -s tooling/native_mlt_g2_custody.py inputs
+
+      - name: Produce exact two-segment native FFV1 intermediary through pinned Driver Host
+        env:
+          CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+        run: |
+          set -euo pipefail
+          if [[ "$MW_MLT_SCOPE" != 'repaired-g2' ]]; then
+            python3 tooling/native_mlt_sequence_e2e.py | tee verification/native-mlt-sequence-e2e/run.log
+          else
+            test "$(id -u)" -ne 0
+            control="$RUNNER_TEMP/mw-mlt-g2-control-$GITHUB_RUN_ID-1"
+            "$CUSTODY_PYTHON" -B -E -s tooling/native_mlt_g2_custody.py begin
+            set +e
+            MOTIONWRIGHT_APPROVED_MLT_G2=1 "$CUSTODY_PYTHON" -B -E -s \
+              tooling/native_mlt_sequence_e2e.py --g2-inputs "$control/records/g2-inputs.json" \
+              > "$control/logs/producer.stdout" 2> "$control/logs/producer.stderr"
+            producer_exit=$?
+            set -e
+            "$CUSTODY_PYTHON" -B -E -s tooling/native_mlt_g2_custody.py exit --exit-code "$producer_exit"
+            exit "$producer_exit"
+          fi
 
       - name: Verify source- and artifact-SHA-pinned FFV1 timeline evidence
+        if: env.MW_MLT_SCOPE != 'repaired-g2'
         run: |
           set -euo pipefail
           root="verification/native-mlt-sequence-e2e/$GITHUB_SHA"
@@ -278,7 +486,7 @@ jobs:
           PY
 
       - name: Publish only verified v0.1 MLT media, not owner/Broker receipts
-        if: always()
+        if: always() && env.MW_MLT_SCOPE != 'repaired-g2'
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
         run: |
@@ -291,9 +499,33 @@ jobs:
           python3 -m json.tool verification/native-mlt-sequence-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
+        if: always() && env.MW_MLT_SCOPE != 'repaired-g2'
         with:
           name: motionwright-native-mlt-sequence-${{ matrix.mode }}-${{ github.sha }}
           path: verification/native-mlt-sequence-public
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Seal original G2 evidence and emit closed public status
+        if: always() && env.MW_MLT_SCOPE == 'repaired-g2'
+        env:
+          CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+          NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          control="$RUNNER_TEMP/mw-mlt-g2-control-$GITHUB_RUN_ID-1"
+          test -n "$CUSTODY_PYTHON"
+          test -f "$control/records/dispatch.json"
+          "$CUSTODY_PYTHON" -B -E -s tooling/native_mlt_g2_custody.py seal \
+            --job-status "$NATIVE_CI_JOB_STATUS"
+
+      - name: Retain only authenticated ciphertext and the closed G2 projection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.MW_MLT_SCOPE == 'repaired-g2'
+        with:
+          name: motionwright-native-mlt-g2-sealed-${{ github.sha }}-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/mw-mlt-g2-control-${{ github.run_id }}-1/public/sealed-originals.bin
+            ${{ runner.temp }}/mw-mlt-g2-control-${{ github.run_id }}-1/public/public-evidence.json
           if-no-files-found: error
           retention-days: 14

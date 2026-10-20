@@ -8,12 +8,15 @@ and hashes the artifact.
 """
 from __future__ import annotations
 
+import argparse
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -25,6 +28,7 @@ PIN = SOURCE_LOCK["dependencies"]["semwright"]["revision"]
 SEMWRIGHT = Path(os.environ.get("SEMWRIGHT_CHECKOUT", ROOT / "_semwright")).resolve()
 SW_BINS = SEMWRIGHT / "target" / "debug"
 MW_EXAMPLE = ROOT / "target" / "debug" / "examples" / "native-manim-e2e"
+MW_CAMERA_SEED = ROOT / "target" / "debug" / "examples" / "native-manim-camera-seed"
 MW_DRIVER = ROOT / "target" / "debug" / "motionwright-manim-community-driver"
 MW_RUNNER = ROOT / "target" / "debug" / "motionwright-manim-runner"
 MANIM_RUNTIME = Path(
@@ -239,297 +243,451 @@ def capability_catalog(env: dict[str, str], socket: Path, session: Path) -> list
     return capabilities
 
 
-def main() -> None:
-    exact_inputs()
-    EVIDENCE.mkdir(parents=True, exist_ok=False)
+def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None):
+    """Capture original process streams in private files before interpreting them."""
+    from native_manim_camera_evidence import CameraEvidenceError, object_bytes, read
+    streams = []
+    process = None
+    try:
+        for name in ("stdout", "stderr"):
+            path = evidence / f"{label}.{name}.log"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            streams.append(os.fdopen(fd, "wb", buffering=0))
+        process = subprocess.Popen(
+            argv, env=env, stdin=subprocess.DEVNULL,
+            stdout=streams[0], stderr=streams[1], start_new_session=True,
+        )
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if camera_custody is not None:
+                camera_custody.native_process = {
+                    "pid": process.pid, "timeout_seconds": timeout,
+                    "process_returncode": None, "native_outcome": "UNKNOWN",
+                    "automatic_retry": False,
+                }
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            except BaseException as cleanup:
+                if camera_custody is not None:
+                    camera_custody.secondary("native-client-timeout-cleanup", cleanup)
+            raise
+        if camera_custody is not None:
+            camera_custody.native_process = {
+                "pid": process.pid, "process_returncode": code,
+                "native_outcome": "NOT_INTERPRETED",
+                "automatic_retry": False,
+            }
+        if code != 0:
+            # The original Rust diagnostic and append-only journal are retained.
+            # A nonzero wrapper process code cannot classify a native UNKNOWN.
+            raise CameraEvidenceError(f"native_example_process_exit_{code}_see_original_private_diagnostic")
+        value = object_bytes(read(evidence / f"{label}.stdout.log"))
+        if camera_custody is not None:
+            camera_custody.native_result = value
+        return value
+    finally:
+        for stream in streams:
+            try:
+                stream.flush()
+                os.fsync(stream.fileno())
+            except BaseException as cleanup:
+                if camera_custody is not None:
+                    camera_custody.secondary("native-process-stream-custody", cleanup)
+            try:
+                stream.close()
+            except BaseException as cleanup:
+                if camera_custody is not None:
+                    camera_custody.secondary("native-process-stream-close", cleanup)
 
-    with tempfile.TemporaryDirectory(prefix="motionwright-native-manim-") as raw:
+
+def camera_options(args):
+    from native_manim_camera_evidence import custody_module, require
+    require(sys.platform == "linux" and os.geteuid() != 0,
+            "camera_physical_runner_must_be_linux_nonroot")
+    require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and os.environ.get("GITHUB_RUN_ATTEMPT") == "1",
+            "camera_requires_one_explicit_original_dispatch")
+    require(args.evidence_root is not None and args.sealed_originals is not None,
+            "camera_private_custody_paths_required")
+    root = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+    for path in (args.evidence_root, args.sealed_originals):
+        require(path.is_absolute() and path.is_relative_to(root)
+                and path.parent.resolve(strict=True) == path.parent
+                and not path.exists() and not path.is_symlink(),
+                "camera_new_private_output_required")
+    observed = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                                       text=True).strip()
+    require(observed == GITHUB_SHA, "camera_original_checkout_identity")
+    require(MW_CAMERA_SEED.is_file(), "camera_source_seed_binary_absent")
+    recipient = {
+        "spki_der_base64": os.environ.get("PRIVATE_EVIDENCE_RECIPIENT_SPKI", ""),
+        "sha256": os.environ.get("PRIVATE_EVIDENCE_RECIPIENT_SHA256", ""),
+    }
+    current = {
+        "source_sha": GITHUB_SHA, "semwright_sha": PIN,
+        "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+    }
+    engine = custody_module()
+    engine.public_key(recipient)
+    engine.validate_context(current)
+    return recipient, current
+
+
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scenario", choices=("static-scene", "camera120"), default="static-scene")
+    parser.add_argument("--evidence-root", type=Path)
+    parser.add_argument("--sealed-originals", type=Path)
+    args = parser.parse_args(argv)
+    camera = args.scenario == "camera120"
+    exact_inputs()
+    if camera:
+        from native_manim_camera_evidence import (
+            CameraCustody, EVIDENCE_NAME, finish_render, prepare_seed, private_json,
+        )
+        recipient, current = camera_options(args)
+    elif args.evidence_root is not None or args.sealed_originals is not None:
+        raise ValueError("private camera custody arguments require camera120")
+    evidence = args.evidence_root if camera else EVIDENCE
+    evidence.mkdir(parents=True, exist_ok=False, mode=0o700)
+    # Camera originals remain in their private directory until runner disposal,
+    # including when sealing fails. They are never automatically removed here.
+    workspace = (contextlib.nullcontext(tempfile.mkdtemp(
+        prefix="motionwright-native-manim-camera-", dir=os.environ["RUNNER_TEMP"]))
+        if camera else tempfile.TemporaryDirectory(prefix="motionwright-native-manim-"))
+    with workspace as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
-        paths: dict[str, Path] = {}
-        for name in [
-            "runtime",
-            "state",
-            "home",
-            "config",
-            "bin",
-            "work",
-            "output",
-            "motionwright-data",
-        ]:
-            path = root / name
-            path.mkdir(mode=0o700)
-            paths[name] = path
+        scope = (CameraCustody(root, evidence, args.sealed_originals, recipient, current)
+                 if camera else contextlib.nullcontext(None))
+        with scope as camera_custody:
+            paths: dict[str, Path] = {}
+            for name in [
+                "runtime",
+                "state",
+                "home",
+                "config",
+                "bin",
+                "work",
+                "output",
+                "motionwright-data",
+            ]:
+                path = root / name
+                path.mkdir(mode=0o700)
+                paths[name] = path
 
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
-        }
-        env.update(
-            HOME=str(paths["home"]),
-            XDG_RUNTIME_DIR=str(paths["runtime"]),
-            XDG_STATE_HOME=str(paths["state"]),
-            RUST_BACKTRACE="1",
-            SEMWRIGHT_TEST_DRIVER_SANDBOX="1",
-            SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BINS / "semwright-sandbox"),
-        )
-
-        database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seeded = run_json([str(MW_EXAMPLE), "seed", str(database)], env=env)
-        if seeded.get("primitive_count") != 3:
-            raise AssertionError(f"unexpected Manim seed: {seeded}")
-
-        driver = paths["bin"] / "motionwright-manim-community-driver"
-        runner = paths["bin"] / "motionwright-manim-runner"
-        shutil.copyfile(MW_DRIVER, driver)
-        shutil.copyfile(MW_RUNNER, runner)
-        driver.chmod(0o700)
-        runner.chmod(0o700)
-
-        manifest = {
-            "manifest_version": 1,
-            "protocol": 8,
-            "id": "manim-community",
-            "version": "0.1.0",
-            "publisher": "motionwright",
-            "executable": str(driver),
-            "sha256": digest(driver),
-            "application": {
-                "desktop_id": None,
-                "process_names": ["motionwright-manim-runner", "python3", "ffmpeg"],
-                "supported_versions": [f"Manim Community {MANIM_VERSION}"],
-            },
-            "transport": "stdio_v1",
-            "mounts": [
-                {"root": "manim-runtime", "read_only": True},
-                {"root": "manim-work", "read_only": False},
-                {"root": "manim-output", "read_only": False},
-                {"root": "fontconfig", "read_only": True},
-            ],
-            "system_config": [],
-            "secrets": [],
-            "tools": [
-                {
-                    "root": "manim-runner-root",
-                    "name": "manim-runner",
-                    "sha256": digest(runner),
-                    "mounts": [
-                        "manim-runtime",
-                        "manim-work",
-                        "manim-output",
-                        "fontconfig",
-                    ],
-                    "dependencies": ["python3", "ffmpeg"],
-                },
-                {
-                    "root": "python-root",
-                    "name": "python3",
-                    "sha256": digest(PYTHON),
-                    "mounts": [],
-                    "dependencies": [],
-                },
-                {
-                    "root": "ffmpeg-root",
-                    "name": "ffmpeg",
-                    "sha256": digest(FFMPEG),
-                    "mounts": [],
-                    "dependencies": [],
-                },
-            ],
-            "network": False,
-            "loopback_port": None,
-            "resources": {
-                "open_files": 512,
-                "processes": 256,
-                "cpu_seconds": 300,
-                "operation_cpu_seconds": 0,
-                "address_space_bytes": 4_294_967_296,
-                "file_size_bytes": 1_073_741_824,
-            },
-            "request_timeout_ms": 300_000,
-            "interfaces": {
-                "dynamic_capabilities": False,
-                "cooperative_cancellation": True,
-                "events": False,
-                "health": True,
-                "progress": False,
-                "artifacts": False,
-                "native_refs": False,
-                "host_tools": True,
-            },
-        }
-        manifest_path = paths["config"] / "manim-driver.json"
-        write_private_json(manifest_path, manifest)
-
-        grants = [
-            ("manim-runtime", MANIM_RUNTIME, False),
-            ("manim-work", paths["work"], True),
-            ("manim-output", paths["output"], True),
-            ("fontconfig", FONTCONFIG, False),
-            ("manim-runner-root", runner, False),
-            ("python-root", PYTHON, False),
-            ("ffmpeg-root", FFMPEG, False),
-        ]
-        config_lines = [
-            f"drivers = [{json.dumps(str(manifest_path))}]",
-            "driver_network = false",
-            "",
-            "[policy]",
-            'profile = "workspace"',
-            'allow = ["driver:manim-community"]',
-        ]
-        for name, path, write in grants:
-            config_lines.extend(
-                [
-                    "",
-                    "[[policy.filesystem]]",
-                    f"name = {json.dumps(name)}",
-                    f"path = {json.dumps(str(path.resolve()))}",
-                    "read = true",
-                    f"write = {'true' if write else 'false'}",
-                ]
-            )
-        config_path = paths["config"] / "owner.toml"
-        config_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
-        config_path.chmod(0o600)
-
-        socket = paths["runtime"] / "broker.sock"
-        session = paths["runtime"] / "motionwright.session"
-        daemon_log = EVIDENCE / "semwrightd.log"
-        log_stream = daemon_log.open("wb")
-        daemon = subprocess.Popen(
-            [
-                str(SW_BINS / "semwrightd"),
-                "--config",
-                str(config_path),
-                "--socket",
-                str(socket),
-            ],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log_stream,
-            stderr=log_stream,
-            start_new_session=True,
-        )
-
-        try:
-            wait_for_socket(daemon, socket, daemon_log)
-            capabilities = capability_catalog(env, socket, session)
-            ids = {item.get("id") for item in capabilities}
-            required = {
-                "driver.manim-community.doctor",
-                "driver.manim-community.render.start",
-                "driver.manim-community.render.status",
-                "driver.manim-community.render.cancel",
-                "driver.manim-community.render.result",
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
             }
-            if not required <= ids:
-                raise AssertionError(
-                    "Manim provider is missing Motionwright capabilities: "
-                    + repr(sorted(required - ids))
+            env.update(
+                HOME=str(paths["home"]),
+                XDG_RUNTIME_DIR=str(paths["runtime"]),
+                XDG_STATE_HOME=str(paths["state"]),
+                RUST_BACKTRACE="1",
+                SEMWRIGHT_TEST_DRIVER_SANDBOX="1",
+                SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BINS / "semwright-sandbox"),
+            )
+
+            database = paths["motionwright-data"] / "motionwright.sqlite3"
+            if camera:
+                seeded = captured_json([str(MW_CAMERA_SEED), str(database)], env=env,
+                                       evidence=evidence, label="source-seed")
+                prepared_camera = prepare_seed(seeded, evidence)
+                # This spelling is the canonical Project.resource_key implementation.
+                seeded = {**seeded, "resource": "project:" + seeded["project_id"]}
+                private_json(evidence / "native-input-identities.json", {
+                    "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN,
+                    "runner_uid": os.geteuid(), "manim_version": MANIM_VERSION,
+                    "source_lock_sha256": digest(ROOT / "SOURCE_LOCK.json"),
+                    "binaries": {name: digest(path) for name, path in {
+                        "source_seed": MW_CAMERA_SEED, "native_example": MW_EXAMPLE,
+                        "driver": MW_DRIVER, "runner": MW_RUNNER,
+                        "broker": SW_BINS / "semwrightd", "client": SW_BINS / "semwright",
+                        "sandbox": SW_BINS / "semwright-sandbox",
+                        "python": PYTHON, "ffmpeg": FFMPEG, "ffprobe": FFPROBE,
+                    }.items()},
+                    "compiler_bytes_exported_before_native_dispatch": True,
+                    "independent_vendor_binary_authentication": False,
+                })
+            else:
+                seeded = run_json([str(MW_EXAMPLE), "seed", str(database)], env=env)
+                if seeded.get("primitive_count") != 3:
+                    raise AssertionError(f"unexpected Manim seed: {seeded}")
+
+            driver = paths["bin"] / "motionwright-manim-community-driver"
+            runner = paths["bin"] / "motionwright-manim-runner"
+            shutil.copyfile(MW_DRIVER, driver)
+            shutil.copyfile(MW_RUNNER, runner)
+            driver.chmod(0o700)
+            runner.chmod(0o700)
+
+            manifest = {
+                "manifest_version": 1,
+                "protocol": 8,
+                "id": "manim-community",
+                "version": "0.1.0",
+                "publisher": "motionwright",
+                "executable": str(driver),
+                "sha256": digest(driver),
+                "application": {
+                    "desktop_id": None,
+                    "process_names": ["motionwright-manim-runner", "python3", "ffmpeg"],
+                    "supported_versions": [f"Manim Community {MANIM_VERSION}"],
+                },
+                "transport": "stdio_v1",
+                "mounts": [
+                    {"root": "manim-runtime", "read_only": True},
+                    {"root": "manim-work", "read_only": False},
+                    {"root": "manim-output", "read_only": False},
+                    {"root": "fontconfig", "read_only": True},
+                ],
+                "system_config": [],
+                "secrets": [],
+                "tools": [
+                    {
+                        "root": "manim-runner-root",
+                        "name": "manim-runner",
+                        "sha256": digest(runner),
+                        "mounts": [
+                            "manim-runtime",
+                            "manim-work",
+                            "manim-output",
+                            "fontconfig",
+                        ],
+                        "dependencies": ["python3", "ffmpeg"],
+                    },
+                    {
+                        "root": "python-root",
+                        "name": "python3",
+                        "sha256": digest(PYTHON),
+                        "mounts": [],
+                        "dependencies": [],
+                    },
+                    {
+                        "root": "ffmpeg-root",
+                        "name": "ffmpeg",
+                        "sha256": digest(FFMPEG),
+                        "mounts": [],
+                        "dependencies": [],
+                    },
+                ],
+                "network": False,
+                "loopback_port": None,
+                "resources": {
+                    "open_files": 512,
+                    "processes": 256,
+                    "cpu_seconds": 300,
+                    "operation_cpu_seconds": 0,
+                    "address_space_bytes": 4_294_967_296,
+                    "file_size_bytes": 1_073_741_824,
+                },
+                "request_timeout_ms": 300_000,
+                "interfaces": {
+                    "dynamic_capabilities": False,
+                    "cooperative_cancellation": True,
+                    "events": False,
+                    "health": True,
+                    "progress": False,
+                    "artifacts": False,
+                    "native_refs": False,
+                    "host_tools": True,
+                },
+            }
+            manifest_path = paths["config"] / "manim-driver.json"
+            write_private_json(manifest_path, manifest)
+
+            grants = [
+                ("manim-runtime", MANIM_RUNTIME, False),
+                ("manim-work", paths["work"], True),
+                ("manim-output", paths["output"], True),
+                ("fontconfig", FONTCONFIG, False),
+                ("manim-runner-root", runner, False),
+                ("python-root", PYTHON, False),
+                ("ffmpeg-root", FFMPEG, False),
+            ]
+            config_lines = [
+                f"drivers = [{json.dumps(str(manifest_path))}]",
+                "driver_network = false",
+                "",
+                "[policy]",
+                'profile = "workspace"',
+                'allow = ["driver:manim-community"]',
+            ]
+            for name, path, write in grants:
+                config_lines.extend(
+                    [
+                        "",
+                        "[[policy.filesystem]]",
+                        f"name = {json.dumps(name)}",
+                        f"path = {json.dumps(str(path.resolve()))}",
+                        "read = true",
+                        f"write = {'true' if write else 'false'}",
+                    ]
                 )
-            forbidden = {
-                item
-                for item in ids
-                if isinstance(item, str)
-                and any(token in item.lower() for token in ("python", "shell", "exec"))
-            }
-            if forbidden:
-                raise AssertionError(f"Manim provider exposed code-execution surface: {forbidden}")
-            if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
-                raise AssertionError("Semwright did not create a private persistent session ticket")
+            config_path = paths["config"] / "owner.toml"
+            config_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
+            config_path.chmod(0o600)
 
-            connection_path = paths["config"] / "motionwright-connection.json"
-            write_private_json(
-                connection_path,
-                {
-                    "schema": "motionwright-semwright-connection/1",
-                    "executable": str((SW_BINS / "semwright").resolve()),
-                    "executable_sha256": digest(SW_BINS / "semwright"),
-                    "socket": str(socket),
-                    "session_file": str(session),
-                    "output_root": str(paths["output"]),
-                    "resource": seeded["resource"],
-                },
-            )
-
-            result = run_json(
+            socket = paths["runtime"] / "broker.sock"
+            session = paths["runtime"] / "motionwright.session"
+            daemon_log = evidence / "semwrightd.log"
+            log_stream = daemon_log.open("wb")
+            daemon = subprocess.Popen(
                 [
-                    str(MW_EXAMPLE),
-                    "realize",
-                    str(database),
-                    str(connection_path),
-                    str(EVIDENCE / "motionwright-manim-evidence.json"),
+                    str(SW_BINS / "semwrightd"),
+                    "--config",
+                    str(config_path),
+                    "--socket",
+                    str(socket),
                 ],
                 env=env,
-                timeout=420,
+                stdin=subprocess.DEVNULL,
+                stdout=log_stream,
+                stderr=log_stream,
+                start_new_session=True,
             )
-            if result.get("native_manim_e2e") != "PASS":
-                raise AssertionError(f"Motionwright Manim realization did not pass: {result}")
 
-            evidence = json.loads(
-                (EVIDENCE / "motionwright-manim-evidence.json").read_text(encoding="utf-8")
-            )
-            artifact = evidence["result"]["artifact"]
-            relative = artifact["relative_path"]
-            artifact_path = paths["output"] / relative
-            if not artifact_path.is_file():
-                raise AssertionError(f"verified MP4 artifact is missing: {artifact_path}")
-            observed_digest = digest(artifact_path)
-            if observed_digest != artifact["sha256"]:
-                raise AssertionError(
-                    f"independent MP4 digest mismatch: {observed_digest} != {artifact['sha256']}"
-                )
-            media = probe_video(artifact_path)
+            try:
+                wait_for_socket(daemon, socket, daemon_log)
+                capabilities = capability_catalog(env, socket, session)
+                ids = {item.get("id") for item in capabilities}
+                required = {
+                    "driver.manim-community.doctor",
+                    "driver.manim-community.render.start",
+                    "driver.manim-community.render.status",
+                    "driver.manim-community.render.cancel",
+                    "driver.manim-community.render.result",
+                }
+                if camera:
+                    required.add("driver.manim-community.camera.render.start")
+                if not required <= ids:
+                    raise AssertionError(
+                        "Manim provider is missing Motionwright capabilities: "
+                        + repr(sorted(required - ids))
+                    )
+                forbidden = {
+                    item
+                    for item in ids
+                    if isinstance(item, str)
+                    and any(token in item.lower() for token in ("python", "shell", "exec"))
+                }
+                if forbidden:
+                    raise AssertionError(f"Manim provider exposed code-execution surface: {forbidden}")
+                if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
+                    raise AssertionError("Semwright did not create a private persistent session ticket")
 
-            review_mp4 = EVIDENCE / "motionwright-manim-community.mp4"
-            shutil.copyfile(artifact_path, review_mp4)
-            write_private_json(
-                EVIDENCE / "result.json",
-                {
-                    "native_manim_e2e": "PASS",
-                    "motionwright_sha": GITHUB_SHA,
-                    "semwright_sha": PIN,
-                    "semwright_version": semwright_version(),
-                    "manim_version": MANIM_VERSION,
-                    "python_sha256": digest(PYTHON),
-                    "ffmpeg_sha256": digest(FFMPEG),
-                    "driver_sha256": digest(driver),
-                    "runner_sha256": digest(runner),
-                    "project": seeded,
-                    "mp4": {
-                        "relative_path": relative,
-                        "sha256": observed_digest,
-                        "bytes": artifact_path.stat().st_size,
-                        **media,
+                connection_path = paths["config"] / "motionwright-connection.json"
+                write_private_json(
+                    connection_path,
+                    {
+                        "schema": "motionwright-semwright-connection/1",
+                        "executable": str((SW_BINS / "semwright").resolve()),
+                        "executable_sha256": digest(SW_BINS / "semwright"),
+                        "socket": str(socket),
+                        "session_file": str(session),
+                        "output_root": str(paths["output"]),
+                        "resource": seeded["resource"],
                     },
-                    "capabilities_checked": sorted(required),
-                },
-            )
-        finally:
-            if daemon.poll() is None:
+                )
+
+                if camera:
+                    request_id = f"camera-{current['run_id']}-{current['run_attempt']}-{GITHUB_SHA[:12]}"
+                    native = camera_custody.once(lambda: captured_json(
+                        [str(MW_EXAMPLE), "realize-camera", str(database), str(connection_path),
+                         str(evidence / EVIDENCE_NAME), seeded["project_id"], seeded["scene_id"],
+                         seeded["deliverable_id"], request_id],
+                        env=env, evidence=evidence, label="native-example", timeout=420,
+                        camera_custody=camera_custody,
+                    ))
+                    finish_render(native, prepared_camera, evidence, paths["output"], paths["work"],
+                                  GITHUB_SHA, PIN, str(FFPROBE), str(FFMPEG))
+                else:
+                    result = run_json(
+                        [
+                            str(MW_EXAMPLE),
+                            "realize",
+                            str(database),
+                            str(connection_path),
+                            str(evidence / "motionwright-manim-evidence.json"),
+                        ],
+                        env=env,
+                        timeout=420,
+                    )
+                    if result.get("native_manim_e2e") != "PASS":
+                        raise AssertionError(f"Motionwright Manim realization did not pass: {result}")
+
+                    original_evidence = json.loads(
+                        (evidence / "motionwright-manim-evidence.json").read_text(encoding="utf-8")
+                    )
+                    artifact = original_evidence["result"]["artifact"]
+                    relative = artifact["relative_path"]
+                    artifact_path = paths["output"] / relative
+                    if not artifact_path.is_file():
+                        raise AssertionError(f"verified MP4 artifact is missing: {artifact_path}")
+                    observed_digest = digest(artifact_path)
+                    if observed_digest != artifact["sha256"]:
+                        raise AssertionError(
+                            f"independent MP4 digest mismatch: {observed_digest} != {artifact['sha256']}"
+                        )
+                    media = probe_video(artifact_path)
+
+                    review_mp4 = evidence / "motionwright-manim-community.mp4"
+                    shutil.copyfile(artifact_path, review_mp4)
+                    write_private_json(
+                        evidence / "result.json",
+                        {
+                            "native_manim_e2e": "PASS",
+                            "motionwright_sha": GITHUB_SHA,
+                            "semwright_sha": PIN,
+                            "semwright_version": semwright_version(),
+                            "manim_version": MANIM_VERSION,
+                            "python_sha256": digest(PYTHON),
+                            "ffmpeg_sha256": digest(FFMPEG),
+                            "driver_sha256": digest(driver),
+                            "runner_sha256": digest(runner),
+                            "project": seeded,
+                            "mp4": {
+                                "relative_path": relative,
+                                "sha256": observed_digest,
+                                "bytes": artifact_path.stat().st_size,
+                                **media,
+                            },
+                            "capabilities_checked": sorted(required),
+                        },
+                    )
+            finally:
                 try:
-                    os.killpg(daemon.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    daemon.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(daemon.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    daemon.wait(timeout=5)
-            log_stream.close()
+                    if daemon.poll() is None:
+                        try:
+                            os.killpg(daemon.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                        try:
+                            daemon.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                os.killpg(daemon.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            daemon.wait(timeout=5)
+                    log_stream.close()
+
+                except BaseException as cleanup_error:
+                    if camera_custody is None:
+                        raise
+                    camera_custody.secondary("broker-cleanup", cleanup_error)
 
     print(
         json.dumps(
             {
-                "native_manim_e2e": "PASS",
+                ("native_manim_camera_e2e" if camera else "native_manim_e2e"): "PASS",
                 "motionwright_sha": GITHUB_SHA,
                 "semwright_sha": PIN,
-                "evidence": str(EVIDENCE),
+                "evidence": "private sealed originals" if camera else str(evidence),
             },
             sort_keys=True,
         )
@@ -537,4 +695,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException:
+        if "camera120" not in sys.argv:
+            raise
+        # Original stdout/stderr, Rust diagnostics, journal and wrapper error
+        # belong in the private snapshot, never in public Actions logs.
+        try:
+            sys.stderr.write("Manim camera verification did not complete; inspect sealed originals. No replay.\n")
+        except BaseException:
+            pass
+        raise SystemExit(2) from None

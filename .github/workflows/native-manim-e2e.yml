@@ -2,6 +2,20 @@ name: Native Manim Community round-trip
 
 on:
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: Existing static scene or one original 120-frame camera job
+        type: choice
+        options: [static-scene, camera120]
+        default: static-scene
+      evidence_recipient_spki:
+        description: Canonical RSA-3072 public SPKI DER in base64 for private originals
+        type: string
+        required: false
+      evidence_recipient_sha256:
+        description: Independently retained SHA-256 of the public SPKI DER
+        type: string
+        required: false
   pull_request:
     paths:
       - 'SOURCE_LOCK.json'
@@ -14,6 +28,14 @@ on:
       - 'crates/manim-profile/**'
       - 'crates/driver-manim-community/**'
       - 'tooling/native_manim_e2e.py'
+      - 'tooling/native_manim_camera_evidence.py'
+      - 'tooling/native_manim_camera_pixels.py'
+      - 'tooling/ci_private_evidence.py'
+      - 'tooling/mlt_official_runtime_intake.py'
+      - 'tooling/requirements/mlt-g2-custody.txt'
+      - 'tooling/tests/test_native_manim_camera_evidence.py'
+      - 'tooling/tests/test_native_manim_camera_pixels.py'
+      - 'tooling/ci_test_runner.py'
       - 'tooling/native_scene_public_artifact.py'
       - 'tooling/cross_app_public_artifact.py'
       - 'tooling/tests/test_native_scene_public_artifact.py'
@@ -23,8 +45,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-manim-roundtrip-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: ${{ inputs.scenario == 'camera120' && 'native-manim-camera-original' || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -45,6 +67,62 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+
+      - name: Require 19 complete source-bound camera pixel regressions
+        run: |
+          python3 -B tooling/ci_test_runner.py \
+            --pattern test_native_manim_camera_pixels.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-camera-pixel-g0/report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-camera-pixel-g0/report.json").read_text())
+          assert value["status"] == "PASS" and value["exit_code"] == 0
+          assert len(value["steps"]) == 1
+          counts = value["steps"][0]["counts"]
+          assert counts["tests_run"] == counts["passed"] == 19
+          assert counts["skipped"] == counts["expected_failures"] == 0
+          PY
+
+      - name: Install pinned private-custody test dependencies outside the checkout
+        run: |
+          python3 -m venv "$RUNNER_TEMP/manim-custody-venv"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes \
+            -r tooling/requirements/mlt-g2-custody.txt
+
+      - name: Verify camera original-custody and publication regressions
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_manim_camera_evidence.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-camera-custody-g0/report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-camera-custody-g0/report.json").read_text())
+          counts = value["steps"][0]["counts"]
+          assert value["status"] == "PASS" and value["exit_code"] == 0 and len(value["steps"]) == 1
+          assert counts["tests_run"] == counts["passed"] == 26
+          assert counts["skipped"] == counts["expected_failures"] == 0
+          PY
+
+      - name: Validate one original camera dispatch and public recovery key
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'camera120'
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          mkdir -m 700 "$RUNNER_TEMP/manim-camera-private" "$RUNNER_TEMP/manim-camera-sealed"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import os, sys
+          sys.path.insert(0, "tooling")
+          from ci_private_evidence import public_key
+          public_key({"spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
+                      "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]})
+          PY
 
       - name: Resolve exact Semwright source pin
         id: pin
@@ -146,7 +224,9 @@ jobs:
           cargo test --locked -p motionwright-manim-profile -p motionwright-manim-community-driver
           cargo clippy --locked -p motionwright-manim-profile -p motionwright-manim-community-driver \
             --all-targets -- -D warnings
-          cargo build --locked -p motionwright-native --example native-manim-e2e
+          cargo build --locked -p motionwright-native \
+            --example native-manim-e2e --example native-manim-camera-seed
+          cargo test --locked -p motionwright-native --example native-manim-camera-seed
           cargo test --locked -p motionwright-native multi_renderer::tests -- --nocapture
           cargo test --locked -p motionwright-native \
             production::tests::production_allowlist_binds_blender_to_the_native_driver \
@@ -156,14 +236,43 @@ jobs:
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+          MANIM_NATIVE_SCENARIO: ${{ inputs.scenario || 'static-scene' }}
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
         run: |
-          python3 tooling/native_manim_e2e.py \
-            | tee verification/native-manim-e2e/run.log
+          if [ "$MANIM_NATIVE_SCENARIO" = "camera120" ]; then
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_e2e.py \
+              --scenario camera120 \
+              --evidence-root "$RUNNER_TEMP/manim-camera-private/$GITHUB_SHA" \
+              --sealed-originals "$RUNNER_TEMP/manim-camera-sealed/originals.mwci" \
+              | tee "$RUNNER_TEMP/manim-camera-wrapper.log"
+          else
+            python3 tooling/native_manim_e2e.py \
+              | tee verification/native-manim-e2e/run.log
+          fi
 
       - name: Reject unsafe public Blender and Manim scene media
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
 
+      - name: Verify original camera evidence and completed sealed custody
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'camera120'
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "manim-camera-private" / os.environ["GITHUB_SHA"]
+          result = json.loads((root / "result.json").read_bytes())
+          sealed = json.loads((root / "camera-custody.json").read_bytes())
+          assert result["native_manim_camera_e2e"] == "PASS"
+          assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
+          assert result["native_effect_invocations"] == 1
+          assert result["mp4"]["frame_count"] == 120
+          assert sealed["status"] == "PASS" and sealed["selected_originals_complete"] is True
+          assert sealed["secondary_error_count"] == 0 and sealed["native_result_retained"] is True
+          PY
+
       - name: Verify Manim review evidence
+        if: inputs.scenario != 'camera120'
         run: |
           test -s "verification/native-manim-e2e/${GITHUB_SHA}/result.json"
           test -s "verification/native-manim-e2e/${GITHUB_SHA}/motionwright-manim-evidence.json"
@@ -188,13 +297,24 @@ jobs:
         if: always()
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
+          MANIM_NATIVE_SCENARIO: ${{ inputs.scenario || 'static-scene' }}
         run: |
-          python3 tooling/native_scene_public_artifact.py \
-            --scene manim \
-            --source-sha "$GITHUB_SHA" \
-            --evidence-root "verification/native-manim-e2e/$GITHUB_SHA" \
-            --output-root "verification/native-manim-public" \
-            --job-status "$NATIVE_CI_JOB_STATUS"
+          if [ "$MANIM_NATIVE_SCENARIO" = "camera120" ]; then
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_scene_public_artifact.py \
+              --scene manim --profile camera120 \
+              --source-sha "$GITHUB_SHA" \
+              --evidence-root "$RUNNER_TEMP/manim-camera-private/$GITHUB_SHA" \
+              --sealed-originals "$RUNNER_TEMP/manim-camera-sealed/originals.mwci" \
+              --output-root "verification/native-manim-public" \
+              --job-status "$NATIVE_CI_JOB_STATUS"
+          else
+            python3 tooling/native_scene_public_artifact.py \
+              --scene manim \
+              --source-sha "$GITHUB_SHA" \
+              --evidence-root "verification/native-manim-e2e/$GITHUB_SHA" \
+              --output-root "verification/native-manim-public" \
+              --job-status "$NATIVE_CI_JOB_STATUS"
+          fi
           python3 -m json.tool verification/native-manim-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -202,5 +322,25 @@ jobs:
         with:
           name: motionwright-native-manim-${{ github.sha }}
           path: verification/native-manim-public
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain encrypted camera originals on every terminal outcome
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.scenario == 'camera120'
+        with:
+          name: motionwright-manim-camera-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/manim-camera-sealed/originals.mwci
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain synthetic source gates separately from native originals
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: motionwright-manim-camera-source-g0-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/manim-camera-pixel-g0
+            ${{ runner.temp }}/manim-camera-custody-g0
           if-no-files-found: error
           retention-days: 14
