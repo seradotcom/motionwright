@@ -41,7 +41,7 @@ TEST_PATH = {
     "macos": "crates/storage/tests/sqlite_darwin_system_alias.rs",
 }
 SOURCE_BASE = "420864831a2dfa8626cbe1854e747ae03ef8a2db"
-PARENT = "46d50a0efd979ebf5908350de6b7e3c34f461da0"
+PARENT = "c612d68317db72f69174df9213138994fa8e51af"
 WORKFLOW = ".github/workflows/storage-sqlite-os-path-authority.yml"
 SCHEMA = "motionwright.A6.sqlite-real-os-path-authority/1"
 
@@ -121,8 +121,11 @@ def source_identity(repo: Path, sha: str) -> dict:
         require(sep == b"\t" and stored.decode() == rel and kind == b"blob"
                 and mode in (b"100644", b"100755"), "unexpected Git source metadata")
         blob = git_query(repo, "cat-file", "blob", oid.decode())
-        require(local.read_bytes() == blob and digest(blob) == expected,
-                "source bytes do not match reviewed Git blob")
+        local_bytes = local.read_bytes()
+        require(local_bytes == blob and digest(blob) == expected,
+                "source bytes do not match reviewed Git blob: " + rel +
+                "; local=" + digest(local_bytes) + "; Git=" + digest(blob) +
+                "; reviewed=" + expected)
         require(hashlib.sha1(b"blob " + str(len(blob)).encode() + b"\0" + blob).hexdigest() ==
                 oid.decode(), "Git blob oid differs")
         evidence[rel] = {"sha256": expected, "git_blob_oid": oid.decode()}

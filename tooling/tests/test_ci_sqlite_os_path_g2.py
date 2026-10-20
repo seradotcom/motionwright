@@ -114,7 +114,7 @@ class CheckoutHistoryContracts(unittest.TestCase):
             GIT_COMMITTER_EMAIL="fixture@example.invalid",
         )
         cls.git(cls.repo, "init", "--quiet", "--initial-branch=main")
-        (cls.repo / "product.txt").write_text("unchanged product\n", encoding="utf-8")
+        (cls.repo / "product.txt").write_text("unchanged product\n", encoding="utf-8", newline="\n")
         cls.git(cls.repo, "add", "product.txt")
         cls.git(cls.repo, "commit", "--quiet", "-m", "Product source")
         cls.base = cls.git(cls.repo, "rev-parse", "HEAD").strip()
@@ -217,6 +217,49 @@ class CheckoutHistoryContracts(unittest.TestCase):
         (checkout / "product.txt").write_text("dirty product\n", encoding="utf-8")
         with self.assertRaisesRegex(gate.VerificationError, "checkout differs"):
             gate.verify_checkout_history(checkout, self.head)
+
+
+    def test_crlf_checkout_is_rejected_and_recreated_blob_is_exact(self):
+        checkout = self.clone(3)
+        source = checkout / "product.txt"
+        blob = self.git(checkout, "show", self.head + ":product.txt").encode()
+        self.git(checkout, "config", "--local", "core.autocrlf", "true")
+        source.unlink()
+        # Recreated bytes need fresh index stat data. This does not change the
+        # reviewed blob, and lets the strict byte guard observe clean CRLF.
+        self.git(checkout, "-c", "core.autocrlf=true", "checkout-index",
+                 "--force", "--index", "--", "product.txt")
+        self.assertEqual(source.read_bytes(), blob.replace(b"\n", b"\r\n"))
+        gate.verify_checkout_history(checkout, self.head)
+        self.assertEqual(self.git(checkout, "write-tree").strip(),
+                         self.git(checkout, "rev-parse", "HEAD^{tree}").strip())
+        with mock.patch.object(gate, "SOURCES", {"product.txt": gate.digest(blob)}), \
+                mock.patch.object(gate, "TEST_PATH", {}):
+            with self.assertRaisesRegex(gate.VerificationError, "product.txt; local="):
+                gate.source_identity(checkout, self.head)
+            self.git(checkout, "config", "--local", "core.autocrlf", "false")
+            source.unlink()
+            self.git(checkout, "checkout-index", "--force", "--index", "--", "product.txt")
+            self.assertEqual(source.read_bytes(), blob)
+            observed = gate.source_identity(checkout, self.head)
+            self.assertEqual(observed["product.txt"]["sha256"], gate.digest(blob))
+            self.assertEqual(self.git(checkout, "write-tree").strip(),
+                             self.git(checkout, "rev-parse", "HEAD^{tree}").strip())
+
+    def test_second_repair_requires_four_commits_for_reviewed_product_base(self):
+        checkout = self.clone(3)
+        self.git(checkout, "commit", "--allow-empty", "--quiet", "-m", "Second repair")
+        head = self.git(checkout, "rev-parse", "HEAD").strip()
+        with mock.patch.object(gate, "PARENT", self.head):
+            for depth in (3, 4):
+                destination = self.root / ("second-repair-" + str(depth))
+                self.git(self.root, "clone", "--quiet", "--depth", str(depth),
+                         checkout.as_uri(), str(destination))
+                if depth == 3:
+                    with self.assertRaisesRegex(gate.VerificationError, "Git source lookup"):
+                        gate.verify_checkout_history(destination, head)
+                else:
+                    gate.verify_checkout_history(destination, head)
 
 
 class PreflightReceiptContracts(unittest.TestCase):

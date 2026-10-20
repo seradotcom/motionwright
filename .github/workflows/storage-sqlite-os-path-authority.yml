@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-          fetch-depth: 3
+          fetch-depth: 4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13'
@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-          fetch-depth: 3
+          fetch-depth: 4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13'
@@ -65,17 +65,36 @@ jobs:
       - name: Prepare exact Git sources and genuine NTFS fixtures
         run: |
           $ErrorActionPreference = 'Stop'
-          git config --local core.autocrlf false
-          git config --local core.eol lf
-          git -c core.autocrlf=false -c core.eol=lf checkout --force "$env:GITHUB_SHA"
-          git -c core.autocrlf=false -c core.eol=lf checkout-index --force -- Cargo.lock SOURCE_LOCK.json crates/storage/src/lib.rs crates/storage/tests/sqlite_windows_reparse_authority.rs crates/storage/tests/sqlite_darwin_system_alias.rs
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot restore exact Git source bytes' }
           $root = Join-Path $env:RUNNER_TEMP ("mw-sqlite-path-" + $env:GITHUB_SHA + "-" + $env:GITHUB_RUN_ID + "-" + $env:GITHUB_RUN_ATTEMPT)
           if (Test-Path -LiteralPath $root) { throw 'Fixture root is not new' }
           $evidence = Join-Path $root 'public'
           $target = Join-Path $root 'target'
           $fixture = Join-Path $root 'ntfs'
           New-Item -ItemType Directory -Path $evidence,$target,$fixture -Force | Out-Null
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value ("MW_SQLITE_EVIDENCE=" + $evidence)
+          $reviewedSources = @('Cargo.lock', 'SOURCE_LOCK.json', 'crates/storage/src/lib.rs', 'crates/storage/tests/sqlite_windows_reparse_authority.rs', 'crates/storage/tests/sqlite_darwin_system_alias.rs')
+          $before = @()
+          foreach ($source in $reviewedSources) {
+            $item = Get-Item -LiteralPath $source -Force
+            if ($item.PSIsContainer -or (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'Reviewed source is not an ordinary file' }
+            $copy = Join-Path $evidence ("source-checkout-before/" + $source)
+            New-Item -ItemType Directory -Path (Split-Path -Parent $copy) -Force | Out-Null
+            Copy-Item -LiteralPath $source -Destination $copy
+            $before += @{ path = $source; bytes = $item.Length; sha256 = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() }
+          }
+          $before | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $evidence 'source-checkout-before.json') -Encoding utf8
+          git config --local core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot set exact source checkout policy' }
+          git config --local core.eol lf
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot set exact source line endings' }
+          git -c core.autocrlf=false -c core.eol=lf checkout --force "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot select the exact source SHA' }
+          # An index stat match can preserve pre-existing CRLF bytes after a
+          # config change, even with --force. Keep their originals, then recreate
+          # only these five reviewed tracked files from the unchanged Git index.
+          foreach ($source in $reviewedSources) { Remove-Item -LiteralPath $source -Force }
+          git -c core.autocrlf=false -c core.eol=lf checkout-index --force --index -- $reviewedSources
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot restore exact Git source bytes' }
           $owner = Join-Path $fixture 'owner'
           New-Item -ItemType Directory -Path $owner | Out-Null
           [System.IO.File]::WriteAllBytes((Join-Path $fixture 'file-target.bin'),[byte[]](73,81,76,84,69,33))
@@ -85,7 +104,6 @@ jobs:
           $symlink = Get-Item -LiteralPath (Join-Path $fixture 'file-reparse.bin') -Force
           if ((($junction.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) -or (($symlink.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) { throw 'Genuine NTFS fixtures missing' }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value ("MW_SQLITE_NTFS_FIXTURE_ROOT=" + $fixture)
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value ("MW_SQLITE_EVIDENCE=" + $evidence)
           Add-Content -LiteralPath $env:GITHUB_ENV -Value ("CARGO_TARGET_DIR=" + $target)
       - name: Run all three ignored-by-default NTFS authority tests
         run: |
@@ -100,7 +118,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   macos-var-alias-real-g2:
-    if: ${{ github.event_name == 'push' || inputs.os_scope == 'macos' || inputs.os_scope == 'both' }}
+    # Push repairs exercise NTFS; Darwin is an explicit selected execution.
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.os_scope == 'macos' || inputs.os_scope == 'both') }}
     needs: g0-source-policy
     runs-on: macos-15
     timeout-minutes: 40
@@ -108,7 +127,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-          fetch-depth: 3
+          fetch-depth: 4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13'
