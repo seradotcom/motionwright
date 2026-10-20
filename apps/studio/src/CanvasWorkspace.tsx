@@ -1,4 +1,5 @@
 import { previewTransform } from "./canvasMotion";
+import { sameProjectRevision, type ProjectRevision } from "./projectMutation";
 import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import CanvasStructureEditor from "./CanvasStructureEditor";
@@ -572,6 +573,8 @@ export default function CanvasWorkspace({
   visibleCreationScope.current = creationScope;
   const localInteractionVersion = useRef(0);
   const [draftTransforms, setDraftTransforms] = useState<Record<string, CanvasTransform>>({});
+  const [gestureStatus, setGestureStatus] = useState<string | null>(null);
+  const gesturePending = useRef(false);
   const [motionProperty, setMotionProperty] = useState<MotionProperty>("opacity");
   const [motionValue, setMotionValue] = useState(scene?.nodes[0]?.opacity ?? 1);
   const [motionInterpolation, setMotionInterpolation] = useState<MotionInterpolation>("linear");
@@ -588,12 +591,33 @@ export default function CanvasWorkspace({
     clientX: number;
     clientY: number;
     initial: CanvasTransform;
+    latest: CanvasTransform | null;
+    source: ProjectRevision;
+    scope: string;
+    sceneId: string;
+    camera: Scene["camera"];
+    commit: Commit;
     autoKey: boolean;
     at: number;
     interpolation: MotionInterpolation;
   } | null>(null);
 
-  useEffect(() => { setAddError(null); }, [creationScope]);
+  const clearGesturePreview = (nodeId: string) => {
+    setDraftTransforms(current => {
+      const copy = { ...current };
+      delete copy[nodeId];
+      return copy;
+    });
+  };
+  const cancelDrag = (message: string, pointerId?: number) => {
+    const active = drag.current;
+    if (!active || (pointerId !== undefined && active.pointerId !== pointerId)) return;
+    drag.current = null;
+    clearGesturePreview(active.nodeId);
+    setGestureStatus(message);
+  };
+
+  useEffect(() => { setAddError(null); setGestureStatus(null); }, [creationScope]);
 
   useEffect(() => {
     const next = scene?.nodes[0] ?? null;
@@ -603,7 +627,14 @@ export default function CanvasWorkspace({
     // mode that can silently author motion on another project or scene.
     setAutoKeyPosition(false);
     drag.current = null;
-  }, [scene?.id, project.generation]);
+  }, [creationScope]);
+
+  useEffect(() => {
+    const active = drag.current;
+    if (active && (!sameProjectRevision(project, active.source) || scene?.id !== active.sceneId)) {
+      cancelDrag("Canvas gesture canceled because the saved project changed. Review it before starting another gesture.");
+    }
+  }, [project, scene?.id]);
 
   const selectedNode = useMemo(
     () => scene?.nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -695,8 +726,10 @@ export default function CanvasWorkspace({
   const stageTransform = (node: CanvasNode) => draftTransforms[node.id] ?? previewTransform(node, scenePlayhead);
 
   const beginDrag = (event: React.PointerEvent<HTMLButtonElement>, node: CanvasNode) => {
+    if (event.button !== 0 || drag.current || gesturePending.current) return;
     selectNode(node);
     if (scenePositionLocked || node.property_locks.includes("position")) return;
+    setGestureStatus(null);
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     drag.current = {
@@ -707,6 +740,15 @@ export default function CanvasWorkspace({
       // Freeze the entire gesture mode/time so a slider seek or toggled
       // checkbox while dragging cannot split the transaction.
       initial: autoKeyPosition ? stageTransform(node) : objectTransform(node),
+      latest: null,
+      source: { id: project.id, generation: project.generation,
+        active_branch: project.active_branch, revision: project.revision },
+      scope: creationScope,
+      sceneId: scene.id,
+      camera: { ...scene.camera },
+      // This callback retains the original App transaction source. A later
+      // render must not authorize the gesture against its newer revision.
+      commit: commitRequired,
       autoKey: autoKeyPosition,
       at: scenePlayhead,
       interpolation: motionInterpolation,
@@ -716,12 +758,16 @@ export default function CanvasWorkspace({
   const moveDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     const active = drag.current;
     if (!active || active.pointerId !== event.pointerId) return;
+    if (!sameProjectRevision(project, active.source) || scene.id !== active.sceneId) {
+      cancelDrag("Canvas gesture canceled because the saved project changed. Review it before starting another gesture.");
+      return;
+    }
     const stage = event.currentTarget.closest(".canvas-stage") as HTMLElement | null;
     if (!stage) return;
     const width = Math.max(stage.clientWidth, 1);
     const height = Math.max(stage.clientHeight, 1);
     const delta = cameraPointerDelta(
-      scene.camera,
+      active.camera,
       event.clientX - active.clientX,
       event.clientY - active.clientY,
       width,
@@ -733,18 +779,29 @@ export default function CanvasWorkspace({
       x: active.initial.x + delta.x,
       y: active.initial.y + delta.y,
     };
+    // Pointermove and pointerup can arrive before React renders the last
+    // movement. Keep its exact coordinates in the gesture as well as the view.
+    active.latest = next;
     setDraftTransforms((current) => ({ ...current, [active.nodeId]: next }));
   };
 
   const endDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     const active = drag.current;
     if (!active || active.pointerId !== event.pointerId) return;
+    if (!sameProjectRevision(project, active.source) || scene.id !== active.sceneId) {
+      cancelDrag("Canvas gesture canceled because the saved project changed. Review it before starting another gesture.");
+      return;
+    }
     drag.current = null;
-    const next = draftTransforms[active.nodeId];
-    if (!next) return;
-    void commit(active.autoKey ? {
+    const next = active.latest;
+    if (!next || (next.x === active.initial.x && next.y === active.initial.y)) {
+      clearGesturePreview(active.nodeId);
+      return;
+    }
+    gesturePending.current = true;
+    void active.commit(active.autoKey ? {
       type: "set_canvas_position_keyframe",
-      scene_id: scene.id,
+      scene_id: active.sceneId,
       node_id: active.nodeId,
       at: rationalSeconds(active.at),
       x: next.x,
@@ -752,15 +809,19 @@ export default function CanvasWorkspace({
       interpolation: active.interpolation,
     } : {
       type: "transform_canvas_node",
-      scene_id: scene.id,
+      scene_id: active.sceneId,
       node_id: active.nodeId,
       transform: next,
+    }).catch(reason => {
+      if (visibleCreationScope.current === active.scope) {
+        setGestureStatus("Canvas gesture result is unconfirmed. Reopen the project to inspect the saved state. "
+          + (reason instanceof Error ? reason.message : String(reason)));
+      }
     }).finally(() => {
-      setDraftTransforms((current) => {
-        const copy = { ...current };
-        delete copy[active.nodeId];
-        return copy;
-      });
+      gesturePending.current = false;
+      // A new gesture cannot start while this one is awaiting a result, so a
+      // late response cannot erase a later gesture on the same object.
+      if (visibleCreationScope.current === active.scope) clearGesturePreview(active.nodeId);
     });
   };
 
@@ -804,6 +865,11 @@ export default function CanvasWorkspace({
 
   return (
     <div className="canvas-workspace" onKeyDown={event => {
+      if (event.key === "Escape" && drag.current) {
+        event.preventDefault(); event.stopPropagation();
+        cancelDrag("Canvas gesture canceled. The saved project is unchanged.");
+        return;
+      }
       if (event.code === "Space" && !event.ctrlKey && !event.metaKey && !event.altKey
         && event.target instanceof HTMLElement && event.target.closest("button, summary")) event.stopPropagation();
     }}>
@@ -925,15 +991,8 @@ export default function CanvasWorkspace({
                   onPointerDown={(event) => beginDrag(event, node)}
                   onPointerMove={moveDrag}
                   onPointerUp={endDrag}
-                  onPointerCancel={() => {
-                    const aborted = drag.current;
-                    drag.current = null;
-                    if (aborted) setDraftTransforms((current) => {
-                      const copy = { ...current };
-                      delete copy[aborted.nodeId];
-                      return copy;
-                    });
-                  }}
+                  onPointerCancel={event => cancelDrag("Canvas gesture canceled. The saved project is unchanged.", event.pointerId)}
+                  onLostPointerCapture={event => cancelDrag("Canvas gesture canceled when pointer capture ended. The saved project is unchanged.", event.pointerId)}
                   onClick={() => selectNode(node)}
                 >
                   <span className="canvas-object-label">{node.text || node.name}</span>
@@ -955,6 +1014,7 @@ export default function CanvasWorkspace({
         <aside className="canvas-properties" aria-label="Canvas properties"
           onChangeCapture={() => { localInteractionVersion.current += 1; }}>
           <div className="canvas-panel-heading">Object</div>
+          {gestureStatus && <p className="canvas-empty-note" role="status" aria-live="polite">{gestureStatus}</p>}
           <CanvasRemovalRecovery project={project} sceneId={scene.id}/>
           {!selectedNode ? (
             <div className="canvas-empty-note">Select an object to inspect its semantic properties.</div>
