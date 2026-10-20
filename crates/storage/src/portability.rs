@@ -883,6 +883,60 @@ mod tests {
     }
 
     #[test]
+    fn rejected_sqlite_project_or_event_write_does_not_publish_captured_cas() {
+        for rejected_table in ["projects", "events"] {
+            let directory = tempfile::tempdir().unwrap();
+            let (bundle, manifest) = bundle_fixture(directory.path());
+            assert_eq!(manifest.backup.events.len(), 2);
+            let database = directory.path().join("target/state.sqlite3");
+            let mut target = Store::open(&database).unwrap();
+            let inspected = target
+                .inspect_project_bundle_with_fingerprint(&bundle)
+                .unwrap();
+
+            // A real SQLite trigger rejects a late row/event write after the
+            // bytes and manifest were valid, not an artificially bad bundle.
+            target
+                .conn
+                .execute_batch(&format!(
+                    "CREATE TRIGGER reject_import BEFORE INSERT ON {rejected_table}
+                     BEGIN SELECT RAISE(ABORT, 'fixture-sqlite-insert-rejected'); END;"
+                ))
+                .unwrap();
+            let before = snapshot(&target);
+            let staging = target.blob_root().join(".staging");
+            fs::create_dir_all(&staging).unwrap();
+            let foreign = staging.join("separate-staging-operation.part");
+            fs::write(&foreign, b"foreign staging bytes").unwrap();
+
+            assert!(
+                matches!(
+                    target.import_project_bundle_inspected(&bundle, &inspected.fingerprint),
+                    Err(StorageError::Sql(_))
+                ),
+                "SQLite {rejected_table} trigger did not reject import"
+            );
+            assert_eq!(snapshot(&target), before);
+            for blob in &manifest.blobs {
+                assert!(
+                    target.verify_blob(&blob.sha256).is_err(),
+                    "SQLite {rejected_table} rejection orphaned a captured CAS member"
+                );
+            }
+            let retained: Vec<_> = fs::read_dir(&staging)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(retained, vec![foreign.clone()]);
+            assert_eq!(fs::read(foreign).unwrap(), b"foreign staging bytes");
+            drop(target);
+            let reopened = Store::open(&database).unwrap();
+            assert_eq!(snapshot(&reopened), before);
+            assert!(reopened.list_projects(10).unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn existing_later_cas_conflict_must_not_publish_unreferenced_first_member() {
         let directory = tempfile::tempdir().unwrap();
         let (bundle, manifest) = bundle_fixture(directory.path());
