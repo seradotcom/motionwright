@@ -456,14 +456,17 @@ fn operational_backup_fixture(root: &Path) -> OperationalBackupFixture {
         backup.source_storage_schema
     );
     assert_eq!(manifest.backup.payload_sha256, backup.payload_sha256);
+    // Inspection checks destination admission, so it needs an empty store.
+    let inspector = StudioService::open(root.join("export-inspection/state.sqlite3")).unwrap();
     assert_eq!(
-        reopened
+        inspector
             .inspect_project_bundle_with_fingerprint(&bundle)
             .unwrap()
             .plan
             .blob_count,
         sources.len()
     );
+    drop(inspector);
     let source_files = {
         let shared = reopened.store();
         let store = shared.lock();

@@ -33,8 +33,10 @@ round trip.
    generation/revision stamp. Compare its document, nine-event
    journal, format, schema and payload digest with the separately captured
    backup. Each export has its own export timestamp.
-3. Inspect the complete bundle before removing only the two verified source CAS
-   files. Require those files to be inside the isolated source directory.
+3. Inspect the complete bundle through a separate empty preflight store before
+   removing only the two verified source CAS files. Inspection includes target
+   admission, so inspecting against the occupied source correctly returns
+   ProjectExists. Require those files to be inside the isolated source directory.
    No production data, unknown path, database or operational process is removed.
 4. Open a separate, empty target database/CAS. Inspect and import the exact
    manifest fingerprint. Compare the entire project, normalizing only the fresh
@@ -67,3 +69,9 @@ Studio interaction, platform signing, human acceptance, Semwright/Broker
 connection, concurrent publication, power-loss durability, or cross-resource
 SQLite/CAS crash atomicity. The receipt assertion concerns the specified
 original request; it is not an exhaustive audit of every operational table.
+
+The first coverage source ccd02cf5447bd81f189942b216a6bd070e71d2ce failed
+in fixture preparation because its preflight inspector reused the occupied
+source store. That was a test setup error, not a product regression. Its
+original CI result is preserved; the successor uses a separate empty inspector
+and does not change the destination-admission rule.
