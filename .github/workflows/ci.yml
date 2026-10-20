@@ -313,8 +313,30 @@ jobs:
           cache-dependency-path: apps/studio/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.1
       - name: Browser acceptance
         run: npm run test:e2e
+      - name: Verify real-service report guards
+        if: ${{ !cancelled() }}
+        working-directory: .
+        run: python3 -I -B tooling/tests/test_ci_canvas_service.py
+      - name: Canvas browser contracts with the current Rust service and SQLite
+        if: ${{ !cancelled() }}
+        working-directory: .
+        run: >-
+          python3 -I -B tooling/ci_canvas_service.py
+          --repo "$GITHUB_WORKSPACE"
+          --target "$RUNNER_TEMP/canvas-service-target"
+          --output "$RUNNER_TEMP/canvas-service-evidence"
+      - name: Retain original real-service browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: canvas-service-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/canvas-service-evidence
+          if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
