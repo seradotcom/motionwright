@@ -9014,6 +9014,9 @@
     "otio-h264-source-missing-reference": {
       "kind": "native"
     },
+    "portable-bundle-atomic-preflight-cross-platform": {
+      "kind": "integration"
+    },
     "public-core-source-audit": {
       "kind": "source"
     },
@@ -23752,6 +23755,293 @@
         {
           "path": "SOURCE_LOCK.json",
           "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original Git product source/test bodies; selected CI job pass lines + digests; scoped partial only.",
+      "artifacts": [
+        {
+          "member": "original-8c-portability-selected-CI.json",
+          "member_sha256": "2ae65d25a8e861e16805b16c5de9e8c750ead57622c2e825150a5724d281e1f1",
+          "path": "docs/acceptance/evidence/portable-late-member-main-8c246fd6.zip",
+          "sha256": "0f0ef5232406945ae1a6a2f325915cf0eab14d9a4495b31e9a5f648e94826413"
+        }
+      ],
+      "assertions": [
+        "Late bundle member byte mutation rejects import before CAS/project publication; before/after destination snapshot remains equal.",
+        "No source blob from either original or changed late member is published and pre-existing unrelated staging data survives unchanged.",
+        "Identical verified CAS already present remains readable; good bundle imports, rotates generation and preserves all original CAS bytes.",
+        "Service-level hash mismatch rejects import and leaves project missing, source blob absent and staging empty on Windows, Linux and macOS."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-PROJECT-06#/statement",
+        "CR-PROJECT-06#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "crates/storage/src/portability.rs",
+          "sha256": "1adadb4ef4033862d74ff13529410616fe17c8d5a9bfc09628fb14e986b56db9"
+        },
+        {
+          "path": "crates/service/tests/project_portability_authority.rs",
+          "sha256": "9f788025e712edbbe79b7774b2e5d78508902f474b7383ce6964dee0da54121e"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 118371353528,
+        "kind": "integration",
+        "passed": 3,
+        "profile": "portable-bundle-atomic-preflight-cross-platform",
+        "run_id": 39343773312,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39343773312/job/118371353528"
+      },
+      "id": "portable-bundle-preflight-main-8c246-storage",
+      "limitations": [
+        "Installed Studio round-trip or all media formats, user rights or independent creative review.",
+        "Power interruption between filesystem write and final SQLite COMMIT, destination long-term rollback/recovery.",
+        "All CR-PROJECT-06 original requirements and linked acceptance scenarios.",
+        "Whole CI suite readiness, release authorization or a human evaluation."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "8c246fd61bd93415f7b10bbd0f2c361fb770a679",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "crates/storage/src/portability.rs",
+          "sha256": "1adadb4ef4033862d74ff13529410616fe17c8d5a9bfc09628fb14e986b56db9"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original Git product source/test bodies; selected CI job pass lines + digests; scoped partial only.",
+      "artifacts": [
+        {
+          "member": "original-8c-portability-selected-CI.json",
+          "member_sha256": "2ae65d25a8e861e16805b16c5de9e8c750ead57622c2e825150a5724d281e1f1",
+          "path": "docs/acceptance/evidence/portable-late-member-main-8c246fd6.zip",
+          "sha256": "0f0ef5232406945ae1a6a2f325915cf0eab14d9a4495b31e9a5f648e94826413"
+        }
+      ],
+      "assertions": [
+        "Service-level blob source mismatch rejects import before publication on windows; source test body and original job are SHA-bound."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-PROJECT-06#/statement",
+        "CR-PROJECT-06#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "crates/storage/src/portability.rs",
+          "sha256": "1adadb4ef4033862d74ff13529410616fe17c8d5a9bfc09628fb14e986b56db9"
+        },
+        {
+          "path": "crates/service/tests/project_portability_authority.rs",
+          "sha256": "9f788025e712edbbe79b7774b2e5d78508902f474b7383ce6964dee0da54121e"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 118371353653,
+        "kind": "integration",
+        "passed": 1,
+        "profile": "portable-bundle-atomic-preflight-cross-platform",
+        "run_id": 39343773312,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39343773312/job/118371353653"
+      },
+      "id": "portable-bundle-preflight-main-8c246-windows",
+      "limitations": [
+        "Installed Studio round-trip or all media formats, user rights or independent creative review.",
+        "Power interruption between filesystem write and final SQLite COMMIT, destination long-term rollback/recovery.",
+        "All CR-PROJECT-06 original requirements and linked acceptance scenarios.",
+        "Whole CI suite readiness, release authorization or a human evaluation."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "8c246fd61bd93415f7b10bbd0f2c361fb770a679",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "crates/storage/src/portability.rs",
+          "sha256": "1adadb4ef4033862d74ff13529410616fe17c8d5a9bfc09628fb14e986b56db9"
+        },
+        {
+          "path": "crates/service/tests/project_portability_authority.rs",
+          "sha256": "9f788025e712edbbe79b7774b2e5d78508902f474b7383ce6964dee0da54121e"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original Git product source/test bodies; selected CI job pass lines + digests; scoped partial only.",
+      "artifacts": [
+        {
+          "member": "original-8c-portability-selected-CI.json",
+          "member_sha256": "2ae65d25a8e861e16805b16c5de9e8c750ead57622c2e825150a5724d281e1f1",
+          "path": "docs/acceptance/evidence/portable-late-member-main-8c246fd6.zip",
+          "sha256": "0f0ef5232406945ae1a6a2f325915cf0eab14d9a4495b31e9a5f648e94826413"
+        }
+      ],
+      "assertions": [
+        "Service-level blob source mismatch rejects import before publication on linux; source test body and original job are SHA-bound."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-PROJECT-06#/statement",
+        "CR-PROJECT-06#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "crates/storage/src/portability.rs",
+          "sha256": "1adadb4ef4033862d74ff13529410616fe17c8d5a9bfc09628fb14e986b56db9"
+        },
+        {
+          "path": "crates/service/tests/project_portability_authority.rs",
+          "sha256": "9f788025e712edbbe79b7774b2e5d78508902f474b7383ce6964dee0da54121e"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 118371353720,
+        "kind": "integration",
+        "passed": 1,
+        "profile": "portable-bundle-atomic-preflight-cross-platform",
+        "run_id": 39343773312,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39343773312/job/118371353720"
+      },
+      "id": "portable-bundle-preflight-main-8c246-linux",
+      "limitations": [
+        "Installed Studio round-trip or all media formats, user rights or independent creative review.",
+        "Power interruption between filesystem write and final SQLite COMMIT, destination long-term rollback/recovery.",
+        "All CR-PROJECT-06 original requirements and linked acceptance scenarios.",
+        "Whole CI suite readiness, release authorization or a human evaluation."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "8c246fd61bd93415f7b10bbd0f2c361fb770a679",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "crates/storage/src/portability.rs",
+          "sha256": "1adadb4ef4033862d74ff13529410616fe17c8d5a9bfc09628fb14e986b56db9"
+        },
+        {
+          "path": "crates/service/tests/project_portability_authority.rs",
+          "sha256": "9f788025e712edbbe79b7774b2e5d78508902f474b7383ce6964dee0da54121e"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original Git product source/test bodies; selected CI job pass lines + digests; scoped partial only.",
+      "artifacts": [
+        {
+          "member": "original-8c-portability-selected-CI.json",
+          "member_sha256": "2ae65d25a8e861e16805b16c5de9e8c750ead57622c2e825150a5724d281e1f1",
+          "path": "docs/acceptance/evidence/portable-late-member-main-8c246fd6.zip",
+          "sha256": "0f0ef5232406945ae1a6a2f325915cf0eab14d9a4495b31e9a5f648e94826413"
+        }
+      ],
+      "assertions": [
+        "Service-level blob source mismatch rejects import before publication on macos; source test body and original job are SHA-bound."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-PROJECT-06#/statement",
+        "CR-PROJECT-06#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "crates/storage/src/portability.rs",
+          "sha256": "1adadb4ef4033862d74ff13529410616fe17c8d5a9bfc09628fb14e986b56db9"
+        },
+        {
+          "path": "crates/service/tests/project_portability_authority.rs",
+          "sha256": "9f788025e712edbbe79b7774b2e5d78508902f474b7383ce6964dee0da54121e"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 118371353803,
+        "kind": "integration",
+        "passed": 1,
+        "profile": "portable-bundle-atomic-preflight-cross-platform",
+        "run_id": 39343773312,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39343773312/job/118371353803"
+      },
+      "id": "portable-bundle-preflight-main-8c246-macos",
+      "limitations": [
+        "Installed Studio round-trip or all media formats, user rights or independent creative review.",
+        "Power interruption between filesystem write and final SQLite COMMIT, destination long-term rollback/recovery.",
+        "All CR-PROJECT-06 original requirements and linked acceptance scenarios.",
+        "Whole CI suite readiness, release authorization or a human evaluation."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "8c246fd61bd93415f7b10bbd0f2c361fb770a679",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "crates/storage/src/portability.rs",
+          "sha256": "1adadb4ef4033862d74ff13529410616fe17c8d5a9bfc09628fb14e986b56db9"
+        },
+        {
+          "path": "crates/service/tests/project_portability_authority.rs",
+          "sha256": "9f788025e712edbbe79b7774b2e5d78508902f474b7383ce6964dee0da54121e"
         }
       ]
     }
