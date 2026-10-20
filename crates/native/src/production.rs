@@ -4066,10 +4066,10 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             async fn marker(&self, name: &str) -> String {
                 timeout(Duration::from_secs(5), async {
                     loop {
-                        if let Ok(value) = fs::read_to_string(self.root.join(name)) {
-                            if !value.is_empty() {
-                                return value;
-                            }
+                        if let Ok(value) = fs::read_to_string(self.root.join(name))
+                            && !value.is_empty()
+                        {
+                            return value;
                         }
                         sleep(Duration::from_millis(10)).await;
                     }
