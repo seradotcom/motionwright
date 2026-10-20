@@ -239,8 +239,8 @@ jobs:
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           source=json.loads((public/"source-inputs.json").read_text())
           receipt=json.loads((public/"official-runtime-contracts.json").read_text())
-          expected={"tooling/mlt_official_runtime_intake.py":"5451e2e8f029d9936f196f656517df0655c4d2b006e9707a8eb2915f44eb62b2",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"87058f27ebd06fe40c4612871ec56b277e9d1b80ed0bc8eb86d287c35a02ab5c"}
+          expected={"tooling/mlt_official_runtime_intake.py":"ba4f5ab4ffb8a95f9499369bd22d4500d308bb01d5d6301e5f7dad97e7acef30",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"659842109c51a8a5603617dc580593cff9bf4b747515ea5d1861e5110a48d669"}
           test="tooling/tests/test_mlt_official_runtime_intake.py"
           assert source["official_intake_sources"]==expected
           assert set(source["official_intake_blob_oids"])==set(expected)
@@ -254,7 +254,7 @@ jobs:
           for row in receipt["steps"]:
               counts=row["counts"]
               assert row["exit_code"]==0 and row["status"]=="PASS"
-              assert counts["tests_run"]==counts["passed"]==34
+              assert counts["tests_run"]==counts["passed"]==44
               assert counts["terminal_status"]=="OK"
               assert all(counts[key]==0 for key in (
                   "errors","failures","skipped","expected_failures","unexpected_successes"))
@@ -1074,8 +1074,8 @@ jobs:
           require(not git("status","--porcelain=v1","--untracked-files=all"),"checkout changed")
           require(not git("ls-files","--others","--ignored","--exclude-standard","-z"),
                   "ignored checkout files")
-          pins={"tooling/mlt_official_runtime_intake.py":"5451e2e8f029d9936f196f656517df0655c4d2b006e9707a8eb2915f44eb62b2",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"87058f27ebd06fe40c4612871ec56b277e9d1b80ed0bc8eb86d287c35a02ab5c"}
+          pins={"tooling/mlt_official_runtime_intake.py":"ba4f5ab4ffb8a95f9499369bd22d4500d308bb01d5d6301e5f7dad97e7acef30",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"659842109c51a8a5603617dc580593cff9bf4b747515ea5d1861e5110a48d669"}
           workflow=".github/workflows/mlt-audio-diagnostic.yml"
           runner="tooling/ci_test_runner.py"
           sources={}
@@ -1117,8 +1117,8 @@ jobs:
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           source=json.loads((public/"source-inputs.json").read_text())
           receipt=json.loads((public/"official-runtime-contracts.json").read_text())
-          expected={"tooling/mlt_official_runtime_intake.py":"5451e2e8f029d9936f196f656517df0655c4d2b006e9707a8eb2915f44eb62b2",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"87058f27ebd06fe40c4612871ec56b277e9d1b80ed0bc8eb86d287c35a02ab5c"}
+          expected={"tooling/mlt_official_runtime_intake.py":"ba4f5ab4ffb8a95f9499369bd22d4500d308bb01d5d6301e5f7dad97e7acef30",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"659842109c51a8a5603617dc580593cff9bf4b747515ea5d1861e5110a48d669"}
           test="tooling/tests/test_mlt_official_runtime_intake.py"
           assert source["official_intake_sources"]==expected
           assert set(source["official_intake_blob_oids"])==set(expected)
@@ -1132,7 +1132,7 @@ jobs:
           for row in receipt["steps"]:
               counts=row["counts"]
               assert row["exit_code"]==0 and row["status"]=="PASS"
-              assert counts["tests_run"]==counts["passed"]==34
+              assert counts["tests_run"]==counts["passed"]==44
               assert counts["terminal_status"]=="OK"
               assert all(counts[key]==0 for key in (
                   "errors","failures","skipped","expected_failures","unexpected_successes"))

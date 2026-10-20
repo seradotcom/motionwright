@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Authenticate two Ubuntu MLT runtime files without installing or loading them.
 
-The trust anchor is the Ubuntu archive keyring supplied by the runner. This
-source-only intake preserves the signed metadata and package bytes for separate
-admission. Its receipt is evidence, not a replacement for an externally pinned
-receipt digest or for a physical loaded-module observation.
+The signing authority is the full Ubuntu Archive 2018 fingerprint pinned below.
+The runner keyring supplies candidate key material, whose original bytes and
+metadata are retained without modifying permissions. This source-only intake
+preserves signed metadata and package bytes for separate admission. Its receipt
+is evidence, not a replacement for an externally pinned receipt digest or for a
+physical loaded-module observation.
 """
 from __future__ import annotations
 
@@ -32,6 +34,10 @@ RELEASE = "dists/noble/InRelease"
 INDEX = "universe/binary-amd64/Packages"
 VERSION = "7.22.0-1build6"
 KEYRING = Path("/usr/share/keyrings/ubuntu-archive-keyring.gpg")
+# Ubuntu Security FAQ, GPG Keys: Archive 2018, RSA 4096. This fixed Noble
+# profile authorizes that primary key directly, not arbitrary signing subkeys.
+ARCHIVE_SIGNING_FINGERPRINT = "F6ECB3762474EDA9D21B7022871920D1991BC93C"
+SIGNING_AUTHORITY_URL = "https://wiki.ubuntu.com/Security/FAQ#GPG_Keys"
 PACKAGE_MEMBERS = {
     "libmlt7": ("original_module", "/usr/lib/x86_64-linux-gnu/mlt-7/libmltavformat.so"),
     "melt": ("melt", "/usr/bin/melt"),
@@ -70,7 +76,8 @@ def json_bytes(value):
     return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
-def read_regular(path, limit):
+def capture_regular(path, limit):
+    """Read one stable handle and preserve observed metadata, without granting trust."""
     path = Path(path)
     require(not path.is_symlink(), "symlink input")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -89,13 +96,25 @@ def read_regular(path, limit):
             require(total <= limit, "input exceeds size limit")
         after = os.fstat(fd)
         namespace = path.lstat()
-        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
-        require(identity(before) == identity(after) == identity(namespace),
+        def identity(value):
+            return {"device": value.st_dev, "inode": value.st_ino,
+                    "size": value.st_size, "mode": value.st_mode,
+                    "uid": value.st_uid, "gid": value.st_gid,
+                    "mtime_ns": value.st_mtime_ns, "ctime_ns": value.st_ctime_ns}
+        observations = [identity(value) for value in (before, after, namespace)]
+        require(observations[0] == observations[1] == observations[2],
                 "input changed during read")
         require(total == before.st_size, "input read size differs")
-        return b"".join(chunks)
+        data = b"".join(chunks)
+        return data, {"path": str(path), "sha256": digest(data), "size": len(data),
+                      "before": observations[0], "after": observations[1],
+                      "namespace_after": observations[2]}
     finally:
         os.close(fd)
+
+
+def read_regular(path, limit):
+    return capture_regular(path, limit)[0]
 
 
 def descriptor(path, root, limit):
@@ -187,7 +206,9 @@ def parse_signature_status(data, returncode, now):
         tag, args = tokens[0], tokens[1:]
         require(tag not in failures, "gpgv negative status: " + tag)
         if tag == "GOODSIG":
-            require(args and re.fullmatch(r"[0-9A-F]{16,64}", args[0]), "invalid GOODSIG")
+            require(args and args[0] in {
+                ARCHIVE_SIGNING_FINGERPRINT[-16:], ARCHIVE_SIGNING_FINGERPRINT},
+                "GOODSIG is not the authorized signing key")
             good_ids.append(args[0])
         if tag != "VALIDSIG":
             continue
@@ -195,6 +216,8 @@ def parse_signature_status(data, returncode, now):
         fpr, creation, timestamp, expiry, version, reserved, public_algo, hash_algo, cls, primary = args
         require(FINGERPRINT.fullmatch(fpr) and FINGERPRINT.fullmatch(primary),
                 "invalid signer fingerprint")
+        require(fpr == primary == ARCHIVE_SIGNING_FINGERPRINT,
+                "VALIDSIG signing and primary fingerprints are not authorized")
         require(timestamp.isdecimal() and expiry.isdecimal(), "invalid signature times")
         created, expires = int(timestamp), int(expiry)
         require(created <= int(now.timestamp()) and (expires == 0 or expires > now.timestamp()),
@@ -209,11 +232,11 @@ def parse_signature_status(data, returncode, now):
                            "creation_date": creation, "created_epoch": created,
                            "expires_epoch": expires, "public_key_algorithm": int(public_algo),
                            "hash_algorithm": int(hash_algo), "signature_class": cls})
-    require(signatures and len({s["fingerprint"] for s in signatures}) == len(signatures),
-            "missing or duplicate valid signatures")
+    require(len(signatures) == 1, "expected exactly one authorized valid signature")
     require(len(good_ids) == len(signatures) and len(set(good_ids)) == len(good_ids),
             "missing or duplicate good signature status")
-    require(all(any(s["fingerprint"].endswith(key) for s in signatures) for key in good_ids),
+    require(good_ids[0] in {signatures[0]["fingerprint"],
+                           signatures[0]["fingerprint"][-16:]},
             "GOODSIG and VALIDSIG identities differ")
     return signatures
 
@@ -409,7 +432,13 @@ def extract_regular_member(tar_data, installed_path):
     return result
 
 
-def build_receipt(context, release, signatures, files, packages, members):
+def build_receipt(context, release, signatures, files, packages, members, keyring_observation):
+    require(len(signatures) == 1 and
+            signatures[0]["fingerprint"] == signatures[0]["primary_fingerprint"] ==
+            ARCHIVE_SIGNING_FINGERPRINT, "receipt lacks the authorized signer")
+    require(files["keyring"]["sha256"] == keyring_observation["sha256"] and
+            files["keyring"]["size"] == keyring_observation["size"],
+            "receipt keyring snapshot differs")
     require(set(packages) == set(members) == set(PACKAGE_MEMBERS), "incomplete runtime custody")
     bindings = {}
     for name, (binding, installed_path) in PACKAGE_MEMBERS.items():
@@ -424,8 +453,13 @@ def build_receipt(context, release, signatures, files, packages, members):
                              "architecture": "amd64", "component": "universe",
                              "upstream_version": "7.22.0", "package_version": VERSION},
             "release": release, "signatures": signatures,
-            "trust_anchor": {"kind": "runner-ubuntu-archive-keyring-snapshot",
+            "trust_anchor": {"kind": "source-pinned-ubuntu-archive-signing-key",
+                             "signing_fingerprint": ARCHIVE_SIGNING_FINGERPRINT,
+                             "primary_fingerprint": ARCHIVE_SIGNING_FINGERPRINT,
+                             "authority_reference": SIGNING_AUTHORITY_URL,
+                             "key_material_role": "observed-candidate-keyring",
                              "original_path": str(KEYRING),
+                             "source_observation": keyring_observation,
                              "keyring": files["keyring"],
                              "fresh_key_revocation_check": "NOT_ESTABLISHED_BY_GPGV"},
             "chain_files": files, "packages": packages, "members": members,
@@ -453,12 +487,16 @@ def collect(root, context):
         tracked[path] = (files[label], limit)
         return files[label]
 
-    keyring = read_regular(KEYRING, LIMIT_METADATA)
-    key_stat = KEYRING.lstat()
-    require(key_stat.st_uid == 0 and not key_stat.st_mode & 0o022, "untrusted keyring permissions")
+    keyring, keyring_observation = capture_regular(KEYRING, LIMIT_METADATA)
+    keyring_pin = {key: keyring_observation[key] for key in ("sha256", "size")}
+    # The snapshot is evidence supplied to gpgv, not a new trust anchor. Its
+    # ownership or mode cannot authorize any signer; the full pin below does.
+    exclusive(root / "raw/keyring-source-observation.json", json_bytes(keyring_observation))
+    remember("keyring_source_observation", root / "raw/keyring-source-observation.json")
     key_copy = root / "raw/ubuntu-archive-keyring.gpg"
     exclusive(key_copy, keyring)
     remember("keyring", key_copy)
+    verify_bytes(read_regular(key_copy, LIMIT_METADATA), keyring_pin)
     for name in ("gpgv", "dpkg-deb"):
         tool = Path("/usr/bin") / name
         data = read_regular(tool, LIMIT_MEMBER)
@@ -477,6 +515,7 @@ def collect(root, context):
         exclusive(root / "commands/gpgv.json", json_bytes({"argv": command}))
         code = run_tool(command, signed_payload, log_path, root, status=status_handle)
     exclusive(root / "commands/gpgv-exit.json", json_bytes({"exit_code": code}))
+    verify_bytes(read_regular(key_copy, LIMIT_METADATA), keyring_pin)
     signatures = parse_signature_status(read_regular(status_path, LIMIT_METADATA), code, now)
     remember("signature_status", status_path)
     remember("signature_log", log_path)
@@ -525,7 +564,7 @@ def collect(root, context):
         remember(name + "_extract_exit", root / "commands" / (name + "-extract-exit.json"))
     for path, (pin, limit) in tracked.items():
         verify_bytes(read_regular(path, limit), {key: pin[key] for key in ("sha256", "size")})
-    return build_receipt(context, release, signatures, files, packages, members)
+    return build_receipt(context, release, signatures, files, packages, members, keyring_observation)
 
 
 def main(argv=None):

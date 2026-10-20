@@ -1,5 +1,6 @@
 """Offline contracts for the signed Ubuntu MLT file inventory."""
 import copy
+from contextlib import contextmanager
 import datetime as dt
 import hashlib
 import io
@@ -16,7 +17,7 @@ from types import SimpleNamespace
 from tooling import mlt_official_runtime_intake as intake
 
 NOW = dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc)
-FPR = "A" * 40
+FPR = "F6ECB3762474EDA9D21B7022871920D1991BC93C"
 
 
 def sha(data):
@@ -112,6 +113,34 @@ class Response(io.BytesIO):
 
     def geturl(self):
         return self.url
+
+
+@contextmanager
+def collection_fixture(root, keyring):
+    real_capture = intake.capture_regular
+
+    def capture(path, limit):
+        path = Path(path)
+        if path.as_posix() == "/usr/lib/os-release":
+            data = b'ID=ubuntu\nVERSION_ID="24.04"\n'
+            return data, {}
+        if path.as_posix() in ("/usr/bin/gpgv", "/usr/bin/dpkg-deb"):
+            return b"tool bytes are mocked; no native command runs", {}
+        data, observation = real_capture(path, limit)
+        if path == keyring:
+            # Exercise the observed non-root/group-writable metadata case.
+            # Neither the file nor any OS permissions are changed.
+            for name in ("before", "after", "namespace_after"):
+                observation[name]["uid"] = 1001
+                observation[name]["gid"] = 1001
+                observation[name]["mode"] = intake.stat.S_IFREG | 0o664
+        return data, observation
+
+    with mock.patch.object(intake, "KEYRING", keyring), \
+            mock.patch.object(intake.platform, "system", return_value="Linux"), \
+            mock.patch.object(intake.platform, "machine", return_value="x86_64"), \
+            mock.patch.object(intake, "capture_regular", side_effect=capture):
+        yield
 
 
 class OfficialRuntimeIntakeTests(unittest.TestCase):
@@ -396,7 +425,15 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
             name: {"installed_path": path, "sha256": sha(elf()), "package_sha256": selected[name]["sha256"]}
             for name, (_, path) in intake.PACKAGE_MEMBERS.items()
         }
-        receipt = intake.build_receipt({}, {}, [], {"keyring": {}}, selected, members)
+        signatures = intake.parse_signature_status(signature(), 0, NOW)
+        keyring_pin = pin(b"retained keyring bytes")
+        observation = {"path": str(intake.KEYRING), **keyring_pin}
+        receipt = intake.build_receipt({}, {}, signatures, {"keyring": keyring_pin},
+                                       selected, members, observation)
+        self.assertEqual(receipt["trust_anchor"]["kind"], "source-pinned-ubuntu-archive-signing-key")
+        self.assertEqual(receipt["trust_anchor"]["signing_fingerprint"], FPR)
+        self.assertEqual(receipt["trust_anchor"]["primary_fingerprint"], FPR)
+        self.assertEqual(receipt["trust_anchor"]["source_observation"], observation)
         self.assertEqual(receipt["schema"], "motionwright.mlt.official-runtime-intake/1")
         self.assertEqual(set(receipt["runtime_bindings"]), {"original_module", "melt"})
         for value in receipt["runtime_bindings"].values():
@@ -406,7 +443,8 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
             self.assertEqual(receipt[key], "NOT_RUN")
         members["melt"]["package_sha256"] = "e" * 64
         with self.assertRaises(intake.IntakeError):
-            intake.build_receipt({}, {}, [], {"keyring": {}}, selected, members)
+            intake.build_receipt({}, {}, signatures, {"keyring": keyring_pin},
+                                 selected, members, observation)
 
     def test_failed_collection_records_one_attempt_without_runtime_receipt_or_retry(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -426,6 +464,165 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
             self.assertEqual(attempt["status"], "FAILED_SOURCE_INTAKE")
             self.assertEqual(attempt["native_execution"], "NOT_RUN")
             self.assertFalse(json.loads((root / "intent.json").read_text())["automatic_retry"])
+
+    def test_signing_and_primary_fingerprints_must_both_be_source_authorized(self):
+        foreign = "B" * 40
+        for changes in ({"fingerprint": foreign, "primary": foreign},
+                        {"fingerprint": foreign}, {"primary": foreign}):
+            with self.subTest(changes=changes):
+                with self.assertRaises(intake.IntakeError):
+                    intake.parse_signature_status(signature(**changes), 0, NOW)
+
+    def test_matching_long_key_id_cannot_replace_the_full_authority_fingerprint(self):
+        collision = "B" * 24 + FPR[-16:]
+        self.assertNotEqual(collision, FPR)
+        for changes in ({"fingerprint": collision, "primary": collision},
+                        {"fingerprint": collision}, {"primary": collision}):
+            with self.subTest(changes=changes):
+                with self.assertRaises(intake.IntakeError):
+                    intake.parse_signature_status(signature(**changes), 0, NOW)
+
+    def test_extra_unauthorized_duplicate_or_weak_signatures_fail_closed(self):
+        collision = "B" * 24 + FPR[-16:]
+        for extra in (signature(fingerprint=collision, primary=collision),
+                      signature(primary="B" * 40), signature(), signature(hash="2")):
+            with self.subTest(extra=extra[-50:]):
+                with self.assertRaises(intake.IntakeError):
+                    intake.parse_signature_status(signature() + extra, 0, NOW)
+
+    def test_goodsig_accepts_only_exact_authorized_long_id_or_full_fingerprint(self):
+        original = signature()
+        full = original.replace(FPR[-16:].encode(), FPR.encode(), 1)
+        self.assertEqual(intake.parse_signature_status(full, 0, NOW)[0]["fingerprint"], FPR)
+        for identity in (FPR[-17:], FPR[:-1], "B" * 16):
+            with self.subTest(identity=identity):
+                data = original.replace(FPR[-16:].encode(), identity.encode(), 1)
+                with self.assertRaises(intake.IntakeError):
+                    intake.parse_signature_status(data, 0, NOW)
+
+    def test_keyring_capture_retains_same_handle_metadata_and_exact_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "keyring"
+            path.write_bytes(b"original key material")
+            data, observation = intake.capture_regular(path, 100)
+            self.assertEqual(data, b"original key material")
+            self.assertEqual(observation["path"], str(path))
+            self.assertEqual(observation["sha256"], sha(data))
+            self.assertEqual(observation["size"], len(data))
+            self.assertEqual(observation["before"], observation["after"])
+            self.assertEqual(observation["before"], observation["namespace_after"])
+            actual = path.lstat()
+            for key, attr in (("device", "st_dev"), ("inode", "st_ino"), ("mode", "st_mode"),
+                              ("uid", "st_uid"), ("gid", "st_gid"), ("size", "st_size"),
+                              ("mtime_ns", "st_mtime_ns"), ("ctime_ns", "st_ctime_ns")):
+                self.assertEqual(observation["before"][key], getattr(actual, attr))
+
+    def test_keyring_capture_does_not_convert_permissions_into_signing_authority(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "keyring"
+            path.write_bytes(b"untrusted candidate key material")
+            actual = path.stat()
+            attrs = {name: getattr(actual, name) for name in (
+                "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")}
+            attrs.update(st_uid=1001, st_gid=1001, st_mode=intake.stat.S_IFREG | 0o664)
+            observed = SimpleNamespace(**attrs)
+            with mock.patch.object(intake.os, "fstat", return_value=observed), \
+                    mock.patch.object(Path, "lstat", return_value=observed), \
+                    mock.patch.object(intake.os, "chmod") as chmod:
+                data, observation = intake.capture_regular(path, 100)
+            self.assertEqual(data, b"untrusted candidate key material")
+            self.assertEqual(observation["before"]["uid"], 1001)
+            self.assertEqual(observation["before"]["mode"] & 0o777, 0o664)
+            chmod.assert_not_called()
+            with self.assertRaises(intake.IntakeError):
+                intake.parse_signature_status(signature(fingerprint="B" * 40, primary="B" * 40), 0, NOW)
+
+    def test_keyring_metadata_change_during_same_handle_capture_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "keyring"
+            path.write_bytes(b"key material")
+            original = path.stat()
+            attrs = {name: getattr(original, name) for name in (
+                "st_dev", "st_ino", "st_size", "st_mode", "st_uid", "st_gid",
+                "st_mtime_ns", "st_ctime_ns")}
+            attrs["st_uid"] += 1
+            with mock.patch.object(intake.os, "fstat", side_effect=[
+                    original, SimpleNamespace(**attrs)]):
+                with self.assertRaisesRegex(intake.IntakeError, "changed during read"):
+                    intake.capture_regular(path, 100)
+
+    def test_collection_preserves_original_keyring_observation_before_download(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root, keyring = parent / "intake", parent / "keyring"
+            root.mkdir()
+            keyring.write_bytes(b"candidate key material")
+            with collection_fixture(root, keyring), \
+                    mock.patch.object(intake.os, "chmod") as chmod, \
+                    mock.patch.object(intake, "download", side_effect=intake.IntakeError("stop before network")) as download, \
+                    mock.patch.object(intake, "run_tool") as run:
+                with self.assertRaisesRegex(intake.IntakeError, "stop before network"):
+                    intake.collect(root, {})
+            download.assert_called_once()
+            run.assert_not_called()
+            chmod.assert_not_called()
+            observation = json.loads((root / "raw/keyring-source-observation.json").read_text())
+            self.assertEqual(observation["before"]["uid"], 1001)
+            self.assertEqual(observation["before"]["mode"] & 0o777, 0o664)
+            self.assertEqual(observation["before"], observation["after"])
+            self.assertEqual(observation["before"], observation["namespace_after"])
+            copied = (root / "raw/ubuntu-archive-keyring.gpg").read_bytes()
+            self.assertEqual(copied, keyring.read_bytes())
+            self.assertEqual(observation["sha256"], sha(copied))
+            self.assertFalse((root / "official-runtime-receipt.json").exists())
+
+    def test_mutated_keyring_snapshot_after_gpgv_is_rejected_before_release_admission(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root, keyring = parent / "intake", parent / "keyring"
+            root.mkdir()
+            keyring.write_bytes(b"candidate key material")
+
+            def download(relative, destination, limit, pin=None):
+                intake.exclusive(destination, b"mocked signed input; no download")
+
+            def run(command, output, error, work, *, status=None, stdin=None):
+                self.assertEqual(command[0], "/usr/bin/gpgv")
+                status.write(signature())
+                status.flush()
+                intake.exclusive(output, release()[0])
+                intake.exclusive(error, b"")
+                (root / "raw/ubuntu-archive-keyring.gpg").write_bytes(b"changed snapshot")
+                return 0
+
+            with collection_fixture(root, keyring), \
+                    mock.patch.object(intake, "download", side_effect=download) as downloaded, \
+                    mock.patch.object(intake, "run_tool", side_effect=run) as invoked, \
+                    mock.patch.object(intake, "parse_release") as parsed:
+                with self.assertRaisesRegex(intake.IntakeError, "authenticated digest"):
+                    intake.collect(root, {})
+            downloaded.assert_called_once()
+            invoked.assert_called_once()
+            parsed.assert_not_called()
+            self.assertEqual(keyring.read_bytes(), b"candidate key material")
+            self.assertFalse((root / "official-runtime-receipt.json").exists())
+
+    def test_receipt_rejects_missing_authority_or_mismatched_keyring_snapshot(self):
+        selected = intake.select_packages(packages())
+        members = {
+            name: {"installed_path": path, "sha256": sha(elf()), "package_sha256": selected[name]["sha256"]}
+            for name, (_, path) in intake.PACKAGE_MEMBERS.items()
+        }
+        signatures = intake.parse_signature_status(signature(), 0, NOW)
+        original = pin(b"keyring")
+        foreign = copy.deepcopy(signatures)
+        foreign[0]["primary_fingerprint"] = "B" * 40
+        for values, observation in (([], original), (foreign, original),
+                                    (signatures, pin(b"replacement"))):
+            with self.subTest(signatures=values, observation=observation):
+                with self.assertRaises(intake.IntakeError):
+                    intake.build_receipt({}, {}, values, {"keyring": original},
+                                         selected, members, observation)
 
 
 if __name__ == "__main__":
