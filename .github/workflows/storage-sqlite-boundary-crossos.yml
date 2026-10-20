@@ -1,0 +1,373 @@
+name: Real SQLite CAS and filesystem alias boundaries
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/storage-sqlite-boundary-crossos.yml'
+      - 'crates/storage/src/lib.rs'
+      - 'crates/storage/src/portability.rs'
+      - 'crates/storage/tests/foreign_sqlite_admission.rs'
+      - 'crates/storage/tests/event_cursor_boundary.rs'
+      - 'crates/storage/tests/sqlite_path_alias_authority.rs'
+      - 'crates/storage/tests/sqlite_darwin_system_alias.rs'
+      - 'crates/storage/tests/sqlite_windows_reparse_authority.rs'
+      - 'Cargo.lock'
+      - 'SOURCE_LOCK.json'
+permissions:
+  contents: read
+concurrency:
+  group: sqlite-boundaries-${{ github.ref }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  g0-source-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Enforce source policy before selected G2
+        run: |
+          set -euo pipefail
+          python -B tooling/source_policy.py
+      - name: Authenticate frozen product sources and named test definitions
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/mw-sqlite-g0-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$work"
+          export MW_SQLITE_EVIDENCE="$work"
+          echo "MW_SQLITE_EVIDENCE=$work" >> "$GITHUB_ENV"
+          python -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,re,stat,subprocess
+          root=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          head=os.environ["GITHUB_SHA"]
+          PRODUCT="f79a1e422beb18859dce033c2feeac6fea197061"
+          pins={'crates/storage/src/lib.rs': '5833e7c185e8ba5aa2fa3b05ddda8dc23b20fac8ec9ea551c903f521cea7cd83', 'crates/storage/src/portability.rs': 'a8738b1522f5c71de610e9203aa0f921cbf6d68cbeb0aa96763f7d0c5a581249', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/tests/sqlite_path_alias_authority.rs': '0a44b1803ce4d03be393a246b14ec0ce21afd64eb5e8d3d0df94d964e5e81e4a', 'crates/storage/tests/sqlite_darwin_system_alias.rs': '68bbc8cb6b3aeb6d775a81400a4b140ebce1fb5e994fbb3aa8ae48fa8be1fccd', 'crates/storage/tests/sqlite_windows_reparse_authority.rs': '4e9ee16caf5f80176a69e134779b35989d76ae65256b18ff34f1c866801eb685', 'Cargo.lock': '583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84', 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1'}
+          assert re.fullmatch(r"[0-9a-f]{40}",head)
+          en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
+          en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
+          def git(*parts):
+           return subprocess.check_output(["git","--no-replace-objects","-C",str(root),*parts],env=en)
+          assert git("rev-parse","HEAD").decode().strip()==head
+          parents=git("rev-list","--parents","-n","1",head).decode().strip().split()
+          assert parents==[head,PRODUCT],"Verification source must be a one-file child of the exact frozen product"
+          changed=git("diff","--name-only",PRODUCT,head).decode().splitlines()
+          assert changed==[".github/workflows/storage-sqlite-boundary-crossos.yml"]
+          assert not git("status","--porcelain=v1","--untracked-files=all")
+          sha=lambda b:hashlib.sha256(b).hexdigest()
+          identity={}
+          for rel,expected in pins.items():
+           path=root/rel
+           assert path.is_file() and not path.is_symlink() and stat.S_ISREG(path.lstat().st_mode)
+           line=git("ls-tree","-z",head,"--",rel).rstrip(b"\0")
+           meta,sep,saved=line.partition(b"\t")
+           assert sep and saved.decode()==rel
+           mode,kind,oid=meta.split()
+           assert mode in (b"100644",b"100755") and kind==b"blob"
+           raw=git("cat-file","blob",oid.decode("ascii"))
+           assert len(raw)<2500000 and raw==path.read_bytes()
+           assert sha(raw)==expected
+           assert hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()==oid.decode()
+           identity[rel]={"sha256":expected,"git_blob_oid":oid.decode()}
+          wanted={'crates/storage/src/portability.rs': ['late_sqlite_writer_cannot_claim_project_during_portable_publication', 'rejected_sqlite_project_or_event_write_does_not_publish_captured_cas', 'newly_visible_existing_project_id_must_not_publish_any_bundle_blobs'], 'crates/storage/tests/foreign_sqlite_admission.rs': ['foreign_unversioned_sqlite_is_not_replaced_or_extended', 'foreign_view_only_sqlite_is_not_mistaken_for_an_empty_database', 'existing_sqlite_with_no_user_schema_objects_can_initialize_normally', 'foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected', 'real_v1_source_layout_still_upgrades_without_changing_project_identity'], 'crates/storage/tests/event_cursor_boundary.rs': ['unsigned_event_cursor_overflow_never_replays_consumed_history'], 'crates/storage/tests/sqlite_path_alias_authority.rs': ['sqlite_file_symlink_cannot_open_another_owners_real_store', 'sqlite_parent_directory_symlink_cannot_create_foreign_owner_state', 'nested_sqlite_directory_alias_is_not_hidden_by_regular_final_parent', 'ordinary_regular_sqlite_project_creation_and_reopen_still_work'], 'crates/storage/tests/sqlite_darwin_system_alias.rs': ['built_in_var_alias_admits_real_sqlite_creation_and_reopen_with_nofollow', 'built_in_var_alias_does_not_exempt_foreign_nested_symlink'], 'crates/storage/tests/sqlite_windows_reparse_authority.rs': ['windows_junction_does_not_admit_another_owners_existing_sqlite', 'windows_junction_cannot_create_sqlite_or_sidecars_in_unowned_directory', 'windows_reparse_file_leaf_is_rejected_without_touching_target_bytes']}
+          for rel,cases in wanted.items():
+           text=(root/rel).read_text(encoding="utf-8")
+           for name in cases:
+            assert len(re.findall(r"\bfn\s+"+name+r"\s*\(",text))==1,(rel,name)
+          receipt={"schema":"motionwright.sqlite-crossOS-G0-original/1","source_sha":head,
+          "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
+          "product_source_sha":PRODUCT,"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+          "job_key":os.environ["GITHUB_JOB"],"sources":identity,
+          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_Windows_tests":12,"expected_macOS_tests":15,"Windows_alias_reparse":"REQUIRES_THREE_EXPLICIT_TESTS_WITH_REAL_FIXTURES",
+          "actual_Rust_run":"NOT_RUN_SOURCE_CHECK_ONLY","G2_crash_atomicity":"NOT_RUN"}
+          out=pathlib.Path(os.environ["MW_SQLITE_EVIDENCE"])
+          assert out.is_absolute() and out.is_dir() and not out.resolve().is_relative_to(root)
+          with (out/"source-snapshot.json").open("x") as stream:
+           json.dump(receipt,stream,indent=2);stream.write("\n")
+          print(json.dumps({"G0":"PASS", "source":head,"12_windows_15_macos_SQLite_cases":True}))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sqlite-boundary-G0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MW_SQLITE_EVIDENCE }}
+          if-no-files-found: warn
+          retention-days: 14
+  g0-contract-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Enforce acceptance and creative policies fail closed
+        run: |
+          set -euo pipefail
+          python -B tooling/acceptance_policy.py
+          python -B tooling/creative_status_policy.py
+  real-sqlite-concurrency:
+    needs: g0-source-policy
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Enforce LF Git object identity and isolated target directory
+        run: |
+          set -euo pipefail
+          git config --local core.autocrlf false
+          git config --local core.eol lf
+          git -c core.autocrlf=false -c core.eol=lf checkout --force "$GITHUB_SHA"
+          git -c core.autocrlf=false -c core.eol=lf checkout-index --force -- \
+            Cargo.lock SOURCE_LOCK.json \
+            crates/storage/src/lib.rs crates/storage/src/portability.rs \
+            crates/storage/tests/foreign_sqlite_admission.rs \
+            crates/storage/tests/event_cursor_boundary.rs \
+            crates/storage/tests/sqlite_path_alias_authority.rs \
+            crates/storage/tests/sqlite_darwin_system_alias.rs \
+            crates/storage/tests/sqlite_windows_reparse_authority.rs
+          python -B -I -S - <<'PY'
+          import os,pathlib
+          folder=pathlib.Path(os.environ["RUNNER_TEMP"])/(
+              "mw-sqlite-"+os.environ["GITHUB_SHA"]+"-"+os.environ["GITHUB_RUN_ID"]
+              +"-"+os.environ["GITHUB_RUN_ATTEMPT"])
+          public=folder/"public"
+          target=folder/"target"
+          assert not folder.exists()
+          public.mkdir(parents=True)
+          target.mkdir()
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf-8") as file:
+              file.write("MW_SQLITE_EVIDENCE="+str(public)+"\n")
+              file.write("CARGO_TARGET_DIR="+str(target)+"\n")
+          PY
+      - name: Verify exact frozen product source snapshot
+        run: |
+          set -euo pipefail
+          python -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,re,stat,subprocess
+          root=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          head=os.environ["GITHUB_SHA"]
+          PRODUCT="f79a1e422beb18859dce033c2feeac6fea197061"
+          pins={'crates/storage/src/lib.rs': '5833e7c185e8ba5aa2fa3b05ddda8dc23b20fac8ec9ea551c903f521cea7cd83', 'crates/storage/src/portability.rs': 'a8738b1522f5c71de610e9203aa0f921cbf6d68cbeb0aa96763f7d0c5a581249', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/tests/sqlite_path_alias_authority.rs': '0a44b1803ce4d03be393a246b14ec0ce21afd64eb5e8d3d0df94d964e5e81e4a', 'crates/storage/tests/sqlite_darwin_system_alias.rs': '68bbc8cb6b3aeb6d775a81400a4b140ebce1fb5e994fbb3aa8ae48fa8be1fccd', 'crates/storage/tests/sqlite_windows_reparse_authority.rs': '4e9ee16caf5f80176a69e134779b35989d76ae65256b18ff34f1c866801eb685', 'Cargo.lock': '583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84', 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1'}
+          assert re.fullmatch(r"[0-9a-f]{40}",head)
+          en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
+          en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
+          def git(*parts):
+           return subprocess.check_output(["git","--no-replace-objects","-C",str(root),*parts],env=en)
+          assert git("rev-parse","HEAD").decode().strip()==head
+          parents=git("rev-list","--parents","-n","1",head).decode().strip().split()
+          assert parents==[head,PRODUCT],"Verification source must be a one-file child of the exact frozen product"
+          changed=git("diff","--name-only",PRODUCT,head).decode().splitlines()
+          assert changed==[".github/workflows/storage-sqlite-boundary-crossos.yml"]
+          assert not git("status","--porcelain=v1","--untracked-files=all")
+          sha=lambda b:hashlib.sha256(b).hexdigest()
+          identity={}
+          for rel,expected in pins.items():
+           path=root/rel
+           assert path.is_file() and not path.is_symlink() and stat.S_ISREG(path.lstat().st_mode)
+           line=git("ls-tree","-z",head,"--",rel).rstrip(b"\0")
+           meta,sep,saved=line.partition(b"\t")
+           assert sep and saved.decode()==rel
+           mode,kind,oid=meta.split()
+           assert mode in (b"100644",b"100755") and kind==b"blob"
+           raw=git("cat-file","blob",oid.decode("ascii"))
+           assert len(raw)<2500000 and raw==path.read_bytes()
+           assert sha(raw)==expected
+           assert hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()==oid.decode()
+           identity[rel]={"sha256":expected,"git_blob_oid":oid.decode()}
+          wanted={'crates/storage/src/portability.rs': ['late_sqlite_writer_cannot_claim_project_during_portable_publication', 'rejected_sqlite_project_or_event_write_does_not_publish_captured_cas', 'newly_visible_existing_project_id_must_not_publish_any_bundle_blobs'], 'crates/storage/tests/foreign_sqlite_admission.rs': ['foreign_unversioned_sqlite_is_not_replaced_or_extended', 'foreign_view_only_sqlite_is_not_mistaken_for_an_empty_database', 'existing_sqlite_with_no_user_schema_objects_can_initialize_normally', 'foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected', 'real_v1_source_layout_still_upgrades_without_changing_project_identity'], 'crates/storage/tests/event_cursor_boundary.rs': ['unsigned_event_cursor_overflow_never_replays_consumed_history'], 'crates/storage/tests/sqlite_path_alias_authority.rs': ['sqlite_file_symlink_cannot_open_another_owners_real_store', 'sqlite_parent_directory_symlink_cannot_create_foreign_owner_state', 'nested_sqlite_directory_alias_is_not_hidden_by_regular_final_parent', 'ordinary_regular_sqlite_project_creation_and_reopen_still_work'], 'crates/storage/tests/sqlite_darwin_system_alias.rs': ['built_in_var_alias_admits_real_sqlite_creation_and_reopen_with_nofollow', 'built_in_var_alias_does_not_exempt_foreign_nested_symlink'], 'crates/storage/tests/sqlite_windows_reparse_authority.rs': ['windows_junction_does_not_admit_another_owners_existing_sqlite', 'windows_junction_cannot_create_sqlite_or_sidecars_in_unowned_directory', 'windows_reparse_file_leaf_is_rejected_without_touching_target_bytes']}
+          for rel,cases in wanted.items():
+           text=(root/rel).read_text(encoding="utf-8")
+           for name in cases:
+            assert len(re.findall(r"\bfn\s+"+name+r"\s*\(",text))==1,(rel,name)
+          receipt={"schema":"motionwright.sqlite-crossOS-G0-original/1","source_sha":head,
+          "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
+          "product_source_sha":PRODUCT,"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+          "job_key":os.environ["GITHUB_JOB"],"sources":identity,
+          "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_Windows_tests":12,"expected_macOS_tests":15,"Windows_alias_reparse":"REQUIRES_THREE_EXPLICIT_TESTS_WITH_REAL_FIXTURES",
+          "actual_Rust_run":"NOT_RUN_SOURCE_CHECK_ONLY","G2_crash_atomicity":"NOT_RUN"}
+          out=pathlib.Path(os.environ["MW_SQLITE_EVIDENCE"])
+          assert out.is_absolute() and out.is_dir() and not out.resolve().is_relative_to(root)
+          with (out/"source-snapshot.json").open("x") as stream:
+           json.dump(receipt,stream,indent=2);stream.write("\n")
+          print(json.dumps({"G0":"PASS", "source":head,"12_windows_15_macos_SQLite_cases":True}))
+          PY
+      - name: Select the exact product commit for Rust execution
+        run: |
+          set -euo pipefail
+          git -c core.autocrlf=false -c core.eol=lf checkout --detach f79a1e422beb18859dce033c2feeac6fea197061
+          test "$(git rev-parse HEAD)" = f79a1e422beb18859dce033c2feeac6fea197061
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+      - name: Execute selected SQLite and real filesystem alias cases
+        run: |
+          set -euo pipefail
+          python -B -I -S - <<'PY'
+          import json,os,pathlib,subprocess,hashlib,re,datetime,sys
+          root=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          public=pathlib.Path(os.environ["MW_SQLITE_EVIDENCE"]).resolve(strict=True)
+          workflow_head=os.environ["GITHUB_SHA"]
+          head=subprocess.check_output(["git","rev-parse","HEAD"],cwd=root).decode().strip()
+          assert head=="f79a1e422beb18859dce033c2feeac6fea197061"
+          assert public.is_dir() and public!=root and not public.is_relative_to(root)
+          want="Windows" if sys.platform=="win32" else "macOS" if sys.platform=="darwin" else ""
+          assert want==os.environ["RUNNER_OS"] and want in ("Windows","macOS")
+          suites=[
+          ("late-writer",["cargo","test","--locked","-p","motionwright-storage","--lib","portability::tests::late_sqlite_writer_cannot_claim_project_during_portable_publication","--","--exact","--test-threads=1"],
+           ("portability::tests::late_sqlite_writer_cannot_claim_project_during_portable_publication",)),
+          ("sql-abort",["cargo","test","--locked","-p","motionwright-storage","--lib","portability::tests::rejected_sqlite_project_or_event_write_does_not_publish_captured_cas","--","--exact","--test-threads=1"],
+           ("portability::tests::rejected_sqlite_project_or_event_write_does_not_publish_captured_cas",)),
+          ("late-id",["cargo","test","--locked","-p","motionwright-storage","--lib","portability::tests::newly_visible_existing_project_id_must_not_publish_any_bundle_blobs","--","--exact","--test-threads=1"],
+           ("portability::tests::newly_visible_existing_project_id_must_not_publish_any_bundle_blobs",)),
+          ("foreign-sqlite",["cargo","test","--locked","-p","motionwright-storage","--test","foreign_sqlite_admission","--","--test-threads=1"],
+           ("foreign_unversioned_sqlite_is_not_replaced_or_extended",
+            "foreign_view_only_sqlite_is_not_mistaken_for_an_empty_database",
+            "existing_sqlite_with_no_user_schema_objects_can_initialize_normally",
+            "foreign_versioned_sqlite_and_spoofed_projects_table_are_rejected",
+            "real_v1_source_layout_still_upgrades_without_changing_project_identity")),
+          ("event-cursor",["cargo","test","--locked","-p","motionwright-storage","--test","event_cursor_boundary","--","--test-threads=1"],
+           ("unsigned_event_cursor_overflow_never_replays_consumed_history",))]
+          if want=="macOS":
+           suites.append(("unix-alias",["cargo","test","--locked","-p","motionwright-storage",
+                          "--test","sqlite_path_alias_authority","--","--test-threads=1"],
+                          ("sqlite_file_symlink_cannot_open_another_owners_real_store",
+                           "sqlite_parent_directory_symlink_cannot_create_foreign_owner_state",
+                           "nested_sqlite_directory_alias_is_not_hidden_by_regular_final_parent",
+                           "ordinary_regular_sqlite_project_creation_and_reopen_still_work")))
+           suites.append(("darwin-system-alias",["cargo","test","--locked","-p","motionwright-storage",
+                          "--test","sqlite_darwin_system_alias","--","--test-threads=1"],
+                          ("built_in_var_alias_admits_real_sqlite_creation_and_reopen_with_nofollow",
+                           "built_in_var_alias_does_not_exempt_foreign_nested_symlink")))
+          fixture=None
+          if want=="Windows":
+           import stat
+           fixture_root=pathlib.Path(os.environ["RUNNER_TEMP"])/("mw-ntfs-"+head+"-"+os.environ["GITHUB_RUN_ID"]+"-"+os.environ["GITHUB_RUN_ATTEMPT"])
+           assert not fixture_root.exists()
+           fixture_root.mkdir()
+           owner=fixture_root/"owner"
+           owner.mkdir()
+           junction=fixture_root/"junction"
+           target=fixture_root/"file-target.bin"
+           target.write_bytes(b"synthetic sqlite alias boundary fixture\n")
+           alias=fixture_root/"file-reparse.bin"
+           creation=subprocess.run(["cmd.exe","/d","/c","mklink","/J",str(junction),str(owner)],capture_output=True,check=False)
+           (public/"ntfs-junction-stdout.log").write_bytes(creation.stdout)
+           (public/"ntfs-junction-stderr.log").write_bytes(creation.stderr)
+           assert creation.returncode==0,"NTFS junction fixture unavailable"
+           os.symlink(target,alias,target_is_directory=False)
+           assert junction.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+           assert alias.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+           assert junction.resolve(strict=True)==owner.resolve(strict=True)
+           assert alias.resolve(strict=True)==target.resolve(strict=True)
+           assert fixture_root.resolve(strict=True).is_relative_to(pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(strict=True))
+           os.environ["MW_SQLITE_NTFS_FIXTURE_ROOT"]=str(fixture_root)
+           fixture={"root":str(fixture_root),"junction":str(junction),"junction_target":str(owner),
+                    "file_reparse":str(alias),"file_target":str(target),
+                    "target_sha256":hashlib.sha256(target.read_bytes()).hexdigest(),
+                    "junction_creation_exit":creation.returncode,
+                    "reparse_attributes_verified":True,"actual_Rust_tests_completed":False}
+           (public/"ntfs-fixture-original.json").write_text(json.dumps(fixture,indent=2)+"\n",encoding="utf-8")
+           suites.append(("windows-ntfs",["cargo","test","--locked","-p","motionwright-storage",
+                          "--test","sqlite_windows_reparse_authority","--","--ignored","--test-threads=1"],
+                          ("windows_junction_does_not_admit_another_owners_existing_sqlite",
+                           "windows_junction_cannot_create_sqlite_or_sidecars_in_unowned_directory",
+                           "windows_reparse_file_leaf_is_rejected_without_touching_target_bytes")))
+          env=dict(os.environ,CARGO_INCREMENTAL="0",PYTHONDONTWRITEBYTECODE="1")
+          report={"schema":"motionwright.sqlite-CAS-real-crossOS-G2/1","source_sha":head,
+          "workflow_source_sha":workflow_head,
+          "run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+          "job_key":os.environ["GITHUB_JOB"],"runner_os":want,
+          "tree_sha":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],cwd=root).decode().strip(),
+          "runner_rustc":subprocess.check_output(["rustc","--version"]).decode().strip(),
+          "runner_cargo":subprocess.check_output(["cargo","--version"]).decode().strip(),
+          "suites":[],"native_installer":"NOT_RUN","disk_power_loss":"NOT_RUN",
+           "filesystem_SQLite_crash_atomicity":"NOT_ESTABLISHED",
+           "Windows_NTFS_reparse_alias":"PENDING_EXPLICIT_THREE" if want=="Windows" else "NOT_APPLICABLE_UNIX",
+           "Windows_NTFS_fixture":fixture,
+           "macOS_unix_SQLite_alias":"PENDING_FOUR_UNIX_AND_TWO_SYSTEM_ALIAS" if want=="macOS" else "NOT_APPLICABLE",
+           "human_acceptance":False}
+          ok=True
+          for label,command,expected in suites:
+           timed_out=False
+           try:
+            result=subprocess.run(command,cwd=root,env=env,capture_output=True,timeout=360)
+           except subprocess.TimeoutExpired as exc:
+            timed_out=True
+            result=subprocess.CompletedProcess(command,124,exc.stdout or b"",exc.stderr or b"")
+           for channel,body in (("stdout",result.stdout),("stderr",result.stderr)):
+            with (public/(label+"-"+channel+".log")).open("xb") as dest:dest.write(body)
+           output=(result.stdout+b"\n"+result.stderr).decode("utf-8",errors="replace")
+           output=re.sub(r"\x1b\[[0-9;]*m","",output)
+           observed=re.findall(r"(?m)^test ([A-Za-z0-9_:]+) \.\.\. ok\r?$",output)
+           terminal=re.search(r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",output)
+           matched=terminal is not None and int(terminal.group(1))==len(expected) and all(int(terminal.group(i))==0 for i in (2,3,4))
+           passed=(result.returncode==0 and matched and len(observed)==len(set(observed))==len(expected)
+                   and set(observed)==set(expected))
+           report["suites"].append({"label":label,"command":command,
+           "expected":list(expected),"observed":observed,"exit_code":result.returncode,"timed_out":timed_out,
+           "status":"PASS" if passed else "FAIL_OR_OMISSION",
+           "stdout":{"name":label+"-stdout.log","sha256":hashlib.sha256(result.stdout).hexdigest()},
+           "stderr":{"name":label+"-stderr.log","sha256":hashlib.sha256(result.stderr).hexdigest()}})
+           print("REAL_SQLITE_G2",label,"PASS" if passed else "RED",result.returncode,len(observed),flush=True)
+           if not passed:
+            ok=False
+            break
+          report["completed_suites"]=len(report["suites"])
+          report["tests_executed"]=sum(len(item["observed"]) for item in report["suites"])
+          goal=15 if want=="macOS" else 12
+          suite_goal=7 if want=="macOS" else 6
+          report["goal_count"]=goal
+          final_head=subprocess.check_output(["git","rev-parse","HEAD"],cwd=root).decode().strip()
+          final_status=subprocess.check_output(["git","status","--porcelain=v1","--untracked-files=all"],cwd=root).decode()
+          report["final_source_sha"]=final_head
+          report["final_source_tree"]=subprocess.check_output(["git","rev-parse","HEAD^{tree}"],cwd=root).decode().strip()
+          report["source_checkout_clean_after_tests"]=not final_status
+          report["source_status_after_tests"]=final_status.splitlines()
+          source_unchanged=(final_head==head and not final_status)
+          report["status"]="PASS_SELECTED" if ok and source_unchanged and len(report["suites"])==suite_goal and report["tests_executed"]==goal else "FAIL_OR_INCOMPLETE"
+          if report["status"]=="PASS_SELECTED":
+           if want=="Windows":
+            report["Windows_NTFS_reparse_alias"]="PASS_THREE_REAL_FIXTURES"
+            report["Windows_NTFS_fixture"]["actual_Rust_tests_completed"]=True
+           else:
+            report["macOS_unix_SQLite_alias"]="PASS_FOUR_UNIX_AND_TWO_SYSTEM_ALIAS"
+          report["at_utc"]=datetime.datetime.now(datetime.timezone.utc).isoformat()
+          with (public/"real-SQLite-crossOS-receipt.json").open("x") as stream:
+           json.dump(report,stream,indent=2);stream.write("\n")
+          assert report["status"]=="PASS_SELECTED",report["status"]
+          print(json.dumps({"source":head,"os":want,"G2_selected_tests":report["tests_executed"],
+          "all_suites":report["completed_suites"],"physical_powerloss":"NOT_RUN"}))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sqlite-real-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MW_SQLITE_EVIDENCE }}
+          if-no-files-found: warn
+          retention-days: 14
