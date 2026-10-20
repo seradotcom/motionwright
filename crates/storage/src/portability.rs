@@ -826,9 +826,7 @@ mod tests {
         let database = directory.path().join("target/state.sqlite3");
         let mut target = Store::open(&database).unwrap();
         let mut peer = Store::open(&database).unwrap();
-        peer.conn
-            .busy_timeout(Duration::from_millis(150))
-            .unwrap();
+        peer.conn.busy_timeout(Duration::from_millis(150)).unwrap();
 
         let inspected = target
             .inspect_project_bundle_with_fingerprint(&bundle)
