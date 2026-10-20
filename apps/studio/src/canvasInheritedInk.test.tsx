@@ -105,3 +105,31 @@ describe("parented Canvas editorial visibility", () => {
     expect(html).toContain("Native Film");
   });
 });
+
+describe("selected profile controls editorial text without changing canonical objects", () => {
+  it("shows the explicit selected profile replacement and its origin", () => {
+    const node = rootText(); node.text = "Original saved English source";
+    const markup = renderToStaticMarkup(<CompositionStudy nodes={[node]} time={0}
+      background="#101820" label="Variant text preview" textOverrides={{[node.id]: "Versión editorial traducida"}} />);
+    expect(markup).toContain("Versión editorial traducida");
+    expect(markup).not.toContain("Original saved English source");
+    expect(markup).toContain('data-text-origin="profile"');
+  });
+
+  it("does not silently resurrect source text when a selected override is explicitly empty", () => {
+    const node = rootText(); node.text = "Source must not reappear";
+    const markup = renderToStaticMarkup(<CompositionStudy nodes={[node]} time={0}
+      background="#101820" label="Empty locale draft cannot claim completed text" textOverrides={{[node.id]: ""}} />);
+    expect(markup).not.toContain("Source must not reappear");
+    expect(markup).toContain('data-text-origin="profile"');
+  });
+
+  it("keeps original text when no active profile override exists for that ID", () => {
+    const node = rootText(); node.text = "Unchanged authored English copy";
+    const markup = renderToStaticMarkup(<CompositionStudy nodes={[node]} time={0}
+      background="#101820" label="Source profile text" textOverrides={{"another-node": "Unrelated locale"}} />);
+    expect(markup).toContain("Unchanged authored English copy");
+    expect(markup).not.toContain("Unrelated locale");
+    expect(markup).toContain('data-text-origin="source"');
+  });
+});
