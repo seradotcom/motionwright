@@ -18,8 +18,8 @@ pub struct ProductionReceiptInput {
     pub payload: Value,
 }
 
-/// Snapshot identity for an append-only local receipt stream. The sequence
-/// count detects new writes that sort before the UUIDv7 latest-id watermark.
+/// Snapshot identity for an append-only local receipt stream. The head UUID
+/// identifies the last committed ordinal; UUID magnitude and dates are not order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionReceiptWatermark {
     pub latest_id: Option<Uuid>,
@@ -82,18 +82,245 @@ fn validate_original_production_binding(
     Ok(has_prior)
 }
 
+type StoredReceiptFields = (
+    String,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
+fn stored_receipt_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredReceiptFields> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+    ))
+}
+
+fn decode_receipt(fields: StoredReceiptFields) -> Result<ProductionReceipt> {
+    let (
+        id,
+        project_id,
+        generation,
+        revision,
+        request_id,
+        request_sha256,
+        command,
+        stage,
+        payload,
+        created_at,
+    ) = fields;
+    let parse_id = |value: &str| {
+        Uuid::parse_str(value).map_err(|_| {
+            StorageError::Domain(DomainError::Invalid(
+                "stored production receipt identity is invalid".into(),
+            ))
+        })
+    };
+    Ok(ProductionReceipt {
+        id: parse_id(&id)?,
+        project_id: parse_id(&project_id)?,
+        generation: parse_id(&generation)?,
+        revision: u64::try_from(revision).map_err(|_| {
+            StorageError::Domain(DomainError::Invalid(
+                "stored production revision is invalid".into(),
+            ))
+        })?,
+        request_id,
+        request_sha256,
+        command,
+        stage,
+        payload: serde_json::from_str(&payload)?,
+        created_at,
+    })
+}
+
+fn query_receipts(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    values: impl rusqlite::Params,
+) -> Result<Vec<ProductionReceipt>> {
+    let mut statement = conn.prepare(sql)?;
+    let rows = statement.query_map(values, stored_receipt_row)?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(decode_receipt(row?)?);
+    }
+    Ok(result)
+}
+
+fn request_history(
+    conn: &rusqlite::Connection,
+    project_id: Uuid,
+    request_id: &str,
+) -> Result<Vec<ProductionReceipt>> {
+    query_receipts(
+        conn,
+        "SELECT r.receipt_id,r.project_id,r.generation,r.revision,r.request_id,
+                r.request_sha256,r.command,r.stage,r.payload_json,r.created_at
+         FROM production_receipts AS r
+         JOIN production_receipt_order AS o ON o.receipt_id=r.receipt_id
+         WHERE r.project_id=?1 AND r.request_id=?2 ORDER BY o.sequence",
+        params![project_id.to_string(), request_id],
+    )
+}
+
+fn is_recovery_command(command: &str) -> bool {
+    matches!(
+        command,
+        "motionwright.recovery.blender" | "motionwright.recovery.motion-canvas"
+    )
+}
+
+fn recovery_attempt(receipt: &ProductionReceipt) -> Result<u64> {
+    receipt
+        .payload
+        .get("attempt")
+        .and_then(Value::as_u64)
+        .filter(|attempt| (1..=16).contains(attempt))
+        .ok_or(StorageError::RequestReuse)
+}
+
+fn retryable_recovery(receipt: &ProductionReceipt) -> bool {
+    receipt.command == "motionwright.recovery.motion-canvas"
+        && receipt.stage == "failed_known"
+        && receipt.payload.get("retryable").and_then(Value::as_bool) == Some(true)
+}
+
+// Ordinal order alone cannot grant authority to a late result from an older
+// attempt. Validate every retained transition, including legacy histories.
+// Ambiguous histories remain available through audit pages, but grant no replay.
+fn recovery_head(history: &[ProductionReceipt]) -> Result<Option<ProductionReceipt>> {
+    let mut previous: Option<&ProductionReceipt> = None;
+    for receipt in history {
+        if !is_recovery_command(&receipt.command) {
+            return Err(StorageError::RequestReuse);
+        }
+        let attempt = recovery_attempt(receipt)?;
+        if let Some(prior) = previous {
+            if receipt.project_id != prior.project_id
+                || receipt.generation != prior.generation
+                || receipt.revision != prior.revision
+                || receipt.request_id != prior.request_id
+                || receipt.request_sha256 != prior.request_sha256
+                || receipt.command != prior.command
+            {
+                return Err(StorageError::RequestReuse);
+            }
+            let prior_attempt = recovery_attempt(prior)?;
+            if receipt.stage == "dispatching" {
+                if !retryable_recovery(prior) || attempt != prior_attempt + 1 {
+                    return Err(StorageError::RequestReuse);
+                }
+            } else if prior.stage != "dispatching"
+                || attempt != prior_attempt
+                || !matches!(
+                    receipt.stage.as_str(),
+                    "completed" | "failed_known" | "outcome_unknown"
+                )
+            {
+                return Err(StorageError::RequestReuse);
+            }
+        } else if receipt.stage != "dispatching" || attempt != 1 {
+            return Err(StorageError::RequestReuse);
+        }
+        previous = Some(receipt);
+    }
+    Ok(previous.cloned())
+}
+
+fn append_record(
+    conn: &rusqlite::Connection,
+    input: ProductionReceiptInput,
+) -> Result<ProductionReceipt> {
+    let receipt = ProductionReceipt {
+        id: Uuid::now_v7(),
+        project_id: input.project_id,
+        generation: input.generation,
+        revision: input.revision,
+        request_id: input.request_id,
+        request_sha256: input.request_sha256,
+        command: input.command,
+        stage: input.stage,
+        payload: input.payload,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let revision = i64::try_from(receipt.revision).map_err(|_| StorageError::RequestReuse)?;
+    conn.execute(
+        "INSERT INTO production_receipts(
+            receipt_id,project_id,generation,revision,request_id,request_sha256,
+            command,stage,payload_json,created_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![
+            receipt.id.to_string(),
+            receipt.project_id.to_string(),
+            receipt.generation.to_string(),
+            revision,
+            &receipt.request_id,
+            &receipt.request_sha256,
+            &receipt.command,
+            &receipt.stage,
+            serde_json::to_string(&receipt.payload)?,
+            &receipt.created_at,
+        ],
+    )?;
+    // An extension trigger can RAISE(IGNORE), omit our mapping, or alter the
+    // inserted row. Verify the complete postcondition before the caller commits.
+    super::validate_production_receipt_order_integrity(conn, Some(receipt.project_id))?;
+    let persisted = query_receipts(
+        conn,
+        "SELECT r.receipt_id,r.project_id,r.generation,r.revision,r.request_id,
+                r.request_sha256,r.command,r.stage,r.payload_json,r.created_at
+         FROM production_receipts AS r
+         JOIN production_receipt_order AS o ON o.receipt_id=r.receipt_id
+         WHERE r.project_id=?1 AND r.receipt_id=?2",
+        params![receipt.project_id.to_string(), receipt.id.to_string()],
+    )?;
+    if persisted.as_slice() != std::slice::from_ref(&receipt) {
+        return Err(StorageError::InvalidBackup(
+            "receipt and its commit-order mapping were not atomically recorded".into(),
+        ));
+    }
+    Ok(receipt)
+}
+
+fn receipt_anchor(conn: &rusqlite::Connection, project_id: Uuid, receipt_id: Uuid) -> Result<i64> {
+    conn.query_row(
+        "SELECT sequence FROM production_receipt_order WHERE project_id=?1 AND receipt_id=?2",
+        params![project_id.to_string(), receipt_id.to_string()],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| {
+        StorageError::Domain(DomainError::Invalid(
+            "receipt cursor does not identify an observation in this project".into(),
+        ))
+    })
+}
+
 impl Store {
     /// Atomically claim one application-owned recovery stage. This is deliberately
-    /// NOT a Semwright command: the Driver Host retains runtime authority.
+    /// not a Semwright command: the Driver Host retains runtime authority.
     /// An unfinished claim survives process death and blocks blind replay.
     pub fn claim_recovery_stage(
         &mut self,
         mut input: ProductionReceiptInput,
     ) -> Result<ProductionReceipt> {
-        if !matches!(
-            input.command.as_str(),
-            "motionwright.recovery.blender" | "motionwright.recovery.motion-canvas"
-        ) || input.stage != "dispatching"
+        if !is_recovery_command(&input.command)
+            || input.stage != "dispatching"
             || input.request_id.len() > 256
             || input.request_id.is_empty()
             || input.request_id.chars().any(char::is_control)
@@ -107,7 +334,6 @@ impl Store {
                 "Recovery stage claim is malformed".into(),
             )));
         }
-        // BEGIN IMMEDIATE serializes claims even across independent processes.
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -121,66 +347,44 @@ impl Store {
                 actual: current.revision,
             });
         }
+        super::validate_production_receipt_order_integrity(&tx, Some(input.project_id))?;
         validate_original_production_binding(&tx, &input)?;
-        // A changed input fingerprint (or newly named workflow) must NOT
-        // bypass an earlier uncertain mutation of the same native provider.
-        // Read the latest receipt for every stage key, not historic dispatches
-        // that were later resolved. The query runs under the write claim lock.
-        let unresolved: Option<String> = tx
-            .query_row(
-                "SELECT current.request_id
-                 FROM production_receipts AS current
-                 JOIN (
-                   SELECT request_id,MAX(receipt_id) AS latest
-                   FROM production_receipts
-                   WHERE project_id=?1 AND generation=?2 AND command=?3
-                   GROUP BY request_id
-                 ) AS recent ON current.receipt_id=recent.latest
-                 WHERE (current.stage IN ('dispatching','outcome_unknown')
-                   OR (current.stage='failed_known' AND current.command='motionwright.recovery.blender'))
-                   AND current.request_id<>?4
-                 LIMIT 1",
-                params![
-                    input.project_id.to_string(),
-                    input.generation.to_string(),
-                    input.command,
-                    input.request_id,
-                ],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if unresolved.is_some() {
-            return Err(StorageError::RequestReuse);
-        }
-        let prior: Option<(String, String, String, String)> = tx
-            .query_row(
-                "SELECT request_sha256,command,stage,payload_json
-                 FROM production_receipts WHERE project_id=?1 AND request_id=?2
-                 ORDER BY receipt_id DESC LIMIT 1",
-                params![input.project_id.to_string(), input.request_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?;
-        let attempt = match prior {
-            None => 1_u64,
-            Some((digest, command, stage, payload)) => {
-                if digest != input.request_sha256 || command != input.command {
-                    return Err(StorageError::RequestReuse);
-                }
-                let payload: Value = serde_json::from_str(&payload)?;
-                if stage != "failed_known"
-                    || input.command != "motionwright.recovery.motion-canvas"
-                    || payload.get("retryable").and_then(Value::as_bool) != Some(true)
-                {
-                    return Err(StorageError::RequestReuse);
-                }
-                payload
-                    .get("attempt")
-                    .and_then(Value::as_u64)
-                    .filter(|n| (1..16).contains(n))
-                    .ok_or(StorageError::RequestReuse)?
-                    + 1
+        // A new name or fingerprint cannot bypass an unresolved provider effect.
+        // Inspect each complete attempt chain, not MAX(UUID) or a bare last row.
+        let keys = {
+            let mut statement = tx.prepare(
+                "SELECT DISTINCT request_id FROM production_receipts
+                 WHERE project_id=?1 AND generation=?2 AND command=?3",
+            )?;
+            statement
+                .query_map(
+                    params![
+                        input.project_id.to_string(),
+                        input.generation.to_string(),
+                        &input.command
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for key in keys {
+            let history = request_history(&tx, input.project_id, &key)?;
+            let head = recovery_head(&history)?.ok_or(StorageError::RequestReuse)?;
+            if key != input.request_id
+                && (matches!(head.stage.as_str(), "dispatching" | "outcome_unknown")
+                    || (head.stage == "failed_known"
+                        && head.command == "motionwright.recovery.blender"))
+            {
+                return Err(StorageError::RequestReuse);
             }
+        }
+        let history = request_history(&tx, input.project_id, &input.request_id)?;
+        let attempt = match recovery_head(&history)? {
+            None => 1,
+            Some(prior) if retryable_recovery(&prior) && recovery_attempt(&prior)? < 16 => {
+                recovery_attempt(&prior)? + 1
+            }
+            Some(_) => return Err(StorageError::RequestReuse),
         };
         let data = input.payload.as_object_mut().ok_or_else(|| {
             StorageError::Domain(DomainError::Invalid(
@@ -188,36 +392,7 @@ impl Store {
             ))
         })?;
         data.insert("attempt".into(), serde_json::json!(attempt));
-        let receipt = ProductionReceipt {
-            id: Uuid::now_v7(),
-            project_id: input.project_id,
-            generation: input.generation,
-            revision: input.revision,
-            request_id: input.request_id,
-            request_sha256: input.request_sha256,
-            command: input.command,
-            stage: input.stage,
-            payload: input.payload,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
-        tx.execute(
-            "INSERT INTO production_receipts(
-                receipt_id,project_id,generation,revision,request_id,request_sha256,
-                command,stage,payload_json,created_at
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![
-                receipt.id.to_string(),
-                receipt.project_id.to_string(),
-                receipt.generation.to_string(),
-                receipt.revision as i64,
-                &receipt.request_id,
-                &receipt.request_sha256,
-                &receipt.command,
-                &receipt.stage,
-                serde_json::to_string(&receipt.payload)?,
-                &receipt.created_at,
-            ],
-        )?;
+        let receipt = append_record(&tx, input)?;
         tx.commit()?;
         Ok(receipt)
     }
@@ -239,10 +414,6 @@ impl Store {
                 "production request digest is invalid".into(),
             )));
         }
-
-        // Serialize the project check, request binding and append across
-        // connections. Reading before the write lock lets competing writers
-        // both observe an unused request key.
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -256,54 +427,32 @@ impl Store {
                 actual: current.revision,
             });
         }
-
+        super::validate_production_receipt_order_integrity(&tx, Some(input.project_id))?;
         let has_prior = validate_original_production_binding(&tx, &input)?;
-        // Observations may extend an existing request, but cannot grant a new
-        // dispatch. Explicit recovery retries use claim_recovery_stage.
         if has_prior && input.stage == "dispatching" {
             return Err(StorageError::RequestReuse);
         }
-
-        // A caller's preflight may predate a peer commit. A new dispatch must
-        // still match the head while this transaction holds the write lock.
-        // Observations of an admitted request retain their original revision.
         if input.stage == "dispatching" && input.revision != current.revision {
             return Err(StorageError::Conflict {
                 expected: input.revision,
                 actual: current.revision,
             });
         }
-
-        let receipt = ProductionReceipt {
-            id: Uuid::now_v7(),
-            project_id: input.project_id,
-            generation: input.generation,
-            revision: input.revision,
-            request_id: input.request_id,
-            request_sha256: input.request_sha256,
-            command: input.command,
-            stage: input.stage,
-            payload: input.payload,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
-        tx.execute(
-            "INSERT INTO production_receipts(
-                receipt_id,project_id,generation,revision,request_id,request_sha256,
-                command,stage,payload_json,created_at
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![
-                receipt.id.to_string(),
-                receipt.project_id.to_string(),
-                receipt.generation.to_string(),
-                receipt.revision as i64,
-                &receipt.request_id,
-                &receipt.request_sha256,
-                &receipt.command,
-                &receipt.stage,
-                serde_json::to_string(&receipt.payload)?,
-                &receipt.created_at,
-            ],
-        )?;
+        if is_recovery_command(&input.command) {
+            let history = request_history(&tx, input.project_id, &input.request_id)?;
+            let head = recovery_head(&history)?.ok_or(StorageError::RequestReuse)?;
+            if head.stage != "dispatching"
+                || input.payload.get("attempt").and_then(Value::as_u64)
+                    != Some(recovery_attempt(&head)?)
+                || !matches!(
+                    input.stage.as_str(),
+                    "completed" | "failed_known" | "outcome_unknown"
+                )
+            {
+                return Err(StorageError::RequestReuse);
+            }
+        }
+        let receipt = append_record(&tx, input)?;
         tx.commit()?;
         Ok(receipt)
     }
@@ -314,86 +463,38 @@ impl Store {
         request_id: &str,
     ) -> Result<Option<ProductionReceipt>> {
         bounded_token(request_id, 256, "production request id")?;
-        self.conn
-            .query_row(
-                "SELECT receipt_id,generation,revision,request_id,request_sha256,
-                        command,stage,payload_json,created_at
-                 FROM production_receipts
-                 WHERE project_id=?1 AND request_id=?2
-                 ORDER BY receipt_id DESC LIMIT 1",
-                params![project_id.to_string(), request_id],
-                |row| {
-                    let id: String = row.get(0)?;
-                    let generation: String = row.get(1)?;
-                    let revision: i64 = row.get(2)?;
-                    let payload: String = row.get(7)?;
-                    Ok((
-                        id,
-                        generation,
-                        revision,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, String>(6)?,
-                        payload,
-                        row.get::<_, String>(8)?,
-                    ))
-                },
-            )
-            .optional()?
-            .map(
-                |(
-                    id,
-                    generation,
-                    revision,
-                    request_id,
-                    request_sha256,
-                    command,
-                    stage,
-                    payload,
-                    created_at,
-                )| {
-                    Ok(ProductionReceipt {
-                        id: Uuid::parse_str(&id).map_err(|_| {
-                            StorageError::Domain(DomainError::Invalid(
-                                "stored production receipt id is invalid".into(),
-                            ))
-                        })?,
-                        project_id,
-                        generation: Uuid::parse_str(&generation).map_err(|_| {
-                            StorageError::Domain(DomainError::Invalid(
-                                "stored production generation is invalid".into(),
-                            ))
-                        })?,
-                        revision: u64::try_from(revision).map_err(|_| {
-                            StorageError::Domain(DomainError::Invalid(
-                                "stored production revision is invalid".into(),
-                            ))
-                        })?,
-                        request_id,
-                        request_sha256,
-                        command,
-                        stage,
-                        payload: serde_json::from_str(&payload)?,
-                        created_at,
-                    })
-                },
-            )
-            .transpose()
+        let tx = self.conn.unchecked_transaction()?;
+        super::validate_production_receipt_order_integrity(&tx, Some(project_id))?;
+        let history = request_history(&tx, project_id, request_id)?;
+        let latest = if history
+            .iter()
+            .any(|receipt| is_recovery_command(&receipt.command))
+        {
+            recovery_head(&history)?
+        } else {
+            history.last().cloned()
+        };
+        tx.commit()?;
+        Ok(latest)
     }
 
-    /// High watermark for this project's local append-only production
-    /// receipts, independent of the creative project revision.
+    /// Head of the committed local receipt stream, independent of wall time and
+    /// the creative project revision. Both fields come from one read snapshot.
     pub fn production_receipt_watermark(
         &self,
         project_id: Uuid,
     ) -> Result<ProductionReceiptWatermark> {
-        let (latest, count): (Option<String>, i64) = self.conn.query_row(
-            "SELECT MAX(receipt_id),COUNT(*) FROM production_receipts WHERE project_id=?1",
+        let tx = self.conn.unchecked_transaction()?;
+        super::validate_production_receipt_order_integrity(&tx, Some(project_id))?;
+        let (latest, count): (Option<String>, i64) = tx.query_row(
+            "SELECT
+               (SELECT receipt_id FROM production_receipt_order
+                WHERE project_id=?1 ORDER BY sequence DESC LIMIT 1),
+               (SELECT COUNT(*) FROM production_receipts WHERE project_id=?1)",
             params![project_id.to_string()],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        Ok(ProductionReceiptWatermark {
+        let head = ProductionReceiptWatermark {
             latest_id: latest
                 .map(|text| {
                     Uuid::parse_str(&text).map_err(|_| {
@@ -408,12 +509,14 @@ impl Store {
                     "Stored receipt count is invalid".into(),
                 ))
             })?,
-        })
+        };
+        tx.commit()?;
+        Ok(head)
     }
 
-    /// Bounded descending keyset read. A caller must compare the stream
-    /// watermark before and after reading; a new receipt can arrive without
-    /// changing the project's creative revision.
+    /// Bounded descending commit-order read. Public UUID anchors are opaque and
+    /// resolve within the same project and read snapshot. Callers compare the
+    /// watermark before and after a multi-page enumeration.
     pub fn production_receipts_before(
         &self,
         project_id: Uuid,
@@ -421,76 +524,33 @@ impl Store {
         before_id: Option<Uuid>,
         limit: usize,
     ) -> Result<Vec<ProductionReceipt>> {
-        let limit = limit.clamp(1, 256);
-        let before = before_id.map(|id| id.to_string());
-        let mut stmt = self.conn.prepare(
-            "SELECT receipt_id,generation,revision,request_id,request_sha256,
-                    command,stage,payload_json,created_at
-             FROM production_receipts
-             WHERE project_id=?1
-               AND receipt_id <= ?2
-               AND (?3 IS NULL OR receipt_id < ?3)
-             ORDER BY receipt_id DESC LIMIT ?4",
-        )?;
-        let rows = stmt.query_map(
+        let tx = self.conn.unchecked_transaction()?;
+        super::validate_production_receipt_order_integrity(&tx, Some(project_id))?;
+        let through = receipt_anchor(&tx, project_id, through_id)?;
+        let before = before_id
+            .map(|id| receipt_anchor(&tx, project_id, id))
+            .transpose()?;
+        if before.is_some_and(|sequence| sequence > through) {
+            return Err(StorageError::Domain(DomainError::Invalid(
+                "receipt cursor exceeds the snapshot commit order".into(),
+            )));
+        }
+        let receipts = query_receipts(
+            &tx,
+            "SELECT r.receipt_id,r.project_id,r.generation,r.revision,r.request_id,
+                    r.request_sha256,r.command,r.stage,r.payload_json,r.created_at
+             FROM production_receipts AS r
+             JOIN production_receipt_order AS o ON o.receipt_id=r.receipt_id
+             WHERE r.project_id=?1 AND o.sequence<=?2 AND (?3 IS NULL OR o.sequence<?3)
+             ORDER BY o.sequence DESC LIMIT ?4",
             params![
                 project_id.to_string(),
-                through_id.to_string(),
+                through,
                 before,
-                limit as i64
+                limit.clamp(1, 256) as i64
             ],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, String>(8)?,
-                ))
-            },
         )?;
-        let mut receipts = Vec::new();
-        for row in rows {
-            let (
-                id,
-                generation,
-                revision,
-                request_id,
-                request_sha256,
-                command,
-                stage,
-                payload,
-                created_at,
-            ) = row?;
-            receipts.push(ProductionReceipt {
-                id: Uuid::parse_str(&id).map_err(|_| {
-                    StorageError::Domain(DomainError::Invalid(
-                        "Stored production receipt ID is invalid".into(),
-                    ))
-                })?,
-                project_id,
-                generation: Uuid::parse_str(&generation).map_err(|_| {
-                    StorageError::Domain(DomainError::Invalid(
-                        "Stored production generation is invalid".into(),
-                    ))
-                })?,
-                revision: u64::try_from(revision).map_err(|_| {
-                    StorageError::Domain(DomainError::Invalid(
-                        "Stored production revision is invalid".into(),
-                    ))
-                })?,
-                request_id,
-                request_sha256,
-                command,
-                stage,
-                payload: serde_json::from_str(&payload)?,
-                created_at,
-            });
-        }
+        tx.commit()?;
         Ok(receipts)
     }
 
