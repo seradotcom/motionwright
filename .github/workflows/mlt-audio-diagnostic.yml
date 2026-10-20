@@ -258,10 +258,10 @@ jobs:
           rec=json.loads((public/"runtime-selector-contracts.json").read_text())
           expected={"tooling/ci_mlt_runtime_selected.py":"9d2077979c21a6c6a3f5cfc1bf78dccb7311bab989d3fc896216d79d9d047d4b",
                     "tooling/native_mlt_runtime_admission.py":"c27e707a5e602eafb97e68b2caee4f46364246841bdbd79acb8d9dce17bc173e",
-                    "tooling/native_mlt_repair_only_compiler_receipt.py":"e62b7f34c7583e963ffb2d53d134b30315aeedea6e6a6e531cda95586e1dab10",
+                    "tooling/native_mlt_repair_only_compiler_receipt.py":"5975fb4cf97d1b042e0d96211167a984bae81cd2d53fec83bf0840a4a99d58f0",
                     "tooling/tests/test_ci_mlt_runtime_selected.py":"f31591a9b7905a9a3c64d3b6ccf8a538dd398c0174ef217652ed049b63bae907",
                     "tooling/tests/test_native_mlt_runtime_admission.py":"d6d25be72a907b5f7344c920866189fbdba607ce839dc027fe50efacee8ef4ab",
-                    "tooling/tests/test_native_mlt_repair_only_compiler_receipt.py":"17fc44df0110b54a7ec56d16e6a9d7d86dc5dfb1bb4cdd9deb2b1c3c7ddd2269"}
+                    "tooling/tests/test_native_mlt_repair_only_compiler_receipt.py":"c10d13952eae1d4bdef0170bea4da6ff022ea8d9cd445c68564844dcea663c93"}
           assert sources["runtime_sources"]==expected
           assert set(sources["runtime_blob_oids"])==set(expected)
           assert sources["source_sha"]==rec["executed_source_sha"]==os.environ["GITHUB_SHA"]
@@ -514,7 +514,7 @@ jobs:
           for row in rec["steps"]:
               cnt=row["counts"]
               assert row["status"]=="PASS" and row["exit_code"]==0
-              assert cnt["tests_run"]==cnt["passed"]==14 and cnt["terminal_status"]=="OK"
+              assert cnt["tests_run"]==cnt["passed"]==16 and cnt["terminal_status"]=="OK"
               assert all(cnt[k]==0 for k in ("failures","errors","skipped","expected_failures","unexpected_successes"))
               for stream in ("stdout","stderr"):
                   assert digest(public/row[stream]["file"])==row[stream]["sha256"]
