@@ -1,57 +1,142 @@
 name: Manifest publication and consumer boundaries
-
-on:
-  workflow_dispatch:
+'on':
+  workflow_dispatch: null
   pull_request:
     paths:
-      - '.github/workflows/manifest-publication-boundaries.yml'
-      - 'tooling/ci_test_runner.py'
-      - 'tooling/release_manifest.py'
-      - 'tooling/package_receipt.py'
-      - 'tooling/owner_candidate_provenance.py'
-      - 'tooling/tests/test_release_manifest_integrity.py'
-      - 'tooling/tests/test_release_manifest_publication.py'
-      - 'tooling/tests/test_candidate_receipt_source.py'
-      - 'tooling/tests/test_owner_candidate_provenance.py'
-      - 'tooling/tests/test_package_receipt.py'
-
+    - .github/workflows/manifest-publication-boundaries.yml
+    - tooling/ci_test_runner.py
+    - tooling/release_manifest.py
+    - tooling/package_receipt.py
+    - tooling/owner_candidate_provenance.py
+    - tooling/tests/test_release_manifest_integrity.py
+    - tooling/tests/test_release_manifest_publication.py
+    - tooling/tests/test_candidate_receipt_source.py
+    - tooling/tests/test_owner_candidate_provenance.py
+    - tooling/tests/test_package_receipt.py
 permissions:
   contents: read
-
 concurrency:
   group: manifest-publication-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
   publication-and-consumers:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: '3.13'
-      - name: Verify publication uncertainty, source identity and consumers
-        run: |
-          python -B tooling/ci_test_runner.py --repo . \
-            --pattern test_release_manifest_integrity.py \
-            --pattern test_release_manifest_publication.py \
-            --pattern test_candidate_receipt_source.py \
-            --pattern test_owner_candidate_provenance.py \
-            --pattern test_package_receipt.py \
-            --mode both --require-complete --expected-source "$GITHUB_SHA" \
-            --report "$RUNNER_TEMP/manifest-publication-boundaries.json"
-      - name: Retain exact test identities and original process output
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: manifest-publication-boundaries-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/manifest-publication-boundaries.json
-            ${{ runner.temp }}/manifest-publication-boundaries-*.log
-          if-no-files-found: error
-          retention-days: 14
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.13'
+    - name: Verify publication uncertainty, source identity and consumers
+      run: |
+        python -B tooling/ci_test_runner.py --repo . \
+          --pattern test_release_manifest_integrity.py \
+          --pattern test_release_manifest_publication.py \
+          --pattern test_candidate_receipt_source.py \
+          --pattern test_owner_candidate_provenance.py \
+          --pattern test_package_receipt.py \
+          --mode both --expected-source "$GITHUB_SHA" \
+          --report "$RUNNER_TEMP/manifest-publication-boundaries.json"
+    - name: Require the exact platform partition and complementary NTFS coverage
+      run: |
+        python -B - <<'PY'
+        import hashlib, json, os, pathlib, re
+        from tooling.ci_test_runner import parse_unittest_summary
+        COUNTS = {"test_release_manifest_integrity": 20, "test_release_manifest_publication": 4,
+                  "test_candidate_receipt_source": 16, "test_owner_candidate_provenance": 26,
+                  "test_package_receipt": 5}
+        LINUX_SKIPS = {
+            "test_release_manifest_integrity.DeliveryIntegrityTests.test_actual_temporary_junction_output_parent_is_refused": "NTFS junction requires Windows",
+            "test_candidate_receipt_source.CandidateReceiptSourceTests.test_real_ntfs_junction_under_temporary_candidate_is_refused": "NTFS junction requires Windows",
+            "test_owner_candidate_provenance.OwnerCandidateProvenanceTests.test_real_ntfs_junction_as_owner_installer_parent_refused": "Windows junction test",
+        }
+        def validate_partition(receipt, logs, runner_os, expected_source):
+            if runner_os not in {"Linux", "Windows"} or receipt["executed_source_sha"] != expected_source:
+                raise ValueError("platform or source mismatch")
+            if receipt["exit_code"] != 0 or "source_postcheck_error" in receipt or len(receipt["steps"]) != 10:
+                raise ValueError("source-bound entry points incomplete")
+            expected_skips = LINUX_SKIPS if runner_os == "Linux" else {}
+            seen = set()
+            modes = {"discovery": {}, "dotted": {}}
+            for step in receipt["steps"]:
+                mode, module = step["entry_point"].split(":", 1)
+                module = module.removesuffix(".py").removeprefix("tooling.tests.")
+                if mode not in modes or module not in COUNTS or (mode, module) in seen:
+                    raise ValueError("unexpected or duplicate entry point")
+                seen.add((mode, module))
+                for stream in ("stdout", "stderr"):
+                    ref = step[stream]
+                    if pathlib.PurePath(ref["file"]).name != ref["file"] or "/" in ref["file"] or "\\" in ref["file"]:
+                        raise ValueError("log path is not a retained basename")
+                    if hashlib.sha256(logs[ref["file"]]).hexdigest() != ref["sha256"]:
+                        raise ValueError("original stream hash differs")
+                view = logs[step["stderr"]["file"]].decode("utf-8").replace("\r\n", "\n")
+                counts = parse_unittest_summary(view)
+                if counts != step["counts"] or step["exit_code"] != 0:
+                    raise ValueError("original counts or process result differs")
+                if counts["terminal_status"] != "OK" or any(counts[k] for k in ("errors", "failures", "expected_failures", "unexpected_successes")):
+                    raise ValueError("entry point did not pass")
+                cases = re.findall(r"^\S+ \(([^()\r\n]+)\) \.\.\. (ok|skipped '[^'\r\n]*')$", view, re.M)
+                if len(cases) != COUNTS[module] or counts["tests_run"] != COUNTS[module]:
+                    raise ValueError("named case count differs")
+                observed = {}
+                for name, status in cases:
+                    name = name.removeprefix("tooling.tests.")
+                    if not name.startswith(module + ".") or name in modes[mode]:
+                        raise ValueError("case identity differs or repeats")
+                    modes[mode][name] = status
+                    if status.startswith("skipped "):
+                        observed[name] = status[len("skipped '"):-1]
+                required = {k: v for k, v in expected_skips.items() if k.startswith(module + ".")}
+                if observed != required or counts["skipped"] != len(required):
+                    raise ValueError("unexpected omission or missing complementary platform case")
+                expected_status = "PASS_WITH_OMISSIONS" if required else "PASS"
+                if step["status"] != expected_status:
+                    raise ValueError("entry point status hides its omissions")
+            if modes["discovery"] != modes["dotted"] or len(modes["dotted"]) != 71:
+                raise ValueError("direct and discovery rosters differ")
+            expected_status = "PASS_WITH_OMISSIONS" if expected_skips else "PASS"
+            if receipt["status"] != expected_status:
+                raise ValueError("aggregate status hides its omissions")
+            return {"schema": "motionwright.manifest.platform-partition/1", "source_sha": expected_source,
+                    "runner_os": runner_os, "named_cases_per_mode": 71,
+                    "executed_per_mode": 71 - len(expected_skips), "platform_only_skips": expected_skips,
+                    "original_receipt_status": receipt["status"], "status": "PASS_SUPPORTED_PLATFORM_CASES",
+                    "complete_cross_platform_acceptance": False, "human_acceptance": False}
+        root = pathlib.Path(os.environ["RUNNER_TEMP"])
+        path = root / "manifest-publication-boundaries.json"
+        receipt = json.loads(path.read_bytes())
+        logs = {step[key]["file"]: (root / step[key]["file"]).read_bytes()
+                for step in receipt["steps"] for key in ("stdout", "stderr")}
+        result = validate_partition(receipt, logs, os.environ["RUNNER_OS"], os.environ["GITHUB_SHA"])
+        target = root / "manifest-publication-platform.json"
+        with target.open("x", encoding="utf-8") as handle:
+            json.dump(result, handle, indent=2)
+            handle.write("\n")
+        print(json.dumps(result, sort_keys=True))
+        PY
+    - name: Retain exact test identities and original process output
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: manifest-publication-boundaries-${{ runner.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt
+          }}
+        path: |
+          ${{ runner.temp }}/manifest-publication-boundaries.json
+          ${{ runner.temp }}/manifest-publication-boundaries-*.log
+          ${{ runner.temp }}/manifest-publication-platform.json
+        if-no-files-found: error
+        retention-days: 14
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-24.04
+        - windows-latest
+    defaults:
+      run:
+        shell: bash
