@@ -268,6 +268,38 @@ class WindowsLifecycleTests(unittest.TestCase):
         with self.assertRaises(lifecycle.LifecycleError):
             lifecycle.fixed_pe_versions(words)
 
+    def test_fixed_pe_versions_accept_nsis_zero_structure_and_reject_other_headers(self):
+        # Fixed resource words observed in an original NSIS-compiled fixture.
+        words = [0xFEEF04BD, 0, 1, 65536, 1, 65536, 0, 0, 4, 1, 0, 0, 0]
+        expected = {"file_version": [0, 1, 1, 0], "product_version": [0, 1, 1, 0]}
+        self.assertEqual(lifecycle.fixed_pe_versions(words), expected)
+        standard = words.copy()
+        standard[1] = 0x10000
+        self.assertEqual(lifecycle.fixed_pe_versions(tuple(standard)), expected)
+        for structure in (1, 0x20000):
+            rejected = words.copy()
+            rejected[1] = structure
+            with self.subTest(structure=structure), self.assertRaisesRegex(
+                    lifecycle.LifecycleError, "^pe_fixed_info_signature$"):
+                lifecycle.fixed_pe_versions(rejected)
+        for signature in (0, 0xFEEF04BC):
+            rejected = words.copy()
+            rejected[0] = signature
+            with self.subTest(signature=signature), self.assertRaisesRegex(
+                    lifecycle.LifecycleError, "^pe_fixed_info_signature$"):
+                lifecycle.fixed_pe_versions(rejected)
+        for index, value in ((0, True), (1, False), (2, True),
+                             (1, -1), (1, 0x100000000)):
+            rejected = words.copy()
+            rejected[index] = value
+            with self.subTest(index=index, value=value), self.assertRaisesRegex(
+                    lifecycle.LifecycleError, "^pe_fixed_info_invalid$"):
+                lifecycle.fixed_pe_versions(rejected)
+        for rejected in (words[:-1], [*words, 0]):
+            with self.subTest(size=len(rejected)), self.assertRaisesRegex(
+                    lifecycle.LifecycleError, "^pe_fixed_info_invalid$"):
+                lifecycle.fixed_pe_versions(rejected)
+
     def test_noncanonical_versions_and_bool_sizes_are_rejected(self):
         for value in ("0.1.01", "0.1", "0.1.1-ci", "0.1.65536", True):
             with self.subTest(value=value), self.assertRaises(lifecycle.LifecycleError):

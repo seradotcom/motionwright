@@ -196,7 +196,7 @@ def fixed_pe_versions(words):
     require(isinstance(words, (list, tuple)) and len(words) == 13
             and all(type(word) is int and 0 <= word <= 0xFFFFFFFF for word in words),
             "pe_fixed_info_invalid")
-    require(words[0] == 0xFEEF04BD and words[1] == 0x00010000, "pe_fixed_info_signature")
+    require(words[0] == 0xFEEF04BD and words[1] in {0, 0x00010000}, "pe_fixed_info_signature")
     split = lambda high, low: [high >> 16, high & 65535, low >> 16, low & 65535]
     return {"file_version": split(words[2], words[3]),
             "product_version": split(words[4], words[5])}
