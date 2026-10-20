@@ -24,7 +24,7 @@ use std::{
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    time::{Instant, sleep, timeout},
+    time::{Instant, sleep, timeout_at},
 };
 use uuid::Uuid;
 
@@ -702,6 +702,7 @@ impl ProductionClient {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
+        let deadline = Instant::now() + Duration::from_secs(RUNTIME_PROBE_DEADLINE_SECS);
         let mut child = child.spawn().map_err(|_| {
             Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
         })?;
@@ -713,32 +714,41 @@ impl ProductionClient {
             .stderr
             .take()
             .ok_or_else(|| backend("Semwright CLI stderr unavailable"))?;
-        let stdout_task = tokio::spawn(read_bounded(stdout));
-        let stderr_task = tokio::spawn(read_bounded(stderr));
-
-        let status = match timeout(
-            Duration::from_secs(RUNTIME_PROBE_DEADLINE_SECS),
-            child.wait(),
-        )
-        .await
-        {
-            Ok(result) => result.map_err(|_| backend("Semwright CLI version probe failed"))?,
+        // One deadline covers process exit and EOF on both pipes. A descendant
+        // may retain a writer after the direct CLI has exited. Keep all readers
+        // in this future so timeout or caller cancellation closes them.
+        let captured = timeout_at(deadline, async {
+            tokio::try_join!(
+                async {
+                    child
+                        .wait()
+                        .await
+                        .map_err(|_| backend("Semwright CLI version probe failed"))
+                },
+                async {
+                    read_bounded(stdout)
+                        .await
+                        .map_err(|_| backend("Semwright CLI version output could not be read"))
+                },
+                async {
+                    read_bounded(stderr)
+                        .await
+                        .map_err(|_| backend("Semwright CLI version diagnostics could not be read"))
+                },
+            )
+        })
+        .await;
+        let (status, stdout, stderr) = match captured {
+            Ok(result) => result?,
             Err(_) => {
-                let _ = child.kill().await;
+                // Dropping the owned child retains kill_on_drop semantics,
+                // without an additional unbounded kill/wait after the deadline.
                 return Err(Error::new(
                     ErrorCode::Timeout,
                     "Semwright CLI version probe timed out",
                 ));
             }
         };
-        let stdout = stdout_task
-            .await
-            .map_err(|_| backend("Semwright CLI version output task failed"))?
-            .map_err(|_| backend("Semwright CLI version output could not be read"))?;
-        let stderr = stderr_task
-            .await
-            .map_err(|_| backend("Semwright CLI version diagnostic task failed"))?
-            .map_err(|_| backend("Semwright CLI version diagnostics could not be read"))?;
         if stdout.len() > MAX_RUNTIME_VERSION_BYTES || stderr.len() > MAX_RUNTIME_VERSION_BYTES {
             return Err(backend(
                 "Semwright CLI version response exceeded the transport budget",
@@ -802,6 +812,15 @@ impl ProductionClient {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
+        let budget_secs = if command.starts_with("driver.mlt-video.")
+            || command.starts_with("driver.blender.")
+            || command.starts_with("driver.manim-community.")
+        {
+            MLT_DEADLINE_SECS
+        } else {
+            DEFAULT_DEADLINE_SECS
+        };
+        let deadline = Instant::now() + Duration::from_secs(budget_secs);
         let mut child = child.spawn().map_err(|_| {
             Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
         })?;
@@ -818,38 +837,37 @@ impl ProductionClient {
             .stderr
             .take()
             .ok_or_else(|| post_spawn_error(backend("Semwright CLI stderr unavailable")))?;
-        let stdout_task = tokio::spawn(read_bounded(stdout));
-        let stderr_task = tokio::spawn(read_bounded(stderr));
-        let deadline = if command.starts_with("driver.mlt-video.")
-            || command.starts_with("driver.blender.")
-            || command.starts_with("driver.manim-community.")
-        {
-            MLT_DEADLINE_SECS
-        } else {
-            DEFAULT_DEADLINE_SECS
-        };
-
-        let status = match timeout(Duration::from_secs(deadline), child.wait()).await {
-            Ok(result) => {
-                result.map_err(|_| post_spawn_error(backend("Semwright CLI process failed")))?
-            }
+        // Joining owned reader futures avoids detached tasks on every error
+        // and cancellation path. Process exit never starts a new output budget.
+        let captured = timeout_at(deadline, async {
+            tokio::try_join!(
+                async {
+                    child
+                        .wait()
+                        .await
+                        .map_err(|_| post_spawn_error(backend("Semwright CLI process failed")))
+                },
+                async {
+                    read_bounded(stdout).await.map_err(|_| {
+                        post_spawn_error(backend("Semwright CLI output could not be read"))
+                    })
+                },
+                async {
+                    read_bounded(stderr).await.map_err(|_| {
+                        post_spawn_error(backend("Semwright CLI diagnostics could not be read"))
+                    })
+                },
+            )
+        })
+        .await;
+        let (status, stdout, stderr) = match captured {
+            Ok(result) => result?,
             Err(_) => {
-                let _ = child.kill().await;
                 let error =
                     Error::new(ErrorCode::Timeout, "Canonical production command timed out");
                 return Err(post_spawn_error(error));
             }
         };
-        let stdout = stdout_task
-            .await
-            .map_err(|_| post_spawn_error(backend("Semwright CLI output task failed")))?
-            .map_err(|_| post_spawn_error(backend("Semwright CLI output could not be read")))?;
-        let stderr = stderr_task
-            .await
-            .map_err(|_| post_spawn_error(backend("Semwright CLI diagnostic task failed")))?
-            .map_err(|_| {
-                post_spawn_error(backend("Semwright CLI diagnostics could not be read"))
-            })?;
         if stdout.len() > MAX_OUTPUT_BYTES || stderr.len() > MAX_OUTPUT_BYTES {
             return Err(post_spawn_error(Error::new(
                 ErrorCode::ResourceExhausted,
@@ -4029,5 +4047,314 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
             reopened.production_receipts(project.id, 10).unwrap(),
             receipts
         );
+    }
+
+    #[cfg(unix)]
+    mod pipe_deadline {
+        use super::*;
+        use tokio::time::timeout;
+
+        // Only this isolated fixture creates a descendant. It never contacts a
+        // Broker/provider, and every descendant has a finite 75-second lifetime.
+        // A private release file ends it earlier, including on test failure.
+        struct PipeFixture {
+            root: PathBuf,
+        }
+
+        impl PipeFixture {
+            async fn marker(&self, name: &str) -> String {
+                timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let Ok(value) = fs::read_to_string(self.root.join(name))
+                            && !value.is_empty()
+                        {
+                            return value;
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("isolated pipe fixture did not publish {name}"))
+            }
+
+            async fn ready(&self) {
+                assert_eq!(self.marker("pipe-ready").await, "ready");
+                assert_eq!(self.marker("parent-exit").await, "exit-zero");
+            }
+
+            async fn finish(&self, instruction: &str) -> String {
+                fs::write(self.root.join("pipe-release"), instruction).unwrap();
+                self.marker("pipe-finished").await
+            }
+        }
+
+        impl Drop for PipeFixture {
+            fn drop(&mut self) {
+                if !self.root.join("pipe-release").exists() {
+                    let _ = fs::write(self.root.join("pipe-release"), "stop");
+                }
+            }
+        }
+
+        fn connection(
+            temp: &tempfile::TempDir,
+            resource: String,
+            stdout: &str,
+            pipe: &str,
+        ) -> (ProductionConnection, PipeFixture) {
+            assert!(matches!(pipe, "stdout" | "stderr" | "none"));
+            let mut connection = fake_connection(temp, resource);
+            fs::write(
+                temp.path().join("pipe-fixture.json"),
+                serde_json::to_vec(&json!({"stdout": stdout, "pipe": pipe})).unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                &connection.executable,
+                r#"#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+root = Path(__file__).resolve().parent
+config = json.loads((root / "pipe-fixture.json").read_text(encoding="utf-8"))
+with (root / "transport-invocations").open("a", encoding="utf-8") as counter:
+    counter.write("invoked\n")
+if config["pipe"] != "none":
+    descendant = os.fork()
+    if descendant == 0:
+        fd = 1 if config["pipe"] == "stdout" else 2
+        os.close(3 - fd)
+        (root / "pipe-ready").write_text("ready", encoding="utf-8")
+        limit = time.monotonic() + 75
+        release = root / "pipe-release"
+        while not release.exists() and time.monotonic() < limit:
+            time.sleep(0.01)
+        result = "finite-lifetime-expired"
+        if release.exists():
+            instruction = release.read_text(encoding="utf-8")
+            result = "released"
+            if instruction == "observe-reader":
+                try:
+                    os.write(fd, b"pipe-cancellation-probe")
+                except BrokenPipeError:
+                    result = "reader-closed"
+                else:
+                    result = "reader-still-open"
+        os.close(fd)
+        (root / "pipe-finished").write_text(result, encoding="utf-8")
+        os._exit(0)
+sys.stdout.write(config["stdout"])
+sys.stdout.flush()
+(root / "parent-exit").write_text("exit-zero", encoding="utf-8")
+os._exit(0)
+"#,
+            )
+            .unwrap();
+            connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+            (
+                connection,
+                PipeFixture {
+                    root: temp.path().to_path_buf(),
+                },
+            )
+        }
+
+        async fn assert_execute_deadline(pipe: &str, mutation: bool) {
+            let (service, project, temp) = fixture_service();
+            let command = "driver.motion-canvas.composition.inspect";
+            let stdout = serde_json::to_string(&transport_reply(command)).unwrap();
+            let (connection, fixture) = connection(&temp, project.resource_key(), &stdout, pipe);
+            let coordinator =
+                ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+            let args = json!({"local_pipe_fixture_only": true});
+            let started = Instant::now();
+            let observed = timeout(
+                Duration::from_secs(DEFAULT_DEADLINE_SECS + 3),
+                coordinator.execute(
+                    project.id,
+                    &project.stamp(),
+                    "original-pipe-attempt",
+                    command,
+                    args.clone(),
+                    mutation,
+                ),
+            )
+            .await;
+            let elapsed = started.elapsed();
+            fixture.ready().await;
+            let cleanup = fixture.finish("stop").await;
+            eprintln!(
+                "pipe_deadline pipe={pipe} mutation={mutation} elapsed_ms={} cleanup={cleanup}",
+                elapsed.as_millis()
+            );
+            assert_eq!(cleanup, "released");
+            assert!(
+                observed.is_ok(),
+                "the real client exceeded its {DEFAULT_DEADLINE_SECS}s process/output deadline"
+            );
+            let error = observed.unwrap().unwrap_err();
+            assert_eq!(error.code, ErrorCode::Timeout);
+            assert_eq!(error.message, "Canonical production command timed out");
+            assert_eq!(error.outcome_known, !mutation);
+            assert_eq!(
+                fs::read(temp.path().join("transport-invocations")).unwrap(),
+                b"invoked\n"
+            );
+            let receipts = service.production_receipts(project.id, 10).unwrap();
+            let terminal = service
+                .latest_production_receipt(project.id, "original-pipe-attempt")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                terminal.stage,
+                if mutation {
+                    "outcome_unknown"
+                } else {
+                    "failed_known"
+                }
+            );
+            assert_eq!(
+                terminal.payload["error"],
+                serde_json::to_value(error).unwrap()
+            );
+            drop(coordinator);
+            drop(service);
+
+            let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+            assert_eq!(reopened.project(project.id).unwrap(), project);
+            assert_eq!(
+                reopened.production_receipts(project.id, 10).unwrap(),
+                receipts
+            );
+            let recovered = ProductionCoordinator::new(reopened.clone(), connection).unwrap();
+            let recovered_error = recovered
+                .execute(
+                    project.id,
+                    &project.stamp(),
+                    "original-pipe-attempt",
+                    command,
+                    args,
+                    mutation,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(recovered_error.code, ErrorCode::Conflict);
+            assert_eq!(recovered_error.outcome_known, !mutation);
+            assert_eq!(
+                fs::read(temp.path().join("transport-invocations")).unwrap(),
+                b"invoked\n",
+                "recovery may not enter the fixture CLI again"
+            );
+            assert_eq!(
+                reopened.production_receipts(project.id, 10).unwrap(),
+                receipts
+            );
+        }
+
+        async fn assert_probe_deadline(pipe: &str) {
+            let (_service, project, temp) = fixture_service();
+            let (connection, fixture) =
+                connection(&temp, project.resource_key(), "semwright 1.0.0\n", pipe);
+            let client = ProductionClient::new(connection).unwrap();
+            let started = Instant::now();
+            let observed = timeout(
+                Duration::from_secs(RUNTIME_PROBE_DEADLINE_SECS + 3),
+                client.probe_runtime("1.0.0"),
+            )
+            .await;
+            fixture.ready().await;
+            let cleanup = fixture.finish("stop").await;
+            eprintln!(
+                "probe_deadline pipe={pipe} elapsed_ms={} cleanup={cleanup}",
+                started.elapsed().as_millis()
+            );
+            assert_eq!(cleanup, "released");
+            assert!(
+                observed.is_ok(),
+                "version output escaped the real probe deadline"
+            );
+            let error = observed.unwrap().unwrap_err();
+            assert_eq!(error.code, ErrorCode::Timeout);
+            assert!(error.outcome_known);
+            assert_eq!(error.message, "Semwright CLI version probe timed out");
+        }
+
+        async fn assert_cancel_closes_reader(pipe: &str) {
+            let (_service, project, temp) = fixture_service();
+            let command = "driver.motion-canvas.composition.inspect";
+            let stdout = serde_json::to_string(&transport_reply(command)).unwrap();
+            let (connection, fixture) = connection(&temp, project.resource_key(), &stdout, pipe);
+            let client = ProductionClient::new(connection).unwrap();
+            let mut pending = Box::pin(client.execute(command, json!({}), false));
+            tokio::select! {
+                _ = fixture.ready() => {},
+                result = &mut pending => panic!("fixture pipe must still be held: {result:?}"),
+            }
+            drop(pending);
+            let outcome = fixture.finish("observe-reader").await;
+            eprintln!("cancelled_client pipe={pipe} descendant_observed={outcome}");
+            assert_eq!(
+                outcome, "reader-closed",
+                "cancelled client left a detached pipe reader"
+            );
+        }
+
+        #[tokio::test]
+        async fn execute_stdout_retained_after_exit_obeys_deadline() {
+            assert_execute_deadline("stdout", false).await;
+        }
+
+        #[tokio::test]
+        async fn execute_stderr_timeout_remains_unknown_after_reopen() {
+            // The read-only local fixture has no effect. This flag exercises
+            // conservative classification for a caller-declared mutation only.
+            assert_execute_deadline("stderr", true).await;
+        }
+
+        #[tokio::test]
+        async fn runtime_probe_stdout_retained_after_exit_obeys_deadline() {
+            assert_probe_deadline("stdout").await;
+        }
+
+        #[tokio::test]
+        async fn runtime_probe_stderr_retained_after_exit_obeys_deadline() {
+            assert_probe_deadline("stderr").await;
+        }
+
+        #[tokio::test]
+        async fn cancellation_closes_descendant_stdout_reader() {
+            assert_cancel_closes_reader("stdout").await;
+        }
+
+        #[tokio::test]
+        async fn cancellation_closes_descendant_stderr_reader() {
+            assert_cancel_closes_reader("stderr").await;
+        }
+
+        #[tokio::test]
+        async fn same_fixture_without_retained_pipe_accepts_valid_response() {
+            let (_service, project, temp) = fixture_service();
+            let command = "driver.motion-canvas.composition.inspect";
+            let stdout = serde_json::to_string(&transport_reply(command)).unwrap();
+            let (connection, fixture) = connection(&temp, project.resource_key(), &stdout, "none");
+            let client = ProductionClient::new(connection).unwrap();
+            let result = timeout(
+                Duration::from_secs(5),
+                client.execute(command, json!({}), false),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(result.request_id, "transport-fixture-original");
+            assert_eq!(result.value["provenance_checked"], true);
+            assert_eq!(fixture.marker("parent-exit").await, "exit-zero");
+            assert_eq!(
+                fs::read(temp.path().join("transport-invocations")).unwrap(),
+                b"invoked\n"
+            );
+        }
     }
 }
