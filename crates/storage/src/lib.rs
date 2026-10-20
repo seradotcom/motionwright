@@ -12,6 +12,8 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
+#[cfg(test)]
+mod apply_crash_tests;
 mod capture_evidence;
 mod derived_cache;
 mod file_import;
@@ -1290,6 +1292,9 @@ impl Store {
             });
         }
 
+        #[cfg(test)]
+        apply_crash_tests::checkpoint(request_id, "after_project_update");
+
         let payload = serde_json::to_string(change)?;
         tx.execute(
             "INSERT INTO events(project_id,revision,kind,payload_json,created_at)
@@ -1301,6 +1306,9 @@ impl Store {
                 project.updated_at.to_rfc3339(),
             ],
         )?;
+
+        #[cfg(test)]
+        apply_crash_tests::checkpoint(request_id, "after_event_insert");
 
         let outcome = ApplyOutcome {
             project,
@@ -1321,7 +1329,11 @@ impl Store {
             ],
         )?;
 
+        #[cfg(test)]
+        apply_crash_tests::checkpoint(request_id, "before_commit");
         tx.commit()?;
+        #[cfg(test)]
+        apply_crash_tests::checkpoint(request_id, "after_commit");
         // The SQLite trigger revoked stale cache registrations *inside* the
         // successful edit transaction. Physical derived-manifest cleanup is
         // best-effort: its durable tombstones will be retried, and failure
