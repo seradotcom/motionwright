@@ -143,8 +143,8 @@ async function evidence(testInfo: TestInfo, services: ScopedChangeService[], ini
   try {
     finalization = await services[0].finalizeClosedStore(testInfo.outputPath("closed-store-1"), final, services.slice(1), prepare);
   } catch (reason) { failures.push(reason); }
-  const path = testInfo.outputPath("brief-real-service-evidence.json");
   try {
+    const path = testInfo.outputPath("brief-real-service-evidence.json");
     await writeFile(path, JSON.stringify({
       fixture: "synthetic_test_fixture",
       evidenceScope: "browser_interaction_real_service_sqlite; excludes_tauri_model_dispatch_film_native_render_and_human_acceptance",
@@ -160,10 +160,13 @@ async function evidence(testInfo: TestInfo, services: ScopedChangeService[], ini
     }, null, 2));
   } catch (reason) { failures.push(reason); }
   for (const attachment of [
-    { name: "brief-real-service-evidence", path },
-    { name: "complete-store-finalization", path: testInfo.outputPath("closed-store-1-outcomes.json") },
+    { name: "brief-real-service-evidence", file: "brief-real-service-evidence.json" },
+    { name: "complete-store-finalization", file: "closed-store-1-outcomes.json" },
   ]) {
-    try { await testInfo.attach(attachment.name, { path: attachment.path, contentType: "application/json" }); }
+    try {
+      const path = testInfo.outputPath(attachment.file);
+      await testInfo.attach(attachment.name, { path, contentType: "application/json" });
+    }
     catch (reason) { failures.push(reason); }
   }
   if (failures.length === 1) throw failures[0];

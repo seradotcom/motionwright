@@ -53,8 +53,8 @@ async function finish(page: Page, info: TestInfo, service: ScopedChangeService, 
   try {
     custody=await service.finalizeClosedStore(info.outputPath("closed-store"),final,peers,[...prepare,()=>page.close()]);
   } catch (reason) { failures.push(reason); }
-  const path=info.outputPath("brief-uncertain-outcome-evidence.json");
   try {
+    const path=info.outputPath("brief-uncertain-outcome-evidence.json");
     await writeFile(path,JSON.stringify({
       scope:"synthetic authoring against real StudioService + grants + SQLite + DOM; excludes installed Tauri, native renders and human acceptance",
       observations,final,canonicalOracle:custody?.oracle,
@@ -67,10 +67,13 @@ async function finish(page: Page, info: TestInfo, service: ScopedChangeService, 
     },null,2));
   } catch (reason) { failures.push(reason); }
   for (const attachment of [
-    {name:"brief-uncertain-outcome-evidence",path},
-    {name:"complete-store-finalization",path:info.outputPath("closed-store-outcomes.json")},
+    {name:"brief-uncertain-outcome-evidence",file:"brief-uncertain-outcome-evidence.json"},
+    {name:"complete-store-finalization",file:"closed-store-outcomes.json"},
   ]) {
-    try { await info.attach(attachment.name,{path:attachment.path,contentType:"application/json"}); }
+    try {
+      const path=info.outputPath(attachment.file);
+      await info.attach(attachment.name,{path,contentType:"application/json"});
+    }
     catch (reason) { failures.push(reason); }
   }
   if (failures.length === 1) throw failures[0];
