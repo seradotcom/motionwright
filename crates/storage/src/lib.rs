@@ -933,11 +933,6 @@ impl Store {
         if exists {
             return Err(StorageError::ProjectExists);
         }
-        // This closure only publishes already captured/validated CAS members.
-        // It runs while the same transaction prevents a competing project-ID
-        // insertion; any publication error rolls SQLite back.
-        publish_captured_blobs(&self.blob_root)?;
-
         tx.execute(
             "INSERT INTO projects(id,generation,revision,title,document_json,updated_at)
              VALUES(?1,?2,?3,?4,?5,?6)",
@@ -963,6 +958,10 @@ impl Store {
                 ],
             )?;
         }
+        // Prepare both authoritative SQLite tables BEFORE publishing media.
+        // A rejected project or journal write cannot orphan CAS. The writer
+        // lock remains held through captured publication and SQLite commit.
+        publish_captured_blobs(&self.blob_root)?;
         tx.commit()?;
         Ok(project)
     }

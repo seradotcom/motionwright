@@ -41,8 +41,10 @@ The first manifest validation rejects a duplicate destination project ID.
 A second SQLite connection can still create that ID while the importer
 captures verified source media. After capturing and preflighting all source members, the importer opens a
 SQLite IMMEDIATE write transaction, checks the destination project ID **inside
-that transaction**, publishes the captured CAS members without reopening the
-source, writes the project and journal on that same transaction, and commits.
+that transaction**, writes the uncommitted project and journal rows, publishes
+the captured CAS members without reopening the source, and then commits.
+A failing project/event INSERT leaves no newly published CAS. A failure after
+publication begins or during COMMIT still has a cross-resource uncertainty.
 A competing SQLite writer must wait or receive BUSY; if a project ID was
 already claimed before the lock, no captured CAS member is published.
 
@@ -64,6 +66,16 @@ serializes the competing writer until the import commits. The test also
 preserves an unrelated private staging file and verifies the original source
 members against the imported CAS bytes.
 
-This is a database writer-serialization repair only. It does not guarantee
-crash-safe cross-resource atomicity, eliminate concurrent foreign CAS writes,
-provide CAS garbage collection, or authorize uncertain retries/deletions.
+The regression
+`rejected_sqlite_project_or_event_write_does_not_publish_captured_cas`
+inserts real SQLite ABORT triggers for either the destination project row or
+its retained journal. It requires the importer to reject the complete, valid
+source before CAS publication, roll back SQLite, preserve unrelated staging
+bytes, and reopen with unchanged authoritative rows.
+
+This is a database writer-serialization and SQL-before-CAS ordering repair.
+It does not guarantee crash-safe cross-resource atomicity, eliminate
+concurrent foreign CAS writes, provide CAS garbage collection, or authorize
+uncertain retries/deletions. Holding the SQLite writer lock during CAS
+publication can also make competing writes receive SQLITE_BUSY on large
+imports; this tradeoff requires bounded workload/latency verification.
