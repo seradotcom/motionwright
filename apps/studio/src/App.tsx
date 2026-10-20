@@ -2189,6 +2189,11 @@ export default function App() {
     await transactProject(source => applyChange(source, change));
   }, [transactProject]);
 
+  // Camera keeps an uncertain attempt until this original mutation returns.
+  // A Project observation or a swallowed error cannot acknowledge the attempt.
+  const commitCamera = useCallback((change: Change): Promise<Project> =>
+    transactProject(source => applyChange(source, change)), [transactProject]);
+
   const commit = useCallback(async (change: Change) => {
     setError(null);
     try {
@@ -2342,7 +2347,7 @@ export default function App() {
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
       case "Production":
-        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
+        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
           commitRequired={commitRequired} playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;

@@ -23,6 +23,18 @@ def report():
     }
 
 
+def selection_report(filename, titles):
+    value = report()
+    value["stats"]["expected"] = len(titles)
+    rows = value["suites"][0]["suites"][0]["specs"]
+    original = rows.pop()
+    for title in titles:
+        spec = copy.deepcopy(original)
+        spec.update(file=filename, title=title)
+        rows.append(spec)
+    return value
+
+
 class CanvasServiceReportTests(unittest.TestCase):
     def check(self, value):
         return gate.validate_report(value, "visual-language-draft-service.spec.ts", (gate.INK_TITLE,))
@@ -42,7 +54,12 @@ class CanvasServiceReportTests(unittest.TestCase):
         self.assertEqual(len(gate.BRIEF_UNCERTAINTY_TITLES), 6)
         self.assertEqual(len(gate.ACTIVE_VOICE_TITLES), 6)
         self.assertEqual(len(set(gate.ACTIVE_VOICE_TITLES)), 6)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 43)
+        self.assertEqual(len(gate.CAMERA_TITLES), 7)
+        self.assertEqual(len(set(gate.CAMERA_TITLES)), 7)
+        self.assertEqual(len(gate.GESTURE_TITLES), 7)
+        self.assertEqual(len(set(gate.GESTURE_TITLES)), 7)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:7]), 43)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 57)
         self.assertEqual(
             [(label, filename) for label, filename, _ in gate.SELECTIONS],
             [("canvas", "canvas-draft-service.spec.ts"),
@@ -51,8 +68,64 @@ class CanvasServiceReportTests(unittest.TestCase):
              ("brief", "brief-service.spec.ts"),
              ("brief-recovery", "brief-recovery-admission-service.spec.ts"),
              ("brief-uncertain", "brief-uncertain-outcome-service.spec.ts"),
-             ("active-voice", "audio-active-voice-service.spec.ts")],
+             ("active-voice", "audio-active-voice-service.spec.ts"),
+             ("camera", "camera-reframe-service.spec.ts"),
+             ("gesture", "canvas-gesture-service.spec.ts")],
         )
+
+    def test_all_57_exact_names_have_one_original_result(self):
+        observed = []
+        for label, filename, titles in gate.SELECTIONS:
+            with self.subTest(selection=label):
+                verified = gate.validate_report(selection_report(filename, titles), filename, titles)
+                self.assertEqual(verified, {"passed": len(titles), "skipped": 0,
+                                            "retries": 0, "titles": list(titles)})
+                observed.extend((filename, title) for title in verified["titles"])
+        self.assertEqual(len(observed), 57)
+        self.assertEqual(len(set(observed)), 57)
+
+    def test_camera_and_gesture_counts_cannot_substitute_named_inventory(self):
+        for label, filename, titles in gate.SELECTIONS[-2:]:
+            for mutation in ("missing", "duplicate", "foreign-title", "foreign-file"):
+                with self.subTest(selection=label, mutation=mutation):
+                    value = selection_report(filename, titles)
+                    rows = value["suites"][0]["suites"][0]["specs"]
+                    if mutation == "missing":
+                        rows.pop()
+                    elif mutation == "duplicate":
+                        rows[-1] = copy.deepcopy(rows[0])
+                    elif mutation == "foreign-title":
+                        rows[-1]["title"] = gate.INK_TITLE
+                    else:
+                        rows[-1]["file"] = "mock.spec.ts"
+                    with self.assertRaises(ValueError):
+                        gate.validate_report(value, filename, titles)
+
+    def test_new_selections_reject_skips_and_repeated_attempts(self):
+        for label, filename, titles in gate.SELECTIONS[-2:]:
+            for mutation in ("skip", "retry", "second-result"):
+                with self.subTest(selection=label, mutation=mutation):
+                    value = selection_report(filename, titles)
+                    test = value["suites"][0]["suites"][0]["specs"][-1]["tests"][0]
+                    if mutation == "skip":
+                        test["expectedStatus"] = "skipped"
+                        test["results"][0]["status"] = "skipped"
+                    elif mutation == "retry":
+                        test["results"][0]["retry"] = 1
+                    else:
+                        test["results"].append(copy.deepcopy(test["results"][0]))
+                    with self.assertRaises(ValueError):
+                        gate.validate_report(value, filename, titles)
+
+    def test_selection_time_bounds_preserve_original_limits_and_new_case_budgets(self):
+        self.assertEqual(gate.SELECTION_TIMEOUTS, {
+            "canvas": 1800, "ink": 180, "program": 600, "brief": 900,
+            "brief-recovery": 180, "brief-uncertain": 900, "active-voice": 900,
+            "camera": 1200, "gesture": 900,
+        })
+        self.assertEqual(set(gate.SELECTION_TIMEOUTS), {label for label, _, _ in gate.SELECTIONS})
+        self.assertGreater(gate.SELECTION_TIMEOUTS["camera"], 7 * 120 + 120)
+        self.assertGreater(gate.SELECTION_TIMEOUTS["gesture"], 7 * 90 + 120)
 
     def test_skip_failure_and_flaky_counters_cannot_be_green(self):
         for key in ("skipped", "unexpected", "flaky"):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Canvas, Program, Brief and Audio browser contracts against the freshly built SQLite service."""
+"""Run Canvas, Program, Brief, Audio, Camera and Gesture contracts against the freshly built SQLite service."""
 from __future__ import annotations
 
 import argparse
@@ -68,6 +68,24 @@ ACTIVE_VOICE_TITLES = (
     "active voice record retention failure is NOT_SENT and reload never submits it",
     "active voice pointer retention failure is NOT_SENT and reload never submits it",
 )
+CAMERA_TITLES = (
+    "Camera reframe keeps raw input, commits twice and reopens exact SQLite Project",
+    "Camera unconfirmed response cannot replay a real SQLite mutation",
+    "a peer upsert with identical saved Camera values cannot acknowledge the held original",
+    "a peer detach with identical saved Camera values cannot acknowledge the held original",
+    "a same-revision Camera inspection cannot release an original that is still held",
+    "a late saved-Camera read for scene A preserves the exact visible author copy of scene B",
+    "a successful original Camera reply closes only scene A while scene B keeps its exact author bytes",
+)
+GESTURE_TITLES = (
+    "rapid pointer move and release commits one exact Canvas transform without losing the final delta",
+    "pointercancel discards the transient delta and later pointerup cannot apply it",
+    "quick release with Auto-key writes a single X/Y motion pair, not a base transform",
+    "a pose gesture cannot overwrite a peer after same-view reopen and release",
+    "a pose gesture cannot overwrite a peer after same-view reopen and cancel",
+    "a keyed gesture cannot overwrite a peer after same-view reopen and release",
+    "a keyed gesture cannot overwrite a peer after same-view reopen and cancel",
+)
 SELECTIONS = (
     ("canvas", "canvas-draft-service.spec.ts", CANVAS_TITLES),
     ("ink", "visual-language-draft-service.spec.ts", (INK_TITLE,)),
@@ -76,7 +94,23 @@ SELECTIONS = (
     ("brief-recovery", "brief-recovery-admission-service.spec.ts", BRIEF_RECOVERY_TITLES),
     ("brief-uncertain", "brief-uncertain-outcome-service.spec.ts", BRIEF_UNCERTAINTY_TITLES),
     ("active-voice", "audio-active-voice-service.spec.ts", ACTIVE_VOICE_TITLES),
+    ("camera", "camera-reframe-service.spec.ts", CAMERA_TITLES),
+    ("gesture", "canvas-gesture-service.spec.ts", GESTURE_TITLES),
 )
+# Retain the existing 43-case process limits. New bounds include the declared
+# Camera 7x120s / Gesture 7x90s cases and the configured 120s server startup.
+# These are execution bounds; only an original run can establish actual timing.
+SELECTION_TIMEOUTS = {
+    "canvas": 1800,
+    "ink": 180,
+    "program": 600,
+    "brief": 900,
+    "brief-recovery": 180,
+    "brief-uncertain": 900,
+    "active-voice": 900,
+    "camera": 1200,
+    "gesture": 900,
+}
 
 
 def require(condition, reason):
@@ -165,7 +199,17 @@ def source_observation(repo):
         "apps/studio/src/AudioWorkspace.tsx",
         "apps/studio/src/audioDraft.ts",
         "apps/studio/tests/audio-active-voice-service.spec.ts",
+        "apps/studio/src/ProductionDesignWorkspace.tsx",
+        "apps/studio/src/CameraReframeWorkbench.tsx",
+        "apps/studio/src/cameraReframeDraft.ts",
+        "apps/studio/src/cameraReframe.ts",
+        "apps/studio/src/projectMutation.ts",
+        "apps/studio/src/CanvasWorkspace.tsx",
+        "apps/studio/src/canvasCamera.ts",
+        "apps/studio/tests/camera-reframe-service.spec.ts",
+        "apps/studio/tests/canvas-gesture-service.spec.ts",
         "tooling/ci_canvas_service.py",
+        "tooling/tests/test_ci_canvas_service.py",
     )
     files = {}
     for name in paths:
@@ -249,8 +293,7 @@ def main():
             if label == "ink":
                 argv += ["--grep", re.escape(INK_TITLE) + "$"]
             command = execute(argv, repo / "apps/studio", case_env, output, label,
-                              1800 if label == "canvas" else 900 if label in ("brief", "brief-uncertain", "active-voice")
-                              else 600 if label == "program" else 180)
+                              SELECTION_TIMEOUTS[label])
             selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
             report["selections"].append(selection)
             try:
