@@ -87,31 +87,64 @@ def identity(value):
     return value
 
 
-def seed_binding(seed):
-    require(type(seed) is dict
-            and seed.get("schema") == "motionwright.native.manim-camera-seed/1"
-            and seed.get("fresh_sqlite_readback") is True
-            and seed.get("native_dispatch_performed") is False
-            and seed.get("decoded_media_verified") is False
-            and seed.get("frame_count") == 120
-            and seed.get("frame_rate_num") == 30
-            and seed.get("frame_rate_den") == 1, "camera_seed_contract")
-    result = {key: seed.get(key) for key in BINDING_KEYS}
+def seed_binding(seed, *, fixture="original"):
+    require(fixture in ("original", "edited1040"), "camera_fixture_profile")
+    require(type(seed) is dict, "camera_seed_contract")
+    if fixture == "original":
+        require(seed.get("schema") == "motionwright.native.manim-camera-seed/1"
+                and seed.get("fresh_sqlite_readback") is True
+                and seed.get("native_dispatch_performed") is False
+                and seed.get("decoded_media_verified") is False
+                and seed.get("frame_count") == 120
+                and seed.get("frame_rate_num") == 30
+                and seed.get("frame_rate_den") == 1, "camera_seed_contract")
+        result = {key: seed.get(key) for key in BINDING_KEYS}
+    else:
+        require(seed.get("schema") == "motionwright.manim.camera.source-cycle/1"
+                and seed.get("phase") == "source-cycle-edit"
+                and seed.get("fresh_sqlite_readback") is True
+                and seed.get("source_changed_by_example") is True
+                and seed.get("import_staging_files_removed") is True
+                and all(seed.get(key) is False for key in (
+                    "native_execution_performed", "native_compiler_registered",
+                    "provider_dispatch_performed", "new_render_job_created",
+                    "imported_source_authority_used", "fresh_registered_source_reopen_verified",
+                    "native_video_frame_content_verified", "human_acceptance",
+                )), "camera_source_cycle_contract")
+        stamp = seed.get("canonical_stamp")
+        require(type(stamp) is dict, "camera_source_cycle_stamp")
+        result = {key: seed.get(key) for key in ("project_id", "scene_id", "deliverable_id")}
+        result.update(generation=stamp.get("generation"), revision=stamp.get("revision"))
     for key in ("project_id", "generation", "scene_id", "deliverable_id"):
         identity(result[key])
     require(type(result["revision"]) is int and result["revision"] >= 1,
             "camera_seed_revision")
+    if fixture == "edited1040":
+        require(stamp.get("resource") == "project:" + result["project_id"],
+                "camera_source_cycle_stamp")
     require(type(seed.get("source_project_sha256")) is str
             and SHA.fullmatch(seed["source_project_sha256"]), "camera_project_digest")
     return result
 
 
+def _checked_source_cycle_inspection(seed, binding, plan):
+    inspected = seed.get("current_source_inspection")
+    require(type(inspected) is dict
+            and inspected.get("current_binding") == binding
+            and inspected.get("current_plan") == plan
+            and inspected.get("native_execution_performed") is False
+            and inspected.get("imported_source_authority_used") is False,
+            "camera_source_cycle_inspection")
+
+
 def prepare_seed(seed, evidence, *, fixture="original"):
     """Preserve bytes emitted by the canonical Rust compiler, without rebuilding JSON."""
-    binding = seed_binding(seed)
+    binding = seed_binding(seed, fixture=fixture)
     program = seed.get("prepared_program", {})
     prepared = program.get("prepared", {})
     compiler = program.get("trusted_compiler", {})
+    if fixture == "edited1040":
+        _checked_source_cycle_inspection(seed, binding, prepared.get("source"))
     require(program.get("original_source_snapshot_checked") is True
             and program.get("program_semantically_bound_to_source") is True
             and program.get("native_execution_performed") is False
@@ -248,7 +281,7 @@ def finish_render(native, prepared, evidence, output_root, work_root,
     return summary
 
 
-def verified_publication(root, source_sha, semwright_sha, sealed_originals):
+def verified_publication(root, source_sha, semwright_sha, sealed_originals, *, fixture="original"):
     """Closed read-only publication; ciphertext custody and original digests are required."""
     result = read_object(root / "result.json")
     require(result.get("schema") == "motionwright.manim.camera.native-e2e/1"
@@ -262,13 +295,16 @@ def verified_publication(root, source_sha, semwright_sha, sealed_originals):
             and result.get("native_editable_reopen_verified") is False
             and result.get("human_acceptance") is False, "camera_public_result_scope")
     seed = read_object(root / "source-seed.json")
-    prepared = {"binding": seed_binding(seed), "plan_sha256": result["plan_sha256"]}
+    prepared = {"binding": seed_binding(seed, fixture=fixture),
+                "plan_sha256": result["plan_sha256"]}
     require(result["project"] == prepared["binding"]
             and result["source_project_sha256"] == seed["source_project_sha256"],
             "camera_public_source_binding")
     plan_path = root / "compiled-camera-plan.json"
-    plan = verified_plan(plan_path, result["plan_sha256"])
+    plan = verified_plan(plan_path, result["plan_sha256"], fixture=fixture)
     require(plan["binding"] == prepared["binding"], "camera_public_plan_binding")
+    if fixture == "edited1040":
+        _checked_source_cycle_inspection(seed, prepared["binding"], plan)
     native_raw = read(root / EVIDENCE_NAME)
     require(sha(native_raw) == result["native_evidence_sha256"],
             "camera_public_native_evidence_digest")
