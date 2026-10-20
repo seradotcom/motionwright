@@ -420,14 +420,29 @@ fn load_project_from_row(conn: &Connection, id: Uuid) -> Result<Project> {
 /// before running the WAL-mode or schema-creation pragmas. This recognizes
 /// source layout, not the application's owner or an external authorization.
 fn validate_existing_project_store_layout(conn: &Connection, version: u32) -> Result<()> {
-    let mut statement =
-        conn.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")?;
-    let tables = statement
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<BTreeSet<String>>>()?;
+    // No user tables is NOT equivalent to an empty database: a foreign
+    // SQLite file may contain only a persisted VIEW (or another user object).
+    // Do not enable WAL or create product tables in such a database.
+    // Exclude only SQLite's reserved internal names such as sqlite_sequence.
+    let mut statement = conn.prepare(
+        "SELECT name,type FROM sqlite_master
+         WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
+    )?;
+    let mapped = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut tables = BTreeSet::new();
+    let mut has_user_schema_object = false;
+    for entry in mapped {
+        let (name, kind) = entry?;
+        has_user_schema_object = true;
+        if kind == "table" {
+            tables.insert(name);
+        }
+    }
     drop(statement);
 
-    if tables.is_empty() {
+    if !has_user_schema_object {
         return if version == 0 {
             Ok(()) // A genuinely fresh, empty SQLite database.
         } else {
