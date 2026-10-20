@@ -637,7 +637,8 @@ pub fn verify_rendered_manim_camera_source(
 ) -> NativeResult<serde_json::Value> {
     use std::io::Read;
 
-    let token = video_relative_path
+    let video_filename = video_relative_path.rsplit('/').next().unwrap_or_default();
+    let token = video_filename
         .strip_prefix("mw_")
         .and_then(|name| name.strip_suffix(".mp4"))
         .filter(|token| {
@@ -647,6 +648,15 @@ pub fn verify_rendered_manim_camera_source(
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
         .ok_or_else(|| invalid("Manim video is not bound to one native job filename"))?;
+    let expected_video_path = format!(
+        "videos/mw_{token}/{}/mw_{token}.mp4",
+        original_plan.render_profile.quality_directory()
+    );
+    if video_relative_path != expected_video_path {
+        return Err(invalid(
+            "Manim video path does not match its job and render profile",
+        ));
+    }
     let package =
         motionwright_manim_profile::planar_camera::camera_source_package_v1(original_plan)
             .map_err(|_| {

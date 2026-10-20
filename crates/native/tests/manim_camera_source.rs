@@ -1179,7 +1179,10 @@ mod production {
         let package = camera_source_package_v1(&plan).unwrap();
         let root = fixture.directory.path().join("native-output");
         std::fs::create_dir(&root).unwrap();
-        let video = "mw_0123456789abcdef0123456789abcdef.mp4";
+        let token = "0123456789abcdef0123456789abcdef";
+        let quality = plan.render_profile.quality_directory();
+        let video_path = format!("videos/mw_{token}/{quality}/mw_{token}.mp4");
+        let video = video_path.as_str();
         let source = "mw_0123456789abcdef0123456789abcdef.mwcam.zip";
         std::fs::write(root.join(source), &bytes).unwrap();
         let artifact = serde_json::json!({"camera_source": {
@@ -1199,24 +1202,22 @@ mod production {
         assert!(
             verify_rendered_manim_camera_source(&root, video, &plan, &changed_descriptor).is_err()
         );
-        assert!(
-            verify_rendered_manim_camera_source(
-                &root,
-                "../mw_0123456789abcdef0123456789abcdef.mp4",
-                &plan,
-                &artifact,
-            )
-            .is_err()
-        );
-        assert!(
-            verify_rendered_manim_camera_source(
-                &root,
-                "mw_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4",
-                &plan,
-                &artifact,
-            )
-            .is_err()
-        );
+        for foreign_video in [
+            format!("mw_{token}.mp4"),
+            format!("../{video}"),
+            format!("videos/../{quality}/mw_{token}.mp4"),
+            format!("videos/mw_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/{quality}/mw_{token}.mp4"),
+            format!("videos/mw_{token}/{quality}/mw_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4"),
+            format!("videos/mw_{token}/1p1/mw_{token}.mp4"),
+            video.replace('/', "\\"),
+            format!("{video}/extra.mp4"),
+        ] {
+            assert!(
+                verify_rendered_manim_camera_source(&root, &foreign_video, &plan, &artifact)
+                    .is_err(),
+                "foreign video path: {foreign_video}"
+            );
+        }
         let edited_plan = edited_camera_plan(&bytes);
         assert!(
             verify_rendered_manim_camera_source(&root, video, &edited_plan, &artifact).is_err()
@@ -1258,7 +1259,7 @@ mod production {
             (
                 "wrong-type",
                 "application/octet-stream",
-                digest,
+                digest.clone(),
                 ErrorCode::Unsupported,
             ),
             (
@@ -1266,12 +1267,6 @@ mod production {
                 CAMERA_SOURCE_MIME_V1,
                 None,
                 ErrorCode::InvalidArgument,
-            ),
-            (
-                "missing-blob",
-                CAMERA_SOURCE_MIME_V1,
-                Some("a".repeat(64)),
-                ErrorCode::NotFound,
             ),
         ] {
             let id = Uuid::new_v4();
@@ -1311,5 +1306,50 @@ mod production {
             )
             .is_ok()
         );
+
+        // The service rejects a new reference to absent bytes before admitting
+        // the edit. Exercise that guard without bypassing canonical storage.
+        let rejected = fixture.service.apply(
+            current.id,
+            &RevisionStamp::from(&current),
+            "camera-source-missing-blob-reference",
+            &Change::AddAsset {
+                asset: Asset {
+                    id: Uuid::new_v4(),
+                    name: "missing-blob-reference".into(),
+                    media_type: CAMERA_SOURCE_MIME_V1.into(),
+                    content_sha256: Some("a".repeat(64)),
+                    source_revision: None,
+                },
+            },
+        );
+        assert!(matches!(
+            rejected,
+            Err(motionwright_storage::StorageError::BlobMissing { .. })
+        ));
+        assert_eq!(fixture.service.project(current.id).unwrap(), current);
+
+        // A previously imported blob can disappear after admission. Remove
+        // only this fixture's verified CAS file and retain the saved reference.
+        let blob_path = fixture
+            .service
+            .store()
+            .lock()
+            .verified_blob_path(digest.as_deref().unwrap())
+            .unwrap();
+        assert!(blob_path.starts_with(fixture.directory.path()));
+        std::fs::remove_file(blob_path).unwrap();
+        assert_eq!(
+            inspect_saved_manim_camera_source(
+                &fixture.service,
+                current.id,
+                &RevisionStamp::from(&current),
+                original_id,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(fixture.service.project(current.id).unwrap(), current);
     }
 }

@@ -614,8 +614,10 @@ pub fn rebind_camera_source_v1(
     let mut rebound = origin.plan.clone();
     rebound.binding.generation = current.binding.generation;
     rebound.binding.revision = current.binding.revision;
+    // Numeric equality alone collapses signed zero, while the source and its
+    // closure retain the exact serialized representation of every control.
     require(
-        &rebound == current,
+        super::source_json(&rebound)? == super::source_json(current)?,
         "manim_camera_source_rebind_content_or_identity_drift",
     )?;
     camera_source_package_v1(&rebound)
@@ -1099,6 +1101,35 @@ mod source_contract_tests {
         let mut tampered = origin.clone();
         tampered.closure.source_sha256 = "0".repeat(64);
         assert!(rebind_camera_source_v1(&tampered, &origin.plan).is_err());
+    }
+
+    #[test]
+    fn camera_source_rebind_rejects_signed_zero_representation_drift() {
+        for (original_zero, changed_zero) in [(-0.0, 0.0), (0.0, -0.0)] {
+            let mut authored = fixture();
+            authored.camera.rotation_deg = original_zero;
+            let origin = camera_source_package_v1(&authored).unwrap();
+            let mut current = authored;
+            current.binding.revision += 1;
+            let rebound = rebind_camera_source_v1(&origin, &current).unwrap();
+            assert_eq!(
+                rebound.closure.plan_sha256,
+                compile_camera_program_source_only(&current)
+                    .unwrap()
+                    .plan_sha256
+            );
+
+            current.camera.rotation_deg = changed_zero;
+            assert!(current.validate_source_only().is_ok());
+            assert_eq!(origin.plan.camera.rotation_deg, current.camera.rotation_deg);
+            assert_ne!(
+                rebound.closure.plan_sha256,
+                compile_camera_program_source_only(&current)
+                    .unwrap()
+                    .plan_sha256
+            );
+            assert!(rebind_camera_source_v1(&origin, &current).is_err());
+        }
     }
 
     #[test]
