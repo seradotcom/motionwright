@@ -93,7 +93,23 @@ jobs:
       - name: Reject stale source, invalid applicability and omitted selected results
         env:
           MW_CI_JOB_TEST_TMP: ${{ runner.temp }}
-        run: python3 -I -B -m unittest discover -s tooling/tests -p 'test_ci_job_plan.py' -v
+        run: >-
+          python3 -I -B tooling/ci_test_runner.py
+          --repo "$GITHUB_WORKSPACE"
+          --test-directory tooling/tests
+          --pattern test_ci_job_plan.py
+          --mode both
+          --expected-source "$GITHUB_SHA"
+          --report "$RUNNER_TEMP/motionwright-ci/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/job-plan-contracts/receipt.json"
+          --require-complete
+      - name: Preserve original job-plan contract evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-job-plan-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/job-plan-contracts
+          if-no-files-found: error
+          retention-days: 30
       - name: Bind job result to original source, plan and execution
         id: source
         if: always()
