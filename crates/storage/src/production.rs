@@ -50,6 +50,38 @@ fn bounded_token(value: &str, max: usize, label: &str) -> Result<()> {
     Ok(())
 }
 
+// A request key has one immutable identity even when observations arrive out of
+// order. Check every prior binding so older inconsistent histories fail closed
+// instead of choosing authority from a receipt UUID or the latest observation.
+fn validate_original_production_binding(
+    conn: &rusqlite::Connection,
+    input: &ProductionReceiptInput,
+) -> Result<bool> {
+    let revision = i64::try_from(input.revision).map_err(|_| StorageError::RequestReuse)?;
+    let (has_prior, binding_changed): (bool, bool) = conn.query_row(
+        "SELECT
+           EXISTS(SELECT 1 FROM production_receipts
+                  WHERE project_id=?1 AND request_id=?2),
+           EXISTS(SELECT 1 FROM production_receipts
+                  WHERE project_id=?1 AND request_id=?2
+                    AND (request_sha256 IS NOT ?3 OR command IS NOT ?4
+                         OR generation IS NOT ?5 OR revision IS NOT ?6))",
+        params![
+            input.project_id.to_string(),
+            &input.request_id,
+            &input.request_sha256,
+            &input.command,
+            input.generation.to_string(),
+            revision,
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if binding_changed {
+        return Err(StorageError::RequestReuse);
+    }
+    Ok(has_prior)
+}
+
 impl Store {
     /// Atomically claim one application-owned recovery stage. This is deliberately
     /// NOT a Semwright command: the Driver Host retains runtime authority.
@@ -89,6 +121,7 @@ impl Store {
                 actual: current.revision,
             });
         }
+        validate_original_production_binding(&tx, &input)?;
         // A changed input fingerprint (or newly named workflow) must NOT
         // bypass an earlier uncertain mutation of the same native provider.
         // Read the latest receipt for every stage key, not historic dispatches
@@ -224,23 +257,21 @@ impl Store {
             });
         }
 
-        let prior: Option<(String, String)> = tx
-            .query_row(
-                "SELECT request_sha256,command FROM production_receipts
-                 WHERE project_id=?1 AND request_id=?2
-                 ORDER BY receipt_id DESC LIMIT 1",
-                params![input.project_id.to_string(), &input.request_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
+        let has_prior = validate_original_production_binding(&tx, &input)?;
         // Observations may extend an existing request, but cannot grant a new
         // dispatch. Explicit recovery retries use claim_recovery_stage.
-        if let Some((prior_sha, prior_command)) = prior
-            && (prior_sha != input.request_sha256
-                || prior_command != input.command
-                || input.stage == "dispatching")
-        {
+        if has_prior && input.stage == "dispatching" {
             return Err(StorageError::RequestReuse);
+        }
+
+        // A caller's preflight may predate a peer commit. A new dispatch must
+        // still match the head while this transaction holds the write lock.
+        // Observations of an admitted request retain their original revision.
+        if input.stage == "dispatching" && input.revision != current.revision {
+            return Err(StorageError::Conflict {
+                expected: input.revision,
+                actual: current.revision,
+            });
         }
 
         let receipt = ProductionReceipt {
@@ -861,5 +892,306 @@ mod tests {
             }),
             Err(StorageError::Conflict { .. })
         ));
+    }
+
+    fn revision_binding_input(
+        project: &motionwright_domain::Project,
+        request_id: &str,
+        command: &str,
+    ) -> ProductionReceiptInput {
+        ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: request_id.into(),
+            request_sha256: "a".repeat(64),
+            command: command.into(),
+            stage: "dispatching".into(),
+            payload: json!({"mutation": true}),
+        }
+    }
+
+    fn edit_after_dispatch(
+        store: &mut Store,
+        project: &motionwright_domain::Project,
+    ) -> motionwright_domain::Project {
+        store
+            .apply(
+                project.id,
+                &project.stamp(),
+                "edit-after-dispatch",
+                &motionwright_domain::Change::AddScene {
+                    name: "Later revision".into(),
+                    objective: "Keep earlier production observations historical".into(),
+                    duration_seconds: 2,
+                },
+            )
+            .unwrap()
+            .project
+    }
+
+    #[test]
+    fn new_dispatch_rechecks_the_current_project_revision_after_peer_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("stale-dispatch.sqlite3");
+        let mut editor = Store::open(&path).unwrap();
+        let prepared = editor.create_named_project("Prepared production").unwrap();
+        let mut dispatcher = Store::open(&path).unwrap();
+        let input = revision_binding_input(
+            &prepared,
+            "prepared-but-never-dispatched",
+            "driver.motion-canvas.render.start",
+        );
+        let before = dispatcher
+            .production_receipt_watermark(prepared.id)
+            .unwrap();
+
+        // The coordinator already read and checked this revision. A different
+        // connection commits a normal project edit before dispatch admission.
+        let edited = edit_after_dispatch(&mut editor, &prepared);
+        assert!(edited.revision > prepared.revision);
+        let result = dispatcher.append_production_receipt(input.clone());
+        assert!(
+            matches!(
+                result,
+                Err(StorageError::Conflict { expected, actual })
+                    if expected == prepared.revision && actual == edited.revision
+            ),
+            "a new dispatch must recheck the head inside its write transaction: {result:?}"
+        );
+        assert_eq!(
+            dispatcher
+                .production_receipt_watermark(prepared.id)
+                .unwrap(),
+            before
+        );
+        assert!(
+            dispatcher
+                .latest_production_receipt(prepared.id, &input.request_id)
+                .unwrap()
+                .is_none()
+        );
+        drop(dispatcher);
+        drop(editor);
+
+        let mut reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.load_project(prepared.id).unwrap(), edited);
+        assert!(
+            reopened
+                .production_receipts(prepared.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+        let current = reopened
+            .append_production_receipt(revision_binding_input(
+                &edited,
+                "new-intent-on-current-revision",
+                "driver.motion-canvas.render.start",
+            ))
+            .unwrap();
+        assert_eq!(current.revision, edited.revision);
+        drop(reopened);
+        let final_read = Store::open(&path).unwrap();
+        assert_eq!(final_read.load_project(prepared.id).unwrap(), edited);
+        assert_eq!(
+            final_read.production_receipts(prepared.id, 10).unwrap(),
+            vec![current]
+        );
+    }
+
+    #[test]
+    fn stale_dispatch_guard_preserves_consumed_keys_and_historical_observations() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("admitted-historical-dispatch.sqlite3");
+        let mut editor = Store::open(&path).unwrap();
+        let original = editor.create_named_project("Admitted production").unwrap();
+        let mut observer = Store::open(&path).unwrap();
+        let input = revision_binding_input(
+            &original,
+            "already-admitted-original-request",
+            "driver.motion-canvas.render.start",
+        );
+        let dispatch = observer.append_production_receipt(input.clone()).unwrap();
+        let edited = edit_after_dispatch(&mut editor, &original);
+        let before = observer.production_receipt_watermark(original.id).unwrap();
+        let duplicate = observer.append_production_receipt(input.clone());
+        assert!(
+            matches!(duplicate, Err(StorageError::RequestReuse)),
+            "a consumed key must retain RequestReuse precedence: {duplicate:?}"
+        );
+        assert_eq!(
+            observer.production_receipt_watermark(original.id).unwrap(),
+            before
+        );
+        let late = observer
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "completed".into(),
+                payload: json!({"result": {"state": "succeeded", "job_ref": "original-job"}}),
+                ..input
+            })
+            .unwrap();
+        assert_eq!(late.revision, original.revision);
+        let current = observer
+            .append_production_receipt(revision_binding_input(
+                &edited,
+                "independent-current-request",
+                "driver.motion-canvas.render.start",
+            ))
+            .unwrap();
+        assert_eq!(current.revision, edited.revision);
+        drop(observer);
+        drop(editor);
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.load_project(original.id).unwrap(), edited);
+        let rows = reopened.production_receipts(original.id, 10).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.contains(&dispatch) && rows.contains(&late) && rows.contains(&current));
+    }
+
+    #[test]
+    fn observations_cannot_move_the_original_request_to_a_later_revision() {
+        for stage in ["outcome_unknown", "completed", "failed_known"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("observation-revision.sqlite3");
+            let mut writer = Store::open(&path).unwrap();
+            let original = writer
+                .create_named_project("Original request binding")
+                .unwrap();
+            let mut observer = Store::open(&path).unwrap();
+            let input = revision_binding_input(
+                &original,
+                "one-original-request",
+                "driver.motion-canvas.render.start",
+            );
+            let dispatch = writer.append_production_receipt(input.clone()).unwrap();
+            let edited = edit_after_dispatch(&mut writer, &original);
+            assert!(edited.revision > original.revision);
+            let before = observer.production_receipt_watermark(original.id).unwrap();
+
+            let result = observer.append_production_receipt(ProductionReceiptInput {
+                revision: edited.revision,
+                stage: stage.into(),
+                payload: json!({"observation": "must retain original revision"}),
+                ..input.clone()
+            });
+            assert!(
+                matches!(result, Err(StorageError::RequestReuse)),
+                "a {stage} observation cannot reattribute the original request: {result:?}"
+            );
+            assert_eq!(
+                observer.production_receipt_watermark(original.id).unwrap(),
+                before
+            );
+            assert_eq!(
+                observer.production_receipts(original.id, 10).unwrap(),
+                vec![dispatch.clone()]
+            );
+
+            let late = observer
+                .append_production_receipt(ProductionReceiptInput {
+                    stage: stage.into(),
+                    payload: json!({"observation": "original revision"}),
+                    ..input
+                })
+                .unwrap();
+            assert_eq!(late.revision, original.revision);
+            drop(observer);
+            drop(writer);
+            let reopened = Store::open(&path).unwrap();
+            assert_eq!(reopened.load_project(original.id).unwrap(), edited);
+            let rows = reopened.production_receipts(original.id, 10).unwrap();
+            assert_eq!(rows.len(), 2);
+            assert!(rows.contains(&dispatch) && rows.contains(&late));
+            assert!(rows.iter().all(|row| row.revision == original.revision));
+        }
+    }
+
+    #[test]
+    fn recovery_retry_cannot_move_the_original_request_to_a_later_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("recovery-revision.sqlite3");
+        let mut writer = Store::open(&path).unwrap();
+        let original = writer
+            .create_named_project("Recovery original binding")
+            .unwrap();
+        let input = revision_binding_input(
+            &original,
+            "one-recovery-stage",
+            "motionwright.recovery.motion-canvas",
+        );
+        let dispatch = writer.claim_recovery_stage(input.clone()).unwrap();
+        let failed = writer
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "failed_known".into(),
+                payload: json!({"retryable": true, "attempt": 1}),
+                ..input.clone()
+            })
+            .unwrap();
+        let edited = edit_after_dispatch(&mut writer, &original);
+        drop(writer);
+
+        let mut observer = Store::open(&path).unwrap();
+        let before = observer.production_receipt_watermark(original.id).unwrap();
+        let result = observer.claim_recovery_stage(ProductionReceiptInput {
+            revision: edited.revision,
+            ..input
+        });
+        assert!(
+            matches!(result, Err(StorageError::RequestReuse)),
+            "an explicit retry cannot bind an old request to a new revision: {result:?}"
+        );
+        assert_eq!(
+            observer.production_receipt_watermark(original.id).unwrap(),
+            before
+        );
+        drop(observer);
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.load_project(original.id).unwrap(), edited);
+        let rows = reopened.production_receipts(original.id, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&dispatch) && rows.contains(&failed));
+        assert_eq!(
+            reopened
+                .latest_production_receipt(original.id, "one-recovery-stage")
+                .unwrap(),
+            Some(failed)
+        );
+    }
+
+    #[test]
+    fn same_revision_explicit_recovery_retry_keeps_its_original_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("same-revision-retry.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let project = store
+            .create_named_project("Supported recovery retry")
+            .unwrap();
+        let input = revision_binding_input(
+            &project,
+            "retryable-original-stage",
+            "motionwright.recovery.motion-canvas",
+        );
+        let original = store.claim_recovery_stage(input.clone()).unwrap();
+        assert_eq!(original.payload["attempt"], json!(1));
+        store
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "failed_known".into(),
+                payload: json!({"retryable": true, "attempt": 1}),
+                ..input.clone()
+            })
+            .unwrap();
+        drop(store);
+        let mut reopened = Store::open(&path).unwrap();
+        let retry = reopened.claim_recovery_stage(input).unwrap();
+        assert_eq!(retry.payload["attempt"], json!(2));
+        assert_eq!(retry.revision, original.revision);
+        assert_eq!(retry.generation, original.generation);
+        assert_eq!(
+            reopened
+                .production_receipt_watermark(project.id)
+                .unwrap()
+                .count,
+            3
+        );
     }
 }

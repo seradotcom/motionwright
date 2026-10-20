@@ -85,7 +85,7 @@ fn persisted_completed_creates_survive_later_unknown_and_distinct_native_outputs
 }
 
 #[test]
-fn same_command_and_request_digest_reused_across_revisions_retains_uncertainty() {
+fn legacy_cross_revision_request_history_retains_uncertainty_after_current_rejection() {
     use motionwright_domain::Change;
     use motionwright_service::ProductionReceiptInput;
     use serde_json::json;
@@ -129,21 +129,60 @@ fn same_command_and_request_digest_reused_across_revisions_retains_uncertainty()
         .project;
     assert!(new_project.revision > original.revision);
 
-    // Storage admits the *same* command, digest and request ID on the
-    // later creative revision. The earlier confirmed resource remains
-    // historical while the newer UNKNOWN attempt remains uncertain.
-    service
-        .append_production_receipt(ProductionReceiptInput {
-            project_id: new_project.id,
-            generation: new_project.generation,
-            revision: new_project.revision,
-            request_id: "reused-across-creative-revisions".into(),
-            request_sha256: "a".repeat(64),
-            command: "driver.mlt-video.project.create".into(),
-            stage: "outcome_unknown".into(),
-            payload: json!({"error":{"code":"Timeout","outcome_known":false}}),
-        })
+    // Current admission must reject this reassignment without changing the
+    // append-only inventory. Older versions admitted it, so the reader still
+    // has to preserve and conservatively interpret that historical evidence.
+    let rejected = service.append_production_receipt(ProductionReceiptInput {
+        project_id: new_project.id,
+        generation: new_project.generation,
+        revision: new_project.revision,
+        request_id: "reused-across-creative-revisions".into(),
+        request_sha256: "a".repeat(64),
+        command: "driver.mlt-video.project.create".into(),
+        stage: "outcome_unknown".into(),
+        payload: json!({"error":{"code":"Timeout","outcome_known":false}}),
+    });
+    assert!(matches!(
+        rejected,
+        Err(motionwright_storage::StorageError::RequestReuse)
+    ));
+    let admitted = service
+        .mlt_cleanup_inventory_snapshot(
+            new_project.id,
+            new_project.generation,
+            new_project.revision,
+        )
         .unwrap();
+    assert_eq!(admitted.source_receipts_scanned, 1);
+    assert_eq!(admitted.confirmed_native_creations_historical, 1);
+    assert_eq!(admitted.unconfirmed_or_invalid_creation_requests, 0);
+
+    drop(service);
+    // Offline legacy fixture only: the current API cannot create these rows.
+    // Copy the original binding and change only its historical observation.
+    let legacy = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        legacy
+            .execute(
+                "INSERT INTO production_receipts(
+                   receipt_id,project_id,generation,revision,request_id,
+                   request_sha256,command,stage,payload_json,created_at)
+                 SELECT ?1,project_id,generation,?2,request_id,
+                        request_sha256,command,'outcome_unknown',?3,created_at
+                 FROM production_receipts WHERE project_id=?4 AND request_id=?5",
+                rusqlite::params![
+                    uuid::Uuid::now_v7().to_string(),
+                    i64::try_from(new_project.revision).unwrap(),
+                    json!({"error":{"code":"Timeout","outcome_known":false}}).to_string(),
+                    new_project.id.to_string(),
+                    "reused-across-creative-revisions",
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    drop(legacy);
+    let service = StudioService::open(&path).unwrap();
 
     let observed = service
         .mlt_cleanup_inventory_snapshot(
