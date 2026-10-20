@@ -2,6 +2,14 @@ name: MLT audio observer source checks
 on:
   workflow_dispatch:
     inputs:
+      verification_scope:
+        description: 'Select observer source checks or official runtime file inventory only'
+        required: true
+        type: choice
+        default: observer-source
+        options:
+          - observer-source
+          - official-runtime-intake
       repaired_only_source_g1:
         description: 'Build exact uninstrumented repaired-only MLT ELF; never install or render'
         required: false
@@ -10,6 +18,8 @@ on:
   pull_request:
     paths:
       - '.github/workflows/mlt-audio-diagnostic.yml'
+      - 'tooling/mlt_official_runtime_intake.py'
+      - 'tooling/tests/test_mlt_official_runtime_intake.py'
       - 'tooling/mlt-audio-diagnostic/**'
       - 'tooling/mlt_repair_verification.py'
       - 'tooling/tests/test_mlt_repair_verification.py'
@@ -31,10 +41,12 @@ defaults:
     shell: bash
 jobs:
   observer-source:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'official-runtime-intake' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       PYTHONDONTWRITEBYTECODE: '1'
+      MW_VERIFICATION_SCOPE: ${{ inputs.verification_scope || 'observer-source' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -42,6 +54,7 @@ jobs:
       - name: Prepare isolated source verification
         run: |
           set -euo pipefail
+          test "$MW_VERIFICATION_SCOPE" = 'observer-source'
           work="$RUNNER_TEMP/mw-mlt-source-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir "$work"
           mkdir "$work"/{source,build,constructors,public,tmp,control}
@@ -50,6 +63,7 @@ jobs:
           export MW_DIAG_VERIFY="$control/verification"
           export MW_DIAG_CHECK="$control/check-source.py"
           echo "MW_DIAG_WORK=$work" >> "$GITHUB_ENV"
+          echo "MW_MLT_INTAKE_G0_PUBLIC=$work/public" >> "$GITHUB_ENV"
           echo "TMPDIR=$work/tmp" >> "$GITHUB_ENV"
           echo "MW_DIAG_SOURCE=$MW_DIAG_SOURCE" >> "$GITHUB_ENV"
           echo "MW_DIAG_VERIFY=$MW_DIAG_VERIFY" >> "$GITHUB_ENV"
@@ -93,6 +107,8 @@ jobs:
                          "tooling/tests/test_native_mlt_repair_only_compiler_receipt.py",
                          "tooling/ci_mlt_runtime_selected.py",
                          "tooling/tests/test_ci_mlt_runtime_selected.py"}
+          intake_paths={"tooling/mlt_official_runtime_intake.py",
+                        "tooling/tests/test_mlt_official_runtime_intake.py"}
           workflow_path=".github/workflows/mlt-audio-diagnostic.yml"
           require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,
                   "wrong worktree")
@@ -106,7 +122,7 @@ jobs:
           require({p.name for p in (repo/folder).iterdir()}==names,"diagnostic source set is not closed")
           originals={}
           oids={}
-          for path in sorted(source_paths|attestor_paths|runtime_paths|{workflow_path}):
+          for path in sorted(source_paths|attestor_paths|runtime_paths|intake_paths|{workflow_path}):
               entries=git("ls-tree","-rz",expected,"--",path).split(b"\0")
               require(len(entries)==2 and entries[-1]==b"","expected one source blob")
               metadata,raw_path=entries[0].split(b"\t",1)
@@ -121,7 +137,7 @@ jobs:
                       "worktree bytes differ from Git blob")
               originals[path]=data
               oids[path]=oid.decode("ascii")
-          require(set(originals)==source_paths|attestor_paths|runtime_paths|{workflow_path},
+          require(set(originals)==source_paths|attestor_paths|runtime_paths|intake_paths|{workflow_path},
                   "missing source, attestor or runtime-admission blob")
           # G0: all 3 G1 suites must remain bound to the exact committed tests.
           # Reuse authenticated Git blobs; execute BEFORE FFmpeg package installation
@@ -203,10 +219,48 @@ jobs:
                             "runtime_sources":{path:hashlib.sha256(originals[path]).hexdigest()
                                                for path in sorted(runtime_paths)},
                             "runtime_blob_oids":{path:oids[path] for path in sorted(runtime_paths)},
+                            "official_intake_sources":{path:hashlib.sha256(originals[path]).hexdigest()
+                                                       for path in sorted(intake_paths)},
+                            "official_intake_blob_oids":{path:oids[path] for path in sorted(intake_paths)},
                             "workflow":{"path":workflow_path,"sha256":hashlib.sha256(originals[workflow_path]).hexdigest(),
                                         "git_blob_oid":oids[workflow_path]}},sort_keys=True,indent=2))
           PY
           python3 -B -I -S "$MW_DIAG_CHECK" export > "$work/public/source-inputs.json"
+      - name: Verify signed distribution intake source contracts (G0)
+        run: |
+          set -euo pipefail
+          python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
+            --pattern test_mlt_official_runtime_intake.py --mode both \
+            --expected-source "$GITHUB_SHA" --require-complete \
+            --report "$MW_MLT_INTAKE_G0_PUBLIC/official-runtime-contracts.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          public=pathlib.Path(os.environ["MW_MLT_INTAKE_G0_PUBLIC"])
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          source=json.loads((public/"source-inputs.json").read_text())
+          receipt=json.loads((public/"official-runtime-contracts.json").read_text())
+          expected={"tooling/mlt_official_runtime_intake.py":"104ea2bf6561574c54c25fb20763deb401f4de4a50e6cd5d853f1c37c003a92b",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"5123d98cd1006d4c8e126ef65c019201b7bb558bf105467e95f47f1febb9a17d"}
+          test="tooling/tests/test_mlt_official_runtime_intake.py"
+          assert source["official_intake_sources"]==expected
+          assert set(source["official_intake_blob_oids"])==set(expected)
+          assert source["source_sha"]==receipt["executed_source_sha"]==os.environ["GITHUB_SHA"]
+          assert receipt["test_definition_sha256"]=={test:expected[test]}
+          assert receipt["status"]=="PASS" and receipt["require_complete"] is True
+          assert len(receipt["steps"])==2
+          assert {row["entry_point"] for row in receipt["steps"]}=={
+              "discovery:test_mlt_official_runtime_intake.py",
+              "dotted:tooling.tests.test_mlt_official_runtime_intake"}
+          for row in receipt["steps"]:
+              counts=row["counts"]
+              assert row["exit_code"]==0 and row["status"]=="PASS"
+              assert counts["tests_run"]==counts["passed"]==66
+              assert counts["terminal_status"]=="OK"
+              assert all(counts[key]==0 for key in (
+                  "errors","failures","skipped","expected_failures","unexpected_successes"))
+              for kind in ("stdout","stderr"):
+                  assert sha(public/row[kind]["file"])==row[kind]["sha256"]
+          PY
       - name: Verify original loaded MLT module attestor source controls (G0)
         run: |
           set -euo pipefail
@@ -977,5 +1031,161 @@ jobs:
         with:
           name: mlt-audio-observer-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.MW_DIAG_WORK }}/public
+          if-no-files-found: error
+          retention-days: 14
+  official-runtime-intake:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'official-runtime-intake' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_REQUESTED_REPAIRED_ONLY: ${{ inputs.repaired_only_source_g1 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare official distribution source custody
+        run: |
+          set -euo pipefail
+          test "$MW_REQUESTED_REPAIRED_ONLY" != 'true'
+          work="$RUNNER_TEMP/mw-mlt-official-source-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$work"
+          mkdir "$work/public" "$work/control"
+          echo "MW_OFFICIAL_WORK=$work" >> "$GITHUB_ENV"
+          echo "MW_MLT_INTAKE_G0_PUBLIC=$work/public" >> "$GITHUB_ENV"
+          cat > "$work/control/check-source.py" <<'PY'
+          import hashlib,json,os,pathlib,re,stat,subprocess
+          def require(ok,message):
+              if not ok: raise SystemExit(message)
+          repo=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          expected=os.environ["GITHUB_SHA"]
+          require(re.fullmatch(r"[0-9a-f]{40}",expected),"invalid source SHA")
+          env={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
+          env.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,
+                     GIT_CONFIG_GLOBAL=os.devnull,GIT_GRAFT_FILE=os.devnull,
+                     GIT_NO_LAZY_FETCH="1",GIT_OPTIONAL_LOCKS="0",GIT_TERMINAL_PROMPT="0")
+          def git(*args):
+              return subprocess.check_output(
+                  ["/usr/bin/git","--no-replace-objects","-C",str(repo),
+                   "-c","core.fsmonitor=false",*args],env=env)
+          require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,
+                  "wrong source checkout")
+          require(git("rev-parse","HEAD").decode().strip()==expected,"HEAD differs")
+          require(not git("status","--porcelain=v1","--untracked-files=all"),"checkout changed")
+          require(not git("ls-files","--others","--ignored","--exclude-standard","-z"),
+                  "ignored checkout files")
+          pins={"tooling/mlt_official_runtime_intake.py":"104ea2bf6561574c54c25fb20763deb401f4de4a50e6cd5d853f1c37c003a92b",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"5123d98cd1006d4c8e126ef65c019201b7bb558bf105467e95f47f1febb9a17d"}
+          workflow=".github/workflows/mlt-audio-diagnostic.yml"
+          runner="tooling/ci_test_runner.py"
+          sources={}
+          for path in sorted(set(pins)|{workflow,runner}):
+              entry=git("ls-tree","-rz",expected,"--",path).split(b"\0")
+              require(len(entry)==2 and not entry[-1],"source path ambiguous")
+              metadata,raw_path=entry[0].split(b"\t",1)
+              mode,kind,oid=metadata.split()
+              require(mode in (b"100644",b"100755") and kind==b"blob" and
+                      raw_path.decode()==path,"nonregular source blob")
+              data=git("cat-file","blob",oid.decode())
+              require(hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()==oid.decode(),
+                      "Git blob digest differs")
+              actual=repo/path
+              require(stat.S_ISREG(actual.lstat().st_mode) and actual.read_bytes()==data,
+                      "worktree source differs")
+              sha=hashlib.sha256(data).hexdigest()
+              require(path not in pins or sha==pins[path],"source pin differs")
+              sources[path]={"sha256":sha,"git_blob_oid":oid.decode()}
+          print(json.dumps({
+              "source_sha":expected,"tree":git("rev-parse",expected+"^{tree}").decode().strip(),
+              "official_intake_sources":{p:sources[p]["sha256"] for p in sorted(pins)},
+              "official_intake_blob_oids":{p:sources[p]["git_blob_oid"] for p in sorted(pins)},
+              "workflow":sources[workflow],"test_runner":sources[runner]},sort_keys=True,indent=2))
+          PY
+          python3 -B -I -S "$work/control/check-source.py" > "$work/public/source-inputs.json"
+          source_tree="$(git --no-replace-objects rev-parse 'HEAD^{tree}')"
+          echo "MW_OFFICIAL_SOURCE_TREE=$source_tree" >> "$GITHUB_ENV"
+      - name: Verify signed distribution intake source contracts (G0)
+        run: |
+          set -euo pipefail
+          python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
+            --pattern test_mlt_official_runtime_intake.py --mode both \
+            --expected-source "$GITHUB_SHA" --require-complete \
+            --report "$MW_MLT_INTAKE_G0_PUBLIC/official-runtime-contracts.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          public=pathlib.Path(os.environ["MW_MLT_INTAKE_G0_PUBLIC"])
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          source=json.loads((public/"source-inputs.json").read_text())
+          receipt=json.loads((public/"official-runtime-contracts.json").read_text())
+          expected={"tooling/mlt_official_runtime_intake.py":"104ea2bf6561574c54c25fb20763deb401f4de4a50e6cd5d853f1c37c003a92b",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"5123d98cd1006d4c8e126ef65c019201b7bb558bf105467e95f47f1febb9a17d"}
+          test="tooling/tests/test_mlt_official_runtime_intake.py"
+          assert source["official_intake_sources"]==expected
+          assert set(source["official_intake_blob_oids"])==set(expected)
+          assert source["source_sha"]==receipt["executed_source_sha"]==os.environ["GITHUB_SHA"]
+          assert receipt["test_definition_sha256"]=={test:expected[test]}
+          assert receipt["status"]=="PASS" and receipt["require_complete"] is True
+          assert len(receipt["steps"])==2
+          assert {row["entry_point"] for row in receipt["steps"]}=={
+              "discovery:test_mlt_official_runtime_intake.py",
+              "dotted:tooling.tests.test_mlt_official_runtime_intake"}
+          for row in receipt["steps"]:
+              counts=row["counts"]
+              assert row["exit_code"]==0 and row["status"]=="PASS"
+              assert counts["tests_run"]==counts["passed"]==66
+              assert counts["terminal_status"]=="OK"
+              assert all(counts[key]==0 for key in (
+                  "errors","failures","skipped","expected_failures","unexpected_successes"))
+              for kind in ("stdout","stderr"):
+                  assert sha(public/row[kind]["file"])==row[kind]["sha256"]
+          PY
+      - name: Check source and acceptance policies
+        run: |
+          set -euo pipefail
+          python3 -B tooling/source_policy.py > "$MW_OFFICIAL_WORK/public/source-policy.stdout.log" 2> "$MW_OFFICIAL_WORK/public/source-policy.stderr.log"
+          python3 -B tooling/acceptance_policy.py > "$MW_OFFICIAL_WORK/public/acceptance-policy.stdout.log" 2> "$MW_OFFICIAL_WORK/public/acceptance-policy.stderr.log"
+          python3 -B tooling/creative_status_policy.py > "$MW_OFFICIAL_WORK/public/creative-status-policy.stdout.log" 2> "$MW_OFFICIAL_WORK/public/creative-status-policy.stderr.log"
+      - name: Authenticate official runtime files without installing or loading them
+        run: |
+          set -euo pipefail
+          python3 -B tooling/mlt_official_runtime_intake.py \
+            --output "$MW_OFFICIAL_WORK/public/distribution" \
+            --source-sha "$GITHUB_SHA" --source-tree "$MW_OFFICIAL_SOURCE_TREE"
+      - name: Confirm unchanged source and inventory-only evidence
+        run: |
+          set -euo pipefail
+          python3 -B -I -S "$MW_OFFICIAL_WORK/control/check-source.py" > "$MW_OFFICIAL_WORK/public/source-inputs-after.json"
+          cmp "$MW_OFFICIAL_WORK/public/source-inputs.json" "$MW_OFFICIAL_WORK/public/source-inputs-after.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib,re
+          public=pathlib.Path(os.environ["MW_OFFICIAL_WORK"])/"public"
+          receipt_path=public/"distribution/official-runtime-receipt.json"
+          receipt=json.loads(receipt_path.read_text())
+          assert receipt["schema"]=="motionwright.mlt.official-runtime-intake/1"
+          assert receipt["scope"]=="signed-distribution-files-only"
+          assert receipt["source_authentication"]=="PASS"
+          assert receipt["context"]["source_sha"]==os.environ["GITHUB_SHA"]
+          assert receipt["context"]["source_tree"]==os.environ["MW_OFFICIAL_SOURCE_TREE"]
+          assert set(receipt["runtime_bindings"])=={"original_module","melt"}
+          paths={"original_module":"/usr/lib/x86_64-linux-gnu/mlt-7/libmltavformat.so",
+                 "melt":"/usr/bin/melt-7"}
+          for name,value in receipt["runtime_bindings"].items():
+              assert set(value)=={"installed_path","sha256"}
+              assert value["installed_path"]==paths[name] and re.fullmatch(r"[0-9a-f]{64}",value["sha256"])
+          for key in ("observer_source","repaired_only_compile","package_installation",
+                      "native_execution","loaded_module_observation","physical_AAC_master"):
+              assert receipt[key]=="NOT_RUN"
+          assert receipt["release_authorized"] is False and receipt["human_acceptance"] is False
+          print(json.dumps({"official_runtime_receipt_sha256":hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+                            "scope":"signed-distribution-files-only",
+                            "observer_source":"NOT_RUN","repaired_only_compile":"NOT_RUN",
+                            "package_installation":"NOT_RUN","native_execution":"NOT_RUN",
+                            "physical_AAC_master":"NOT_RUN"}))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: mlt-official-runtime-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MW_OFFICIAL_WORK }}/public
           if-no-files-found: error
           retention-days: 14
