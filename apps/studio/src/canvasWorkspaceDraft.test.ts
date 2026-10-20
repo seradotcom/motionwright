@@ -485,7 +485,7 @@ describe("Canvas style uses one recoverable, revision-bound authoring session", 
     const scope = draft.scope, raw = JSON.stringify({schema:"motionwright.canvas-recovery/1",scope,writerId:"old",updatedAt:1,draft:legacy});
     const decoded = decodeCanvasRecovery(raw,scope,"old").draft!;
     const migrated = reconcileCanvasDraft(decoded,project);
-    expect(migrated.schema).toBe("motionwright.canvas-draft/3");
+    expect(migrated.schema).toBe("motionwright.canvas-draft/4");
     expect(migrated.fields.text.raw).toBe("Kept legacy content");
     expect(migrated.fields.x.raw).toBe("345");
     expect(migrated.fields.font_size.raw).toBe(String(project.scenes[0].nodes[0].style.font_size));
@@ -609,11 +609,152 @@ describe("Canvas parent and Z authoring uses the same persistent revision-scoped
     const original=raw;
     const decoded=decodeCanvasRecovery(raw,draft.scope,"v2-author").draft!;
     const migrated=reconcileCanvasDraft(decoded,project);
-    expect(migrated.schema).toBe("motionwright.canvas-draft/3");
+    expect(migrated.schema).toBe("motionwright.canvas-draft/4");
     expect(migrated.fields.text.raw).toBe("Kept human copy");
     expect(migrated.fields.fill.raw).toBe("#F7EAD7");
     expect(migrated.fields.parent_id.raw).toBe(first.parent_id??"");
     expect(migrated.fields.z_index.raw).toBe(String(first.z_index));
     expect(raw).toBe(original);
+  });
+});
+
+describe("Canvas relations belong to the same persistent scoped authoring session", () => {
+  it("retains relation target and kind through ten independent revisions", async () => {
+    const { canvasRelationIssue, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    let project = structuredClone(fixtureProject),scene=project.scenes[0];
+    const node=scene.nodes[0],other=scene.nodes[1];
+    let draft=createCanvasDraft(project,scene.id,node.id);
+    draft=editCanvasField(draft,"relation_kind","align_right");
+    draft=editCanvasField(draft,"relation_target",other.id);
+    for(let i=0;i<10;i++) {
+      project=structuredClone(project);project.revision++;
+      project.scenes[0].nodes[0].text="Independent revision "+i;
+      draft=reconcileCanvasDraft(draft,project);
+    }
+    expect(draft.fields.relation_kind.raw).toBe("align_right");
+    expect(draft.fields.relation_target.raw).toBe(other.id);
+    expect(canvasRelationIssue(draft,project,"add")).toBeNull();
+    const prepared=prepareCanvasRelationSubmission(draft,project,"add","018f0000-0000-7000-8000-000000000290");
+    expect(prepared.change.type).toBe("set_canvas_relations");
+    expect(prepared.change.relations).toMatchObject([{kind:"align_right",target_id:other.id}]);
+    expect(prepared.draft.awaiting?.relations).toEqual(prepared.change.relations);
+  });
+
+  it("matches exact Add acknowledgement, consumes its target once, and forbids a duplicated relation", async () => {
+    const { canvasRelationIssue, canvasSubmissionMatches, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    let draft=createCanvasDraft(project,scene.id,node.id);
+    draft=editCanvasField(draft,"relation_kind","follow");
+    draft=editCanvasField(draft,"relation_target",scene.nodes[1].id);
+    const sent=prepareCanvasRelationSubmission(draft,project,"add","018f0000-0000-7000-8000-000000000291");
+    expect(() => prepareCanvasRelationSubmission(sent.draft,project,"add","018f0000-0000-7000-8000-000000000292")).toThrow(/unconfirmed/);
+    const saved=structuredClone(project);saved.revision++;
+    saved.scenes[0].nodes[0].relations=sent.change.relations;
+    expect(canvasSubmissionMatches(saved,sent.draft,sent.submission)).toBe(true);
+    draft=reconcileCanvasDraft(sent.draft,saved);
+    expect(draft.awaiting).toBeNull();
+    expect(draft.fields.relation_kind.raw).toBe("follow");
+    expect(draft.fields.relation_target.raw).toBe("");
+    expect(draft.relationsBase).toEqual(sent.change.relations);
+    draft=editCanvasField(draft,"relation_target",scene.nodes[1].id);
+    expect(canvasRelationIssue(draft,saved,"add")).toContain("already exists");
+    expect(() => prepareCanvasRelationSubmission(draft,saved,"add","018f0000-0000-7000-8000-000000000292")).toThrow(/already exists/);
+  });
+
+  it("requires an explicit choice when a peer changes the saved relation list", async () => {
+    const { canvasRelationIssue, canvasDraftConflicts, resolveCanvasField, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    let project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    let draft=editCanvasField(createCanvasDraft(project,scene.id,node.id),"relation_target",scene.nodes[1].id);
+    const peer=structuredClone(project);peer.revision++;
+    peer.scenes[0].nodes[0].relations=[{id:"018f0000-0000-7000-8000-000000000293",kind:"follow",target_id:scene.nodes[1].id}];
+    draft=reconcileCanvasDraft(draft,peer);
+    expect(canvasDraftConflicts(draft,peer).some(item=>item.field==="relation_target")).toBe(true);
+    expect(canvasRelationIssue(draft,peer,"add")).toContain("Review the changed relation list");
+    expect(() => prepareCanvasRelationSubmission(draft,peer,"add","018f0000-0000-7000-8000-000000000294")).toThrow(/changed relation list/);
+    draft=resolveCanvasField(draft,peer,"relation_target","draft");
+    expect(canvasRelationIssue(draft,peer,"add")).toBeNull();
+    const result=prepareCanvasRelationSubmission(draft,peer,"add","018f0000-0000-7000-8000-000000000294");
+    expect(result.change.relations).toHaveLength(2);
+    expect(result.change.relations[0].id).toBe(peer.scenes[0].nodes[0].relations[0].id);
+  });
+
+  it("an uncertain Remove retains its exact list until the author explicitly reviews a newer revision", async () => {
+    const { prepareCanvasRelationSubmission, releaseCanvasSubmission, canvasRelationIssue } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    node.relations=[{id:"018f0000-0000-7000-8000-000000000295",kind:"align_left",target_id:scene.nodes[1].id}];
+    const draft=createCanvasDraft(project,scene.id,node.id);
+    const pending=prepareCanvasRelationSubmission(draft,project,"remove","018f0000-0000-7000-8000-000000000296",node.relations[0].id);
+    expect(pending.change.relations).toEqual([]);
+    const peer=structuredClone(project);peer.revision++;peer.scenes[0].nodes[0].text="Other author";
+    const held=reconcileCanvasDraft(pending.draft,peer);
+    expect(held.awaiting?.relations).toEqual([]);
+    expect(canvasRelationIssue(held,peer,"remove",node.relations[0].id)).toContain("unconfirmed");
+    expect(() => prepareCanvasRelationSubmission(held,peer,"remove","018f0000-0000-7000-8000-000000000297",node.relations[0].id)).toThrow(/unconfirmed/);
+    const reviewed=reconcileCanvasDraft(releaseCanvasSubmission(held,pending.submission.id),peer);
+    expect(canvasRelationIssue(reviewed,peer,"remove",node.relations[0].id)).toBeNull();
+  });
+
+  it("rejects invalid/self targets, duplicate IDs and saved position locks before grant", async () => {
+    const { canvasRelationIssue, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    let draft=editCanvasField(createCanvasDraft(project,scene.id,node.id),"relation_target",node.id);
+    expect(canvasRelationIssue(draft,project,"add")).toContain("another saved");
+    expect(() => prepareCanvasRelationSubmission(draft,project,"add","018f0000-0000-7000-8000-000000000298")).toThrow();
+    draft=editCanvasField(draft,"relation_target","missing");
+    expect(canvasRelationIssue(draft,project,"add")).toContain("another saved");
+    draft=editCanvasField(draft,"relation_target",scene.nodes[1].id);
+    const locked=structuredClone(project);
+    locked.scenes[0].nodes[0].property_locks.push("position");
+    expect(canvasRelationIssue(draft,locked,"add")).toContain("lock");
+    expect(() => prepareCanvasRelationSubmission(draft,locked,"add","018f0000-0000-7000-8000-000000000298")).toThrow(/lock/);
+    expect(draft.fields.relation_target.raw).toBe(scene.nodes[1].id);
+  });
+
+  it("preserves later human target change after a saved Add ACK", async () => {
+    const { canvasSubmissionMatches, prepareCanvasRelationSubmission } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    let draft=editCanvasField(createCanvasDraft(project,scene.id,node.id),"relation_target",scene.nodes[1].id);
+    const sent=prepareCanvasRelationSubmission(draft,project,"add","018f0000-0000-7000-8000-000000000299");
+    draft=editCanvasField(sent.draft,"relation_target","");
+    const saved=structuredClone(project);saved.revision++;saved.scenes[0].nodes[0].relations=sent.change.relations;
+    expect(canvasSubmissionMatches(saved,draft,sent.submission)).toBe(true);
+    draft=reconcileCanvasDraft(draft,saved);
+    expect(draft.awaiting).toBeNull();
+    expect(draft.fields.relation_target.raw).toBe("");
+    expect(draft.fields.relation_target.intent).toBe(true);
+  });
+
+  it("migrates a valid v3 copy without losing text, style, hierarchy and saved relation identity", async () => {
+    const { CANVAS_RELATION_FIELDS } = await import("./canvasWorkspaceDraft");
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    node.relations=[{id:"018f0000-0000-7000-8000-0000000002a0",kind:"align_left",target_id:scene.nodes[1].id}];
+    let draft=createCanvasDraft(project,scene.id,node.id);
+    draft=editCanvasField(draft,"text","Legacy human message");
+    draft=editCanvasField(draft,"fill","#C15A73");
+    draft=editCanvasField(draft,"z_index","17");
+    const legacy=structuredClone(draft) as typeof draft;legacy.schema="motionwright.canvas-draft/3";
+    for(const field of CANVAS_RELATION_FIELDS) delete (legacy.fields as Partial<typeof draft.fields>)[field];
+    delete (legacy as Partial<typeof draft>).relationsBase;
+    const scope=draft.scope,original=JSON.stringify({schema:"motionwright.canvas-recovery/1",scope,writerId:"v3-writer",updatedAt:1,draft:legacy});
+    const decoded=decodeCanvasRecovery(original,scope,"v3-writer").draft!;
+    const migrated=reconcileCanvasDraft(decoded,project);
+    expect(migrated.schema).toBe("motionwright.canvas-draft/4");
+    expect(migrated.fields.text.raw).toBe("Legacy human message");
+    expect(migrated.fields.fill.raw).toBe("#C15A73");
+    expect(migrated.fields.z_index.raw).toBe("17");
+    expect(migrated.relationsBase).toEqual(node.relations);
+    expect(migrated.fields.relation_kind.raw).toBe("align_left");
+    expect(migrated.fields.relation_target.raw).toBe("");
+  });
+
+  it("quarantines malformed, excessive, duplicated and unknown-kind recovered relation lists", async () => {
+    const project=structuredClone(fixtureProject),scene=project.scenes[0],node=scene.nodes[0];
+    const draft=createCanvasDraft(project,scene.id,node.id),valid={id:"018f0000-0000-7000-8000-0000000002a1",kind:"follow",target_id:scene.nodes[1].id};
+    const read = (list: unknown) => decodeCanvasRecovery(JSON.stringify({schema:"motionwright.canvas-recovery/1",scope:draft.scope,
+      writerId:"tampered-writer",updatedAt:1,draft:{...draft,relationsBase:list}}),draft.scope,"tampered-writer");
+    expect(() => read([valid,valid])).toThrow(/invalid/);
+    expect(() => read([{...valid,kind:"unauthorized_kind"}])).toThrow(/invalid/);
+    expect(() => read(Array.from({length:129},(_,i)=>({...valid,id:String(i)})))).toThrow(/invalid/);
+    expect(() => read([valid])).not.toThrow();
   });
 });

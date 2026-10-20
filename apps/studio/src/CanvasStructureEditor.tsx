@@ -1,11 +1,10 @@
 import { Link2, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { CANVAS_STYLE_FIELDS, CANVAS_HIERARCHY_FIELDS, canvasFieldHasInput, canvasFieldIssue } from "./canvasWorkspaceDraft";
+import { useMemo } from "react";
+import { CANVAS_STYLE_FIELDS, CANVAS_HIERARCHY_FIELDS, canvasDraftHasWork, canvasFieldHasInput, canvasFieldIssue } from "./canvasWorkspaceDraft";
 import type { CanvasDraftField, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
 import type {
   CanvasNode,
   Change,
-  RelationKind,
   Scene,
 } from "./types";
 
@@ -24,7 +23,8 @@ const finiteOr = (value: string, fallback: number): number => {
 export default function CanvasStructureEditor({
   scene,
   node,
-  commit, draft, edit, saveStyle, styleIssue, saveHierarchy, hierarchyIssue, pending,
+  commit, draft, edit, saveStyle, styleIssue, saveHierarchy, hierarchyIssue,
+  relation, relationIssue, pending,
 }: {
   scene: Scene;
   node: CanvasNode;
@@ -35,15 +35,10 @@ export default function CanvasStructureEditor({
   styleIssue: string | null;
   saveHierarchy: () => void;
   hierarchyIssue: string | null;
+  relation: (operation: "add" | "remove", relationId?: string) => void;
+  relationIssue: string | null;
   pending: boolean;
 }) {
-  const [relationKind, setRelationKind] = useState<RelationKind>("align_left");
-  const [relationTarget, setRelationTarget] = useState("");
-
-  useEffect(() => {
-    setRelationTarget("");
-  }, [node.id, node.parent_id, node.z_index]);
-
   const otherNodes = useMemo(
     () => scene.nodes.filter((candidate) => candidate.id !== node.id),
     [node.id, scene.nodes],
@@ -54,23 +49,6 @@ export default function CanvasStructureEditor({
   const parentLocked = node.property_locks.includes("parent");
   const orderLocked = node.property_locks.includes("order");
   const positionLocked = node.property_locks.includes("position");
-
-  const addRelation = () => {
-    if (!relationTarget || positionLocked) return;
-    return commit({
-      type: "set_canvas_relations",
-      scene_id: scene.id,
-      node_id: node.id,
-      relations: [
-        ...node.relations,
-        {
-          id: crypto.randomUUID(),
-          kind: relationKind,
-          target_id: relationTarget,
-        },
-      ],
-    });
-  };
 
   return (
     <div className="canvas-structure-editor">
@@ -160,78 +138,39 @@ export default function CanvasStructureEditor({
 
       <div className="canvas-editor-section">
         <span className="field-label">Relations</span>
+        <p className="semantic-footnote">Relation choices are local until Add or Remove commits the exact saved list.</p>
         <div className="relation-composer">
-          <select
-            aria-label="Canvas relation kind"
-            value={relationKind}
-            disabled={positionLocked || otherNodes.length === 0}
-            onChange={(event) => setRelationKind(event.target.value as RelationKind)}
-          >
-            <option value="align_left">Align left</option>
-            <option value="align_center_x">Align center X</option>
-            <option value="align_right">Align right</option>
-            <option value="align_top">Align top</option>
-            <option value="align_center_y">Align center Y</option>
-            <option value="align_bottom">Align bottom</option>
-            <option value="follow">Follow</option>
-            <option value="attach">Attach</option>
+          <select aria-label="Canvas relation kind" value={draft.fields.relation_kind.raw}
+            disabled={pending || positionLocked || otherNodes.length === 0}
+            onChange={event => edit("relation_kind",event.target.value)}>
+            <option value="align_left">Align left</option><option value="align_center_x">Align center X</option>
+            <option value="align_right">Align right</option><option value="align_top">Align top</option>
+            <option value="align_center_y">Align center Y</option><option value="align_bottom">Align bottom</option>
+            <option value="follow">Follow</option><option value="attach">Attach</option>
           </select>
-          <select
-            aria-label="Canvas relation target"
-            value={relationTarget}
-            disabled={positionLocked || otherNodes.length === 0}
-            onChange={(event) => setRelationTarget(event.target.value)}
-          >
+          <select aria-label="Canvas relation target" value={draft.fields.relation_target.raw}
+            disabled={pending || positionLocked || otherNodes.length === 0}
+            onChange={event => edit("relation_target",event.target.value)}>
             <option value="">Target…</option>
-            {otherNodes.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.name}
-              </option>
-            ))}
+            {draft.fields.relation_target.raw && !otherNodes.some(candidate => candidate.id === draft.fields.relation_target.raw)
+              && <option value={draft.fields.relation_target.raw}>Missing saved target · review</option>}
+            {otherNodes.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
           </select>
-          <button
-            type="button"
-            className="plain-icon"
-            aria-label="Add canvas relation"
-            disabled={!relationTarget || positionLocked}
-            onClick={() => void addRelation()}
-          >
-            <Link2 size={13} />
-          </button>
+          <button type="button" className="plain-icon" aria-label="Add canvas relation"
+            disabled={pending || positionLocked || relationIssue !== null}
+            onClick={() => relation("add")}><Link2 size={13}/></button>
         </div>
+        {canvasFieldHasInput(draft.fields.relation_target) && relationIssue &&
+          <p className="semantic-footnote" role="status">{relationIssue}</p>}
         <div className="relation-list">
-          {node.relations.map((relation) => {
-            const target = scene.nodes.find(
-              (candidate) => candidate.id === relation.target_id,
-            );
-            return (
-              <div className="relation-row" key={relation.id}>
-                <span>{relation.kind.replaceAll("_", " ")}</span>
-                <strong>{target?.name ?? relation.target_id.slice(0, 8)}</strong>
-                <button
-                  type="button"
-                  className="plain-icon"
-                  aria-label={"Remove relation " + relation.id}
-                  disabled={positionLocked}
-                  onClick={() =>
-                    void commit({
-                      type: "set_canvas_relations",
-                      scene_id: scene.id,
-                      node_id: node.id,
-                      relations: node.relations.filter(
-                        (candidate) => candidate.id !== relation.id,
-                      ),
-                    })
-                  }
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            );
-          })}
-          {node.relations.length === 0 && (
-            <span className="visual-empty">No semantic relations.</span>
-          )}
+          {node.relations.map(item => <div className="relation-row" key={item.id}>
+            <span>{item.kind.replaceAll("_"," ")}</span>
+            <strong>{scene.nodes.find(candidate => candidate.id === item.target_id)?.name ?? item.target_id.slice(0,8)}</strong>
+            <button type="button" className="plain-icon" aria-label={"Remove relation " + item.id}
+              disabled={pending || positionLocked || Boolean(draft.awaiting)}
+              onClick={() => relation("remove",item.id)}><Trash2 size={12}/></button>
+          </div>)}
+          {node.relations.length === 0 && <span className="visual-empty">No semantic relations.</span>}
         </div>
       </div>
 
@@ -239,6 +178,8 @@ export default function CanvasStructureEditor({
         <button
           type="button"
           className="button destructive"
+          disabled={pending || canvasDraftHasWork(draft)}
+          title={canvasDraftHasWork(draft) ? "Commit or preserve the current object draft before removing it." : undefined}
           onClick={() =>
             void commit({
               type: "remove_canvas_node",
