@@ -21,8 +21,6 @@ use std::{
     path::{Component, Path, PathBuf},
     time::Duration,
 };
-#[cfg(test)]
-use tokio::time::timeout;
 use tokio::{
     io::AsyncReadExt,
     process::Command,
@@ -4054,6 +4052,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     #[cfg(unix)]
     mod pipe_deadline {
         use super::*;
+        use tokio::time::timeout;
 
         // Only this isolated fixture creates a descendant. It never contacts a
         // Broker/provider, and every descendant has a finite 75-second lifetime.
