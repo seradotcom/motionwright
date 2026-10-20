@@ -138,3 +138,18 @@ describe("Program design never presents an excluded source scene as part of the 
     expect(p.project).toEqual(original);
   });
 });
+
+describe("excluded-scene source text remains authentic despite leftover localized profile fields", () => {
+  it("renders the original saved node text, not a stale override for a scene omitted from the selected cut", () => {
+    const p = source();
+    p.text.text = "Original author copy outside the deliverable";
+    const profile = structuredClone(p.project.deliverables[0]);
+    profile.included_scene_ids = ["018f0000-0000-7000-8000-0000000002a1"];
+    profile.text_overrides[p.text.id] = "Localized words that must not appear";
+    const html = render(p, profile);
+    expect(html).toContain('data-output-cut-scope="excluded"');
+    expect(html).toContain("Original author copy outside the deliverable");
+    expect(html).not.toContain("Localized words that must not appear");
+    expect(html).toContain('data-text-origin="source"');
+  });
+});

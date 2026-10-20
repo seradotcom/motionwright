@@ -33,7 +33,7 @@ export default function ProgramDesignStudy({
     data-source-revision={project.revision} data-selected-profile-id={profile?.id ?? ""}
     data-output-cut-scope={cutScope}>
     <CompositionStudy nodes={scene.nodes} width={1920} height={1080} time={time}
-      background={surface} ink={ink} textOverrides={profile?.text_overrides}
+      background={surface} ink={ink} textOverrides={cutScope === "excluded" ? undefined : profile?.text_overrides}
       label="Program Canvas editorial study: not native output"/>
     <p className="program-design-disclosure">
       DESIGN_PREVIEW · EDITORIAL SOURCE CANVAS · {profile ? profile.name : "No selected output profile"}

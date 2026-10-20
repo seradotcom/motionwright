@@ -233,3 +233,71 @@ test("a real saved partial cut excludes an editable Program scene until an expli
       final,[],[()=>page.close()]);
   }
 });
+
+test("real SQLite profile cut with stale localized text shows only the excluded original source after reopen", async ({page},info) => {
+  const service = await ScopedChangeService.create({
+    databasePath:info.outputPath("studio","excluded-locale.sqlite3"),desktopInvokeFixture:true,
+  });
+  let final: Project | undefined, projectId: string | null = null;
+  const peers: Awaited<ReturnType<typeof service.peer>>[]=[];
+  try {
+    const initial=(await service.fixtureBootstrap()).project;
+    final=initial;projectId=initial.id;
+    const scene=initial.scenes.find(item=>item.renderer==="motion-canvas" && item.nodes.some(node=>node.kind==="text"));
+    if(!scene) throw new Error("A saved source Canvas text scene is required");
+    const node=scene.nodes.find(item=>item.kind==="text")!;
+    const profile=initial.deliverables[0];
+    await service.attachFixturePage(page,initial.id);await page.goto("/");
+    await button(page,"Canvas").click();
+    await button(page,"Add scene").click();
+    await page.getByLabel("New scene name",{exact:true}).fill("Other saved output scene");
+    await page.locator(".add-scene-form").getByRole("button",{name:"Add",exact:true}).click();
+    await revision(page,initial.revision+1);
+    const expanded=await service.project(initial.id);
+    final=expanded;
+    const other=expanded.scenes.find(item=>!initial.scenes.some(old=>old.id===item.id));
+    if(!other)throw new Error("A real second output scene was not created");
+    const peer=await service.peer();peers.push(peer);
+    const current=await peer.project(initial.id);
+    const updated=await peer.apply(current,{
+      type:"upsert_deliverable",
+      profile:{...current.deliverables.find(item=>item.id===profile.id)!,
+        included_scene_ids:[other.id],
+        text_overrides:{[node.id]:"Stale localized text for an excluded scene"},
+      },
+    });
+    final=updated;
+    expect(updated.revision).toBe(expanded.revision+1);
+    expect(updated.deliverables.find(item=>item.id===profile.id)?.included_scene_ids).toEqual([other.id]);
+    expect(updated.deliverables.find(item=>item.id===profile.id)?.text_overrides[node.id])
+      .toBe("Stale localized text for an excluded scene");
+    await page.reload();await revision(page,updated.revision);
+    await button(page,"Canvas").click();
+    await page.locator(".tree-row").filter({has:page.getByText(scene.name,{exact:true})}).click();
+    await button(page,"Timeline").click();
+    const monitor=page.getByLabel("Saved Canvas editorial design monitor",{exact:true});
+    await expect(monitor).toHaveAttribute("data-output-cut-scope","excluded");
+    await expect(monitor.getByRole("status")).toContainText("SCENE EXCLUDED FROM SELECTED OUTPUT CUT");
+    await expect(readProgramText(page,node.id)).toHaveAttribute("data-text-origin","source");
+    await expect(readProgramText(page,node.id)).toContainText(node.text ?? "");
+    await expect(readProgramText(page,node.id)).not.toContainText("Stale localized text for an excluded scene");
+    const canonical=await service.project(initial.id);
+    const journal=await service.history(initial.id,initial.revision);
+    expect(journal.map(entry=>entry.change.type)).toEqual(["add_scene","upsert_deliverable"]);
+    const applyCount=applied(service).length;
+    expect(applyCount).toBe(1);
+    await service.close();await service.start();await page.reload();await revision(page,canonical.revision);
+    await button(page,"Timeline").click();
+    await expect(monitor).toHaveAttribute("data-output-cut-scope","excluded");
+    await expect(readProgramText(page,node.id)).toHaveAttribute("data-text-origin","source");
+    await expect(readProgramText(page,node.id)).toContainText(node.text ?? "");
+    expect(await service.project(initial.id)).toEqual(canonical);
+    expect(await service.history(initial.id,initial.revision)).toEqual(journal);
+    expect(applied(service)).toHaveLength(applyCount);
+    final=canonical;
+  }finally{
+    if(projectId){try{final=await service.project(projectId)}catch{/* preserve original failure */}}
+    await service.finalizeClosedStore(info.outputPath("excluded-locale-closed-store"),
+      final,peers,[()=>page.close()]);
+  }
+});
