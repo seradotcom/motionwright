@@ -1,4 +1,4 @@
-use motionwright_domain::{CanvasNode, CoordinateSpace, Project, RendererKind, Scene};
+use motionwright_domain::{BlendMode, CanvasNode, CoordinateSpace, Project, RendererKind, Scene};
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -71,6 +71,17 @@ fn ensure_flat_semantics(node: &CanvasNode) -> NativeResult<()> {
         return Err(unsupported(format!(
             "Canvas node {} has opacity/stroke state that this native contribution cannot preserve",
             node.id
+        )));
+    }
+    // Neither the typed Blender geometry/material contribution nor the
+    // bounded Manim primitive format encodes compositing blend state.
+    // Preserving authored Multiply/Screen/Add is mandatory: never silently
+    // replace those semantics with a default Normal material before a
+    // native effect is dispatched.
+    if node.style.blend_mode != BlendMode::Normal {
+        return Err(unsupported(format!(
+            "Canvas node {} uses {:?} blend mode; this native contribution cannot preserve authored compositing",
+            node.id, node.style.blend_mode
         )));
     }
     Ok(())
@@ -541,6 +552,68 @@ mod tests {
         let export_path = blender_export_path(&plan);
         assert!(export_path.ends_with(".glb"));
         assert!(!export_path.contains('/'));
+    }
+
+    #[test]
+    fn blender_projection_negotiates_non_normal_blend_before_dispatch() {
+        // A5 MW05-E01-02: compositing semantics are authored content.
+        // The typed Blender contribution has no blend-mode field, so it
+        // must refuse Multiply/Screen/Add rather than silently output a
+        // Normal material. No SDK, Broker or rendering work is involved.
+        let original = project_with_renderer(RendererKind::Blender);
+        let scene_id = original.scenes[0].id;
+        let original_wire = serde_json::to_value(&original).unwrap();
+        let normal_plan = build_blender_contribution(&original, scene_id).unwrap();
+        assert_eq!(normal_plan.objects.len(), 1);
+        assert_eq!(
+            original.scenes[0].nodes[0].style.blend_mode,
+            BlendMode::Normal
+        );
+
+        for mode in [BlendMode::Multiply, BlendMode::Screen, BlendMode::Add] {
+            let mut edited = original.clone();
+            edited.scenes[0].nodes[0].style.blend_mode = mode;
+            edited.validate().unwrap();
+            let authored_before = serde_json::to_value(&edited).unwrap();
+            let error = build_blender_contribution(&edited, scene_id).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported, "{mode:?}");
+            assert!(error.message.contains("blend mode"), "{mode:?}: {error}");
+            assert!(
+                error.message.contains(&format!("{mode:?}")),
+                "the unsupported mode must be named for the author"
+            );
+            assert_eq!(serde_json::to_value(&edited).unwrap(), authored_before);
+            assert_eq!(edited.scenes[0].nodes[0].style.blend_mode, mode);
+            // A failed projected scene cannot be used to dispatch a
+            // material.create or export operation; the Normal source and
+            // its already accepted pure projection remain unchanged.
+            assert_eq!(serde_json::to_value(&original).unwrap(), original_wire);
+            assert_eq!(
+                build_blender_contribution(&original, scene_id).unwrap(),
+                normal_plan
+            );
+        }
+    }
+
+    #[test]
+    fn manim_projection_rejects_non_normal_blend_before_compiling_scene() {
+        // ManimPrimitive also has no compositing blend-mode member.
+        // Sharing the flat semantics guard must not produce Python for
+        // unsupported creative content either.
+        let original = project_with_renderer(RendererKind::ManimCommunity);
+        let scene_id = original.scenes[0].id;
+        assert!(build_manim_plan(&original, scene_id).is_ok());
+
+        for mode in [BlendMode::Multiply, BlendMode::Screen, BlendMode::Add] {
+            let mut authored = original.clone();
+            authored.scenes[0].nodes[0].style.blend_mode = mode;
+            authored.validate().unwrap();
+            let before = serde_json::to_value(&authored).unwrap();
+            let error = build_manim_plan(&authored, scene_id).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported, "{mode:?}");
+            assert!(error.message.contains("blend mode"));
+            assert_eq!(serde_json::to_value(&authored).unwrap(), before);
+        }
     }
 
     #[test]
