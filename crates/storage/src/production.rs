@@ -1260,6 +1260,440 @@ mod tests {
         );
     }
 
+    fn extension_order_project() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        motionwright_domain::Project,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("receipt-extension.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let project = store.create_named_project("Extension authority").unwrap();
+        store
+            .conn
+            .execute_batch("CREATE TABLE extension_receipt_audit(receipt_id TEXT NOT NULL);")
+            .unwrap();
+        drop(store);
+        (temp, path, project)
+    }
+
+    fn extension_recovery_input(
+        project: &motionwright_domain::Project,
+        stage: &str,
+        payload: Value,
+    ) -> ProductionReceiptInput {
+        ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: "requested-recovery".into(),
+            request_sha256: "a".repeat(64),
+            command: "motionwright.recovery.motion-canvas".into(),
+            stage: stage.into(),
+            payload,
+        }
+    }
+
+    fn install_order_extension(path: &std::path::Path, sql: &str, retained_v2: bool) {
+        let db = rusqlite::Connection::open(path).unwrap();
+        if retained_v2 {
+            db.execute_batch(
+                "DROP TRIGGER production_receipt_order_append;
+                 DROP TABLE production_receipt_order;
+                 PRAGMA user_version=2;",
+            )
+            .unwrap();
+        }
+        db.execute_batch(sql).unwrap();
+    }
+
+    fn order_extension_snapshot(conn: &rusqlite::Connection) -> Value {
+        let receipts =
+            {
+                let mut stmt = conn.prepare(
+                "SELECT receipt_id,project_id,generation,revision,request_id,request_sha256,
+                        command,stage,payload_json,created_at
+                 FROM production_receipts ORDER BY rowid"
+            ).unwrap();
+                stmt.query_map([], stored_receipt_row)
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap()
+            };
+        let mappings = {
+            let mut stmt = conn.prepare(
+                "SELECT sequence,receipt_id,project_id FROM production_receipt_order ORDER BY sequence"
+            ).unwrap();
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+        };
+        let schema = {
+            let mut stmt = conn
+                .prepare("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")
+                .unwrap();
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+        };
+        let sequences = {
+            let mut stmt = conn
+                .prepare("SELECT name,seq FROM sqlite_sequence ORDER BY name")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let audit = {
+            let mut stmt = conn
+                .prepare("SELECT receipt_id FROM extension_receipt_audit ORDER BY rowid")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        json!({
+            "receipts":receipts, "mappings":mappings, "schema":schema,
+            "sequences":sequences, "audit":audit,
+            "version":conn.pragma_query_value(None,"user_version",|r|r.get::<_,u32>(0)).unwrap()
+        })
+    }
+
+    fn reject_nested_recovery_terminal(retained_v2: bool) {
+        let (_temp, path, project) = extension_order_project();
+        let nested = Uuid::now_v7();
+        install_order_extension(
+            &path,
+            &format!(
+                "CREATE TRIGGER extension_nested_terminal AFTER INSERT ON production_receipts
+             WHEN NEW.command='motionwright.recovery.motion-canvas' AND NEW.stage='dispatching'
+             BEGIN
+               INSERT INTO extension_receipt_audit VALUES(NEW.receipt_id);
+               INSERT INTO production_receipts
+               SELECT '{nested}',NEW.project_id,NEW.generation,NEW.revision,NEW.request_id,
+                      NEW.request_sha256,NEW.command,'failed_known',
+                      json_set(NEW.payload_json,'$.retryable',json('true')),NEW.created_at;
+             END;"
+            ),
+            retained_v2,
+        );
+        let mut store = Store::open(&path).unwrap();
+        let before = order_extension_snapshot(&store.conn);
+        let result = store.claim_recovery_stage(extension_recovery_input(
+            &project,
+            "dispatching",
+            json!({}),
+        ));
+        let post_head = store.latest_production_receipt(project.id, "requested-recovery");
+        assert!(
+            result.is_err(),
+            "a nested terminal cannot change the claimed authority before return: {result:?}, head={post_head:?}"
+        );
+        assert_eq!(order_extension_snapshot(&store.conn), before);
+        assert_eq!(store.load_project(project.id).unwrap(), project);
+        drop(store);
+        let mut reopened = Store::open(&path).unwrap();
+        assert_eq!(order_extension_snapshot(&reopened.conn), before);
+        reopened
+            .conn
+            .execute_batch("DROP TRIGGER extension_nested_terminal")
+            .unwrap();
+        let admitted = reopened
+            .claim_recovery_stage(extension_recovery_input(&project, "dispatching", json!({})))
+            .unwrap();
+        assert_eq!(admitted.payload["attempt"], 1);
+        assert!(matches!(
+            reopened.claim_recovery_stage(extension_recovery_input(
+                &project,
+                "dispatching",
+                json!({})
+            )),
+            Err(StorageError::RequestReuse)
+        ));
+    }
+
+    #[test]
+    fn recovery_legacy_extension_nested_terminal_cannot_publish_a_claim() {
+        reject_nested_recovery_terminal(true);
+    }
+
+    #[test]
+    fn recovery_new_extension_nested_terminal_cannot_publish_a_claim() {
+        reject_nested_recovery_terminal(false);
+    }
+
+    fn reject_nested_recovery_key(other_generation: bool) {
+        let (_temp, path, project) = extension_order_project();
+        let nested = Uuid::now_v7();
+        let generation = if other_generation {
+            format!("'{}'", Uuid::now_v7())
+        } else {
+            "NEW.generation".into()
+        };
+        install_order_extension(
+            &path,
+            &format!(
+                "CREATE TRIGGER extension_nested_key AFTER INSERT ON production_receipts
+             WHEN NEW.request_id='requested-recovery' AND NEW.stage='dispatching'
+             BEGIN
+               INSERT INTO extension_receipt_audit VALUES(NEW.receipt_id);
+               INSERT INTO production_receipts
+               SELECT '{nested}',NEW.project_id,{generation},NEW.revision,'nested-unadmitted-key',
+                      NEW.request_sha256,NEW.command,'dispatching',NEW.payload_json,NEW.created_at;
+             END;"
+            ),
+            true,
+        );
+        let mut store = Store::open(&path).unwrap();
+        let before = order_extension_snapshot(&store.conn);
+        let result = store.claim_recovery_stage(extension_recovery_input(
+            &project,
+            "dispatching",
+            json!({}),
+        ));
+        assert!(
+            result.is_err(),
+            "an extension cannot add another recovery admission: {result:?}"
+        );
+        assert_eq!(order_extension_snapshot(&store.conn), before);
+        drop(store);
+        assert_eq!(
+            order_extension_snapshot(&Store::open(&path).unwrap().conn),
+            before
+        );
+    }
+
+    #[test]
+    fn recovery_extension_nested_new_key_cannot_publish_a_claim() {
+        reject_nested_recovery_key(false);
+    }
+
+    #[test]
+    fn recovery_extension_nested_other_generation_cannot_publish_a_claim() {
+        reject_nested_recovery_key(true);
+    }
+
+    #[test]
+    fn recovery_extension_cannot_rewrite_retained_proof_during_retry_claim() {
+        let (_temp, path, project) = extension_order_project();
+        let mut store = Store::open(&path).unwrap();
+        store
+            .claim_recovery_stage(extension_recovery_input(&project, "dispatching", json!({})))
+            .unwrap();
+        store
+            .append_production_receipt(extension_recovery_input(
+                &project,
+                "failed_known",
+                json!({"attempt":1,"retryable":true,"proof":"original"}),
+            ))
+            .unwrap();
+        drop(store);
+        install_order_extension(&path,
+            "CREATE TRIGGER extension_rewrite_history AFTER INSERT ON production_receipts
+             WHEN NEW.stage='dispatching' AND json_extract(NEW.payload_json,'$.attempt')=2
+             BEGIN
+               INSERT INTO extension_receipt_audit VALUES(NEW.receipt_id);
+               UPDATE production_receipts SET payload_json=json_set(payload_json,'$.proof','changed')
+               WHERE project_id=NEW.project_id AND request_id=NEW.request_id AND stage='failed_known';
+             END;", false);
+        let mut store = Store::open(&path).unwrap();
+        let before = order_extension_snapshot(&store.conn);
+        let result = store.claim_recovery_stage(extension_recovery_input(
+            &project,
+            "dispatching",
+            json!({}),
+        ));
+        assert!(
+            result.is_err(),
+            "a still-valid chain cannot authorize rewriting retained proof: {result:?}"
+        );
+        assert_eq!(order_extension_snapshot(&store.conn), before);
+    }
+
+    #[test]
+    fn recovery_extension_cannot_admit_retry_during_terminal_append() {
+        let (_temp, path, project) = extension_order_project();
+        let mut store = Store::open(&path).unwrap();
+        store
+            .claim_recovery_stage(extension_recovery_input(&project, "dispatching", json!({})))
+            .unwrap();
+        drop(store);
+        let nested = Uuid::now_v7();
+        install_order_extension(
+            &path,
+            &format!(
+                "CREATE TRIGGER extension_nested_retry AFTER INSERT ON production_receipts
+             WHEN NEW.request_id='requested-recovery' AND NEW.stage='failed_known'
+             BEGIN
+               INSERT INTO extension_receipt_audit VALUES(NEW.receipt_id);
+               INSERT INTO production_receipts
+               SELECT '{nested}',NEW.project_id,NEW.generation,NEW.revision,NEW.request_id,
+                      NEW.request_sha256,NEW.command,'dispatching',
+                      json_set(NEW.payload_json,'$.attempt',2),NEW.created_at;
+             END;"
+            ),
+            true,
+        );
+        let mut store = Store::open(&path).unwrap();
+        let before = order_extension_snapshot(&store.conn);
+        let result = store.append_production_receipt(extension_recovery_input(
+            &project,
+            "failed_known",
+            json!({"attempt":1,"retryable":true}),
+        ));
+        assert!(
+            result.is_err(),
+            "terminal append cannot include an unrequested next claim: {result:?}"
+        );
+        assert_eq!(order_extension_snapshot(&store.conn), before);
+        assert_eq!(
+            store
+                .latest_production_receipt(project.id, "requested-recovery")
+                .unwrap()
+                .unwrap()
+                .stage,
+            "dispatching"
+        );
+    }
+
+    #[test]
+    fn recovery_extension_cannot_change_project_authority_during_claim() {
+        let (_temp, path, project) = extension_order_project();
+        install_order_extension(
+            &path,
+            "CREATE TRIGGER extension_change_project AFTER INSERT ON production_receipts
+             WHEN NEW.request_id='requested-recovery' AND NEW.stage='dispatching'
+             BEGIN
+               UPDATE projects SET revision=revision+1 WHERE id=NEW.project_id;
+             END;",
+            false,
+        );
+        let mut store = Store::open(&path).unwrap();
+        let before = order_extension_snapshot(&store.conn);
+        let result = store.claim_recovery_stage(extension_recovery_input(
+            &project,
+            "dispatching",
+            json!({}),
+        ));
+        assert!(
+            result.is_err(),
+            "claim cannot outlive its project revision inside the transaction: {result:?}"
+        );
+        assert_eq!(order_extension_snapshot(&store.conn), before);
+        assert_eq!(store.load_project(project.id).unwrap(), project);
+    }
+
+    fn reject_schema3_reserved_shadow(collision: &str) {
+        let (_temp, path, project) = extension_order_project();
+        let mut store = Store::open(&path).unwrap();
+        let original = store
+            .claim_recovery_stage(extension_recovery_input(&project, "dispatching", json!({})))
+            .unwrap();
+        drop(store);
+        install_order_extension(&path, collision, false);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let before = order_extension_snapshot(&db);
+        drop(db);
+        let result = Store::open(&path);
+        assert!(
+            result.is_err(),
+            "schema3 must reject an extra object sharing a reserved name"
+        );
+        drop(result);
+        let after = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(order_extension_snapshot(&after), before);
+        assert_eq!(
+            after
+                .query_row("SELECT receipt_id FROM production_receipts", [], |r| r
+                    .get::<_, String>(
+                    0
+                ))
+                .unwrap(),
+            original.id.to_string()
+        );
+    }
+
+    #[test]
+    fn schema3_receipt_order_table_name_rejects_shadow_trigger() {
+        reject_schema3_reserved_shadow(
+            "CREATE TRIGGER PrOdUcTiOn_ReCeIpT_OrDeR AFTER INSERT ON production_receipts BEGIN SELECT 1; END;",
+        );
+    }
+
+    #[test]
+    fn schema3_receipt_order_index_name_rejects_shadow_trigger() {
+        reject_schema3_reserved_shadow(
+            "CREATE TRIGGER production_receipt_order_by_project AFTER INSERT ON production_receipts BEGIN SELECT 1; END;",
+        );
+    }
+
+    #[test]
+    fn schema3_receipt_order_trigger_name_rejects_shadow_table() {
+        reject_schema3_reserved_shadow(
+            "CREATE TABLE production_receipt_order_append(retained TEXT NOT NULL);
+             INSERT INTO production_receipt_order_append VALUES('foreign extension bytes');",
+        );
+    }
+
+    #[test]
+    fn recovery_ordinary_extension_audit_remains_compatible_in_both_creation_orders() {
+        for retained_v2 in [true, false] {
+            let (_temp, path, project) = extension_order_project();
+            install_order_extension(
+                &path,
+                "CREATE TRIGGER extension_ordinary_audit AFTER INSERT ON production_receipts
+                 BEGIN INSERT INTO extension_receipt_audit VALUES(NEW.receipt_id); END;",
+                retained_v2,
+            );
+            let mut store = Store::open(&path).unwrap();
+            let first = store
+                .claim_recovery_stage(extension_recovery_input(&project, "dispatching", json!({})))
+                .unwrap();
+            let failed = store
+                .append_production_receipt(extension_recovery_input(
+                    &project,
+                    "failed_known",
+                    json!({"attempt":1,"retryable":true}),
+                ))
+                .unwrap();
+            let retry = store
+                .claim_recovery_stage(extension_recovery_input(&project, "dispatching", json!({})))
+                .unwrap();
+            assert_eq!(retry.payload["attempt"], 2);
+            drop(store);
+            let reopened = Store::open(&path).unwrap();
+            assert_eq!(
+                reopened.production_receipts(project.id, 10).unwrap(),
+                vec![retry, failed, first]
+            );
+            assert_eq!(
+                reopened
+                    .conn
+                    .query_row("SELECT COUNT(*) FROM extension_receipt_audit", [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                3
+            );
+        }
+    }
+
     struct ReceiptClockFixture {
         project: motionwright_domain::Project,
         input: ProductionReceiptInput,
