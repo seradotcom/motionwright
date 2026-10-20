@@ -2205,6 +2205,7 @@ dependencies = [
  "motionwright-domain",
  "motionwright-storage",
  "parking_lot",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
