@@ -86,9 +86,15 @@ def compiler_object_binding(compiles: object, compiled_c: Path,
         file = row.get("file")
         if not isinstance(file, str):
             continue
+        workdir = row.get("directory")
+        require(isinstance(workdir, str) and Path(workdir).is_absolute()
+                and Path(workdir).is_dir()
+                and not Path(workdir).is_symlink(),
+                "compiler_CMake_working_directory_not_original_absolute")
+        cwd = Path(workdir).resolve(strict=True)
         source = Path(file)
         if not source.is_absolute():
-            source = Path(row.get("directory", "")) / source
+            source = cwd / source
         if str(source.resolve(strict=True)) != expected_file:
             continue
         arguments = row.get("arguments")
@@ -106,13 +112,13 @@ def compiler_object_binding(compiles: object, compiled_c: Path,
                 "consumer_compiler_must_compile_an_original_C_object")
         actual_input = Path(arguments[arguments.index("-c") + 1])
         if not actual_input.is_absolute():
-            actual_input = Path(row.get("directory", "")) / actual_input
+            actual_input = cwd / actual_input
         require(str(actual_input.resolve(strict=True)) == expected_file,
                 "actual_compiler_C_argument_not_the_repaired_only_source")
         target = arguments[arguments.index("-o") + 1]
         target_path = Path(target)
         if not target_path.is_absolute():
-            target_path = Path(row.get("directory", "")) / target_path
+            target_path = cwd / target_path
         require(str(target_path.resolve(strict=True)) == expected_output,
                 "compiled_consumer_object_is_not_the_source_command_target")
         entries.append({
@@ -121,6 +127,7 @@ def compiler_object_binding(compiles: object, compiled_c: Path,
             ),
             "original_compiled_C_file": expected_file,
             "consumer_object": expected_output,
+            "compiler_workdir": str(cwd),
         })
     require(len(entries) == 1,
             "one_and_only_one_repaired_only_compiler_command_required")
@@ -128,7 +135,7 @@ def compiler_object_binding(compiles: object, compiled_c: Path,
 
 
 def linker_object_binding(raw_link_command: bytes, consumer_object: Path,
-                          module: Path) -> dict:
+                          module: Path, link_workdir: Path) -> dict:
     """Bind one actual repaired C object to one original candidate shared ELF.
 
     Use the original CMake link.txt (not a hand-authored claim). The approved
@@ -149,7 +156,13 @@ def linker_object_binding(raw_link_command: bytes, consumer_object: Path,
     require(not any(token.startswith("@") or token in {";", "|", "&&", "||"}
                     for token in argv),
             "linker_input_object_identity_ambiguous")
-    cwd = module.parent.resolve(strict=True)
+    require(link_workdir.is_absolute() and link_workdir.is_dir()
+            and not link_workdir.is_symlink(),
+            "original_CMake_link_workdir_not_trusted")
+    # CMake launches link.txt from its *compile_commands directory*, e.g.
+    # build/src/modules/avformat. The .so lives in build/out/lib/mlt.
+    # Anchoring relative -o or .o arguments at module.parent is incorrect.
+    cwd = link_workdir.resolve(strict=True)
 
     def absolute_arg(token: str) -> str:
         name = Path(token)
@@ -169,6 +182,7 @@ def linker_object_binding(raw_link_command: bytes, consumer_object: Path,
         "linked_module": result,
         "linked_consumer_object": str(consumer_object.resolve(strict=True)),
         "repaired_consumer_object_in_link": True,
+        "original_CMake_link_workdir": str(cwd),
     }
 
 
@@ -200,7 +214,10 @@ def build_receipt(original: Path, repaired: Path, compiled_source: Path,
     compile_entry = compiler_object_binding(
         unique_json(commands_bytes), compiled_source, object_path,
     )
-    link_entry = linker_object_binding(link_bytes, object_path, module)
+    link_entry = linker_object_binding(
+        link_bytes, object_path, module,
+        Path(compile_entry["compiler_workdir"]),
+    )
     oracle = unique_json(oracle_bytes)
     require(isinstance(oracle, dict)
             and oracle.get("schema") == "motionwright.native.mlt.repaired-only-G1-C-oracle/1"

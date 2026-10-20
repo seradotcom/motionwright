@@ -180,6 +180,55 @@ class RepairOnlySourceReceiptTests(unittest.TestCase):
                                         "consumer_object_is_not_the_source_command_target"):
                 self.seal(f)
 
+    def test_original_cmake_workdir_links_repaired_object_to_separate_out_module(self):
+        """Actual CMake layout: link.txt executes from src/modules/avformat,
+        while the ELF is in build/out/lib/mlt. Both arguments are relative.
+        """
+        left, right = self.real_sources()
+        with tempfile.TemporaryDirectory() as scratch:
+            build_root = Path(scratch) / "mlt-only-new-build"
+            cwd = build_root / "src" / "modules" / "avformat"
+            cwd.mkdir(parents=True)
+            f = self.fixture(cwd, original_source=left, repaired_source=right)
+            object_file = cwd / "CMakeFiles" / "mltavformat.dir" / "consumer_avformat.c.o"
+            object_file.parent.mkdir(parents=True)
+            f["object"].rename(object_file)
+            f["object"] = object_file
+            destination = build_root / "out" / "lib" / "mlt"
+            destination.mkdir(parents=True)
+            module = destination / "libmltavformat.so"
+            f["module"].rename(module)
+            f["module"] = module
+            commands = json.loads(f["commands"].read_text())
+            commands[0]["arguments"][-1] = "CMakeFiles/mltavformat.dir/consumer_avformat.c.o"
+            f["commands"].write_text(json.dumps(commands), encoding="utf-8")
+            f["link"].write_text(shlex.join([
+                "/usr/bin/cc", "-shared", "-o",
+                "../../../out/lib/mlt/libmltavformat.so",
+                "CMakeFiles/mltavformat.dir/consumer_avformat.c.o", "-lmlt",
+            ]), encoding="utf-8")
+            result = self.seal(f)
+            self.assertEqual(result["compiler_command"]["compiler_workdir"], str(cwd))
+            self.assertEqual(
+                result["linker_command"]["original_CMake_link_workdir"], str(cwd)
+            )
+            self.assertEqual(result["linker_command"]["linked_module"], str(module))
+            self.assertEqual(result["linker_command"]["linked_consumer_object"],
+                             str(object_file))
+            self.assertNotEqual(module.parent, cwd)
+
+    def test_cmake_wrong_link_workdir_fails_instead_of_guessing_module_parent(self):
+        left, right = self.real_sources()
+        with tempfile.TemporaryDirectory() as scratch:
+            cwd = Path(scratch) / "build" / "src" / "modules" / "avformat"
+            cwd.mkdir(parents=True)
+            f = self.fixture(cwd, original_source=left, repaired_source=right)
+            with self.assertRaises(proof.CompilerReceiptRejected):
+                proof.linker_object_binding(
+                    f["link"].read_bytes(), f["object"], f["module"],
+                    cwd / "not-the-original-CMake-workdir",
+                )
+
     def test_linking_a_foreign_object_rejects_module_provenance(self):
         left, right = self.real_sources()
         with tempfile.TemporaryDirectory() as directory:
