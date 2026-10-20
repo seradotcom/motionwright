@@ -453,6 +453,88 @@ def original_png_index(output_root: Path, film: dict, *, frames: int = 180) -> d
     }
 
 
+def parse_original_180_framemd5(source: bytes) -> dict:
+    """Require one SHA-256 of every decoded RGB24 pixel frame at exactly 30fps.
+
+    These independent lossy-master hashes are evidence of complete decoding,
+    NOT equality to the original editable PNG frames (H264 is lossy).
+    """
+    require(0 < len(source) <= 128 * 1024, "all180_decoded_RGB_hash_receipt_budget")
+    try:
+        content = source.decode("ascii")
+    except UnicodeError as exc:
+        raise Film180G2Rejected("all180_original_RGB_hash_receipt_not_ASCII") from exc
+    header = {}
+    records = []
+    for line in content.splitlines():
+        if line.startswith("#"):
+            match = re.fullmatch(r"#(hash|tb 0|dimensions 0|codec_id 0):\s*(.+)", line)
+            if match:
+                require(match.group(1) not in header,
+                        "all180_duplicate_native_decoder_header")
+                header[match.group(1)] = match.group(2)
+        elif line.strip():
+            fields = [token.strip() for token in line.split(",")]
+            require(len(fields) == 6, "all180_decoded_RGB_frame_record_malformed")
+            records.append(fields)
+    require(header.get("hash", "").upper() == "SHA256"
+            and header.get("dimensions 0") == "1920x1080"
+            and header.get("codec_id 0") == "rawvideo",
+            "original_RGB24_video_decoder_format_or_hash_not_admitted")
+    timing = re.fullmatch(r"(\d+)/(\d+)", header.get("tb 0", ""))
+    require(timing is not None, "all180_decoded_RGB_timebase_not_observed")
+    num, den = (int(timing.group(1)), int(timing.group(2)))
+    require(num > 0 and den > 0 and den % (30 * num) == 0,
+            "all180_decoded_RGB_timebase_is_not_exact_30fps")
+    step = den // (30 * num)
+    require(len(records) == 180,
+            "all180_native_master_frames_not_actually_decoded")
+    hashes = []
+    for index, frame in enumerate(records):
+        try:
+            stream, dts, pts, duration, size = [int(value) for value in frame[:5]]
+        except ValueError as exc:
+            raise Film180G2Rejected("all180_native_RGB_numeric_frame_malformed") from exc
+        require(stream == 0 and dts == pts == index * step
+                and duration == step and size == 1920 * 1080 * 3
+                and re.fullmatch(r"[0-9a-fA-F]{64}", frame[5]) is not None,
+                "all180_native_RGB_index_pts_size_or_SHA_mismatch")
+        hashes.append(frame[5].lower())
+    return {
+        "schema": "motionwright.native.film180.decoded-all180-RGB24/1",
+        "source_frame_count": 180,
+        "observed_decode_timebase": f"{num}/{den}",
+        "frame_rate": "30/1",
+        "decoded_format": "RGB24",
+        "decoded_pixel_size": [1920, 1080],
+        "bytes_per_decoded_frame": 1920 * 1080 * 3,
+        "all_original_frame_sha256": hashes,
+        "unique_decoded_RGB_frames": len(set(hashes)),
+        "every_original_decoded_RGB_frame_observed": True,
+        "original_PNG_pixel_equality_claim": False,
+        "H264_perceptual_fidelity_claim": False,
+        "human_acceptance": False,
+    }
+
+
+def actual_all180_original_RGB_digests(video: Path, ffmpeg: str) -> dict:
+    """FFmpeg decodes all frames yet writes only bounded SHA manifests, no 1GB RGB."""
+    require(video.is_absolute() and video.is_file() and not video.is_symlink(),
+            "all180_original_native_MP4_source_not_regular_absolute")
+    saved_sha = digest(video)
+    result = subprocess.run(
+        [ffmpeg, "-nostdin", "-v", "error", "-i", str(video), "-map", "0:v:0",
+         "-an", "-fps_mode", "passthrough", "-pix_fmt", "rgb24",
+         "-f", "framemd5", "-hash", "sha256", "pipe:1"],
+        capture_output=True, timeout=MEDIA_TIMEOUT, check=True,
+    )
+    original = parse_original_180_framemd5(result.stdout)
+    require(saved_sha == digest(video),
+            "original_AV_master_mutated_during_full_RGB_decode")
+    original["source_master_sha256"] = saved_sha
+    return original
+
+
 def original_frame_difference(ffmpeg: str, first: Path, second: Path,
                               *, number: int = 110) -> dict:
     from native_film180_media_readback import WIDTH, HEIGHT, difference_count
@@ -643,12 +725,18 @@ def stage_and_decode(paths: dict[str, Path], connection: Path,
     )
     readback = evidence / f"{stage}-independent-AV-content.json"
     write_private_json(readback, receipt)
+    all_frames = actual_all180_original_RGB_digests(original_mp4, "ffmpeg")
+    all_frames_path = evidence / f"{stage}-all180-decoded-original-RGB24.json"
+    write_private_json(all_frames_path, all_frames)
     return {
         "stage": stage, "source_project_SHA": digest(project_file),
         "original_audio_SHA": source_sha,
         "Film_manifest": pixels,
         "master_sha": video_sha,
         "independent_content_sha": digest(readback),
+        "decoded_all180_RGB_manifest_sha256": digest(all_frames_path),
+        "all_original_180_video_frames_decoded": all_frames["source_frame_count"] == 180,
+        "original_H264_png_pixel_equality_claim": False,
         "actual_loaded_repaired_MLT_module": loaded_module["actual_mapped_original_MLT_module_sha256"],
         "physical_native_media_witness": "PASS",
         "master_file": original_mp4,
@@ -729,6 +817,8 @@ def execute() -> None:
             "MLT_module_installed_SHA": manifest["mlt_installed_module_sha256"],
             "actual_loaded_MLT_process_observed_here": True,
             "native_media_content_probe_completed": True,
+            "all180_decoded_RGB24_hashes_source_bound": True,
+            "H264_perceptual_pixel_fidelity_claim": False,
             "private_original_r38_project_rendered": False,
             "human_review": False, "release_authorized": False,
         })

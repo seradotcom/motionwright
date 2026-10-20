@@ -187,6 +187,75 @@ class Film180G2SourceTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.Film180G2Rejected, "PNG_signature"):
                 runner.original_png_index(root, evidence)
 
+    @staticmethod
+    def decoded_all_180_manifest(*, frames: int = 180,
+                                 timebase: str = "1/30") -> bytes:
+        # Bounded synthetic format fixture only; actual pixels must be
+        # streamed through the original installed FFmpeg6.1 on the CI master.
+        parts = timebase.split("/")
+        num, den = map(int, parts)
+        step = den // (30 * num) if num and den % (30 * num) == 0 else 1
+        lines = [
+            "#format: frame checksums",
+            "#version: 2",
+            "#hash: SHA256",
+            "#software: libavformat",
+            "#tb 0: " + timebase,
+            "#media_type 0: video",
+            "#codec_id 0: rawvideo",
+            "#dimensions 0: 1920x1080",
+            "#sar 0: 1/1",
+            "#stream#, dts, pts, duration, size, hash",
+        ]
+        for frame in range(frames):
+            mark = hashlib.sha256(f"source-only-{frame}".encode()).hexdigest()
+            lines.append(
+                f"0, {frame * step}, {frame * step}, {step}, 6220800, {mark}"
+            )
+        return ("\n".join(lines) + "\n").encode("ascii")
+
+    def test_complete_original_180_decoded_RGB_sha_manifest_is_source_bound(self):
+        result = runner.parse_original_180_framemd5(self.decoded_all_180_manifest())
+        self.assertEqual(result["source_frame_count"], 180)
+        self.assertEqual(len(result["all_original_frame_sha256"]), 180)
+        self.assertEqual(result["decoded_format"], "RGB24")
+        self.assertEqual(result["bytes_per_decoded_frame"], 6220800)
+        self.assertTrue(result["every_original_decoded_RGB_frame_observed"])
+        self.assertFalse(result["original_PNG_pixel_equality_claim"])
+        self.assertFalse(result["H264_perceptual_fidelity_claim"])
+
+    def test_video_with_missing_179th_original_RGB_frame_fails_closed(self):
+        with self.assertRaisesRegex(runner.Film180G2Rejected, "frames_not_actually_decoded"):
+            runner.parse_original_180_framemd5(
+                self.decoded_all_180_manifest(frames=179)
+            )
+
+    def test_wrong_original_RGB_color_clock_rejected_without_claiming_fidelity(self):
+        with self.assertRaisesRegex(runner.Film180G2Rejected, "not_exact_30fps"):
+            runner.parse_original_180_framemd5(
+                self.decoded_all_180_manifest(timebase="1001/30000")
+            )
+        alternate = self.decoded_all_180_manifest().replace(
+            b"#dimensions 0: 1920x1080", b"#dimensions 0: 960x540"
+        )
+        with self.assertRaisesRegex(runner.Film180G2Rejected, "format_or_hash"):
+            runner.parse_original_180_framemd5(alternate)
+
+    def test_bad_original_frame_PTS_and_invalid_bytes_rejected(self):
+        valid = self.decoded_all_180_manifest()
+        incorrect_pts = valid.replace(
+            b"0, 60, 60, 1, 6220800, ",
+            b"0, 60, 59, 1, 6220800, ", 1,
+        )
+        with self.assertRaisesRegex(runner.Film180G2Rejected, "index_pts_size"):
+            runner.parse_original_180_framemd5(incorrect_pts)
+        truncated_pixels = valid.replace(
+            b"0, 70, 70, 1, 6220800, ",
+            b"0, 70, 70, 1, 150000, ", 1,
+        )
+        with self.assertRaisesRegex(runner.Film180G2Rejected, "index_pts_size"):
+            runner.parse_original_180_framemd5(truncated_pixels)
+
     def test_source_binding_is_closed_to_new_operation_stage_names(self):
         self.assertEqual(runner.ORIGINAL_AUDIO_OWNER_NAME, "firstparty-film180-source.wav")
         self.assertEqual(runner.STAGE_TIMEOUT, 1500)
