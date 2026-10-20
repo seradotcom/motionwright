@@ -595,7 +595,7 @@ Function MWINST_ArmInterruption
     StrCpy $MWINST_InterruptCreated $1
     StrCpy $0 "$TEMP\motionwright-nsis-$MWINST_InterruptId.checkpoint"
     ; CREATE_NEW, no sharing, no inherited handle, OPEN_REPARSE_POINT.
-    ; Existing leaves are never reused. Ancestor admission belongs to A6.
+    ; Existing leaves are never reused. The verification runner admits ancestors.
     System::Call 'kernel32::CreateFileW(w r0, i 0x40000000, i 0, p 0, i 1, i 0x00200080, p 0) p.r1 ?e'
     Pop $2
     ${If} $1 = -1
@@ -610,7 +610,7 @@ FunctionEnd
 
 Function MWINST_InterruptionStop
   ; One cleanup attempt for this invocation's handle, never a retry of a
-  ; failed close. The process exits without success/failure callbacks.
+  ; failed close. Stop without publishing payloads or adopting/deleting stages.
   ${If} $MWINST_InterruptHandle != -1
     StrCpy $0 $MWINST_InterruptHandle
     StrCpy $MWINST_InterruptHandle -1
@@ -668,7 +668,7 @@ Function MWINST_InterruptMainAfterWithdrawal
     StrCpy $MWOWN_LastWin32Error $5
     Call MWINST_InterruptionStop
   ${EndIf}
-  ; A6 may terminate only its admitted process handle during this pause.
+  ; The verification runner may terminate only its admitted process handle.
   ; Expiry is a fixture failure, not a successful interruption or upgrade.
   Sleep 30000
   StrCpy $MWOWN_LastReason "checkpoint_wait_expired"

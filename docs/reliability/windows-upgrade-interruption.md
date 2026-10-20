@@ -8,10 +8,10 @@ CR-PROJECT-02, CR-PROJECT-06 and ACC-003/004. It covers a deliberately interrupt
 NSIS process on an isolated Windows runner. It does not establish physical
 power-loss durability, platform signing, a published upgrade or human acceptance.
 
-The original source-bound 0.1.0 to 0.1.1 fixture cycle on source 480b4ad9 passed
-install, upgrade and uninstall once each. Its interruption state remains NOT_RUN.
-A new checkpoint source, compiled setup and original execution require their own
-identities and evidence; this contract does not relabel the earlier cycle.
+Each checkpoint source, compiled setup and original execution require their own
+identities and evidence. An uninterrupted install, upgrade and uninstall cycle
+does not establish interruption recovery. Evidence from an earlier source or
+execution must remain bound to that original scope.
 
 ## Existing recovery path
 
@@ -31,9 +31,9 @@ owned controls. Neither operation adopts or recursively cleans older stages.
 ## Checkpoint activation and reservation
 
 The source contains an optional MWINST_CI_INTERRUPTION compile-time block.
-Normal release builds must leave this define absent. A6 owns the reviewed
-fixture build overlay, records the define, rendered template, setup digest,
-version/profile pair and source/tree/lock identities. An environment variable
+Normal release builds must leave this define absent. The verification runner
+records the reviewed fixture build overlay, define, rendered template, setup
+digest, version/profile pair and source/tree/lock identities. An environment variable
 alone cannot enable a normal build.
 
 For the single interrupted invocation, set MOTIONWRIGHT_NSIS_INTERRUPT_ID to a
@@ -51,7 +51,7 @@ share mode zero and a noninheritable handle:
 
 An existing leaf is a refusal. The GUID is never reused, the receipt is never
 overwritten, and the source does not delete it. CREATE_NEW does not establish
-ancestor confinement; A6 must independently admit the runner's TEMP directory.
+ancestor confinement; the verification runner must independently admit TEMP.
 A failure before the checkpoint may leave an empty reserved file. Preserve it
 as incomplete evidence.
 
@@ -79,20 +79,23 @@ and the expected candidate digest/size. FILETIME must remain an exact 64-bit
 integer or decimal string, never a floating-point number.
 
 The writer checks the WriteFile result and exact byte count, flushes the file
-and checks the close result. Sharing remains disabled until that close. A6
-retains and hashes the closed original bytes before parsing them. File flush
+and checks the close result. Sharing remains disabled until that close. The
+verification runner retains and hashes the closed original bytes before parsing. File flush
 alone makes no claim about durable stage, registry or SQLite state after power
 loss.
 
 Every armed path stops. After publishing the receipt, the installer pauses for
 30 seconds. If the runner does not terminate it, it exits with code 4 using
-Quit, with no continuation to payload publication or installer callbacks.
+Quit, without returning to payload publication. The interrupted stage must not
+be deleted or adopted, and the observed terminal code must remain 4. Review the
+actual generated installer's lifecycle callbacks against those properties;
+the contract does not assume that every possible callback is absent.
 Code 4 is a failed/expired fixture rendezvous, not successful interruption.
 
 ## Runner admission and termination
 
-A6 retains its original process handle and checks the receipt's PID and creation
-FILETIME against that same live process. It also binds the executable bytes,
+The verification runner retains its original process handle and checks the
+receipt's PID and creation FILETIME against that same live process. It also binds the executable bytes,
 original launch operation GUID, setup/profile inputs, run/job/attempt and
 private directory to the admitted request. A child or elevated process with a
 different identity must not be killed under the original handle assumption.
@@ -147,22 +150,24 @@ match whatever the installer produced.
 
 The recovered current application must open the same project, perform one
 visible supported edit, close, reopen and expose the expected identity,
-generation and revision with the exact changed field. A3 provides the current
-supported UI action and A6 owns the installed-window runner. Opening the old
-application before upgrade or querying only SQLite does not execute this case.
+generation and revision with the exact changed field. The installed-window
+runner must use a supported action from the current application's UI contract.
+Opening the old application before upgrade or querying only SQLite does not
+execute this case.
 
 The existing future-schema rejection and transactional migration tests remain
 separately source-bound. An installer preservation result does not prove a
 migration or permit a future database to be downgraded.
 
-## Evidence state
+## Required evidence
 
-At this draft: source implementation proposed; NSIS compilation and physical
-interruption/recovery execution NOT_RUN. Required original evidence includes
-setup and predecessor identities, source and rendered overlay, intent,
-checkpoint bytes, process identity/terminal, complete before/interrupted/
-recovered snapshots, updated-application edit/reopen observations and all
-original failures. A5 decides formal clause sufficiency independently.
+The contract itself is not a compilation or physical execution result. Admission
+requires successful compilation of both the normal template without the define
+and the fixture template with it. Retain original setup and predecessor
+identities, source and rendered overlay, intent, exact checkpoint bytes, process
+identity and terminal status, complete before/interrupted/recovered snapshots,
+updated-application edit/reopen observations and all original failures.
+An independent review must assess each requirement against those originals.
 
 Primary API references:
 
