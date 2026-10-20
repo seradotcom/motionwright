@@ -262,6 +262,11 @@ Var NoShortcutMode
     Call MWINST_MakeDestinationAvailable
     ${If} $MWINST_NeedFile = 1
       !insertmacro MWINST_REQUIRE_ABSENT "${Relative}" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}"
+      !ifdef MWINST_CI_INTERRUPTION
+        !if "${Symbol}" == "MW_MAIN"
+          Call MWINST_InterruptMainAfterWithdrawal
+        !endif
+      !endif
       !insertmacro MWOWN_PUBLISH "$MWINST_Parent" "$MWINST_StageLeaf" "$MWINST_Leaf" "${${Symbol}_SHA256}" "${${Symbol}_SIZE}" $0
       ${If} $0 = ${MWOWN_PUBLISH_UNCERTAIN}
         SetErrorLevel 3
@@ -299,6 +304,12 @@ Var MWINST_NeedFile
 Var MWINST_DiagnosticPhase
 Var MWINST_StageLeaf
 Var MWINST_StageDirectory
+!ifdef MWINST_CI_INTERRUPTION
+Var MWINST_InterruptId
+Var MWINST_InterruptHandle
+Var MWINST_InterruptPid
+Var MWINST_InterruptCreated
+!endif
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -534,6 +545,135 @@ Function MWINST_CaptureFailure
     FileClose $0
   ${EndIf}
   Pop $0
+FunctionEnd
+!endif
+
+
+!ifdef MWINST_CI_INTERRUPTION
+; Explicit disposable-runner build only. No release build defines this flag.
+; Arm before predecessor withdrawal. The runner admits its private TEMP root.
+Function MWINST_ArmInterruption
+  System::Store "SF"
+  StrCpy $MWINST_InterruptId ""
+  StrCpy $MWINST_InterruptHandle -1
+  ReadEnvStr $0 "MOTIONWRIGHT_NSIS_INTERRUPT_ID"
+  ${If} $0 != ""
+    ReadEnvStr $1 "GITHUB_ACTIONS"
+    ${If} $1 != "true"
+      !insertmacro MWINST_FAIL "Interruption fixtures require the admitted disposable runner."
+    ${EndIf}
+    StrLen $1 $0
+    StrCpy $2 $0 1
+    StrCpy $3 $0 1 -1
+    ${If} $1 != 38
+    ${OrIf} $2 != "{"
+    ${OrIf} $3 != "}"
+      !insertmacro MWINST_FAIL "The interruption identifier is not a braced GUID."
+    ${EndIf}
+    System::Call 'ole32::CLSIDFromString(w r0, g .r1) i.r2'
+    ${If} $2 != 0
+    ${OrIf} $0 != $1
+      !insertmacro MWINST_FAIL "The interruption identifier is not canonical."
+    ${EndIf}
+    StrCpy $MWINST_InterruptId $1
+    StrCpy $MWINST_Relative "${MAINBINARYNAME}.exe"
+    Call MWINST_Classify
+    ${If} $MWINST_Classification != "PREDECESSOR"
+      !insertmacro MWINST_FAIL "Interruption requires the admitted previous main executable."
+    ${EndIf}
+    System::Call 'kernel32::GetCurrentProcessId() i.r0'
+    IntFmt $MWINST_InterruptPid "%u" $0
+    System::Call 'kernel32::GetCurrentProcess() p.r0'
+    System::Call 'kernel32::GetProcessTimes(p r0, *l .r1, *l .r2, *l .r3, *l .r4) i.r5 ?e'
+    Pop $6
+    ${If} $5 = 0
+      StrCpy $MWOWN_LastReason "checkpoint_process_identity_unavailable"
+      StrCpy $MWOWN_LastWin32Error $6
+      !insertmacro MWINST_FAIL "The original installer process identity is unavailable."
+    ${EndIf}
+    ; Keep the full 64-bit FILETIME as decimal text; never use IntOp on it.
+    StrCpy $MWINST_InterruptCreated $1
+    StrCpy $0 "$TEMP\motionwright-nsis-$MWINST_InterruptId.checkpoint"
+    ; CREATE_NEW, no sharing, no inherited handle, OPEN_REPARSE_POINT.
+    ; Existing leaves are never reused. Ancestor admission belongs to A6.
+    System::Call 'kernel32::CreateFileW(w r0, i 0x40000000, i 0, p 0, i 1, i 0x00200080, p 0) p.r1 ?e'
+    Pop $2
+    ${If} $1 = -1
+      StrCpy $MWOWN_LastReason "checkpoint_receipt_reservation_refused"
+      StrCpy $MWOWN_LastWin32Error $2
+      !insertmacro MWINST_FAIL "The original checkpoint receipt could not be reserved."
+    ${EndIf}
+    StrCpy $MWINST_InterruptHandle $1
+  ${EndIf}
+  System::Store "fL"
+FunctionEnd
+
+Function MWINST_InterruptionStop
+  ; One cleanup attempt for this invocation's handle, never a retry of a
+  ; failed close. The process exits without success/failure callbacks.
+  ${If} $MWINST_InterruptHandle != -1
+    StrCpy $0 $MWINST_InterruptHandle
+    StrCpy $MWINST_InterruptHandle -1
+    System::Call 'kernel32::CloseHandle(p r0) i.r1'
+  ${EndIf}
+  !ifdef MWINST_CI_DIAGNOSTICS
+    Call MWINST_CaptureFailure
+  !endif
+  SetErrorLevel 4
+  Quit
+FunctionEnd
+
+Function MWINST_InterruptMainAfterWithdrawal
+  ${If} $MWINST_InterruptId == ""
+    Return
+  ${EndIf}
+  ; Every armed path stops here. None can return to MWOWN_PUBLISH.
+  StrCpy $MWINST_DiagnosticPhase "ci-main-withdrawn-checkpoint"
+  ${If} $MWINST_InterruptHandle = -1
+  ${OrIf} $MWINST_Classification != "PREDECESSOR"
+    StrCpy $MWOWN_LastReason "checkpoint_not_armed_for_predecessor"
+    StrCpy $MWOWN_LastWin32Error 0
+    Call MWINST_InterruptionStop
+  ${EndIf}
+  !insertmacro MWOWN_CHECK "" "$MWINST_Parent" "$MWINST_StageLeaf" "${MW_MAIN_SHA256}" "${MW_MAIN_SIZE}" $0
+  ${If} $0 != ${MWOWN_MATCHED}
+    Call MWINST_InterruptionStop
+  ${EndIf}
+  ; Fixed-field UTF-16LE, no BOM or trailing NUL. The file stays exclusive
+  ; until all bytes have been written, flushed and the handle closed.
+  StrCpy $0 "motionwright.nsis-checkpoint/1|id=$MWINST_InterruptId|pid=$MWINST_InterruptPid|creation_filetime=$MWINST_InterruptCreated|phase=main-withdrawn-before-publication|stage=$MWINST_StageLeaf|candidate_sha256=${MW_MAIN_SHA256}|candidate_size=${MW_MAIN_SIZE}$\r$\n"
+  StrLen $1 $0
+  IntOp $1 $1 * 2
+  StrCpy $2 $MWINST_InterruptHandle
+  System::Call 'kernel32::WriteFile(p r2, w r0, i r1, *i .r3, p 0) i.r4 ?e'
+  Pop $5
+  ${If} $4 = 0
+  ${OrIf} $3 != $1
+    StrCpy $MWOWN_LastReason "checkpoint_receipt_write_incomplete"
+    StrCpy $MWOWN_LastWin32Error $5
+    Call MWINST_InterruptionStop
+  ${EndIf}
+  System::Call 'kernel32::FlushFileBuffers(p r2) i.r4 ?e'
+  Pop $5
+  ${If} $4 = 0
+    StrCpy $MWOWN_LastReason "checkpoint_receipt_flush_failed"
+    StrCpy $MWOWN_LastWin32Error $5
+    Call MWINST_InterruptionStop
+  ${EndIf}
+  StrCpy $MWINST_InterruptHandle -1
+  System::Call 'kernel32::CloseHandle(p r2) i.r4 ?e'
+  Pop $5
+  ${If} $4 = 0
+    StrCpy $MWOWN_LastReason "checkpoint_receipt_close_failed"
+    StrCpy $MWOWN_LastWin32Error $5
+    Call MWINST_InterruptionStop
+  ${EndIf}
+  ; A6 may terminate only its admitted process handle during this pause.
+  ; Expiry is a fixture failure, not a successful interruption or upgrade.
+  Sleep 30000
+  StrCpy $MWOWN_LastReason "checkpoint_wait_expired"
+  StrCpy $MWOWN_LastWin32Error 0
+  Call MWINST_InterruptionStop
 FunctionEnd
 !endif
 
@@ -805,6 +945,9 @@ Section EarlyChecks
   StrCpy $MWINST_PluginRoot $1
   Call MWINST_PrepareSources
   Call MWINST_Preflight
+  !ifdef MWINST_CI_INTERRUPTION
+    Call MWINST_ArmInterruption
+  !endif
 SectionEnd
 
 Section WebView2
