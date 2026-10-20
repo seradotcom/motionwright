@@ -152,6 +152,10 @@ def assert_centroids(plan: dict, frames: dict[int, bytes]) -> list[dict]:
         if not (positions[0][0] - positions[1][0] > 4
                 and positions[1][0] - positions[2][0] > 4):
             raise AssertionError("decoded frames do not show the original moving-camera trajectory")
+        # The authored four-pixel camera Y move is ~1.32 decoded pixels.
+        # An X-only moving image must never satisfy the two-axis source contract.
+        if positions[0][1] - positions[-1][1] < 1.0:
+            raise AssertionError("decoded frames do not show independent vertical camera movement")
     return observations
 
 
