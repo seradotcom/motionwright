@@ -1194,4 +1194,305 @@ mod tests {
             3
         );
     }
+
+    struct ReceiptClockFixture {
+        project: motionwright_domain::Project,
+        input: ProductionReceiptInput,
+        initial: ProductionReceipt,
+        earlier_failure: ProductionReceipt,
+        pending: ProductionReceipt,
+    }
+
+    fn retained_receipts_after_clock_reversal(path: &std::path::Path) -> ReceiptClockFixture {
+        let mut store = Store::open(path).unwrap();
+        let project = store.create_named_project("Durable receipt order").unwrap();
+        let input = revision_binding_input(
+            &project,
+            "original-recovery-stage",
+            "motionwright.recovery.motion-canvas",
+        );
+        let initial = store.claim_recovery_stage(input.clone()).unwrap();
+        assert_eq!(initial.payload["attempt"], json!(1));
+        let mut earlier_failure = store
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "failed_known".into(),
+                payload: json!({"retryable": true, "attempt": 1}),
+                ..input.clone()
+            })
+            .unwrap();
+
+        // Model retained bytes from an earlier process with an advanced clock.
+        // No system clock is changed and no native operation is dispatched.
+        let original_id = earlier_failure.id;
+        earlier_failure.id = Uuid::from_u128(
+            original_id
+                .as_u128()
+                .checked_add(86_400_000_u128 << 80)
+                .unwrap(),
+        );
+        earlier_failure.created_at =
+            (chrono::DateTime::parse_from_rfc3339(&earlier_failure.created_at).unwrap()
+                + chrono::Duration::days(1))
+            .to_rfc3339();
+        assert_eq!(
+            store
+                .conn
+                .execute(
+                    "UPDATE production_receipts SET receipt_id=?1,created_at=?2 WHERE receipt_id=?3",
+                    params![
+                        earlier_failure.id.to_string(),
+                        &earlier_failure.created_at,
+                        original_id.to_string(),
+                    ],
+                )
+                .unwrap(),
+            1
+        );
+        drop(store);
+
+        let mut reopened = Store::open(path).unwrap();
+        let pending = reopened.claim_recovery_stage(input.clone()).unwrap();
+        assert_eq!(pending.payload["attempt"], json!(2));
+        assert!(
+            pending.id < earlier_failure.id,
+            "fixture must retain a later commit with a lower UUID"
+        );
+        assert_eq!(
+            reopened
+                .production_receipt_watermark(project.id)
+                .unwrap()
+                .count,
+            3
+        );
+        drop(reopened);
+        ReceiptClockFixture {
+            project,
+            input,
+            initial,
+            earlier_failure,
+            pending,
+        }
+    }
+
+    #[test]
+    fn commit_order_latest_receipt_survives_vacuum_and_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("latest-commit.sqlite3");
+        let fixture = retained_receipts_after_clock_reversal(&path);
+        let store = Store::open(&path).unwrap();
+        store.conn.execute_batch("VACUUM").unwrap();
+        drop(store);
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .latest_production_receipt(fixture.project.id, &fixture.input.request_id)
+                .unwrap(),
+            Some(fixture.pending),
+            "the durable latest receipt must not be chosen by wall-clock UUID"
+        );
+    }
+
+    #[test]
+    fn commit_order_watermark_tracks_lower_uuid_append() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("watermark-commit.sqlite3");
+        let fixture = retained_receipts_after_clock_reversal(&path);
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .production_receipt_watermark(fixture.project.id)
+                .unwrap(),
+            ProductionReceiptWatermark {
+                latest_id: Some(fixture.pending.id),
+                count: 3,
+            },
+            "watermark head must identify the last commit, including a lower UUID"
+        );
+    }
+
+    #[test]
+    fn commit_order_receipt_pages_preserve_history_across_decreasing_uuids() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("paged-commit.sqlite3");
+        let fixture = retained_receipts_after_clock_reversal(&path);
+        let reopened = Store::open(&path).unwrap();
+        let mut before = None;
+        let mut observed = Vec::new();
+        for _ in 0..4 {
+            let page = reopened
+                .production_receipts_before(fixture.project.id, fixture.pending.id, before, 1)
+                .unwrap();
+            if page.is_empty() {
+                break;
+            }
+            assert_eq!(page.len(), 1);
+            before = Some(page[0].id);
+            observed.extend(page);
+        }
+        assert_eq!(
+            observed,
+            vec![fixture.pending, fixture.earlier_failure, fixture.initial],
+            "UUID cursor must resolve to durable order without omitting a prior future-clock receipt"
+        );
+    }
+
+    #[test]
+    fn commit_order_receipt_pages_reject_missing_foreign_and_forward_anchors() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("scoped-anchors.sqlite3");
+        let fixture = retained_receipts_after_clock_reversal(&path);
+        let mut reopened = Store::open(&path).unwrap();
+        let other = reopened
+            .create_named_project("Foreign cursor owner")
+            .unwrap();
+        let foreign = reopened
+            .append_production_receipt(revision_binding_input(
+                &other,
+                "foreign-observation",
+                "driver.motion-canvas.render.start",
+            ))
+            .unwrap();
+        let missing = Uuid::now_v7();
+        for (label, through, before) in [
+            ("missing head", missing, None),
+            ("foreign head", foreign.id, None),
+            ("missing cursor", fixture.pending.id, Some(missing)),
+            ("foreign cursor", fixture.pending.id, Some(foreign.id)),
+            (
+                "cursor newer than snapshot",
+                fixture.initial.id,
+                Some(fixture.pending.id),
+            ),
+        ] {
+            let result =
+                reopened.production_receipts_before(fixture.project.id, through, before, 2);
+            assert!(
+                result.is_err(),
+                "{label} must not widen a page or fabricate an empty complete history: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn commit_order_pending_retry_vetoes_same_key_after_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("same-key-pending.sqlite3");
+        let fixture = retained_receipts_after_clock_reversal(&path);
+        let mut reopened = Store::open(&path).unwrap();
+        let before = reopened
+            .production_receipt_watermark(fixture.project.id)
+            .unwrap();
+        let result = reopened.claim_recovery_stage(fixture.input.clone());
+        assert!(
+            matches!(result, Err(StorageError::RequestReuse)),
+            "pending attempt2 must not be dispatched again from earlier failed_known1: {result:?}"
+        );
+        assert_eq!(
+            reopened
+                .production_receipt_watermark(fixture.project.id)
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            reopened
+                .latest_production_receipt(fixture.project.id, &fixture.input.request_id)
+                .unwrap(),
+            Some(fixture.pending)
+        );
+    }
+
+    #[test]
+    fn commit_order_pending_retry_vetoes_renamed_key_after_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("renamed-key-pending.sqlite3");
+        let fixture = retained_receipts_after_clock_reversal(&path);
+        let mut reopened = Store::open(&path).unwrap();
+        let before = reopened
+            .production_receipt_watermark(fixture.project.id)
+            .unwrap();
+        let result = reopened.claim_recovery_stage(ProductionReceiptInput {
+            request_id: "renamed-recovery-stage".into(),
+            request_sha256: "b".repeat(64),
+            ..fixture.input.clone()
+        });
+        assert!(
+            matches!(result, Err(StorageError::RequestReuse)),
+            "renaming a request must not bypass pending original attempt2: {result:?}"
+        );
+        assert_eq!(
+            reopened
+                .production_receipt_watermark(fixture.project.id)
+                .unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn commit_order_known_failed_retry_advances_to_next_attempt() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("known-next-attempt.sqlite3");
+        let fixture = retained_receipts_after_clock_reversal(&path);
+        let mut store = Store::open(&path).unwrap();
+        store
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "failed_known".into(),
+                payload: json!({"retryable": true, "attempt": 2}),
+                ..fixture.input.clone()
+            })
+            .unwrap();
+        drop(store);
+        let mut reopened = Store::open(&path).unwrap();
+        let third = reopened.claim_recovery_stage(fixture.input).unwrap();
+        assert_eq!(
+            third.payload["attempt"],
+            json!(3),
+            "known failed retry consumes its attempt even across lower UUIDs"
+        );
+        assert_eq!(third.generation, fixture.project.generation);
+        assert_eq!(third.revision, fixture.project.revision);
+        assert_eq!(
+            reopened
+                .production_receipt_watermark(fixture.project.id)
+                .unwrap()
+                .count,
+            5
+        );
+    }
+
+    #[test]
+    fn commit_order_completed_retry_cannot_reopen_earlier_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("completed-retry.sqlite3");
+        let fixture = retained_receipts_after_clock_reversal(&path);
+        let mut store = Store::open(&path).unwrap();
+        let completed = store
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "completed".into(),
+                payload: json!({"attempt": 2}),
+                ..fixture.input.clone()
+            })
+            .unwrap();
+        drop(store);
+        let mut reopened = Store::open(&path).unwrap();
+        let before = reopened
+            .production_receipt_watermark(fixture.project.id)
+            .unwrap();
+        let result = reopened.claim_recovery_stage(fixture.input.clone());
+        assert!(
+            matches!(result, Err(StorageError::RequestReuse)),
+            "completed attempt2 must not reopen from an older failed_known1: {result:?}"
+        );
+        assert_eq!(
+            reopened
+                .production_receipt_watermark(fixture.project.id)
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            reopened
+                .latest_production_receipt(fixture.project.id, &fixture.input.request_id)
+                .unwrap(),
+            Some(completed)
+        );
+    }
 }
