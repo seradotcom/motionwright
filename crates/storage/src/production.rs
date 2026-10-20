@@ -841,8 +841,9 @@ mod tests {
         assert_eq!(empty.count, 0);
         assert!(empty.latest_id.is_none());
         let digest = "a".repeat(64);
+        let mut committed_ids = Vec::new();
         for index in 0..311 {
-            store
+            let receipt = store
                 .append_production_receipt(ProductionReceiptInput {
                     project_id: first.id,
                     generation: first.generation,
@@ -854,6 +855,7 @@ mod tests {
                     payload: json!({"index": index}),
                 })
                 .unwrap();
+            committed_ids.push(receipt.id);
         }
         let head = store.production_receipt_watermark(first.id).unwrap();
         assert_eq!(head.count, 311);
@@ -876,7 +878,11 @@ mod tests {
             items.extend(batch.iter().map(|record| record.id));
         }
         assert_eq!(items.len(), 311);
-        assert!(items.windows(2).all(|pair| pair[0] > pair[1]));
+        committed_ids.reverse();
+        assert_eq!(
+            items, committed_ids,
+            "pages must retain durable insertion order"
+        );
         assert_eq!(store.production_receipts(first.id, 256).unwrap().len(), 256);
 
         // New independent receipts update the receipt stream watermark
@@ -894,12 +900,11 @@ mod tests {
             })
             .unwrap();
         assert_ne!(store.production_receipt_watermark(first.id).unwrap(), head);
-        assert!(
-            store
-                .production_receipts_before(other.id, head.latest_id.unwrap(), None, 16)
-                .unwrap()
-                .is_empty()
-        );
+        // A foreign UUID is an invalid scoped anchor, not proof of emptiness.
+        assert!(matches!(
+            store.production_receipts_before(other.id, head.latest_id.unwrap(), None, 16),
+            Err(StorageError::Domain(DomainError::Invalid(_)))
+        ));
     }
 
     #[test]
