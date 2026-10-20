@@ -276,7 +276,7 @@ jobs:
           receipt=json.loads((root/"loaded-module-contracts.json").read_text())
           test="tooling/tests/test_native_mlt_loaded_module.py"
           reader="tooling/native_mlt_loaded_module.py"
-          expected={reader:"4e5313c9700cb2a07e56430bb2ff109335ecf485abfda0ebc4007807aeb0ab01",
+          expected={reader:"003572799ab66c34ad4697f140b70cd3f0280f38eb03596611251a6d26324fd6",
                     test:"f8d717d0cf057092d9d5f111532551dd3318f169c870efe9a6d974638d6e1e9b"}
           assert source["source_sha"]==receipt["executed_source_sha"]==os.environ["GITHUB_SHA"]
           assert source["attestor_sources"]==expected
