@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { fixtureBootstrap } from "../src/fixture";
+import { seedSyntheticProjectSelection } from "./support/selectedSyntheticProject";
 
 test("editor exposes real workspaces and browser-demo mutations", async ({ page }) => {
   await page.goto("/");
@@ -375,7 +376,7 @@ test("delivery variants keep lineage, replan alternate aspect ratios and require
   await page.getByLabel("Framing", { exact: true }).selectOption("crop");
   await expect(page.getByText("Approve crop")).toBeVisible();
   await page.getByRole("button", { name: "Save profile", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("crop framing requires explicit approval");
+  await expect(page.getByRole("alert")).toContainText("Approve the crop before saving crop framing.");
 
   await page.locator("label.delivery-inline-check").filter({ hasText: "Approve crop" }).locator("input").check();
   await page.getByRole("button", { name: "Save profile", exact: true }).click();
@@ -584,7 +585,7 @@ test("review time ranges are validated and historical anchors do not imply renew
   await expect(review).toContainText("RESOLVED");
 
   await page.getByRole("button", { name: "Brief", exact: true }).click();
-  await page.getByLabel("Project title").fill("Rethought compositing script");
+  await page.locator("#project-title-rich").fill("Rethought compositing script");
   await page.getByRole("button", { name: "Save title" }).click();
   await page.getByRole("button", { name: "Review", exact: true }).click();
   await expect(page.locator(".critique-copy").filter({ hasText: "Check the full composite cut" })).toContainText(
@@ -619,15 +620,20 @@ test("desktop job receipts reread active jobs and preserve explicit manual refre
   };
 
   await page.clock.install();
+  await seedSyntheticProjectSelection(page, boot.project.id);
   await page.addInitScript(({ initialBoot, initialJob }) => {
     const mock = window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (command: string) => Promise<unknown> };
+      __TAURI_INTERNALS__: { invoke: (command: string, args?: {request?: {project_id?:string|null}}) => Promise<unknown> };
       __TEST_RECEIPTS__: { calls: number; jobs: Array<Record<string, unknown>> };
     };
     mock.__TEST_RECEIPTS__ = { calls: 0, jobs: [structuredClone(initialJob)] };
     mock.__TAURI_INTERNALS__ = {
-      invoke: async (command) => {
-        if (command === "bootstrap") return structuredClone(initialBoot);
+      invoke: async (command, args) => {
+        if (command === "bootstrap") {
+          const id = args?.request?.project_id;
+          if (id !== initialBoot.project.id) throw new Error("Synthetic receipt fixture requires the selected UUID.");
+          return { ...structuredClone(initialBoot), project_selection: {status:"selected",project_id:id} };
+        }
         if (command === "production_jobs") {
           mock.__TEST_RECEIPTS__.calls += 1;
           return structuredClone(mock.__TEST_RECEIPTS__.jobs);

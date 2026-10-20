@@ -1,0 +1,313 @@
+import { describe, expect, it } from "vitest";
+import { fixtureProject } from "./fixture";
+import type { CanvasNode, Project } from "./types";
+import {
+  CANVAS_COPY_BYTES, CANVAS_COPY_LIMIT, CANVAS_DRAFT_PREFIX, canvasContextConflicts, canvasDraftConflicts, canvasDraftHasWork,
+  canvasDraftScope, canvasFieldIssue, canvasGroupIssue, canvasRecoveryKey, canvasSubmissionMatches,
+  createCanvasDraft, decodeCanvasRecovery, discardCanvasRecovery, editCanvasField, prepareCanvasSubmission, readCanvasRecoveries,
+  reconcileCanvasDraft, releaseCanvasSubmission, resolveCanvasField, reviewCanvasContext, writeCanvasRecovery,
+} from "./canvasWorkspaceDraft";
+import type { CanvasDraftStorage, CanvasRecovery, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
+
+function source() { return structuredClone(fixtureProject); }
+const sceneId = fixtureProject.scenes[0].id, nodeId = fixtureProject.scenes[0].nodes[0].id;
+const node = (project: Project) => project.scenes[0].nodes[0];
+const draftFor = (project: Project) => createCanvasDraft(project, sceneId, nodeId);
+function nextProject(project: Project, values: Partial<CanvasNode>) {
+  const next = structuredClone(project); next.revision++; Object.assign(node(next), values); return next;
+}
+function copy(draft: CanvasWorkspaceDraft | null, writerId = "window-a", at = 1): CanvasRecovery {
+  return { schema: "motionwright.canvas-recovery/1", scope: canvasDraftScope(source(), sceneId, nodeId), writerId, updatedAt: at, draft };
+}
+function roundTrip(draft: CanvasWorkspaceDraft) {
+  const value = copy(draft);
+  return decodeCanvasRecovery(JSON.stringify(value), draft.scope, value.writerId).draft!;
+}
+class MemoryStorage implements CanvasDraftStorage {
+  data = new Map<string, string>();
+  known = new Map<string, string>();
+  failWrites = false;
+  get length() { return this.data.size; }
+  key(index: number) { return [...this.data.keys()][index] ?? null; }
+  getItem(key: string) { return this.data.get(key) ?? null; }
+  setItem(key: string, value: string) {
+    if (this.failWrites) throw new Error("QuotaExceededError");
+    this.data.set(key, value);
+  }
+  removeItem(key: string) { this.data.delete(key); }
+}
+function retain(storage: MemoryStorage, value: CanvasRecovery) {
+  const key = canvasRecoveryKey(value.scope, value.writerId);
+  const raw = writeCanvasRecovery(storage, value, storage.known.get(key) ?? null);
+  storage.known.set(key, raw); return raw;
+}
+
+describe("Canvas input continuity invariants", () => {
+  it("keeps raw decimal fragments and exact human text through durable recovery", () => {
+    const project = source();
+    for (const raw of ["", "-", "1e", " 1.25e+ ", "Infinity", "0x10"]) {
+      let draft = editCanvasField(draftFor(project), "x", raw);
+      draft = editCanvasField(draft, "text", "  Human decision — keep these spaces.\n🌘\n");
+      const recovered = reconcileCanvasDraft(roundTrip(draft), project);
+      expect(recovered.fields.x.raw).toBe(raw);
+      expect(recovered.fields.text.raw).toBe(draft.fields.text.raw);
+      expect(canvasGroupIssue(recovered, project, "transform")).toContain("finite decimal");
+      expect(prepareCanvasSubmission(recovered, project, "text", "sent-text").change).toEqual({
+        type: "update_canvas_text", scene_id: sceneId, node_id: nodeId, text: draft.fields.text.raw,
+      });
+    }
+    expect(canvasFieldIssue("width", "0")).toBeNull();
+    expect(canvasFieldIssue("height", "-0.1")).toContain("zero or greater");
+    expect(canvasFieldIssue("opacity", "1.001")).toContain("between zero and one");
+    expect(canvasFieldIssue("x", " 1.25e+2 ")).toBeNull();
+  });
+
+  it("scopes recovery to project, generation, branch, scene and object identities", () => {
+    const project = source(), draft = editCanvasField(draftFor(project), "text", "Only this object");
+    for (const property of ["id", "generation", "active_branch"] as const) {
+      const other = { ...project, [property]: project[property] + "-other" };
+      expect(() => reconcileCanvasDraft(draft, other)).toThrow(/another project/);
+    }
+    const storage = new MemoryStorage(); retain(storage, copy(draft));
+    for (const [scene, object] of [[sceneId + "-other", nodeId], [sceneId, nodeId + "-other"]]) {
+      expect(readCanvasRecoveries(storage, canvasDraftScope(project, scene, object)).entries).toEqual([]);
+    }
+    const malformed = { ...copy(draft), draft: { ...draft, nodeId: "another-object" } };
+    expect(() => decodeCanvasRecovery(JSON.stringify(malformed), draft.scope, "window-a")).toThrow(/object scope/);
+  });
+
+  it("backs up the largest admitted ordinary text object while retaining a separate numeric edit", () => {
+    const project = source(); node(project).text = "a".repeat(100_000);
+    let draft = editCanvasField(draftFor(project), "x", "420");
+    draft = editCanvasField(draft, "text", "b".repeat(100_000));
+    const attempt = prepareCanvasSubmission(draft, project, "text", "large-valid-text");
+    const recovered = roundTrip(attempt.draft);
+    expect(recovered.fields.text.raw).toHaveLength(100_000);
+    expect(recovered.fields.x.raw).toBe("420");
+    expect(recovered.awaiting).toEqual(attempt.submission);
+    expect(canvasFieldIssue("text", "b".repeat(100_001))).toContain("100,000 UTF-8 bytes");
+    expect(canvasFieldIssue("text", "🌘".repeat(25_001))).toContain("100,000 UTF-8 bytes");
+  });
+
+  it("requires context review when equal numeric values acquire a different parent, space or kind", () => {
+    const project = source();
+    let draft = editCanvasField(draftFor(project), "x", "420");
+    draft = editCanvasField(draft, "text", "A pending line");
+    for (const values of [{ parent_id: project.scenes[0].nodes[1].id }, { coordinate_space: "scene_local" as const }]) {
+      const changed = nextProject(project, values), recovered = reconcileCanvasDraft(roundTrip(draft), changed);
+      expect(canvasContextConflicts(recovered, changed)).toEqual(["transform"]);
+      expect(recovered.fields.x.raw).toBe("420");
+      expect(() => prepareCanvasSubmission(recovered, changed, "transform", "blocked-context")).toThrow(/object context/);
+      expect(prepareCanvasSubmission(recovered, changed, "text", "independent-text").change).toMatchObject({ text: "A pending line" });
+      const reviewed = reviewCanvasContext(recovered, changed);
+      expect(prepareCanvasSubmission(reviewed, changed, "transform", "reviewed-context").change).toMatchObject({ transform: { x: 420 } });
+    }
+    const changedKind = nextProject(project, { kind: "shape" });
+    expect(canvasContextConflicts(reconcileCanvasDraft(draft, changedKind), changedKind)).toEqual(["text", "transform"]);
+    const sameNumbersNewParent = nextProject(project, { parent_id: project.scenes[0].nodes[1].id, x: 420 });
+    const converged = reconcileCanvasDraft(roundTrip(draft), sameNumbersNewParent);
+    expect(canvasContextConflicts(converged, sameNumbersNewParent)).toEqual(["transform"]);
+    expect(converged.baseContext.parent_id).toBeNull();
+    expect(canvasContextConflicts(reviewCanvasContext(converged, sameNumbersNewParent), sameNumbersNewParent)).toEqual([]);
+  });
+
+  it("preserves authored X across repeated disjoint revisions and composes the current untouched Y", () => {
+    let project = source();
+    let draft = editCanvasField(draftFor(project), "x", " 411.25 ");
+    const originalStyle = structuredClone(node(project).style);
+    // Pure state stress, not a claim about persisted service revisions; the G2
+    // suite exercises the actual journal and separate SQLite processes.
+    for (let revision = 0; revision < 12; revision++) {
+      project = nextProject(project, { y: node(project).y + 3, text: "Peer line " + revision });
+      draft = reconcileCanvasDraft(roundTrip(draft), project);
+      expect(draft.fields.x.raw).toBe(" 411.25 ");
+      expect(draft.fields.y.raw).toBe(String(node(project).y));
+      expect(draft.fields.text.raw).toBe(node(project).text);
+      expect(canvasDraftConflicts(draft, project)).toEqual([]);
+    }
+    const attempt = prepareCanvasSubmission(draft, project, "transform", "layout-intent");
+    expect(attempt.change).toEqual({ type: "transform_canvas_node", scene_id: sceneId, node_id: nodeId,
+      transform: { x: 411.25, y: node(project).y, width: node(project).width, height: node(project).height,
+        rotation_deg: node(project).rotation_deg, opacity: node(project).opacity } });
+    expect(node(project).style).toEqual(originalStyle);
+    expect(node(project).x).toBe(node(source()).x);
+  });
+
+  it("requires a field choice for overlapping peer edits without consuming independent input", () => {
+    const original = source();
+    let draft = editCanvasField(draftFor(original), "text", "My pending line");
+    draft = editCanvasField(draft, "x", "420");
+    const peer = nextProject(original, { text: "A colleague's saved line", y: 333 });
+    draft = reconcileCanvasDraft(roundTrip(draft), peer);
+    expect(canvasDraftConflicts(draft, peer)).toEqual([{ field: "text", before: node(original).text,
+      current: "A colleague's saved line", proposed: "My pending line", futureRevision: false }]);
+    expect(() => prepareCanvasSubmission(draft, peer, "text", "blocked")).toThrow(/overlapping/);
+    const keepSaved = resolveCanvasField(draft, peer, "text", "saved");
+    expect(keepSaved.fields.text.raw).toBe(node(peer).text);
+    expect(keepSaved.fields.x).toEqual(draft.fields.x);
+    expect(prepareCanvasSubmission(keepSaved, peer, "transform", "layout").change).toMatchObject({ transform: { x: 420, y: 333 } });
+    const keepDraft = resolveCanvasField(draft, peer, "text", "draft");
+    expect(keepDraft.fields.text.base).toBe(node(peer).text);
+    expect(prepareCanvasSubmission(keepDraft, peer, "text", "reviewed").change).toMatchObject({ text: "My pending line" });
+    expect(node(peer).text).toBe("A colleague's saved line");
+  });
+
+  it("recognizes only the observed snapshot and retains later raw, including a return to the old base", () => {
+    const project = source();
+    let draft = editCanvasField(editCanvasField(draftFor(project), "x", "420"), "y", "350");
+    const sent = prepareCanvasSubmission(draft, project, "transform", "pending-layout"), payload = JSON.stringify(sent.change);
+    draft = editCanvasField(sent.draft, "x", "1e");
+    draft = editCanvasField(draft, "y", String(node(project).y));
+    draft = editCanvasField(draft, "text", "Next human sentence\n");
+    expect(canvasSubmissionMatches(project, draft, sent.submission)).toBe(false);
+    expect(reconcileCanvasDraft(roundTrip(draft), project).awaiting).toEqual(sent.submission);
+    const saved = nextProject(project, { x: 420, y: 350 });
+    const acknowledged = reconcileCanvasDraft(roundTrip(draft), saved);
+    expect(acknowledged.awaiting).toBeNull();
+    expect(acknowledged.fields.x).toMatchObject({ raw: "1e", base: "420", intent: true });
+    expect(acknowledged.fields.y).toMatchObject({ raw: String(node(project).y), base: "350", intent: true });
+    expect(acknowledged.fields.text.raw).toBe("Next human sentence\n");
+    expect(canvasDraftConflicts(acknowledged, saved)).toEqual([]);
+    expect(JSON.stringify(sent.change)).toBe(payload);
+  });
+
+  it("uses an input sequence to distinguish the same raw value typed again during an ACK", () => {
+    const project = source();
+    const sent = prepareCanvasSubmission(editCanvasField(draftFor(project), "x", " 420 "), project, "transform", "same-raw");
+    const typedAgain = editCanvasField(editCanvasField(sent.draft, "x", "421"), "x", " 420 ");
+    const saved = nextProject(project, { x: 420 });
+    const recovered = reconcileCanvasDraft(roundTrip(typedAgain), saved);
+    expect(recovered.fields.x.raw).toBe(" 420 ");
+    expect(recovered.fields.x.sequence).toBe(sent.submission.fields.x!.sequence + 2);
+    expect(canvasDraftHasWork(recovered)).toBe(true);
+    const unchanged = reconcileCanvasDraft(sent.draft, saved);
+    expect(unchanged.fields.x.raw).toBe("420");
+    expect(canvasDraftHasWork(unchanged)).toBe(false);
+  });
+
+  it("keeps failed and unconfirmed inputs, and an old failure cannot cancel a new submission", () => {
+    const project = source();
+    const first = prepareCanvasSubmission(editCanvasField(draftFor(project), "text", "First attempt"), project, "text", "first");
+    const released = releaseCanvasSubmission(first.draft, "first");
+    expect(released.fields).toEqual(first.draft.fields);
+    expect(released.awaiting).toBeNull();
+    const second = prepareCanvasSubmission(released, project, "text", "second");
+    expect(releaseCanvasSubmission(second.draft, "first")).toBe(second.draft);
+    const peer = nextProject(project, { text: "Peer takes this field" });
+    const observed = reconcileCanvasDraft(roundTrip(second.draft), peer);
+    expect(observed.awaiting).toBeNull();
+    expect(observed.fields.text.raw).toBe("First attempt");
+    expect(canvasDraftConflicts(observed, peer)).toHaveLength(1);
+  });
+
+  it("never recreates a removed object or accepts a future base without explicit review", () => {
+    const project = source(), draft = editCanvasField(draftFor(project), "x", "440");
+    const removed = structuredClone(project); removed.scenes[0].nodes = []; removed.revision++;
+    expect(() => reconcileCanvasDraft(draft, removed)).toThrow(/no longer/);
+    expect(removed.scenes[0].nodes).toEqual([]);
+    const older = { ...project, revision: project.revision - 1 };
+    expect(canvasDraftConflicts(draft, older)).toMatchObject([{ field: "x", futureRevision: true }]);
+    expect(() => prepareCanvasSubmission(draft, older, "transform", "older")).toThrow(/overlapping/);
+  });
+
+  it("respects saved property and scene locks while preserving disjoint editable fields", () => {
+    const project = source(); node(project).property_locks.push("position", "text");
+    let draft = editCanvasField(draftFor(project), "x", "440");
+    draft = editCanvasField(draft, "text", "Kept under lock");
+    expect(canvasGroupIssue(draft, project, "text")).toContain("lock");
+    expect(canvasGroupIssue(draft, project, "transform")).toContain("lock");
+    draft = resolveCanvasField(draft, project, "x", "saved");
+    draft = editCanvasField(draft, "width", "960");
+    expect(canvasGroupIssue(draft, project, "transform")).toBeNull();
+    project.locks.push({ id: "scene-lock", resource: "scene:" + sceneId, kind: "position", note: "Keep layout" });
+    expect(() => prepareCanvasSubmission(draft, project, "transform", "blocked")).toThrow(/lock/);
+    expect(draft.fields.width.raw).toBe("960");
+    expect(draft.fields.text.raw).toBe("Kept under lock");
+  });
+});
+
+describe("bounded Canvas recovery storage", () => {
+  it("compares the last observed bytes before replacing or discarding even a valid externally changed copy", () => {
+    const storage = new MemoryStorage(), draft = editCanvasField(draftFor(source()), "text", "Window A's input");
+    const observedRaw = retain(storage, copy(draft)), key = canvasRecoveryKey(draft.scope, "window-a");
+    const otherRaw = JSON.stringify(copy(editCanvasField(draft, "text", "A valid external correction"), "window-a", 99));
+    storage.setItem(key, otherRaw);
+    expect(() => writeCanvasRecovery(storage, copy(editCanvasField(draft, "text", "A later local edit")), observedRaw)).toThrow(/changed in another window/);
+    expect(storage.getItem(key)).toBe(otherRaw);
+    expect(() => discardCanvasRecovery(storage, key, observedRaw)).toThrow(/changed after it was shown/);
+    expect(storage.getItem(key)).toBe(otherRaw);
+    expect(readCanvasRecoveries(storage, draft.scope).entries[0].raw).toBe(otherRaw);
+    const brokenRaw = "{invalid recovery\nKeep every original byte 🌘";
+    storage.setItem(key, brokenRaw);
+    expect(readCanvasRecoveries(storage, draft.scope).unreadable[0].raw).toBe(brokenRaw);
+    expect(() => discardCanvasRecovery(storage, key, otherRaw)).toThrow(/changed after/);
+    discardCanvasRecovery(storage, key, brokenRaw);
+    expect(storage.getItem(key)).toBeNull();
+  });
+
+  it("keeps independent windows and uses durable clean checkpoints without resurrecting stale drafts", () => {
+    const storage = new MemoryStorage(), draft = editCanvasField(draftFor(source()), "text", "A window's input");
+    retain(storage, copy(draft, "window-a", 100));
+    const other = editCanvasField(draft, "text", "B window's independent input");
+    retain(storage, copy(other, "window-b", 100));
+    const beforeA = storage.getItem(canvasRecoveryKey(draft.scope, "window-a"));
+    retain(storage, copy(null, "window-b", 1));
+    expect(storage.getItem(canvasRecoveryKey(draft.scope, "window-a"))).toBe(beforeA);
+    expect(readCanvasRecoveries(storage, draft.scope).entries[0].value.draft).toBeNull();
+    expect(() => retain(storage, copy(other, "window-b"))).toThrow(/immutable/);
+    retain(storage, copy(other, "new-window-b"));
+    expect(readCanvasRecoveries(storage, draft.scope).entries[0].value.draft?.fields.text.raw).toBe("B window's independent input");
+    expect(storage.getItem(canvasRecoveryKey(draft.scope, "window-a"))).toBe(beforeA);
+  });
+
+  it("refuses corrupt, unsupported, forged or oversized copies without replacing their bytes", () => {
+    const storage = new MemoryStorage(), draft = editCanvasField(draftFor(source()), "x", "1e");
+    const key = canvasRecoveryKey(draft.scope, "window-a"), bad = "{unreadable original input";
+    storage.setItem(key, bad);
+    expect(readCanvasRecoveries(storage, draft.scope).unreadable).toEqual([{ key, raw: bad, writerId: "window-a" }]);
+    expect(() => retain(storage, copy(draft))).toThrow();
+    expect(storage.getItem(key)).toBe(bad);
+    const oversized = copy(editCanvasField(draft, "text", "🌘".repeat(CANVAS_COPY_BYTES)));
+    expect(() => decodeCanvasRecovery(JSON.stringify(oversized), draft.scope, "window-a")).toThrow(/1 MiB/);
+    const forged = { ...copy(draft), draft: { ...draft, fields: { ...draft.fields, x: { ...draft.fields.x, sequence: -1 } } } };
+    expect(() => decodeCanvasRecovery(JSON.stringify(forged), draft.scope, "window-a")).toThrow(/invalid field/);
+    const valid = { ...copy(draft), effect_grant: "never-authority", change: { type: "delete_project" } };
+    expect(decodeCanvasRecovery(JSON.stringify(valid), draft.scope, "window-a")).not.toHaveProperty("effect_grant");
+    expect(decodeCanvasRecovery(JSON.stringify(valid), draft.scope, "window-a")).not.toHaveProperty("change");
+    const unknownScopeKey = canvasRecoveryKey("{}", "unknown-window");
+    storage.setItem(unknownScopeKey, "Unassignable original bytes");
+    expect(readCanvasRecoveries(storage, draft.scope).unreadable).toContainEqual({
+      key: unknownScopeKey, raw: "Unassignable original bytes", writerId: "unidentified-1",
+    });
+  });
+
+  it("keeps the last durable input during quota failure and never evicts pending work at the copy bound", () => {
+    const storage = new MemoryStorage(), draft = editCanvasField(draftFor(source()), "text", "Durable input");
+    retain(storage, copy(draft));
+    const durable = new Map(storage.data); storage.failWrites = true;
+    expect(() => retain(storage, copy(editCanvasField(draft, "text", "New input still in memory")))).toThrow(/Quota/);
+    expect(storage.data).toEqual(durable); storage.failWrites = false;
+    for (let index = 1; index < CANVAS_COPY_LIMIT; index++) retain(storage, copy(draft, "window-" + index));
+    const full = new Map(storage.data);
+    expect(() => retain(storage, copy(draft, "beyond-the-bound"))).toThrow(/full/);
+    expect(storage.data).toEqual(full);
+    storage.setItem(CANVAS_DRAFT_PREFIX + "unscoped-extra", "unreadable input");
+    const result = readCanvasRecoveries(storage, draft.scope);
+    expect(result.limited).toBe(true);
+    expect(storage.length).toBe(CANVAS_COPY_LIMIT + 1);
+  });
+
+  it("bounds aggregate bytes without discarding another project's input", () => {
+    const storage = new MemoryStorage();
+    const draft = editCanvasField(draftFor(source()), "text", "x".repeat(110_000));
+    let full = false;
+    for (let index = 0; index < CANVAS_COPY_LIMIT; index++) {
+      const before = new Map(storage.data);
+      try { retain(storage, copy(draft, "large-window-" + index)); }
+      catch (reason) {
+        expect(String(reason)).toContain("4 MiB"); expect(storage.data).toEqual(before); full = true; break;
+      }
+    }
+    expect(full).toBe(true); expect(storage.length).toBeGreaterThan(20); expect(storage.length).toBeLessThan(CANVAS_COPY_LIMIT);
+  });
+});

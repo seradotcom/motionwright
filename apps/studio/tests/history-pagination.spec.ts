@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 
 test("recent-first committed history exposes all 260 revisions with bounded older pages", async ({ page }) => {
@@ -26,7 +26,14 @@ test("recent-first committed history exposes all 260 revisions with bounded olde
     runtime.__TEST_HISTORY__ = { cursors: [] };
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") return structuredClone(initial);
+        if (command === "bootstrap") {
+          const syntheticResponse = structuredClone(initial);
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "project_history_recent") {
           const request = args?.request as { through_revision: number; limit: number };
           runtime.__TEST_HISTORY__.cursors.push(request.through_revision);
@@ -92,7 +99,14 @@ test("an earlier-history read error keeps the recent page and allows retry", asy
     let failOnce = true;
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") return structuredClone(initial);
+        if (command === "bootstrap") {
+          const syntheticResponse = structuredClone(initial);
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "project_history_recent") {
           const request = args?.request as { through_revision: number; limit: number };
           if (request.through_revision < 108 && failOnce) {

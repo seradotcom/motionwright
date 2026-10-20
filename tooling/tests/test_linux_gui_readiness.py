@@ -71,6 +71,65 @@ class NativeWindowAndBootstrapTests(unittest.TestCase):
         killer.assert_called_once()
         self.assertEqual(native_probe.call_count, 2)
 
+    def test_real_window_interaction_can_wait_but_dispatches_only_once(self):
+        contexts = self.mock_launch(
+            clock=[0.0, 0.1, 0.3, 0.5, 0.7, 0.9],
+            stdout='0x00400004 "Motionwright": ("motionwright")',
+        )
+        env, popen, xwin, clock, sleep, kill, proc = contexts
+        calls = []
+        readiness = []
+
+        def once(scratch):
+            self.assertEqual(scratch, self.root / "isolated")
+            calls.append("inspected")
+            return len(calls) == 2
+
+        def ready(scratch):
+            readiness.append(True)
+            return True
+
+        with env, popen, xwin as native_probe, clock, sleep, kill as killer:
+            result = gui.run_probe(
+                self.app, self.root / "isolated", seconds=3,
+                window_interaction=once, ready_check=ready,
+            )
+        self.assertEqual(result["status"], "WINDOW_OBSERVED")
+        self.assertEqual(calls, ["inspected", "inspected"])
+        self.assertEqual(readiness, [True])
+        self.assertEqual(native_probe.call_count, 3)
+        killer.assert_called_once()
+
+    def test_native_create_is_not_claimed_before_empty_store_authority(self):
+        contexts = self.mock_launch(clock=[0, 0.1, 1.1, 2.1],
+                                    stdout='0x00400004 "Motionwright": ("motionwright")')
+        env, popen, xwin, clock, sleep, kill, proc = contexts
+        calls = []
+        def not_yet_ready(scratch):
+            calls.append(scratch)
+            return False
+        with env, popen, xwin, clock, sleep, kill:
+            with self.assertRaisesRegex(RuntimeError, "empty-store authority never permitted"):
+                gui.run_probe(self.app, self.root / "isolated", seconds=2,
+                              ready_check=lambda _: False,
+                              window_interaction=not_yet_ready)
+        self.assertEqual(len(calls), 2)
+
+    def test_sent_native_create_without_sqlite_ack_remains_failure_without_retry(self):
+        contexts = self.mock_launch(clock=[0, 0.1, 0.5, 1.1, 2.1],
+                                    stdout='0x00400004 "Motionwright": ("motionwright")')
+        env, popen, xwin, clock, sleep, kill, proc = contexts
+        calls = []
+        def dispatched_once(scratch):
+            calls.append(scratch)
+            return True
+        with env, popen, xwin, clock, sleep, kill:
+            with self.assertRaisesRegex(RuntimeError, "One original native Create action was sent"):
+                gui.run_probe(self.app, self.root / "isolated", seconds=2,
+                              ready_check=lambda _: False,
+                              window_interaction=dispatched_once)
+        self.assertEqual(len(calls), 1)
+
     def test_existing_window_only_smoke_retains_its_original_contract(self):
         contexts = self.mock_launch(clock=[0.0, 0.1, 0.2],
                                     stdout='0x00400004 "Motionwright": ("motionwright")')

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 
 const jobFixture = (boot: typeof fixtureBootstrap) => ({
@@ -32,7 +32,14 @@ test("owner explicitly observes only original native job; no render restart or f
     };
     app.__OWNER_STATUS__={reads:0,forbidden:[],requests:[]};
     app.__TAURI_INTERNALS__={invoke:async(command,args)=>{
-      if(command==="bootstrap")return structuredClone(initial);
+      if (command === "bootstrap") {
+        const syntheticResponse = structuredClone(initial);
+        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+        }
+        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      }
       if(command==="production_jobs")return [structuredClone(job)];
       if(command==="read_original_native_job_status"){
         app.__OWNER_STATUS__.reads++;
@@ -91,8 +98,15 @@ test("foreign response with fake verified media is rejected, never becomes succe
     const app=window as unknown as {
       __TAURI_INTERNALS__:{invoke:(command:string)=>Promise<unknown>};
     };
-    app.__TAURI_INTERNALS__={invoke:async(command)=>{
-      if(command==="bootstrap")return structuredClone(initial);
+    app.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+      if (command === "bootstrap") {
+        const syntheticResponse = structuredClone(initial);
+        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+        }
+        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      }
       if(command==="production_jobs")return [structuredClone(job)];
       if(command==="read_original_native_job_status")return {
         schema:"motionwright.v01-owner-native-status/1",

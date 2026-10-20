@@ -4,6 +4,7 @@ import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeU
 import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateCraftDisclosures, validateMetricSourceNoticesOnEdit } from "./creativeProduction";
+import { savedDeliveryRecipe, validateDeliveryRecipe } from "./deliveryRecipe";
 import { validateBrandGovernance } from "./brandGovernance";
 import { upsertSfxCue, validateSfxProject } from "./semanticSfx";
 import { applyEvaluatorChange, validateEvaluatorState } from "./creativeEvaluator";
@@ -16,10 +17,15 @@ import { registerIdentityOrigin, revokeIdentityOrigin, validateIdentityRegistry 
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
+import { openProjectFromLibrary } from "./projectLibrary";
+import {
+  importFileWithRetention, recoverFileImportWithRetention,
+  type FileImportTransport, type RetainedFileImport,
+} from "./fileImport";
 import { fixtureBootstrap } from "./fixture";
 import type {
   AssetIntegrityPage,
-  Bootstrap,
+  StudioBootstrap,
   BranchState,
   CanvasKeyframe,
   CaptionExportResult,
@@ -64,6 +70,22 @@ const browserEvents: ProjectEvent[] = [];
 
 const projectResource = (project: Project) => "project:" + project.id;
 const sceneResource = (sceneId: string) => "scene:" + sceneId;
+
+function recipeDesignStates(project: Project) {
+  return [project, ...project.branch_workspaces.flatMap(workspace => [workspace.base_state, workspace.current_state])];
+}
+
+function validateSavedRecipeStates(project: Project): void {
+  for (const state of recipeDesignStates(project)) {
+    const recipes = Object.entries(state.production_design?.delivery_recipes ?? {});
+    if (recipes.length > 128 || new Set(recipes.map(([id]) => id.toLowerCase())).size !== recipes.length) {
+      throw new Error("Delivery recipe profiles must be unique and within the 128-profile limit.");
+    }
+    for (const [profileId, recipe] of recipes) {
+      validateDeliveryRecipe({ ...project, scenes:state.scenes, deliverables:state.deliverables }, profileId, recipe);
+    }
+  }
+}
 
 const extensionKindForRenderer = (renderer: Project["scenes"][number]["renderer"]) => {
   if (renderer === "remotion") return "remotion-renderer";
@@ -156,9 +178,34 @@ function mergeBranchState(base: BranchState, target: BranchState, source: Branch
   return result;
 }
 
-export async function bootstrap(): Promise<Bootstrap> {
-  if (isTauri()) return invoke<Bootstrap>("bootstrap");
-  return structuredClone(browserState);
+/** Read a specific saved identity or request an unselected library shell. */
+export async function bootstrap(projectId: string | null = null): Promise<StudioBootstrap> {
+  if (!isTauri()) {
+    const demo = structuredClone(browserState);
+    return { ...demo, project_selection: { status: "selected", project_id: demo.project.id } };
+  }
+  const value = await invoke<StudioBootstrap>("bootstrap", { request: { project_id: projectId } });
+  const selection = value?.project_selection;
+  if (!value?.native_sdk || !["tauri", "browser-demo"].includes(value.native_sdk.mode)
+      || typeof value.native_sdk.application !== "string"
+      || typeof value.native_sdk.pinned_revision !== "string" || typeof value.native_sdk.version !== "string"
+      || !selection) throw new Error("The desktop returned an invalid project startup response.");
+  if (projectId === null) {
+    if (selection.status !== "unselected" || value.project !== null) {
+      throw new Error("The desktop selected a project without an explicit identity. No fallback was accepted.");
+    }
+  } else if (selection.status === "unavailable") {
+    if (selection.project_id !== projectId || value.project !== null || typeof selection.message !== "string") {
+      throw new Error("The desktop returned an invalid unavailable-project response.");
+    }
+  } else if (selection.status !== "selected" || selection.project_id !== projectId
+      || !value.project || value.project.id !== projectId
+      || typeof value.project.generation !== "string" || !value.project.generation
+      || !Number.isSafeInteger(value.project.revision) || value.project.revision < 0
+      || !Array.isArray(value.project.scenes) || !Array.isArray(value.project.deliverables)) {
+    throw new Error("The desktop did not return the explicitly requested project.");
+  }
+  return value;
 }
 
 function browserModelDisclosure(
@@ -294,9 +341,12 @@ export async function modelRequestPreflight(
   };
 }
 
+/** Local UI freshness check only. Backend grants and source authority remain mandatory. */
+export type NativeDeliveryDispatchCheck = () => void;
+
 async function issueEffectGrant(
   effect: EffectKind,
-  project: Project | null,
+  project: Pick<Project, "id" | "generation" | "revision"> | null,
   subject: string,
 ): Promise<EffectGrantReceipt> {
   if (!isTauri()) {
@@ -325,50 +375,34 @@ const workflowCommand = (action: WorkflowAction): string => ({
   promote: "workflow.promote",
 })[action];
 
+const desktopFileImport: FileImportTransport = {
+  prepare: request => invoke("prepare_file_import", { request }),
+  grant: preparation => issueEffectGrant("import_local", {
+    id: preparation.project_id, generation: preparation.generation, revision: preparation.revision,
+  }, preparation.path),
+  dispatch: (kind, request) => invoke(kind === "voice" ? "import_voice_file" : "import_asset_file", { request }),
+  recover: request => invoke("recover_file_import", { request }),
+  current: projectId => openProjectFromLibrary(projectId),
+};
+
 export async function importAssetFile(
-  project: Project,
-  path: string,
-  name?: string,
-  mediaType?: string,
-): Promise<Project> {
-  if (!isTauri()) {
-    throw new Error("Local asset import requires the Motionwright desktop runtime.");
-  }
-  const grant = await issueEffectGrant("import_local", project, path);
-  return invoke<Project>("import_asset_file", {
-    request: {
-      project_id: project.id,
-      generation: project.generation,
-      revision: project.revision,
-      effect_grant: grant.token,
-      path,
-      name: name ?? null,
-      media_type: mediaType ?? null,
-    },
-  });
+  project: Project, path: string, name?: string, mediaType?: string,
+): Promise<{ project: Project; retained: RetainedFileImport }> {
+  if (!isTauri()) throw new Error("Local asset import requires the Motionwright desktop runtime.");
+  return importFileWithRetention(project, { kind: "asset", path, name, media_type: mediaType }, desktopFileImport);
 }
 
 export async function importVoiceFile(
-  project: Project,
-  path: string,
-  label?: string,
-): Promise<Project> {
-  if (!isTauri()) {
-    throw new Error("Measured voice import requires the Motionwright desktop runtime.");
-  }
-  const grant = await issueEffectGrant("import_local", project, path);
-  return invoke<Project>("import_voice_file", {
-    request: {
-      project_id: project.id,
-      generation: project.generation,
-      revision: project.revision,
-      effect_grant: grant.token,
-      path,
-      name: null,
-      media_type: null,
-      label: label ?? null,
-    },
-  });
+  project: Project, path: string, label?: string,
+): Promise<{ project: Project; retained: RetainedFileImport }> {
+  if (!isTauri()) throw new Error("Measured voice import requires the Motionwright desktop runtime.");
+  return importFileWithRetention(project, { kind: "voice", path, label }, desktopFileImport);
+}
+
+/** Reads the original durable receipt; it never obtains or retries an import grant. */
+export async function recoverOriginalFileImport(project: Project, retained: RetainedFileImport): Promise<Project | null> {
+  if (!isTauri()) throw new Error("Import recovery requires the Motionwright desktop runtime.");
+  return recoverFileImportWithRetention(project, retained, desktopFileImport);
 }
 
 export async function waveformPage(
@@ -669,6 +703,34 @@ export async function productionJobsHistory(
   });
 }
 
+/** Derive the dispatch snapshot from saved intent before any async boundary. */
+function savedFilmOptions(project: Project, deliverableId: string, proposed: MotionCanvasFilmOptions): MotionCanvasFilmOptions {
+  const profile = project.deliverables.find(item => item.id === deliverableId);
+  const recipe = savedDeliveryRecipe(project, deliverableId);
+  if (!profile || !recipe) throw new Error("Save scene intent for this delivery profile before checking or rendering Film.");
+  validateDeliveryRecipe(project, deliverableId, recipe);
+  const included = new Set(profile.included_scene_ids);
+  const scenes = project.scenes.filter(scene => scene.renderer === "motion-canvas" && (!included.size || included.has(scene.id)));
+  const frame_rate = { num: Number(profile.frame_rate.num), den: Number(profile.frame_rate.den) };
+  if (!Object.values(frame_rate).every(value => Number.isSafeInteger(value) && value > 0)) throw new Error("The saved delivery frame rate is invalid.");
+  const scene_intents = scenes.map(scene => {
+    const intent = recipe.scene_intents.find(item => item.scene_id === scene.id);
+    if (!intent?.role || !intent.archetype) throw new Error("Every included Motion Canvas scene needs a saved role and archetype.");
+    return { scene_id:scene.id, role:intent.role, archetype:intent.archetype };
+  });
+  const options: MotionCanvasFilmOptions = { frame_rate, font_family:"Instrument Sans Variable", mono_font_family:"IBM Plex Mono", scene_intents };
+  const supplied = proposed?.scene_intents;
+  if (!proposed || Object.keys(proposed).length !== 4 || !proposed.frame_rate || Object.keys(proposed.frame_rate).length !== 2
+      || proposed.frame_rate.num !== frame_rate.num || proposed.frame_rate.den !== frame_rate.den
+      || proposed.font_family !== options.font_family || proposed.mono_font_family !== options.mono_font_family
+      || !Array.isArray(supplied) || supplied.length !== scene_intents.length
+      || new Set(supplied.map(intent => intent.scene_id)).size !== scene_intents.length
+      || supplied.some(intent => Object.keys(intent).length !== 3 || !scene_intents.some(saved => saved.scene_id === intent.scene_id && saved.role === intent.role && saved.archetype === intent.archetype))) {
+    throw new Error("Film options differ from this profile's saved scene intent, frame rate or supported font policy. Save or refresh the project before retrying.");
+  }
+  return options;
+}
+
 /** Read-only semantic Film projection. It cannot establish real render support. */
 export async function preflightMotionCanvas(
   project: Project,
@@ -678,13 +740,14 @@ export async function preflightMotionCanvas(
   if (!isTauri()) {
     throw new Error("Canonical Film preflight requires the Motionwright desktop runtime.");
   }
+  const savedOptions = savedFilmOptions(project, deliverableId, options);
   return invoke<MotionCanvasProjectionPreflight>("motion_canvas_preflight", {
     request: {
       project_id: project.id,
       generation: project.generation,
       revision: project.revision,
       deliverable_id: deliverableId,
-      options,
+      options: savedOptions,
     },
   });
 }
@@ -693,12 +756,16 @@ export async function renderMotionCanvas(
   project: Project,
   deliverableId: string,
   options: MotionCanvasFilmOptions,
+  beforeDispatch?: NativeDeliveryDispatchCheck,
 ): Promise<MotionCanvasRenderEvidence> {
   if (!isTauri()) {
     throw new Error("Canonical Motion Canvas production requires the Motionwright desktop runtime.");
   }
+  const savedOptions = savedFilmOptions(project, deliverableId, options);
   const requestId = crypto.randomUUID();
+  beforeDispatch?.();
   const grant = await issueEffectGrant("render_local", project, requestId);
+  beforeDispatch?.();
   return invoke<MotionCanvasRenderEvidence>("render_motion_canvas", {
     request: {
       project_id: project.id,
@@ -707,7 +774,7 @@ export async function renderMotionCanvas(
       request_id: requestId,
       effect_grant: grant.token,
       deliverable_id: deliverableId,
-      options,
+      options: savedOptions,
     },
   });
 }
@@ -768,12 +835,15 @@ export async function assembleNativeAvMaster(
   deliverableId: string,
   voiceTrackId: string,
   previewToken: string,
+  beforeDispatch?: NativeDeliveryDispatchCheck,
 ): Promise<MltAvMasterEvidence> {
   if (!isTauri()) {
     throw new Error("Native AV mastering requires the desktop Semwright runtime.");
   }
   const requestId = crypto.randomUUID();
+  beforeDispatch?.();
   const grant = await issueEffectGrant("render_local", project, requestId);
+  beforeDispatch?.();
   return invoke<MltAvMasterEvidence>("assemble_av_master", {
     request: {
       project_id: project.id,
@@ -797,12 +867,15 @@ export async function assembleNativeMultisegmentAvMaster(
   deliverableId: string,
   voiceTrackId: string,
   previewToken: string,
+  beforeDispatch?: NativeDeliveryDispatchCheck,
 ): Promise<NativeMultisegmentAvMasterEvidence> {
   if (!isTauri()) {
     throw new Error("Native multisegment AV mastering requires the desktop runtime.");
   }
   const requestId = crypto.randomUUID();
+  beforeDispatch?.();
   const grant = await issueEffectGrant("render_local", project, requestId);
+  beforeDispatch?.();
   return invoke<NativeMultisegmentAvMasterEvidence>("assemble_multisegment_av_master", {
     request: {
       project_id: project.id,
@@ -825,13 +898,16 @@ export async function exportVerifiedNativeMaster(
   exportToken: string,
   destination: string,
   includeIntegrityManifest = false,
+  beforeDispatch?: NativeDeliveryDispatchCheck,
 ): Promise<MasterExportReceipt> {
   if (!isTauri()) {
     throw new Error("Verified native MP4 delivery requires the desktop runtime.");
   }
   const absolutePath = destination.trim();
   if (!absolutePath) throw new Error("Choose an absolute .mp4 delivery destination.");
+  beforeDispatch?.();
   const grant = await issueEffectGrant("deliver_local", project, absolutePath);
+  beforeDispatch?.();
   return invoke<MasterExportReceipt>("export_native_av_master", {
     request: {
       project_id: project.id,
@@ -991,6 +1067,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "upsert_procedural_field":
     case "detach_procedural_field":
     case "set_production_plan":
+    case "set_delivery_recipe":
     case "upsert_native_capsule":
       await applyProductionDesignChange(next, change);
       break;
@@ -1534,6 +1611,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     case "remove_asset": {
       assertUnlocked(next, projectResource(next), ["content"]);
+      if (recipeDesignStates(next).some(state => Object.values(state.production_design?.delivery_recipes ?? {}).some(recipe =>
+          recipe.original_mix?.music_asset_id === change.asset_id || recipe.original_mix?.sfx_asset_id === change.asset_id))) {
+        throw new Error("Asset remains referenced by a delivery recipe in the project or a retained branch; clear or migrate those references before deletion.");
+      }
       if(next.production_design?.identity_origins?.some(record=>
         record.provenance_asset_id===change.asset_id ||
         record.consent_asset_id===change.asset_id))
@@ -1674,6 +1755,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     }
     case "remove_deliverable": {
       assertUnlocked(next, projectResource(next), ["content"]);
+      if (next.production_design?.delivery_recipes?.[change.profile_id]) throw new Error("Clear the saved delivery recipe before removing this profile.");
       if (next.deliverables.length <= 1) throw new Error("a project must keep at least one deliverable profile");
       if (next.reviews.some((review) => review.anchor.profile_id === change.profile_id)) {
         throw new Error("deliverable profile is referenced by review history");
@@ -2001,6 +2083,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   validateMeasuredData(next);
   validateMetricSourceNoticesOnEdit(next);
   await validateEvaluatorState(next);
+  validateSavedRecipeStates(next);
   next.revision += 1;
   const activeBranch = next.branches.find((branch) => branch.id === next.active_branch);
   if (!activeBranch) throw new Error("active branch is missing");
@@ -2080,6 +2163,18 @@ export async function nativeOriginalMixAudition(
   project:Project,options:import('./nativeMixTypes').OriginalMixPreviewOptions
 ):Promise<Uint8Array>{
   if(!isTauri())throw new Error('Original multi-bus WAV playback requires the verified desktop domain service.');
+  const profile = project.deliverables.find(item => item.id === options.deliverable_profile_id);
+  const recipe = savedDeliveryRecipe(project, options.deliverable_profile_id);
+  if (!profile || !recipe?.original_mix) throw new Error("Save an enabled original mix recipe for this profile before auditioning.");
+  validateDeliveryRecipe(project, profile.id, recipe);
+  const mix = recipe.original_mix;
+  if (Object.keys(mix).some(key => mix[key as keyof typeof mix] !== options[key as keyof typeof mix])) {
+    throw new Error("The audition options differ from the saved original mix recipe. Save or refresh its inputs before retrying.");
+  }
+  if (profile.voice_track_id && profile.voice_track_id !== project.audio.active_voice_track_id) {
+    throw new Error("The profile voice differs from the active measured voice; this original mix cannot realize that combination.");
+  }
+  if ((project.audio.sfx_cues?.length ?? 0) > 0) throw new Error("This original mix cannot apply the saved semantic SFX cue schedule; those cues must not be silently omitted.");
   if(!options.owner_attests_preview_rights||
       ![options.music_asset_id,options.sfx_asset_id].every(assetId=>
         project.assets.some(asset=>asset.id===assetId&&asset.media_type.startsWith('audio/')&&
@@ -2091,10 +2186,11 @@ export async function nativeOriginalMixAudition(
       options.duck_attenuation_db<0||options.duck_attenuation_db>30||
       ![options.duck_attack_samples,options.duck_release_samples].every(value=>
         Number.isInteger(value)&&value>=1&&value<=48000)){
-    throw new Error('Original mixing needs explicitly selected source-bound assets, an approved local-preview attestation and bounded sample gains.');
+    throw new Error('Original mixing needs saved source-bound assets, explicit preview-use rights confirmation and bounded sample gains.');
   }
   const result=await invoke<Uint8Array|ArrayBuffer|number[]>('native_original_mix_audition',{request:{
-    project_id:project.id,generation:project.generation,revision:project.revision,...options
+    project_id:project.id,generation:project.generation,revision:project.revision,
+    deliverable_profile_id:profile.id,...structuredClone(mix),owner_attests_preview_rights:true
   }});
   const bytes=result instanceof Uint8Array?result:
     result instanceof ArrayBuffer?new Uint8Array(result):

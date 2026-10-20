@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/selectedSyntheticProject";
 import { fixtureBootstrap } from "../src/fixture";
 
 test("local portable MP4 verification is explicit, read-only and supports an independent hash", async ({ page }) => {
@@ -17,7 +17,14 @@ test("local portable MP4 verification is explicit, read-only and supports an ind
     runtime.__MEDIA_CHECK__ = { calls: [], otherOperations: [], runtimeProbes: [] };
     runtime.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") return structuredClone(initial);
+        if (command === "bootstrap") {
+          const syntheticResponse = structuredClone(initial);
+          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+          }
+          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        }
         if (command === "production_runtime_status") {
           // Deliver's new v0.1 compatibility check is READ-ONLY. It must
           // never ask for a grant or mutate this independent MP4 test.
