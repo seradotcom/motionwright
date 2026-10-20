@@ -63,8 +63,13 @@ After npm ci in apps/studio, run from the repository root:
 
 For a retained authentic baseline bundle, pass --bundle PATH. For an original
 JSON receipt, pass --report PATH; an existing receipt is refused. The JSON
-contains the actual bundle/region SHA-256, bundled launch-editor version, each
-case observation and final counts. Missing or changed module structure fails
+contains the probe/package/lock and actual bundle/region SHA-256, the locked
+and installed Vite versions, bundled launch-editor version, each case
+observation and final counts. The default mode requires the installed Vite
+version to match the lock. An explicit --bundle fixture is labeled separately
+and has no claimed installed Vite version. In CI the report also records the
+source SHA, run and attempt from the existing workflow environment; original
+checkout and source-job records remain authoritative for that identity. Missing or changed module structure fails
 rather than reporting a successful empty selection.
 
 ## Verification limits

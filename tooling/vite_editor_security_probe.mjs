@@ -17,6 +17,23 @@ for (let index = 2; index < process.argv.length; index += 2) {
 }
 const bundle = options.get("--bundle") ??
   fileURLToPath(new URL("../apps/studio/node_modules/vite/dist/node/chunks/config.js", import.meta.url));
+const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const probeBytes = fs.readFileSync(fileURLToPath(import.meta.url));
+const studioPackageBytes = fs.readFileSync(path.join(repositoryRoot, "apps/studio/package.json"));
+const lockBytes = fs.readFileSync(path.join(repositoryRoot, "apps/studio/package-lock.json"));
+const lockedViteVersion = JSON.parse(lockBytes.toString("utf8")).packages["node_modules/vite"].version;
+let installedViteVersion = null;
+if (!options.has("--bundle")) {
+  const installedPackage = JSON.parse(fs.readFileSync(
+    path.join(repositoryRoot, "apps/studio/node_modules/vite/package.json"), "utf8"));
+  assert.equal(installedPackage.name, "vite");
+  installedViteVersion = installedPackage.version;
+  assert.equal(installedViteVersion, lockedViteVersion,
+    "installed Vite version differs from the reviewed lock");
+}
+const sourceShaFromCiEnvironment = process.env.GITHUB_SHA ?? null;
+assert(sourceShaFromCiEnvironment === null || /^[0-9a-f]{40}$/.test(sourceShaFromCiEnvironment),
+  "invalid CI source SHA");
 const bytes = fs.readFileSync(bundle);
 const source = bytes.toString("utf8");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -30,26 +47,26 @@ assert.equal(regions.filter((match) => match[2] === "index.js").length, 1,
   "launcher entry point must be unique");
 const moduleSource = regions.map((match) => match[3]).join("\n");
 const positiveCases = [
-  { name: "ordinary_path", file: "C:\\a2-fixture\\scene.ts",
-    command: "code.cmd C:\\a2-fixture\\scene.ts" },
-  { name: "spaces_keep_quoting", file: "C:\\a2-fixture\\two scenes.ts",
-    command: 'code.cmd "C:\\a2-fixture\\two scenes.ts"' },
-  { name: "ampersand_keeps_escaping", file: "C:\\a2-fixture\\scene&notes.ts",
-    command: 'code.cmd ^"C:\\a2-fixture\\scene^&notes.ts^"' },
-  { name: "caret_keeps_escaping", file: "C:\\a2-fixture\\scene^notes.ts",
-    command: 'code.cmd ^"C:\\a2-fixture\\scene^^notes.ts^"' },
-  { name: "line_column_keep_editor_arguments", file: "C:\\a2-fixture\\scene.ts:12:3",
-    command: "code.cmd -r -g C:\\a2-fixture\\scene.ts:12:3" },
+  { name: "ordinary_path", file: "C:\\editor-fixture\\scene.ts",
+    command: "code.cmd C:\\editor-fixture\\scene.ts" },
+  { name: "spaces_keep_quoting", file: "C:\\editor-fixture\\two scenes.ts",
+    command: 'code.cmd "C:\\editor-fixture\\two scenes.ts"' },
+  { name: "ampersand_keeps_escaping", file: "C:\\editor-fixture\\scene&notes.ts",
+    command: 'code.cmd ^"C:\\editor-fixture\\scene^&notes.ts^"' },
+  { name: "caret_keeps_escaping", file: "C:\\editor-fixture\\scene^notes.ts",
+    command: 'code.cmd ^"C:\\editor-fixture\\scene^^notes.ts^"' },
+  { name: "line_column_keep_editor_arguments", file: "C:\\editor-fixture\\scene.ts:12:3",
+    command: "code.cmd -r -g C:\\editor-fixture\\scene.ts:12:3" },
 ];
 const rejectedCases = [
-  { name: "percent_environment_token_rejected", file: "C:\\a2-fixture\\scene%A2_SENTINEL%.ts",
+  { name: "percent_environment_token_rejected", file: "C:\\editor-fixture\\scene%EDITOR_PROBE_SENTINEL%.ts",
     error: /argument containing "%"/ },
-  { name: "percent_commandline_token_rejected", file: "C:\\a2-fixture\\scene%CMDCMDLINE:~-38%.ts",
+  { name: "percent_commandline_token_rejected", file: "C:\\editor-fixture\\scene%CMDCMDLINE:~-38%.ts",
     error: /argument containing "%"/ },
   // These two exercise synthetic arguments, not legal Windows filesystem names.
-  { name: "synthetic_carriage_return_rejected", file: "C:\\a2-fixture\\scene\rmarker.ts",
+  { name: "synthetic_carriage_return_rejected", file: "C:\\editor-fixture\\scene\rmarker.ts",
     error: /argument containing a line break/ },
-  { name: "synthetic_line_feed_rejected", file: "C:\\a2-fixture\\scene\nmarker.ts",
+  { name: "synthetic_line_feed_rejected", file: "C:\\editor-fixture\\scene\nmarker.ts",
     error: /argument containing a line break/ },
 ];
 
@@ -150,7 +167,7 @@ for (const test of rejectedCases) {
     assert.match(observed.errors[0].message, test.error);
   });
 }
-check("missing_file_has_no_effect", "C:\\a2-fixture\\missing.ts", (observed) => {
+check("missing_file_has_no_effect", "C:\\editor-fixture\\missing.ts", (observed) => {
   assert.equal(observed.fileChecks.length, 1);
   assert.equal(observed.executions.length, 0);
   assert.equal(observed.errors.length, 0);
@@ -158,6 +175,16 @@ check("missing_file_has_no_effect", "C:\\a2-fixture\\missing.ts", (observed) => 
 const report = {
   schema: "motionwright.vite-editor-admission/1",
   advisory: "GHSA-698v-4r3x-3vcv",
+  source_sha_from_ci_environment: sourceShaFromCiEnvironment,
+  ci_run_id: process.env.GITHUB_RUN_ID ?? null,
+  ci_run_attempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
+  source_identity_scope: "CI environment claim; original checkout/source job logs remain authoritative",
+  probe_sha256: hash(probeBytes),
+  studio_package_sha256: hash(studioPackageBytes),
+  studio_lock_sha256: hash(lockBytes),
+  locked_vite_version: lockedViteVersion,
+  installed_vite_version: installedViteVersion,
+  bundle_mode: options.has("--bundle") ? "external_bundle_fixture" : "installed_locked_dependency",
   bundle: path.resolve(bundle),
   bundle_sha256: hash(bytes),
   module_regions_sha256: hash(moduleSource),
