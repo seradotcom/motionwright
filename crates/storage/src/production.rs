@@ -921,6 +921,124 @@ mod tests {
     }
 
     #[test]
+    fn new_dispatch_rechecks_the_current_project_revision_after_peer_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("stale-dispatch.sqlite3");
+        let mut editor = Store::open(&path).unwrap();
+        let prepared = editor.create_named_project("Prepared production").unwrap();
+        let mut dispatcher = Store::open(&path).unwrap();
+        let input = revision_binding_input(
+            &prepared,
+            "prepared-but-never-dispatched",
+            "driver.motion-canvas.render.start",
+        );
+        let before = dispatcher
+            .production_receipt_watermark(prepared.id)
+            .unwrap();
+
+        // The coordinator already read and checked this revision. A different
+        // connection commits a normal project edit before dispatch admission.
+        let edited = edit_after_dispatch(&mut editor, &prepared);
+        assert!(edited.revision > prepared.revision);
+        let result = dispatcher.append_production_receipt(input.clone());
+        assert!(
+            matches!(
+                result,
+                Err(StorageError::Conflict { expected, actual })
+                    if expected == prepared.revision && actual == edited.revision
+            ),
+            "a new dispatch must recheck the head inside its write transaction: {result:?}"
+        );
+        assert_eq!(
+            dispatcher
+                .production_receipt_watermark(prepared.id)
+                .unwrap(),
+            before
+        );
+        assert!(
+            dispatcher
+                .latest_production_receipt(prepared.id, &input.request_id)
+                .unwrap()
+                .is_none()
+        );
+        drop(dispatcher);
+        drop(editor);
+
+        let mut reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.load_project(prepared.id).unwrap(), edited);
+        assert!(
+            reopened
+                .production_receipts(prepared.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+        let current = reopened
+            .append_production_receipt(revision_binding_input(
+                &edited,
+                "new-intent-on-current-revision",
+                "driver.motion-canvas.render.start",
+            ))
+            .unwrap();
+        assert_eq!(current.revision, edited.revision);
+        drop(reopened);
+        let final_read = Store::open(&path).unwrap();
+        assert_eq!(final_read.load_project(prepared.id).unwrap(), edited);
+        assert_eq!(
+            final_read.production_receipts(prepared.id, 10).unwrap(),
+            vec![current]
+        );
+    }
+
+    #[test]
+    fn stale_dispatch_guard_preserves_consumed_keys_and_historical_observations() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("admitted-historical-dispatch.sqlite3");
+        let mut editor = Store::open(&path).unwrap();
+        let original = editor.create_named_project("Admitted production").unwrap();
+        let mut observer = Store::open(&path).unwrap();
+        let input = revision_binding_input(
+            &original,
+            "already-admitted-original-request",
+            "driver.motion-canvas.render.start",
+        );
+        let dispatch = observer.append_production_receipt(input.clone()).unwrap();
+        let edited = edit_after_dispatch(&mut editor, &original);
+        let before = observer.production_receipt_watermark(original.id).unwrap();
+        let duplicate = observer.append_production_receipt(input.clone());
+        assert!(
+            matches!(duplicate, Err(StorageError::RequestReuse)),
+            "a consumed key must retain RequestReuse precedence: {duplicate:?}"
+        );
+        assert_eq!(
+            observer.production_receipt_watermark(original.id).unwrap(),
+            before
+        );
+        let late = observer
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "completed".into(),
+                payload: json!({"result": {"state": "succeeded", "job_ref": "original-job"}}),
+                ..input
+            })
+            .unwrap();
+        assert_eq!(late.revision, original.revision);
+        let current = observer
+            .append_production_receipt(revision_binding_input(
+                &edited,
+                "independent-current-request",
+                "driver.motion-canvas.render.start",
+            ))
+            .unwrap();
+        assert_eq!(current.revision, edited.revision);
+        drop(observer);
+        drop(editor);
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.load_project(original.id).unwrap(), edited);
+        let rows = reopened.production_receipts(original.id, 10).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.contains(&dispatch) && rows.contains(&late) && rows.contains(&current));
+    }
+
+    #[test]
     fn observations_cannot_move_the_original_request_to_a_later_revision() {
         for stage in ["outcome_unknown", "completed", "failed_known"] {
             let temp = tempfile::tempdir().unwrap();
