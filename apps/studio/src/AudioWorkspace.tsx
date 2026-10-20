@@ -680,8 +680,9 @@ function ActiveVoiceSelection({ project, commit }: { project: Project; commit: C
       const own = copies.find(copy => copy.writer === previous);
       if (own?.value) { draft = own.value.draft; writer = own.writer; }
       else if (own) { blocked = true; blockedKey = own.key; warning = "This tab's selection record is unreadable and has been kept."; }
-      else if (limited || copies.some(copy => !copy.value || activeVoiceIsUnconfirmed(copy.value.draft))) {
-        blocked = true; warning = "Inspect a retained selection record before starting another selection.";
+      if (limited || copies.some(copy => copy.writer !== writer
+        && (!copy.value || activeVoiceIsUnconfirmed(copy.value.draft)))) {
+        blocked = true; warning ??= "Inspect a retained selection record before starting another selection.";
       }
     } catch (reason) { blocked = true; warning = messageOf(reason); }
     const created: AudioLiveDraft = { draft, writer, warning, blocked, blockedKey };

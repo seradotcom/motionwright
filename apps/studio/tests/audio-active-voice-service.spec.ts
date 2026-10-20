@@ -137,9 +137,48 @@ test("active voice selection preserves both measured sources and canonical state
   for(let i=0;i<paths.length;i++)expect(createHash("sha256").update(await readFile(paths[i])).digest("hex")).toBe(hashes[i]);
   const requests=selectionRequests(service);expect(requests).toHaveLength(1);expect(requests[0].revision).toBe(initial.revision);
   const copy=await ownRecord(page,initial);expect(copy.value.draft.awaiting?.selection?.intentId).not.toBe(requests[0].request_id);
-  expect(await service.reopen(saved.id)).toEqual(saved);await reloadAudio(page);
-  await expect(originalButton(page)).toHaveAttribute("aria-pressed","true");expect(selectionRequests(service)).toHaveLength(1);
-  voice.final=saved;observations.saved=saved;observations.selectionRecord=copy;await ledger(page).screenshot({path:info.outputPath("voice-selection-reopened.png")});
+  expect(await service.reopen(saved.id)).toEqual(saved);
+  const foreign=await page.evaluate(copy=>{
+    const value:AudioRecovery=structuredClone(copy.value);
+    if(!value.draft.awaiting?.selection)throw new Error("The acknowledged source record has no selection.");
+    value.writer=crypto.randomUUID();value.updatedAt=Date.now();
+    value.draft.awaiting.selection={...value.draft.awaiting.selection,intentId:crypto.randomUUID(),outcome:"UNKNOWN",
+      diagnostic:"Authored foreign-writer recovery fixture; no extra Project invocation."};
+    const key="motionwright.audio-recovery.v1:"+encodeURIComponent(value.scope)+":"+value.writer;
+    const raw=JSON.stringify(value);window.localStorage.setItem(key,raw);
+    if(window.localStorage.getItem(key)!==raw)throw new Error("The foreign recovery fixture was not retained.");
+    return {key,raw,value};
+  },copy);
+  await reloadAudio(page);
+  await expect(originalButton(page)).toHaveAttribute("aria-pressed","true");
+  await expect(originalButton(page)).toBeDisabled();await expect(revisionButton(page)).toBeDisabled();
+  await expect(retained(page)).toContainText("Acknowledged selection response");
+  expect(await ownRecord(page,initial)).toEqual(copy);
+  expect(await rawRecord(page,foreign.key)).toBe(foreign.raw);expect(selectionRequests(service)).toHaveLength(1);
+  await ledger(page).locator("summary").filter({hasText:"Retained selection records"}).click();
+  await button(page,"Inspect retained selection "+foreign.value.writer.slice(0,8)).click();
+  await expect(retained(page)).toContainText("Unconfirmed voice selection");
+  await expect(originalButton(page)).toBeDisabled();await expect(revisionButton(page)).toBeDisabled();
+  const inspected=await ownRecord(page,initial);expect(inspected.value.writer).not.toBe(foreign.value.writer);
+  const retainedAckRaw=await rawRecord(page,copy.key);
+  if(retainedAckRaw===null)throw new Error("The original acknowledged record is missing after inspection.");
+  const retainedAck=JSON.parse(retainedAckRaw) as AudioRecovery;
+  expect(retainedAck).toEqual({...copy.value,updatedAt:retainedAck.updatedAt});
+  expect(retainedAck.updatedAt).toBeGreaterThanOrEqual(copy.value.updatedAt);
+  await button(page,"Read saved selection and history").click();
+  const review=page.getByRole("region",{name:"Saved voice selection review",exact:true});
+  await expect(review).toContainText("does not identify or acknowledge the earlier request");
+  await expect(review).toContainText("Read saved revision r"+saved.revision);
+  await button(page,"Keep earlier record and choose another selection").click();
+  await expect(originalButton(page)).toBeEnabled();await expect(revisionButton(page)).toBeEnabled();
+  expect(selectionRequests(service)).toHaveLength(1);
+  expect(await rawRecord(page,copy.key)).toBe(retainedAckRaw);expect(await rawRecord(page,foreign.key)).toBe(foreign.raw);
+  expect(await rawRecord(page,inspected.key)).toBe(inspected.raw);
+  const final=await service.project(initial.id);expect(final).toEqual(saved);expect(await service.reopen(final.id)).toEqual(final);
+  voice.final=final;observations.saved=saved;observations.selectionRecord=copy;observations.foreignUnknownFixture=foreign;
+  observations.acknowledgedRecordAfterRetention={key:copy.key,raw:retainedAckRaw,value:retainedAck};
+  observations.reviewedForeignCopy=inspected;observations.final=final;
+  await ledger(page).screenshot({path:info.outputPath("voice-selection-reopened.png")});
 });
 
 test("a held original selection reply blocks duplicate sends across workspace remount",async({page,voice})=>{
