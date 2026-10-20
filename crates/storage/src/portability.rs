@@ -128,6 +128,13 @@ impl Store {
         // captured set BEFORE publishing its first content-addressed member.
         // Never delete a foreign or pre-existing blob on failure.
         self.preflight_bundle_blob_destinations(&staged)?;
+        // An inspected project ID can be claimed by a second SQLite writer
+        // while these immutable media members are being staged. Recheck the
+        // authoritative destination before publishing the first CAS member,
+        // so a collision already visible at this boundary cannot orphan media.
+        // This is a bounded preflight, not a SQLite/filesystem transaction:
+        // another writer may still race after this query.
+        self.inspect_import(&manifest.backup)?;
         for captured in &staged {
             self.publish_file_import(captured)?;
         }
@@ -741,6 +748,62 @@ mod tests {
         assert_eq!(source.load_project(original.id).unwrap(), advanced);
         let actual = load_bundle_manifest(&destination).unwrap();
         assert_eq!(actual, exported);
+    }
+
+    #[test]
+    fn newly_visible_existing_project_id_must_not_publish_any_bundle_blobs() {
+        // Reproduce the time window between an accepted initial bundle
+        // inspection and the later media capture. A second SQLite connection
+        // legitimately creates another project using the bundle's ID.
+        let directory = tempfile::tempdir().unwrap();
+        let (bundle, manifest) = bundle_fixture(directory.path());
+        assert_eq!(manifest.blobs.len(), 2);
+        let database = directory.path().join("target/state.sqlite3");
+        let mut target = Store::open(&database).unwrap();
+        let initial = target
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap();
+        assert_eq!(initial.plan.blob_count, 2);
+        for blob in &manifest.blobs {
+            assert!(
+                target.verify_blob(&blob.sha256).is_err(),
+                "target unexpectedly already contains a source CAS member"
+            );
+        }
+
+        let mut peer = Store::open(&database).unwrap();
+        let mut current = Project::new("Independent local project").unwrap();
+        current.id = manifest.backup.project.id;
+        peer.create_project(&current).unwrap();
+        drop(peer);
+
+        let before = snapshot(&target);
+        let rejected = target.import_validated_bundle(&bundle, &manifest);
+        assert!(
+            matches!(rejected, Err(StorageError::ProjectExists)),
+            "second connection's valid project ID collision was not rejected"
+        );
+        assert_eq!(
+            snapshot(&target),
+            before,
+            "journal, project or receipts changed"
+        );
+        assert_eq!(target.load_project(current.id).unwrap(), current);
+        for blob in &manifest.blobs {
+            assert!(
+                target.verify_blob(&blob.sha256).is_err(),
+                "a bundle CAS member was published after an already-visible
+                 project collision rejected its import"
+            );
+        }
+        let stage = target.blob_root().join(".staging");
+        assert!(
+            fs::read_dir(stage).unwrap().next().is_none(),
+            "rejected bundle left private captured import bytes"
+        );
+        for blob in &manifest.blobs {
+            assert!(bundle.join(&blob.relative_path).is_file());
+        }
     }
 
     #[test]
