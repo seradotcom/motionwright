@@ -26,7 +26,8 @@ SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA64 = re.compile(r"[0-9a-f]{64}\Z")
 MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 EXPECTED_FIRST_UI_TITLE = "motionwright ci first use"
-EXPECTED_SCHEMA = 2
+EXPECTED_SCHEMA = 3
+LEGACY_EXPECTED_SCHEMA = 2
 CURRENT_FIRST_USE_CONTRACT = "explicit-project-library/1"
 LEGACY_FIRST_USE_CONTRACT = "automatic-project-679cc48b/1"
 LEGACY_FIRST_USE_SOURCE = "679cc48baf7c6f9bb4a0b803508c9b2a9891d944"
@@ -204,6 +205,8 @@ def read_project_snapshot(
     database: Path, *, first_use_contract: str = CURRENT_FIRST_USE_CONTRACT,
 ) -> dict:
     expected_title = _first_use_title(first_use_contract)
+    expected_schema = (LEGACY_EXPECTED_SCHEMA
+                       if first_use_contract == LEGACY_FIRST_USE_CONTRACT else EXPECTED_SCHEMA)
     require(database.is_file() and not database.is_symlink(),
             "Installed application did not persist a regular SQLite database")
     require(0 < database.stat().st_size < 64 * 1024 * 1024,
@@ -212,7 +215,7 @@ def read_project_snapshot(
         with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=3)) as db:
             require(db.execute("PRAGMA quick_check").fetchone() == ("ok",),
                     "Installed SQLite project integrity check failed")
-            require(db.execute("PRAGMA user_version").fetchone() == (EXPECTED_SCHEMA,),
+            require(db.execute("PRAGMA user_version").fetchone() == (expected_schema,),
                     "Installed SQLite project schema does not match its source contract")
             rows = db.execute(
                 "SELECT id, generation, revision, title, document_json FROM projects ORDER BY id"

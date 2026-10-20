@@ -41,7 +41,7 @@ def seeded_store(root: Path, *, name: str = "motionwright ci first use") -> Path
     }, separators=(",", ":"))
     with closing(sqlite3.connect(database)) as conn, conn:
         conn.executescript("""
-          PRAGMA user_version=2;
+          PRAGMA user_version=3;
           CREATE TABLE projects(
             id TEXT PRIMARY KEY, generation TEXT NOT NULL,
             revision INTEGER NOT NULL, title TEXT NOT NULL,
@@ -69,7 +69,7 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
         db = seeded_store(self.scratch)
         before = db.read_bytes()
         snapshot = probe.read_snapshot(self.scratch / "data")
-        self.assertEqual(snapshot.schema_version, 2)
+        self.assertEqual(snapshot.schema_version, 3)
         self.assertEqual(snapshot.revision, 0)
         self.assertEqual(snapshot.title, "motionwright ci first use")
         self.assertEqual(len(snapshot.document_sha256), 64)
@@ -85,6 +85,11 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
             connection.execute("DELETE FROM projects")
         self.assertTrue(probe._empty_library_ready(self.scratch))
         self.assertFalse(probe._bootstrap_committed(self.scratch))
+        for version in (2, 4):
+            with closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute("PRAGMA user_version=" + str(version))
+            with self.subTest(schema=version):
+                self.assertFalse(probe._empty_library_ready(self.scratch))
 
     def test_readiness_requires_complete_committed_project_after_x11_window(self):
         self.scratch.mkdir()
@@ -130,7 +135,7 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
         snapshot = probe.ProjectSnapshot(
             id=str(uuid.uuid4()), generation=str(uuid.uuid4()),
             revision=0, title="motionwright ci first use",
-            document_sha256="a" * 64, schema_version=2, event_count=0,
+            document_sha256="a" * 64, schema_version=3, event_count=0,
         )
         for update in [
             {"id": str(uuid.uuid4())},
@@ -186,10 +191,13 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
 
     def test_schema_mismatch_or_corrupt_file_cannot_become_pass(self):
         database = seeded_store(self.scratch)
-        with closing(sqlite3.connect(database)) as conn, conn:
-            conn.execute("PRAGMA user_version=3")
-        with self.assertRaisesRegex(probe.ColdStartError, "supported native schema"):
-            probe.read_snapshot(self.scratch / "data")
+        for version in (0, 1, 2, 4):
+            with closing(sqlite3.connect(database)) as conn, conn:
+                conn.execute("PRAGMA user_version=" + str(version))
+            with self.subTest(schema=version), self.assertRaisesRegex(
+                probe.ColdStartError, "supported native schema",
+            ):
+                probe.read_snapshot(self.scratch / "data")
         database.write_bytes(b"not a real sqlite database")
         with self.assertRaisesRegex(probe.ColdStartError, "read-only"):
             probe.read_snapshot(self.scratch / "data")
