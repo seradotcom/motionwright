@@ -2198,6 +2198,18 @@ export default function App() {
     }
   }, [commitRequired]);
 
+  // Brief retains the original rejected outcome for recovery and also reports
+  // it in the shared project notice. Reporting never acknowledges or retries it.
+  const commitReportedRequired = useCallback(async (change: Change): Promise<void> => {
+    setError(null);
+    try {
+      await commitRequired(change);
+    } catch (reason) {
+      try { setError(reason instanceof Error ? reason.message : String(reason)); }
+      finally { throw reason; }
+    }
+  }, [commitRequired]);
+
   // Only call after the existing coordinator admitted and published the current
   // canonical Project. A local cleanup failure cannot undo that saved outcome.
   const cleanConfirmedFileImport = useCallback((retained: RetainedFileImport) => {
@@ -2312,7 +2324,7 @@ export default function App() {
   const renderWorkspace = () => {
     switch (workspace) {
       case "Brief":
-        return <RichBriefView project={project} commit={commitRequired} />;
+        return <RichBriefView project={project} commit={commitReportedRequired} />;
       case "Narrative":
         return <RichNarrativeView project={project} scene={selectedScene} commit={commit} />;
       case "Audio":

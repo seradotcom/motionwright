@@ -109,16 +109,48 @@ function holdNextApply(service: ScopedChangeService, change: Change["type"], pha
   };
 }
 
-async function evidence(testInfo: TestInfo, services: ScopedChangeService[], initial: Project | undefined, final: Project | undefined, prepare: (() => Promise<unknown>)[] = []) {
+/** Review the saved state without granting authorship to an untyped reply. */
+async function reviewBeforeNewSave(page: Page, service: ScopedChangeService, saved: Project) {
+  const retained = await Promise.all(briefFields.map(field => input(page, field).inputValue()));
+  const applied = applyRequests(service).length;
+  const journal = await service.history(saved.id);
+  expect(await service.project(saved.id)).toEqual(saved);
+  const unconfirmed = page.getByRole("region", { name: "Unconfirmed brief submission", exact: true });
+  await expect(unconfirmed).toBeVisible();
+  await expect(button(page, "Commit brief")).toBeDisabled();
+  await button(page, "Read saved Brief and history").click();
+  const review = page.getByRole("region", { name: "Saved Brief outcome review", exact: true });
+  await expect(review).toContainText("Read saved revision r" + saved.revision);
+  await expect(review).toContainText("does not identify or acknowledge the earlier request");
+  await button(page, "Keep earlier attempt and continue editing").click();
+  await expect(unconfirmed).toHaveCount(0);
+  await fieldsEqual(page, retained);
+  expect(applyRequests(service)).toHaveLength(applied);
+  expect(await service.project(saved.id)).toEqual(saved);
+  expect(await service.history(saved.id)).toEqual(journal);
+}
+
+type ScenarioFailure = { reason: unknown };
+function failureDetail(reason: unknown) {
+  try { return reason instanceof Error ? { name: reason.name, message: reason.message, stack: reason.stack } : { message: String(reason) }; }
+  catch { return { message: "An unprintable thrown value remains in the original test failure." }; }
+}
+
+async function evidence(testInfo: TestInfo, services: ScopedChangeService[], initial: Project | undefined, final: Project | undefined,
+  prepare: (() => Promise<unknown>)[] = [], primaryFailure?: ScenarioFailure) {
   let finalization: StoreFinalization | undefined;
+  const failures: unknown[] = primaryFailure ? [primaryFailure.reason] : [];
   try {
     finalization = await services[0].finalizeClosedStore(testInfo.outputPath("closed-store-1"), final, services.slice(1), prepare);
-  } finally {
-    const path = testInfo.outputPath("brief-real-service-evidence.json");
+  } catch (reason) { failures.push(reason); }
+  const path = testInfo.outputPath("brief-real-service-evidence.json");
+  try {
     await writeFile(path, JSON.stringify({
       fixture: "synthetic_test_fixture",
       evidenceScope: "browser_interaction_real_service_sqlite; excludes_tauri_model_dispatch_film_native_render_and_human_acceptance",
       initial, final, canonicalOracle: finalization?.oracle,
+      primaryFailure: primaryFailure ? failureDetail(primaryFailure.reason) : null,
+      failures: failures.map(failureDetail),
       finalizationPath: testInfo.outputPath("closed-store-1-outcomes.json"),
       services: services.map(service => ({
         databasePath: service.databasePath, binaryPath: service.binaryPath,
@@ -126,15 +158,24 @@ async function evidence(testInfo: TestInfo, services: ScopedChangeService[], ini
         processExits: service.processExits, lifecycleTaints: service.lifecycleTaints,
       })),
     }, null, 2));
-    await testInfo.attach("brief-real-service-evidence", { path, contentType: "application/json" });
-    await testInfo.attach("complete-store-finalization", { path: testInfo.outputPath("closed-store-1-outcomes.json"), contentType: "application/json" });
+  } catch (reason) { failures.push(reason); }
+  for (const attachment of [
+    { name: "brief-real-service-evidence", path },
+    { name: "complete-store-finalization", path: testInfo.outputPath("closed-store-1-outcomes.json") },
+  ]) {
+    try { await testInfo.attach(attachment.name, { path: attachment.path, contentType: "application/json" }); }
+    catch (reason) { failures.push(reason); }
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures,
+    "Brief scenario and evidence finalization retained separate failures", { cause: primaryFailure?.reason });
 }
 
 test("saving the title or brief commits only that group and conserves the other raw inputs", async ({ page }, testInfo) => {
   const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
   let initial: Project | undefined;
   let final: Project | undefined;
+  let primaryFailure: ScenarioFailure | undefined;
   try {
     initial = (await service.fixtureBootstrap()).project;
     await service.attachFixturePage(page);
@@ -188,8 +229,9 @@ test("saving the title or brief commits only that group and conserves the other 
     });
     expect(applyRequests(service)).toHaveLength(2);
     expect(await service.reopen(initial.id)).toEqual(final);
-  } finally {
-    await evidence(testInfo, [service], initial, final, [() => page.close()]);
+  } catch (reason) { primaryFailure = { reason }; }
+  finally {
+    await evidence(testInfo, [service], initial, final, [() => page.close()], primaryFailure);
   }
 });
 
@@ -198,6 +240,7 @@ test("a late real reply preserves newer typing and reload never replays an alrea
   const gates: ReturnType<typeof holdNextApply>[] = [];
   let initial: Project | undefined;
   let final: Project | undefined;
+  let primaryFailure: ScenarioFailure | undefined;
   try {
     initial = (await service.fixtureBootstrap()).project;
     await service.attachFixturePage(page);
@@ -258,8 +301,9 @@ test("a late real reply preserves newer typing and reload never replays an alrea
     expect(applyRequests(service)).toHaveLength(2);
     expect(outsideBrief(final)).toEqual(outsideBrief(initial));
     await page.screenshot({ path: testInfo.outputPath("reloaded-pending-input-without-replay.png"), fullPage: true });
-  } finally {
-    await evidence(testInfo, [service], initial, final, [...gates.map(gate => () => gate.dispose()), () => page.close()]);
+  } catch (reason) { primaryFailure = { reason }; }
+  finally {
+    await evidence(testInfo, [service], initial, final, [...gates.map(gate => () => gate.dispose()), () => page.close()], primaryFailure);
   }
 });
 
@@ -268,6 +312,7 @@ test("returning an in-flight field to its original value survives navigation and
   let gate: ReturnType<typeof holdNextApply> | undefined;
   let initial: Project | undefined;
   let final: Project | undefined;
+  let primaryFailure: ScenarioFailure | undefined;
   try {
     const seed = (await service.fixtureBootstrap()).project;
     initial = await service.apply(seed, { type: "set_brief", objective: "Old",
@@ -320,6 +365,7 @@ test("returning an in-flight field to its original value survives navigation and
     await gate.dispose();
     await paint(page);
     await expect(input(page, "Production objective")).toHaveValue("Old");
+    await reviewBeforeNewSave(page, service, sent);
     await button(page, "Keep my draft Production objective").click();
     expect(await service.project(initial.id)).toEqual(sent);
     expect(await service.history(initial.id, initial.revision)).toHaveLength(1);
@@ -339,8 +385,9 @@ test("returning an in-flight field to its original value survives navigation and
     ]);
     expect(applyRequests(service)).toHaveLength(requestsBefore + 2);
     expect(await service.reopen(initial.id)).toEqual(final);
-  } finally {
-    await evidence(testInfo, [service], initial, final, [...(gate ? [() => gate!.dispose()] : []), () => page.close()]);
+  } catch (reason) { primaryFailure = { reason }; }
+  finally {
+    await evidence(testInfo, [service], initial, final, [...(gate ? [() => gate!.dispose()] : []), () => page.close()], primaryFailure);
   }
 });
 
@@ -348,6 +395,7 @@ test("a real brief validation failure preserves every input through reload and c
   const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
   let initial: Project | undefined;
   let final: Project | undefined;
+  let primaryFailure: ScenarioFailure | undefined;
   try {
     initial = (await service.fixtureBootstrap()).project;
     await service.attachFixturePage(page);
@@ -362,13 +410,15 @@ test("a real brief validation failure preserves every input through reload and c
     await fieldsEqual(page, raw);
     expect(await service.project(initial.id)).toEqual(initial);
     expect(await service.history(initial.id, initial.revision)).toEqual([]);
-    await expect(button(page, "Commit brief")).toBeEnabled();
+    await expect(button(page, "Commit brief")).toBeDisabled();
+    await expect(page.getByRole("region", { name: "Unconfirmed brief submission", exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("real-domain-refusal-keeps-all-fields.png"), fullPage: true });
     await page.reload();
     await openBrief(page);
     await fieldsEqual(page, raw);
     expect(await service.project(initial.id)).toEqual(initial);
 
+    await reviewBeforeNewSave(page, service, initial);
     await input(page, "Audience").fill("A corrected audience within the domain budget.");
     await button(page, "Commit brief").click();
     await revision(page, initial.revision + 1);
@@ -384,8 +434,9 @@ test("a real brief validation failure preserves every input through reload and c
     expect(await service.history(initial.id, initial.revision)).toHaveLength(1);
     expect(applyRequests(service)).toHaveLength(2);
     expect(await service.reopen(initial.id)).toEqual(final);
-  } finally {
-    await evidence(testInfo, [service], initial, final, [() => page.close()]);
+  } catch (reason) { primaryFailure = { reason }; }
+  finally {
+    await evidence(testInfo, [service], initial, final, [() => page.close()], primaryFailure);
   }
 });
 
@@ -397,6 +448,7 @@ for (const resolution of ["saved", "draft"] as const) {
     let gate: ReturnType<typeof holdNextApply> | undefined;
     let initial: Project | undefined;
     let final: Project | undefined;
+    let primaryFailure: ScenarioFailure | undefined;
     try {
       peer = await service.peer();
       second = await context.newPage();
@@ -440,6 +492,7 @@ for (const resolution of ["saved", "draft"] as const) {
       await expect(button(page, "Keep saved Constraints")).toHaveCount(0);
       await expect(button(page, "Commit brief")).toBeDisabled();
       await conflicts.screenshot({ path: testInfo.outputPath(`real-brief-conflict-${resolution}.png`) });
+      await reviewBeforeNewSave(page, service, winner);
       await button(page, resolution === "saved" ? "Keep saved Production objective" : "Keep my draft Production objective").click();
       expect(await service.project(initial.id)).toEqual(winner);
       expect(await service.history(initial.id, initial.revision)).toHaveLength(1);
@@ -462,9 +515,10 @@ for (const resolution of ["saved", "draft"] as const) {
       expect(processA).toBeDefined();
       expect(processB).toBeDefined();
       expect(processA).not.toBe(processB);
-    } finally {
+    } catch (reason) { primaryFailure = { reason }; }
+    finally {
       await evidence(testInfo, peer ? [service, peer] : [service], initial, final,
-        [...(gate ? [() => gate!.dispose()] : []), () => page.close(), ...(second ? [() => second!.close()] : [])]);
+        [...(gate ? [() => gate!.dispose()] : []), () => page.close(), ...(second ? [() => second!.close()] : [])], primaryFailure);
     }
   });
 }
@@ -474,6 +528,7 @@ test("reopening revokes a real grant without changing the revision or clearing t
   let gate: ReturnType<typeof holdNextApply> | undefined;
   let initial: Project | undefined;
   let final: Project | undefined;
+  let primaryFailure: ScenarioFailure | undefined;
   try {
     initial = (await service.fixtureBootstrap()).project;
     await service.attachFixturePage(page);
@@ -492,6 +547,7 @@ test("reopening revokes a real grant without changing the revision or clearing t
     expect(await service.project(initial.id)).toEqual(initial);
     expect(await service.history(initial.id, initial.revision)).toEqual([]);
     await gate.dispose();
+    await reviewBeforeNewSave(page, service, initial);
     await expect(button(page, "Commit brief")).toBeEnabled();
     await button(page, "Commit brief").click();
     await revision(page, initial.revision + 1);
@@ -509,7 +565,8 @@ test("reopening revokes a real grant without changing the revision or clearing t
     expect(await service.history(initial.id, initial.revision)).toHaveLength(1);
     expect(outsideBrief(final)).toEqual(outsideBrief(initial));
     expect(await service.reopen(initial.id)).toEqual(final);
-  } finally {
-    await evidence(testInfo, [service], initial, final, [...(gate ? [() => gate!.dispose()] : []), () => page.close()]);
+  } catch (reason) { primaryFailure = { reason }; }
+  finally {
+    await evidence(testInfo, [service], initial, final, [...(gate ? [() => gate!.dispose()] : []), () => page.close()], primaryFailure);
   }
 });

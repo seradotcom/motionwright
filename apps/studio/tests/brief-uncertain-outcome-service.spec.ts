@@ -39,24 +39,43 @@ async function ownRecovery(page: Page, project: Project) {
 async function retainedRaw(page: Page, key: string) {
   return page.evaluate(key=>window.localStorage.getItem(key),key);
 }
+type ScenarioFailure = { reason: unknown };
+function failureDetail(reason: unknown) {
+  try { return reason instanceof Error ? { name: reason.name, message: reason.message, stack: reason.stack } : { message: String(reason) }; }
+  catch { return { message: "An unprintable thrown value remains in the original test failure." }; }
+}
+
 async function finish(page: Page, info: TestInfo, service: ScopedChangeService, peers: ScopedChangeService[],
-  final: Project | undefined, observations: Record<string,unknown>, prepare: (()=>Promise<unknown>)[] = []) {
+  final: Project | undefined, observations: Record<string,unknown>, prepare: (()=>Promise<unknown>)[] = [],
+  primaryFailure?: ScenarioFailure) {
   let custody: StoreFinalization | undefined;
+  const failures: unknown[] = primaryFailure ? [primaryFailure.reason] : [];
   try {
     custody=await service.finalizeClosedStore(info.outputPath("closed-store"),final,peers,[...prepare,()=>page.close()]);
-  } finally {
-    const path=info.outputPath("brief-uncertain-outcome-evidence.json");
+  } catch (reason) { failures.push(reason); }
+  const path=info.outputPath("brief-uncertain-outcome-evidence.json");
+  try {
     await writeFile(path,JSON.stringify({
       scope:"synthetic authoring against real StudioService + grants + SQLite + DOM; excludes installed Tauri, native renders and human acceptance",
       observations,final,canonicalOracle:custody?.oracle,
+      primaryFailure:primaryFailure ? failureDetail(primaryFailure.reason) : null,
+      failures:failures.map(failureDetail),
       services:[service,...peers].map(item=>({
         databasePath:item.databasePath,binaryPath:item.binaryPath,transcript:item.transcript,
         processExits:item.processExits,lifecycleTaints:item.lifecycleTaints,stderr:item.stderr,
       })),
     },null,2));
-    await info.attach("brief-uncertain-outcome-evidence",{path,contentType:"application/json"});
-    await info.attach("complete-store-finalization",{path:info.outputPath("closed-store-outcomes.json"),contentType:"application/json"});
+  } catch (reason) { failures.push(reason); }
+  for (const attachment of [
+    {name:"brief-uncertain-outcome-evidence",path},
+    {name:"complete-store-finalization",path:info.outputPath("closed-store-outcomes.json")},
+  ]) {
+    try { await info.attach(attachment.name,{path:attachment.path,contentType:"application/json"}); }
+    catch (reason) { failures.push(reason); }
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures,
+    "Brief scenario and evidence finalization retained separate failures", {cause:primaryFailure?.reason});
 }
 
 for (const scenario of [
@@ -67,6 +86,7 @@ for (const scenario of [
   const peers:ScopedChangeService[]=[];
   const observations:Record<string,unknown>={mode:scenario.mode};
   let final:Project|undefined;
+  let primaryFailure:ScenarioFailure|undefined;
   const original=service.invoke.bind(service);
   try {
     const initial=(await service.fixtureBootstrap()).project;
@@ -162,9 +182,10 @@ for (const scenario of [
     expect(await service.project(initial.id)).toEqual(final);
     expect(await service.history(initial.id,initial.revision)).toEqual(journal);
     expect(applies(service)).toHaveLength(2);
-  } finally {
+  } catch (reason) { primaryFailure={reason}; }
+  finally {
     service.invoke=original;
-    await finish(page,info,service,peers,final,observations);
+    await finish(page,info,service,peers,final,observations,[],primaryFailure);
   }
 });
 
@@ -172,6 +193,7 @@ for(const fault of ["record","pointer"] as const) test(
   "Brief "+fault+" retention failure is NOT_SENT and retry backup permits one explicit save",async({page},info)=>{
   const service=await ScopedChangeService.create({databasePath:info.outputPath("service","studio.sqlite3"),desktopInvokeFixture:true});
   let final:Project|undefined;
+  let primaryFailure:ScenarioFailure|undefined;
   const observations:Record<string,unknown>={fault};
   try {
     const initial=(await service.fixtureBootstrap()).project;
@@ -233,7 +255,8 @@ for(const fault of ["record","pointer"] as const) test(
     expect(await service.project(initial.id)).toEqual(final);
     expect(await service.history(initial.id,initial.revision)).toEqual(journal);
     expect(applies(service)).toHaveLength(1);
-  } finally {await finish(page,info,service,[],final,observations);}
+  } catch (reason) { primaryFailure={reason}; }
+  finally {await finish(page,info,service,[],final,observations,[],primaryFailure);}
 });
 
 test("a late Brief reply cannot consume the pending state of a new recovery writer",async({page},info)=>{
@@ -244,6 +267,7 @@ test("a late Brief reply cannot consume the pending state of a new recovery writ
   const dispatched=new Promise<void>(resolve=>{entered=resolve;});
   const completed=new Promise<void>(resolve=>{finished=resolve;});
   let held=false,armed=true,final:Project|undefined;
+  let primaryFailure:ScenarioFailure|undefined;
   const observations:Record<string,unknown>={};
   try {
     const initial=(await service.fixtureBootstrap()).project;
@@ -275,6 +299,9 @@ test("a late Brief reply cannot consume the pending state of a new recovery writ
     const newer=await ownRecovery(page,initial);
     expect(newer.value.draft?.pending?.outcome).toBe("UNKNOWN");
     expect(newer.value.draft?.pending?.intentId).not.toBe(earlier.value.draft?.pending?.intentId);
+    const copies=page.getByRole("region",{name:"Brief draft recovery",exact:true});
+    await copies.locator("summary").click();
+    await expect(button(page,"Restore brief draft "+earlier.writer)).toBeVisible();
     await expect(button(page,"Restore brief draft "+earlier.writer)).toBeDisabled();
     expect(applies(service)).toHaveLength(0); // The one old transport call is still held before the real service.
     expect(await service.project(initial.id)).toEqual(initial);
@@ -296,9 +323,10 @@ test("a late Brief reply cannot consume the pending state of a new recovery writ
     await expect(unconfirmed(page)).toBeVisible();
     await expect(objective(page)).toHaveValue("Later input belongs to the separate recovery writer\n");
     expect(applies(service)).toHaveLength(1);
-  } finally {
+  } catch (reason) { primaryFailure={reason}; }
+  finally {
     service.invoke=original;release();
-    await finish(page,info,service,[],final,observations,[async()=>{if(held)await completed;}]);
+    await finish(page,info,service,[],final,observations,[async()=>{if(held)await completed;}],primaryFailure);
   }
 });
 
@@ -306,6 +334,7 @@ test("a failed recovery fork pointer keeps the earlier Brief UNKNOWN and sends n
   const service=await ScopedChangeService.create({databasePath:info.outputPath("service","studio.sqlite3"),desktopInvokeFixture:true});
   const original=service.invoke.bind(service);
   let final:Project|undefined;
+  let primaryFailure:ScenarioFailure|undefined;
   const observations:Record<string,unknown>={};
   try {
     const initial=(await service.fixtureBootstrap()).project;
@@ -351,8 +380,9 @@ test("a failed recovery fork pointer keeps the earlier Brief UNKNOWN and sends n
     expect(journal).toHaveLength(1);
     observations.originalUnknown=after;
     observations.savedProject=final;observations.journal=journal;
-  } finally {
+  } catch (reason) { primaryFailure={reason}; }
+  finally {
     service.invoke=original;
-    await finish(page,info,service,[],final,observations);
+    await finish(page,info,service,[],final,observations,[],primaryFailure);
   }
 });
