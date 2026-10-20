@@ -30,3 +30,26 @@ import checks from `.github/workflows/project-portability.yml`. The
 test reproduces a two-member late-target conflict with an unchanged SQLite
 snapshot and foreign sentinel; the matching-existing-blob test covers
 successful import without replacing the original CAS bytes.
+
+
+## Destination project ID collision during capture
+
+The first manifest validation rejects a duplicate destination project ID.
+A second SQLite connection can still create that ID while the importer
+captures verified source media. The final publication preflight therefore
+also repeats the read-only database import check after all source members
+are captured and before publishing the first CAS member.
+
+The deterministic regression
+newly_visible_existing_project_id_must_not_publish_any_bundle_blobs
+performs an initial valid bundle inspection, creates a different persisted
+project under that same ID through a second SQLite connection, and resumes
+the prevalidated importer. It requires a truthful ProjectExists error,
+unchanged competing SQLite rows/journal/receipts, no new CAS publication
+and cleaned private capture files. The normal import and the prior
+destination-CAS conflict tests must remain passing.
+
+This guards against a project collision that is already visible before
+publication. It does not eliminate a new collision arriving after the
+last check, guarantee crash-safe cross-resource atomicity, provide CAS
+garbage collection, or authorize uncertain operation retries/deletions.
