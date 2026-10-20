@@ -216,6 +216,66 @@ class CameraPixelReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "identities"):
                 inspect.verified_plan(path, hashlib.sha256(raw).hexdigest())
 
+    def test_edited1040_fixture_is_explicit_and_closed(self):
+        plan = source()
+        plan["reframe"]["end_center_x"] = 1040.0
+        plan["camera"]["center_x"] = 1040.0
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "edited.json"
+            raw = json.dumps(plan).encode()
+            path.write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            self.assertEqual(inspect.verified_plan(path, digest, fixture="edited1040"), plan)
+            with self.assertRaisesRegex(AssertionError, "camera endpoints"):
+                inspect.verified_plan(path, digest)
+            with self.assertRaisesRegex(AssertionError, "unsupported physical"):
+                inspect.verified_plan(path, digest, fixture="edited1012")
+
+    def test_edited1040_rejects_other_endpoints_even_with_matching_hashes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "unadmitted.json"
+            for endpoint in (1000.0, 1012.0, 1100.0, 1120.0):
+                with self.subTest(endpoint=endpoint):
+                    plan = source()
+                    plan["reframe"]["end_center_x"] = endpoint
+                    plan["camera"]["center_x"] = endpoint
+                    raw = json.dumps(plan).encode()
+                    path.write_bytes(raw)
+                    with self.assertRaisesRegex(AssertionError, "camera endpoints"):
+                        inspect.verified_plan(path, hashlib.sha256(raw).hexdigest(),
+                                              fixture="edited1040")
+
+    def test_edited1040_synthetic_frames_keep_existing_motion_tolerances(self):
+        plan = source()
+        plan["reframe"]["end_center_x"] = 1040.0
+        plan["camera"]["center_x"] = 1040.0
+        self.assertEqual(len(inspect.assert_centroids(plan, color_frames(plan))), 3)
+        proof = inspect.assert_two_axis_motion(plan, centroid_rows(plan))
+        self.assertAlmostEqual(proof["expected_center_slope_px_per_frame"][0],
+                               -80 / 360, places=6)
+        self.assertTrue(proof["both_axes_moving_camera_verified_from_decoded_centroids"])
+
+    def test_original_synthetic_frames_cannot_prove_edited1040(self):
+        # Existing synthetic RGB controls only; this is not a native MP4.
+        original = source()
+        edited = source()
+        edited["reframe"]["end_center_x"] = 1040.0
+        edited["camera"]["center_x"] = 1040.0
+        with self.assertRaisesRegex(AssertionError, "diverges"):
+            inspect.assert_centroids(edited, color_frames(original))
+
+    def test_original_120_centroids_cannot_prove_edited1040(self):
+        original = source()
+        edited = source()
+        edited["reframe"]["end_center_x"] = 1040.0
+        edited["camera"]["center_x"] = 1040.0
+        rows = centroid_rows(original)
+        for row in rows:
+            row["expected_center"] = list(inspect.frame_center(
+                edited, edited["nodes"][0], row["frame"]))
+        with self.assertRaisesRegex(AssertionError, "original 3px position bound"):
+            inspect.assert_two_axis_motion(edited, rows)
+
     def test_symlink_plan_is_not_trusted(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

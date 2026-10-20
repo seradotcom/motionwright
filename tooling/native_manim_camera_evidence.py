@@ -106,7 +106,7 @@ def seed_binding(seed):
     return result
 
 
-def prepare_seed(seed, evidence):
+def prepare_seed(seed, evidence, *, fixture="original"):
     """Preserve bytes emitted by the canonical Rust compiler, without rebuilding JSON."""
     binding = seed_binding(seed)
     program = seed.get("prepared_program", {})
@@ -147,7 +147,7 @@ def prepare_seed(seed, evidence):
     private_json(evidence / "source-seed.json", seed)
     # Existing immutable 120-frame oracle also refuses an unsupported fixture
     # before any native effect. It does not create source or grant authority.
-    verified_plan(plan_path, plan_hash)
+    verified_plan(plan_path, plan_hash, fixture=fixture)
     return {"binding": binding, "plan": plan, "plan_sha256": plan_hash,
             "program_sha256": compiler["source_sha256"],
             "plan_path": plan_path, "seed": seed}
@@ -196,7 +196,7 @@ def checked_native_evidence(evidence, prepared):
 
 
 def finish_render(native, prepared, evidence, output_root, work_root,
-                  source_sha, semwright_sha, ffprobe, ffmpeg):
+                  source_sha, semwright_sha, ffprobe, ffmpeg, *, fixture="original"):
     """Read originals after one terminal Ok; every failure leaves that Ok intact."""
     disk_native = read_object(evidence / EVIDENCE_NAME)
     require(disk_native == native, "camera_stdout_and_durable_evidence_differ")
@@ -219,8 +219,9 @@ def finish_render(native, prepared, evidence, output_root, work_root,
     private_bytes(evidence / "original-render-program.py", original_program)
     private_bytes(evidence / "original-camera-getters.json", getters)
     # Original native media only; never a synthetic MP4 or a replacement render.
+    pixel_options = {} if fixture == "original" else {"fixture": fixture}
     decoded = verify_pixels(prepared["plan_path"], prepared["plan_sha256"],
-                            review_media, artifact["sha256"], ffprobe, ffmpeg)
+                            review_media, artifact["sha256"], ffprobe, ffmpeg, **pixel_options)
     private_json(evidence / "decoded-camera-readback.json", decoded)
     summary = {
         "schema": "motionwright.manim.camera.native-e2e/1",

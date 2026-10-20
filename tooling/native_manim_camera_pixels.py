@@ -40,7 +40,12 @@ def checked_input(path: Path, budget: int) -> Path:
     return path
 
 
-def verified_plan(path: Path, expected_sha: str) -> dict:
+def verified_plan(path: Path, expected_sha: str, *, fixture: str = "original") -> dict:
+    # The caller chooses a closed physical fixture; imported plan bytes cannot
+    # choose their own expected endpoint or widen the existing pixel bounds.
+    if fixture not in ("original", "edited1040"):
+        raise AssertionError("unsupported physical camera fixture")
+    end_center_x = 1000.0 if fixture == "original" else 1040.0
     checked_input(path, 4 * 1024 * 1024)
     if re.fullmatch(r"[0-9a-f]{64}", expected_sha) is None:
         raise AssertionError("trusted plan SHA-256 must be lowercase hexadecimal")
@@ -62,9 +67,9 @@ def verified_plan(path: Path, expected_sha: str) -> dict:
     if (
         source.get("start_center_x") != 960.0
         or source.get("start_center_y") != 540.0
-        or source.get("end_center_x") != 1000.0
+        or source.get("end_center_x") != end_center_x
         or source.get("end_center_y") != 544.0
-        or plan.get("camera", {}).get("center_x") != 1000.0
+        or plan.get("camera", {}).get("center_x") != end_center_x
         or plan.get("camera", {}).get("center_y") != 544.0
     ):
         raise AssertionError("camera endpoints do not match the authored physical test")
@@ -300,8 +305,8 @@ def decoded_rgb120(media: Path, ffmpeg: str) -> bytes:
 
 
 def verify(plan_file: Path, plan_sha: str, media: Path, media_sha: str,
-           ffprobe: str, ffmpeg: str) -> dict:
-    plan = verified_plan(plan_file, plan_sha)
+           ffprobe: str, ffmpeg: str, *, fixture: str = "original") -> dict:
+    plan = verified_plan(plan_file, plan_sha, fixture=fixture)
     checked_input(media, MAX_MP4_BYTES)
     if re.fullmatch(r"[0-9a-f]{64}", media_sha) is None or digest(media) != media_sha:
         raise AssertionError("native video digest differs from the original trusted receipt")
@@ -340,13 +345,14 @@ def main() -> None:
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--fixture", choices=("original", "edited1040"), default="original")
     args = parser.parse_args()
     if (not args.receipt.is_absolute() or args.receipt.exists()
             or not args.receipt.parent.is_dir()):
         raise SystemExit("receipt must be a new absolute file in an existing directory")
     result = verify(
         args.plan, args.plan_sha256, args.media, args.media_sha256,
-        args.ffprobe, args.ffmpeg,
+        args.ffprobe, args.ffmpeg, fixture=args.fixture,
     )
     with args.receipt.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2, sort_keys=True)
