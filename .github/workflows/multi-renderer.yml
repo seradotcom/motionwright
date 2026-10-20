@@ -78,4 +78,24 @@ jobs:
           workspaces: semwright
       - name: Verify curated Blender driver catalog has no generic Python escape
         working-directory: semwright
-        run: cargo test -p semwright-driver-blender curated_commands_are_migrated_without_generic_python_escape --lib
+        shell: bash
+        run: |
+          set -euo pipefail
+          catalog_log="$RUNNER_TEMP/blender-catalog-original.log"
+          cargo test --locked -p semwright-driver-blender --bin semwright-blender-driver tests::curated_commands_are_migrated_without_generic_python_escape -- --exact --nocapture 2>&1 | tee "$catalog_log"
+          python3 - "$catalog_log" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+          text = Path(sys.argv[1]).read_text(encoding="utf-8")
+          text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+          expected = "tests::curated_commands_are_migrated_without_generic_python_escape"
+          actual = re.findall(r"(?m)^test ([\w:]+) \.\.\. (ok|FAILED|ignored)$", text)
+          assert actual == [(expected, "ok")], "Catalogue assertion was omitted, duplicated or failed"
+          summaries = re.findall(
+              r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; "
+              r"(\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+          assert len(summaries) == 1, "Catalogue terminal summary is missing or ambiguous"
+          assert summaries[0][:5] == ("ok", "1", "0", "0", "0"), "Catalogue assertion did not pass"
+          print("blender-catalog-contract=PASS actual_tests=1")
+          PY
