@@ -41634,6 +41634,298 @@
           "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
         }
       ]
+    },
+    {
+      "artifact_scope": "Exact original source SHA and ordered static transaction/cas assertion checks.",
+      "artifacts": [
+        {
+          "member": "cas-original-source-order.json",
+          "member_sha256": "dac8919143907492a0145a7c9a49ae161ab8b0856faab37c6a2afcf9e364e69a",
+          "path": "docs/acceptance/evidence/cr-project-03-sqlite-cas-main-42086483.zip",
+          "sha256": "9d4a804ee3e616967c7afb7c0c6df728529169ecd306ac0a6d186b3bcdba45c7"
+        }
+      ],
+      "assertions": [
+        "Within the same immediate SQLite transaction: load current project, compare authority/revision, guarded write, write event+receipt, then commit."
+      ],
+      "complete_criterion_ids": [
+        "CR-PROJECT-03#/statement"
+      ],
+      "criterion_ids": [
+        "CR-PROJECT-03#/statement"
+      ],
+      "definitions": [
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "5833e7c185e8ba5aa2fa3b05ddda8dc23b20fac8ec9ea551c903f521cea7cd83"
+        },
+        {
+          "path": "crates/service/tests/delivery_recipe_persistence.rs",
+          "sha256": "33592569ff865e7711c954baa04da74860e7d9ac9e0d25f8d94e6b553cad7558"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "source",
+        "passed": 19,
+        "profile": "sqlite-cas-source-structure",
+        "skipped": 0,
+        "source_relation": "integrated_main_source_inspection",
+        "status": "pass"
+      },
+      "id": "sqlite-cas-source-main-42086483",
+      "limitations": [
+        "Source-order tests are distinct from real executed SQLite concurrency and crash/interruption handling."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "420864831a2dfa8626cbe1854e747ae03ef8a2db",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "5833e7c185e8ba5aa2fa3b05ddda8dc23b20fac8ec9ea551c903f521cea7cd83"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Selected original CI Rust test-body excerpts and SHA-locked Git product source.",
+      "artifacts": [
+        {
+          "member": "cas-original-selected-tests.json",
+          "member_sha256": "91c7bb3b26a12e25c0101a660536b0022aa0eddf885e97be52fb2f5489e688c3",
+          "path": "docs/acceptance/evidence/cr-project-03-sqlite-cas-main-42086483.zip",
+          "sha256": "9d4a804ee3e616967c7afb7c0c6df728529169ecd306ac0a6d186b3bcdba45c7"
+        }
+      ],
+      "assertions": [
+        "Actual two independent SQLite StudioService instances execute concurrent incompatible mutations: one success and one Conflict.",
+        "Exactly one revision/event is committed, request replay returns the original receipt, and reuse with changed bytes is rejected."
+      ],
+      "complete_criterion_ids": [
+        "CR-PROJECT-03#/acceptance_criterion"
+      ],
+      "criterion_ids": [
+        "CR-PROJECT-03#/statement",
+        "CR-PROJECT-03#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "crates/service/tests/delivery_recipe_persistence.rs",
+          "sha256": "33592569ff865e7711c954baa04da74860e7d9ac9e0d25f8d94e6b553cad7558"
+        },
+        {
+          "path": "crates/service/tests/paid_generation_persistence.rs",
+          "sha256": "716e033c465cdf4cfc810004f29bc26440ae0915dcd6db8eb865dd63caf48083"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "bb1b77ac803a2de7c26b67f0d6f433a48d49c02e7ce3f60b682ec9fda81c8312"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "job_id": 118783124553,
+        "kind": "integration",
+        "passed": 2,
+        "profile": "sqlite-service-reopen",
+        "run_id": 39466877681,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39466877681/job/118783124553"
+      },
+      "id": "sqlite-cas-two-clients-main-42086483",
+      "limitations": [
+        "No full installed Studio UI, workflow authoring, external media or other acceptance cases are proven."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "420864831a2dfa8626cbe1854e747ae03ef8a2db",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "crates/storage/src/lib.rs",
+          "sha256": "5833e7c185e8ba5aa2fa3b05ddda8dc23b20fac8ec9ea551c903f521cea7cd83"
+        },
+        {
+          "path": "crates/service/src/lib.rs",
+          "sha256": "0d343d8c85dd523570092d52af066dc71b9a75e704453fe15e1122a9849e988d"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Redistributable source/package metadata and hash-bound source-policy checks.",
+      "artifacts": [
+        {
+          "member": "external-public-core-source-main-42086483.json",
+          "member_sha256": "23cc9d07e2a759ee8a139a4cbe0e85dad7f1c77f640f19270c9464632514f991",
+          "path": "docs/acceptance/evidence/external-core-locked-build-main-42086483.zip",
+          "sha256": "870e4c5fcd5e3e6eeed4e0ec26fc196b0e9f49488ac33209327d822d77e4cd3c"
+        }
+      ],
+      "assertions": [
+        "Motionwright's canonical Git repo is distinct from the Core repository.",
+        "Eight Semwright dependencies resolve from a public Git URL at the exact revision in SOURCE_LOCK.json, with no local path override.",
+        "All six tracked application-owned crate manifests are named motionwright-*, and no Semwright Core crate is copied into tracked crates or vendor trees.",
+        "Public source policy explicitly checks source pin identity and rejects private-material publication."
+      ],
+      "complete_criterion_ids": [],
+      "criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "1dc04b693bb3cb8558e76c9e61ab743fb05fdc081f92519b6c05671831e7d824"
+        },
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "crates/domain/Cargo.toml",
+          "sha256": "8787b18304fa8b66c57597168d2d54ced44acfb0911467f8cad8dcb3c31a5a3b"
+        },
+        {
+          "path": "crates/driver-manim-community/Cargo.toml",
+          "sha256": "b681cb4d68dd871b4bcbc72174179781cb5ffb7124ff8bcf0b830e1368dc7838"
+        },
+        {
+          "path": "crates/manim-profile/Cargo.toml",
+          "sha256": "027d8100a187bbfad0604adddab09bc4cc5080071b4a33fc702e355b6960deca"
+        },
+        {
+          "path": "crates/native/Cargo.toml",
+          "sha256": "07afd9a66630bba5dae5dc73178302bcbc5a69e4f5ae4cdbfda5b039e61d137f"
+        },
+        {
+          "path": "crates/service/Cargo.toml",
+          "sha256": "7f85f62079f85a9ba6078c42a949627b79b801e61d3368c9164f0008b73711c8"
+        },
+        {
+          "path": "crates/storage/Cargo.toml",
+          "sha256": "f60ec852c01b3dd28ded6bf1560645f43655d4e13bc46feef990b566b3e0d263"
+        }
+      ],
+      "execution": {
+        "failed": 0,
+        "kind": "source",
+        "passed": 9,
+        "profile": "public-core-source-audit",
+        "skipped": 0,
+        "source_relation": "integrated_main_source_inspection",
+        "status": "pass"
+      },
+      "id": "separate-core-source-main-42086483",
+      "limitations": [
+        "Static source inspection does not verify runtime behavior or consent/license of an external asset.",
+        "Main CI execution is retained separately; a source check alone is not a native or installed acceptance."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "420864831a2dfa8626cbe1854e747ae03ef8a2db",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        }
+      ]
+    },
+    {
+      "artifact_scope": "Original CI job IDs/log digests/selected lines and exact source-locked dependency input.",
+      "artifacts": [
+        {
+          "member": "external-locked-build-observations-main-42086483.json",
+          "member_sha256": "95a0565a5976077320b7a31ab44533c239b9df62f04aab3c182806672ef0abeb",
+          "path": "docs/acceptance/evidence/external-core-locked-build-main-42086483.zip",
+          "sha256": "870e4c5fcd5e3e6eeed4e0ec26fc196b0e9f49488ac33209327d822d77e4cd3c"
+        }
+      ],
+      "assertions": [
+        "The original source-policy job on exact main-42086483 passes and reports the declared public Semwright revision/version.",
+        "The original rust-tests job uses cargo test --locked with the Git Cargo.lock bytes and completes compiled Motionwright domain, storage, service and native crates against Git dependency APIs."
+      ],
+      "complete_criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "definitions": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "bb1b77ac803a2de7c26b67f0d6f433a48d49c02e7ce3f60b682ec9fda81c8312"
+        },
+        {
+          "path": "tooling/source_policy.py",
+          "sha256": "1dc04b693bb3cb8558e76c9e61ab743fb05fdc081f92519b6c05671831e7d824"
+        }
+      ],
+      "execution": {
+        "attempt": 1,
+        "failed": 0,
+        "kind": "integration",
+        "passed": 2,
+        "profile": "external-core-locked-ci",
+        "run_id": 39466877681,
+        "skipped": 0,
+        "source_relation": "integrated_main_snapshot",
+        "status": "pass",
+        "url": "https://github.com/seradotcom/motionwright/actions/runs/39466877681"
+      },
+      "id": "external-core-locked-build-main-42086483",
+      "limitations": [
+        "Scoped external Core boundary only; product media or installed UI are not inferred.",
+        "Original selected CI jobs succeed, but no human license/rights interpretation or stable release is asserted."
+      ],
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "420864831a2dfa8626cbe1854e747ae03ef8a2db",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_inputs": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84"
+        },
+        {
+          "path": "SOURCE_LOCK.json",
+          "sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+        },
+        {
+          "path": "crates/native/Cargo.toml",
+          "sha256": "07afd9a66630bba5dae5dc73178302bcbc5a69e4f5ae4cdbfda5b039e61d137f"
+        }
+      ]
     }
   ],
   "schema": "motionwright.technical-evidence/1",
@@ -54188,6 +54480,181 @@
       "source": {
         "digest_kind": "git-text-lf",
         "motionwright_sha": "4a529b2e8143ff409420d0afb3202ccf3c3a1caa",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "aba1ccd516aff63529f731f6e14292349c07a92a7103324c20c8c8b065bad6a6"
+    },
+    {
+      "criterion_id": "CR-PROJECT-03#/statement",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "sqlite-cas-source-main-42086483": "3a7bb1b55257d79e1b3c88104f0cbe3fbc9ec6b432af90613895cecfccf48867",
+        "sqlite-cas-two-clients-main-42086483": "abd1afd52c0e275dae43d30e06a048ad586d233818d049f4b9b10b772a28b3fd"
+      },
+      "id": "technical-cas-main-42086483-cr-project-03-statement",
+      "limitations": [
+        "Only these two objective original project CAS clauses are complete. All linked scenarios, installed feature behavior and release signoff are separate."
+      ],
+      "obligations": [
+        {
+          "basis": "Two original main-42086483 rust-tests selected race assertions passed on locked CI.",
+          "evidence_ids": [
+            "sqlite-cas-two-clients-main-42086483"
+          ],
+          "id": "current-execution",
+          "status": "pass"
+        },
+        {
+          "basis": "Exact Git source-order checks place authority, guarded revision update, history and receipt inside one immediate transaction.",
+          "evidence_ids": [
+            "sqlite-cas-source-main-42086483"
+          ],
+          "id": "transaction-scope",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "c188645373c8b6df5a62e62205a499f8fee7a3baf8d3b6060600b7085d852886",
+      "reviewed_at_utc": "2026-10-20T18:18:23.758044+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-exact-a6a6-original-rust-cas-and-source-order-oracle"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "420864831a2dfa8626cbe1854e747ae03ef8a2db",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "2e2995a92e4fac8a045f0684e476e7a502f3520c2ad725543f1866413a514b74"
+    },
+    {
+      "criterion_id": "CR-PROJECT-03#/acceptance_criterion",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "sqlite-cas-two-clients-main-42086483": "abd1afd52c0e275dae43d30e06a048ad586d233818d049f4b9b10b772a28b3fd"
+      },
+      "id": "technical-cas-main-42086483-cr-project-03-acceptance_criterion",
+      "limitations": [
+        "Only these two objective original project CAS clauses are complete. All linked scenarios, installed feature behavior and release signoff are separate."
+      ],
+      "obligations": [
+        {
+          "basis": "Two independent clients race incompatible revisions under a barrier, not an in-memory mock.",
+          "evidence_ids": [
+            "sqlite-cas-two-clients-main-42086483"
+          ],
+          "id": "incompatible-concurrent-clients",
+          "status": "pass"
+        },
+        {
+          "basis": "Original test asserts exactly one winner, one conflict, one revision and event.",
+          "evidence_ids": [
+            "sqlite-cas-two-clients-main-42086483"
+          ],
+          "id": "single-winner-conflict",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "8229bcb03cabec66ccc969a70b07ae5ff5d793a1e5a1df4b5f6aad021aafa03a",
+      "reviewed_at_utc": "2026-10-20T18:18:23.758044+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-exact-a6a6-original-rust-cas-and-source-order-oracle"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "420864831a2dfa8626cbe1854e747ae03ef8a2db",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "d3504b01e31212f08d5c455f1d4b5bc12efd8c28c2bca0512d0e88ac8519027a"
+    },
+    {
+      "criterion_id": "CR-FOUND-01#/statement",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "external-core-locked-build-main-42086483": "4137d54ccfe059edf4f6f15674003b5c210ab2600022fa547b7d4c02a0feeb84",
+        "separate-core-source-main-42086483": "e945d7eb0452f09c0c58ac6f9edecec89b0af834d1a58aa3bd49eed81dd7bcb9"
+      },
+      "id": "technical-cr-found-01-statement-main-42086483",
+      "limitations": [
+        "The exact original repo boundary is a technically objective contract; this automated review is not a human evaluator or a license decision."
+      ],
+      "obligations": [
+        {
+          "basis": "Git source checks verify separate app repository, eight public Semwright Git crates and no copied Core local path.",
+          "evidence_ids": [
+            "separate-core-source-main-42086483"
+          ],
+          "id": "external-repo-and-public-contract-source",
+          "status": "pass"
+        },
+        {
+          "basis": "Exact original main-42086483 CI executes --locked Rust tests on Motionwright Native consumer, with matching Semwright SOURCE_LOCK.",
+          "evidence_ids": [
+            "external-core-locked-build-main-42086483"
+          ],
+          "id": "external-locked-native-consumer-build",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "290409caa5453dc7de687e85b197fa4bdce79e0286ca04db7f8675961bd9e29f",
+      "reviewed_at_utc": "2026-10-20T18:18:25.938141+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-git-source-and-original-locked-ci-review-main-42086483"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "420864831a2dfa8626cbe1854e747ae03ef8a2db",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_clause_sha256": "d7b9334791eac150d827bb1976a4319b290380feb751c05a14581a8dbc61fd86"
+    },
+    {
+      "criterion_id": "CR-FOUND-01#/acceptance_criterion",
+      "decision": "sufficient",
+      "evidence_record_sha256": {
+        "external-core-locked-build-main-42086483": "4137d54ccfe059edf4f6f15674003b5c210ab2600022fa547b7d4c02a0feeb84",
+        "separate-core-source-main-42086483": "e945d7eb0452f09c0c58ac6f9edecec89b0af834d1a58aa3bd49eed81dd7bcb9"
+      },
+      "id": "technical-cr-found-01-acceptance_criterion-main-42086483",
+      "limitations": [
+        "The exact original repo boundary is a technically objective contract; this automated review is not a human evaluator or a license decision."
+      ],
+      "obligations": [
+        {
+          "basis": "Six tracked Motionwright-owned packages, no Semwright path overrides or Core vendor crate; exact source lock bound.",
+          "evidence_ids": [
+            "separate-core-source-main-42086483"
+          ],
+          "id": "no-private-crate-copy-or-local-core-path",
+          "status": "pass"
+        },
+        {
+          "basis": "Original source policy and --locked Cargo job succeed using public crate Git versions; no private Core checkout dependency.",
+          "evidence_ids": [
+            "external-core-locked-build-main-42086483"
+          ],
+          "id": "public-contract-build-executes",
+          "status": "pass"
+        }
+      ],
+      "oracle_profile_sha256": "902e5e8837630368044af6a18cc156d66d08cb34b2d0393a3f128e8dd96f7772",
+      "reviewed_at_utc": "2026-10-20T18:18:25.938141+00:00",
+      "reviewer": {
+        "identity_authentication": "not_asserted",
+        "kind": "automated_technical",
+        "reference": "a5-git-source-and-original-locked-ci-review-main-42086483"
+      },
+      "schema_version": 1,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "420864831a2dfa8626cbe1854e747ae03ef8a2db",
         "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
       },
       "source_clause_sha256": "aba1ccd516aff63529f731f6e14292349c07a92a7103324c20c8c8b065bad6a6"
