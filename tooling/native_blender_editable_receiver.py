@@ -25,6 +25,7 @@ No scripts are loaded from GLB/project data. Requires bpy only in run_phase().
 """
 from __future__ import annotations
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -88,7 +89,7 @@ def read_json(path, max_bytes=256 * 1024):
         raise ReceiverError("receiver_receipt_invalid_json") from exc
 
 
-def original_glb(path, expected_sha):
+def _read_glb_source(path, expected_sha):
     require(isinstance(expected_sha, str) and SHA.fullmatch(expected_sha) is not None,
             "original_GLB_digest_required")
     require(path.is_file() and not path.is_symlink(), "source_GLB_not_regular")
@@ -147,11 +148,18 @@ def original_glb(path, expected_sha):
         require(label not in names, "duplicate_original_GLB_object_identity")
         names[label] = item["name"]
     require(set(names)==set(EXPECTED), "original_GLB_object_identity_incomplete")
-    return {
+    info = {
         "sha256": expected_sha, "bytes":len(data),
         "source_object_names": names,
         "original_Project_UUID_custody": "NOT_PROVEN_BY_GLB_NAME_ALONE",
     }
+    return info, source, chunks[1][1]
+
+
+def original_glb(path, expected_sha):
+    """Retain the historical metadata API; decoded buffers remain transient."""
+    info, _, _ = _read_glb_source(path, expected_sha)
+    return info
 
 
 def root_path(value):
@@ -570,6 +578,224 @@ def source_scene_snapshot(bpy):
     return result
 
 
+
+# Exact normal transport is separate from the historical roundtrip tolerances.
+SOURCE_NORMAL_TOLERANCE = 0.000001
+
+
+def _glb_uint(value, maximum, reason):
+    require(type(value) is int and 0 <= value <= maximum, reason)
+    return value
+
+
+def _glb_normal_accessor(document, binary, index, kind, component_types):
+    accessors = document.get("accessors")
+    views = document.get("bufferViews")
+    require(type(accessors) is list and 0 < len(accessors) <= 32 and
+            type(views) is list and 0 < len(views) <= 32,
+            "GLB_normal_accessor_inventory")
+    row = accessors[_glb_uint(index, len(accessors)-1, "GLB_normal_accessor_index")]
+    require(type(row) is dict and row.get("type") == kind and
+            type(row.get("componentType")) is int and row["componentType"] in component_types and
+            "sparse" not in row and row.get("normalized", False) is False,
+            "GLB_normal_accessor_format")
+    view = views[_glb_uint(row.get("bufferView"), len(views)-1, "GLB_normal_buffer_view_index")]
+    require(type(view) is dict and "buffer" in view and
+            type(view["buffer"]) is int and view["buffer"] == 0,
+            "GLB_normal_external_buffer")
+    declared = _glb_uint(document["buffers"][0].get("byteLength"), MAX_GLB,
+                         "GLB_normal_buffer_size")
+    require(0 < declared and 0 <= len(binary)-declared <= 3, "GLB_normal_BIN_size")
+    codes = {5121: "B", 5123: "H", 5125: "I", 5126: "f"}
+    dimensions = {"SCALAR": 1, "VEC3": 3}
+    fmt = "<" + codes[row["componentType"]] * dimensions[kind]
+    width = struct.calcsize(fmt)
+    scalar_width = struct.calcsize("<" + codes[row["componentType"]])
+    count = _glb_uint(row.get("count"), 1024, "GLB_normal_accessor_count")
+    start = _glb_uint(row.get("byteOffset", 0), declared, "GLB_normal_accessor_offset")
+    offset = _glb_uint(view.get("byteOffset", 0), declared, "GLB_normal_view_offset")
+    span = _glb_uint(view.get("byteLength"), declared, "GLB_normal_view_size")
+    stride = _glb_uint(view.get("byteStride", width), 252, "GLB_normal_accessor_stride")
+    require(count > 0 and stride >= width and stride % scalar_width == 0 and
+            (offset + start) % scalar_width == 0 and offset + span <= declared and
+            start + (count-1)*stride + width <= span, "GLB_normal_accessor_bounds")
+    result = [list(struct.unpack_from(fmt, binary, offset + start + i*stride))
+              for i in range(count)]
+    require(all(math.isfinite(x) for value in result for x in value),
+            "GLB_normal_nonfinite_component")
+    return result
+
+
+def glb_corner_normal_assignments(document, binary, native_geometry):
+    """Bind one received GLB to its import, not original/exported index identities."""
+    require(type(native_geometry) is list and len(native_geometry) == 2,
+            "GLB_normal_native_object_count")
+    native = {}
+    for row in native_geometry:
+        require(type(row) is dict and type(row.get("name")) is str and
+                row["name"] not in native, "GLB_normal_native_identity_ambiguous")
+        native[row["name"]] = row
+    assignments = {}
+    used_meshes = set()
+    for node in document["nodes"]:
+        name = node.get("name")
+        require(name in native and name not in assignments, "GLB_normal_node_identity_changed")
+        number = _glb_uint(node.get("mesh"), len(document["meshes"])-1,
+                           "GLB_normal_mesh_index")
+        require(number not in used_meshes, "GLB_normal_instanced_mesh")
+        used_meshes.add(number)
+        mesh, seen = document["meshes"][number], native[name]
+        require(type(mesh) is dict and mesh.get("name") == seen.get("mesh_name") and
+                seen.get("mesh_users") == 1 and type(seen.get("mesh_users")) is int,
+                "GLB_normal_mesh_identity_ambiguous")
+        require("skin" not in node and not node.get("weights") and not node.get("extensions")
+                and not mesh.get("weights") and not mesh.get("extensions") and
+                type(mesh.get("primitives")) is list and len(mesh["primitives"]) == 1,
+                "GLB_normal_deformation_or_primitive_profile")
+        primitive = mesh["primitives"][0]
+        require(type(primitive) is dict and type(primitive.get("mode", 4)) is int and
+                primitive.get("mode", 4) == 4 and not primitive.get("targets") and
+                not primitive.get("extensions"), "GLB_normal_triangle_profile")
+        attributes = primitive.get("attributes")
+        require(type(attributes) is dict and "POSITION" in attributes and "NORMAL" in attributes,
+                "GLB_normal_POSITION_NORMAL_required")
+        positions = _glb_normal_accessor(document, binary, attributes["POSITION"], "VEC3", {5126})
+        normals = _glb_normal_accessor(document, binary, attributes["NORMAL"], "VEC3", {5126})
+        indices = [row[0] for row in _glb_normal_accessor(
+            document, binary, primitive.get("indices"), "SCALAR", {5121, 5123, 5125})]
+        match = NAMES.fullmatch(name)
+        require(match is not None, "GLB_normal_node_name_profile")
+        require(4 <= len(positions) == len(normals) <= 256 and
+                len(indices) == EXPECTED[match.group(1)]["faces"]*3 and
+                all(index < len(positions) for index in indices),
+                "GLB_normal_geometry_count_or_index")
+        require(all(_finite_vector(row, 3, 100) for row in positions) and
+                all(_finite_vector(row, 3, 1.00001) and abs(sum(x*x for x in row)-1) <= 0.0001
+                    for row in normals), "GLB_normal_source_values")
+        converted = [[x, -z, y] for x, y, z in positions]
+        require(seen.get("positions") == converted and seen.get("loop_vertices") == indices and
+                seen.get("polygon_loops") == [list(range(i, i+3)) for i in range(0, len(indices), 3)],
+                "GLB_normal_vertex_corner_correspondence")
+        expected = [[normals[index][0], -normals[index][2], normals[index][1]] for index in indices]
+        assignments[name] = {
+            "mesh_name": mesh["name"], "node_mesh_index": number,
+            "positions": converted, "loop_vertices": indices,
+            "polygon_loops": seen["polygon_loops"], "normals": expected,
+        }
+    require(set(assignments) == set(native), "GLB_normal_missing_native_object")
+    return assignments
+
+
+def source_normal_observation(actual, expected):
+    require(len(actual) == len(expected) and 0 < len(expected) <= 372 and
+            all(_finite_vector(row, 3, 1.00001) for row in actual + expected),
+            "Blender_source_normal_getter_shape")
+    errors = [abs(x-y) for row, reference in zip(actual, expected) for x, y in zip(row, reference)]
+    return {"corners": len(expected), "max_component_error": max(errors),
+            "components_over_limit": sum(error > SOURCE_NORMAL_TOLERANCE for error in errors),
+            "within_source_limit": all(error <= SOURCE_NORMAL_TOLERANCE for error in errors)}
+
+
+def _native_normal_geometry(bpy):
+    return [{"name": obj.name, "mesh_name": obj.data.name, "mesh_users": obj.data.users,
+             "positions": [[float(x) for x in vertex.co] for vertex in obj.data.vertices],
+             "loop_vertices": [loop.vertex_index for loop in obj.data.loops],
+             "polygon_loops": [list(face.loop_indices) for face in obj.data.polygons]}
+            for obj in bpy.context.scene.objects]
+
+
+def _observe_received_corner_normals(bpy, assignments, *, require_free_storage):
+    bpy.context.view_layer.update()
+    graph = bpy.context.evaluated_depsgraph_get()
+    objects = {obj.name: obj for obj in bpy.context.scene.objects}
+    observations = {}
+    for name, assignment in assignments.items():
+        obj = objects[name]
+        attribute = obj.data.attributes.get("custom_normal")
+        storage = None if attribute is None else {
+            "name": attribute.name, "data_type": attribute.data_type,
+            "domain": attribute.domain, "corners": len(attribute.data)}
+        if require_free_storage:
+            require(storage == {"name": "custom_normal", "data_type": "FLOAT_VECTOR",
+                                "domain": "CORNER", "corners": len(assignment["normals"])},
+                    "Blender_source_normals_FREE_storage_missing")
+        base = [[float(x) for x in item.vector] for item in obj.data.corner_normals]
+        evaluated = obj.evaluated_get(graph)
+        mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=graph)
+        try:
+            require([[float(x) for x in v.co] for v in mesh.vertices] == assignment["positions"] and
+                    [loop.vertex_index for loop in mesh.loops] == assignment["loop_vertices"] and
+                    [list(face.loop_indices) for face in mesh.polygons] == assignment["polygon_loops"],
+                    "Blender_source_normals_evaluated_geometry_changed")
+            physical = [[float(x) for x in item.vector] for item in mesh.corner_normals]
+            observations[name] = {
+                "storage": storage, "base": source_normal_observation(base, assignment["normals"]),
+                "evaluated": source_normal_observation(physical, assignment["normals"])}
+        finally:
+            evaluated.to_mesh_clear()
+    return observations
+
+
+def _require_received_normal_limit(observations):
+    require(all(row[getter]["within_source_limit"]
+                for row in observations.values() for getter in ("base", "evaluated")),
+            "Blender_received_source_normals_exceed_1e6")
+
+
+def _received_normal_context(bpy, path, expected_sha):
+    snapshot = source_scene_snapshot(bpy)
+    info, document, binary = _read_glb_source(path, expected_sha)
+    assignments = glb_corner_normal_assignments(document, binary, _native_normal_geometry(bpy))
+    return info, assignments, snapshot
+
+
+def verify_received_corner_normals(bpy, path, expected_sha):
+    """Read saved native getters; never repair a reopened file."""
+    info, assignments, _ = _received_normal_context(bpy, path, expected_sha)
+    measured = _observe_received_corner_normals(bpy, assignments, require_free_storage=True)
+    _require_received_normal_limit(measured)
+    require(original_glb(path, expected_sha) == info, "GLB_source_changed_during_normal_readback")
+    return {"received_glb": info, "source_component_tolerance": SOURCE_NORMAL_TOLERANCE,
+            "normal_storage_rewritten": False, "physical_objects": measured,
+            "Host_authority_or_human_acceptance_proven": False}
+
+
+def install_received_corner_normals(bpy, path, expected_sha):
+    """Preserve imported FLOAT32 normals in Blender's native FREE corner storage."""
+    info, assignments, before = _received_normal_context(bpy, path, expected_sha)
+    previous = _observe_received_corner_normals(bpy, assignments, require_free_storage=False)
+    objects = {obj.name: obj for obj in bpy.context.scene.objects}
+    try:
+        for name, assignment in assignments.items():
+            mesh = objects[name].data
+            old = mesh.attributes.get("custom_normal")
+            if old is not None:
+                mesh.attributes.remove(old)
+            attribute = mesh.attributes.new(name="custom_normal", type="FLOAT_VECTOR", domain="CORNER")
+            require(attribute.name == "custom_normal" and attribute.data_type == "FLOAT_VECTOR" and
+                    attribute.domain == "CORNER" and len(attribute.data) == len(assignment["normals"]),
+                    "Blender_native_FREE_normal_attribute_not_admitted")
+            attribute.data.foreach_set("vector", [x for value in assignment["normals"] for x in value])
+            mesh.update()
+            require([[float(x) for x in item.vector] for item in attribute.data] == assignment["normals"],
+                    "Blender_native_FREE_normal_write_changed_values")
+        bpy.context.view_layer.update()
+    except (AttributeError, RuntimeError, TypeError) as error:
+        raise ReceiverError("Blender_native_FREE_normal_storage_unavailable") from error
+    after = source_scene_snapshot(bpy)
+    old_content, new_content = copy.deepcopy(before), copy.deepcopy(after)
+    for row in old_content + new_content:
+        row["mesh"].pop("corner_normals")
+    require(old_content == new_content, "Blender_normal_preservation_changed_unrelated_source_content")
+    measured = _observe_received_corner_normals(bpy, assignments, require_free_storage=True)
+    _require_received_normal_limit(measured)
+    require(original_glb(path, expected_sha) == info, "GLB_source_changed_during_normal_preservation")
+    return {"received_glb": info, "source_component_tolerance": SOURCE_NORMAL_TOLERANCE,
+            "normal_storage_rewritten": True, "previous_physical_objects": previous,
+            "physical_objects": measured, "fresh_native_reopen_not_yet_verified": True,
+            "Host_authority_or_human_acceptance_proven": False}
+
+
 def write_receipt(path, value):
     with path.open("x",encoding="utf8",newline="\n") as out:
         json.dump(value,out,indent=2,sort_keys=True,allow_nan=False)
@@ -632,6 +858,7 @@ def run_phase(args):
         bpy.ops.wm.read_factory_settings(use_empty=True)
         value=bpy.ops.import_scene.gltf(filepath=str(source))
         require("FINISHED" in value, "native_Blender_GLB_import_failed")
+        normal_storage=install_received_corner_normals(bpy,source,args.source_sha256)
         original=source_scene_snapshot(bpy)
         require({obj["name"] for obj in original}==set(info["source_object_names"].values()),
                 "original_GLTF_names_not_preserved_by_Blender_import")
@@ -642,6 +869,7 @@ def run_phase(args):
             "schema":SCHEMA,"phase":"imported_first_party_GLB_to_Blend",
             "source":info,"blender_version":bpy.app.version_string,
             "native_saved_file":artifact,"objects":original,
+            "source_normal_storage":normal_storage,
             "original_blend_originated_from_GLB_not_Studio_source":True,
             "original_Broker_effect_replayed":False,
             "rights_human_acceptance":False,
@@ -662,6 +890,7 @@ def run_phase(args):
                 "Blender_edit_phase_did_not_reopen_saved_native_file")
         before=source_scene_snapshot(bpy)
         require(before==first["objects"],"Blender_original_reopen_changed_project_content")
+        normal_readback=verify_received_corner_normals(bpy,source,args.source_sha256)
         focus=next(obj for obj in bpy.context.scene.objects
                    if NAMES.fullmatch(obj.name).group(1)=="focus")
         focus.location.x=float(focus.location.x)+EDIT_DELTA_X
@@ -683,6 +912,7 @@ def run_phase(args):
             "schema":SCHEMA,"phase":"original_Blend_reopened_and_edited",
             "source":info,"original_blend":verify,
             "artifacts":artifacts,"objects":after,"change":change,
+            "source_normal_readback":normal_readback,
             "original_Broker_effect_replayed":False,
             "rights_human_acceptance":False,
         })
@@ -705,6 +935,7 @@ def run_phase(args):
         actual=source_scene_snapshot(bpy)
         require(actual==second["objects"],"Blender_second_reopen_changed_edited_content")
         verified=compare_edit(first["objects"],actual)
+        normal_readback=verify_received_corner_normals(bpy,source,args.source_sha256)
         write_receipt(final,{
             "schema":SCHEMA,"phase":"edited_Blend_reopened_in_new_Blender_process",
             "source":info,
@@ -714,6 +945,7 @@ def run_phase(args):
             "original_objects":first["objects"],
             "verified_edited_objects":actual,
             "change":verified,
+            "source_normal_readback":normal_readback,
             "complete_GLTF_import_Blend_reopen_edit_Blend_reopen":True,
             "original_Blend_source_from_Motionwright_Host":False,
             "external_rights_accepted":False,
@@ -741,6 +973,8 @@ def run_phase(args):
         bpy.ops.wm.read_factory_settings(use_empty=True)
         result=bpy.ops.import_scene.gltf(filepath=str(output_glb))
         require("FINISHED" in result,"Blender_edited_GLB_import_failed")
+        normal_storage=install_received_corner_normals(
+            bpy,output_glb,second["artifacts"]["edited_glb"]["sha256"])
         actual=source_scene_snapshot(bpy)
         audit=compare_reimported_glb(
             first["objects"],third["verified_edited_objects"],actual)
@@ -752,6 +986,7 @@ def run_phase(args):
             "source":info,"original_exported_glb":second["artifacts"]["edited_glb"],
             "reimported_native_blend":measure_saved_file(saved,root),
             "objects":actual,"audit":audit,
+            "source_normal_storage":normal_storage,
             "original_Broker_effect_replayed":False,
             "rights_human_acceptance":False,
         })
@@ -778,6 +1013,8 @@ def run_phase(args):
                 "Blender_reimported_native_source_did_not_reopen")
         audit=compare_reimported_glb(
             first["objects"],edited_source["verified_edited_objects"],actual)
+        normal_readback=verify_received_corner_normals(
+            bpy,output_glb,second["artifacts"]["edited_glb"]["sha256"])
         write_receipt(final,{
             "schema":SCHEMA,"phase":"reimported_Blend_reopened_independently",
             "source":info,
@@ -785,6 +1022,7 @@ def run_phase(args):
             "edited_GLB_sha256":reimport["original_exported_glb"]["sha256"],
             "reimported_Blend_sha256":reimport["reimported_native_blend"]["sha256"],
             "final_objects":actual,"audit":audit,
+            "source_normal_readback":normal_readback,
             "five_separate_Blender_processes_required":True,
             "complete_first_party_GLTF_external_editable_interchange":True,
             "original_Motionwright_native_blend_source_proven":False,
