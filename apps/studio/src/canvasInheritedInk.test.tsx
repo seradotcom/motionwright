@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import CompositionStudy from "./CompositionStudy";
 import ExpandedStudy from "./ExpandedStudy";
+import CameraReframeWorkbench from "./CameraReframeWorkbench";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { fixtureProject } from "./fixture";
 import type { CanvasNode } from "./types";
@@ -131,5 +132,30 @@ describe("selected profile controls editorial text without changing canonical ob
     expect(markup).toContain("Unchanged authored English copy");
     expect(markup).not.toContain("Unrelated locale");
     expect(markup).toContain('data-text-origin="source"');
+  });
+});
+
+describe("profile text flows through expanded and camera studies", () => {
+  it("renders selected profile text in the enlarged editorial study", () => {
+    const node = rootText(); node.text = "Base text from source";
+    const html = renderToStaticMarkup(<ExpandedStudy nodes={[node]} width={1920} height={1080}
+      time={0} duration={6} background="#101820" textOverrides={{[node.id]:"Perfil de salida guardado"}}
+      onSeek={() => {}} onClose={() => {}}/>);
+    expect(html).toContain("Perfil de salida guardado");
+    expect(html).not.toContain("Base text from source");
+    expect(html).toContain('data-text-origin="profile"');
+  });
+
+  it("the camera study follows explicit selected profile without altering source copy", () => {
+    const project = structuredClone(fixtureProject), scene = project.scenes[0];
+    const node = scene.nodes.find(item => item.kind === "text")!;
+    node.text = "Untranslated source sentence";
+    const profile = {...project.deliverables[0], text_overrides: {[node.id]: "Vista localizada por cámara"}};
+    const html = renderToStaticMarkup(<CameraReframeWorkbench project={project} scene={scene}
+      busy={false} commit={async () => {}} playhead={0} onSeek={() => {}}
+      onOpenCanvas={() => {}} displayProfile={profile}/>);
+    expect(html).toContain("Vista localizada por cámara");
+    expect(html).not.toContain("Untranslated source sentence");
+    expect(html).toContain('data-text-origin="profile"');
   });
 });
