@@ -33,8 +33,17 @@ class CanvasServiceReportTests(unittest.TestCase):
     def test_original_pass_has_exact_inventory(self):
         observed = self.check(report())
         self.assertEqual(observed, {"passed": 1, "skipped": 0, "retries": 0, "titles": [gate.INK_TITLE]})
-        self.assertEqual(len(gate.CANVAS_TITLES), 17)
-        self.assertEqual(len(set(gate.CANVAS_TITLES)), 17)
+        self.assertEqual(len(gate.CANVAS_TITLES), 19)
+        self.assertEqual(len(set(gate.CANVAS_TITLES)), 19)
+        self.assertEqual(len(gate.PROGRAM_TITLES), 3)
+        self.assertEqual(len(set(gate.PROGRAM_TITLES)), 3)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 23)
+        self.assertEqual(
+            [(label, filename) for label, filename, _ in gate.SELECTIONS],
+            [("canvas", "canvas-draft-service.spec.ts"),
+             ("ink", "visual-language-draft-service.spec.ts"),
+             ("program", "program-design-service.spec.ts")],
+        )
 
     def test_skip_failure_and_flaky_counters_cannot_be_green(self):
         for key in ("skipped", "unexpected", "flaky"):
