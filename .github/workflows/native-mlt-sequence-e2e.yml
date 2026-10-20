@@ -142,7 +142,7 @@ jobs:
           expected = {
               "dotted:tooling.tests.test_native_mlt_owner_workspace": 8,
               "dotted:tooling.tests.test_native_mlt_g2_custody": 27,
-              "dotted:tooling.tests.test_native_mlt_g2_observation": 23,
+              "dotted:tooling.tests.test_native_mlt_g2_observation": 29,
               "dotted:tooling.tests.test_native_mlt_executable_alias": 24,
               "dotted:tooling.tests.test_native_mlt_compiler_intake": 24,
           }

@@ -1,9 +1,10 @@
-"""Source regressions only: all native callbacks and live attestations are doubles."""
+"""Source and OS descriptor regressions; native callbacks and module attestations are doubles."""
 from __future__ import annotations
 
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import struct
 import sys
@@ -50,6 +51,9 @@ class ObserverDouble:
         self.stopped = True
         if self.stop_error:
             raise self.stop_error
+
+    def close(self):
+        pass
 
     def require_one(self, master):
         raise g2.G2Unverified("test original live witness absent")
@@ -275,6 +279,8 @@ class ObserverIdentityTests(unittest.TestCase):
             master.write_bytes(b"test double")
             observer = object.__new__(g2.LiveObserver)
             observer.fatal = False
+            observer.output_root = master.parent
+            observer.consumer_files = {}
             observer.candidates = set()
             observer.receipts = {}
             with self.assertRaises(g2.G2Unverified):
@@ -364,6 +370,164 @@ class InputEnvelopeTests(unittest.TestCase):
             with self.assertRaisesRegex(g2.G2Unverified, "official_runtime_binary_bindings"):
                 self.prepare()
             closure.assert_not_called()
+
+
+class OriginalConsumerFileTests(unittest.TestCase):
+    def test_private_consumer_selection_requires_the_pinned_layout(self):
+        root = Path("/owner-output")
+        output = Path("/tmp/semwright-video-" + "a" * 32 + "/partial.mp4")
+        def argv(path):
+            return ("/usr/bin/melt\0timeline.mlt\0-consumer\0avformat:" + str(path) + "\0").encode()
+        with mock.patch.object(g2.loaded, "verified_melt_cmdline") as validate:
+            self.assertEqual(g2.selected_consumer(argv(output), root), output)
+            validate.assert_called_once_with(argv(output), str(output))
+        for path in (
+            "/tmp/unrelated/partial.mp4",
+            "/tmp/semwright-video-" + "a" * 31 + "/partial.mp4",
+            "/tmp/semwright-video-" + "A" * 32 + "/partial.mp4",
+            "/tmp/semwright-video-" + "a" * 32 + "/child/partial.mp4",
+            "/tmp/semwright-video-" + "a" * 32 + "/partial.wav",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(g2.selected_consumer(argv(path), root))
+
+    @unittest.skipUnless(sys.platform == "linux", "requires the real Linux procfs FD bridge")
+    def test_live_fd_survives_publication_unlink_and_path_replacement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            stage = root / "partial.mp4"
+            master = root / "published.mp4"
+            original = b"original source-only custody fixture"
+            stage.write_bytes(original)
+            with stage.open("rb") as native_fd:
+                self.assertGreaterEqual(native_fd.fileno(), 0)
+                ticks = g2.process_identity(os.getpid())[1]
+                held = g2.OriginalConsumerFile.capture(os.getpid(), ticks, stage)
+                try:
+                    master.write_bytes(stage.read_bytes())
+                    stage.unlink()
+                    stage.write_bytes(b"foreign replacement must never be reopened")
+                    binding = held.verify(g2.sha(master.read_bytes()), master.stat().st_size)
+                    self.assertEqual(binding["inode"], os.fstat(native_fd.fileno()).st_ino)
+                    self.assertNotEqual(binding["inode"], stage.stat().st_ino)
+                    self.assertFalse(binding["staging_path_reopened"])
+                    self.assertEqual(binding["sha256"], g2.sha(original))
+                finally:
+                    held.close()
+
+    def test_final_publication_must_equal_the_retained_descriptor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary) / "partial.mp4"
+            stage.write_bytes(b"original")
+            descriptor = os.open(stage, os.O_RDONLY)
+            held = g2.OriginalConsumerFile(descriptor, os.fstat(descriptor), 41, 10)
+            try:
+                with self.assertRaisesRegex(g2.G2Unverified, "differs_from_published"):
+                    held.verify(g2.sha(b"replaced"), len(b"replaced"))
+            finally:
+                held.close()
+
+            evidence = Path(temporary) / "evidence"
+            evidence.mkdir()
+            original = stage.read_bytes()
+            expected = g2.sha(original)
+            (evidence / "original-native-master.mp4").write_bytes(original)
+            session = g2.G2Session({}, evidence, b"", {"test_double": True})
+            session.native_result = {
+                "test_double": True,
+                "master_artifact_sha256": expected,
+                "master_artifact_bytes": len(original),
+            }
+            session.master_sha = expected
+            session.observer = mock.Mock()
+            session.observer.require_one.return_value = {
+                "publication_binding": {"sha256": g2.sha(b"replaced"), "bytes": len(original)},
+            }
+            session.retain_master(stage, expected, len(original))
+            self.assertIsNone(session.live_proof)
+            self.assertIn("original_live_module_witness", session.secondary_failures)
+            self.assertFalse((evidence / "original-live-module.json").exists())
+
+    def test_descriptor_mutation_during_final_hash_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary) / "partial.mp4"
+            original = b"original"
+            stage.write_bytes(original)
+            descriptor = os.open(stage, os.O_RDONLY)
+            held = g2.OriginalConsumerFile(descriptor, os.fstat(descriptor), 41, 10)
+            real_read = os.read
+            changed = False
+            def mutate(fd, limit):
+                nonlocal changed
+                block = real_read(fd, limit)
+                if not changed:
+                    changed = True
+                    with stage.open("ab") as writer:
+                        writer.write(b"changed")
+                return block
+            try:
+                with mock.patch.object(g2.os, "read", side_effect=mutate):
+                    with self.assertRaisesRegex(g2.G2Unverified, "changed_during_read"):
+                        held.verify(g2.sha(original), len(original))
+            finally:
+                held.close()
+
+    def test_pid_reuse_during_capture_closes_every_retained_descriptor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            directory = proc / "41" / "fd"
+            directory.mkdir(parents=True)
+            entry = directory / "7"
+            entry.write_bytes(b"original")
+            output = Path("/tmp/semwright-video-" + "a" * 32 + "/partial.mp4")
+            opened = []
+            real_open = os.open
+            def track_open(path, flags):
+                descriptor = real_open(path, flags)
+                opened.append(descriptor)
+                return descriptor
+            with mock.patch.object(g2, "Path", return_value=proc), \
+                 mock.patch.object(g2, "process_identity", side_effect=[(20, 10), (20, 11)]), \
+                 mock.patch.object(g2.os, "readlink", return_value=str(output)), \
+                 mock.patch.object(g2.os, "getuid", return_value=entry.stat().st_uid, create=True), \
+                 mock.patch.object(g2.os, "O_CLOEXEC", getattr(os, "O_CLOEXEC", 0), create=True), \
+                 mock.patch.object(g2.os, "O_NONBLOCK", getattr(os, "O_NONBLOCK", 0), create=True), \
+                 mock.patch.object(g2.os, "open", side_effect=track_open):
+                with self.assertRaisesRegex(g2.G2Unverified, "process_identity_changed"):
+                    g2.OriginalConsumerFile.capture(41, 10, output)
+            self.assertEqual(len(opened), 1)
+            with self.assertRaises(OSError):
+                os.fstat(opened[0])
+
+    def test_private_staging_is_joined_to_owned_publication_by_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            stage = root / "partial.mp4"
+            master = root / "owner" / "master.mp4"
+            master.parent.mkdir()
+            stage.write_bytes(b"source-only publication fixture")
+            master.write_bytes(stage.read_bytes())
+            descriptor = os.open(stage, os.O_RDONLY)
+            held = g2.OriginalConsumerFile(descriptor, os.fstat(descriptor), 41, 10)
+            observer = object.__new__(g2.LiveObserver)
+            observer.fatal = False
+            observer.output_root = master.parent
+            observer.candidates = {(41, 10)}
+            observer.receipts = {(41, 10): {
+                "output_path": "/tmp/semwright-video-" + "a" * 32 + "/partial.mp4",
+                "live_module": {"test_double": True, "native_effect_executed": False},
+            }}
+            observer.consumer_files = {(41, 10): held}
+            try:
+                proof = observer.require_one(master)
+                self.assertEqual(proof["publication_binding"]["sha256"], g2.sha(master.read_bytes()))
+                self.assertEqual(proof["published_output_path"], str(master))
+                foreign = root / "foreign.mp4"
+                foreign.write_bytes(master.read_bytes())
+                with self.assertRaisesRegex(g2.G2Unverified, "not_native_result_artifact"):
+                    observer.require_one(foreign)
+            finally:
+                held.close()
 
 
 if __name__ == "__main__":

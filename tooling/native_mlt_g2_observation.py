@@ -190,6 +190,13 @@ def descendant_of(pid: int, ancestor: tuple[int, int]) -> bool:
     return False
 
 
+def private_consumer_path(path: Path) -> bool:
+    # Semwright 54d3459 renders into its mode-0700 PrivateDir, then publishes a
+    # copy. The pathname only selects a candidate; its live FD proves custody.
+    return re.fullmatch(r"/tmp/semwright-video-[0-9a-f]{32}/partial\.mp4",
+                        path.as_posix()) is not None
+
+
 def selected_consumer(payload: bytes, output_root: Path) -> Path | None:
     if not (0 < len(payload) <= loaded.MAX_CMDLINE and payload.endswith(b"\0")):
         return None
@@ -198,15 +205,124 @@ def selected_consumer(payload: bytes, output_root: Path) -> Path | None:
     if len(consumers) != 1 or not consumers[0].startswith("avformat:"):
         return None
     output = Path(consumers[0][len("avformat:"):])
-    if output.suffix != ".mp4" or not output.is_absolute():
-        return None
-    if output_root not in output.parents:
-        return None
-    require(output.resolve() == output and ".." not in output.parts
-            and not any(parent.is_symlink() for parent in output.parents),
-            "g2_consumer_output_not_canonical")
+    if not private_consumer_path(output):
+        if output.suffix != ".mp4" or not output.is_absolute():
+            return None
+        if output_root not in output.parents:
+            return None
+        require(output.resolve() == output and ".." not in output.parts
+                and not any(parent.is_symlink() for parent in output.parents),
+                "g2_consumer_output_not_canonical")
     loaded.verified_melt_cmdline(payload, str(output))
     return output
+
+
+MAX_CONSUMER_BYTES = 256_000_000
+
+
+def consumer_file_identity(info) -> tuple:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+
+
+def consumer_file_generation(info) -> tuple:
+    return (*consumer_file_identity(info), info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+class OriginalConsumerFile:
+    """A read-only original-process FD retained across publication and unlink."""
+    def __init__(self, descriptor: int, info, pid: int, start_ticks: int):
+        self.descriptor = descriptor
+        self.identity = consumer_file_identity(info)
+        self.pid = pid
+        self.start_ticks = start_ticks
+
+    @classmethod
+    def capture(cls, pid: int, start_ticks: int, output: Path):
+        require(process_identity(pid)[1] == start_ticks,
+                "g2_consumer_fd_process_identity_changed")
+        directory = Path("/proc") / str(pid) / "fd"
+        entries = list(directory.iterdir())
+        require(len(entries) <= 4096, "g2_consumer_fd_inventory_budget")
+        retained = {}
+        try:
+            for entry in entries:
+                if not entry.name.isdecimal():
+                    continue
+                descriptor = None
+                try:
+                    if os.readlink(entry) != str(output):
+                        continue
+                    before = entry.stat()
+                    require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
+                            and 0 <= before.st_size <= MAX_CONSUMER_BYTES,
+                            "g2_consumer_fd_not_regular_owned_output")
+                    # Follow the selected original process's procfs FD only.
+                    descriptor = os.open(entry, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+                    opened = os.fstat(descriptor)
+                    after = entry.stat()
+                    require(os.readlink(entry) == str(output)
+                            and consumer_file_identity(before) == consumer_file_identity(opened)
+                            == consumer_file_identity(after)
+                            and stat.S_ISREG(opened.st_mode)
+                            and opened.st_uid == os.getuid()
+                            and all(0 <= item.st_size <= MAX_CONSUMER_BYTES
+                                    for item in (before, opened, after)),
+                            "g2_consumer_fd_identity_changed")
+                    identity = consumer_file_identity(opened)
+                    if identity not in retained:
+                        retained[identity] = cls(descriptor, opened, pid, start_ticks)
+                        descriptor = None
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                finally:
+                    if descriptor is not None:
+                        os.close(descriptor)
+            require(process_identity(pid)[1] == start_ticks,
+                    "g2_consumer_fd_process_identity_changed")
+            if not retained:
+                raise FileNotFoundError("g2_original_consumer_fd_not_yet_visible")
+            require(len(retained) == 1, "g2_original_consumer_fd_ambiguous")
+            return next(iter(retained.values()))
+        except BaseException:
+            for original in retained.values():
+                original.close()
+            raise
+
+    def verify(self, expected_sha: str, expected_size: int) -> dict:
+        require(self.descriptor is not None, "g2_original_consumer_fd_closed")
+        before = os.fstat(self.descriptor)
+        require(consumer_file_identity(before) == self.identity
+                and stat.S_ISREG(before.st_mode)
+                and 0 < before.st_size <= MAX_CONSUMER_BYTES,
+                "g2_original_consumer_fd_identity_changed")
+        os.lseek(self.descriptor, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            block = os.read(self.descriptor, min(1_048_576, MAX_CONSUMER_BYTES + 1 - total))
+            if not block:
+                break
+            total += len(block)
+            require(total <= MAX_CONSUMER_BYTES, "g2_original_consumer_fd_budget")
+            digest.update(block)
+        after = os.fstat(self.descriptor)
+        require(consumer_file_generation(before) == consumer_file_generation(after)
+                and total == before.st_size,
+                "g2_original_consumer_fd_changed_during_read")
+        require(total == expected_size and digest.hexdigest() == expected_sha,
+                "g2_original_consumer_differs_from_published_artifact")
+        return {
+            "binding": "original_process_fd_to_published_bytes",
+            "pid": self.pid, "process_start_ticks": self.start_ticks,
+            "device": before.st_dev, "inode": before.st_ino,
+            "sha256": digest.hexdigest(), "bytes": total,
+            "stable_fd_generation": True, "staging_path_reopened": False,
+        }
+
+    def close(self) -> None:
+        if self.descriptor is not None:
+            descriptor, self.descriptor = self.descriptor, None
+            os.close(descriptor)
 
 
 class LiveObserver:
@@ -217,6 +333,7 @@ class LiveObserver:
         self.melt_sha = melt_sha
         self.candidates: set[tuple[int, int]] = set()
         self.receipts: dict[tuple[int, int], dict] = {}
+        self.consumer_files: dict[tuple[int, int], OriginalConsumerFile] = {}
         self.outputs: dict[tuple[int, int], str] = {}
         self.observation_failures = 0
         self.fatal = False
@@ -228,6 +345,7 @@ class LiveObserver:
         require(len(pids) <= 8192, "g2_process_inventory_budget")
         for pid in pids:
             proc = Path("/proc") / str(pid)
+            original = None
             try:
                 if os.readlink(proc / "exe") != str(MELT.resolve(strict=True)):
                     continue
@@ -248,6 +366,7 @@ class LiveObserver:
                     pid, MELT, self.melt_sha, admission.INSTALLED,
                     REPAIRED_MODULE_SHA256, str(output),
                 )
+                original = OriginalConsumerFile.capture(pid, before, output)
                 require(process_identity(pid)[1] == before
                         and descendant_of(pid, self.ancestor),
                         "g2_native_process_identity_changed")
@@ -257,6 +376,8 @@ class LiveObserver:
                     "daemon_start_ticks": self.ancestor[1],
                     "output_path": str(output), "live_module": proof,
                 }
+                self.consumer_files[identity] = original
+                original = None
             except G2Unverified:
                 self.fatal = True
                 self.observation_failures += 1
@@ -264,6 +385,9 @@ class LiveObserver:
                 # Re-observing the same live process is read-only. A process
                 # that ends before a valid witness remains unverified.
                 self.observation_failures += 1
+            finally:
+                if original is not None:
+                    original.close()
 
     def start(self) -> None:
         require(self.thread is None, "g2_observer_already_started")
@@ -292,10 +416,26 @@ class LiveObserver:
     def require_one(self, master: Path) -> dict:
         require(not self.fatal and len(self.candidates) == 1 and len(self.receipts) == 1,
                 "g2_original_live_module_not_uniquely_witnessed")
-        proof = next(iter(self.receipts.values()))
-        require(proof["output_path"] == str(master.resolve(strict=True)),
+        identity, proof = next(iter(self.receipts.items()))
+        published = master.resolve(strict=True)
+        observed = Path(proof["output_path"])
+        require(self.output_root in published.parents
+                and (observed == published or private_consumer_path(observed)),
                 "g2_observed_consumer_is_not_native_result_artifact")
-        return proof
+        original = self.consumer_files.get(identity)
+        require(original is not None, "g2_original_consumer_fd_not_retained")
+        packed = admission.checked_bytes(master, MAX_CONSUMER_BYTES)
+        binding = original.verify(sha(packed), len(packed))
+        return {**proof, "published_output_path": str(published),
+                "publication_binding": binding}
+
+    def close(self) -> None:
+        try:
+            self.stop()
+        finally:
+            retained, self.consumer_files = self.consumer_files, {}
+            for original in retained.values():
+                original.close()
 
 
 class G2Session:
@@ -431,7 +571,7 @@ class G2Session:
             try:
                 if len(self.observer.outputs) == 1:
                     output = Path(next(iter(self.observer.outputs.values())))
-                    if output.is_file():
+                    if not private_consumer_path(output) and output.is_file():
                         packed = admission.checked_bytes(output, 256_000_000)
                         new_bytes(self.evidence_dir / "unconfirmed-native-output.mp4", packed)
                         new_json(self.evidence_dir / "unconfirmed-output.json", {
@@ -486,7 +626,11 @@ class G2Session:
                 "g2_retained_master_differs_from_native_result")
         try:
             require(self.observer is not None, "g2_original_observer_missing")
-            self.live_proof = self.observer.require_one(master)
+            proof = self.observer.require_one(master)
+            binding = proof["publication_binding"]
+            require(binding["sha256"] == expected_sha and binding["bytes"] == expected_size,
+                    "g2_original_consumer_differs_from_reported_master")
+            self.live_proof = proof
             new_json(self.evidence_dir / "original-live-module.json", self.live_proof)
         except Exception:
             # Keep decoding this one original artifact even if a live witness
@@ -570,6 +714,13 @@ class G2Session:
         return self
 
     def __exit__(self, exc_type, error, traceback):
+        cleanup_error = None
+        if self.observer is not None:
+            try:
+                self.observer.close()
+            except Exception as failure:
+                cleanup_error = failure
+                self.secondary("original_consumer_descriptor_cleanup")
         try:
             new_json(self.evidence_dir / "final-custody.json", {
                 "schema": "motionwright.native.mlt-g2-custody/1",
@@ -586,7 +737,9 @@ class G2Session:
                 ),
                 "secondary_failures": self.secondary_failures,
                 "post_native_error_type": None if error is None else type(error).__name__,
-                "source_content_and_live_module_verified": self.completed and error is None,
+                "source_content_and_live_module_verified": (
+                    self.completed and error is None and cleanup_error is None
+                ),
                 "original_source": self.provenance,
                 "native_operation_retried": False,
                 "packet_PTS_and_AAC_priming_verified": False,
@@ -601,6 +754,10 @@ class G2Session:
                 raise failure
         if self.native_error is not None and error is not self.native_error:
             raise self.native_error.with_traceback(self.native_traceback)
+        if cleanup_error is not None and error is None:
+            failure = G2Unverified("g2_original_consumer_descriptor_cleanup_failed")
+            failure.native_result = self.native_result
+            raise failure from cleanup_error
         if error is not None and self.native_result is not None:
             try:
                 error.motionwright_native_result = self.native_result
