@@ -8,10 +8,10 @@ uses the existing compiled Rust Motionwright exporter and owner-checked
 portable media bridge, and binds ALL THREE original 30-frame source intervals.
 
 It never imports OTIO in Kdenlive, launches an editor, saves/reopens .kdenlive,
-performs native effects or grants a public artifact/release. A6 owns a
-selected disposable Linux G2 runner and must authenticate those application
-operations separately. Preserve the original missing-reference fixture as a
-separate negative, not a synthetic full receiver PASS.
+performs native effects or grants a public artifact/release. A separately
+authorized disposable Linux integration run must authenticate those actual
+application operations. Preserve the original missing-reference fixture as
+a separate negative, not a synthetic full receiver PASS.
 """
 from __future__ import annotations
 

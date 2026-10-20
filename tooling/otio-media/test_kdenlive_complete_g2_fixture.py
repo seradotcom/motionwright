@@ -1,7 +1,7 @@
 """Synthetic source-bound three-clip Kdenlive G2 input tests.
 
-No Kdenlive process, H264 encoding, Semwright Broker or G2 native action is
-executed here. A6 owns selected GitHub Actions G2 and exact source custody.
+No Kdenlive process, H264 encoding, Semwright Broker or native rendering
+is executed here. A separate authorized app run owns exact process custody.
 """
 from __future__ import annotations
 
