@@ -71,6 +71,8 @@ jobs:
           verify_paths={"tooling/mlt_repair_verification.py",
                         "tooling/tests/test_mlt_repair_verification.py"}
           source_paths={folder+"/"+name for name in names}|verify_paths
+          attestor_paths={"tooling/native_mlt_loaded_module.py",
+                          "tooling/tests/test_native_mlt_loaded_module.py"}
           workflow_path=".github/workflows/mlt-audio-diagnostic.yml"
           require(pathlib.Path(git("rev-parse","--show-toplevel").decode().strip()).resolve()==repo,
                   "wrong worktree")
@@ -84,7 +86,7 @@ jobs:
           require({p.name for p in (repo/folder).iterdir()}==names,"diagnostic source set is not closed")
           originals={}
           oids={}
-          for path in sorted(source_paths|{workflow_path}):
+          for path in sorted(source_paths|attestor_paths|{workflow_path}):
               entries=git("ls-tree","-rz",expected,"--",path).split(b"\0")
               require(len(entries)==2 and entries[-1]==b"","expected one source blob")
               metadata,raw_path=entries[0].split(b"\t",1)
@@ -99,7 +101,8 @@ jobs:
                       "worktree bytes differ from Git blob")
               originals[path]=data
               oids[path]=oid.decode("ascii")
-          require(set(originals)==source_paths|{workflow_path},"missing source blob")
+          require(set(originals)==source_paths|attestor_paths|{workflow_path},
+                  "missing source or attestor blob")
           # G0: all 3 G1 suites must remain bound to the exact committed tests.
           # Reuse authenticated Git blobs; execute BEFORE FFmpeg package installation
           # or the upstream MLT download. Do not replace any later result guards.
@@ -174,10 +177,49 @@ jobs:
                             "sources":{path:hashlib.sha256(originals[path]).hexdigest()
                                        for path in sorted(source_paths)},
                             "source_blob_oids":{path:oids[path] for path in sorted(source_paths)},
+                            "attestor_sources":{path:hashlib.sha256(originals[path]).hexdigest()
+                                                for path in sorted(attestor_paths)},
+                            "attestor_blob_oids":{path:oids[path] for path in sorted(attestor_paths)},
                             "workflow":{"path":workflow_path,"sha256":hashlib.sha256(originals[workflow_path]).hexdigest(),
                                         "git_blob_oid":oids[workflow_path]}},sort_keys=True,indent=2))
           PY
           python3 -B -I -S "$MW_DIAG_CHECK" export > "$work/public/source-inputs.json"
+      - name: Verify original loaded MLT module attestor source controls (G0)
+        run: |
+          set -euo pipefail
+          python3 -B tooling/ci_test_runner.py --repo . --test-directory tooling/tests \
+            --pattern test_native_mlt_loaded_module.py --mode both \
+            --expected-source "$GITHUB_SHA" --require-complete \
+            --report "$MW_DIAG_WORK/public/loaded-module-contracts.json"
+          python3 -B -I -S - <<'PY'
+          import hashlib,json,os,pathlib
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          root=pathlib.Path(os.environ["MW_DIAG_WORK"])/"public"
+          source=json.loads((root/"source-inputs.json").read_text())
+          receipt=json.loads((root/"loaded-module-contracts.json").read_text())
+          test="tooling/tests/test_native_mlt_loaded_module.py"
+          reader="tooling/native_mlt_loaded_module.py"
+          expected={reader:"e072a2d02a8ac358b1652a105cb183d5df3b7c8564bd6a95d2a441cab3bc08fd",
+                    test:"eac8fdf9c83725b58eccabc7a3fbbeeb974d4a87cf7ed486f0bb93204c8549be"}
+          assert source["source_sha"]==receipt["executed_source_sha"]==os.environ["GITHUB_SHA"]
+          assert source["attestor_sources"]==expected
+          assert set(source["attestor_blob_oids"])==set(expected)
+          assert receipt["status"]=="PASS" and receipt["require_complete"] is True
+          assert receipt["test_definition_sha256"]=={test:expected[test]}
+          assert len(receipt["steps"])==2
+          assert {row["entry_point"] for row in receipt["steps"]}=={
+              "discovery:test_native_mlt_loaded_module.py",
+              "dotted:tooling.tests.test_native_mlt_loaded_module"}
+          for row in receipt["steps"]:
+              counts=row["counts"]
+              assert row["exit_code"]==0 and row["status"]=="PASS"
+              assert counts["tests_run"]==counts["passed"]==15
+              assert counts["terminal_status"]=="OK"
+              for key in ("errors","failures","skipped","expected_failures","unexpected_successes"):
+                  assert counts[key]==0
+              for kind in ("stdout","stderr"):
+                  assert sha(root/row[kind]["file"])==row[kind]["sha256"]
+          PY
       - name: Check source and acceptance policies
         run: |
           set -euo pipefail
