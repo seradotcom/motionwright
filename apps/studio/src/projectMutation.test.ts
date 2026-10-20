@@ -1,0 +1,359 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { bootstrap } from "./api";
+import { fixtureBootstrap, fixtureProject } from "./fixture";
+import { ProjectMutationGate, ProjectReadSupersededError, type ProjectRevision } from "./projectMutation";
+
+const base = (): ProjectRevision => ({ id: "project-a", generation: "generation-a", revision: 12, active_branch: "branch-a" });
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+describe("one source-bound Studio mutation path", () => {
+  it("blocks a concurrent edit synchronously while an import awaits IPC", async () => {
+    const gate = new ProjectMutationGate();
+    let visible = base();
+    const receipt = deferred<ProjectRevision>();
+    const second = vi.fn(async () => ({ ...visible, revision: 14 }));
+    const pending = vi.fn();
+    const first = gate.run(visible, () => visible, () => receipt.promise, p => { visible = p; }, pending);
+    await expect(gate.run(visible, () => visible, second, p => { visible = p; }, pending))
+      .rejects.toThrow("Finish the current project change or import");
+    expect(second).not.toHaveBeenCalled();
+    expect(pending.mock.calls).toEqual([[true]]);
+    receipt.resolve({ ...visible, revision: 13 });
+    await first;
+    expect(visible.revision).toBe(13);
+    expect(pending.mock.calls).toEqual([[true], [false]]);
+    await gate.run(visible, () => visible, second, p => { visible = p; });
+    expect(visible.revision).toBe(14);
+  });
+
+  it.each([
+    { ...base(), id: "project-b" },
+    { ...base(), generation: "restored-generation" },
+    { ...base(), revision: 14 },
+    { ...base(), active_branch: "branch-b" },
+  ])("never publishes a late result after a visible scope change: %j", async (replacement) => {
+    const gate = new ProjectMutationGate();
+    const original = base();
+    let visible = original;
+    const receipt = deferred<ProjectRevision>();
+    const publish = vi.fn((p: ProjectRevision) => { visible = p; });
+    const result = gate.run(original, () => visible, () => receipt.promise, publish);
+    const assertion = expect(result).rejects.toThrow("active project changed");
+    visible = replacement;
+    receipt.resolve({ ...original, revision: 13 });
+    await assertion;
+    expect(publish).not.toHaveBeenCalled();
+    expect(visible).toEqual(replacement);
+  });
+
+  it.each([
+    { ...base(), id: "wrong-project", revision: 13 },
+    { ...base(), generation: "wrong-generation", revision: 13 },
+    { ...base(), revision: 11 },
+    { ...base(), revision: Number.NaN },
+  ])("refuses an unrelated or regressing backend response: %j", async (response) => {
+    const publish = vi.fn();
+    const gate = new ProjectMutationGate();
+    await expect(gate.run(base(), base, async () => response, publish)).rejects.toThrow("response does not match");
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("releases the latch after failure without retrying the request", async () => {
+    const gate = new ProjectMutationGate();
+    const pending = vi.fn();
+    const failed = vi.fn(async () => { throw new Error("CAS conflict"); });
+    await expect(gate.run(base(), base, failed, vi.fn(), pending)).rejects.toThrow("CAS conflict");
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(pending.mock.calls).toEqual([[true], [false]]);
+    const publish = vi.fn();
+    await gate.run(base(), base, async p => ({ ...p, revision: 13 }), publish);
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an already stale source before dispatch", async () => {
+    const operation = vi.fn(async () => base());
+    const gate = new ProjectMutationGate();
+    await expect(gate.run(base(), () => ({ ...base(), revision: 14 }), operation, vi.fn()))
+      .rejects.toThrow("before this request");
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("refuses a callback from another branch even if id, generation and revision still match", async () => {
+    const source = base(), current = { ...source, active_branch: "another-branch" };
+    const operation = vi.fn(async () => ({ ...source, revision: source.revision + 1 }));
+    const publish = vi.fn(), pending = vi.fn();
+    await expect(new ProjectMutationGate().run(source, () => current, operation, publish, pending))
+      .rejects.toThrow("before this request");
+    expect(operation).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(pending).not.toHaveBeenCalled();
+  });
+
+  it("allows a canonical branch checkout and uses that observed branch for the following edit", async () => {
+    const gate = new ProjectMutationGate();
+    let visible = base();
+    const checkout = { ...visible, active_branch: "branch-b", revision: visible.revision + 1 };
+    await expect(gate.run(visible, () => visible, async () => checkout, next => { visible = next; }))
+      .resolves.toEqual(checkout);
+    const edit = vi.fn(async (source: ProjectRevision) => ({ ...source, revision: source.revision + 1 }));
+    await gate.run(visible, () => visible, edit, next => { visible = next; });
+    expect(edit).toHaveBeenCalledExactlyOnceWith(checkout);
+    expect(visible).toEqual({ ...checkout, revision: checkout.revision + 1 });
+  });
+
+  it("serializes a portable replacement with ordinary edits and publishes only a new project", async () => {
+    const gate = new ProjectMutationGate();
+    let visible = base();
+    const receipt = deferred<ProjectRevision>();
+    const edit = vi.fn(async () => ({ ...visible, revision: visible.revision + 1 }));
+    const pending = vi.fn();
+    const importPromise = gate.run(visible, () => visible, () => receipt.promise,
+      next => { visible = next; }, pending, "replace");
+    await expect(gate.run(visible, () => visible, edit, vi.fn())).rejects.toThrow("Finish the current");
+    expect(edit).not.toHaveBeenCalled();
+    const imported = { id: "imported-project", generation: "fresh-generation", revision: 0, active_branch: "imported-branch" };
+    receipt.resolve(imported);
+    await expect(importPromise).resolves.toEqual(imported);
+    expect(visible).toEqual(imported);
+    expect(pending.mock.calls).toEqual([[true], [false]]);
+    await gate.run(visible, () => visible, edit, next => { visible = next; });
+    expect(visible.revision).toBe(1);
+  });
+
+  it.each([
+    { ...base(), revision: 0 },
+    { ...base(), id: "imported-project", generation: "generation-a", revision: 0 },
+    { ...base(), id: "", generation: "new-generation", revision: 0 },
+    { ...base(), id: "imported-project", generation: "", revision: 0 },
+    { ...base(), id: "imported-project", generation: "new-generation", revision: -1 },
+    { ...base(), id: "imported-project", generation: "new-generation", revision: NaN },
+  ])("refuses a forged or non-new portable project identity: %j", async response => {
+    const publish = vi.fn();
+    await expect(new ProjectMutationGate().run(base(), base, async () => response,
+      publish, undefined, "replace")).rejects.toThrow("expected project identity");
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("preserves a switched view when a portable import returns late", async () => {
+    const gate = new ProjectMutationGate();
+    const original = base();
+    let visible = original;
+    const deferredImport = deferred<ProjectRevision>();
+    const publish = vi.fn((next: ProjectRevision) => { visible = next; });
+    const result = gate.run(original, () => visible, () => deferredImport.promise,
+      publish, undefined, "replace");
+    const assertion = expect(result).rejects.toThrow("active project changed");
+    visible = { ...original, revision: 14 };
+    deferredImport.resolve({ id: "new-id", generation: "new-generation", revision: 0, active_branch: "new-branch" });
+    await assertion;
+    expect(publish).not.toHaveBeenCalled();
+    expect(visible.revision).toBe(14);
+  });
+});
+
+// Presentation coordination only. These controlled promises and transport
+// responses do not claim Store, grant, native-renderer, or installer coverage.
+describe("explicit library read admission", () => {
+  function open(gate: ProjectMutationGate, source: ProjectRevision | null,
+    current: () => ProjectRevision | null, id: string, result: Promise<ProjectRevision>,
+    publish: (project: ProjectRevision) => void, pending?: (busy: boolean) => void) {
+    return gate.read({source,current,requestedProjectId:id,load:()=>result,
+      project:project=>project,publish,pending});
+  }
+
+  it.each(["older resolves first", "newer resolves first"])("keeps the latest of two explicit opens: %s", async order => {
+    const gate = new ProjectMutationGate();
+    let visible: ProjectRevision | null = null;
+    const a = deferred<ProjectRevision>(), b = deferred<ProjectRevision>();
+    const pending = vi.fn(), publish = vi.fn((p: ProjectRevision) => { visible=p; });
+    const first = open(gate,null,()=>visible,"a",a.promise,publish,pending);
+    const rejected = expect(first).rejects.toBeInstanceOf(ProjectReadSupersededError);
+    const second = open(gate,null,()=>visible,"b",b.promise,publish,pending);
+    if (order === "older resolves first") {
+      a.resolve({...base(),id:"a"}); await rejected;
+      expect(visible).toBeNull();
+      expect(pending.mock.calls).toEqual([[true],[true]]);
+    }
+    b.resolve({...base(),id:"b"}); await second;
+    if (order === "newer resolves first") { a.resolve({...base(),id:"a"}); await rejected; }
+    expect(visible).toEqual({...base(),id:"b"});
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(pending.mock.calls).toEqual([[true],[true],[false]]);
+  });
+
+  it("suppresses an old rejection after a newer unselected shell was accepted", async () => {
+    const gate = new ProjectMutationGate();
+    const firstReply = deferred<ProjectRevision>();
+    const old = open(gate,null,()=>null,"a",firstReply.promise,vi.fn());
+    const rejected = expect(old).rejects.toBeInstanceOf(ProjectReadSupersededError);
+    const shell = vi.fn();
+    await gate.read<ProjectRevision,null>({source:null,current:()=>null,requestedProjectId:null,
+      load:async()=>null,project:()=>null,publish:shell});
+    firstReply.reject(new Error("Old corrupt-project response"));
+    await rejected;
+    expect(shell).toHaveBeenCalledOnce();
+  });
+
+  it("allows an explicit same UUID reopen after generation rotation", async () => {
+    const gate = new ProjectMutationGate();
+    let visible=base();
+    const restored={...visible,generation:"new-restored-generation",revision:0,active_branch:"restored-branch"};
+    await open(gate,visible,()=>visible,visible.id,Promise.resolve(restored),next=>{visible=next;});
+    expect(visible).toEqual(restored);
+    await gate.run(visible,()=>visible,async p=>({...p,revision:1}),next=>{visible=next;});
+    expect(visible).toEqual({...restored,revision:1});
+  });
+
+  it("a corrupt-project open error retains the current view, releases busy, and never loads a fallback", async () => {
+    const gate = new ProjectMutationGate();
+    let visible=base();
+    const before={...visible}, load=vi.fn(async()=>{throw new Error("Stored selected document is corrupt");});
+    const publish=vi.fn((p:ProjectRevision)=>{visible=p;});
+    const pending=vi.fn();
+    await expect(gate.read({source:visible,current:()=>visible,requestedProjectId:"b",load,
+      project:(p:ProjectRevision)=>p,publish,pending})).rejects.toThrow("is corrupt");
+    expect(load).toHaveBeenCalledOnce();expect(publish).not.toHaveBeenCalled();expect(visible).toEqual(before);
+    expect(pending.mock.calls).toEqual([[true],[false]]);
+    await gate.run(visible,()=>visible,async p=>({...p,revision:13}),p=>{visible=p;});
+    expect(visible.revision).toBe(13);
+  });
+
+  it("serializes opens against an edit or import in either order before dispatch", async () => {
+    const gate = new ProjectMutationGate();let visible=base();
+    const pendingRead=deferred<ProjectRevision>();
+    const reading=open(gate,visible,()=>visible,"b",pendingRead.promise,p=>{visible=p;});
+    const edit=vi.fn(async(p:ProjectRevision)=>({...p,revision:p.revision+1}));
+    await expect(gate.run(visible,()=>visible,edit,vi.fn())).rejects.toThrow("Finish the current");
+    expect(edit).not.toHaveBeenCalled();
+    pendingRead.resolve({...base(),id:"b"});await reading;
+    const pendingEdit=deferred<ProjectRevision>();
+    const editing=gate.run(visible,()=>visible,()=>pendingEdit.promise,p=>{visible=p;});
+    const read=vi.fn(async()=>base());
+    await expect(gate.read({source:visible,current:()=>visible,requestedProjectId:"a",load:read,
+      project:p=>p,publish:vi.fn()})).rejects.toThrow("Finish the current");
+    expect(read).not.toHaveBeenCalled();
+    pendingEdit.resolve({...visible,revision:visible.revision+1});await editing;
+  });
+
+  it.each([
+    {...base(),id:"wrong"}, {...base(),revision:11}, {...base(),revision:Number.NaN},
+  ])("refuses an unrelated or regressing read result without publishing: %j", async response => {
+    const gate=new ProjectMutationGate(), publish=vi.fn();
+    await expect(open(gate,base(),base,base().id,Promise.resolve(response),publish)).rejects.toThrow("does not match");
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("never publishes a selected project for an explicitly unselected shell", async () => {
+    const publish=vi.fn();
+    await expect(new ProjectMutationGate().read({source:null,current:()=>null,requestedProjectId:null,
+      load:async()=>base(),project:p=>p,publish})).rejects.toThrow("No fallback was accepted");
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("preserves a scope changed outside the read coordinator while a response awaited", async () => {
+    const gate=new ProjectMutationGate();let visible=base();const reply=deferred<ProjectRevision>(), publish=vi.fn();
+    const reading=open(gate,visible,()=>visible,"b",reply.promise,publish);
+    const refused=expect(reading).rejects.toThrow("active project changed while opening");
+    visible={...visible,active_branch:"new-branch"};reply.resolve({...base(),id:"b"});await refused;
+    expect(publish).not.toHaveBeenCalled();expect(visible.active_branch).toBe("new-branch");
+  });
+});
+
+describe("new project admission uses the existing mutation coordinator", () => {
+  it("serializes creation from an empty library against another create and an open before dispatch", async () => {
+    const gate = new ProjectMutationGate(), reply = deferred<ProjectRevision>();
+    let visible: ProjectRevision | null = null;
+    const publish = vi.fn((next: ProjectRevision) => { visible = next; });
+    const pending = vi.fn();
+    const first = gate.create(null, () => visible, () => reply.promise, publish, pending);
+    expect(pending).toHaveBeenLastCalledWith(true);
+    const second = vi.fn(async () => base());
+    await expect(gate.create(null, () => visible, second, publish)).rejects.toThrow("Finish the current");
+    const read = vi.fn(async () => base());
+    await expect(gate.read({ source: null, current: () => visible, requestedProjectId: base().id,
+      load: read, project: value => value, publish })).rejects.toThrow("Finish the current");
+    expect(second).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
+    reply.resolve({ ...base(), revision: 0 }); await first;
+    expect(visible).toEqual({ ...base(), revision: 0 }); expect(publish).toHaveBeenCalledOnce();
+    expect(pending.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("never replaces a newer visible project when creation returns late", async () => {
+    const gate = new ProjectMutationGate(), reply = deferred<ProjectRevision>();
+    let visible = base(); const publish = vi.fn(); const pending = vi.fn();
+    const first = gate.create(visible, () => visible, () => reply.promise, publish, pending);
+    const rejected = expect(first).rejects.toThrow("active project changed during creation");
+    visible = { ...visible, revision: visible.revision + 1 };
+    reply.resolve({ ...base(), id: "created", generation: "created-generation", revision: 0 });
+    await rejected; expect(publish).not.toHaveBeenCalled(); expect(visible.revision).toBe(base().revision + 1);
+    expect(pending.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("releases admission after an unknown result without replaying the operation", async () => {
+    const gate = new ProjectMutationGate(); let visible = base();
+    const create = vi.fn(async () => { throw new Error("Synthetic unknown result"); });
+    const publish = vi.fn();
+    await expect(gate.create(visible, () => visible, create, publish)).rejects.toThrow("unknown result");
+    expect(create).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled();
+    const saved = { ...visible, id: "recovered", generation: "recovered-generation", revision: 4 };
+    await gate.read({ source: visible, current: () => visible, requestedProjectId: saved.id,
+      load: async () => saved, project: value => value, publish: next => { visible = next; } });
+    expect(visible).toEqual(saved); expect(create).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { ...base(), revision: 0 },
+    { ...base(), id: "created", generation: "created-generation", revision: Number.NaN },
+    { ...base(), id: "created", generation: "", revision: 0 },
+  ])("refuses an invalid new-document result without changing the original: %j", async result => {
+    const source = base(), publish = vi.fn();
+    await expect(new ProjectMutationGate().create(source, () => source, async () => result, publish)).rejects.toThrow("expected new document");
+    expect(publish).not.toHaveBeenCalled();
+  });
+});
+
+describe("synthetic desktop bootstrap transport contract", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  function transport(response: unknown) {
+    const invoke=vi.fn(async(_command: string, _args?: unknown, _options?: unknown)=>response);
+    vi.stubGlobal("window",{__TAURI_INTERNALS__:{invoke}});
+    return invoke;
+  }
+  const native_sdk={...fixtureBootstrap.native_sdk,mode:"tauri" as const};
+
+  it("requests an explicitly unselected shell without manufacturing a Project", async () => {
+    const reply={project:null,project_selection:{status:"unselected"},native_sdk};
+    const invoke=transport(reply);
+    expect(await bootstrap(null)).toEqual(reply);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("bootstrap",{request:{project_id:null}},undefined);
+  });
+
+  it("returns unavailable for exactly the requested corrupt identity, without selecting or retrying another", async () => {
+    const reply={project:null,project_selection:{status:"unavailable",project_id:fixtureProject.id,message:"Synthetic unreadable document"},native_sdk};
+    const invoke=transport(reply);
+    expect(await bootstrap(fixtureProject.id)).toEqual(reply);
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(invoke.mock.calls[0][1]).toEqual({request:{project_id:fixtureProject.id}});
+  });
+
+  it("refuses implicit latest selection, legacy missing status, and a foreign returned project", async () => {
+    transport({project:fixtureProject,project_selection:{status:"selected",project_id:fixtureProject.id},native_sdk});
+    await expect(bootstrap(null)).rejects.toThrow("without an explicit identity");
+    transport({project:fixtureProject,native_sdk});
+    await expect(bootstrap(fixtureProject.id)).rejects.toThrow("invalid project startup");
+    transport({project:{...fixtureProject,id:"foreign"},project_selection:{status:"selected",project_id:fixtureProject.id},native_sdk});
+    await expect(bootstrap(fixtureProject.id)).rejects.toThrow("explicitly requested project");
+  });
+
+  it("carries the newly observed generation for the explicitly reopened identity", async () => {
+    const project={...fixtureProject,generation:"abcdefab-1234-4567-89ab-abcdef123459",revision:0};
+    const reply={project,project_selection:{status:"selected",project_id:project.id},native_sdk};
+    transport(reply);
+    expect((await bootstrap(project.id)).project).toEqual(project);
+  });
+});

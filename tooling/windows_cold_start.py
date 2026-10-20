@@ -24,6 +24,8 @@ import uuid
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA64 = re.compile(r"[0-9a-f]{64}\Z")
 MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
+EXPECTED_FIRST_UI_TITLE = "motionwright ci first use"
+EXPECTED_SCHEMA = 2
 
 
 class ColdStartError(RuntimeError):
@@ -115,7 +117,7 @@ def read_project_snapshot(database: Path) -> dict:
             and doc.get("revision") == revision
             and doc.get("title") == title,
             "SQLite source project identity conflicts with saved JSON")
-    require(title == "Untitled Motion Project" and type(revision) is int and revision >= 0,
+    require(title == EXPECTED_FIRST_UI_TITLE and type(revision) is int and revision >= 0,
             "Installed first-use project was not initialized as expected")
     return {
         "project_id": project_id,
@@ -139,6 +141,67 @@ def known_databases(appdata_roots: list[Path]) -> list[Path]:
         if direct.exists():
             candidates.add(direct)
     return sorted(candidates)
+
+
+def _empty_library_ready(database: Path) -> bool:
+    """Only a fresh, empty real SQLite store permits one native GUI Create."""
+    if not database.is_file() or database.is_symlink():
+        return False
+    try:
+        with closing(sqlite3.connect(
+            database.as_uri() + "?mode=ro", uri=True, timeout=3,
+        )) as connection:
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("PRAGMA trusted_schema=OFF")
+            return (
+                connection.execute("PRAGMA quick_check(1)").fetchone() == ("ok",)
+                and connection.execute("PRAGMA user_version").fetchone() == (EXPECTED_SCHEMA,)
+                and connection.execute("SELECT COUNT(*) FROM projects").fetchone() == (0,)
+            )
+    except sqlite3.Error:
+        return False
+
+
+def _create_first_project_in_native_window(hwnd: int) -> None:
+    """One accessible real WebView2 action; never write the database directly."""
+    require(os.name == "nt" and os.getenv("GITHUB_ACTIONS") == "true",
+            "Real first-use UI action is restricted to disposable CI Windows")
+    script = Path(__file__).with_name("windows_first_project_ui.ps1")
+    require(script.is_file() and not script.is_symlink(),
+            "Native project-creation UI script is unavailable")
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-File", str(script),
+             "-WindowHandle", str(hwnd), "-ProjectTitle", EXPECTED_FIRST_UI_TITLE],
+            capture_output=True, text=True, timeout=21, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ColdStartError("Native accessible project-creation action was not confirmed") from error
+    if result.returncode != 0 or result.stdout.strip() != "VISIBLE_PROJECT_CREATE_ACTIVATED":
+        # Only a closed technical stage enum enters the public runner log.
+        # Never include raw UI automation stderr, arguments, process paths
+        # or arbitrary text from a downloaded/installed binary.
+        safe_stderr = getattr(result, "stderr", "")
+        if not isinstance(safe_stderr, str):
+            safe_stderr = ""
+        # Only the script's own closed taxonomy is admitted, never arbitrary
+        # PowerShell error details, host paths, titles, or project data.
+        allowed = {
+            "PRECHECK", "UIA_LOAD", "WINDOW_LOOKUP", "ELEMENT_QUERY",
+            "FORM_FIND", "FORM_AMBIGUOUS", "INPUT_NOT_FOCUSABLE",
+            "INPUT_ACTIVATE", "INPUT_FOCUS", "INPUT_FOCUS_VERIFY",
+            "INPUT_VALUE_PATTERN", "INPUT_INITIAL_VALUE", "INPUT_KEYSTROKE",
+            "INPUT_VALUE_READBACK", "BUTTON_ENABLE",
+            "INVOKE_LOOKUP", "INVOKE_UNKNOWN",
+        }
+        markers = re.findall(
+            r"(?m)^MOTIONWRIGHT_UI_STAGE:([A-Z_]+)\s*$", safe_stderr,
+        )
+        stage = markers[0] if len(markers) == 1 and markers[0] in allowed else "ACTION_CONFIRMATION_UNAVAILABLE"
+        raise ColdStartError(
+            "Native accessible project-creation action was not confirmed: " + stage
+        )
 
 
 def windows_motionwright_window(process_id: int) -> int | None:
@@ -197,6 +260,7 @@ def boot_once(
     binary: Path, env: dict[str, str], database_roots: list[Path],
     log_path: Path, expected_db: Path | None = None, seconds: int = 55,
 ) -> tuple[dict, Path, int]:
+    creation_sent = False
     with log_path.open("xb") as log:
         process = subprocess.Popen(
             [str(binary)],
@@ -221,6 +285,11 @@ def boot_once(
                 hwnd = windows_motionwright_window(process.pid)
                 if hwnd is not None and observed:
                     database = observed[0]
+                    if expected_db is None and not creation_sent and _empty_library_ready(database):
+                        # This flag is set before action: an uncertain result
+                        # must never cause a second Create on the same launch.
+                        creation_sent = True
+                        _create_first_project_in_native_window(hwnd)
                     if expected_db is not None and database != expected_db:
                         raise ColdStartError("Relaunched desktop switched to another project database")
                     try:

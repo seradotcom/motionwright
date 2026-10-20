@@ -1,4 +1,4 @@
-import {expect,test,type Page} from "@playwright/test";
+import {expect,test,type Page} from "./support/selectedSyntheticProject";
 import {fixtureBootstrap} from "../src/fixture";
 import type {CreativeEvaluatorBundle} from "../src/creativeEvaluator";
 
@@ -63,7 +63,14 @@ test("an approved owner registration sends one scoped canonical evaluator change
     runtime.__EXPERIMENT_TEST_CALLS__=calls;
     runtime.__TAURI_INTERNALS__={invoke:async(command,args)=>{
       const request=args?.request as Record<string,unknown>|undefined;
-      if(command==="bootstrap")return {...initial,project:structuredClone(project)};
+      if (command === "bootstrap") {
+        const syntheticResponse = {...initial,project:structuredClone(project)};
+        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
+        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
+          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
+        }
+        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      }
       if(command==="production_runtime_status")return {
         status:"ready",reason:null,expected_version:"1.0.0",observed_version:"1.0.0",
         version_compatible:true,executable_sha256:"a".repeat(64),

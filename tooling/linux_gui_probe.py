@@ -27,6 +27,7 @@ def check_window_output(output: str) -> bool:
 def run_probe(
     app_run: Path, scratch: Path, *, seconds: int,
     ready_check: Callable[[Path], bool] | None = None,
+    window_interaction: Callable[[Path], bool] | None = None,
 ) -> dict:
     app_dir = app_run.parent.resolve(strict=True)
     resolved = app_run.resolve(strict=True)
@@ -52,6 +53,7 @@ def run_probe(
     log_file = scratch / "app-run.log"
     result = {"status": "NO_WINDOW", "window_title": "", "elapsed_seconds": 0}
     window_seen = False
+    interacted = window_interaction is None
     with log_file.open("wb") as log:
         child = subprocess.Popen(
             [str(app_run)], cwd=app_run.parent,
@@ -72,6 +74,12 @@ def run_probe(
                 )
                 if check.returncode == 0 and check_window_output(check.stdout):
                     window_seen = True
+                    # The first-use handler may inspect readiness repeatedly,
+                    # but it must dispatch a GUI mutation at most once.
+                    if not interacted:
+                        interacted = bool(window_interaction(scratch))
+                        time.sleep(0.6)
+                        continue
                     # Tauri can expose a window before its setup() callback
                     # finishes creating the local SQLite project. The cold
                     # relaunch test requires both a live window and committed
@@ -102,6 +110,14 @@ def run_probe(
                 child.wait(timeout=4)
     if result["status"] != "WINDOW_OBSERVED":
         if window_seen and ready_check is not None:
+            if window_interaction is not None:
+                if not interacted:
+                    raise RuntimeError(
+                        "Installed first-use empty-store authority never permitted a native UI action"
+                    )
+                raise RuntimeError(
+                    "One original native Create action was sent but SQLite never confirmed a project"
+                )
             raise RuntimeError("Window appeared, but installed project bootstrap never became ready within the bounded probe")
         raise RuntimeError("Motionwright never created an X11 window within the bounded probe")
     return result
