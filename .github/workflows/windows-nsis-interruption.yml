@@ -63,14 +63,14 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
-          python3 -I -B tooling/source_policy.py
-          python3 -I -B tooling/acceptance_policy.py
-          python3 -I -B tooling/creative_status_policy.py
-          python3 -I -B tooling/public_surface_policy.py
+          python3 -B -E -s tooling/source_policy.py
+          python3 -B -E -s tooling/acceptance_policy.py
+          python3 -B -E -s tooling/creative_status_policy.py
+          python3 -B -E -s tooling/public_surface_policy.py
           cargo fmt --all -- --check
       - name: Discover and execute the complete source-bound checkpoint contract roster
         run: >-
-          python3 -I -B tooling/ci_test_runner.py
+          python3 -B -E -s tooling/ci_test_runner.py
           --repo "$GITHUB_WORKSPACE"
           --test-directory tooling/tests
           --pattern test_windows_nsis_interruption.py
