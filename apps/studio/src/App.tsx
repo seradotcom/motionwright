@@ -1,4 +1,5 @@
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
+import SceneInspector from "./SceneInspector";
 import { isPaletteShortcut } from "./editorCommandSearch";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import ProgramDesignStudy, { hasEditableProgramDesign } from "./ProgramDesignStudy";
@@ -36,7 +37,6 @@ import {
   Sparkles,
   Sun,
   Type,
-  Unlock,
   Wand2,
   WifiOff,
   Workflow,
@@ -80,7 +80,6 @@ import WorkflowWorkspace from "./WorkflowWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
 import { ChangesWorkspace, ReviewWorkspace } from "./HistoryWorkspaces";
 import type {
-  Beat,
   Bootstrap,
   StudioBootstrap,
   Change,
@@ -165,15 +164,6 @@ const rendererLabels: Record<RendererKind, string> = {
   "manim-gl": "ManimGL",
 };
 
-const rendererAvailable = (project: Project, renderer: RendererKind) => {
-  if (renderer === "remotion") {
-    return project.extensions.some((extension) => extension.kind === "remotion-renderer" && extension.enabled && extension.rights_status === "cleared");
-  }
-  if (renderer === "manim-gl") {
-    return project.extensions.some((extension) => extension.kind === "manim-gl-renderer" && extension.enabled && extension.rights_status === "cleared");
-  }
-  return true;
-};
 
 function projectTimelineDuration(project: Project) {
   return Math.max(
@@ -622,6 +612,7 @@ function formatByteCount(value: string) {
 function DeliverView({
   project,
   commit,
+  commitRecipe,
   desktopMode,
   onImportBundle,
   onOpenAudio,
@@ -635,6 +626,7 @@ function DeliverView({
 }: {
   project: Project;
   commit: (change: Change) => Promise<void>;
+  commitRecipe: (change: Change) => Promise<Project>;
   desktopMode: boolean;
   onImportBundle: (path: string) => Promise<Project>;
   onOpenAudio: () => void;
@@ -716,7 +708,7 @@ function DeliverView({
         <span className="count-label">{project.deliverables.length} profiles</span>
       </header>
 
-      <DeliveryProfiles project={project} commit={commit} desktopMode={desktopMode}
+      <DeliveryProfiles project={project} commit={commit} commitRecipe={commitRecipe} desktopMode={desktopMode}
         onOpenAudio={onOpenAudio} currentProjectState={currentProjectState}
         renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
         avEvidence={avEvidence} onAvEvidence={onAvEvidence}
@@ -1081,396 +1073,6 @@ function ProjectRail({
   );
 }
 
-function SceneBeatRow({
-  scene,
-  beat,
-  locked,
-  commit,
-  rate,
-  mode,
-}: {
-  scene: Scene;
-  beat: Beat;
-  locked: boolean;
-  commit: (change: Change) => Promise<void>;
-  rate: RationalTime;
-  mode: TimecodeMode;
-}) {
-  const [label, setLabel] = useState(beat.label);
-  const [objective, setObjective] = useState(beat.objective);
-  const [start, setStart] = useState(seconds(beat.start));
-  const [duration, setDuration] = useState(seconds(beat.duration));
-
-  useEffect(() => {
-    setLabel(beat.label);
-    setObjective(beat.objective);
-    setStart(seconds(beat.start));
-    setDuration(seconds(beat.duration));
-  }, [beat.id, beat.label, beat.objective, beat.start.num, beat.start.den, beat.duration.num, beat.duration.den]);
-
-  const sceneDuration = seconds(scene.duration);
-  const valid =
-    label.trim().length > 0 &&
-    label.length <= 160 &&
-    objective.length <= 4_000 &&
-    Number.isFinite(start) &&
-    Number.isFinite(duration) &&
-    start >= 0 &&
-    duration > 0 &&
-    start + duration <= sceneDuration + 0.000001;
-  const dirty =
-    label !== beat.label ||
-    objective !== beat.objective ||
-    Math.abs(start - seconds(beat.start)) > 0.000001 ||
-    Math.abs(duration - seconds(beat.duration)) > 0.000001;
-
-  return (
-    <div className="scene-beat-row" data-beat-id={beat.id}>
-      <div className="scene-beat-row-head">
-        <input
-          aria-label="Beat label"
-          value={label}
-          disabled={locked}
-          maxLength={160}
-          onChange={(event) => setLabel(event.target.value)}
-        />
-        <button
-          type="button"
-          className="plain-icon"
-          aria-label={"Remove beat " + beat.label}
-          disabled={locked}
-          onClick={() => commit({ type: "remove_scene_beat", scene_id: scene.id, beat_id: beat.id })}
-        >
-          <X size={12} />
-        </button>
-      </div>
-      <textarea
-        aria-label="Beat objective"
-        value={objective}
-        disabled={locked}
-        rows={2}
-        maxLength={4000}
-        onChange={(event) => setObjective(event.target.value)}
-      />
-      <div className="scene-beat-time-grid">
-        <label>
-          <span>Start</span>
-          <input
-            aria-label="Beat start seconds"
-            type="number"
-            min="0"
-            max={sceneDuration}
-            step="0.1"
-            value={start}
-            disabled={locked}
-            onChange={(event) => setStart(Number(event.target.value))}
-          />
-        </label>
-        <label>
-          <span>Duration</span>
-          <input
-            aria-label="Beat duration seconds"
-            type="number"
-            min="0.001"
-            max={sceneDuration}
-            step="0.1"
-            value={duration}
-            disabled={locked}
-            onChange={(event) => setDuration(Number(event.target.value))}
-          />
-        </label>
-      </div>
-      <div className="scene-beat-row-foot">
-        <span className="mono">{formatTime(start, rate, mode)} → {formatTime(start + duration, rate, mode)}</span>
-        <button
-          type="button"
-          className="button compact"
-          disabled={locked || !valid || !dirty}
-          onClick={() => commit({
-            type: "upsert_scene_beat",
-            scene_id: scene.id,
-            beat: {
-              ...beat,
-              label: label.trim(),
-              objective,
-              start: rationalSeconds(start),
-              duration: rationalSeconds(duration),
-            },
-          })}
-        >
-          Save beat
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function SceneBeatEditor({
-  scene,
-  contentLocked,
-  timingLocked,
-  commit,
-  rate,
-  mode,
-}: {
-  scene: Scene;
-  contentLocked: boolean;
-  timingLocked: boolean;
-  commit: (change: Change) => Promise<void>;
-  rate: RationalTime;
-  mode: TimecodeMode;
-}) {
-  const sceneDuration = seconds(scene.duration);
-  const locked = contentLocked || timingLocked;
-  const beats = [...scene.beats].sort((left, right) =>
-    seconds(left.start) - seconds(right.start) || left.id.localeCompare(right.id)
-  );
-  let cursor = 0;
-  let exactCoverage = true;
-  let firstGap: { start: number; duration: number } | null = null;
-  for (const beat of beats) {
-    const start = seconds(beat.start);
-    const end = start + seconds(beat.duration);
-    if (start > cursor + 0.000001 && !firstGap) {
-      firstGap = { start: cursor, duration: start - cursor };
-    }
-    if (Math.abs(start - cursor) > 0.000001) exactCoverage = false;
-    cursor = Math.max(cursor, end);
-  }
-  if (cursor < sceneDuration - 0.000001 && !firstGap) {
-    firstGap = { start: cursor, duration: sceneDuration - cursor };
-  }
-  if (Math.abs(cursor - sceneDuration) > 0.000001) exactCoverage = false;
-  const nativeReady = beats.length === 0 || exactCoverage;
-
-  return (
-    <section className="scene-beat-editor" aria-label="Scene beats">
-      <div className="scene-beat-editor-head">
-        <div>
-          <strong>Scene beats</strong>
-          <span>{beats.length} authored · {formatTime(sceneDuration, rate, mode)}</span>
-        </div>
-        <span className={"beat-coverage " + (nativeReady ? "ready" : "needs-work")}>
-          {beats.length === 0 ? "scene span" : nativeReady ? "native-ready" : "timing gap"}
-        </span>
-      </div>
-      {beats.length === 0 ? (
-        <p className="inspector-empty">
-          No authored beats. Native Film currently preserves this as one full-scene shot.
-        </p>
-      ) : (
-        <div className="scene-beat-list">
-          {beats.map((beat) => (
-            <SceneBeatRow
-              key={beat.id}
-              scene={scene}
-              beat={beat}
-              locked={locked}
-              commit={commit}
-              rate={rate}
-              mode={mode}
-            />
-          ))}
-        </div>
-      )}
-      <button
-        type="button"
-        className="button full"
-        disabled={locked || !firstGap || beats.length >= 32}
-        title={firstGap ? "Fill the first uncovered interval" : "No uncovered timing gap remains"}
-        onClick={() => {
-          if (!firstGap) return;
-          commit({
-            type: "upsert_scene_beat",
-            scene_id: scene.id,
-            beat: {
-              id: crypto.randomUUID(),
-              label: "New beat",
-              objective: "",
-              start: rationalSeconds(firstGap.start),
-              duration: rationalSeconds(firstGap.duration),
-            },
-          });
-        }}
-      >
-        <Plus size={12} /> Fill timing gap
-      </button>
-      <div className="renderer-note">
-        <Clock3 size={13} />
-        Authored beats may be incomplete while editing. Native Film dispatch requires exact, non-overlapping coverage.
-      </div>
-    </section>
-  );
-}
-
-function Inspector({
-  project,
-  scene,
-  commit,
-  rate,
-  mode,
-}: {
-  project: Project;
-  scene: Scene | null;
-  commit: (change: Change) => Promise<void>;
-  rate: RationalTime;
-  mode: TimecodeMode;
-}) {
-  const [objective, setObjective] = useState(scene?.objective ?? "");
-  const [durationSeconds, setDurationSeconds] = useState(scene ? seconds(scene.duration) : 0);
-  useEffect(() => setObjective(scene?.objective ?? ""), [scene?.id, scene?.objective]);
-  useEffect(() => setDurationSeconds(scene ? seconds(scene.duration) : 0), [scene?.id, scene?.duration.num, scene?.duration.den]);
-
-  if (!scene) {
-    return (
-      <aside className="inspector">
-        <div className="inspector-heading">Inspector</div>
-        <EmptyWorkspace icon={Settings2} title="Nothing selected" body="Select a scene to inspect its semantic state." />
-      </aside>
-    );
-  }
-
-  const resource = "scene:" + scene.id;
-  const locks = project.locks.filter((lock) => lock.resource === resource);
-  const timingLocked = locks.some((lock) => lock.kind === "timing");
-  const contentLocked = locks.some((lock) => lock.kind === "content");
-  return (
-    <aside className="inspector">
-      <div className="inspector-heading">
-        <span>Inspector</span>
-        <span className="mono">r{project.revision}</span>
-      </div>
-
-      <section className="inspector-section">
-        <div className="inspector-section-title">Scene</div>
-        <label className="field-label">Name</label>
-        <div className="read-field">{scene.name}</div>
-        <label className="field-label" htmlFor="renderer">Renderer</label>
-        <select
-          id="renderer"
-          value={scene.renderer}
-          onChange={(event) => commit({
-            type: "set_scene_renderer",
-            scene_id: scene.id,
-            renderer: event.target.value as RendererKind,
-          })}
-        >
-          {Object.entries(rendererLabels).map(([value, label]) => {
-            const renderer = value as RendererKind;
-            const available = rendererAvailable(project, renderer);
-            return (
-              <option key={value} value={value} disabled={!available}>
-                {label}{available ? "" : " · opt-in required"}
-              </option>
-            );
-          })}
-        </select>
-        <label className="field-label" htmlFor="scene-status">Review state</label>
-        <select
-          id="scene-status"
-          aria-label="Scene status"
-          value={scene.status}
-          onChange={(event) => commit({
-            type: "set_scene_status",
-            scene_id: scene.id,
-            status: event.target.value as Scene["status"],
-          })}
-        >
-          <option value="draft">Draft</option>
-          <option value="review">Review</option>
-          <option value="approved">Approved</option>
-          <option value="needs_work">Needs work</option>
-        </select>
-        <label className="field-label" htmlFor="scene-duration">Duration · seconds</label>
-        <div className="inline-save-field compact-inline">
-          <input
-            id="scene-duration"
-            aria-label="Scene duration seconds"
-            type="number"
-            min="0.001"
-            max="86400"
-            step="0.1"
-            value={durationSeconds}
-            disabled={timingLocked}
-            onChange={(event) => setDurationSeconds(Number(event.target.value))}
-          />
-          <button
-            type="button"
-            className="button compact"
-            disabled={timingLocked || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 86400 || Math.abs(durationSeconds - seconds(scene.duration)) < 0.0005}
-            onClick={() => commit({ type: "set_scene_duration", scene_id: scene.id, duration: rationalSeconds(durationSeconds) })}
-          >
-            Ripple
-          </button>
-        </div>
-        <div className="renderer-note">
-          <Clock3 size={13} />
-          Duration ripple reflows later scene starts. It does not stretch or infer voice timing.
-        </div>
-        <div className="renderer-note">
-          <CircleDashed size={13} />
-          Capability loss is evaluated before a renderer swap is executed.
-        </div>
-      </section>
-
-      <section className="inspector-section">
-        <div className="inspector-section-title">Objective</div>
-        <textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={5} />
-        <button
-          type="button"
-          className="button full"
-          disabled={!objective.trim() || objective === scene.objective}
-          onClick={() => commit({ type: "update_scene_objective", scene_id: scene.id, objective: objective.trim() })}
-        >
-          Commit objective
-        </button>
-      </section>
-
-      <section className="inspector-section">
-        <SceneBeatEditor
-          scene={scene}
-          contentLocked={contentLocked}
-          timingLocked={timingLocked}
-          commit={commit}
-          rate={rate}
-          mode={mode}
-        />
-      </section>
-
-      <section className="inspector-section">
-        <div className="inspector-section-title">Locks</div>
-        {locks.length === 0 ? (
-          <p className="inspector-empty">No explicit locks.</p>
-        ) : (
-          <div className="lock-list">
-            {locks.map((lock) => (
-              <div className="lock-row" key={lock.id}>
-                <LockKeyhole size={13} />
-                <div><strong>{lock.kind}</strong><span>{lock.note || "Locked"}</span></div>
-                <button
-                  type="button"
-                  className="plain-icon"
-                  aria-label={"Remove " + lock.kind + " lock"}
-                  onClick={() => commit({ type: "remove_lock", lock_id: lock.id })}
-                >
-                  <Unlock size={13} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="lock-actions">
-          <button type="button" className="button compact" onClick={() => commit({ type: "set_lock", resource, kind: "content", note: "Protected from content edits" })}>
-            <LockKeyhole size={13} /> Content
-          </button>
-          <button type="button" className="button compact" onClick={() => commit({ type: "set_lock", resource, kind: "timing", note: "Protected timing" })}>
-            <Clock3 size={13} /> Timing
-          </button>
-        </div>
-      </section>
-    </aside>
-  );
-}
 
 function Timeline({
   project,
@@ -2338,6 +1940,7 @@ export default function App() {
             project={project}
             commit={commit}
             commitRequired={commitRequired}
+            commitRecipe={commitCamera}
             desktopMode={boot.native_sdk.mode === "tauri"}
             importVoice={ingestVoice}
             playhead={playhead}
@@ -2383,12 +1986,13 @@ export default function App() {
           key={[project.id, project.generation, project.revision].join(":")}
           project={project} desktopMode={boot.native_sdk.mode === "tauri"} />;
       case "Review":
-        return <ReviewWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
+        return <ReviewWorkspace project={project} scene={selectedScene} commit={commitCamera} playhead={playhead} onSeek={seekTo} />;
       case "Deliver":
         return (
           <DeliverView
             project={project}
             commit={commitRequired}
+            commitRecipe={commitCamera}
             onOpenAudio={() => setWorkspace("Audio")}
             currentProjectState={currentProjectState}
             desktopMode={boot.native_sdk.mode === "tauri"}
@@ -2555,7 +2159,7 @@ export default function App() {
         <div className="center-stack">
           <div className="workspace-stage">{renderWorkspace()}</div>
         </div>
-        {workspace !== "Production" && <Inspector project={project} scene={selectedScene} commit={commit} rate={timebaseRate} mode={displayMode} />}
+        {workspace !== "Production" && <SceneInspector project={project} scene={selectedScene} commit={commit} commitScene={commitCamera} commitBeat={commitCamera} rate={timebaseRate} mode={displayMode} rendererLabels={rendererLabels} />}
       </div>
 
       <Timeline

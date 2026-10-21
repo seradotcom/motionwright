@@ -321,7 +321,7 @@ function MixEditor({ project, commit }: { project: Project; commit: Commit }) {
   </section>;
 }
 
-type AudioWorkspaceProps = { project: Project; commit: Commit; commitRequired: Commit; desktopMode: boolean; importVoice: (path: string, label?: string) => Promise<void>; playhead: number; onSeek: (seconds: number) => void };
+type AudioWorkspaceProps = { project: Project; commit: Commit; commitRequired: Commit; commitRecipe: (change: Change) => Promise<Project>; desktopMode: boolean; importVoice: (path: string, label?: string) => Promise<void>; playhead: number; onSeek: (seconds: number) => void };
 
 function AudioRetainedDrafts({ project }: { project: Project }) {
   const [copies, setCopies] = useState<AudioRecoveryCopy[]>([]), [error, setError] = useState<string | null>(null);
@@ -394,6 +394,7 @@ function AudioWorkspaceEditor({
   project,
   commit,
   commitRequired,
+  commitRecipe,
   desktopMode,
   importVoice,
   playhead,
@@ -402,6 +403,7 @@ function AudioWorkspaceEditor({
   project: Project;
   commit: Commit;
   commitRequired: Commit;
+  commitRecipe: (change: Change) => Promise<Project>;
   desktopMode: boolean;
   importVoice: (path: string, label?: string) => Promise<void>;
   playhead: number;
@@ -652,7 +654,7 @@ function AudioWorkspaceEditor({
           </section>
 
           <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit}/>
-          <NativeOriginalMixReview project={project} desktopMode={desktopMode} commit={commit}/>
+          <NativeOriginalMixReview project={project} desktopMode={desktopMode} commit={commitRecipe}/>
           <SemanticSfxWorkbench project={project} commit={commit} onSeek={onSeek}/>
           <MixEditor project={project} commit={commit}/>
           <AudioRetainedDrafts project={project}/>

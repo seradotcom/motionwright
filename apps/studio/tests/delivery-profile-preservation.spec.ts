@@ -248,7 +248,14 @@ test("an actual stale CAS refusal preserves sent and later raw input without ret
   const pending = review(page).getByRole("group", { name: "name pending input", exact: true });
   await expect(pending).toContainText("A originally sent");
   await expect(pending).toContainText("A still being edited");
-  await pending.getByRole("button", { name: "Keep my input name", exact: true }).click();
+  await expect(pending.getByRole("button", { name: "Keep my input name", exact: true })).toBeDisabled();
+  await expect(pending.getByRole("button", { name: "Keep saved name", exact: true })).toBeDisabled();
+  const originalCopy = (await recoveryCopies(page)).find(copy => copy.key.includes(c.a.id));
+  expect(originalCopy).toBeDefined();
+  await button(page, "Read saved profile and history").click();
+  await expect(page.getByRole("region", { name: "Saved profile outcome", exact: true })).toBeVisible();
+  await button(page, "Keep original attempt and start a separate profile edit").click();
+  expect(await page.evaluate(key => localStorage.getItem(key), originalCopy!.key)).toBe(originalCopy!.raw);
   expect(profileRequests(c.service, c.a.id)).toHaveLength(beforeCount + 1);
   await button(page, "Save profile").click(); await revision(page, other.revision + 1);
   const final = await c.service.project(c.project.id);
@@ -262,6 +269,8 @@ test("an actual stale CAS refusal preserves sent and later raw input without ret
   expect(requests[1].request_id).not.toBe(original.request_id);
   expect(requests[1].effect_grant).not.toBe(original.effect_grant);
   expect(nativeRequests(c.service)).toEqual([]);
+  expect(await page.evaluate(key => localStorage.getItem(key), originalCopy!.key)).toBe(originalCopy!.raw);
+  c.observations.originalUnknownCopy = originalCopy;
   c.observations.originalRejected = { request: original, error: "error" in result ? String(result.error) : null };
   c.observations.peerProject = other; c.observations.finalOracle = await c.service.observeStoredProject(final);
   c.observations.behaviorAssertionsCompleted = true;
@@ -434,6 +443,8 @@ test("an unknown own copy blocks actual Save until explicit reading proves absen
     await button(page, "Read profile recovery copy again").click();
     await expect(input(page, "Profile name")).toHaveValue(rawName);
     await expect(button(page, "Read profile recovery copy again")).toHaveCount(0);
+    await expect(button(page, "Save profile")).toBeDisabled();
+    await button(page, "Verify profile recovery copy").click();
     await expect(button(page, "Save profile")).toBeEnabled();
     expect(profileRequests(c.service, c.a.id)).toHaveLength(beforeCount);
     expect(profileGrantCount(c.service, c.project.id)).toBe(beforeGrants);
@@ -456,7 +467,7 @@ test("an unknown own copy blocks actual Save until explicit reading proves absen
   }
 });
 
-test("a known quota warning still permits one explicit real Save without changing the authored raw", async ({ page, profileCase: c }) => {
+test("a known quota failure blocks real Save until verified recovery without changing the authored raw", async ({ page, profileCase: c }) => {
   await page.goto("/"); await delivery(page, c.a);
   const beforeCount = profileRequests(c.service, c.a.id).length, beforeGrants = profileGrantCount(c.service, c.project.id);
   await page.evaluate(({ prefix, profileId }) => {
@@ -472,15 +483,25 @@ test("a known quota warning still permits one explicit real Save without changin
     await input(page, "Profile name").fill(rawName);
     await expect(review(page).getByRole("alert")).toContainText("quota");
     await expect(input(page, "Profile name")).toHaveValue(rawName);
-    await expect(button(page, "Save profile")).toBeEnabled();
+    await expect(button(page, "Save profile")).toBeDisabled();
     await expect(button(page, "Read profile recovery copy again")).toHaveCount(0);
+    expect(profileRequests(c.service, c.a.id)).toHaveLength(beforeCount);
+    expect(profileGrantCount(c.service, c.project.id)).toBe(beforeGrants);
+    expect(await c.service.project(c.project.id)).toEqual(c.project);
+    await page.evaluate(() => {
+      const state = (window as unknown as Record<string, unknown>).__mwProfileQuotaFault as { originalSet: typeof Storage.prototype.setItem };
+      Storage.prototype.setItem = state.originalSet;
+    });
+    await button(page, "Verify profile recovery copy").click();
+    await expect(input(page, "Profile name")).toHaveValue(rawName);
+    expect(profileRequests(c.service, c.a.id)).toHaveLength(beforeCount);
     await button(page, "Save profile").click(); await revision(page, c.project.revision + 1);
     const final = await c.service.project(c.project.id);
     expect(final.deliverables.find(profile => profile.id === c.a.id)).toEqual({ ...c.a, name: rawName });
     expect(profileRequests(c.service, c.a.id)).toHaveLength(beforeCount + 1);
     expect(profileGrantCount(c.service, c.project.id)).toBe(beforeGrants + 1);
     expect(nativeRequests(c.service)).toEqual([]);
-    c.observations.recoveryAdmission = { quotaIsKnownWriteWarning: true, rawName, actualSaveCount: 1 };
+    c.observations.recoveryAdmission = { quotaBlockedTransport: true, verifiedBeforeExplicitSave: true, rawName, actualSaveCount: 1 };
     c.observations.finalOracle = await c.service.observeStoredProject(final);
     c.observations.behaviorAssertionsCompleted = true;
   } finally {

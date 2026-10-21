@@ -3,18 +3,14 @@ run-name: Studio service ${{ github.event_name == 'workflow_dispatch' && inputs.
 on:
   push:
     branches: ['verify/studio-service-*']
-    paths:
-      - '.github/workflows/studio-service-verification.yml'
-      - 'tooling/ci_canvas_service.py'
-      - 'tooling/tests/test_ci_canvas_service.py'
   workflow_dispatch:
     inputs:
       selection:
         description: Run only the required real-service selection; all is the complete defined roster
         type: choice
         required: true
-        default: narrative
-        options: [narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture]
+        default: authoring-drafts
+        options: [complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, inspector, profile-metadata, profile-authority]
 permissions:
   contents: read
 concurrency:
@@ -70,7 +66,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: g0
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Include source build, all declared case bounds and setup/retention time.
+    timeout-minutes: ${{ inputs.selection == 'all' && 360 || inputs.selection == 'complete-authoring' && 180 || inputs.selection == 'authoring-drafts' && 120 || 60 }}
     env:
       CARGO_HOME: ${{ github.workspace }}/v/c
       CARGO_TARGET_DIR: ${{ github.workspace }}/v/t
@@ -121,11 +118,26 @@ jobs:
           set -euo pipefail
           python -B -I tooling/ci_canvas_service.py --repo . \
             --target ../v/t --output ../v/e --selection "$REQUESTED_SELECTION"
-      - name: Retain original reports, closed stores, streams and service binary
+      - name: Close complete original evidence into a verified TAR
+        id: archive
+        if: always()
+        run: |
+          set -euo pipefail
+          python -B -I tooling/ci_canvas_service.py archive --repo . --evidence ../v
+      - name: Retain verified TAR and original custody receipt
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: studio-service-${{ inputs.selection }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: v/retained
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Preserve unsealed diagnostics when archive custody fails
+        if: always() && steps.archive.outcome != 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: studio-service-unsealed-${{ inputs.selection }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             v/e
             v/tools

@@ -29,7 +29,7 @@ function measuredVoiceProblem(voice: VoiceTrack): string | null {
 export default function NativeOriginalMixReview({ project, desktopMode, commit }: {
   project: Project;
   desktopMode: boolean;
-  commit: (change: Change) => Promise<void>;
+  commit: (change: Change) => Promise<Project>;
 }) {
   const [profileId, setProfileId] = useState(() => project.deliverables.find(profile =>
     savedDeliveryRecipe(project, profile.id)?.original_mix)?.id ?? project.deliverables[0]?.id ?? "");
@@ -109,7 +109,9 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         || voiceAsset.content_sha256 !== selectedVoice.source_sha256) {
       blockers.push("The active measured voice must still reference its exact imported WAV digest.");
     }
-    if (selectedProfile?.voice_track_id && selectedProfile.voice_track_id !== selectedVoice.id) {
+    if (selectedProfile && !selectedProfile.voice_track_id) {
+      blockers.push("Explicitly bind this delivery profile to the active measured voice take before auditioning.");
+    } else if (selectedProfile?.voice_track_id && selectedProfile.voice_track_id !== selectedVoice.id) {
       blockers.push("The delivery profile is bound to a different voice take than the active Audio take. Select that active take or explicitly save a matching profile before auditioning.");
     }
     const voiceSegments = project.audio.transcript.filter(segment => segment.voice_track_id === selectedVoice.id);
@@ -207,7 +209,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
       <div><span>Saved music gain</span><strong>{project.audio.mix.music_gain_db} dB</strong></div>
       <div><span>Sample peak guard policy</span><strong>{ORIGINAL_MIX_SAMPLE_PEAK_GUARD_DBFS} dBFS · fixed</strong></div>
     </div>
-    <p className="production-help">Audition uses the active measured voice{selectedVoice ? " (" + selectedVoice.label + ")" : ""}, the selected saved profile and the saved global voice/music gains shown above. An unbound profile uses that active voice. The sample peak guard is a native mixer policy; it is separate from LUFS and true-peak targets.</p>
+    <p className="production-help">Audition uses the active measured voice{selectedVoice ? " (" + selectedVoice.label + ")" : ""}, the selected saved profile and the saved global voice/music gains shown above. The saved profile must explicitly bind that active voice. The sample peak guard is a native mixer policy; it is separate from LUFS and true-peak targets.</p>
     {blockers.length > 0 && <section aria-label="Original mix audition requirements">
       <ul className="production-help">{blockers.map(reason => <li key={reason}>{reason}</li>)}</ul>
     </section>}

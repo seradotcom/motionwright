@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import type { Change, MotionCanvasArchetype, MotionCanvasNarrativeRole, Project } from "./types";
+import type { MotionCanvasArchetype, MotionCanvasNarrativeRole, Project } from "./types";
 
 export interface DeliverySceneIntent {
   scene_id: string;
@@ -93,6 +92,7 @@ export function editRecipeField(draft: RecipeDraft, key: string, value: string, 
 /** Record authored input, never a grant or proof that the request committed. */
 export function submitRecipeDraft(draft: RecipeDraft, revision: number): RecipeDraft {
   if (!Number.isSafeInteger(revision) || revision < draft.revision) throw new Error("The saved project is behind this draft.");
+  if (draft.awaiting) throw new Error("Review the unconfirmed recipe outcome before a separate intent.");
   if (!Object.keys(draft.edits).length) throw new Error("There is no edited recipe input to save.");
   const next = structuredClone(draft);
   next.revision = revision;
@@ -100,22 +100,20 @@ export function submitRecipeDraft(draft: RecipeDraft, revision: number): RecipeD
   next.awaiting = { revision, fields: Object.fromEntries(Object.entries(next.edits).map(([key, edit]) => [key, edit.value])) };
   return next;
 }
-function canonicalRecipeField(group: RecipeGroup, key: string, raw: string): string {
+export function canonicalRecipeField(group: RecipeGroup, key: string, raw: string): string {
   if (group === "mix" && (numberFields as readonly string[]).includes(key) && decimal.test(raw.trim()) && Number.isFinite(Number(raw))) return String(Number(raw));
   return raw;
 }
-/** A current value can agree with a draft without proving which request wrote it. */
+/** A current value can agree with a draft without proving which request wrote it.
+ * This legacy input projection never acknowledges a submission. The original
+ * Project receipt is handled by the authority-aware coordinator, not by props.
+ */
 export function reconcileRecipeDraft(draft: RecipeDraft, current: Record<string, string>, revision: number): RecipeDraft {
   const next = structuredClone(draft);
   if (revision < draft.revision) return next;
-  const awaiting = next.awaiting;
-  const observed = (key: string, value: string) => Boolean(awaiting && revision > awaiting.revision && (current[key] ?? "") === canonicalRecipeField(draft.group, key, value));
-  for (const [key, edit] of Object.entries(next.edits)) {
-    const sent = awaiting?.fields[key];
-    const unchangedSentInput = sent !== undefined && edit.value === sent && observed(key, sent);
-    if (unchangedSentInput || (edit.value === (current[key] ?? "") && (!edit.intent || !awaiting))) delete next.edits[key];
+  if (!next.awaiting) for (const [key, edit] of Object.entries(next.edits)) {
+    if (edit.value === (current[key] ?? "") && !edit.intent) delete next.edits[key];
   }
-  if (awaiting && Object.entries(awaiting.fields).every(([key, value]) => observed(key, value))) delete next.awaiting;
   next.revision = revision;
   return next;
 }
@@ -123,15 +121,10 @@ export function recipeConflicts(draft: RecipeDraft, current: Record<string, stri
   return Object.entries(draft.edits).filter(([key, edit]) => (current[key] ?? "") !== edit.base && (current[key] ?? "") !== canonicalRecipeField(draft.group, key, edit.value)).map(([key]) => key);
 }
 export function resolveRecipeField(draft: RecipeDraft, key: string, current: Record<string, string>, keep: "saved" | "draft"): RecipeDraft {
+  if (draft.awaiting) throw new Error("Review the unconfirmed recipe outcome before resolving its input.");
   const next = structuredClone(draft);
   if (keep === "saved") delete next.edits[key];
   else if (next.edits[key]) next.edits[key] = { base: current[key] ?? "", value: next.edits[key].value };
-  // Explicit abandonment closes this local review, not an in-flight request.
-  // The hook prevents this action while its request is still running.
-  if (next.awaiting) {
-    delete next.awaiting.fields[key];
-    if (!Object.keys(next.edits).length || !Object.keys(next.awaiting.fields).length) delete next.awaiting;
-  }
   return next;
 }
 export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: RecipeDraft): DeliveryRecipe {
@@ -213,7 +206,7 @@ export function loadRecipeDraft(key: string, scope: string, group: RecipeGroup, 
   let entry: RecipeDraftRecovery = { draft: newRecipeDraft(scope, group, revision), blocked: null, warning: null };
   try { raw = localStorage.getItem(key); }
   catch (failure) {
-    entry = { ...entry, warning: "Recipe recovery storage could not be accessed. Input can still be edited in this window and saved to the project. " + String(failure), unverified: true };
+    entry = { ...entry, warning: "Recipe recovery storage could not be accessed. Input can still be edited in this window; project dispatch requires a verified recovery checkpoint. " + String(failure), unverified: true };
     memory.set(key, structuredClone(entry));
     return entry;
   }
@@ -231,10 +224,13 @@ export function persistRecipeDraft(key: string, draft: RecipeDraft): RecipeDraft
   if (entry.blocked) return entry;
   try {
     if (entry.unverified) {
-      if (localStorage.getItem(key) !== null) throw new Error("The earlier inaccessible copy is retained. Save this input to the project before reloading this window.");
+      if (localStorage.getItem(key) !== null) throw new Error("The earlier inaccessible copy is retained. Keep a separate verified copy of current input before reloading this window.");
       delete entry.unverified;
     }
-    if (!Object.keys(draft.edits).length && !draft.awaiting) localStorage.removeItem(key);
+    if (!Object.keys(draft.edits).length && !draft.awaiting) {
+      localStorage.removeItem(key);
+      if (localStorage.getItem(key) !== null) throw new Error("The recipe recovery removal was not confirmed.");
+    }
     else {
       const raw = JSON.stringify(draft);
       decodeRecipeDraft(raw, draft.scope, draft.group);
@@ -245,6 +241,7 @@ export function persistRecipeDraft(key: string, draft: RecipeDraft): RecipeDraft
       }
       if (total + new TextEncoder().encode(raw).length > 2 * 1024 * 1024 || count >= 64) throw new Error("Recipe recovery copies reached their 64-copy / 2 MiB budget.");
       localStorage.setItem(key, raw);
+      if (localStorage.getItem(key) !== raw) throw new Error("The recipe recovery write was not confirmed.");
     }
     entry.warning = null;
   } catch (failure) { entry.warning = backupWarning(failure); }
@@ -293,103 +290,5 @@ export function discardRecipeDraftCopy(scope: string, ownKey: string, copyKey: s
   memory.delete(copyKey);
 }
 
-/** Both Studio surfaces use the same scoped draft and the existing commit path. */
-export function useDeliveryRecipeDraft(project: Project, profileId: string, group: RecipeGroup, commit: (change: Change) => Promise<void>) {
-  const scope = recipeDraftScope(project, profileId, group);
-  const key = recipeDraftStorageKey(scope, recipeDraftWriterId());
-  const canonical = savedDeliveryRecipe(project, profileId);
-  const current = recipeFields(canonical, group);
-  const stored = loadRecipeDraft(key, scope, group, project.revision);
-  const visible = reconcileRecipeDraft(stored.draft, current, project.revision);
-  const live = useRef({ project, scope, key, draft: visible });
-  live.current = { project, scope, key, draft: visible };
-  const [, rerender] = useState(0);
-  const [action, setAction] = useState<{ key: string; error: string | null; message: string | null }>({ key, error: null, message: null });
-  const [pending, setPending] = useState(false);
-  const [recoveryEpoch, setRecoveryEpoch] = useState(0);
-  const inFlight = useRef(false);
-  const update = (draft: RecipeDraft) => {
-    if (live.current.key !== key) return;
-    live.current.draft = draft;
-    persistRecipeDraft(key, draft);
-    rerender(value => value + 1);
-  };
-  useEffect(() => {
-    persistRecipeDraft(key, visible);
-    rerender(value => value + 1);
-    // Scalar canonical changes reconcile saved values without replaying input.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, project.revision, JSON.stringify(canonical)]);
-  const conflicts = recipeConflicts(visible, current);
-  const values = { ...current, ...Object.fromEntries(Object.entries(visible.edits).map(([field, edit]) => [field, edit.value])) };
-  const locked = project.locks.some(lock => lock.kind === "content" && lock.resource === "project:" + project.id);
-  const sourceBehind = visible.revision > project.revision;
-  const copies = useRef<{ key: string; epoch: number; copies: RecipeRecoveryCopy[]; warning: string | null }>({ key: "", epoch: -1, copies: [], warning: null });
-  if (copies.current.key !== key || copies.current.epoch !== recoveryEpoch) copies.current = { key, epoch: recoveryEpoch, ...readRecipeRecoveryCopies(scope, group, key) };
-  const set = (field: string, value: string) => {
-    if (live.current.key !== key) return;
-    try {
-      let next = editRecipeField(live.current.draft, field, value, current);
-      if (group === "mix" && field !== "enabled") next = editRecipeField(next, "enabled", "true", current);
-      update(next);
-      setAction({ key, error: null, message: null });
-    } catch (failure) { setAction({ key, error: String(failure), message: null }); }
-  };
-  const resolve = (field: string, keep: "saved" | "draft") => {
-    if (live.current.key !== key || inFlight.current || sourceBehind) return;
-    update(resolveRecipeField(live.current.draft, field, current, keep));
-    setAction({ key, error: null, message: null });
-  };
-  const save = async () => {
-    if (live.current.key !== key || inFlight.current || locked || sourceBehind || stored.blocked || recipeConflicts(live.current.draft, current).length || !Object.keys(live.current.draft.edits).length) return;
-    let proposed: DeliveryRecipe;
-    let submitted: RecipeDraft;
-    try {
-      proposed = proposedDeliveryRecipe(canonical, live.current.draft);
-      validateDeliveryRecipe(project, profileId, proposed);
-      submitted = submitRecipeDraft(live.current.draft, project.revision);
-    } catch (failure) { setAction({ key, error: failure instanceof Error ? failure.message : String(failure), message: null }); return; }
-    update(submitted);
-    inFlight.current = true;
-    setPending(true);
-    // Clear only an action error; backup warnings remain attached to the copy.
-    setAction({ key, error: null, message: null });
-    try {
-      await commit({ type: "set_delivery_recipe", deliverable_profile_id: profileId, recipe: proposed.scene_intents.length || proposed.original_mix ? proposed : null });
-      if (live.current.key === key) setAction({ key, error: null, message: "The save request returned. Only values visible in the current saved project are treated as confirmed; pending input is retained." });
-    } catch (failure) { if (live.current.key === key) setAction({ key, error: failure instanceof Error ? failure.message : String(failure), message: null }); }
-    finally { inFlight.current = false; setPending(false); }
-  };
-  const error = [...new Set([action.key === key ? action.error : null, stored.blocked, stored.warning, copies.current.warning].filter((value): value is string => Boolean(value)))].join(" ") || null;
-  return { values, savedValues: current, edits: visible.edits, conflicts, dirty: Object.keys(visible.edits).length > 0, awaiting: Boolean(visible.awaiting), pending, locked, sourceBehind, error, message: action.key === key ? action.message : null, recoveryBlocked: Boolean(stored.blocked),
-    set, resolve, save,
-    copies: copies.current.copies,
-    refreshCopies: () => setRecoveryEpoch(value => value + 1),
-    recoverCopy: (copyKey: string) => {
-      if (live.current.key !== key || inFlight.current || sourceBehind) return;
-      try {
-        const recovered = recoverRecipeDraftCopy(key, copyKey, scope, group, current, project.revision);
-        update(recovered.draft);
-        setAction({ key, error: null, message: "Recovered a separate editing window's draft. Its original copy is retained; review any changed saved values before saving." });
-      } catch (failure) { setAction({ key, error: String(failure), message: null }); }
-    },
-    discardCopy: (copyKey: string) => {
-      if (live.current.key !== key) return;
-      try { discardRecipeDraftCopy(scope, key, copyKey); setRecoveryEpoch(value => value + 1); }
-      catch (failure) { setAction({ key, error: String(failure), message: null }); }
-    },
-    clearGroup: () => {
-      if (live.current.key !== key || inFlight.current || sourceBehind || stored.blocked || live.current.draft.awaiting || Object.keys(live.current.draft.edits).length) return;
-      let cleared = newRecipeDraft(scope, group, project.revision);
-      const empty = recipeFields(null, group);
-      for (const field of new Set([...Object.keys(current), ...Object.keys(empty)])) cleared = editRecipeField(cleared, field, empty[field] ?? "", current);
-      update(cleared);
-      setAction({ key, error: null, message: "Clearing is pending. Save this recipe change to remove the saved intent." });
-    },
-    discardUnreadableCopy: () => {
-      if (live.current.key !== key || inFlight.current) return;
-      try { discardUnreadableRecipeDraft(key, scope, group, project.revision); rerender(value => value + 1); setAction({ key, error: null, message: null }); }
-      catch (failure) { setAction({ key, error: String(failure), message: null }); }
-    },
-  };
-}
+// The authority-aware hook consumes only the original Project receipt.
+export { useDeliveryRecipeDraft } from "./deliveryRecipeDraft";

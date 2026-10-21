@@ -67,6 +67,7 @@ test("explicit desktop audition reads a saved recipe and leaves that project rev
     source_sha256:voiceAsset.content_sha256!,loudness_lufs:-22,true_peak_dbfs:-8,
   }];
   project.audio.active_voice_track_id=voiceId;
+  project.deliverables[0].voice_track_id=voiceId;
   project.audio.transcript=[{
     id:"00000000-0000-4000-8000-000000000054",voice_track_id:voiceId,
     start:{num:"0",den:"1"},end:{num:"1",den:"1"},

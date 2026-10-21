@@ -2,9 +2,10 @@ import { useMemo, useState } from "react";
 import { ArrowLeftRight, GitCompareArrows, ShieldAlert } from "lucide-react";
 import type { Change, Project } from "./types";
 import { inspectCreativeAlternative } from "./creativeAlternativeEvidence";
+import { reviewHasWork, useReviewDraft } from "./reviewDraft";
 import "./creative-alternatives.css";
 
-type Commit=(change:Change)=>Promise<void>;
+type Commit=(change:Change)=>Promise<Project>;
 export default function CreativeAlternativesPanel({
   project,commit,
 }:{
@@ -14,11 +15,11 @@ export default function CreativeAlternativesPanel({
     project.branch_workspaces.some(snapshot=>snapshot.branch_id===branch.id));
   const [selection,setSelection]=useState<string|null>(null);
   const selected=candidates.some(b=>b.id===selection)?selection:candidates[0]?.id??null;
-  const [direction,setDirection]=useState<"positive"|"negative">("positive");
-  const [rationale,setRationale]=useState("");
-  const [working,setWorking]=useState(false);
-  const [error,setError]=useState<string|null>(null);
-  const [note,setNote]=useState<string|null>(null);
+  const editor=useReviewDraft(project,{kind:"alternative",id:selected??project.active_branch},commit);
+  const {direction,rationale}=editor.draft.raw;
+  const working=editor.saving,error=editor.error,note=editor.notice;
+  const setDirection=(value:"positive"|"negative")=>editor.edit("direction",value);
+  const setRationale=(value:string)=>editor.edit("rationale",value);
   const active=project.branches.find(b=>b.id===project.active_branch);
   const alternative=candidates.find(b=>b.id===selected);
   const evaluated=useMemo(()=>{
@@ -27,12 +28,11 @@ export default function CreativeAlternativesPanel({
     catch(e){return {report:null,error:e instanceof Error?e.message:"The comparison cannot be assessed."};}
   },[project,selected]);
   const report=evaluated.report;
-  const enabled=!!report && report.differences.length>0 && !working &&
+  const enabled=!!report && report.differences.length>0 && !editor.blocked &&
     rationale.trim().length>=15 && rationale.trim().length<=1200;
 
   const record=async()=>{
     if(!enabled || !report || !alternative)return;
-    setError(null);setNote(null);setWorking(true);
     const exactKeys=Object.entries(report.count_by_kind)
       .sort(([a],[b])=>a.localeCompare(b))
       .map(([kind,n])=>kind+":"+n).join(", ");
@@ -48,22 +48,10 @@ export default function CreativeAlternativesPanel({
       "Editable source differences: "+report.differences.length+" ("+exactKeys+")",
       "Human editorial reason: "+rationale.trim(),
     ].join("\n");
-    try {
-      await commit({
-        type:"add_review",
-        kind:"creative",
-        resource:"project:"+project.id,
-        body:text,
-        start:null,
-        end:null,
-        locale:null,
-        profile_id:null,
-      });
-      setRationale("");
-      setNote("Manual "+direction+" study recorded as a new project revision. This is an open review, not an approved component or media artifact.");
-    } catch(e){
-      setError(e instanceof Error?e.message:"The revisioned review could not be recorded.");
-    } finally {setWorking(false);}
+    await editor.submit({
+      type:"add_review",kind:"creative",resource:"project:"+project.id,body:text,
+      start:null,end:null,locale:null,profile_id:null,
+    });
   };
   return <section className="creative-alternatives" aria-label="Creative alternatives evidence">
     <header className="creative-alternatives-heading">
@@ -89,7 +77,7 @@ export default function CreativeAlternativesPanel({
         <ArrowLeftRight size={17} aria-hidden="true"/>
         <label><span className="field-label">Compare against saved branch</span>
           <select aria-label="Creative alternative branch" value={selected??""}
-            onChange={e=>{setSelection(e.target.value);setError(null);setNote(null);}}>
+            onChange={e=>setSelection(e.target.value)}>
             {candidates.map(b=><option value={b.id} key={b.id}>{b.name} · r{b.head_revision}</option>)}
           </select></label>
       </div>
@@ -146,6 +134,24 @@ export default function CreativeAlternativesPanel({
           onClick={()=>void record()}>
           {working?"Recording source review…":"Record manual "+direction+" observation"}
         </button>
+        {editor.unknown&&<p role="status">Original alternative-review outcome UNKNOWN. The reason is retained and no request is replayed.</p>}
+        {editor.unknown&&<button type="button" className="button compact" disabled={working||editor.reviewing}
+          onClick={()=>void editor.readOutcome()}>Read saved alternative review and history</button>}
+        {editor.outcome&&<section role="region" aria-label="Saved alternative review outcome">
+          <p>Read saved revision r{editor.outcome.project.revision} and {editor.outcome.events.length} contiguous history entries.</p>
+          <p>Matching authored values at revisions {editor.outcome.matchingValueRevisions.join(", ")||"none"} do not identify or acknowledge the original request.</p>
+          <p>The original UNKNOWN copy remains. A later reason is kept; unchanged submitted text starts blank to prevent replay.</p>
+          <button type="button" className="button compact" disabled={working||editor.reviewing}
+            onClick={editor.separateIntent}>Keep original attempt and start a separate alternative review</button>
+        </section>}
+        {editor.storageError&&<div role="alert"><p>{editor.storageError}</p>
+          <button type="button" className="button compact" onClick={editor.retryBackup}>Retry alternative recovery copy</button></div>}
+        {editor.stale&&!editor.unknown&&<div role="status">
+          <p>This reason was authored at r{editor.draft.baseRevision}. Compare the current alternatives before keeping it for this revision.</p>
+          <button type="button" className="button compact" disabled={working||editor.unknown}
+            onClick={editor.advance}>Review alternative reason on current revision</button></div>}
+        {reviewHasWork(editor.draft)&&<button type="button" className="button compact"
+          onClick={editor.download}>Export alternative recovery copy</button>}
         {error&&<p className="creative-alternatives-error" role="alert">{error}</p>}
         {note&&<p className="creative-alternatives-status" role="status">{note}</p>}
       </div>}

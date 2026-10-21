@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fixtureProject } from "./fixture";
-import type { MotionCanvasFilmOptions, Project } from "./types";
+import type { MotionCanvasFilmOptions, Project, ProjectEvent } from "./types";
 import type { NativeDeliveryDispatchCheck } from "./api";
 import {
   captureDeliveryDispatch, type DeliveryDispatchView, type ProfileMetadataDraft,
@@ -13,6 +13,8 @@ import {
   submitProfileMetadata, reconcileProfileMetadata, profileMetadataConflicts, resolveProfileMetadata,
   decodeProfileMetadata, loadProfileMetadata, persistProfileMetadata, discardUnreadableProfileMetadata,
   profileMetadataCopies, recoverProfileMetadata, rereadProfileMetadata, retainedProfileMetadataCopies,
+  acknowledgeProfileMetadata, inspectProfileOutcome, separateProfileIntent, retainSeparateProfileIntent,
+  readProfileWriter, verifyProfileWriter, profileCopyVerified, PROFILE_WRITER_PREFIX,
 } from "./deliveryProfileDraft";
 import { ProjectMutationGate, type ProjectRevision } from "./projectMutation";
 
@@ -300,6 +302,16 @@ function metadataFixture() {
   profile.text_overrides = {};
   return { project, profile, current: profileCanonicalFields(profile), scope: profileMetadataScope(project, profile.id) };
 }
+
+function originalReceipt(f: ReturnType<typeof metadataFixture>, sent: ProfileMetadataDraft): Project {
+  if (!sent.awaiting?.original) throw new Error("The test requires an original capture.");
+  const project = structuredClone(f.project);
+  project.revision = sent.awaiting.revision + 1;
+  project.deliverables = project.deliverables.map(profile => profile.id === f.profile.id
+    ? structuredClone(sent.awaiting!.original!.profile) : profile);
+  return project;
+}
+
 let metadataCopyCounter = 0;
 function metadataWriter() {
   return "12345678-1234-4234-8234-" + String(++metadataCopyCounter).padStart(12, "0");
@@ -341,17 +353,20 @@ describe("frame rate property order", () => {
 
   it("acknowledges all submitted fields from Rust JSON while preserving later frame-rate and incomplete input", () => {
     const f = metadataFixture(), before = { ...f.profile, frame_rate: { num: "24", den: "1" } };
-    const current = profileCanonicalFields(before);
+    const current = profileCanonicalFields(before), id = metadataWriter();
     let draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "frame_rate", "30/1", current);
     draft = editProfileMetadata(draft, "language", "es-MX", current);
-    const sent = submitProfileMetadata(draft, before, 20);
+    const sent = submitProfileMetadata(draft, before, 20, id);
     let later = editProfileMetadata(sent, "frame_rate", "30000/1001", current);
     later = editProfileMetadata(later, "height", "1e", current);
     const partial = { ...before, frame_rate: JSON.parse('{"den":"1","num":"30"}') };
     const unconfirmed = reconcileProfileMetadata(later, profileCanonicalFields(partial), 21, f.scope);
     expect(unconfirmed.awaiting).toEqual(sent.awaiting);
-    const saved = { ...partial, language: "es-MX" }, savedFields = profileCanonicalFields(saved);
-    const observed = reconcileProfileMetadata(unconfirmed, savedFields, 22, f.scope);
+    const receipt = originalReceipt(f, sent);
+    const saved = receipt.deliverables.find(profile => profile.id === f.profile.id)!;
+    saved.frame_rate = JSON.parse('{"den":"1","num":"30"}');
+    const savedFields = profileCanonicalFields(saved);
+    const observed = acknowledgeProfileMetadata(unconfirmed, id, receipt);
     expect(observed.awaiting).toBeUndefined();
     expect(observed.edits).toEqual({
       frame_rate: { base: '{"num":"30","den":"1"}', value: "30000/1001" },
@@ -377,8 +392,9 @@ describe("frame rate property order", () => {
     expect(loaded.draft.awaiting?.fields.frame_rate.target).toBe('{"num":"30","den":"1"}');
     const current = profileCanonicalFields({ ...f.profile, frame_rate: JSON.parse('{"den":"1","num":"30"}') });
     const observed = reconcileProfileMetadata(loaded.draft, current, 21, f.scope);
-    expect(observed.awaiting).toBeUndefined();
-    expect(observed.edits.frame_rate).toEqual({ base: current.frame_rate, value: "30000/1001" });
+    expect(observed.awaiting).toEqual(loaded.draft.awaiting);
+    expect(observed.edits.frame_rate).toEqual({ base: '{"num":"24","den":"1"}', value: "30000/1001" });
+    expect(acknowledgeProfileMetadata(observed, metadataWriter(), { ...f.project, revision: 21 })).toEqual(observed);
     expect(entries.get(key)).toBe(raw);
     expect(storage.setItem).not.toHaveBeenCalled(); expect(storage.removeItem).not.toHaveBeenCalled();
   });
@@ -449,16 +465,16 @@ describe("raw output metadata continuity", () => {
   });
 
   it("captures an explicit note-line edit even when a saved single note has the same display text", () => {
-    const f = metadataFixture(), profile = { ...f.profile, adaptation_notes: ["A\nB"] };
+    const f = metadataFixture(), profile = { ...f.profile, adaptation_notes: ["A\nB"] }, id = metadataWriter();
     const current = profileCanonicalFields(profile);
     const edited = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "adaptation_notes", "A\nB", current);
     expect(edited.edits.adaptation_notes).toEqual({ base: JSON.stringify(["A\nB"]), value: "A\nB" });
-    const sent = submitProfileMetadata(edited, profile, 20);
+    const sent = submitProfileMetadata(edited, profile, 20, id);
     expect(sent.awaiting?.fields.adaptation_notes.target).toBe(JSON.stringify(["A", "B"]));
     const unconfirmed = reconcileProfileMetadata(sent, current, 21, f.scope);
     expect(unconfirmed.awaiting).toEqual(sent.awaiting);
     expect(unconfirmed.edits).toEqual(edited.edits);
-    const confirmed = reconcileProfileMetadata(unconfirmed, profileCanonicalFields({ ...profile, adaptation_notes: ["A", "B"] }), 22, f.scope);
+    const confirmed = acknowledgeProfileMetadata(unconfirmed, id, originalReceipt(f, sent));
     expect(confirmed.edits).toEqual({});
     expect(confirmed.awaiting).toBeUndefined();
   });
@@ -511,53 +527,63 @@ describe("raw output metadata continuity", () => {
     expect(profileMetadataConflicts(draft, profileCanonicalFields(current))).toEqual(["adaptation_notes"]);
   });
 
-  it("keeps unsent equivalent numeric spelling until explicit review or a later observation of its submitted value", () => {
-    const f = metadataFixture();
+  it("keeps equivalent numeric spelling until explicit review or the original confirmed reply", () => {
+    const f = metadataFixture(), id = metadataWriter();
     f.profile.width = 1920; f.current = profileCanonicalFields(f.profile);
     const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "width", "001920", f.current);
     expect(reconcileProfileMetadata(draft, f.current, 21, f.scope).edits.width.value).toBe("001920");
-    const sent = submitProfileMetadata(draft, f.profile, 21);
+    const sent = submitProfileMetadata(draft, f.profile, 21, id);
     const observed = reconcileProfileMetadata(sent, f.current, 22, f.scope);
-    expect(observed.edits).toEqual({});
-    expect(observed.awaiting).toBeUndefined();
+    expect(observed.edits.width.value).toBe("001920");
+    expect(observed.awaiting).toEqual(sent.awaiting);
+    const confirmed = acknowledgeProfileMetadata(observed, id, originalReceipt(f, sent));
+    expect(confirmed.edits).toEqual({});
+    expect(confirmed.awaiting).toBeUndefined();
   });
 
-  it("keeps C typed after B was sent and rebases C to the observed B without replaying it", () => {
-    const f = metadataFixture();
+  it("keeps C typed after B was sent and rebases C only to the original reply without replay", () => {
+    const f = metadataFixture(), id = metadataWriter();
     const b = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "Submitted B", f.current);
-    const sent = submitProfileMetadata(b, f.profile, 20);
+    const sent = submitProfileMetadata(b, f.profile, 20, id);
     const c = editProfileMetadata(sent, "name", "Current C", f.current);
-    const observed = reconcileProfileMetadata(c, { ...f.current, name: '"Submitted B"' }, 21, f.scope);
+    const unchanged = reconcileProfileMetadata(c, { ...f.current, name: '"Submitted B"' }, 21, f.scope);
+    expect(unchanged.awaiting).toEqual(sent.awaiting);
+    const observed = acknowledgeProfileMetadata(unchanged, id, originalReceipt(f, sent));
     expect(observed.edits.name).toEqual({ base: '"Submitted B"', value: "Current C" });
     expect(observed.awaiting).toBeUndefined();
     expect(profileMetadataConflicts(observed, { ...f.current, name: '"Submitted B"' })).toEqual([]);
     expect(sent.awaiting?.fields.name).toEqual({ raw: "Submitted B", target: '"Submitted B"' });
   });
 
-  it("keeps A restored while B is unconfirmed and then keeps A against the observed B", () => {
-    const f = metadataFixture(), originalName = f.profile.name;
+  it("keeps A restored while B is unconfirmed and after the original B acknowledgement", () => {
+    const f = metadataFixture(), originalName = f.profile.name, id = metadataWriter();
     const b = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "Submitted B", f.current);
-    const sent = submitProfileMetadata(b, f.profile, 20);
+    const sent = submitProfileMetadata(b, f.profile, 20, id);
     const restored = editProfileMetadata(sent, "name", originalName, f.current);
     const unchanged = reconcileProfileMetadata(restored, f.current, 21, f.scope);
     expect(unchanged.edits.name.value).toBe(originalName);
     expect(unchanged.awaiting).toEqual(sent.awaiting);
-    const observed = reconcileProfileMetadata(unchanged, { ...f.current, name: '"Submitted B"' }, 22, f.scope);
+    const observed = acknowledgeProfileMetadata(unchanged, id, originalReceipt(f, sent));
     expect(observed.edits.name).toEqual({ base: '"Submitted B"', value: originalName });
     expect(observed.awaiting).toBeUndefined();
   });
 
-  it("requires all sent fields in one later observation, not a partial match", () => {
-    const f = metadataFixture();
+  it("requires the exact original full upsert reply and rejects partial or matching observed values", () => {
+    const f = metadataFixture(), id = metadataWriter();
     let draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "Submitted", f.current);
     draft = editProfileMetadata(draft, "height", "720", f.current);
-    const sent = submitProfileMetadata(draft, f.profile, 20);
+    const sent = submitProfileMetadata(draft, f.profile, 20, id);
     const partial = reconcileProfileMetadata(sent, { ...f.current, name: '"Submitted"' }, 21, f.scope);
     expect(partial.edits).toEqual(sent.edits);
     expect(partial.awaiting).toEqual(sent.awaiting);
-    const observed = reconcileProfileMetadata(partial, { ...f.current, name: '"Submitted"', height: "720" }, 22, f.scope);
-    expect(observed.edits).toEqual({});
-    expect(observed.awaiting).toBeUndefined();
+    const receipt = originalReceipt(f, sent), incomplete = structuredClone(receipt);
+    incomplete.deliverables.find(profile => profile.id === f.profile.id)!.height = f.profile.height;
+    expect(() => acknowledgeProfileMetadata(partial, id, incomplete)).toThrow("exact profile upsert");
+    const matching = reconcileProfileMetadata(partial, { ...f.current, name: '"Submitted"', height: "720" }, 21, f.scope);
+    expect(matching.awaiting).toEqual(sent.awaiting);
+    const confirmed = acknowledgeProfileMetadata(matching, id, receipt);
+    expect(confirmed.edits).toEqual({});
+    expect(confirmed.awaiting).toBeUndefined();
   });
 
   for (const [label, revision, differentScope] of [
@@ -576,21 +602,22 @@ describe("raw output metadata continuity", () => {
     expect(() => submitProfileMetadata(future, f.profile, 20)).toThrow();
   });
 
-  it("requires explicit review before another unconfirmed save and resolves one field without mutating another", () => {
+  it("requires separate outcome review for UNKNOWN while keeping unsent field resolution independent", () => {
     const f = metadataFixture();
     let draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "Submitted", f.current);
     draft = editProfileMetadata(draft, "height", "720", f.current);
     const sent = submitProfileMetadata(draft, f.profile, 20);
     expect(() => submitProfileMetadata(sent, f.profile, 20)).toThrow("before sending another save");
-    const current = { ...f.current, name: '"A different author"' };
-    const kept = resolveProfileMetadata(sent, "name", current, "draft");
+    const current = { ...f.current, name: '"A different author"' }, before = JSON.stringify(sent);
+    expect(() => resolveProfileMetadata(sent, "name", current, "draft")).toThrow("UNKNOWN");
+    expect(() => resolveProfileMetadata(sent, "height", current, "saved")).toThrow("UNKNOWN");
+    expect(JSON.stringify(sent)).toBe(before);
+    const kept = resolveProfileMetadata(draft, "name", current, "draft");
     expect(kept.edits.name).toEqual({ base: '"A different author"', value: "Submitted" });
-    expect(kept.edits.height).toEqual(sent.edits.height);
-    expect(kept.awaiting?.fields).toEqual({ height: sent.awaiting!.fields.height });
+    expect(kept.edits.height).toEqual(draft.edits.height);
     const saved = resolveProfileMetadata(kept, "height", current, "saved");
     expect(saved.edits).toEqual({ name: kept.edits.name });
     expect(saved.awaiting).toBeUndefined();
-    expect(sent.awaiting?.fields.name.raw).toBe("Submitted");
   });
 
   it("adds or deletes one text override without replacing the latest unrelated override", () => {
@@ -958,13 +985,13 @@ describe("explicit local cut mode", () => {
     expect(() => proposedProfileMetadata(profile, draft)).toThrow("complete decimal");
   });
   it("keeps an empty edit made after a custom selection was sent through the matching ACK", () => {
-    const f = metadataFixture(), profile = { ...f.profile, included_scene_ids: [] };
+    const f = metadataFixture(), profile = { ...f.profile, included_scene_ids: [] }, id = metadataWriter();
     const current = profileCanonicalFields(profile);
     const draft = choose(newProfileMetadataDraft(f.scope, 20), current, "custom", ids);
-    const sent = submitProfileMetadata(draft, profile, 20);
+    const sent = submitProfileMetadata(draft, profile, 20, id);
     const later = choose(sent, current, "custom", []);
     const saved = { ...profile, included_scene_ids: ids };
-    const observed = reconcileProfileMetadata(later, profileCanonicalFields(saved), 21, f.scope);
+    const observed = acknowledgeProfileMetadata(later, id, originalReceipt(f, sent));
     expect(observed.awaiting).toBeUndefined();
     expect(observed.edits.cut_mode.value).toBe("custom");
     expect(observed.edits.included_scene_ids.value).toBe("[]");
@@ -1132,5 +1159,226 @@ describe("retained metadata for removed profiles", () => {
     expect(collected.warning).toContain("64 retained profile snapshots");
     expect([...entries]).toEqual(before);
     expect(storage.setItem).not.toHaveBeenCalled(); expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+});
+
+describe("original profile authority causal regressions", () => {
+  it("causal: matching incoming values cannot acknowledge the original attempt", () => {
+    const f = metadataFixture();
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "Original capture", f.current);
+    const sent = submitProfileMetadata(draft, f.profile, 20);
+    const observed = reconcileProfileMetadata(sent, { ...f.current, name: '"Original capture"' }, 21, f.scope);
+    expect(observed.awaiting).toEqual(sent.awaiting);
+    expect(observed.edits.name).toEqual(sent.edits.name);
+  });
+  it("causal: explicit field resolution cannot consume an UNKNOWN attempt", () => {
+    const f = metadataFixture();
+    const sent = submitProfileMetadata(editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "Original capture", f.current), f.profile, 20);
+    expect(() => resolveProfileMetadata(sent, "name", f.current, "draft")).toThrow(/original|UNKNOWN/i);
+    expect(sent.awaiting?.fields.name.raw).toBe("Original capture");
+  });
+});
+
+describe("original profile reply authority", () => {
+  function captured() {
+    const f = metadataFixture(), id = metadataWriter();
+    let draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "Original saved name", f.current);
+    draft = editProfileMetadata(draft, "width", "001280", f.current);
+    const sent = submitProfileMetadata(draft, f.profile, 20, id);
+    return { f, id, sent, receipt: originalReceipt(f, sent) };
+  }
+  for (const fault of ["project", "generation", "branch", "old-revision", "late-revision", "missing-profile", "unsent-field"] as const) {
+    it("retains the complete UNKNOWN capture after an original reply with " + fault, () => {
+      const { f, id, sent, receipt } = captured(), before = JSON.stringify(sent);
+      if (fault === "project") receipt.id = metadataWriter();
+      if (fault === "generation") receipt.generation = metadataWriter();
+      if (fault === "branch") receipt.active_branch = metadataWriter();
+      if (fault === "old-revision") receipt.revision = 20;
+      if (fault === "late-revision") receipt.revision = 22;
+      if (fault === "missing-profile") receipt.deliverables = receipt.deliverables.filter(profile => profile.id !== f.profile.id);
+      if (fault === "unsent-field") receipt.deliverables.find(profile => profile.id === f.profile.id)!.language = "different";
+      expect(() => acknowledgeProfileMetadata(sent, id, receipt)).toThrow("exact profile upsert");
+      expect(JSON.stringify(sent)).toBe(before);
+    });
+  }
+  it("cannot acknowledge another original capture ID even when scope, base and profile match", () => {
+    const { id, sent, receipt } = captured(), other = metadataWriter();
+    expect(other).not.toBe(id); expect(acknowledgeProfileMetadata(sent, other, receipt)).toEqual(sent);
+  });
+  it("retains an A-B-A spelling edit and unrelated incomplete fields on the original acknowledgement", () => {
+    const { f, id, sent, receipt } = captured();
+    let later = editProfileMetadata(sent, "name", "Intervening spelling", f.current);
+    later = editProfileMetadata(later, "name", "Original saved name", f.current);
+    later = editProfileMetadata(later, "height", "1e", f.current);
+    const result = acknowledgeProfileMetadata(later, id, receipt);
+    expect(result.edits.name.value).toBe("Original saved name");
+    expect(result.edits.height.value).toBe("1e");
+    expect(result.edits.width).toBeUndefined(); expect(result.awaiting).toBeUndefined();
+  });
+  it("keeps an original receipt UNKNOWN when the retained comparison source is already newer", () => {
+    const { f, id, sent, receipt } = captured();
+    const advanced = reconcileProfileMetadata(sent, f.current, 22, f.scope);
+    expect(() => acknowledgeProfileMetadata(advanced, id, receipt)).toThrow("exact profile upsert");
+    expect(advanced.awaiting).toEqual(sent.awaiting);
+  });
+  for (const fault of ["capture-id", "capture-profile", "capture-version", "unknown-member"] as const) {
+    it("rejects a modified persisted original capture: " + fault, () => {
+      const { f, sent } = captured(), changed = structuredClone(sent);
+      if (fault === "capture-id") changed.awaiting!.original!.id = "not-an-attempt-id";
+      if (fault === "capture-profile") changed.awaiting!.original!.profile.width = 1920;
+      if (fault === "capture-version") changed.awaiting!.original!.versions.name = Number.MAX_SAFE_INTEGER;
+      if (fault === "unknown-member") Object.assign(changed.awaiting!.original!, { acknowledged: true });
+      expect(() => decodeProfileMetadata(JSON.stringify(changed), f.scope)).toThrow("original profile capture");
+      expect(decodeProfileMetadata(JSON.stringify(sent), f.scope)).toEqual(sent);
+    });
+  }
+});
+
+describe("verified metadata pointer and UNKNOWN separation custody", () => {
+  function retained() {
+    const f = metadataFixture(), { storage, entries } = storageFixture(), tab = storageFixture(), writerId = metadataWriter();
+    const writer = readProfileWriter(f.scope, writerId, tab.storage), key = profileMetadataKey(f.scope, writerId), id = metadataWriter();
+    const sent = submitProfileMetadata(editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "Original", f.current), f.profile, 20, id);
+    expect(profileCopyVerified(persistProfileMetadata(key, sent, storage))).toBe(true);
+    verifyProfileWriter(f.scope, writer, tab.storage);
+    return { f, storage, entries, tab, writer, key, sent, saved: originalReceipt(f, sent) };
+  }
+  it("refuses a silently dropped own copy and does not claim a durable write", () => {
+    const f = metadataFixture(), { storage, entries } = storageFixture(), key = profileMetadataKey(f.scope, metadataWriter());
+    storage.setItem.mockImplementation(() => undefined);
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "width", "1e", f.current);
+    const result = persistProfileMetadata(key, draft, storage);
+    expect(profileCopyVerified(result)).toBe(false); expect(result.draft.edits.width.value).toBe("1e");
+    expect(result.blocked).toContain("could not be verified"); expect(entries.size).toBe(0);
+  });
+  it("requires explicit pointer rereading after an unreadable original pointer", () => {
+    const f = metadataFixture(), tab = storageFixture(), fallback = metadataWriter();
+    tab.storage.getItem.mockImplementationOnce(() => { throw new Error("read denied"); });
+    const writer = readProfileWriter(f.scope, fallback, tab.storage);
+    expect(writer.readUnverified).toBe(true);
+    expect(() => verifyProfileWriter(f.scope, writer, tab.storage)).toThrow("Read the profile writer pointer again");
+    expect(tab.entries.size).toBe(0);
+    verifyProfileWriter(f.scope, writer, tab.storage, true);
+    expect(tab.entries.get(PROFILE_WRITER_PREFIX + f.scope)).toBe(fallback);
+  });
+  for (const fault of ["silent", "throw", "foreign"] as const) it("refuses unverified writer publication: " + fault, () => {
+    const f = metadataFixture(), tab = storageFixture(), id = metadataWriter();
+    const writer = readProfileWriter(f.scope, id, tab.storage), key = PROFILE_WRITER_PREFIX + f.scope;
+    if (fault === "silent") tab.storage.setItem.mockImplementation(() => undefined);
+    if (fault === "throw") tab.storage.setItem.mockImplementation(() => { throw new Error("quota"); });
+    if (fault === "foreign") tab.entries.set(key, metadataWriter());
+    const prior = tab.entries.get(key);
+    expect(() => verifyProfileWriter(f.scope, writer, tab.storage)).toThrow();
+    expect(writer.error).not.toBeNull(); expect(tab.entries.get(key)).toBe(prior);
+  });
+  it("blocks a 65th profile copy without evicting or modifying any original copy", () => {
+    const f = metadataFixture(), { storage, entries } = storageFixture();
+    for (let index = 0; index < 64; index++) {
+      const scope = profileMetadataScope(f.project, metadataWriter()), key = profileMetadataKey(scope, metadataWriter());
+      entries.set(key, JSON.stringify(editProfileMetadata(newProfileMetadataDraft(scope, 20), "width", "1e", f.current)));
+    }
+    const original = [...entries], key = profileMetadataKey(f.scope, metadataWriter());
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "No eviction", f.current);
+    const result = persistProfileMetadata(key, draft, storage);
+    expect(profileCopyVerified(result)).toBe(false); expect(result.warning).toContain("64-copy");
+    expect([...entries]).toEqual(original); expect(result.draft.edits.name.value).toBe("No eviction");
+  });
+  it("separates inspected later input without rewriting the original UNKNOWN bytes after an observation", async () => {
+    const c = retained();
+    const later = editProfileMetadata(c.sent, "name", "  Separate later input  ", c.f.current);
+    persistProfileMetadata(c.key, later, c.storage); const raw = c.entries.get(c.key)!;
+    const observed = reconcileProfileMetadata(later, profileCanonicalFields(c.saved.deliverables[0]), 21, c.f.scope);
+    const history: ProjectEvent[] = [{ revision: 21, created_at: "2026-01-01T00:00:00Z",
+      change: { type: "upsert_deliverable", profile: c.sent.awaiting!.original!.profile } }];
+    const outcome = await inspectProfileOutcome(observed, c.saved, { readProject: async () => c.saved, readHistory: async () => history });
+    const next = separateProfileIntent(observed, c.saved, outcome), nextId = metadataWriter();
+    const result = retainSeparateProfileIntent(c.key, observed, next, c.writer, nextId, c.storage, c.tab.storage);
+    expect(result.writerId).toBe(nextId); expect(c.entries.get(c.key)).toBe(raw);
+    const copy = decodeProfileMetadata(c.entries.get(profileMetadataKey(c.f.scope, nextId))!, c.f.scope);
+    expect(copy.awaiting).toBeUndefined(); expect(copy.edits.name.value).toBe("  Separate later input  ");
+    expect(outcome.matchingValueRevisions).toEqual([21]);
+    expect(JSON.parse(raw).awaiting.original.id).toBe(c.sent.awaiting!.original!.id);
+  });
+  for (const fault of ["original-changed", "new-copy-quota", "pointer-silent"] as const) {
+    it("keeps the original UNKNOWN capture and pointer when separation fails: " + fault, async () => {
+      const c = retained(), raw = c.entries.get(c.key)!, nextId = metadataWriter();
+      const later = editProfileMetadata(c.sent, "name", "Distinct later intent", c.f.current);
+      persistProfileMetadata(c.key, later, c.storage);
+      const retainedRaw = c.entries.get(c.key)!;
+      const outcome = await inspectProfileOutcome(later, c.saved, {
+        readProject: async () => c.saved,
+        readHistory: async () => [{ revision: 21, created_at: "2026-01-01T00:00:00Z",
+          change: { type: "upsert_deliverable", profile: c.sent.awaiting!.original!.profile } }],
+      });
+      const next = separateProfileIntent(later, c.saved, outcome);
+      if (fault === "original-changed") c.entries.set(c.key, raw);
+      if (fault === "new-copy-quota") c.storage.setItem.mockImplementation((key, value) => {
+        if (key !== c.key) throw new Error("quota"); c.entries.set(key, value);
+      });
+      if (fault === "pointer-silent") c.tab.storage.setItem.mockImplementation(() => undefined);
+      expect(() => retainSeparateProfileIntent(c.key, later, next, c.writer, nextId, c.storage, c.tab.storage)).toThrow();
+      expect(c.entries.get(c.key)).toBe(fault === "original-changed" ? raw : retainedRaw);
+      expect(c.tab.entries.get(PROFILE_WRITER_PREFIX + c.f.scope)).toBe(c.writer.writerId);
+      expect(JSON.parse(c.entries.get(c.key)!).awaiting.original.id).toBe(c.sent.awaiting!.original!.id);
+    });
+  }
+});
+
+describe("explicit saved profile and journal inspection", () => {
+  function inspectable() {
+    const f = metadataFixture(), id = metadataWriter();
+    const draft = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "Uncertain", f.current);
+    const sent = submitProfileMetadata(draft, f.profile, 20, id), saved = originalReceipt(f, sent);
+    const event: ProjectEvent = { revision: 21, created_at: "2026-01-01T00:00:00Z", change: { type: "upsert_deliverable", profile: sent.awaiting!.original!.profile } };
+    const transport = { readProject: vi.fn(async () => structuredClone(saved)), readHistory: vi.fn(async () => [structuredClone(event)]) };
+    return { f, sent, saved, event, transport };
+  }
+  it("reports a matching saved value without acknowledging or mutating the retained original", async () => {
+    const c = inspectable(), raw = JSON.stringify(c.sent);
+    const result = await inspectProfileOutcome(c.sent, c.saved, c.transport);
+    expect(result.matchingValueRevisions).toEqual([21]); expect(JSON.stringify(c.sent)).toBe(raw);
+    const next = separateProfileIntent(c.sent, c.saved, result);
+    expect(next.edits).toEqual({}); expect(next.awaiting).toBeUndefined(); expect(JSON.stringify(c.sent)).toBe(raw);
+  });
+  for (const fault of ["other-owner", "changed-initial", "changed-final", "gap", "empty-history", "oversized-history", "invalid-profile"] as const) {
+    it("does not admit a separate intent from unverified source or history: " + fault, async () => {
+      const c = inspectable();
+      if (fault === "other-owner") c.saved.generation = metadataWriter();
+      if (fault === "changed-initial") c.transport.readProject.mockResolvedValue({ ...c.saved, title: "Different saved source" });
+      if (fault === "changed-final") c.transport.readProject.mockResolvedValueOnce(c.saved).mockResolvedValue({ ...c.saved, title: "Concurrent change" });
+      if (fault === "gap") c.transport.readHistory.mockResolvedValue([{ ...c.event, revision: 22 }]);
+      if (fault === "empty-history") c.transport.readHistory.mockResolvedValue([]);
+      if (fault === "oversized-history") c.saved.revision = 2070;
+      if (fault === "invalid-profile") c.transport.readHistory.mockResolvedValue([{ ...c.event,
+        change: { type: "upsert_deliverable", profile: { ...c.sent.awaiting!.original!.profile, width: -1 } } }]);
+      const raw = JSON.stringify(c.sent);
+      await expect(inspectProfileOutcome(c.sent, c.saved, c.transport)).rejects.toThrow();
+      expect(JSON.stringify(c.sent)).toBe(raw);
+    });
+  }
+  it("rejects a previously inspected capture after its scope or pending identity changes", async () => {
+    const c = inspectable(), outcome = await inspectProfileOutcome(c.sent, c.saved, c.transport);
+    const changed = structuredClone(c.sent); changed.awaiting!.original!.id = metadataWriter();
+    expect(() => separateProfileIntent(changed, c.saved, outcome)).toThrow("complete history");
+    expect(() => separateProfileIntent(c.sent, { ...c.saved, revision: 22 }, outcome)).toThrow("complete history");
+  });
+  it("legacy same-spelling causal: retains later A-B-A input when the historical capture has no original edit versions", async () => {
+    const c = inspectable(), legacy = structuredClone(c.sent); delete legacy.awaiting!.original;
+    delete legacy.sequence; delete legacy.versions;
+    let later = editProfileMetadata(legacy, "name", "Intervening author edit", c.f.current);
+    later = editProfileMetadata(later, "name", legacy.awaiting!.fields.name.raw, c.f.current);
+    const raw = JSON.stringify(later), outcome = await inspectProfileOutcome(later, c.saved, c.transport);
+    const separate = separateProfileIntent(later, c.saved, outcome);
+    expect(separate.edits.name?.value).toBe(legacy.awaiting!.fields.name.raw);
+    expect(separate.awaiting).toBeUndefined(); expect(JSON.stringify(later)).toBe(raw);
+  });
+  it("permits legacy UNKNOWN inspection while preserving its old raw and later unsent spelling", async () => {
+    const c = inspectable(), legacy = structuredClone(c.sent); delete legacy.awaiting!.original;
+    legacy.edits.name.value = "Later legacy input"; const raw = JSON.stringify(legacy);
+    const outcome = await inspectProfileOutcome(legacy, c.saved, c.transport);
+    expect(outcome.matchingValueRevisions).toEqual([21]);
+    const next = separateProfileIntent(legacy, c.saved, outcome);
+    expect(next.edits.name.value).toBe("Later legacy input"); expect(next.awaiting).toBeUndefined();
+    expect(JSON.stringify(legacy)).toBe(raw);
   });
 });
