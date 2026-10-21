@@ -15,7 +15,7 @@ on:
         description: 'Exact 40-character product source; independent of the gate checkout'
         required: true
         type: string
-        default: 'c1a1073688b263a802376ead9d2e62f4420e0946'
+        default: '85d41b8c29d1734b6b69bbc420eefd91c071a97e'
       oracle_source_sha:
         description: 'Exact reviewed updated-application oracle source'
         required: true
@@ -51,7 +51,7 @@ jobs:
       - name: Admit explicit source identity without shell interpolation
         id: identity
         env:
-          REQUESTED_PRODUCT_SHA: ${{ inputs.product_source_sha || 'c1a1073688b263a802376ead9d2e62f4420e0946' }}
+          REQUESTED_PRODUCT_SHA: ${{ inputs.product_source_sha || '85d41b8c29d1734b6b69bbc420eefd91c071a97e' }}
           REQUESTED_ORACLE_SHA: ${{ inputs.oracle_source_sha || '016cd88c4ef20ada70fcc446361c40e4a0b81ca1' }}
           REQUESTED_SCOPE: ${{ inputs.verification_scope || 'g0' }}
         run: |
