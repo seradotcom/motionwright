@@ -5,6 +5,7 @@ mod mlt_cleanup;
 mod models;
 mod portability;
 mod project_creation;
+mod project_projection;
 pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodedPcm, WAVEFORM_FRAMES_PER_PEAK,
     WaveformPage,
@@ -16,6 +17,11 @@ pub use jobs::{
 pub use mlt_cleanup::MltCleanupInventory;
 pub use models::{
     ModelContextDisclosure, ModelProviderKind, ModelRequestDraft, ModelRequestPreflight,
+};
+pub use project_projection::{
+    MAX_NODE_PAGE_ITEMS, MAX_PROJECTION_RESPONSE_BYTES, MAX_SCENE_PAGE_ITEMS, NodePage,
+    NodePageCursor, ProjectionError, ProjectionFailure, ProjectionHead, ProjectionIdentity,
+    ProjectionResult, ScenePage, ScenePageCursor, SceneRef, SceneSummary,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

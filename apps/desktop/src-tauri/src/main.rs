@@ -10,6 +10,7 @@ mod narration_native;
 mod original_mix_native;
 mod project_export;
 mod project_library;
+mod project_projection;
 mod runtime_setup;
 
 use av_delivery::{
@@ -495,6 +496,39 @@ fn open_project(
     request: project_library::OpenProjectRequest,
 ) -> Result<Project, String> {
     project_library::open_project(&state.service, request).map_err(sanitized)
+}
+
+#[tauri::command]
+async fn project_projection_head(
+    state: State<'_, AppState>,
+    request: project_projection::Head,
+) -> Result<motionwright_service::ProjectionHead, motionwright_service::ProjectionFailure> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || project_projection::head(&service, request))
+        .await
+        .map_err(|_| motionwright_service::ProjectionFailure::Unavailable)?
+}
+
+#[tauri::command]
+async fn project_scene_page(
+    state: State<'_, AppState>,
+    request: project_projection::Scenes,
+) -> Result<motionwright_service::ScenePage, motionwright_service::ProjectionFailure> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || project_projection::scenes(&service, request))
+        .await
+        .map_err(|_| motionwright_service::ProjectionFailure::Unavailable)?
+}
+
+#[tauri::command]
+async fn project_scene_nodes(
+    state: State<'_, AppState>,
+    request: project_projection::Nodes,
+) -> Result<motionwright_service::NodePage, motionwright_service::ProjectionFailure> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || project_projection::nodes(&service, request))
+        .await
+        .map_err(|_| motionwright_service::ProjectionFailure::Unavailable)?
 }
 
 #[tauri::command]
@@ -2177,6 +2211,9 @@ fn main() {
             bootstrap,
             list_projects,
             open_project,
+            project_projection_head,
+            project_scene_page,
+            project_scene_nodes,
             issue_project_creation_grant,
             create_project,
             recover_project_creation,
