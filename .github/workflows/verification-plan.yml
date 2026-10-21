@@ -3,7 +3,7 @@ name: Verification Plan (shadow)
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'verify/release-scope-*']
   workflow_dispatch:
     inputs:
       base_sha:
@@ -49,6 +49,7 @@ jobs:
           python tooling/ci_test_runner.py --repo . \
             --test-directory tooling/tests \
             --pattern test_ci_impact_plan.py \
+            --pattern test_release_scope_plan.py \
             --pattern test_conformance_policy.py \
             --pattern test_conformance_currency_impact.py \
             --pattern test_conformance_history_guard.py \
