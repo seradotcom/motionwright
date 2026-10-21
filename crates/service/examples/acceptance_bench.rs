@@ -1,3 +1,6 @@
+#[path = "responsiveness_bench.rs"]
+mod reference_profiles;
+
 use motionwright_domain::{
     Change, LockKind, RationalTime, RendererKind, RevisionStamp, SceneStatus,
     variant_dependency_fingerprint,
@@ -5,7 +8,6 @@ use motionwright_domain::{
 use motionwright_service::StudioService;
 use serde::Serialize;
 use std::{env, fs, io::Write, path::Path, time::Instant};
-use tempfile::tempdir;
 use uuid::Uuid;
 
 #[derive(Clone, Copy)]
@@ -35,6 +37,7 @@ struct CacheMetric {
 
 #[derive(Serialize)]
 struct DatasetMetric {
+    artifact_directory: String,
     brief: String,
     size: String,
     scene_count: usize,
@@ -69,6 +72,12 @@ struct CacheEvidence {
 
 #[derive(Serialize)]
 struct BenchmarkReport {
+    dataset_family: &'static str,
+    normative_reference: bool,
+    source_attribution_verified: bool,
+    source_binding_consistent: bool,
+    source_context: serde_json::Value,
+    artifact_directory: String,
     schema: &'static str,
     source_sha: String,
     generated_by: &'static str,
@@ -108,8 +117,12 @@ fn database_bytes(path: &Path) -> u64 {
 }
 
 fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetric {
-    let temp = tempdir().expect("temporary benchmark directory");
-    let db_path = temp.path().join("motionwright.sqlite3");
+    let temp = reference_profiles::support::retained_directory(&format!(
+        "historical-{}-{size}",
+        brief.slug
+    ))
+    .expect("retained historical benchmark directory");
+    let db_path = temp.join("motionwright.sqlite3");
     let open_started = Instant::now();
     let service = StudioService::open(&db_path).expect("benchmark store");
     let fresh_store_open_micros = open_started.elapsed().as_micros();
@@ -326,7 +339,7 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
         })).collect::<Vec<_>>(),
     }))
     .expect("serialize derived preview index");
-    let cache_source = temp.path().join("derived-preview-index.json");
+    let cache_source = temp.join("derived-preview-index.json");
     fs::write(&cache_source, &derived_payload).expect("write derived preview index");
 
     let cache_store_started = Instant::now();
@@ -381,6 +394,7 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
     };
 
     DatasetMetric {
+        artifact_directory: temp.display().to_string(),
         brief: brief.slug.into(),
         size: size.into(),
         scene_count,
@@ -402,7 +416,29 @@ fn run_dataset(brief: BriefSpec, size: &str, scene_count: usize) -> DatasetMetri
     }
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    match env::var("MOTIONWRIGHT_REFERENCE_PROFILES") {
+        Ok(mode) if mode == "normative" => return reference_profiles::support::acceptance_main(),
+        Ok(mode) if mode == "historical" => {}
+        Err(env::VarError::NotPresent) => {}
+        _ => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "motionwright.performance.configuration-error.v1",
+                    "status": "FAIL",
+                    "error": "MOTIONWRIGHT_REFERENCE_PROFILES must be normative or historical; unset it for the historical default"
+                })
+            );
+            return std::process::ExitCode::FAILURE;
+        }
+    }
+    let evidence = reference_profiles::support::retained_directory("historical-source")
+        .expect("historical source evidence directory");
+    let context_before = reference_profiles::support::context();
+    let (sources_before, identity_before) =
+        reference_profiles::support::retain_sources(&evidence.join("source-before"))
+            .expect("retain historical benchmark sources before execution");
     let budget_ms = env::var("MOTIONWRIGHT_LATENCY_BUDGET_MS")
         .ok()
         .and_then(|value| value.parse::<u128>().ok())
@@ -451,9 +487,32 @@ fn main() {
         .map(|result| result.cache.validation_micros)
         .sum();
 
+    let context_after = reference_profiles::support::context();
+    let (sources_after, identity_after) =
+        reference_profiles::support::retain_sources(&evidence.join("source-after"))
+            .expect("retain historical benchmark sources after execution");
+    let source_attribution_verified =
+        reference_profiles::support::source_attributed(&context_before)
+            && reference_profiles::support::source_attributed(&context_after)
+            && context_before["source_sha_compiled"] == context_after["source_sha_compiled"]
+            && context_before["executable"] == context_after["executable"]
+            && context_before["compiler_version"] == context_after["compiler_version"]
+            && identity_before == identity_after;
     let report = BenchmarkReport {
+        source_binding_consistent: source_attribution_verified,
+        dataset_family: "historical_scene_count_microbench",
+        normative_reference: false,
+        source_attribution_verified: false,
+        source_context: serde_json::json!({
+            "before": context_before, "after": context_after,
+            "retained_sources_before": sources_before, "retained_sources_after": sources_after,
+        }),
+        artifact_directory: evidence.display().to_string(),
         schema: "motionwright.performance.v1",
-        source_sha: env::var("GITHUB_SHA").unwrap_or_else(|_| "local-unattributed".into()),
+        source_sha: context_before["source_sha_compiled"]
+            .as_str()
+            .unwrap_or("unattributed")
+            .to_owned(),
         generated_by: "motionwright-service/examples/acceptance_bench",
         latency_budget_ms: budget_ms,
         briefs: briefs.len(),
@@ -473,6 +532,12 @@ fn main() {
         comparative_claims: "NONE: the benchmark reports Motionwright measurements only and makes no competitor-superiority claim.",
     };
 
+    fs::write(
+        evidence.join("report.json"),
+        serde_json::to_vec_pretty(&report).expect("encode retained historical report"),
+    )
+    .expect("retain historical report before enforcing budgets");
+
     // Keep all nine measured datasets available even when a budget rejects the run.
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
@@ -491,4 +556,9 @@ fn main() {
             failure.brief, failure.size, failure.max_commit_micros, budget_micros
         );
     }
+    if !report.source_binding_consistent {
+        eprintln!("benchmark source attribution changed or is unavailable");
+        return std::process::ExitCode::FAILURE;
+    }
+    std::process::ExitCode::SUCCESS
 }
