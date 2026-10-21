@@ -1,9 +1,11 @@
 //! Stable local-import identity and explicit read-only receipt recovery.
-use super::{StudioService, audio, invalid_import, validate_importable_asset};
+use super::{
+    MAX_SVG_IMPORT_BYTES, StudioService, audio, invalid_import, validate_importable_asset,
+};
 use motionwright_domain::{Asset, Change, RevisionStamp, VoiceTrack};
 use motionwright_storage::{ApplyOutcome, FileImportIntent, Result, StorageError};
 use sha2::{Digest, Sha256};
-use std::{fs, fs::File, io::Read, path::Path};
+use std::path::Path;
 use uuid::Uuid;
 
 fn stable_import_id(
@@ -31,36 +33,8 @@ fn stable_import_id(
     Ok(Uuid::from_bytes(bytes))
 }
 
-fn hash_source_once(source: &Path) -> Result<String> {
-    let metadata = fs::symlink_metadata(source)?;
-    #[cfg(windows)]
-    let reparse = {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes() & 0x400 != 0
-    };
-    #[cfg(not(windows))]
-    let reparse = false;
-    if !metadata.is_file() || metadata.file_type().is_symlink() || reparse {
-        return Err(StorageError::UnsafeSourcePath(
-            "file import requires a regular non-symlink source".into(),
-        ));
-    }
-    let mut input = File::open(source)?;
-    if !input.metadata()?.is_file() {
-        return Err(StorageError::UnsafeSourcePath(
-            "source is not a regular file".into(),
-        ));
-    }
-    let mut digest = Sha256::new();
-    let mut chunk = [0_u8; 128 * 1024];
-    loop {
-        let read = input.read(&mut chunk)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&chunk[..read]);
-    }
-    Ok(hex::encode(digest.finalize()))
+fn hash_source_once(source: &Path, max_bytes: u64) -> Result<String> {
+    motionwright_storage::Store::hash_file_import_source_with_limit(source, max_bytes)
 }
 
 impl StudioService {
@@ -99,7 +73,7 @@ impl StudioService {
         if let Some(recorded) = recorded {
             // Known replay does not ingest or repair CAS, and never remeasures
             // a voice take. A normal file import still binds the supplied bytes.
-            let source_sha256 = hash_source_once(source)?;
+            let source_sha256 = hash_source_once(source, self.import_limits.source_bytes())?;
             if source_sha256 != recorded.source_sha256 {
                 return Err(StorageError::RequestReuse);
             }
@@ -125,15 +99,26 @@ impl StudioService {
         {
             return Err(invalid_import("voice import requires an audio media type"));
         }
-        let staged = self.store.lock().stage_file_import(source)?;
+        let svg_extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
+        let max_bytes = match &intent {
+            FileImportIntent::Asset { media_type, .. }
+                if media_type.eq_ignore_ascii_case("image/svg+xml") || svg_extension =>
+            {
+                MAX_SVG_IMPORT_BYTES.min(self.import_limits.source_bytes())
+            }
+            _ => self.import_limits.source_bytes(),
+        };
+        let staged = self
+            .store
+            .lock()
+            .stage_file_import_with_limit(source, max_bytes)?;
         let source_sha256 = staged.descriptor().sha256.clone();
         let immutable_path = staged.path();
         let change = match &intent {
             FileImportIntent::Asset { name, media_type } => {
-                let svg_extension = source
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
                 validate_importable_asset(immutable_path, media_type, svg_extension)?;
                 Change::AddAsset {
                     asset: Asset {
@@ -156,7 +141,7 @@ impl StudioService {
                 media_type,
                 label,
             } => {
-                let measured = audio::measure_audio_file(immutable_path)?;
+                let measured = audio::measure_audio_file(immutable_path, &self.import_limits)?;
                 let asset_id = stable_import_id(
                     project_id,
                     expected.generation,

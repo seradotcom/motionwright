@@ -19,6 +19,8 @@ import subprocess
 import sys
 import uuid
 
+import storage_schema_contract as storage
+
 from nsis_owned_files import (
     _capture, _check_path_syntax, _relative, _require_plain_parents,
     _require_regular, _signature, _source_change_time, _read_flags,
@@ -49,12 +51,18 @@ SOURCE_PATHS = (
     "tooling/tests/test_nsis_owned_files.py",
     "tooling/windows_installer_lifecycle.py",
     "tooling/tests/test_windows_installer_lifecycle.py",
+    "tooling/windows_installer_producer.py",
+    "tooling/tests/test_windows_installer_producer.py",
     "tooling/ci_test_runner.py",
     "tooling/package_receipt.py",
     "tooling/release_manifest.py",
     "tooling/v01_release_readiness.py",
     "tooling/candidate_smoke.py",
     "tooling/windows_cold_start.py",
+    "tooling/storage_schema_contract.py",
+    "tooling/tests/test_storage_schema_contract.py",
+    "tooling/windows_nsis_interruption.py",
+    "crates/storage/src/lib.rs",
     "tooling/windows_first_project_ui.ps1",
     "apps/studio/package.json",
     "apps/studio/package-lock.json",
@@ -417,6 +425,12 @@ def validate_inputs(root: Path, admission: dict, expected_source: str, expected_
             and set(before.get("files", {})) == set(SOURCE_PATHS), "source_observation_mismatch")
     for item in before["files"].values():
         identity(item)
+    cohort = inputs.get("storage_cohort")
+    if cohort is not None:
+        cohort = storage.validate_cohort(cohort, source_sha=expected_source,
+                                         source_tree=admission["source_tree"])
+        require(before["files"].get(storage.SOURCE_PATH) == cohort["source_input"]["checkout"],
+                "storage_cohort_original_not_bound")
     require(compiled.get("source_sha") == expected_source
             and compiled.get("source_tree") == admission["source_tree"]
             and inputs.get("source_sha") == expected_source, "compiled_source_mismatch")
@@ -489,6 +503,7 @@ def validate_inputs(root: Path, admission: dict, expected_source: str, expected_
     require_pe_version(old_pe, old_version, ref_identity(refs["previous_main"]))
     require_pe_version(new_pe, target_version, ref_identity(refs["current_main"]))
     return {"source_sha": expected_source, "source_tree": admission["source_tree"],
+        **({"storage_cohort": cohort} if cohort is not None else {}),
         "run": expected_run, "source_before": before,
         "source_version": meta["version"], "previous_version": old_version,
         "fixture_installer_version": target_version,
@@ -587,8 +602,10 @@ def optional_regular_stamp(path: Path):
 def capture_snapshot(root: Path, *, snapshot_name: str, operation: str, position: str,
                      install_root: Path, database: Path, registry_keys: list[str],
                      registry_reader=registry_snapshot,
-                     first_use_contract: str = CURRENT_FIRST_USE_CONTRACT) -> dict:
+                     first_use_contract: str = CURRENT_FIRST_USE_CONTRACT, storage_cohort=None) -> dict:
     """Capture a quiescent fixture; never follows a reparse or modifies its store."""
+    if storage_cohort is not None:
+        storage_cohort = storage.validate_cohort(storage_cohort)
     operation_id(operation)
     require(position in {"before", "after"}, "snapshot_position")
     require(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", snapshot_name), "snapshot_name")
@@ -639,11 +656,14 @@ def capture_snapshot(root: Path, *, snapshot_name: str, operation: str, position
         # copies. The original DB/WAL/SHM captures above remain untouched.
         project = read_project_snapshot(
             inspection / database.name, first_use_contract=first_use_contract,
+            **({"storage_cohort": storage_cohort} if storage_cohort is not None else {}),
         )
     else:
         require(all(value is None for value in family.values()), "orphan_sqlite_sidecar")
     require(registry_reader(registry_keys) == before_registry, "registry_changed_during_capture")
-    value = {"schema": "motionwright.windows-lifecycle-snapshot/1",
+    value = {"schema": ("motionwright.windows-lifecycle-snapshot/1" if storage_cohort is None
+                        else "motionwright.windows-lifecycle-snapshot/2"),
+        **({"storage_cohort": storage_cohort} if storage_cohort is not None else {}),
         "operation_id": operation, "position": position,
         "install_root": str(install_root), "database": str(database),
         "installed": retained, "registry": before_registry,
@@ -737,11 +757,20 @@ def retain_observed_result(root: Path, phase: str, original: dict, observation,
     return result
 
 
-def snapshot_value(root: Path, ref: dict, operation: str, position: str, keys: list[str]):
+def snapshot_value(root: Path, ref: dict, operation: str, position: str, keys: list[str],
+                   *, storage_cohort=None):
     value = bound_json(root, ref)
-    exact(value, {"schema", "operation_id", "position", "install_root", "database",
-                  "installed", "registry", "sqlite_family", "project"}, "snapshot_fields")
-    require(value["schema"] == "motionwright.windows-lifecycle-snapshot/1"
+    fields = {"schema", "operation_id", "position", "install_root", "database",
+              "installed", "registry", "sqlite_family", "project"}
+    schema = "motionwright.windows-lifecycle-snapshot/1"
+    if storage_cohort is not None:
+        storage_cohort = storage.validate_cohort(storage_cohort)
+        fields.add("storage_cohort")
+        schema = "motionwright.windows-lifecycle-snapshot/2"
+    exact(value, fields, "snapshot_fields")
+    require(storage_cohort is None or value["storage_cohort"] == storage_cohort,
+            "snapshot_storage_cohort_mismatch")
+    require(value["schema"] == schema
             and value["operation_id"] == operation and value["position"] == position,
             "snapshot_phase_binding")
     require(isinstance(value["installed"], dict) and len(value["installed"]) <= MAX_FILES,

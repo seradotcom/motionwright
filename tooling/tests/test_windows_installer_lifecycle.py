@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import sys
@@ -15,6 +16,9 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import windows_installer_lifecycle as lifecycle
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_storage_schema_contract import cohort as storage_cohort_fixture
+from windows_cold_start import ColdStartError
 from release_manifest import ManifestError
 
 
@@ -848,6 +852,594 @@ class WindowsLifecycleTests(unittest.TestCase):
             )
         self.assertEqual(database.read_bytes(), original)
         self.assertFalse((self.root / "wrong-contract/snapshot.json").exists())
+
+
+class TemplateFlowError(ValueError):
+    """The source exceeds the deliberately closed NSIS control-flow subset."""
+
+
+class UninstallTemplateFlow:
+    """Interpret actual payload-flow macros with explicitly simulated guard results.
+
+    This is not an NSIS VM or a filesystem/registry oracle. The tested slice starts
+    at uninstall flag initialization and ends before association/registration
+    cleanup. Optional hooks, the running-process check, native calls and compiler
+    object iteration require the separate compiled Windows gate.
+    """
+
+    LOGIC = {"If", "AndIf", "OrIf", "ElseIf", "Else", "EndIf"}
+    OWNED = (
+        "motionwright-desktop.exe", r"assets\alpha data.dat", r"assets\beta.dat",
+        "helper-one.exe", "helper-two.exe",
+    )
+
+    def __init__(self, template, guard, overrides=None, modified=None, missing=()):
+        self.template = template
+        self.constants = dict(re.findall(r"(?m)^!define (MWOWN_\w+) ([0-9]+)\s*$", guard))
+        required = {"MWOWN_MATCHED", "MWOWN_MISSING", "MWOWN_PRESERVED",
+                    "MWOWN_DELETE_MARKED", "MWOWN_DELETE_UNCERTAIN"}
+        if not required <= self.constants.keys():
+            raise TemplateFlowError("missing native result constants")
+        self.baselines = {name: (("synthetic baseline " + name) * (index + 1)).encode()
+                          for index, name in enumerate(self.OWNED)}
+        self.files = {**self.baselines, "uninstall.exe": b"synthetic retained self",
+                      "foreign.txt": b"foreign bytes"}
+        self.files.update(modified or {})
+        for name in missing:
+            self.files.pop(name, None)
+        self.initial_files = dict(self.files)
+        self.overrides = overrides or {}
+        self.calls = []
+        self.diagnostics = []
+        self.model_exit_code = 0
+        self.abort = None
+        self.registration_phase_reached = False
+        self.variables = {"$INSTDIR": r"C:\synthetic-install"}
+        self.declared = {"$0", "$INSTDIR", "$MWOWN_LastReason"}
+        self.declared.update("$" + name for name in re.findall(r"(?m)^Var (\w+)\s*$", template))
+        self.constants.update(MAINBINARYNAME="motionwright-desktop",
+                              PRODUCTNAME="Synthetic Motionwright")
+        for index, name in enumerate(self.OWNED):
+            symbol = ("MW_MAIN" if index == 0 else
+                      "MW_RESOURCE_" + str(index - 1) if index < 3 else
+                      "MW_BINARY_" + str(index - 3))
+            self.constants[symbol + "_SHA256"] = hashlib.sha256(self.baselines[name]).hexdigest()
+            self.constants[symbol + "_SIZE"] = str(len(self.baselines[name]))
+        self.macros = {}
+        for match in re.finditer(r"(?ms)^!macro (\w+)([^\n]*)\n(.*?)^!macroend\s*$", template):
+            name, parameters, body = match.groups()
+            if name in self.macros:
+                raise TemplateFlowError("duplicate macro: " + name)
+            self.macros[name] = (parameters.split(), body)
+        sections = re.findall(r"(?ms)^Section Uninstall\s*\n(.*?)^SectionEnd\s*$", template)
+        if len(sections) != 1:
+            raise TemplateFlowError("uninstall section is not unique")
+        section = sections[0]
+        start = "  StrCpy $MWINST_UninstallPreserved 0"
+        end = "  ; Delete app associations"
+        if section.count(start) != 1 or section.count(end) != 1:
+            raise TemplateFlowError("payload-flow boundaries are not unique")
+        prefix, payload = section.split(start)
+        expected_hook = [
+            "!ifmacrodef NSIS_HOOK_PREUNINSTALL",
+            "!insertmacro NSIS_HOOK_PREUNINSTALL", "!endif",
+        ]
+        if [line.strip() for line in prefix.splitlines() if line.strip()] != expected_hook:
+            raise TemplateFlowError("unsupported operations before payload preflight")
+        payload = start + payload.split(end)[0]
+        self.instructions = self._expand(self._render_payload(payload), {}, ())
+        self.program, position = self._sequence(0)
+        if position != len(self.instructions):
+            raise TemplateFlowError("unbalanced conditional at payload boundary")
+
+    @staticmethod
+    def _tokens(line):
+        tokens, position = [], 0
+        for match in re.finditer(r'"[^"\r\n]*"|[^\s"]+', line):
+            if line[position:match.start()].strip():
+                raise TemplateFlowError("unsupported quoting")
+            token = match.group()
+            tokens.append(token[1:-1] if token.startswith('"') else token)
+            position = match.end()
+        if line[position:].strip():
+            raise TemplateFlowError("unterminated quoted token")
+        return tokens
+
+    def _render_payload(self, payload):
+        def render(match):
+            collection, body = match.groups()
+            rows = (self.OWNED[1:3] if collection == "resources" else self.OWNED[3:5])
+            field = "{{this.[1]}}" if collection == "resources" else "{{this}}"
+            return "".join(body.replace(field, name).replace("{{@index}}", str(index))
+                           for index, name in enumerate(rows))
+        rendered = re.sub(r"(?ms)^\s*{{#each (resources|binaries)}}\s*\n(.*?)^\s*{{/each}}\s*$",
+                          render, payload)
+        if "{{" in rendered or "}}" in rendered:
+            raise TemplateFlowError("unsupported template iteration or field")
+        return rendered
+
+    def _substitute(self, line, parameters):
+        def replace(match):
+            name = match.group(1)
+            if name in parameters:
+                return parameters[name]
+            if name in self.constants:
+                return self.constants[name]
+            if name in self.LOGIC:
+                return match.group()
+            raise TemplateFlowError("unknown source symbol: " + name)
+        return re.sub(r"\${(\w+)}", replace, line)
+
+    def _expand(self, source, parameters, stack):
+        output = []
+        for raw in source.splitlines():
+            line = raw.strip()
+            if not line or line.startswith(";"):
+                continue
+            tokens = self._tokens(self._substitute(line, parameters))
+            if tokens[0] == "!insertmacro" and len(tokens) >= 2:
+                name = tokens[1]
+                if name not in {"MWOWN_CHECK", "MWOWN_DELETE", "CheckIfAppIsRunning"}:
+                    if name not in self.macros or name in stack:
+                        raise TemplateFlowError("unknown or recursive macro: " + name)
+                    keys, body = self.macros[name]
+                    if len(keys) != len(tokens) - 2:
+                        raise TemplateFlowError("macro argument count: " + name)
+                    output.extend(self._expand(body, dict(zip(keys, tokens[2:])), stack + (name,)))
+                    continue
+            output.append(tokens)
+        return output
+
+    def _condition(self, tokens):
+        if len(tokens) != 4 or tokens[2] not in {"=", "==", "!=", "S==", "S!="}:
+            raise TemplateFlowError("unsupported conditional expression")
+        return tokens[1:]
+
+    def _sequence(self, position):
+        nodes = []
+        while position < len(self.instructions):
+            tokens = self.instructions[position]
+            if tokens[0] in {"${ElseIf}", "${Else}", "${EndIf}"}:
+                break
+            if tokens[0] == "${If}":
+                branches, fallback = [], []
+                while True:
+                    conditions = [self._condition(self.instructions[position])]
+                    position += 1
+                    connective = None
+                    while position < len(self.instructions) and self.instructions[position][0] in {
+                            "${AndIf}", "${OrIf}"}:
+                        extra = self.instructions[position]
+                        kind = extra[0]
+                        if connective is not None and connective != kind:
+                            raise TemplateFlowError("mixed logical connectives are unsupported")
+                        connective = kind
+                        conditions.append(self._condition(extra))
+                        position += 1
+                    body, position = self._sequence(position)
+                    branches.append((connective, conditions, body))
+                    if position >= len(self.instructions):
+                        raise TemplateFlowError("unterminated conditional")
+                    if self.instructions[position][0] == "${ElseIf}":
+                        continue
+                    if self.instructions[position] == ["${Else}"]:
+                        fallback, position = self._sequence(position + 1)
+                    if position >= len(self.instructions) or self.instructions[position] != ["${EndIf}"]:
+                        raise TemplateFlowError("ambiguous conditional terminator")
+                    position += 1
+                    break
+                nodes.append(("conditional", branches, fallback))
+                continue
+            self._validate_instruction(tokens)
+            nodes.append(("instruction", tokens))
+            position += 1
+        return nodes, position
+
+    def _validate_instruction(self, tokens):
+        operation = tokens[0]
+        if operation == "StrCpy" and len(tokens) == 3 and tokens[1] in self.declared:
+            return
+        if operation == "SetErrorLevel" and len(tokens) == 2 and re.fullmatch(r"[0-9]+", tokens[1]):
+            return
+        if operation in {"Abort", "DetailPrint"} and len(tokens) == 2:
+            return
+        if operation == "!insertmacro":
+            if tokens[1] in {"MWOWN_CHECK", "MWOWN_DELETE"} and len(tokens) == 8:
+                return
+            if tokens[1] == "CheckIfAppIsRunning" and len(tokens) == 4:
+                return
+        raise TemplateFlowError("unsupported instruction: " + " ".join(tokens))
+
+    def _value(self, token):
+        def replace(match):
+            name = match.group()
+            if name not in self.variables:
+                raise TemplateFlowError("uninitialized variable: " + name)
+            return self.variables[name]
+        value = re.sub(r"\$(?:[A-Za-z_]\w*|[0-9])", replace, token)
+        if "$" in value:
+            raise TemplateFlowError("unsupported runtime substitution")
+        return value
+
+    def _true(self, expression):
+        left, operator, right = expression
+        left, right = self._value(left), self._value(right)
+        if operator == "=":
+            if not re.fullmatch(r"-?[0-9]+", left) or not re.fullmatch(r"-?[0-9]+", right):
+                raise TemplateFlowError("unsupported nondecimal integer comparison")
+            return int(left) == int(right)
+        # LogicLib == / != use StrCmp; S== / S!= use StrCmpS.
+        equal = left == right if operator.startswith("S") else left.casefold() == right.casefold()
+        return not equal if operator.endswith("!=") else equal
+
+    def _execute(self, nodes):
+        for node in nodes:
+            if self.abort is not None:
+                return
+            if node[0] == "conditional":
+                selected = node[2]
+                for connective, conditions, body in node[1]:
+                    values = [self._true(condition) for condition in conditions]
+                    if (any(values) if connective == "${OrIf}" else all(values)):
+                        selected = body
+                        break
+                self._execute(selected)
+                continue
+            tokens = node[1]
+            operation = tokens[0]
+            if operation == "StrCpy":
+                self.variables[tokens[1]] = self._value(tokens[2])
+            elif operation == "SetErrorLevel":
+                self.model_exit_code = int(tokens[1])
+            elif operation == "Abort":
+                self.abort = self._value(tokens[1])
+            elif operation == "DetailPrint":
+                self.diagnostics.append(self._value(tokens[1]))
+            else:
+                name, *arguments = tokens[1:]
+                arguments = [self._value(arg) if arg != "$0" else arg for arg in arguments]
+                if name == "CheckIfAppIsRunning":
+                    if arguments != [r"C:\synthetic-install\motionwright-desktop.exe", "Synthetic Motionwright"]:
+                        raise TemplateFlowError("unexpected running-process check binding")
+                    self.calls.append(("RUNNING_PROCESS_CHECK", None))
+                    continue
+                prefix, root, relative, digest, size, result_variable = arguments
+                if (prefix != "un." or root != r"C:\synthetic-install" or result_variable != "$0"
+                        or relative not in self.baselines):
+                    raise TemplateFlowError("unexpected native guard target")
+                baseline = self.baselines[relative]
+                if digest != hashlib.sha256(baseline).hexdigest() or size != str(len(baseline)):
+                    raise TemplateFlowError("native guard baseline binding mismatch")
+                phase = "CHECK" if name == "MWOWN_CHECK" else "DELETE"
+                key = (phase, relative)
+                if key in self.calls:
+                    raise TemplateFlowError("repeated native request is not admitted by this fixture")
+                self.calls.append(key)
+                default = ("MWOWN_MATCHED", "matched") if phase == "CHECK" else ("MWOWN_DELETE_MARKED", "delete_marked")
+                result, reason = self.overrides.get(key, default)
+                self.variables["$0"] = self.constants.get(result, str(result))
+                self.variables["$MWOWN_LastReason"] = reason
+                if phase == "DELETE" and self.variables["$0"] == self.constants["MWOWN_DELETE_MARKED"]:
+                    self.files.pop(relative, None)
+
+    def run(self):
+        self._execute(self.program)
+        self.registration_phase_reached = self.abort is None
+        return self
+
+
+class UninstallTemplateFlowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        windows = Path(__file__).resolve().parents[2] / "apps/desktop/src-tauri/windows"
+        cls.template = (windows / "installer.nsi").read_text(encoding="utf-8-sig")
+        cls.guard = (windows / "uninstall-ownership.nsh").read_text(encoding="utf-8-sig")
+
+    def flow(self, overrides=None, modified=None, missing=(), template=None):
+        return UninstallTemplateFlow(self.template if template is None else template, self.guard,
+                                     overrides, modified, missing).run()
+
+    def assert_complete(self, flow):
+        self.assertIsNone(flow.abort)
+        self.assertTrue(flow.registration_phase_reached)
+        self.assertEqual(flow.model_exit_code, 0)
+        for name in ("uninstall.exe", "foreign.txt"):
+            self.assertEqual(flow.files[name], flow.initial_files[name])
+
+    def assert_blocked(self, flow, code=2, before_effects=False):
+        self.assertIsNotNone(flow.abort)
+        self.assertFalse(flow.registration_phase_reached)
+        self.assertEqual(flow.model_exit_code, code)
+        if before_effects:
+            self.assertFalse(any(phase == "DELETE" for phase, _ in flow.calls))
+            self.assertEqual(flow.files, flow.initial_files)
+
+    def test_mixed_content_mismatch_preserves_each_role_and_removes_intact_payloads(self):
+        for role in UninstallTemplateFlow.OWNED:
+            for reason in ("hash_mismatch", "size_mismatch"):
+                with self.subTest(role=role, reason=reason):
+                    responses = {(phase, role): ("MWOWN_PRESERVED", reason) for phase in ("CHECK", "DELETE")}
+                    flow = self.flow(responses, {role: b"authored modified bytes"})
+                    self.assert_complete(flow)
+                    self.assertEqual(set(flow.files), {role, "uninstall.exe", "foreign.txt"})
+                    self.assertEqual(flow.files[role], b"authored modified bytes")
+                    self.assertEqual(flow.calls.count(("DELETE", role)), 1)
+
+    def test_all_modified_payloads_can_complete_with_their_bytes_retained(self):
+        modified = {name: ("changed " + name).encode() for name in UninstallTemplateFlow.OWNED}
+        responses = {(phase, name): ("MWOWN_PRESERVED", "hash_mismatch")
+                     for phase in ("CHECK", "DELETE") for name in modified}
+        flow = self.flow(responses, modified)
+        self.assert_complete(flow)
+        self.assertEqual(flow.files, flow.initial_files)
+
+    def test_missing_listed_payloads_do_not_block_other_removals(self):
+        for name in UninstallTemplateFlow.OWNED:
+            with self.subTest(name=name):
+                responses = {(phase, name): ("MWOWN_MISSING", "file_missing") for phase in ("CHECK", "DELETE")}
+                flow = self.flow(responses, missing=(name,))
+                self.assert_complete(flow)
+                self.assertEqual(set(flow.files), {"uninstall.exe", "foreign.txt"})
+
+    def test_all_checks_precede_running_process_check_and_any_disposition(self):
+        flow = self.flow()
+        self.assert_complete(flow)
+        self.assertEqual(flow.calls, [("CHECK", name) for name in UninstallTemplateFlow.OWNED] +
+                         [("RUNNING_PROCESS_CHECK", None)] +
+                         [("DELETE", name) for name in UninstallTemplateFlow.OWNED])
+
+    def test_hard_preflight_reasons_refuse_before_every_effect(self):
+        reasons = (
+            "parent_not_ordinary_directory", "file_not_ordinary", "file_redirected_or_aliased",
+            "file_unavailable", "file_read_count_invalid", "sha256_cleanup_failed",
+            "sha256_provider_cleanup_failed", "file_close_failed", "root_close_failed",
+            "file_identity_changed", "size_changed", "new_unknown_reason", "",
+        )
+        for reason in reasons:
+            for name in UninstallTemplateFlow.OWNED:
+                with self.subTest(reason=reason, name=name):
+                    flow = self.flow({("CHECK", name): ("MWOWN_PRESERVED", reason)})
+                    self.assert_blocked(flow, before_effects=True)
+                    self.assertEqual(sum(phase == "CHECK" for phase, _ in flow.calls), 5)
+
+    def test_safe_reason_with_wrong_preflight_result_is_not_preservation_authority(self):
+        for code in ("MWOWN_DELETE_MARKED", "MWOWN_DELETE_UNCERTAIN", "MWOWN_PUBLISHED", "999"):
+            for reason in ("hash_mismatch", "size_mismatch"):
+                with self.subTest(code=code, reason=reason):
+                    flow = self.flow({("CHECK", UninstallTemplateFlow.OWNED[0]): (code, reason)})
+                    self.assert_blocked(flow, before_effects=True)
+
+    def test_reason_must_match_exactly_in_both_operations(self):
+        for reason in ("HASH_MISMATCH", "Size_Mismatch", "hash_mismatch ", "size_mismatch_extra",
+                       "file_close_failed:hash_mismatch"):
+            for phase in ("CHECK", "DELETE"):
+                with self.subTest(reason=reason, phase=phase):
+                    flow = self.flow({(phase, UninstallTemplateFlow.OWNED[0]): ("MWOWN_PRESERVED", reason)})
+                    self.assert_blocked(flow, before_effects=phase == "CHECK")
+
+    def test_delete_rechecks_content_changed_after_a_successful_preflight(self):
+        name = UninstallTemplateFlow.OWNED[1]
+        for reason in ("hash_mismatch", "size_mismatch"):
+            with self.subTest(reason=reason):
+                flow = self.flow({("DELETE", name): ("MWOWN_PRESERVED", reason)},
+                                 {name: b"changed after preflight"})
+                self.assert_complete(flow)
+                self.assertEqual(flow.files[name], b"changed after preflight")
+                self.assertEqual(set(flow.files), {name, "uninstall.exe", "foreign.txt"})
+
+    def test_preflight_mismatch_does_not_skip_a_later_matching_delete_check(self):
+        name = UninstallTemplateFlow.OWNED[1]
+        flow = self.flow({("CHECK", name): ("MWOWN_PRESERVED", "hash_mismatch")})
+        self.assert_complete(flow)
+        self.assertIn(("DELETE", name), flow.calls)
+        self.assertNotIn(name, flow.files)
+
+    def test_prior_safe_mismatch_cannot_mask_later_hard_preflight(self):
+        first, later = UninstallTemplateFlow.OWNED[:2]
+        flow = self.flow({("CHECK", first): ("MWOWN_PRESERVED", "hash_mismatch"),
+                          ("CHECK", later): ("MWOWN_PRESERVED", "file_close_failed")})
+        self.assert_blocked(flow, before_effects=True)
+
+    def test_prior_safe_mismatch_cannot_mask_later_hard_delete(self):
+        first, later = UninstallTemplateFlow.OWNED[:2]
+        flow = self.flow({("DELETE", first): ("MWOWN_PRESERVED", "size_mismatch"),
+                          ("DELETE", later): ("MWOWN_PRESERVED", "file_unavailable")})
+        self.assert_blocked(flow)
+        self.assertEqual([name for phase, name in flow.calls if phase == "DELETE"], [first, later])
+        self.assertEqual(flow.files, flow.initial_files)
+
+    def test_hard_delete_stops_without_rollback_or_further_dispositions(self):
+        for reason in ("file_not_ordinary", "file_unavailable", "file_read_count_invalid",
+                       "sha256_cleanup_failed", "file_close_failed", "root_close_failed",
+                       "unknown_delete_reason"):
+            with self.subTest(reason=reason):
+                name = UninstallTemplateFlow.OWNED[2]
+                flow = self.flow({("DELETE", name): ("MWOWN_PRESERVED", reason)})
+                self.assert_blocked(flow)
+                self.assertEqual([item for phase, item in flow.calls if phase == "DELETE"],
+                                 list(UninstallTemplateFlow.OWNED[:3]))
+                self.assertFalse(any(item in flow.files for item in UninstallTemplateFlow.OWNED[:2]))
+                self.assertTrue(all(item in flow.files for item in UninstallTemplateFlow.OWNED[2:]))
+
+    def test_unknown_delete_stops_once_even_if_reason_looks_like_content_mismatch(self):
+        name = UninstallTemplateFlow.OWNED[1]
+        for reason in ("close_after_delete_failed", "root_close_after_delete_failed", "hash_mismatch", "size_mismatch"):
+            with self.subTest(reason=reason):
+                flow = self.flow({("DELETE", name): ("MWOWN_DELETE_UNCERTAIN", reason)})
+                self.assert_blocked(flow, code=3)
+                self.assertEqual(flow.calls.count(("DELETE", name)), 1)
+                self.assertEqual([item for phase, item in flow.calls if phase == "DELETE"],
+                                 list(UninstallTemplateFlow.OWNED[:2]))
+                self.assertEqual(flow.variables["$MWOWN_LastReason"], reason)
+
+    def test_wrong_delete_result_with_safe_reason_still_stops(self):
+        for code in ("MWOWN_MATCHED", "MWOWN_PUBLISHED", "999"):
+            with self.subTest(code=code):
+                flow = self.flow({("DELETE", UninstallTemplateFlow.OWNED[1]): (code, "hash_mismatch")})
+                self.assert_blocked(flow)
+                self.assertNotIn(("DELETE", UninstallTemplateFlow.OWNED[2]), flow.calls)
+
+    def test_interpreter_rejects_unsupported_instruction_even_in_untaken_branch(self):
+        marker = "  StrCpy $MWINST_UninstallPreserved 0"
+        for instruction in ('Delete "$INSTDIR\\foreign.txt"', "Goto +2", "Call HiddenOperation"):
+            with self.subTest(instruction=instruction):
+                inserted = marker + "\n  ${If} 0 = 1\n    " + instruction + "\n  ${EndIf}"
+                with self.assertRaisesRegex(TemplateFlowError, "unsupported instruction"):
+                    self.flow(template=self.template.replace(marker, inserted, 1))
+
+    def test_interpreter_rejects_ambiguous_or_unknown_logic(self):
+        marker = "  StrCpy $MWINST_UninstallPreserved 0"
+        for condition in ("${If} $0 < 2\n  ${EndIf}",
+                          "${If} 0 = 0\n  ${AndIf} 1 = 1\n  ${OrIf} 2 = 2\n  ${EndIf}",
+                          "${Else}\n  ${EndIf}"):
+            with self.subTest(condition=condition):
+                with self.assertRaises(TemplateFlowError):
+                    self.flow(template=self.template.replace(marker, marker + "\n  " + condition, 1))
+
+    def test_interpreter_rejects_unknown_macro_and_template_field(self):
+        marker = "  StrCpy $MWINST_UninstallPreserved 0"
+        for extra in ('!insertmacro UnknownOperation "payload"',
+                      '{{#each other_collection}}\n{{this}}\n{{/each}}'):
+            with self.subTest(extra=extra):
+                with self.assertRaises(TemplateFlowError):
+                    self.flow(template=self.template.replace(marker, marker + "\n  " + extra, 1))
+
+    def test_distinct_resource_and_binary_bindings_are_checked_against_source_arguments(self):
+        for original, wrong in (("${MW_RESOURCE_{{@index}}_SHA256}", "${MW_MAIN_SHA256}"),
+                                ("${MW_BINARY_{{@index}}_SIZE}", "${MW_MAIN_SIZE}")):
+            with self.subTest(original=original):
+                with self.assertRaisesRegex(TemplateFlowError, "baseline binding mismatch"):
+                    self.flow(template=self.template.replace(original, wrong))
+
+
+
+class StorageCohortLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-storage-cohort-")
+        self.addCleanup(self.temp.cleanup)
+        self.parent = Path(self.temp.name)
+        self.root = self.parent / "evidence"
+        self.root.mkdir()
+        self.fx = Fixture(self.root)
+        self.installed = self.parent / "installed"
+        self.installed.mkdir()
+        (self.installed / "motionwright-desktop.exe").write_bytes(b"synthetic installed bytes")
+        self.profile = self.parent / "profile"
+        self.profile.mkdir()
+        self.database = self.profile / "motionwright.sqlite3"
+        self.selected = storage_cohort_fixture(4)
+        self.operation = str(uuid.uuid4())
+
+    def seed_four(self):
+        db = sqlite3.connect(self.database)
+        self.addCleanup(db.close)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA user_version=4")
+        db.execute("CREATE TABLE projects(id TEXT,generation TEXT,revision INTEGER,title TEXT,document_json TEXT)")
+        project = {"id": str(uuid.uuid4()), "generation": str(uuid.uuid4()),
+                   "revision": 0, "title": "motionwright ci first use", "schema_version": 2}
+        db.execute("INSERT INTO projects VALUES (?,?,?,?,?)",
+                   (project["id"], project["generation"], 0, project["title"], json.dumps(project)))
+        db.execute("""CREATE TABLE receipts(project_id TEXT,request_id TEXT,request_sha256 TEXT,
+                   result_json TEXT,created_at TEXT,
+                   apply_binding_version INTEGER NOT NULL DEFAULT 0 CHECK(apply_binding_version IN (0,1)),
+                   apply_binding_json TEXT)""")
+        db.commit()
+        return db, project
+
+    def capture(self, label, *, selected=True):
+        return lifecycle.capture_snapshot(self.root, snapshot_name=label, operation=self.operation,
+            position="before", install_root=self.installed, database=self.database,
+            registry_keys=self.fx.context["registry_keys"], registry_reader=lambda _: self.fx.registry("0.1.0"),
+            **({"storage_cohort": self.selected} if selected else {}))
+
+    def bind_inputs(self, value):
+        self.fx.inputs_doc["storage_cohort"] = value
+        self.fx.source_record["files"][lifecycle.storage.SOURCE_PATH] = self.selected["source_input"]["checkout"]
+        self.fx.inputs_ref = self.fx.js("cohort-inputs", self.fx.inputs_doc)
+        self.fx.admission["refs"]["inputs"] = self.fx.inputs_ref
+        self.fx.compiled_doc["inputs_receipt"] = self.fx.ident(self.fx.inputs_ref)
+        self.fx.admission["refs"]["compiled"] = self.fx.js("cohort-compiled", self.fx.compiled_doc)
+
+    def test_four_capture_retains_original_family_and_separate_inspection(self):
+        _, project = self.seed_four()
+        original = {p.name: p.read_bytes() for p in self.profile.iterdir()}
+        reference = self.capture("four-capture")
+        value = lifecycle.snapshot_value(self.root, reference, self.operation, "before",
+            self.fx.context["registry_keys"], storage_cohort=self.selected)
+        self.assertEqual(value["schema"], "motionwright.windows-lifecycle-snapshot/2")
+        self.assertEqual(value["storage_cohort"], self.selected)
+        self.assertEqual(value["project"]["project_id"], project["id"])
+        self.assertEqual({p.name: p.read_bytes() for p in self.profile.iterdir()}, original)
+        self.assertTrue(all(value["sqlite_family"].values()))
+        for name, ref in value["sqlite_family"].items():
+            self.assertEqual(lifecycle.bound_file(self.root, ref).read_bytes(), original[name])
+
+    def test_historical_default_does_not_publish_a_four_snapshot(self):
+        self.seed_four()
+        original = {p.name: p.read_bytes() for p in self.profile.iterdir()}
+        with self.assertRaises(ColdStartError):
+            self.capture("default-on-four", selected=False)
+        self.assertFalse((self.root / "default-on-four/snapshot.json").exists())
+        self.assertEqual({p.name: p.read_bytes() for p in self.profile.iterdir()}, original)
+
+    def test_v2_snapshot_needs_explicit_matching_source_and_does_not_downgrade_v1(self):
+        self.seed_four()
+        reference = self.capture("bound-four")
+        keys = self.fx.context["registry_keys"]
+        with self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.snapshot_value(self.root, reference, self.operation, "before", keys)
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "snapshot_storage_cohort_mismatch"):
+            lifecycle.snapshot_value(self.root, reference, self.operation, "before", keys,
+                storage_cohort=storage_cohort_fixture(4, source="c" * 40))
+        legacy = self.fx.snapshot(self.operation, "before", {}, self.fx.registry(None))
+        old = self.fx.js("legacy", legacy)
+        self.assertEqual(lifecycle.snapshot_value(self.root, old, self.operation, "before", keys), legacy)
+        with self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.snapshot_value(self.root, old, self.operation, "before", keys, storage_cohort=self.selected)
+
+    def test_explicit_input_cohort_binds_source_tree_and_retained_source_bytes(self):
+        self.bind_inputs(self.selected)
+        observed = self.fx.validate_inputs()
+        self.assertEqual(observed["storage_cohort"], self.selected)
+        self.assertEqual(observed["source_sha"], self.selected["source_sha"])
+        self.assertEqual(observed["source_tree"], self.selected["source_tree"])
+
+    def test_foreign_input_cohort_or_original_bytes_fail_before_pe_observation(self):
+        for field, replacement in (("source_sha", "c" * 40), ("source_tree", "c" * 40),
+                                    ("source_input", storage_cohort_fixture(3)["source_input"])):
+            value = copy.deepcopy(self.selected)
+            value[field] = replacement
+            self.bind_inputs(value)
+            with self.subTest(field=field), mock.patch.object(lifecycle, "read_pe_versions") as pe:
+                with self.assertRaises((lifecycle.LifecycleError, lifecycle.storage.StorageContractError)):
+                    self.fx.validate_inputs(pe_reader=pe)
+                pe.assert_not_called()
+
+    def test_document_version_four_is_not_storage_four_acceptance(self):
+        db, project = self.seed_four()
+        project["schema_version"] = 4
+        db.execute("UPDATE projects SET document_json=?", (json.dumps(project),))
+        db.commit()
+        original = {p.name: p.read_bytes() for p in self.profile.iterdir()}
+        with self.assertRaises(ColdStartError):
+            self.capture("wrong-document")
+        self.assertFalse((self.root / "wrong-document/snapshot.json").exists())
+        self.assertEqual({p.name: p.read_bytes() for p in self.profile.iterdir()}, original)
+
+    def test_invalid_cohort_is_rejected_before_creating_snapshot_output(self):
+        self.selected = {"storage_schema": 4}
+        with self.assertRaises(lifecycle.storage.StorageContractError):
+            self.capture("invalid-admission")
+        self.assertFalse((self.root / "invalid-admission").exists())
+
+    def test_missing_binding_columns_never_publish_a_four_snapshot(self):
+        db, _ = self.seed_four()
+        db.execute("ALTER TABLE receipts DROP COLUMN apply_binding_json")
+        db.commit()
+        with self.assertRaises(ColdStartError):
+            self.capture("missing-binding-column")
+        self.assertFalse((self.root / "missing-binding-column/snapshot.json").exists())
 
 
 if __name__ == "__main__":

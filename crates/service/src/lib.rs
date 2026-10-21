@@ -1,15 +1,18 @@
 mod audio;
 mod file_import;
+mod import_limits;
 mod jobs;
 mod mlt_cleanup;
 mod models;
 mod portability;
 mod project_creation;
 mod project_projection;
+mod svg_admission;
 pub use audio::{
-    AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodedPcm, WAVEFORM_FRAMES_PER_PEAK,
-    WaveformPage,
+    AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodeBudget, OriginalMixDecodedPcm,
+    WAVEFORM_FRAMES_PER_PEAK, WaveformPage,
 };
+pub use import_limits::ImportLimits;
 pub use jobs::{
     ProductionJobApplicability, ProductionJobProgress, ProductionJobProjection, ProductionJobState,
     ProductionObservationState,
@@ -373,25 +376,64 @@ fn validate_importable_asset(
             "active or externally-referencing SVG assets are not admitted",
         ));
     }
+    svg_admission::check_svg_xml_css(text, MAX_SVG_IMPORT_BYTES as usize).map_err(|_| {
+        invalid_import("active or externally-referencing SVG assets are not admitted")
+    })?;
     Ok(())
 }
 
 #[derive(Clone)]
 pub struct StudioService {
     store: Arc<Mutex<Store>>,
+    import_limits: ImportLimits,
+}
+
+fn original_mix_source_matches(
+    project: &Project,
+    expected: &RevisionStamp,
+    asset_id: Uuid,
+    digest: &str,
+    media_type: &str,
+) -> bool {
+    project.resource_key() == expected.resource
+        && project.generation == expected.generation
+        && project.revision == expected.revision
+        && project.assets.iter().any(|asset| {
+            asset.id == asset_id
+                && asset.content_sha256.as_deref() == Some(digest)
+                && asset.media_type == media_type
+        })
 }
 
 impl StudioService {
     pub fn open(path: impl AsRef<Path>) -> StorageResult<Self> {
-        Ok(Self {
-            store: Arc::new(Mutex::new(Store::open(path)?)),
-        })
+        Self::open_with_import_limits(path, ImportLimits::default())
     }
 
     pub fn from_store(store: Store) -> Self {
+        Self::from_store_with_import_limits(store, ImportLimits::default())
+    }
+
+    /// Native-host resource policy; request payloads cannot choose these limits.
+    pub fn open_with_import_limits(
+        path: impl AsRef<Path>,
+        limits: ImportLimits,
+    ) -> StorageResult<Self> {
+        Ok(Self::from_store_with_import_limits(
+            Store::open(path)?,
+            limits,
+        ))
+    }
+
+    pub fn from_store_with_import_limits(store: Store, limits: ImportLimits) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
+            import_limits: limits,
         }
+    }
+
+    pub fn import_limits(&self) -> ImportLimits {
+        self.import_limits
     }
 
     pub fn store(&self) -> Arc<Mutex<Store>> {
@@ -406,16 +448,51 @@ impl StudioService {
         self.store.lock().load_project(id)
     }
 
-    /// Read ONLY an already imported/verified exact project audio asset and
-    /// decode short-form stereo PCM without resampling, web execution or
-    /// opening an arbitrary renderer-supplied filename.
+    /// Compatibility entry point for the existing bounded audition.
+    /// The source must already be an imported, exact project-owned WAV.
     pub fn decoded_stem_for_original_mix(
         &self,
         project_id: Uuid,
         expected_revision: u64,
         asset_id: Uuid,
     ) -> StorageResult<OriginalMixDecodedPcm> {
-        let (path, digest) = {
+        self.decoded_stem_for_original_mix_checked(
+            project_id,
+            expected_revision,
+            None,
+            asset_id,
+            OriginalMixDecodeBudget::Audition15Seconds,
+        )
+    }
+
+    /// Decode an imported WAV under a closed native policy and a complete
+    /// project identity. This does not resample or authorize an external effect.
+    pub fn decoded_stem_for_original_mix_with_budget(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        asset_id: Uuid,
+        budget: OriginalMixDecodeBudget,
+    ) -> StorageResult<OriginalMixDecodedPcm> {
+        self.decoded_stem_for_original_mix_checked(
+            project_id,
+            expected.revision,
+            Some(expected),
+            asset_id,
+            budget,
+        )
+    }
+
+    fn decoded_stem_for_original_mix_checked(
+        &self,
+        project_id: Uuid,
+        expected_revision: u64,
+        expected: Option<&RevisionStamp>,
+        asset_id: Uuid,
+        budget: OriginalMixDecodeBudget,
+    ) -> StorageResult<OriginalMixDecodedPcm> {
+        let source_limit = budget.source_bytes();
+        let (initial_stamp, digest, media_type, source_bytes) = {
             let store = self.store.lock();
             let project = store.load_project(project_id)?;
             if project.revision != expected_revision {
@@ -423,10 +500,21 @@ impl StudioService {
                     "Original mix belongs to a stale project revision",
                 ));
             }
+            // Also capture the full identity for the revision-only old API.
+            let initial_stamp = RevisionStamp::from(&project);
+            if expected.is_some_and(|expected| {
+                expected.resource != initial_stamp.resource
+                    || expected.generation != initial_stamp.generation
+                    || expected.revision != initial_stamp.revision
+            }) {
+                return Err(invalid_import(
+                    "Original mix belongs to a stale project identity or revision",
+                ));
+            }
             let asset = project
                 .assets
                 .iter()
-                .find(|item| item.id == asset_id)
+                .find(|asset| asset.id == asset_id)
                 .ok_or_else(|| invalid_import("Selected original mix source asset is absent"))?;
             if !matches!(
                 asset.media_type.as_str(),
@@ -436,26 +524,59 @@ impl StudioService {
                     "Audition needs a previously imported original WAV, not an executable/stream/unknown codec",
                 ));
             }
+            let media_type = asset.media_type.clone();
             let digest = asset
                 .content_sha256
                 .as_ref()
                 .ok_or_else(|| invalid_import("Original mix WAV has no immutable source SHA-256"))?
                 .clone();
-            let path = store.verified_blob_path(&digest)?;
-            (path, digest)
+            let source_bytes = store.read_blob(&digest, source_limit)?;
+
+            // This mutex does not exclude another Store connection committing
+            // while the bounded CAS capture is in progress.
+            let after_capture = store.load_project(project_id)?;
+            if !original_mix_source_matches(
+                &after_capture,
+                &initial_stamp,
+                asset_id,
+                &digest,
+                &media_type,
+            ) {
+                return Err(invalid_import(
+                    "Original audio was changed or removed during source capture",
+                ));
+            }
+            (initial_stamp, digest, media_type, source_bytes)
         };
-        let decoded = audio::decode_original_mix_pcm(&path, &digest)?;
-        // A concurrent editor cannot replace or remove this source while
-        // the bounded audio decoder runs; no stale mixes escape the service.
-        let latest = self.project(project_id)?;
-        if latest.revision != expected_revision
-            || !latest.assets.iter().any(|entry| {
-                entry.id == asset_id && entry.content_sha256.as_deref() == Some(digest.as_str())
-            })
+        let captured_len = source_bytes.len();
+
+        #[cfg(test)]
+        audio::run_original_mix_decode_hook();
+
+        // Move the verified container into the only original-mix decoder.
+        // Its input/reader drop before return, outside the Store mutex.
+        let decoded = audio::decode_original_mix_pcm_bytes(source_bytes, &digest, budget)?;
+
+        #[cfg(test)]
+        audio::run_original_mix_recheck_hook();
+
         {
-            return Err(invalid_import(
-                "Original audio was changed or removed during source decode",
-            ));
+            let store = self.store.lock();
+            // Recheck the current CAS with the same finite reader. This temporary
+            // drops before the fresh project read; it is not the PCM authority.
+            let fresh_len = store.read_blob(&digest, source_limit)?.len();
+            if fresh_len != captured_len {
+                return Err(invalid_import(
+                    "Original audio byte length changed during source decode",
+                ));
+            }
+            let latest = store.load_project(project_id)?;
+            if !original_mix_source_matches(&latest, &initial_stamp, asset_id, &digest, &media_type)
+            {
+                return Err(invalid_import(
+                    "Original audio was changed or removed during source decode",
+                ));
+            }
         }
         Ok(decoded)
     }
@@ -1578,5 +1699,273 @@ mod audio_import_tests {
         assert!(second.has_previous);
         assert!(!second.has_next);
         assert_eq!(second.source_sha256, track.source_sha256);
+    }
+    #[test]
+    fn original_mix_decodes_captured_cas_bytes_despite_a_b_a_replacement() {
+        use sha2::{Digest, Sha256};
+        use std::{cell::Cell, rc::Rc};
+
+        struct ClearOriginalMixHooks;
+        impl Drop for ClearOriginalMixHooks {
+            fn drop(&mut self) {
+                audio::BEFORE_ORIGINAL_MIX_DECODE.with(|slot| {
+                    let _ = slot.borrow_mut().take();
+                });
+                audio::BEFORE_ORIGINAL_MIX_RECHECK.with(|slot| {
+                    let _ = slot.borrow_mut().take();
+                });
+            }
+        }
+
+        const SOURCE_LIMIT: u64 = 8 * 1024 * 1024;
+        const FRAMES: u32 = 48_000;
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("studio.sqlite3");
+        let service = StudioService::open(&database).unwrap();
+        let initial = service.create_project("Original mix CAS ABA").unwrap();
+        let a_path = temp.path().join("original-a.wav");
+        let b_path = temp.path().join("replacement-b.wav");
+        write_pcm16_wav(&a_path, 48_000, 2, FRAMES, 8192);
+        write_pcm16_wav(&b_path, 48_000, 2, FRAMES, -8192);
+        let a_bytes = fs::read(&a_path).unwrap();
+        let b_bytes = fs::read(&b_path).unwrap();
+        assert_eq!(a_bytes.len(), b_bytes.len());
+        assert_ne!(a_bytes, b_bytes);
+
+        let imported = service
+            .import_asset_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "original-mix-cas-aba",
+                &a_path,
+                "original-a.wav".into(),
+                "audio/wav".into(),
+            )
+            .unwrap()
+            .project;
+        let project = service.project(imported.id).unwrap();
+        assert_eq!(project.assets.len(), 1);
+        let asset_id = project.assets[0].id;
+        let digest = project.assets[0].content_sha256.as_ref().unwrap().clone();
+        let initial_stamp = RevisionStamp::from(&project);
+        let project_snapshot = serde_json::to_value(&project).unwrap();
+        assert_eq!(digest, hex::encode(Sha256::digest(&a_bytes)));
+
+        let literal_a = [0x00_u8, 0x20_u8];
+        let literal_b = [0x00_u8, 0xe0_u8];
+        let expected_pcm = literal_a.repeat(FRAMES as usize * 2);
+        let normal = service
+            .decoded_stem_for_original_mix(project.id, project.revision, asset_id)
+            .unwrap();
+        assert_eq!(normal.sample_frames, u64::from(FRAMES));
+        assert_eq!(normal.interleaved_s16le, expected_pcm);
+        let cas_path = {
+            let shared = service.store();
+            let store = shared.lock();
+            assert_eq!(store.read_blob(&digest, SOURCE_LIMIT).unwrap(), a_bytes);
+            store.verified_blob_path(&digest).unwrap()
+        };
+
+        let before_decode_calls = Rc::new(Cell::new(0_usize));
+        let before_recheck_calls = Rc::new(Cell::new(0_usize));
+        let _clear_hooks = ClearOriginalMixHooks;
+        {
+            let path = cas_path.clone();
+            let expected_a = a_bytes.clone();
+            let replacement_b = b_bytes.clone();
+            let calls = Rc::clone(&before_decode_calls);
+            let shared = service.store();
+            audio::BEFORE_ORIGINAL_MIX_DECODE.with(|slot| {
+                assert!(slot.borrow().is_none());
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    assert!(
+                        shared.try_lock().is_some(),
+                        "decode must release the Store mutex"
+                    );
+                    assert_eq!(fs::read(&path).unwrap(), expected_a);
+                    fs::write(&path, &replacement_b).unwrap();
+                    assert_eq!(fs::read(&path).unwrap(), replacement_b);
+                    calls.set(calls.get() + 1);
+                }));
+            });
+        }
+        {
+            let path = cas_path.clone();
+            let expected_b = b_bytes.clone();
+            let restored_a = a_bytes.clone();
+            let calls = Rc::clone(&before_recheck_calls);
+            let shared = service.store();
+            audio::BEFORE_ORIGINAL_MIX_RECHECK.with(|slot| {
+                assert!(slot.borrow().is_none());
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    assert!(
+                        shared.try_lock().is_some(),
+                        "decode must release the Store mutex"
+                    );
+                    assert_eq!(fs::read(&path).unwrap(), expected_b);
+                    fs::write(&path, &restored_a).unwrap();
+                    assert_eq!(fs::read(&path).unwrap(), restored_a);
+                    calls.set(calls.get() + 1);
+                }));
+            });
+        }
+
+        let result =
+            service.decoded_stem_for_original_mix(project.id, initial_stamp.revision, asset_id);
+        assert_eq!(before_decode_calls.get(), 1);
+        assert_eq!(before_recheck_calls.get(), 1);
+        drop(service);
+        let reopened = StudioService::open(&database).unwrap();
+        let after = reopened.project(project.id).unwrap();
+        assert_eq!(RevisionStamp::from(&after), initial_stamp);
+        assert_eq!(serde_json::to_value(&after).unwrap(), project_snapshot);
+        {
+            let shared = reopened.store();
+            let store = shared.lock();
+            assert_eq!(store.read_blob(&digest, SOURCE_LIMIT).unwrap(), a_bytes);
+        }
+        assert_eq!(fs::read(&a_path).unwrap(), a_bytes);
+        assert_eq!(fs::read(&b_path).unwrap(), b_bytes);
+
+        let decoded = result.expect("the restored, unchanged original remains valid");
+        assert_eq!(decoded.original_asset_sha256, digest);
+        assert_eq!(decoded.sample_frames, u64::from(FRAMES));
+        assert_eq!(decoded.interleaved_s16le.len(), FRAMES as usize * 4);
+        if decoded.interleaved_s16le != expected_pcm {
+            assert!(
+                decoded
+                    .interleaved_s16le
+                    .chunks_exact(2)
+                    .all(|sample| sample == literal_b),
+                "unexpected PCM must be distinguished from the intended B witness",
+            );
+            panic!(
+                "captured source binding mismatch: original=A(+8192), decoded=B(-8192), final CAS=A"
+            );
+        }
+        assert_eq!(
+            decoded.decoded_pcm_sha256,
+            hex::encode(Sha256::digest(&expected_pcm)),
+        );
+    }
+    #[test]
+    fn original_mix_rejects_store_generation_replacement_at_the_same_revision() {
+        use std::{cell::Cell, rc::Rc};
+
+        struct ClearRecheckHook;
+        impl Drop for ClearRecheckHook {
+            fn drop(&mut self) {
+                audio::BEFORE_ORIGINAL_MIX_RECHECK.with(|slot| {
+                    let _ = slot.borrow_mut().take();
+                });
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("original.sqlite3");
+        let service = StudioService::open(&database).unwrap();
+        let initial = service
+            .create_project("Original mix generation boundary")
+            .unwrap();
+        let source = temp.path().join("original.wav");
+        write_pcm16_wav(&source, 48_000, 2, 48_000, 8192);
+        let original_bytes = fs::read(&source).unwrap();
+        let project = service
+            .import_asset_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "generation-source",
+                &source,
+                "original.wav".into(),
+                "audio/wav".into(),
+            )
+            .unwrap()
+            .project;
+        let asset_id = project.assets[0].id;
+        let digest = project.assets[0].content_sha256.as_ref().unwrap().clone();
+        let normal = service
+            .decoded_stem_for_original_mix(project.id, project.revision, asset_id)
+            .unwrap();
+        let original_snapshot = serde_json::to_value(&project).unwrap();
+        let backup = service.export_project(project.id).unwrap();
+
+        // This is a real replacement Store, not an in-place application restore.
+        // Public import keeps the ID/revision and assigns a fresh generation.
+        let replacement_database = temp.path().join("replacement.sqlite3");
+        let mut replacement = Store::open(&replacement_database).unwrap();
+        assert_eq!(
+            replacement.ingest_blob_file(&source).unwrap().sha256,
+            digest
+        );
+        let restored = replacement.import_project(&backup).unwrap();
+        assert_eq!(restored.id, project.id);
+        assert_eq!(restored.revision, project.revision);
+        assert_ne!(restored.generation, project.generation);
+        assert_eq!(
+            restored.assets[0].content_sha256.as_deref(),
+            Some(digest.as_str())
+        );
+        let restored_snapshot = serde_json::to_value(&restored).unwrap();
+
+        let calls = Rc::new(Cell::new(0_usize));
+        let hook_calls = Rc::clone(&calls);
+        let shared = service.store();
+        let _clear = ClearRecheckHook;
+        audio::BEFORE_ORIGINAL_MIX_RECHECK.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let mut current = shared
+                    .try_lock()
+                    .expect("decoder must release the Store mutex");
+                *current = replacement;
+                hook_calls.set(hook_calls.get() + 1);
+            }));
+        });
+        let result = service.decoded_stem_for_original_mix(project.id, project.revision, asset_id);
+        assert_eq!(calls.get(), 1, "replacement must occur after decoding");
+        assert_eq!(
+            serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+            restored_snapshot,
+        );
+        assert_eq!(
+            service
+                .store()
+                .lock()
+                .read_blob(&digest, 8 * 1024 * 1024)
+                .unwrap(),
+            original_bytes,
+        );
+        let original_reopened = StudioService::open(&database).unwrap();
+        assert_eq!(
+            serde_json::to_value(original_reopened.project(project.id).unwrap()).unwrap(),
+            original_snapshot,
+        );
+        assert_eq!(
+            original_reopened
+                .store()
+                .lock()
+                .read_blob(&digest, 8 * 1024 * 1024)
+                .unwrap(),
+            original_bytes,
+        );
+        assert_eq!(fs::read(&source).unwrap(), original_bytes);
+        match result {
+            Err(StorageError::Domain(DomainError::Invalid(message))) => {
+                assert_eq!(
+                    message,
+                    "Original audio was changed or removed during source decode"
+                );
+            }
+            Ok(decoded) => {
+                assert_eq!(
+                    decoded, normal,
+                    "baseline witness must contain the valid original PCM"
+                );
+                panic!(
+                    "original mix accepted a replacement project generation at the same revision and digest"
+                );
+            }
+            Err(error) => panic!("unexpected generation-boundary failure: {error:?}"),
+        }
     }
 }
