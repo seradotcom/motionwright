@@ -175,7 +175,7 @@ async function evidence(testInfo: TestInfo, services: ScopedChangeService[], ini
 }
 
 test("saving the title or brief commits only that group and conserves the other raw inputs", async ({ page }, testInfo) => {
-  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   let initial: Project | undefined;
   let final: Project | undefined;
   let primaryFailure: ScenarioFailure | undefined;
@@ -239,7 +239,7 @@ test("saving the title or brief commits only that group and conserves the other 
 });
 
 test("a late real reply preserves newer typing and reload never replays an already committed brief", async ({ page }, testInfo) => {
-  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   const gates: ReturnType<typeof holdNextApply>[] = [];
   let initial: Project | undefined;
   let final: Project | undefined;
@@ -311,7 +311,7 @@ test("a late real reply preserves newer typing and reload never replays an alrea
 });
 
 test("returning an in-flight field to its original value survives navigation and reload until explicitly saved", async ({ page }, testInfo) => {
-  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   let gate: ReturnType<typeof holdNextApply> | undefined;
   let initial: Project | undefined;
   let final: Project | undefined;
@@ -395,7 +395,7 @@ test("returning an in-flight field to its original value survives navigation and
 });
 
 test("a real brief validation failure preserves every input through reload and correction", async ({ page }, testInfo) => {
-  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   let initial: Project | undefined;
   let final: Project | undefined;
   let primaryFailure: ScenarioFailure | undefined;
@@ -445,7 +445,7 @@ test("a real brief validation failure preserves every input through reload and c
 
 for (const resolution of ["saved", "draft"] as const) {
   test(`two real clients resolve only the overlapping brief field by keeping the ${resolution} value`, async ({ page, context }, testInfo) => {
-    const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+    const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
     let peer: ScopedChangeService | undefined;
     let second: Page | undefined;
     let gate: ReturnType<typeof holdNextApply> | undefined;
@@ -527,7 +527,7 @@ for (const resolution of ["saved", "draft"] as const) {
 }
 
 test("reopening revokes a real grant without changing the revision or clearing the refused brief", async ({ page }, testInfo) => {
-  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   let gate: ReturnType<typeof holdNextApply> | undefined;
   let initial: Project | undefined;
   let final: Project | undefined;

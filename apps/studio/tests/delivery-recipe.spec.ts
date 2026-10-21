@@ -145,15 +145,15 @@ function syntheticWav(amplitude: number, period: number) {
 interface CaseProof {
   info: TestInfo; services: ScopedChangeService[]; pages: Page[]; gates: ReturnType<typeof holdRecipe>[];
   ids: Map<string, Set<string>>; observations: Record<string, unknown>;
-  create(name: string, desktop?: boolean): Promise<ScopedChangeService>;
+  create(name: string): Promise<ScopedChangeService>;
   peer(service: ScopedChangeService): Promise<ScopedChangeService>;
   attach(service: ScopedChangeService, page: Page): Promise<void>;
   track(service: ScopedChangeService, project: Project): void;
 }
 async function scenario(info: TestInfo, run: (proof: CaseProof) => Promise<void>) {
   const proof: CaseProof = { info, services: [], pages: [], gates: [], ids: new Map(), observations: { behaviorAssertionsCompleted: false },
-    async create(name, desktop = false) {
-      const service = await ScopedChangeService.create({ databasePath: info.outputPath(name, "studio.sqlite3"), desktopInvokeFixture: desktop });
+    async create(name) {
+      const service = await ScopedChangeService.create({ databasePath: info.outputPath(name, "studio.sqlite3"), desktopInvokeFixture: true });
       this.services.push(service); this.track(service, (await service.fixtureBootstrap()).project); return service;
     },
     async peer(service) { const peer = await service.peer(); this.services.push(peer); return peer; },
@@ -670,7 +670,7 @@ test("project content locks and a real revoked grant retain inputs for a fresh r
 }));
 
 test("Film and PCM guards use saved options and expose unsupported combinations without pretending a native result", async ({ page }, info) => scenario(info, async proof => {
-  const service = await proof.create("service", true); // Opt-in desktop invoke routing; not installed Tauri.
+  const service = await proof.create("service"); // Opt-in desktop invoke routing; not installed Tauri.
   const initial = await setup(proof, service, true);
   const { a, b, music, sfx } = initial;
   let project = await service.apply(initial.project, { type: "set_visual_language", visual_language: {
@@ -771,7 +771,7 @@ test("Film and PCM guards use saved options and expose unsupported combinations 
 }));
 
 test("portable export and verified import preserve both recipes and CAS while isolating the new generation's drafts", async ({ page, browser }, info) => scenario(info, async proof => {
-  const source = await proof.create("source-service", true);
+  const source = await proof.create("source-service");
   const initial = await setup(proof, source, true);
   const { a, b, music, sfx } = initial;
   let donor = await seedRecipe(source, initial.project, a, true, music, sfx);
@@ -795,7 +795,7 @@ test("portable export and verified import preserve both recipes and CAS while is
     expect(digest(bytes)).toBe(blob.sha256); expect(bytes.length).toBe(blob.size_bytes);
   }
   await mix(page, a); await field(page, "SFX gain dB").fill("-13"); // Old generation's unsaved input.
-  const target = await proof.create("target-service", true);
+  const target = await proof.create("target-service");
   // Source and destination stores require independent remembered project selections.
   const targetContext = await browser.newContext({ baseURL: info.project.use.baseURL });
   const targetPage = await targetContext.newPage();
