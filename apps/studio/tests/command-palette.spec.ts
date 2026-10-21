@@ -51,6 +51,8 @@ test("palette consumes transport keys and executes exactly one frame-step action
 
 test("keyboard guide, zero results, focus trap, and reopen keep the palette usable", async ({ page }) => {
   await page.goto("/");
+  await expect(page.getByRole("button", { name: "Open command palette" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open command palette" })).toBeEnabled();
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Command palette" });
   await dialog.getByRole("button", { name: "Keyboard shortcuts" }).click();
@@ -83,6 +85,8 @@ test("palette view actions can toggle light theme without a content edit", async
 
 test("keyboard selection follows visible grouped results rather than hidden search-score order", async ({ page }) => {
   await page.goto("/");
+  await expect(page.getByRole("button", { name: "Open command palette" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open command palette" })).toBeEnabled();
   await page.keyboard.press("Control+k");
   const search = page.getByRole("combobox", { name: "Search editor commands" });
   await search.fill("view");
