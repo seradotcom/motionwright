@@ -2167,7 +2167,7 @@ export default function App() {
           key={[project.id, project.generation, project.revision].join(":")}
           project={project} desktopMode={boot.native_sdk.mode === "tauri"} />;
       case "Review":
-        return <ReviewWorkspace project={project} scene={selectedScene} commit={commit} playhead={playhead} onSeek={seekTo} />;
+        return <ReviewWorkspace project={project} scene={selectedScene} commit={commitCamera} playhead={playhead} onSeek={seekTo} />;
       case "Deliver":
         return (
           <DeliverView
