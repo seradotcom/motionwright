@@ -18,6 +18,7 @@ from unittest import mock
 TOOLING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLING))
 import windows_updated_application as oracle
+import nsis_owned_files as owned
 
 UUID = "11111111-1111-4111-8111-111111111111"
 GENERATION = "22222222-2222-4222-8222-222222222222"
@@ -827,6 +828,210 @@ class OriginalAdmissionContracts(unittest.TestCase):
         self.assertNotIn("after_reopen", receipt)
         self.assertFalse(receipt["human_acceptance"])
         self.assertFalse(receipt["release_authorized"])
+
+
+
+class ProducerAdmissionContracts(unittest.TestCase):
+    """Real profile/retained-file helpers; no native process or UI is executed."""
+
+    def setUp(self):
+        OriginalAdmissionContracts.setUp(self)
+        self.profile_calls = 0
+        previous_setup = self.ref("previous-setup.bin", b"synthetic retained previous package")
+        previous_receipt = self.ref("previous-capture.json", {"fixture": "synthetic prior capture"})
+        old = oracle.life.retained_ref(self.evidence, self.evidence / "old-main.bin")
+        uninstaller = oracle.life.retained_ref(self.evidence, self.evidence / "old-uninstaller.bin")
+        self.profile = {
+            "schema": "motionwright.nsis-predecessor/1",
+            "identity": {"application": "Motionwright",
+                         "bundle_id": "com.seradotcom.motionwright", "arch": "x64"},
+            "version": "0.1.0", "source_sha": "d" * 40, "source_tree": "e" * 40,
+            "target": {"version": "0.1.1", "main_sha256": self.current["sha256"]},
+            "package": previous_setup, "capture_receipt": previous_receipt,
+            "files": [
+                {"relative": self.exe.name, "source": old["path"], "kind": "main",
+                 **oracle.life.ref_identity(old)},
+                {"relative": "uninstall.exe", "source": uninstaller["path"], "kind": "uninstaller",
+                 **oracle.life.ref_identity(uninstaller)},
+            ],
+        }
+        self.value["refs"]["predecessor_profile"] = self.ref("complete-profile.json", self.profile)
+        context = oracle.read_json(self.evidence, self.value["refs"]["interruption_context"])
+        context["predecessor_profile_sha256"] = self.value["refs"]["predecessor_profile"]["sha256"]
+        self.value["refs"]["interruption_context"] = self.ref("complete-context.json", context)
+
+    def real_profile_admission(self, profile=None, expected_pin=None):
+        self.profile_calls += 1
+        profile = copy.deepcopy(self.profile if profile is None else profile)
+        reference = self.ref("profile-helper-" + str(self.profile_calls) + ".json", profile)
+        output = self.root / ("profile-helper-" + str(self.profile_calls))
+        output.mkdir()
+        result = oracle.emit_predecessor_include(
+            output / "predecessor.nsh", application="Motionwright",
+            bundle_id="com.seradotcom.motionwright", arch="x64",
+            target_version="0.1.1", target_main_sha256=self.current["sha256"],
+            environment={
+                "MW_NSIS_PREDECESSOR_MANIFEST": str(self.evidence / reference["path"]),
+                "MW_NSIS_PREDECESSOR_MANIFEST_SHA256": expected_pin or reference["sha256"],
+            },
+        )
+        self.assertEqual(result, {
+            "enabled": True, "files": 2, "manifest_sha256": reference["sha256"],
+            "package_sha256": profile["package"]["sha256"],
+        })
+        self.assertEqual(
+            hashlib.sha256((output / "mw-predecessor-manifest.capture.json").read_bytes()).hexdigest(),
+            reference["sha256"],
+        )
+        return result
+
+    def change_snapshot(self, role, suffix, mutate):
+        value = oracle.read_json(self.evidence, self.value["refs"][role])
+        mutate(value)
+        self.value["refs"][role] = self.ref(role + "-" + suffix + ".json", value)
+
+    def add_foreign(self):
+        reference = self.ref("foreign-original.txt", b"Synthetic user data retained without ownership.\n")
+        for role in ("before_snapshot", "recovered_snapshot"):
+            self.change_snapshot(role, "foreign",
+                                 lambda value: value["installed"].update({"user-created-foreign.txt": reference}))
+        return reference
+
+    def test_real_x64_profile_reaches_one_application_boundary(self):
+        product, gate_repo = self.root / "product", self.root / "gate"
+        product.mkdir()
+        gate_repo.mkdir()
+        self.gate.source_observation = lambda _repo, sha, _paths: {
+            "sha": sha, "tree": "c" * 40, "files": {}}
+        self.gate.GATE_PATHS = ("tooling/canonical-gate.py",)
+        self.gate.PRODUCT_PATHS = ("installer.nsi",)
+        reference = self.ref("real-profile-observer-input.json", self.value)
+        output = self.root / "real-profile-observation"
+        args = SimpleNamespace(
+            output=output, evidence_root=self.evidence, product_repo=product, gate_repo=gate_repo,
+            input=self.evidence / reference["path"], input_sha256=reference["sha256"],
+            product_source="a" * 40, gate_source="b" * 40, oracle_source="f" * 40,
+        )
+        environment = {
+            "GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows",
+            "GITHUB_REPOSITORY": RUN["repository"], "GITHUB_RUN_ID": "12",
+            "GITHUB_RUN_ATTEMPT": "1",
+        }
+        real_helper = oracle.emit_predecessor_include
+        # Prior checkpoint/PE admission is synthetic. Profile admission itself
+        # executes the original helper and captures its real input family.
+        # Stop at the first application boundary, without manufacturing an ACK.
+        with (mock.patch.object(oracle, "os", SimpleNamespace(name="nt", environ=environment)),
+              mock.patch.object(oracle, "load_canonical_gate", return_value=self.gate),
+              mock.patch.object(oracle.life, "read_pe_versions", return_value={}),
+              mock.patch.object(oracle.life, "require_pe_version"),
+              mock.patch.object(oracle, "emit_predecessor_include", wraps=real_helper) as profile_call,
+              mock.patch.object(oracle.cold, "native_windows_launch_environment", return_value=environment),
+              mock.patch.object(oracle, "run_lifetime",
+                                side_effect=RuntimeError("synthetic application boundary")) as lifetime,
+              mock.patch.object(oracle.subprocess, "Popen") as native,
+              redirect_stdout(io.StringIO())):
+            code = oracle.observe(args)
+            native.assert_not_called()
+        profile_call.assert_called_once()
+        lifetime.assert_called_once()
+        self.assertEqual(lifetime.call_args.args[1:3], ("first", "edit"))
+        self.assertEqual(code, 1)
+        receipt = json.loads((output / "receipt.json").read_bytes())
+        self.assertEqual(receipt["status"], "INCOMPLETE")
+        self.assertEqual(receipt["application_result"], "NOT_STARTED")
+        self.assertEqual(receipt["lifetimes"], [])
+        self.assertEqual(receipt["diagnostic"], "RuntimeError")
+        admitted = json.loads((output / "admitted-input.json").read_bytes())
+        self.assertEqual(admitted["profile"]["enabled"], True)
+        self.assertEqual(admitted["profile"]["files"], 2)
+        self.assertEqual(admitted["profile"]["manifest_sha256"],
+                         self.value["refs"]["predecessor_profile"]["sha256"])
+        self.assertFalse(admitted["human_acceptance"])
+
+    def test_complete_owned_and_foreign_originals_are_admitted(self):
+        foreign = self.add_foreign()
+        self.real_profile_admission()
+        originals = {role: (self.evidence / self.value["refs"][role]["path"]).read_bytes()
+                     for role in ("before_snapshot", "recovered_snapshot")}
+        try:
+            admitted = oracle.admit_originals(self.evidence, self.value, self.gate)
+        except oracle.OracleError as error:
+            self.fail("Complete producer snapshots with preserved foreign bytes were refused: " + str(error))
+        for key, role in (("before", "before_snapshot"), ("recovered", "recovered_snapshot")):
+            self.assertEqual(len(admitted[key]["installed"]), 3)
+            self.assertEqual(oracle.life.file_map(admitted[key])["user-created-foreign.txt"],
+                             oracle.life.ref_identity(foreign))
+            self.assertEqual((self.evidence / self.value["refs"][role]["path"]).read_bytes(),
+                             originals[role])
+        self.assertNotIn("user-created-foreign.txt", {row["relative"] for row in self.profile["files"]})
+
+    def test_modified_owned_original_is_refused(self):
+        self.real_profile_admission()
+        changed = self.ref("changed-owned.bin", b"synthetic modified predecessor main")
+        self.change_snapshot("before_snapshot", "owned-changed",
+                             lambda value: value["installed"].update({self.exe.name: changed}))
+        with self.assertRaisesRegex(oracle.OracleError, "predecessor_inventory_not_original_snapshot"):
+            oracle.admit_originals(self.evidence, self.value, self.gate)
+
+    def test_missing_owned_original_is_refused(self):
+        self.real_profile_admission()
+        self.change_snapshot("before_snapshot", "owned-missing",
+                             lambda value: value["installed"].pop("uninstall.exe"))
+        with self.assertRaisesRegex(oracle.OracleError, "predecessor_inventory_not_original_snapshot"):
+            oracle.admit_originals(self.evidence, self.value, self.gate)
+
+    def test_modified_foreign_original_is_refused(self):
+        self.add_foreign()
+        self.real_profile_admission()
+        changed = self.ref("changed-foreign.txt", b"synthetic changed user data")
+        self.change_snapshot("recovered_snapshot", "foreign-changed",
+                             lambda value: value["installed"].update({"user-created-foreign.txt": changed}))
+        with self.assertRaises(oracle.OracleError):
+            oracle.admit_originals(self.evidence, self.value, self.gate)
+
+    def test_missing_foreign_original_is_refused(self):
+        self.add_foreign()
+        self.real_profile_admission()
+        self.change_snapshot("recovered_snapshot", "foreign-missing",
+                             lambda value: value["installed"].pop("user-created-foreign.txt"))
+        with self.assertRaises(oracle.OracleError):
+            oracle.admit_originals(self.evidence, self.value, self.gate)
+
+    def test_original_profile_helper_rejects_invalid_authority_and_paths(self):
+        for fault in ("architecture", "pin", "duplicate", "case-alias", "source-escape", "missing-sibling"):
+            with self.subTest(fault=fault):
+                profile = copy.deepcopy(self.profile)
+                pin = None
+                if fault == "architecture":
+                    profile["identity"]["arch"] = "x86_64"
+                elif fault == "pin":
+                    pin = "0" * 64
+                elif fault == "duplicate":
+                    profile["files"].append(copy.deepcopy(profile["files"][0]))
+                elif fault == "case-alias":
+                    duplicate = copy.deepcopy(profile["files"][0])
+                    duplicate["relative"] = duplicate["relative"].upper()
+                    profile["files"].append(duplicate)
+                elif fault == "source-escape":
+                    profile["files"][0]["source"] = "../old-main.bin"
+                else:
+                    profile["package"]["path"] = "missing-previous-package.bin"
+                with self.assertRaises((owned.CaptureError, FileNotFoundError)):
+                    self.real_profile_admission(profile, pin)
+
+    def test_original_snapshot_helper_rejects_case_aliases(self):
+        self.real_profile_admission()
+        for role in ("before_snapshot", "recovered_snapshot"):
+            with self.subTest(role=role):
+                original = self.value["refs"][role]
+                self.change_snapshot(role, "case-alias", lambda value: value["installed"].update({
+                    self.exe.name.upper(): value["installed"][self.exe.name]}))
+                try:
+                    with self.assertRaisesRegex(oracle.life.LifecycleError, "snapshot_inventory_alias"):
+                        oracle.admit_originals(self.evidence, self.value, self.gate)
+                finally:
+                    self.value["refs"][role] = original
 
 
 if __name__ == "__main__":
