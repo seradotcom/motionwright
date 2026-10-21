@@ -212,6 +212,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(test)]
+type ImportSourceOpenHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_IMPORT_SOURCE_OPEN: std::cell::RefCell<Option<ImportSourceOpenHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_import_source_open_hook(source: &Path) {
+    let hook = BEFORE_IMPORT_SOURCE_OPEN.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(source);
+    }
+}
+
 /// A private capture awaiting validation and optional CAS publication.
 ///
 /// Drop removes only the private staging name, never a published CAS blob.
@@ -256,6 +273,8 @@ impl Store {
                 limit: max_bytes,
             });
         }
+        #[cfg(test)]
+        run_import_source_open_hook(source);
         let staging_root = self.blob_root.join(".staging");
         create_checked_blob_directory(&staging_root)?;
         let input = File::open(source)?;
@@ -708,5 +727,152 @@ mod staging_tests {
                 .is_none()
         );
         assert_eq!(store.load_project(original.id).unwrap(), advanced.project);
+    }
+}
+
+#[cfg(test)]
+mod source_open_tests {
+    use super::{BEFORE_IMPORT_SOURCE_OPEN, ImportSourceOpenHook};
+    use crate::{StorageError, Store};
+    use rusqlite::types::Value;
+    use sha2::{Digest, Sha256};
+    use std::{fs, path::Path};
+
+    struct HookGuard;
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            BEFORE_IMPORT_SOURCE_OPEN.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+    fn before_open(hook: impl FnOnce(&Path) + 'static) -> HookGuard {
+        BEFORE_IMPORT_SOURCE_OPEN.with(|slot| {
+            let previous = slot
+                .borrow_mut()
+                .replace(Box::new(hook) as ImportSourceOpenHook);
+            assert!(previous.is_none(), "one hook per test thread");
+        });
+        HookGuard
+    }
+    fn rows(store: &Store) -> Vec<Vec<Vec<Value>>> {
+        [
+            "SELECT * FROM projects ORDER BY id",
+            "SELECT * FROM events ORDER BY project_id,revision",
+            "SELECT * FROM receipts ORDER BY project_id,request_id",
+        ]
+        .into_iter()
+        .map(|sql| {
+            let mut statement = store.conn.prepare(sql).unwrap();
+            let columns = statement.column_count();
+            let values = statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|column| row.get::<_, Value>(column))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap();
+            values.map(|row| row.unwrap()).collect()
+        })
+        .collect()
+    }
+    fn store_at(root: &Path) -> Store {
+        let mut store = Store::open(root.join("import.sqlite3")).unwrap();
+        store
+            .create_named_project("Source handle boundary")
+            .unwrap();
+        assert!(!store.blob_root.join(".staging").exists());
+        store
+    }
+
+    #[test]
+    fn regular_source_capture_preserves_exact_bytes_and_sql() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_at(tmp.path());
+        let source = tmp.path().join("regular.bin");
+        let bytes = b"ordinary source bytes";
+        fs::write(&source, bytes).unwrap();
+        let before = rows(&store);
+        let staged = store.stage_file_import_with_limit(&source, 32).unwrap();
+        let staged_path = staged.path().to_path_buf();
+        assert_eq!(fs::read(&staged_path).unwrap(), bytes);
+        assert_eq!(staged.descriptor().size_bytes, bytes.len() as u64);
+        assert_eq!(
+            staged.descriptor().sha256,
+            hex::encode(Sha256::digest(bytes))
+        );
+        assert_eq!(rows(&store), before);
+        drop(staged);
+        assert!(!staged_path.exists(), "private capture is removed on drop");
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+    }
+
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Requires symbolic-link privilege; explicit Windows runner execution is required"
+    )]
+    fn replaced_symlink_source_is_rejected_before_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_at(tmp.path());
+        let incoming = tmp.path().join("incoming");
+        fs::create_dir(&incoming).unwrap();
+        let source = incoming.join("source.bin");
+        let sentinel = tmp.path().join("outside-sentinel.bin");
+        fs::write(&source, b"admitted ordinary leaf").unwrap();
+        fs::write(&sentinel, b"outside bytes must not be captured").unwrap();
+        let outside_before = fs::read(&sentinel).unwrap();
+        let target = sentinel.clone();
+        let before = rows(&store);
+        let _guard = before_open(move |leaf| {
+            fs::remove_file(leaf).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, leaf).unwrap();
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(&target, leaf).unwrap();
+        });
+        let result = store.stage_file_import(&source);
+        assert!(
+            result.is_err(),
+            "replaced leaf must never capture its target"
+        );
+        assert!(!store.blob_root.join(".staging").exists());
+        assert_eq!(rows(&store), before);
+        assert_eq!(fs::read(&sentinel).unwrap(), outside_before);
+    }
+
+    #[test]
+    fn oversized_opened_source_is_rejected_before_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_at(tmp.path());
+        let source = tmp.path().join("growing.bin");
+        fs::write(&source, b"small").unwrap();
+        let before = rows(&store);
+        let _guard = before_open(|leaf| fs::write(leaf, [b'x'; 64]).unwrap());
+        let result = store.stage_file_import_with_limit(&source, 32);
+        assert!(matches!(
+            result,
+            Err(StorageError::BlobTooLarge { limit: 32, .. })
+        ));
+        assert!(!store.blob_root.join(".staging").exists());
+        assert_eq!(rows(&store), before);
+        assert_eq!(fs::read(&source).unwrap(), [b'x'; 64]);
+    }
+
+    #[test]
+    fn replaced_directory_source_is_rejected_before_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_at(tmp.path());
+        let source = tmp.path().join("becomes-directory.bin");
+        fs::write(&source, b"small").unwrap();
+        let before = rows(&store);
+        let _guard = before_open(|leaf| {
+            fs::remove_file(leaf).unwrap();
+            fs::create_dir(leaf).unwrap();
+        });
+        assert!(store.stage_file_import(&source).is_err());
+        assert!(!store.blob_root.join(".staging").exists());
+        assert!(source.is_dir());
+        assert_eq!(rows(&store), before);
     }
 }
