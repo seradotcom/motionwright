@@ -152,20 +152,36 @@ ManifestDPIAwareness PerMonitorV2
   ${EndIf}
 !macroend
 
+; Only a completed content comparison permits selective preservation. Cleanup
+; failures replace the reason in the guard and must remain blocking.
+!macro MWINST_UNINSTALL_CLASSIFY_CONTENT
+  StrCpy $MWINST_UninstallContentMismatch 0
+  ${If} $0 = ${MWOWN_PRESERVED}
+    ${If} $MWOWN_LastReason S== "hash_mismatch"
+    ${OrIf} $MWOWN_LastReason S== "size_mismatch"
+      StrCpy $MWINST_UninstallContentMismatch 1
+    ${EndIf}
+  ${EndIf}
+!macroend
 !macro MWINST_UNINSTALL_PREFLIGHT Relative Sha Size
   !insertmacro MWOWN_CHECK "un." "$INSTDIR" "${Relative}" "${Sha}" "${Size}" $0
+  !insertmacro MWINST_UNINSTALL_CLASSIFY_CONTENT
   ${If} $0 != ${MWOWN_MATCHED}
   ${AndIf} $0 != ${MWOWN_MISSING}
+  ${AndIf} $MWINST_UninstallContentMismatch != 1
     StrCpy $MWINST_UninstallPreserved 1
   ${EndIf}
 !macroend
 
 !macro MWINST_DELETE_OWNED Relative Sha Size
   !insertmacro MWOWN_DELETE "un." "$INSTDIR" "${Relative}" "${Sha}" "${Size}" $0
+  !insertmacro MWINST_UNINSTALL_CLASSIFY_CONTENT
   ${If} $0 = ${MWOWN_DELETE_UNCERTAIN}
     StrCpy $MWINST_UninstallUncertain 1
     SetErrorLevel 3
     Abort "Uninstall outcome is uncertain. No operation was retried; registration was retained."
+  ${ElseIf} $MWINST_UninstallContentMismatch = 1
+    DetailPrint "Preserved modified payload: ${Relative}; $MWOWN_LastReason"
   ${ElseIf} $0 != ${MWOWN_DELETE_MARKED}
   ${AndIf} $0 != ${MWOWN_MISSING}
     StrCpy $MWINST_UninstallPreserved 1
@@ -288,6 +304,7 @@ Var MWINST_NewSelfSize
 Var MWINST_Completed
 Var MWINST_UninstallPreserved
 Var MWINST_UninstallUncertain
+Var MWINST_UninstallContentMismatch
 Var MWINST_ShortcutSource
 Var MWINST_ShortcutTarget
 Var MWINST_ShortcutRoot
