@@ -66,8 +66,8 @@ jobs:
           import hashlib,json,os,pathlib,re,stat,subprocess
           root=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
           head=os.environ["GITHUB_SHA"]
-          reviewed_source="4a529b2e8143ff409420d0afb3202ccf3c3a1caa"
-          pins={'crates/storage/src/portability.rs': 'a8738b1522f5c71de610e9203aa0f921cbf6d68cbeb0aa96763f7d0c5a581249', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': '5833e7c185e8ba5aa2fa3b05ddda8dc23b20fac8ec9ea551c903f521cea7cd83', 'Cargo.lock': '583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84', 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1'}
+          reviewed_source="098d119a3d4edcae9612f60adca639891b56e977"
+          pins={'crates/storage/src/portability.rs': 'b3281be45a51d83987bd3e2a6862f38ac3b09aaa9efa730815e87ff63bdc34be', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'b86b2cf5d86ed8ea8076a468e3810e123666bc2ec092b8aa3e6180643aa3e20e', 'Cargo.lock': 'c66d8cb5a786c11cb80fccca57ce2264e7268ced0625a159fbf06308a8889e70', 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
@@ -204,8 +204,8 @@ jobs:
           import hashlib,json,os,pathlib,re,stat,subprocess
           root=pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
           head=os.environ["GITHUB_SHA"]
-          reviewed_source="4a529b2e8143ff409420d0afb3202ccf3c3a1caa"
-          pins={'crates/storage/src/portability.rs': 'a8738b1522f5c71de610e9203aa0f921cbf6d68cbeb0aa96763f7d0c5a581249', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': '5833e7c185e8ba5aa2fa3b05ddda8dc23b20fac8ec9ea551c903f521cea7cd83', 'Cargo.lock': '583f9276782966778e544ca1facd9d7a9af5a7c216e2dee4da598c00da118a84', 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1'}
+          reviewed_source="098d119a3d4edcae9612f60adca639891b56e977"
+          pins={'crates/storage/src/portability.rs': 'b3281be45a51d83987bd3e2a6862f38ac3b09aaa9efa730815e87ff63bdc34be', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'b86b2cf5d86ed8ea8076a468e3810e123666bc2ec092b8aa3e6180643aa3e20e', 'Cargo.lock': 'c66d8cb5a786c11cb80fccca57ce2264e7268ced0625a159fbf06308a8889e70', 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
