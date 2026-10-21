@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
-import { Save, RefreshCw, ExternalLink, Unlink } from "lucide-react";
+import { Save, ExternalLink, Unlink } from "lucide-react";
 import type { CanvasNode, Change, Project, Scene } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
-import { defaultProceduralConfig, normalizedProceduralConfig, realizeProceduralField } from "./proceduralField";
+import { realizeProceduralField } from "./proceduralField";
 import type { ProceduralConfig } from "./proceduralField";
+import { proceduralConfig, workbenchScope } from "./creativeWorkbenchDraft";
+import type { ProceduralRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
+import { useCreativeWorkbenchDraft, WorkbenchDraftFeedback } from "./useCreativeWorkbenchDraft";
 
 const previewIdentity="00000000-0000-4000-8000-000000000095";
-type Props={project:Project;scene:Scene|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<void>;busy:boolean;onOpenCanvas:()=>void};
+type Props={project:Project;scene:Scene|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<Project>;busy:boolean;onOpenCanvas:()=>void};
 const dimensions=[
   ["seed","Integer seed",0,4294967295],
   ["count","Number of objects",1,64],
@@ -22,51 +25,31 @@ const dimensions=[
   ["reveal_step_frames","Entrance interval (frames; 0 disables)",0,10],
   ["reveal_duration_frames","Entrance fade length (frames)",1,60],
 ] as const;
-export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOpenCanvas,displayProfile}:Props){
+export default function ProceduralFieldWorkbench(props: Props) {
+  return <ProceduralEditor key={workbenchScope(props.project,{kind:"procedural",sceneId:props.scene?.id??null})} {...props}/>;
+}
+function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile}:Props){
   const stored=project.production_design?.procedural_fields?.find(field=>field.scene_id===scene?.id);
-  const [draft,setDraft]=useState<ProceduralConfig>(()=>normalizedProceduralConfig(structuredClone(stored?.config??defaultProceduralConfig())));
-  const [base,setBase]=useState(project.revision);
+  const editor=useCreativeWorkbenchDraft(project,{kind:"procedural",sceneId:scene?.id??null},commit,busy);
+  const input=editor.draft.input as Extract<WorkbenchInput,{kind:"procedural"}>, draft=input.config;
+  const setDraft=(update:(value:ProceduralRaw)=>ProceduralRaw)=>editor.edit({...input,config:update(draft)});
   const [nodes,setNodes]=useState<CanvasNode[]>([]);
-  const [error,setError]=useState<string|null>(null);
   const [previewError,setPreviewError]=useState<string|null>(null);
   const [previewLoading,setPreviewLoading]=useState(false);
   const [previewTime,setPreviewTime]=useState(2);
-  const reload=()=>{
-    setDraft(normalizedProceduralConfig(structuredClone(stored?.config??defaultProceduralConfig())));
-    setBase(project.revision);setError(null);
-  };
-  useEffect(()=>{
-    setDraft(normalizedProceduralConfig(structuredClone(stored?.config??defaultProceduralConfig())));
-    setBase(project.revision);setError(null);
-    // Deliberately reset on scene identity, not every revision; never silently lose a draft.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[scene?.id,project.generation]);
   useEffect(()=>{
     let active=true;setPreviewLoading(true);setPreviewError(null);
-    realizeProceduralField(stored?.id??previewIdentity,draft).then(items=>{
+    Promise.resolve().then(()=>realizeProceduralField(stored?.id??previewIdentity,proceduralConfig(draft))).then(items=>{
       if(active){setNodes(items);setPreviewLoading(false);}
     }).catch(e=>{
       if(active){setNodes([]);setPreviewError(e instanceof Error?e.message:String(e));setPreviewLoading(false);}
     });
     return()=>{active=false;};
   },[draft,stored?.id]);
-  const stale=base!==project.revision;
   const previewMax=scene?Math.max(0,seconds(scene.duration)-1/30):6;
   const renderedTime=Math.min(previewTime,previewMax);
-  const update=async()=>{
-    if(!scene || stale || busy || previewError) return;
-    setError(null);
-    try{
-      await commit({type:"upsert_procedural_field",instance_id:stored?.id??crypto.randomUUID(),scene_id:scene.id,config:draft});
-      setBase(project.revision+1);
-    }catch(e){setError(e instanceof Error?e.message:String(e));}
-  };
-  const detach=async()=>{
-    if(!stored || stale || busy) return;
-    setError(null);
-    try{await commit({type:"detach_procedural_field",instance_id:stored.id});setBase(project.revision+1);}
-    catch(e){setError(e instanceof Error?e.message:String(e));}
-  };
+  const update=async()=>{ if(scene&&!editor.blocked&&!previewError&&!previewLoading) await editor.send("save"); };
+  const detach=async()=>{ if(stored&&!editor.blocked) await editor.send("detach"); };
   return <section className="production-plan" aria-label="Procedural field designer">
     <div className="production-section-title">
       <div><h2>Procedural field / repetition</h2><p>Seeded Canvas objects, not a baked texture or remote generative model.</p></div>
@@ -75,11 +58,7 @@ export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOp
       Grid/staggered, seeded scatter, fixed-point radial and progressive spiral layouts share stable IDs.
       Up to 64 nodes per field, 16 fields per project and one attached field per scene.</p>
     {!scene && <p role="status">Choose a working scene to author a field.</p>}
-    {stale && <div className="production-notice" role="status">
-      <strong>This draft uses revision {base}; the project is now {project.revision}.</strong>
-      <span>Your pending controls are preserved until you reload.</span>
-      <button className="secondary-button" onClick={reload}><RefreshCw size={14}/> Reload current field</button>
-    </div>}
+    <WorkbenchDraftFeedback editor={editor} project={project}/>
     <div className="production-plan-grid">
       <label className="production-field"><span>Distribution</span>
         <select aria-label="Procedural distribution" value={draft.distribution}
@@ -102,18 +81,17 @@ export default function ProceduralFieldWorkbench({project,scene,commit,busy,onOp
         <input aria-label="Procedural fill" value={draft.fill} maxLength={7}
           onChange={e=>setDraft(v=>({...v,fill:e.target.value}))}/>
       </label>
-      {dimensions.map(([key,label,min,max])=><label className="production-field" key={key}>
+      {dimensions.map(([key,label])=><label className="production-field" key={key}>
         <span>{label}</span>
-        <input aria-label={label} type="number" min={min} max={max} step={1} value={Number.isNaN(draft[key])?"":draft[key]}
-          onChange={e=>setDraft(v=>({...v,[key]:e.target.value===""?Number.NaN:Number(e.target.value)}))}/>
+        <input aria-label={label} type="text" inputMode="numeric" value={draft[key]}
+          onChange={e=>setDraft(v=>({...v,[key]:e.target.value}))}/>
       </label>)}
     </div>
     {previewError && <p className="production-error" role="alert">{previewError}</p>}
-    {error && <p className="production-error" role="alert">{error}</p>}
     <div className="production-button-row">
-      <button className="primary-button" disabled={!scene || busy || stale || previewLoading || !!previewError}
+      <button className="primary-button" disabled={!scene || editor.blocked || previewLoading || !!previewError}
         onClick={update}><Save size={14}/>{stored?"Update procedural field":"Add procedural field"}</button>
-      {stored && <button className="secondary-button" disabled={busy || stale}
+      {stored && <button className="secondary-button" disabled={editor.blocked}
         onClick={detach}><Unlink size={14}/> Detach generator (keep objects)</button>}
       <button className="secondary-button" disabled={!scene}
         onClick={onOpenCanvas}><ExternalLink size={14}/> Edit individual objects</button>
