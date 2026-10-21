@@ -1,5 +1,6 @@
 """Negative controls for the mandatory real-service browser selection."""
 import copy
+import io
 import importlib.util
 from pathlib import Path
 import unittest
@@ -549,6 +550,279 @@ class CompleteAuthoringScopeTests(unittest.TestCase):
                         value["errors"] = [{"message": "source service unavailable"}]
                     with self.assertRaises(ValueError):
                         gate.validate_report(value, filename, titles)
+
+
+class ClosedStudioArchiveTests(unittest.TestCase):
+    """Small synthetic files exercise retention only; no service or application runs."""
+
+    def fixture(self, directory):
+        root = Path(directory) / "v"
+        output, tools = root / "e", root / "tools"
+        output.mkdir(parents=True)
+        tools.mkdir()
+        for name in ("rustc", "cargo", "node", "npm", "python"):
+            (tools / (name + ".txt")).write_text("synthetic tool identity\n")
+        source = {"checkout": "a" * 40, "tree": "b" * 40, "files": {"synthetic": "only"}}
+        gate.write_new(output / "source-before.json", source)
+        commands = {}
+        for label in ("build", "ink"):
+            for stream in ("stdout", "stderr"):
+                (output / (label + "." + stream + ".log")).write_bytes(b"synthetic command stream\n")
+            command = {"argv": ["synthetic-not-executed"], "cwd": str(root),
+                       "exit_code": 0, "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED",
+                       "stdout": gate.digest(output / (label + ".stdout.log")),
+                       "stderr": gate.digest(output / (label + ".stderr.log"))}
+            gate.write_new(output / (label + ".command.json"), command)
+            commands[label] = command
+        gate.write_new(output / "ink.json", report())
+        binary = output / "executed-studio-service"
+        binary.write_bytes(b"synthetic bytes, never executed\n")
+        receipt = {"status": "PASS", "source_before": source, "source_after": source,
+                   "build": commands["build"], "selection_plan": gate.selection_plan("ink"),
+                   "service_binary": {"path": "synthetic", **gate.digest(binary)},
+                   "retained_service_binary": {"path": binary.name, **gate.digest(binary)},
+                   "selections": [{"label": "ink", "status": "PASS", "expected_tests": 1,
+                                   "command": commands["ink"], "original_report": gate.digest(output / "ink.json"),
+                                   "verified": gate.validate_report(report(), "visual-language-draft-service.spec.ts",
+                                                                    (gate.INK_TITLE,))}]}
+        gate.write_new(output / "receipt.json", receipt)
+        store = output / "case" / "closed-store" / "store"
+        (store / "blobs" / ".staging").mkdir(parents=True)
+        database = store / "synthetic.sqlite3"
+        database.write_bytes(b"synthetic database byte fixture\n")
+        entries = [{"path": "", "kind": "directory"}, {"path": "blobs", "kind": "directory"},
+                   {"path": "blobs/.staging", "kind": "directory"},
+                   {"path": database.name, "kind": "file", "sizeBytes": database.stat().st_size,
+                    "sha256": gate.digest(database)["sha256"]}]
+        aggregate = gate.hashlib.sha256(gate.json.dumps(
+            entries, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        manifest = {"schemaVersion": 1, "entries": entries, "snapshotDirectory": str(store),
+                    "databaseRelativePath": database.name, "sourceBeforeSha256": aggregate,
+                    "sourceAfterSha256": aggregate, "snapshotSha256": aggregate,
+                    "lifecycle": [{"exits": [{"processId": 1, "code": 0, "signal": None}], "taints": []}],
+                    "evidenceScope": "synthetic retention control; not a SQLite execution"}
+        (store.parent / "manifest.json").write_text(gate.json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        return root, source, store
+
+    def retained(self, root, source):
+        with mock.patch.object(gate, "source_observation", return_value=source):
+            with mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+                return gate.retain_closed_archive(root.parent / "g", root)
+
+    def mutate_json(self, path, change):
+        value = gate.json.loads(path.read_bytes())
+        change(value)
+        path.write_text(gate.json.dumps(value))
+
+    def forged_tar(self, root, path, inventory, mutation):
+        items = list(inventory["entries"].items())
+        if mutation == "duplicate":
+            items.append(items[0])
+        if mutation == "extra":
+            items.append(("e/unexpected", {"kind": "file", "mode": 0o644, "bytes": 0}))
+        changed = False
+        with gate.tarfile.open(path, "w", format=gate.tarfile.PAX_FORMAT) as archive:
+            for name, item in items:
+                if mutation == "omitted-directory" and name.endswith("/.staging"):
+                    continue
+                info = gate.tarfile.TarInfo("../escape" if mutation == "unsafe-name" and not changed else name)
+                info.mode = item["mode"]
+                info.type = gate.tarfile.DIRTYPE if item["kind"] == "directory" else gate.tarfile.REGTYPE
+                data = b"" if item["kind"] == "directory" or name == "e/unexpected" else (root / name).read_bytes()
+                if not changed and mutation in ("symlink", "hardlink", "fifo"):
+                    info.type = {"symlink": gate.tarfile.SYMTYPE, "hardlink": gate.tarfile.LNKTYPE,
+                                 "fifo": gate.tarfile.FIFOTYPE}[mutation]
+                    info.linkname = "e/elsewhere" if mutation != "fifo" else ""
+                if not changed and mutation == "mode":
+                    info.mode ^= 1
+                if item["kind"] == "file" and data and mutation in ("changed-bytes", "wrong-size") and not changed:
+                    data = bytes([data[0] ^ 1]) + data[1:] if mutation == "changed-bytes" else data + b"x"
+                    changed = True
+                elif mutation not in ("changed-bytes", "wrong-size"):
+                    changed = True
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data) if data else None)
+
+    def test_closed_tar_preserves_original_empty_staging_and_all_bindings(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, source, store = self.fixture(directory)
+            before = gate.archive_inventory(root)
+            result = self.retained(root, source)
+            self.assertEqual(result["status"], "PASS", result)
+            self.assertEqual(result["custody"], "VERIFIED_ORIGINAL_TREE_COPY")
+            self.assertFalse(result["formal_acceptance"])
+            self.assertEqual(len(result["bindings"]["captures"]), 1)
+            self.assertEqual(gate.archive_inventory(root), before)
+            with gate.tarfile.open(root / "retained/closed-evidence.tar") as archive:
+                self.assertTrue(archive.getmember("e/case/closed-store/store/blobs/.staging").isdir())
+            self.assertTrue((store / "blobs/.staging").is_dir())
+
+    def test_omitted_empty_directory_reproduces_structural_failure(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, _, _ = self.fixture(directory)
+            inventory = gate.archive_inventory(root)
+            path = root / "omitted.tar"
+            self.forged_tar(root, path, inventory, "omitted-directory")
+            with self.assertRaisesRegex(ValueError, "complete member structure"):
+                gate.verify_closed_tar(path, inventory)
+            self.assertEqual(gate.archive_inventory(root), inventory)
+
+    def test_archive_cannot_substitute_changed_duplicate_extra_or_wrong_size_members(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, _, _ = self.fixture(directory)
+            inventory = gate.archive_inventory(root)
+            for mutation in ("changed-bytes", "duplicate", "extra", "wrong-size", "mode"):
+                with self.subTest(mutation=mutation):
+                    path = root / (mutation + ".tar")
+                    self.forged_tar(root, path, inventory, mutation)
+                    with self.assertRaises(ValueError):
+                        gate.verify_closed_tar(path, inventory)
+
+    def test_unsafe_tar_names_links_and_nonregular_members_are_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, _, _ = self.fixture(directory)
+            inventory = gate.archive_inventory(root)
+            for mutation in ("unsafe-name", "symlink", "hardlink", "fifo"):
+                with self.subTest(mutation=mutation):
+                    path = root / (mutation + ".tar")
+                    self.forged_tar(root, path, inventory, mutation)
+                    with self.assertRaises(ValueError):
+                        gate.verify_closed_tar(path, inventory)
+            for name in ("/e/x", "e/../x", "e//x", "e/./x", "e\\x", "e/a:stream",
+                         "tools/NUL.txt", "e/trailing.", "e/trailing ", "e/control\nx", "other/x"):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    gate.archive_member_name(name)
+
+    def test_member_file_total_and_path_bounds_are_enforced(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, _, _ = self.fixture(directory)
+            for key, limit in (("members", 2), ("file_bytes", 1), ("total_bytes", 1), ("path_bytes", 2)):
+                with self.subTest(bound=key), mock.patch.dict(gate.ARCHIVE_LIMITS, {key: limit}):
+                    with self.assertRaises(ValueError):
+                        gate.archive_inventory(root)
+
+    def test_extended_metadata_trailing_payload_and_truncation_are_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, _, _ = self.fixture(directory)
+            inventory = gate.archive_inventory(root)
+            for mutation in ("pax", "trailing", "truncated"):
+                with self.subTest(mutation=mutation):
+                    path = root / (mutation + ".tar")
+                    if mutation == "pax":
+                        with gate.tarfile.open(path, "w") as archive:
+                            info = gate.tarfile.TarInfo("metadata")
+                            info.type, info.size = gate.tarfile.XHDTYPE, 5000
+                            archive.addfile(info, io.BytesIO(b"x" * 5000))
+                    else:
+                        gate.write_closed_tar(root, path, inventory)
+                        raw = path.read_bytes()
+                        path.write_bytes(raw + b"extra" if mutation == "trailing" else raw[:len(raw) // 2])
+                    with self.assertRaises((ValueError, gate.tarfile.TarError)):
+                        gate.verify_closed_tar(path, inventory)
+
+    def test_source_links_reparse_points_and_special_files_are_rejected(self):
+        for mode, attributes in ((gate.stat.S_IFLNK, 0), (gate.stat.S_IFDIR, 0x400),
+                                 (gate.stat.S_IFIFO, 0), (gate.stat.S_IFREG, 0)):
+            with self.subTest(mode=mode, attributes=attributes):
+                value = mock.Mock(st_mode=mode, st_file_attributes=attributes, st_nlink=2)
+                with mock.patch.object(Path, "lstat", return_value=value), self.assertRaises(ValueError):
+                    gate.archive_stat(Path("synthetic"))
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, _, store = self.fixture(directory)
+            gate.os.link(store / "synthetic.sqlite3", root / "e" / "hard-linked-copy")
+            with self.assertRaisesRegex(ValueError, "hard-linked"):
+                gate.archive_inventory(root)
+
+    def test_copy_time_input_mutation_preserves_failure_and_original_diagnostic(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, source, store = self.fixture(directory)
+            original = gate.write_closed_tar
+            def changing(*args):
+                original(*args)
+                (store / "synthetic.sqlite3").write_bytes(b"changed after copy")
+            with mock.patch.object(gate, "write_closed_tar", side_effect=changing):
+                result = self.retained(root, source)
+            self.assertEqual(result["status"], "FAIL")
+            self.assertEqual(result["custody"], "UNSEALED_DIAGNOSTICS")
+            self.assertIn("changed during retention", result["error"])
+            self.assertNotIn("archive", result)
+            self.assertEqual(gate.json.loads((root / "retained/archive-receipt.json").read_bytes()), result)
+
+    def test_source_mutation_after_copy_cannot_be_sealed(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, source, _ = self.fixture(directory)
+            with mock.patch.object(gate, "source_observation", side_effect=[source, {**source, "tree": "c" * 40}]):
+                with mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+                    result = gate.retain_closed_archive(root.parent / "g", root)
+            self.assertEqual(result["status"], "FAIL")
+            self.assertIn("source changed", result["error"])
+            self.assertEqual(result["custody"], "UNSEALED_DIAGNOSTICS")
+
+    def test_unknown_command_or_helper_lifecycle_never_produces_sealed_custody(self):
+        for mutation in ("timeout", "taint", "missing-exits", "nonzero-exit"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+                root, source, store = self.fixture(directory)
+                if mutation == "timeout":
+                    self.mutate_json(root / "e/receipt.json", lambda r: r["build"].update(
+                        exit_code=None, diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"))
+                else:
+                    def change(manifest):
+                        if mutation == "taint":
+                            manifest["lifecycle"][0]["taints"] = ["synthetic unobserved child"]
+                        elif mutation == "missing-exits":
+                            manifest["lifecycle"][0]["exits"] = []
+                        else:
+                            manifest["lifecycle"][0]["exits"][0]["code"] = 7
+                    self.mutate_json(store.parent / "manifest.json", change)
+                result = self.retained(root, source)
+                self.assertEqual(result["status"], "FAIL")
+                self.assertEqual(result["custody"], "UNSEALED_DIAGNOSTICS")
+                self.assertFalse((root / "retained/closed-evidence.tar").exists())
+
+    def test_receipt_manifest_source_and_executable_bindings_cannot_be_substituted(self):
+        for mutation in ("source", "report", "binary", "aggregate", "snapshot", "missing-tool", "missing-staging"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+                root, source, store = self.fixture(directory)
+                if mutation == "source":
+                    self.mutate_json(root / "e/source-before.json", lambda r: r.update(tree="c" * 40))
+                elif mutation == "report":
+                    self.mutate_json(root / "e/ink.json", lambda r: r["stats"].update(expected=0))
+                elif mutation == "binary":
+                    (root / "e/executed-studio-service").write_bytes(b"substituted bytes")
+                elif mutation == "aggregate":
+                    self.mutate_json(store.parent / "manifest.json", lambda r: r.update(snapshotSha256="0" * 64))
+                elif mutation == "snapshot":
+                    self.mutate_json(store.parent / "manifest.json", lambda r: r.update(snapshotDirectory=str(root)))
+                elif mutation == "missing-tool":
+                    (root / "tools/rustc.txt").unlink()
+                else:
+                    (store / "blobs/.staging").rmdir()
+                result = self.retained(root, source)
+                self.assertEqual(result["status"], "FAIL")
+                self.assertEqual(result["custody"], "UNSEALED_DIAGNOSTICS")
+
+    def test_long_unicode_names_retain_exact_streamed_member_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, source, _ = self.fixture(directory)
+            name = "e/" + "long-" * 24 + "á.json"
+            (root / name).write_bytes(b"synthetic unicode-path payload")
+            result = self.retained(root, source)
+            self.assertEqual(result["status"], "PASS", result)
+            with gate.tarfile.open(root / "retained/closed-evidence.tar") as archive:
+                self.assertEqual(archive.extractfile(name).read(), b"synthetic unicode-path payload")
+
+    def test_existing_retention_is_preserved_and_host_archive_command_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
+            root, source, _ = self.fixture(directory)
+            result = self.retained(root, source)
+            self.assertEqual(result["status"], "PASS")
+            original = (root / "retained/archive-receipt.json").read_bytes()
+            with self.assertRaisesRegex(ValueError, "fresh archive"):
+                self.retained(root, source)
+            self.assertEqual((root / "retained/archive-receipt.json").read_bytes(), original)
+            with mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}), self.assertRaises(ValueError):
+                gate.archive_main(["--repo", str(root.parent / "g"), "--evidence", str(root)])
+
 
 if __name__ == "__main__":
     unittest.main()

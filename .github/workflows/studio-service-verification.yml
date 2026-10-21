@@ -118,11 +118,26 @@ jobs:
           set -euo pipefail
           python -B -I tooling/ci_canvas_service.py --repo . \
             --target ../v/t --output ../v/e --selection "$REQUESTED_SELECTION"
-      - name: Retain original reports, closed stores, streams and service binary
+      - name: Close complete original evidence into a verified TAR
+        id: archive
+        if: always()
+        run: |
+          set -euo pipefail
+          python -B -I tooling/ci_canvas_service.py archive --repo . --evidence ../v
+      - name: Retain verified TAR and original custody receipt
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: studio-service-${{ inputs.selection }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: v/retained
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Preserve unsealed diagnostics when archive custody fails
+        if: always() && steps.archive.outcome != 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: studio-service-unsealed-${{ inputs.selection }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             v/e
             v/tools
