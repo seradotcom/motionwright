@@ -3,7 +3,7 @@ use super::{StudioService, audio, invalid_import, validate_importable_asset};
 use motionwright_domain::{Asset, Change, RevisionStamp, VoiceTrack};
 use motionwright_storage::{ApplyOutcome, FileImportIntent, Result, StorageError};
 use sha2::{Digest, Sha256};
-use std::{fs, fs::File, io::Read, path::Path};
+use std::path::Path;
 use uuid::Uuid;
 
 fn stable_import_id(
@@ -32,35 +32,7 @@ fn stable_import_id(
 }
 
 fn hash_source_once(source: &Path) -> Result<String> {
-    let metadata = fs::symlink_metadata(source)?;
-    #[cfg(windows)]
-    let reparse = {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes() & 0x400 != 0
-    };
-    #[cfg(not(windows))]
-    let reparse = false;
-    if !metadata.is_file() || metadata.file_type().is_symlink() || reparse {
-        return Err(StorageError::UnsafeSourcePath(
-            "file import requires a regular non-symlink source".into(),
-        ));
-    }
-    let mut input = File::open(source)?;
-    if !input.metadata()?.is_file() {
-        return Err(StorageError::UnsafeSourcePath(
-            "source is not a regular file".into(),
-        ));
-    }
-    let mut digest = Sha256::new();
-    let mut chunk = [0_u8; 128 * 1024];
-    loop {
-        let read = input.read(&mut chunk)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&chunk[..read]);
-    }
-    Ok(hex::encode(digest.finalize()))
+    motionwright_storage::Store::hash_file_import_source(source)
 }
 
 impl StudioService {

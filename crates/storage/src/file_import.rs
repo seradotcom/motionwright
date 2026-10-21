@@ -229,6 +229,95 @@ fn run_import_source_open_hook(source: &Path) {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn open_import_source_handle(source: &Path) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open};
+    let descriptor = open(
+        source,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(std::io::Error::from)?;
+    Ok(File::from(descriptor))
+}
+
+#[cfg(windows)]
+fn open_import_source_handle(source: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(source)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn open_import_source_handle(_source: &Path) -> std::io::Result<File> {
+    Err(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "safe file-import source opening is unavailable on this platform",
+    ))
+}
+
+/// Validate and retain the opened source, not just a prior pathname snapshot.
+/// Ancestor aliases and concurrent writes to regular files are outside this
+/// leaf-admission boundary; the capture keeps its independent streaming limit.
+fn open_regular_import_source(source: &Path, max_bytes: u64) -> Result<File> {
+    let size = ensure_regular_file(source, "import source")?.len();
+    if size > max_bytes {
+        return Err(StorageError::BlobTooLarge {
+            size,
+            limit: max_bytes,
+        });
+    }
+    #[cfg(test)]
+    run_import_source_open_hook(source);
+
+    let input = open_import_source_handle(source)?;
+
+    let metadata = input.metadata()?;
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || reparse {
+        return Err(StorageError::UnsafeSourcePath(
+            "file import requires a regular non-reparse opened source".into(),
+        ));
+    }
+    if metadata.len() > max_bytes {
+        return Err(StorageError::BlobTooLarge {
+            size: metadata.len(),
+            limit: max_bytes,
+        });
+    }
+    Ok(input)
+}
+
+impl Store {
+    /// Verify bytes for a known import replay without staging, CAS or database IO.
+    pub fn hash_file_import_source(source: &Path) -> Result<String> {
+        let mut input = open_regular_import_source(source, u64::MAX)?;
+        let mut digest = Sha256::new();
+        let mut chunk = [0_u8; 128 * 1024];
+        loop {
+            let count = match input.read(&mut chunk) {
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            if count == 0 {
+                break;
+            }
+            digest.update(&chunk[..count]);
+        }
+        Ok(hex::encode(digest.finalize()))
+    }
+}
+
 /// A private capture awaiting validation and optional CAS publication.
 ///
 /// Drop removes only the private staging name, never a published CAS blob.
@@ -266,18 +355,9 @@ impl Store {
         max_bytes: u64,
     ) -> Result<StagedFileImport> {
         ensure_regular_directory(&self.blob_root, "blob root")?;
-        let size = ensure_regular_file(source, "import source")?.len();
-        if size > max_bytes {
-            return Err(StorageError::BlobTooLarge {
-                size,
-                limit: max_bytes,
-            });
-        }
-        #[cfg(test)]
-        run_import_source_open_hook(source);
+        let input = open_regular_import_source(source, max_bytes)?;
         let staging_root = self.blob_root.join(".staging");
         create_checked_blob_directory(&staging_root)?;
-        let input = File::open(source)?;
         let path = staging_root.join(format!("{}.part", Uuid::now_v7().simple()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -873,6 +953,70 @@ mod source_open_tests {
         assert!(store.stage_file_import(&source).is_err());
         assert!(!store.blob_root.join(".staging").exists());
         assert!(source.is_dir());
+        assert_eq!(rows(&store), before);
+    }
+
+    #[test]
+    fn replay_source_hash_preserves_bytes_without_staging_or_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("replay.bin");
+        let bytes = b"known replay input";
+        fs::write(&source, bytes).unwrap();
+        assert_eq!(
+            Store::hash_file_import_source(&source).unwrap(),
+            hex::encode(Sha256::digest(bytes))
+        );
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Requires symbolic-link privilege; explicit Windows runner execution is required"
+    )]
+    fn replay_source_hash_rejects_replaced_symlink_without_creating_outputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("replay.bin");
+        let sentinel = tmp.path().join("outside-sentinel.bin");
+        fs::write(&source, b"original").unwrap();
+        fs::write(&sentinel, b"outside replay bytes").unwrap();
+        let before = fs::read(&sentinel).unwrap();
+        let target = sentinel.clone();
+        let _guard = before_open(move |leaf| {
+            fs::remove_file(leaf).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, leaf).unwrap();
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(&target, leaf).unwrap();
+        });
+        assert!(Store::hash_file_import_source(&source).is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), before);
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 2);
+    }
+
+    // This post-repair case must not be copied onto the plain-open baseline:
+    // that implementation can block at open. Run in an externally bounded CI
+    // process, never as an unbounded host reproduction.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn replaced_fifo_source_is_rejected_without_waiting_for_a_writer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_at(tmp.path());
+        let source = tmp.path().join("becomes-fifo.bin");
+        fs::write(&source, b"ordinary leaf").unwrap();
+        let before = rows(&store);
+        let _guard = before_open(|leaf| {
+            fs::remove_file(leaf).unwrap();
+            rustix::fs::mkfifoat(
+                rustix::fs::CWD,
+                leaf,
+                rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            )
+            .unwrap();
+        });
+        assert!(store.stage_file_import(&source).is_err());
+        assert!(!store.blob_root.join(".staging").exists());
         assert_eq!(rows(&store), before);
     }
 }
