@@ -990,8 +990,8 @@ COMPOSED_COMPOSITION_PAIR["repair"]["targets"] = {
 CURRENT_PHASE_SELECTIONS = ("foundation-current", "foundation-composed-current")
 
 # Gate dependencies are independent of the frozen product source.
-COMPOSED_DEPENDENCY_HASHES = {'tooling/ci_storage_apply_recovery.py': 'd1387f0b86d5747da3fb5687aaa7b860c51f6fa08ffd78ec5c71c2000f5fcab2',
- 'tooling/tests/test_ci_storage_apply_recovery.py': '8c4bc8805a338c298cf410ab751fe053e8cc458a09c8f2888e8a897f2e875339',
+COMPOSED_DEPENDENCY_HASHES = {'tooling/ci_storage_apply_recovery.py': 'b238db82b3c774f56d403ee897f6399183173d2823ea42a9bdfe0413386dc87e',
+ 'tooling/tests/test_ci_storage_apply_recovery.py': '18019c8070dfbf8f904a0bf1516c5bbd8195c5c6573ea122957622b330be0da8',
  '.github/workflows/storage-apply-process-recovery.yml': 'fab7d4e12b1d56e732b03d90ce840ee9f436968b986c335a350a86ab3734e5ce',
  'docs/reliability/storage-apply-process-recovery.md': 'c1e4ec2eac4f25eb26698d0ef6501a197da3e86f03aaf769b02c145b9b09fa0c'}
 
@@ -1030,7 +1030,11 @@ DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class UnknownExecution(custody.VerificationError):
-    """A timed-out process is not permission to replay or continue."""
+    """An uncertain process or receipt is not permission to replay or continue."""
+
+    def __init__(self, message, command=None):
+        super().__init__(message)
+        self.command = command
 
 
 def require(ok, message):
@@ -1377,13 +1381,20 @@ def retain_source(repo, snapshot, output):
 
 
 def command(argv, cwd, environment, output, label, timeout, context, observations=None):
-    row = custody.execute(argv, cwd, environment, output, label, timeout, context)
+    try:
+        row = custody.execute(argv, cwd, environment, output, label, timeout, context)
+    except custody.UnknownObservation as error:
+        raise UnknownExecution("unretained observation; stop without replay: " + label, error.command) from error
+    if custody.execution_unknown(row):
+        raise UnknownExecution("uncertain command; stop all remaining cases without replay: " + label, row)
     if observations is not None:
         root, items = observations
-        items.append({"folder": output.relative_to(root).as_posix(), "command": row,
-                      "receipt": custody.fingerprint(output / (label + ".command.json"), root)})
-    if row["observation"] == "UNKNOWN_TIMEOUT_NO_RETRY":
-        raise UnknownExecution("timed out; stop all remaining cases without replay: " + label)
+        try:
+            original = custody.fingerprint(output / (label + ".command.json"), root)
+            items.append({"folder": output.relative_to(root).as_posix(), "command": row,
+                          "receipt": original})
+        except BaseException as error:
+            raise UnknownExecution("command custody was not retained; stop: " + label, row) from error
     require(row["observation"] == "DIRECT_PROCESS_EXIT_OBSERVED",
             "command did not start or exit observably: " + label)
     require(row["log_custody"] == "VERIFIED_SNAPSHOT", "original command log custody failed")
@@ -1635,6 +1646,7 @@ def run_role(pair, role, gate, workspace, output, target, temporary, environment
         result["phase"] = "complete"
     except UnknownExecution as error:
         result.update(status="UNKNOWN", error=str(error),
+                      unsealed_command=error.command,
                       terminal_custody="UNSEALED_DESCENDANTS_NOT_OBSERVED")
     except Exception as error:
         result.update(error=type(error).__name__ + ": " + str(error))
@@ -1833,6 +1845,7 @@ def run(workspace, output, selection="foundation-causal"):
                 receipt["status"] = PASS_STATUSES[selection]
     except UnknownExecution as error:
         receipt.update(status="UNKNOWN", error=str(error),
+                       unsealed_command=error.command,
                        terminal_custody="UNSEALED_DESCENDANTS_NOT_OBSERVED")
     except Exception as error:
         receipt.update(error=type(error).__name__ + ": " + str(error))

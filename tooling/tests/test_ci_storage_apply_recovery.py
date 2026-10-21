@@ -14,6 +14,32 @@ from unittest import mock
 from tooling import ci_storage_apply_recovery as gate
 
 
+class SyntheticObservedProcess:
+    """Only a fixture for the canonical observer, never an executed test binary."""
+    def __init__(self, code=0, error=None):
+        self.pid = 123456789
+        self.code, self.error, self.returncode = code, error, None
+
+    def wait(self, timeout=None):
+        if self.error is not None:
+            raise self.error
+        self.returncode = self.code
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+
+def synthetic_spawn_from_run(callback):
+    def spawn(argv, **kwargs):
+        try:
+            result = callback(argv, **kwargs)
+        except subprocess.TimeoutExpired as error:
+            return SyntheticObservedProcess(error=error)
+        return SyntheticObservedProcess(result.returncode)
+    return spawn
+
+
 def environment(platform="Windows"):
     sha = "a" * 40
     return {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
@@ -469,7 +495,9 @@ class EvidenceContracts(unittest.TestCase):
     def test_timeout_with_unstable_log_keeps_UNKNOWN_and_one_invocation(self):
         output = self.root / "e"
         output.mkdir()
-        with mock.patch.object(gate.subprocess, "run", side_effect=subprocess.TimeoutExpired(["fixture"], 1)) as run, \
+        with mock.patch.object(gate.subprocess, "Popen", return_value=SyntheticObservedProcess(
+                    error=subprocess.TimeoutExpired(["fixture"], 1))) as run, \
+                mock.patch.object(gate, "stop_observed_process", return_value=[]), \
                 mock.patch.object(gate, "fingerprint", side_effect=gate.VerificationError("log changed")):
             command = gate.execute(["fixture"], self.repo, {}, output, "timeout", 1, self.context)
         run.assert_called_once()
@@ -481,7 +509,7 @@ class EvidenceContracts(unittest.TestCase):
     def test_launch_failure_is_not_reported_as_an_executed_unknown_case(self):
         output = self.root / "e"
         output.mkdir()
-        with mock.patch.object(gate.subprocess, "run", side_effect=FileNotFoundError("fixture absent")) as run:
+        with mock.patch.object(gate.subprocess, "Popen", side_effect=FileNotFoundError("fixture absent")) as run:
             command = gate.execute(["absent"], self.repo, {}, output, "launch", 1, self.context)
         run.assert_called_once()
         self.assertEqual(command["observation"], "NOT_STARTED_LAUNCH_ERROR")
@@ -880,7 +908,9 @@ class Binding4Contracts(unittest.TestCase):
                 mock.patch.object(gate, "__file__", str(g / "tooling" / "ci_storage_apply_recovery.py")), \
                 mock.patch.object(gate, "binding4_source_snapshot", side_effect=lambda _p, role: snapshots[role]), \
                 mock.patch.object(gate, "source_snapshot", return_value={"files": {}}), \
-                mock.patch.object(gate.subprocess, "run", side_effect=fake_run) as process:
+                mock.patch.object(gate.subprocess, "Popen", side_effect=synthetic_spawn_from_run(fake_run)) as process, \
+                mock.patch.object(gate, "owned_process_group_state", return_value="ABSENT"), \
+                mock.patch.object(gate, "stop_observed_process", return_value=[]):
             self.assertEqual(gate.run_binding4(s, output, gate.BINDING4_SOURCE_SHA, "binding4-core44", b), 1)
         result = json.loads((output / "receipt.json").read_bytes())
         self.assertEqual(result["status"], "UNKNOWN")
@@ -1160,7 +1190,9 @@ class CurrentProductContracts(unittest.TestCase):
                 mock.patch.object(gate, "__file__", str(g / "tooling" / "ci_storage_apply_recovery.py")), \
                 mock.patch.object(gate, "binding4_source_snapshot", side_effect=lambda _path, role, **_kw: snapshots[role]), \
                 mock.patch.object(gate, "source_snapshot", return_value={"files": {}}), \
-                mock.patch.object(gate.subprocess, "run", side_effect=fake_run) as process:
+                mock.patch.object(gate.subprocess, "Popen", side_effect=synthetic_spawn_from_run(fake_run)) as process, \
+                mock.patch.object(gate, "owned_process_group_state", return_value="ABSENT"), \
+                mock.patch.object(gate, "stop_observed_process", return_value=[]):
             self.assertEqual(gate.run_binding4(s, output, gate.CURRENT_SOURCE_SHA, "current-process"), 1)
         receipt = json.loads((output / "receipt.json").read_bytes())
         self.assertEqual(receipt["product_source_sha"], gate.CURRENT_SOURCE_SHA)
@@ -1171,6 +1203,140 @@ class CurrentProductContracts(unittest.TestCase):
         self.assertEqual(receipt["results"], [])
         self.assertFalse(receipt["operations_retried"])
         self.assertFalse((output / "case-02.command.json").exists())
+
+
+
+class OwnedProcessObservationContracts(unittest.TestCase):
+    """Source-level process controls; no Rust, installer or native application."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def observe(self, process, *, group="ABSENT", cleanup=None, owned=True):
+        with mock.patch.object(gate.subprocess, "Popen", return_value=process) as spawn, \
+                mock.patch.object(gate, "supports_owned_process_group", return_value=owned), \
+                mock.patch.object(gate, "owned_process_group_state", return_value=group), \
+                mock.patch.object(gate, "stop_observed_process", return_value=[] if cleanup is None else cleanup) as stop:
+            row = gate.execute(["synthetic"], self.root, {}, self.root, "case", 17, {})
+        self.assertEqual(spawn.call_count, 1)
+        return row, spawn, stop
+
+    def test_absent_owned_group_preserves_positive_direct_exit(self):
+        row, spawn, cleanup = self.observe(SyntheticObservedProcess())
+        self.assertEqual(row["observation"], "DIRECT_PROCESS_EXIT_OBSERVED")
+        self.assertEqual(row["exit_code"], 0)
+        self.assertEqual(row["owned_group_after_wait"], "ABSENT")
+        self.assertTrue(spawn.call_args.kwargs["start_new_session"])
+        self.assertEqual(row["escaped_descendants"], "NOT_OBSERVED")
+        cleanup.assert_not_called()
+
+    def test_live_owned_group_after_root_zero_keeps_unknown_and_cleanup(self):
+        row, _, cleanup = self.observe(SyntheticObservedProcess(), group="PRESENT")
+        self.assertTrue(gate.execution_unknown(row))
+        self.assertEqual(row["exit_code"], 0)
+        self.assertEqual(row["uncertainty_reason"], "OWNED_GROUP_PRESENT_AFTER_DIRECT_EXIT")
+        cleanup.assert_called_once()
+
+    def test_direct_only_boundary_does_not_claim_descendant_observation(self):
+        row, spawn, cleanup = self.observe(SyntheticObservedProcess(), owned=False)
+        self.assertEqual(row["observation"], "DIRECT_PROCESS_EXIT_OBSERVED")
+        self.assertEqual(row["process_boundary"], "DIRECT_PROCESS_ONLY")
+        self.assertEqual(row["owned_group_after_wait"], "NOT_OBSERVED")
+        self.assertEqual(row["escaped_descendants"], "NOT_OBSERVED")
+        self.assertFalse(spawn.call_args.kwargs["start_new_session"])
+        cleanup.assert_not_called()
+
+    def test_post_launch_oserror_is_unknown_not_launch_failure(self):
+        row, _, cleanup = self.observe(SyntheticObservedProcess(error=OSError("wait failed")))
+        self.assertEqual(row["observation"], "UNKNOWN_PROCESS_NO_RETRY")
+        self.assertEqual(row["pid"], 123456789)
+        self.assertEqual(row["uncertainty_reason"], "POST_LAUNCH_OBSERVATION_ERROR")
+        cleanup.assert_called_once()
+
+    def test_wait_interrupt_and_secondary_cleanup_interrupt_keep_unknown(self):
+        process = SyntheticObservedProcess(error=KeyboardInterrupt("first interruption"))
+        with mock.patch.object(gate.subprocess, "Popen", return_value=process), \
+                mock.patch.object(gate, "stop_observed_process", side_effect=KeyboardInterrupt("cleanup interruption")):
+            row = gate.execute(["synthetic"], self.root, {}, self.root, "case", 17, {})
+        self.assertTrue(gate.execution_unknown(row))
+        self.assertIn("first interruption", row["error"])
+        self.assertIn("cleanup interruption", row["cleanup_errors"][0])
+
+    def test_group_probe_error_after_exit_is_unknown(self):
+        process = SyntheticObservedProcess()
+        with mock.patch.object(gate.subprocess, "Popen", return_value=process), \
+                mock.patch.object(gate, "supports_owned_process_group", return_value=True), \
+                mock.patch.object(gate, "owned_process_group_state", side_effect=PermissionError("group unavailable")), \
+                mock.patch.object(gate, "stop_observed_process", return_value=[]):
+            row = gate.execute(["synthetic"], self.root, {}, self.root, "case", 17, {})
+        self.assertTrue(gate.execution_unknown(row))
+        self.assertIn("group unavailable", row["error"])
+
+    def test_partial_receipt_failure_carries_unknown_and_no_rewrite(self):
+        def partial(path, value):
+            Path(path).write_text("partial", encoding="utf-8")
+            raise OSError("controlled receipt write failure")
+        with mock.patch.object(gate.subprocess, "Popen", return_value=SyntheticObservedProcess()) as spawn, \
+                mock.patch.object(gate, "owned_process_group_state", return_value="ABSENT"), \
+                mock.patch.object(gate, "write_new", side_effect=partial) as write:
+            with self.assertRaises(gate.UnknownObservation) as caught:
+                gate.execute(["synthetic"], self.root, {}, self.root, "case", 17, {})
+        self.assertEqual(caught.exception.command["observation"], "UNKNOWN_CUSTODY_NO_RETRY")
+        self.assertEqual(caught.exception.command["pid"], 123456789)
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual(spawn.call_count, 1)
+        self.assertEqual((self.root / "case.command.json").read_text(), "partial")
+
+    def test_unknown_stream_failure_cannot_downgrade_observation(self):
+        with mock.patch.object(gate.subprocess, "Popen", return_value=SyntheticObservedProcess(error=OSError("wait"))), \
+                mock.patch.object(gate, "stop_observed_process", return_value=[]), \
+                mock.patch.object(gate, "fingerprint", side_effect=gate.VerificationError("unstable stream")):
+            row = gate.execute(["synthetic"], self.root, {}, self.root, "case", 17, {})
+        self.assertTrue(gate.execution_unknown(row))
+        self.assertEqual(row["log_custody"], "INCOMPLETE")
+        self.assertEqual(json.loads((self.root / "case.command.json").read_bytes())["observation"],
+                         "UNKNOWN_PROCESS_NO_RETRY")
+
+    def test_ambiguous_spawn_and_stream_close_keep_unknown_without_guessing_a_handle(self):
+        original_open = Path.open
+
+        class FailingClose:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self.stream.__enter__()
+
+            def __exit__(self, *error):
+                self.stream.__exit__(*error)
+                raise OSError("stderr finalization failed")
+
+        def opened(path, mode="r", *args, **kwargs):
+            stream = original_open(path, mode, *args, **kwargs)
+            return FailingClose(stream) if mode == "xb" and path.name.endswith(".stderr.log") else stream
+
+        with mock.patch.object(Path, "open", opened), \
+                mock.patch.object(gate.subprocess, "Popen", side_effect=OSError("spawn handle unavailable")) as spawn, \
+                mock.patch.object(gate, "stop_observed_process") as stop:
+            row = gate.execute(["synthetic"], self.root, {}, self.root, "case", 17, {"case": "ambiguous"})
+        self.assertEqual(row["observation"], "UNKNOWN_PROCESS_NO_RETRY")
+        self.assertEqual(row["uncertainty_reason"], "SPAWN_HANDLE_NOT_OBSERVED")
+        self.assertEqual(row["error"], "OSError: spawn handle unavailable")
+        self.assertEqual(row["secondary_observation_errors"], ["OSError: stderr finalization failed"])
+        self.assertIsNone(row["pid"])
+        self.assertEqual(row["context"], {"case": "ambiguous"})
+        self.assertEqual(row["diagnostic_custody"], "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+        self.assertEqual(json.loads((self.root / "case.command.json").read_bytes()), row)
+        spawn.assert_called_once()
+        stop.assert_not_called()
+
+    def test_timeout_and_process_and_custody_unknown_share_stop_predicate(self):
+        for value in ("UNKNOWN_TIMEOUT_NO_RETRY", "UNKNOWN_PROCESS_NO_RETRY", "UNKNOWN_CUSTODY_NO_RETRY"):
+            self.assertTrue(gate.execution_unknown({"observation": value}))
+        for value in ("DIRECT_PROCESS_EXIT_OBSERVED", "NOT_STARTED_LAUNCH_ERROR", ""):
+            self.assertFalse(gate.execution_unknown({"observation": value}))
 
 
 if __name__ == "__main__":

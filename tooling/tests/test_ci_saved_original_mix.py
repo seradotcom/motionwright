@@ -519,6 +519,8 @@ class SyntheticExecution(unittest.TestCase):
         code, receipt = self.run_gate("unknown")
         self.assertEqual(code, 2)
         self.assertEqual(receipt["status"], "UNKNOWN")
+        self.assertEqual(receipt["postcheck"], "NOT_RUN_UNKNOWN_PROCESS_OR_CUSTODY")
+        self.assertNotIn("source_after", receipt)
         self.assertEqual((receipt["unknown"], receipt["not_run"]), (1, 40))
         self.assertEqual(len([x for x in self.calls if x[0].startswith("case-")]), 1)
 
@@ -552,6 +554,76 @@ class SyntheticExecution(unittest.TestCase):
         code, receipt = self.run_gate("schema-tamper")
         self.assertEqual((code, receipt["passed"]), (2, 41))
         self.assertIn("schemas changed during tests", receipt["postcheck_error"])
+
+
+
+class SharedObservationStopContracts(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.execution = gate.Execution(self.root, self.root, {}, {})
+
+    def test_live_group_unknown_is_sticky_and_forbids_second_command(self):
+        row = {"observation": "UNKNOWN_PROCESS_NO_RETRY", "exit_code": 0, "pid": 123}
+        with mock.patch.object(gate.custody, "execute", return_value=row) as execute, \
+                mock.patch.object(gate.custody, "fingerprint") as readback:
+            with self.assertRaises(gate.VerificationError):
+                self.execution.run(["synthetic"], "first", 120)
+            with self.assertRaisesRegex(gate.VerificationError, "prior UNKNOWN"):
+                self.execution.run(["forbidden"], "second", 120)
+        execute.assert_called_once()
+        readback.assert_not_called()
+        self.assertTrue(self.execution.unknown)
+        self.assertEqual(self.execution.commands, [row])
+
+    def test_persistence_unknown_is_sticky_and_keeps_unsealed_command(self):
+        row = {"observation": "UNKNOWN_CUSTODY_NO_RETRY", "pid": 456}
+        with mock.patch.object(gate.custody, "execute", side_effect=gate.custody.UnknownObservation("partial", row)) as execute:
+            with self.assertRaises(gate.VerificationError):
+                self.execution.run(["synthetic"], "first", 120)
+            with self.assertRaisesRegex(gate.VerificationError, "prior UNKNOWN"):
+                self.execution.run(["forbidden"], "second", 120)
+        execute.assert_called_once()
+        self.assertTrue(self.execution.unknown)
+        self.assertEqual(self.execution.commands, [row])
+
+    def test_metadata_readback_failure_keeps_known_exit_and_stops_commands(self):
+        row = {"observation": "DIRECT_PROCESS_EXIT_OBSERVED", "exit_code": 0,
+               "pid": 123, "log_custody": "VERIFIED_SNAPSHOT"}
+        with mock.patch.object(gate.custody, "execute", return_value=row) as execute, \
+                mock.patch.object(gate.custody, "fingerprint", side_effect=OSError("metadata unavailable")):
+            with self.assertRaisesRegex(gate.VerificationError, "custody readback failed"):
+                self.execution.run(["synthetic"], "first", 120)
+            with self.assertRaisesRegex(gate.VerificationError, "prior UNKNOWN"):
+                self.execution.run(["forbidden"], "second", 120)
+        self.assertTrue(self.execution.unknown)
+        self.assertEqual(row["observation"], "DIRECT_PROCESS_EXIT_OBSERVED")
+        unsealed = self.execution.commands[0]
+        self.assertEqual(unsealed["original_command"], row)
+        self.assertEqual(unsealed["observation"], "UNKNOWN_CUSTODY_NO_RETRY")
+        self.assertEqual(unsealed["exit_code"], 0)
+        self.assertEqual(unsealed["secondary_observation_errors"], ["OSError: metadata unavailable"])
+        self.assertEqual(self.execution.originals, [])
+        execute.assert_called_once()
+
+    def test_stream_readback_failure_after_metadata_remains_unknown(self):
+        row = {"observation": "DIRECT_PROCESS_EXIT_OBSERVED", "exit_code": 0,
+               "pid": 456, "log_custody": "VERIFIED_SNAPSHOT"}
+        original = {"path": "first.command.json"}
+        with mock.patch.object(gate.custody, "execute", return_value=row) as execute, \
+                mock.patch.object(gate.custody, "fingerprint", return_value=original), \
+                mock.patch.object(gate, "original_stream", side_effect=[
+                    json.dumps(row).encode(), OSError("stdout unavailable")]):
+            with self.assertRaisesRegex(gate.VerificationError, "custody readback failed"):
+                self.execution.run(["synthetic"], "first", 120)
+            with self.assertRaisesRegex(gate.VerificationError, "prior UNKNOWN"):
+                self.execution.run(["forbidden"], "second", 120)
+        self.assertTrue(self.execution.unknown)
+        self.assertEqual(self.execution.commands[0]["original_command"], row)
+        self.assertEqual(self.execution.commands[0]["secondary_observation_errors"], ["OSError: stdout unavailable"])
+        self.assertEqual(self.execution.originals, [original])
+        execute.assert_called_once()
 
 
 if __name__ == "__main__":

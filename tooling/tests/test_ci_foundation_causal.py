@@ -1618,6 +1618,10 @@ class ComposedCurrentCausalTests(unittest.TestCase):
 
     def test_composed_workflow_keeps_one_executor_and_exact_linux_consumer_check(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(encoding="utf-8")
+        g0 = text.split("\n  foundation-causal-g0:\n", 1)[1].split("\n  foundation-causal:\n", 1)[0]
+        for pattern in ("test_ci_foundation_causal.py", "test_ci_storage_apply_recovery.py",
+                        "test_ci_saved_original_mix.py"):
+            self.assertIn("--pattern " + pattern, g0)
         selected = text.split("\n  foundation-causal:\n", 1)[1]
         self.assertEqual(text.count("gate/tooling/ci_foundation_causal.py"), 1)
         self.assertEqual(text.count("needs: foundation-causal-g0"), 1)
@@ -1648,7 +1652,7 @@ class ComposedCurrentCausalTests(unittest.TestCase):
             root, snapshot, "foundation-composed-current")
         self.assertEqual(observed["files"], gate.COMPOSED_DEPENDENCY_HASHES)
         self.assertEqual(hashlib.sha256(loaded.read_bytes()).hexdigest(),
-                         "d1387f0b86d5747da3fb5687aaa7b860c51f6fa08ffd78ec5c71c2000f5fcab2")
+                         "b238db82b3c774f56d403ee897f6399183173d2823ea42a9bdfe0413386dc87e")
         self.assertEqual((observed["product_source"], observed["product_tree"]),
                          (self.pair["repair"]["sha"], self.pair["repair"]["tree"]))
         source, tree, _ = gate.custody.binding4_product_profile("current-process")
@@ -1666,6 +1670,82 @@ class ComposedCurrentCausalTests(unittest.TestCase):
         self.assertEqual(gate.CURRENT_DEPENDENCY_HASHES["tooling/ci_storage_apply_recovery.py"],
                          "463cf14f9e3d907c8782bc7505574b214f646028baddb38efccba67d62984653")
         self.assertNotEqual(gate.CURRENT_DEPENDENCY_HASHES, gate.COMPOSED_DEPENDENCY_HASHES)
+
+
+class SharedObservationStopContracts(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def test_unknown_owned_group_stops_before_receipt_readback(self):
+        row = {"observation": "UNKNOWN_PROCESS_NO_RETRY", "exit_code": 0, "pid": 123}
+        with patch.object(gate.custody, "execute", return_value=row) as execute, \
+                patch.object(gate.custody, "fingerprint") as readback:
+            with self.assertRaises(gate.UnknownExecution) as caught:
+                gate.command(["synthetic"], self.root, {}, self.root, "case", 120, {}, (self.root, []))
+        self.assertEqual(caught.exception.command, row)
+        execute.assert_called_once()
+        readback.assert_not_called()
+
+    def test_unretained_shared_receipt_remains_unknown_with_command(self):
+        row = {"observation": "UNKNOWN_CUSTODY_NO_RETRY", "pid": 456}
+        with patch.object(gate.custody, "execute", side_effect=gate.custody.UnknownObservation("partial", row)):
+            with self.assertRaises(gate.UnknownExecution) as caught:
+                gate.command(["synthetic"], self.root, {}, self.root, "case", 120, {})
+        self.assertEqual(caught.exception.command, row)
+
+    def test_post_command_metadata_error_does_not_allow_later_pair(self):
+        row = {"observation": "DIRECT_PROCESS_EXIT_OBSERVED", "exit_code": 0, "log_custody": "VERIFIED_SNAPSHOT"}
+        with patch.object(gate.custody, "execute", return_value=row), \
+                patch.object(gate.custody, "fingerprint", side_effect=OSError("metadata absent")):
+            with self.assertRaises(gate.UnknownExecution) as caught:
+                gate.command(["synthetic"], self.root, {}, self.root, "case", 120, {}, (self.root, []))
+        self.assertEqual(caught.exception.command, row)
+
+    def test_ambiguous_spawn_stream_error_stops_role_scheduler(self):
+        workspace, output = self.root / "workspace", self.root / "evidence"
+        workspace.mkdir()
+        output.mkdir()
+        pair = {"id": "synthetic-unknown", "baseline": {
+            "sha": "1" * 40, "tree": "2" * 40, "targets": {}}, "repair": {
+            "sha": "3" * 40, "tree": "4" * 40, "targets": {}}}
+        original_open = Path.open
+        visits = []
+
+        class FailingClose:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self.stream.__enter__()
+
+            def __exit__(self, *error):
+                self.stream.__exit__(*error)
+                raise OSError("stderr finalization failed")
+
+        def opened(path, mode="r", *args, **kwargs):
+            stream = original_open(path, mode, *args, **kwargs)
+            return FailingClose(stream) if mode == "xb" and path.name.endswith(".stderr.log") else stream
+
+        def callback(spec, role):
+            visits.append(role)
+            return gate.run_role(spec, role, self.root, workspace, output,
+                                 self.root / "unused-target", self.root / "unused-temp", {}, {}, {})
+
+        with patch.object(Path, "open", opened), \
+                patch.object(gate.custody.subprocess, "Popen", side_effect=OSError("spawn handle unavailable")) as spawn, \
+                patch.object(gate.custody, "stop_observed_process") as stop:
+            results = gate.run_pairs(callback, [pair])
+        self.assertEqual(visits, ["baseline"])
+        self.assertEqual(results[0]["status"], "UNKNOWN")
+        command = results[0]["roles"][0]["unsealed_command"]
+        self.assertEqual(command["uncertainty_reason"], "SPAWN_HANDLE_NOT_OBSERVED")
+        self.assertEqual(command["secondary_observation_errors"], ["OSError: stderr finalization failed"])
+        self.assertFalse((output / pair["id"] / "repair").exists())
+        spawn.assert_called_once()
+        stop.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

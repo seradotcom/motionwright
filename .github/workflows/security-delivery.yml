@@ -250,7 +250,9 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/verification/foundation-g0"
           python3 gate/tooling/ci_test_runner.py --repo gate \
-            --pattern test_ci_foundation_causal.py --mode both --require-complete \
+            --pattern test_ci_foundation_causal.py \
+            --pattern test_ci_storage_apply_recovery.py \
+            --pattern test_ci_saved_original_mix.py --mode both --require-complete \
             --expected-source "$GITHUB_SHA" \
             --report "$GITHUB_WORKSPACE/verification/foundation-g0/receipt.json"
       - name: Public source policies

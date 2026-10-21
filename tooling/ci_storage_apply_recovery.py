@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -395,27 +396,143 @@ def finish(before, after, binary, rows, enumerated, context):
             "human_acceptance": False, "release_authorized": False}
 
 
-def execute(argv, cwd, env, output, label, timeout, context):
-    row = {"argv": argv, "cwd": str(cwd), "started_utc": now(), "context": context}
-    with (output / (label + ".stdout.log")).open("xb") as out, (output / (label + ".stderr.log")).open("xb") as err:
+class UnknownObservation(VerificationError):
+    """A launched or uncertain command whose complete receipt was not retained."""
+
+    def __init__(self, message, command):
+        super().__init__(message)
+        self.command = command
+
+
+def execution_unknown(command):
+    # Future unknown observations must also stop a caller, never become FAIL
+    # followed by another operation. This predicate grants no success credit.
+    return str(command.get("observation", "")).startswith("UNKNOWN")
+
+
+def supports_owned_process_group():
+    return os.name == "posix"
+
+
+def owned_process_group_state(pid):
+    """Observe only the POSIX session group created for this direct child."""
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return "ABSENT"
+    return "PRESENT"
+
+
+def stop_observed_process(process, owned_group):
+    """Bounded cleanup; uncertainty stays UNKNOWN even after successful cleanup."""
+    errors = []
+    for force in (False, True):
         try:
-            result = subprocess.run(argv, cwd=cwd, env=env, stdout=out, stderr=err, timeout=timeout)
-            row.update(exit_code=result.returncode, observation="DIRECT_PROCESS_EXIT_OBSERVED")
-        except subprocess.TimeoutExpired:
-            row.update(exit_code=None, observation="UNKNOWN_TIMEOUT_NO_RETRY",
-                       diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
-        except OSError as error:
-            row.update(exit_code=None, observation="NOT_STARTED_LAUNCH_ERROR", error=str(error))
+            if owned_group:
+                os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            elif process.poll() is None:
+                process.kill() if force else process.terminate()
+        except ProcessLookupError:
+            pass
+        except BaseException as error:
+            errors.append(type(error).__name__ + ": " + str(error))
+        try:
+            process.wait(timeout=2)
+        except BaseException as error:
+            errors.append(type(error).__name__ + ": " + str(error))
+        try:
+            root_done = process.poll() is not None
+            group_done = not owned_group or owned_process_group_state(process.pid) == "ABSENT"
+            if root_done and group_done:
+                break
+        except BaseException as error:
+            errors.append(type(error).__name__ + ": " + str(error))
+    return errors
+
+
+def execute(argv, cwd, env, output, label, timeout, context):
+    owned_group = supports_owned_process_group()
+    row = {"argv": argv, "cwd": str(cwd), "started_utc": now(), "context": context,
+           "process_observation_schema": "motionwright.command-process-observation/2",
+           "process_boundary": "OWNED_POSIX_SESSION_GROUP" if owned_group else "DIRECT_PROCESS_ONLY",
+           "escaped_descendants": "NOT_OBSERVED", "pid": None,
+           "owned_group_after_wait": "NOT_OBSERVED", "cleanup_errors": []}
+    process = None
+    try:
+        with (output / (label + ".stdout.log")).open("xb") as out, (output / (label + ".stderr.log")).open("xb") as err:
+            try:
+                process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
+                                           start_new_session=owned_group)
+            except (FileNotFoundError, PermissionError) as error:
+                row.update(exit_code=None, observation="NOT_STARTED_LAUNCH_ERROR", error=str(error))
+            except OSError as error:
+                row.update(exit_code=None, observation="UNKNOWN_PROCESS_NO_RETRY",
+                           uncertainty_reason="SPAWN_HANDLE_NOT_OBSERVED",
+                           error=type(error).__name__ + ": " + str(error),
+                           diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+            else:
+                row["pid"] = process.pid
+                try:
+                    row["exit_code"] = process.wait(timeout=timeout)
+                    if owned_group:
+                        row["owned_group_after_wait"] = owned_process_group_state(process.pid)
+                        if row["owned_group_after_wait"] != "ABSENT":
+                            row.update(observation="UNKNOWN_PROCESS_NO_RETRY",
+                                       uncertainty_reason="OWNED_GROUP_PRESENT_AFTER_DIRECT_EXIT")
+                    if not execution_unknown(row):
+                        row["observation"] = "DIRECT_PROCESS_EXIT_OBSERVED"
+                except subprocess.TimeoutExpired as error:
+                    row.update(exit_code=None, observation="UNKNOWN_TIMEOUT_NO_RETRY",
+                               uncertainty_reason="DIRECT_WAIT_TIMEOUT", error=str(error))
+                except BaseException as error:
+                    row.update(exit_code=None, observation="UNKNOWN_PROCESS_NO_RETRY",
+                               uncertainty_reason="POST_LAUNCH_OBSERVATION_ERROR",
+                               error=type(error).__name__ + ": " + str(error))
+                if execution_unknown(row):
+                    row["diagnostic_custody"] = "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"
+                    try:
+                        row["cleanup_errors"] = stop_observed_process(process, owned_group)
+                    except BaseException as error:
+                        row["cleanup_errors"].append(type(error).__name__ + ": " + str(error))
+    except BaseException as error:
+        if process is None and isinstance(error, OSError) and not execution_unknown(row):
+            # Log setup failed, or launch was known not to start. A missing
+            # handle does not erase an already observed uncertain launch.
+            raise
+        if execution_unknown(row):
+            row.setdefault("secondary_observation_errors", []).append(
+                type(error).__name__ + ": " + str(error))
+        else:
+            row.update(exit_code=None, observation="UNKNOWN_PROCESS_NO_RETRY",
+                       uncertainty_reason="OBSERVATION_OR_STREAM_FINALIZATION_ERROR",
+                       error=type(error).__name__ + ": " + str(error))
+        row["diagnostic_custody"] = "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"
+        if process is not None:
+            try:
+                row["cleanup_errors"].extend(stop_observed_process(process, owned_group))
+            except BaseException as cleanup_error:
+                row["cleanup_errors"].append(type(cleanup_error).__name__ + ": " + str(cleanup_error))
     row["finished_utc"] = now()
     row["log_custody"] = "VERIFIED_SNAPSHOT"
     for stream in ("stdout", "stderr"):
         path = output / (label + "." + stream + ".log")
         try:
             row[stream] = fingerprint(path, output)
-        except (OSError, VerificationError) as error:
+        except BaseException as error:
             row["log_custody"] = "INCOMPLETE"
-            row[stream] = {"path": path.name, "custody_error": str(error)}
-    write_new(output / (label + ".command.json"), row)
+            row[stream] = {"path": path.name, "custody_error": type(error).__name__ + ": " + str(error)}
+            if not isinstance(error, (OSError, VerificationError)):
+                row.update(observation="UNKNOWN_PROCESS_NO_RETRY",
+                           uncertainty_reason="STREAM_OBSERVATION_INTERRUPTED")
+    try:
+        write_new(output / (label + ".command.json"), row)
+    except BaseException as error:
+        row.update(observation="UNKNOWN_CUSTODY_NO_RETRY",
+                   uncertainty_reason="COMMAND_RECEIPT_PERSISTENCE_FAILED",
+                   receipt_error=type(error).__name__ + ": " + str(error))
+        # Do not rewrite a potentially partial receipt or lose the observation
+        # in a generic FAIL. The caller retains this row in its own successor.
+        raise UnknownObservation("command receipt could not be retained; no retry", row) from error
     return row
 
 
@@ -480,12 +597,15 @@ def run(repo, output, source_sha):
              "CARGO_PROFILE_TEST_DEBUG", "CARGO_PROFILE_DEV_DEBUG")}
         receipt["phase"] = "compile"
         for label, argv in (("rustc-version", ["rustc", "-Vv"]), ("cargo-version", ["cargo", "-V"])):
-            require(execute(argv, repo, env, output, label, 45, context)["exit_code"] == 0, "tool identity failed")
+            observed = execute(argv, repo, env, output, label, 45, context)
+            if execution_unknown(observed):
+                raise UnknownObservation("tool observation is UNKNOWN", observed)
+            require(observed["exit_code"] == 0, "tool identity failed")
         build = execute(["cargo", "test", "--locked", "-p", "motionwright-storage", "--lib", "--no-run",
                          "--message-format=json"], repo, env, output, "compile", 1500, context)
         receipt["build"] = build
-        if build["observation"] == "UNKNOWN_TIMEOUT_NO_RETRY":
-            receipt["status"] = "UNKNOWN"
+        if execution_unknown(build):
+            raise UnknownObservation("build observation is UNKNOWN", build)
         binary = select_binary(read_original(output, build, "stdout"), build["exit_code"], repo, target)
         receipt["binary"] = binary
         copy = output / ("executed-test-binary.exe" if context["RUNNER_OS"] == "Windows" else "executed-test-binary")
@@ -495,8 +615,8 @@ def run(repo, output, source_sha):
         receipt["retained_binary"] = retained
         receipt["phase"] = "roster"
         listing = execute([binary["absolute_path"], "--list", "--format", "terse"], repo, env, output, "roster", 45, context)
-        if listing["observation"] == "UNKNOWN_TIMEOUT_NO_RETRY":
-            receipt["status"] = "UNKNOWN"
+        if execution_unknown(listing):
+            raise UnknownObservation("roster observation is UNKNOWN", listing)
         enumerated = selected_roster(read_original(output, listing, "stdout"), listing["exit_code"], context["RUNNER_OS"])
         receipt["enumerated_cases"] = list(enumerated)
         require(snapshot() == before, "source changed during compilation")
@@ -520,9 +640,9 @@ def run(repo, output, source_sha):
                               repo, case_env, output, label, 120, context)
             if command["observation"] != "NOT_STARTED_LAUNCH_ERROR":
                 receipt["case_processes_started"] += 1
-            unknown = command["observation"] == "UNKNOWN_TIMEOUT_NO_RETRY"
+            unknown = execution_unknown(command)
             if unknown:
-                receipt["status"] = "UNKNOWN"
+                raise UnknownObservation("case observation is UNKNOWN", command)
             after_binary = {"absolute_path": binary["absolute_path"], **fingerprint(Path(binary["absolute_path"]), target)}
             assertion = None
             try:
@@ -553,6 +673,9 @@ def run(repo, output, source_sha):
                     "phase checkpoint inventory incomplete or unexpected")
         receipt.update(finish(before, after, binary, receipt["results"], enumerated, context))
         receipt["phase"] = "complete"
+    except UnknownObservation as error:
+        receipt.update(status="UNKNOWN", unsealed_command=error.command,
+                       error=str(error), terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
     except Exception as error:
         receipt["error"] = type(error).__name__ + ": " + str(error)
     receipt["finished_utc"] = now()
@@ -565,7 +688,8 @@ def run(repo, output, source_sha):
 
 
 
-# The historical constants and callable helpers above remain source-frozen.
+# Historical product constants and receipt schemas remain frozen.
+# Future executions use the versioned shared process observation above.
 BINDING4_SOURCE_SHA = "449de7a315a513468610d517e78f9ab87f76ae9d"
 BINDING4_SOURCE_TREE = "6193f0f2721914e84bac571986cacd5492f8a7c9"
 BINDING4_REVIEWED = MappingProxyType({'Cargo.lock': '5a70f296cd65e9fa9c5f9f5265a7f13735d72b74496b05b2d9e4501cbd604cdd',
@@ -982,11 +1106,17 @@ def run_binding4(repo, output, source_sha, mode, baseline_repo=None):
             result["baseline"] = binding4_source_snapshot(roots["baseline"], "baseline")
         return result
     def invoke(argv, root, env, label, timeout, role, is_case=False):
-        cmd = execute(argv, root, env, output, label, timeout, binding4_command_context(context, role))
+        try:
+            cmd = execute(argv, root, env, output, label, timeout, binding4_command_context(context, role))
+        except UnknownObservation as error:
+            receipt["commands"].append(error.command)
+            if is_case and error.command.get("pid") is not None:
+                receipt["case_processes_started"] += 1
+            raise
         receipt["commands"].append(cmd)
         if is_case and cmd["observation"] != "NOT_STARTED_LAUNCH_ERROR":
             receipt["case_processes_started"] += 1
-        if cmd["observation"] == "UNKNOWN_TIMEOUT_NO_RETRY":
+        if execution_unknown(cmd):
             receipt["status"] = "UNKNOWN"
         require(cmd["observation"] == "DIRECT_PROCESS_EXIT_OBSERVED", "command failed or UNKNOWN; no retry")
         return cmd
@@ -1113,6 +1243,9 @@ def run_binding4(repo, output, source_sha, mode, baseline_repo=None):
         receipt.update(finish_binding4(before, after, binaries, receipt["results"], rosters, context,
                                        receipt["baseline"], base_binary if "baseline" in roots else None))
         receipt["phase"] = "complete"
+    except UnknownObservation as error:
+        receipt.update(status="UNKNOWN", unsealed_command=error.command,
+                       error=str(error), terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
     except Exception as error:
         receipt["error"] = type(error).__name__ + ": " + str(error)
     receipt["finished_utc"] = now()
