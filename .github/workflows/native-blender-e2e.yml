@@ -1,160 +1,542 @@
 name: Native Blender round-trip
-
-on:
+'on':
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Select source checks or an explicit native Blender attempt
+        type: choice
+        options:
+        - static-glb
+        - source
+        - original-scene
+        default: source
+      expected_source_sha:
+        description: Exact Motionwright commit required for an original Scene attempt
+        type: string
+        required: false
+      recovery_recipient:
+        description: Admitted RSA3072 public recipient JSON; never a private key
+        type: string
+        required: false
   pull_request:
     paths:
-      - 'SOURCE_LOCK.json'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/domain/**'
-      - 'crates/service/**'
-      - 'crates/storage/**'
-      - 'crates/native/**'
-      - 'tooling/native_blender_e2e.py'
-      - 'tooling/native_scene_public_artifact.py'
-      - 'tooling/cross_app_public_artifact.py'
-      - 'tooling/tests/test_native_scene_public_artifact.py'
-      - '.github/workflows/native-blender-e2e.yml'
-
+    - SOURCE_LOCK.json
+    - Cargo.toml
+    - Cargo.lock
+    - crates/domain/**
+    - crates/service/**
+    - crates/storage/**
+    - crates/native/**
+    - tooling/native_blender_e2e.py
+    - tooling/native_blender_original_evidence.py
+    - tooling/blender_original_scene_contract.py
+    - tooling/ci_private_evidence.py
+    - tooling/mlt_official_runtime_intake.py
+    - tooling/native_mlt_loaded_module.py
+    - tooling/requirements/mlt-g2-custody.txt
+    - tooling/tests/test_blender_original_scene_contract.py
+    - tooling/tests/test_native_blender_original_evidence.py
+    - tooling/native_scene_public_artifact.py
+    - tooling/cross_app_public_artifact.py
+    - tooling/tests/test_native_scene_public_artifact.py
+    - .github/workflows/native-blender-e2e.yml
 permissions:
   contents: read
-
 concurrency:
-  group: native-blender-roundtrip-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
-
+  group: ${{ inputs.verification_scope == 'original-scene' && 'native-blender-original-exclusive' || format('native-blender-roundtrip-{0}-{1}',
+    github.event_name, github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ inputs.verification_scope != 'original-scene' }}
 defaults:
   run:
     shell: bash
-
 env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
   SEMWRIGHT_TEST_BLENDER_ROOT: /usr/local/blender-4.5.14-linux-x64
-
 jobs:
   native-blender-roundtrip:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.verification_scope == 'original-scene' && 60 || 45 }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-
-      - name: Resolve exact Semwright source pin
-        id: pin
-        run: |
-          sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
-          test "${#sha}" -eq 40
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: seradotcom/semwright
-          ref: ${{ steps.pin.outputs.sha }}
-          path: _semwright
-          persist-credentials: false
-
-      - name: Verify immutable source identities
-        run: |
-          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Validate Blender verification scope
+      env:
+        VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
+      run: |
+        python3 - <<'PY'
+        import os
+        event = os.environ["GITHUB_EVENT_NAME"]
+        scope = os.environ["VERIFICATION_SCOPE"]
+        allowed = {"source", "static-glb", "original-scene"}
+        if event == "workflow_dispatch":
+            if scope not in allowed:
+                raise SystemExit("Unknown Blender verification scope")
+        elif event == "pull_request":
+            if scope and scope not in allowed:
+                raise SystemExit("Unknown Blender verification scope")
+            scope = "source"
+        else:
+            raise SystemExit("Unsupported Blender verification event")
+        print(f"Blender verification scope: {scope}")
+        PY
+    - name: Bind the explicit original Scene attempt
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'original-scene'
+      env:
+        EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+        RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+      run: |
+        python3 - <<'PY'
+        import json, os, re
+        assert os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
+        assert os.environ['GITHUB_RUN_ATTEMPT'] == '1', 'A native attempt cannot be rerun automatically'
+        source = os.environ['EXPECTED_SOURCE']
+        assert re.fullmatch(r'[0-9a-f]{40}', source) and source == os.environ['GITHUB_SHA']
+        raw = os.environ['RECOVERY_RECIPIENT']
+        assert 0 < len(raw) <= 4096
+        recipient = json.loads(raw)
+        assert set(recipient) == {'spki_der_base64', 'sha256'}
+        PY
+    - name: Verify original Scene source and custody contracts
+      run: |
+        python3 -m venv "$RUNNER_TEMP/blender-original-venv"
+        "$RUNNER_TEMP/blender-original-venv/bin/python" -m pip install \
+          --disable-pip-version-check --no-input --no-cache-dir --only-binary=:all: \
+          --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+        "$RUNNER_TEMP/blender-original-venv/bin/python" -m pip check
+        "$RUNNER_TEMP/blender-original-venv/bin/python" tooling/ci_test_runner.py \
+          --pattern test_blender_original_scene_contract.py \
+          --pattern test_native_blender_original_evidence.py \
+          --mode both --require-complete --expected-source "$GITHUB_SHA" \
+          --report "$RUNNER_TEMP/blender-original-source-tests.json"
+        "$RUNNER_TEMP/blender-original-venv/bin/python" - <<'PY'
+        import hashlib, json, os, pathlib, re
+        report = pathlib.Path(os.environ["RUNNER_TEMP"]) / "blender-original-source-tests.json"
+        receipt = json.loads(report.read_bytes())
+        expected = {
+            "discovery:test_blender_original_scene_contract.py": 35,
+            "discovery:test_native_blender_original_evidence.py": 51,
+            "dotted:tooling.tests.test_blender_original_scene_contract": 35,
+            "dotted:tooling.tests.test_native_blender_original_evidence": 51,
+        }
+        compact = {
+            "test_default_runtime_path_is_unchanged",
+            "test_exact_four_compact_runtimes_preserve_context_roots",
+            "test_existing_runtime_prefix_is_not_adopted",
+            "test_existing_runtime_child_is_not_adopted_before_other_directories",
+            "test_runtime_symlinks_are_not_adopted",
+            "test_linux_socket_budget_counts_utf8_bytes_at_107_and_108",
+            "test_overlong_socket_fails_before_driver_copy_or_popen",
+            "test_existing_socket_path_fails_before_driver_copy_or_popen",
+            "test_linux_old_109_socket_fails_and_compact_socket_binds",
+        }
+        steps = receipt.get("steps", [])
+        if (receipt.get("status") != "PASS" or receipt.get("exit_code") != 0
+                or receipt.get("executed_source_sha") != os.environ["GITHUB_SHA"]
+                or len(steps) != 4
+                or {step.get("entry_point") for step in steps} != set(expected)):
+            raise SystemExit("Missing exact Blender source-contract entrypoint")
+        for step in steps:
+            count = expected[step["entry_point"]]
+            counts = step.get("counts", {})
+            if (step.get("status") != "PASS" or step.get("exit_code") != 0
+                    or counts.get("tests_run") != count or counts.get("passed") != count
+                    or any(counts.get(k) != 0 for k in
+                           ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
+                raise SystemExit("Incomplete Blender 35+51 source roster")
+            if "test_native_blender_original_evidence" in step["entry_point"]:
+                original = report.with_name(step["stderr"]["file"]).read_bytes()
+                if hashlib.sha256(original).hexdigest() != step["stderr"]["sha256"]:
+                    raise SystemExit("Original Blender test log changed")
+                view = original.decode("utf-8", "strict").replace("\r\n", "\n")
+                observed = re.findall(r"^(test_\w+) \([^\n]*\.CompactRuntimeTests\.\1\) \.\.\. ok$", view, re.M)
+                if len(observed) != 9 or set(observed) != compact:
+                    raise SystemExit("Every Linux compact-runtime case must actually pass")
+        print(json.dumps({"distinct_Blender_source_cases":86, "case_executions":172,
+                          "compact_runtime_cases":9, "skipped":0,
+                          "native_effects":False}, sort_keys=True))
+        PY
+    - name: Resolve exact Semwright source pin
+      id: pin
+      run: |
+        sha="$(python3 -c 'import json; print(json.load(open("SOURCE_LOCK.json"))["dependencies"]["semwright"]["revision"])')"
+        test "${#sha}" -eq 40
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: seradotcom/semwright
+        ref: ${{ steps.pin.outputs.sha }}
+        path: _semwright
+        persist-credentials: false
+      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene')
+    - name: Verify immutable source identities
+      env:
+        VERIFY_SEMWRIGHT_CHECKOUT: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene') }}
+      run: |
+        test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+        if [[ "$VERIFY_SEMWRIGHT_CHECKOUT" == "true" ]]; then
           test "$(git -C _semwright rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
-          python3 tooling/source_policy.py
-
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
-        with:
-          toolchain: 1.98.1
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          key: motionwright-native-blender-1.98.1
-          cache-on-failure: true
-
-      - name: Install verified Blender and sandbox dependencies
-        env:
-          BLENDER_URL: https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
-          BLENDER_SHA256: 9ba871ff2ecd36526b77432745980b7e6664ecd0c7ca11c48849073dcfe06da3
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            bubblewrap fontconfig xz-utils libpipewire-0.3-dev pkg-config clang
-          curl --fail --location --retry 3 --output /tmp/blender.tar.xz "$BLENDER_URL"
-          echo "$BLENDER_SHA256  /tmp/blender.tar.xz" | sha256sum --check -
-          sudo tar -xJf /tmp/blender.tar.xz -C /usr/local
-          test "$("$SEMWRIGHT_TEST_BLENDER_ROOT/blender" --version | head -1)" = "Blender 4.5.14 LTS"
-          bwrap --version
-
-      - name: Configure disposable-runner Driver Host sandbox
-        run: |
-          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
-            "$GITHUB_WORKSPACE/verification/native-blender-e2e/sandbox-profile.txt"
-
-      - name: Build exact Semwright Broker, sandbox and Blender provider
-        working-directory: _semwright
-        run: |
-          cargo build --locked -p semwright-daemon -p semwright-cli --bins
-          cargo build --locked \
-            -p semwright-plugin-host --bin semwright-sandbox \
-            -p semwright-driver-blender \
-            --bin semwright-blender-driver \
-            --bin semwright-blender-session-runner
-
-      - name: Build bounded Motionwright Blender acceptance
-        run: |
-          cargo build --locked -p motionwright-native --example native-blender-e2e
-          cargo test --locked -p motionwright-native blender -- --nocapture
-
-      - name: Realize application-owned scene through real Broker and Blender Driver Host
-        env:
-          SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
-          SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
-        run: |
-          python3 tooling/native_blender_e2e.py \
-            | tee verification/native-blender-e2e/run.log
-
-      - name: Reject unsafe public Blender and Manim scene media
-        run: python3 -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
-
-      - name: Verify Blender review evidence
-        run: |
-          test -s "verification/native-blender-e2e/${GITHUB_SHA}/result.json"
-          test -s "verification/native-blender-e2e/${GITHUB_SHA}/motionwright-blender-evidence.json"
-          test -s "verification/native-blender-e2e/${GITHUB_SHA}/motionwright-contribution.glb"
-          python3 - <<'PY'
-          import json, os, struct
-          from pathlib import Path
-          root = Path("verification/native-blender-e2e") / os.environ["GITHUB_SHA"]
-          result = json.loads((root / "result.json").read_text())
-          assert result["native_blender_e2e"] == "PASS"
-          assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
-          assert len(result["semwright_sha"]) == 40
-          assert result["glb"]["meshes"] >= 2
-          assert result["glb"]["materials"] >= 2
-          data = (root / "motionwright-contribution.glb").read_bytes()
-          magic, version, length = struct.unpack("<4sII", data[:12])
-          assert magic == b"glTF" and version == 2 and length == len(data)
-          PY
-
-      - name: Stage only verified Blender GLB, not original Broker receipts
-        if: always()
-        env:
-          NATIVE_CI_JOB_STATUS: ${{ job.status }}
-        run: |
-          python3 tooling/native_scene_public_artifact.py \
-            --scene blender \
-            --source-sha "$GITHUB_SHA" \
-            --evidence-root "verification/native-blender-e2e/$GITHUB_SHA" \
-            --output-root "verification/native-blender-public" \
-            --job-status "$NATIVE_CI_JOB_STATUS"
-          python3 -m json.tool verification/native-blender-public/public-evidence.json >/dev/null
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: motionwright-native-blender-${{ github.sha }}
-          path: verification/native-blender-public
-          if-no-files-found: error
-          retention-days: 14
+        fi
+        python3 tooling/source_policy.py
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      with:
+        toolchain: 1.98.1
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      with:
+        key: motionwright-native-blender-1.98.1
+        cache-on-failure: true
+    - name: Build bounded Motionwright Blender acceptance
+      run: |
+        cargo fmt --all -- --check
+        cargo clippy --locked -p motionwright-native --lib --example native-blender-e2e -- -D warnings
+        cargo build --locked -p motionwright-native --example native-blender-e2e
+        cargo test --locked -p motionwright-native blender -- --nocapture
+        cargo test --locked -p motionwright-native --example native-blender-e2e original_ -- --nocapture
+    - name: Require every source and receipt custody case before native execution
+      run: |
+        python3 - <<'PY'
+        import hashlib, json, os, pathlib, re, shlex, subprocess
+        def require_exact_case(name, output, code):
+            view = output.decode("utf-8", "replace").replace("\r\n", "\n")
+            names = re.findall(r"^test (\S+) \.\.\. ok$", view, re.M)
+            summaries = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;", view, re.M)
+            if code != 0 or names != [name] or summaries != [("1", "0", "0")]:
+                raise ValueError("required Rust case did not execute exactly once without omissions")
+            return {"name": name, "passed": 1, "failed": 0, "ignored": 0}
+        def source_state():
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            if head != os.environ["GITHUB_SHA"]:
+                raise ValueError("Rust test checkout differs from requested source")
+            if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip():
+                raise ValueError("tracked Rust test inputs changed")
+            paths = ["crates/native/src/production.rs", "crates/native/src/production/receipt_custody.rs",
+                     "crates/native/src/production/blender_original.rs", "crates/native/src/multi_renderer.rs",
+                     "crates/native/examples/native-blender-e2e.rs", "Cargo.lock", "SOURCE_LOCK.json",
+                     ".github/workflows/native-blender-e2e.yml"]
+            return {"sha": head, "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+                    "files": {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}}
+        ROSTER = [
+          {
+            "target": "--lib",
+            "name": "production::receipt_custody::tests::custody_reservation_is_shared_bounded_and_released_before_observation"
+          },
+          {
+            "target": "--lib",
+            "name": "production::receipt_custody::tests::custody_observation_survives_guard_drop_and_confirmed_append_releases"
+          },
+          {
+            "target": "--lib",
+            "name": "production::receipt_custody::tests::custody_retains_original_storage_error_with_bounded_private_projection"
+          },
+          {
+            "target": "--lib",
+            "name": "production::receipt_custody::tests::custody_diagnostic_prefix_preserves_utf8_and_reports_format_failure"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::production_custody_preserves_completed_terminal_on_sqlite_append_failure"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::production_custody_preserves_typed_error_when_its_append_also_fails"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::production_custody_capacity_rejection_precedes_intent_and_invocation"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::production_custody_releases_on_pre_dispatch_storage_rejection"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::production_custody_clears_only_after_confirmed_append_and_replay_is_effect_free"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::original_blender_plan_preserves_the_existing_geometry_and_full_identity"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::original_blender_camera_uses_geometry_basis_without_inventing_a_canvas_uuid"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::original_blender_plan_refuses_unsupported_zoom_and_rotation"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::original_blender_plan_rejects_native_name_collision_between_distinct_full_uuids"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::original_blender_plan_binds_content_beyond_the_revision_label"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::original_blender_plan_rejects_unbounded_depth_and_camera_position"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::original_blender_plan_rejects_non_finite_camera_and_foreign_renderer"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_phase_rejects_implicit_source_or_edit_selection"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_phase_source_requires_the_exact_filename_size_and_digest"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_phase_edit_rejects_nonfinite_zero_or_unbounded_translation"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_phase_never_overwrites_an_existing_source_path"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_property_comparison_keeps_integer_boolean_and_float_contracts_distinct"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_journal_retains_typed_consent_or_unknown_without_substitution"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_journal_keeps_a_native_ack_when_later_property_validation_fails"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_phase_reopen_refuses_unknown_or_completed_claim_without_dispatch"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "original_tests::original_seed_uses_reopened_project_bytes_and_the_canonical_plan"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "original_tests::original_receipt_snapshot_keeps_rows_beyond_the_latest_window"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "original_tests::original_typed_error_survives_capture_publication_and_diagnostic_failures"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "original_tests::original_ok_is_retained_when_reopen_or_publication_fails"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "original_tests::original_publication_ack_is_returned_only_after_the_publisher_finishes"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "original_tests::original_evidence_writer_preserves_an_existing_attempt"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "original_tests::original_append_custody_is_written_only_to_the_private_snapshot"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::production_workflow_intent_matches_effective_client_mutation_after_reopen"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::blender_projection_negotiates_non_normal_blend_before_dispatch"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::manim_projection_rejects_non_normal_blend_before_compiling_scene"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_journal_retains_uncertainty_for_unbound_mutation_identity"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_identity_tagging_retains_uncertainty_for_unbound_mutation_identity"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_original::tests::original_camera_creation_retains_uncertainty_for_unbound_mutation_identity"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::completed_read_replay_cannot_change_original_project_revision"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::completed_mutation_replay_cannot_change_original_project_revision"
+          }
+        ]
+        out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "blender-required-rust"
+        out.mkdir(exist_ok=False)
+        before = source_state()
+        receipt = {"schema": "motionwright.blender.required-rust-tests/1", "source_before": before,
+                   "run_id": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                   "required": len(ROSTER), "cases": [], "status": "RUNNING", "native_effects": False}
+        def retain():
+            (out / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        retain()
+        try:
+            if len(ROSTER) != 39 or len({r["name"] for r in ROSTER}) != 39:
+                raise ValueError("required Rust roster differs")
+            for index, row in enumerate(ROSTER):
+                argv = ["cargo", "test", "--locked", "-p", "motionwright-native"] + shlex.split(row["target"]) + [row["name"], "--", "--exact", "--nocapture"]
+                entry = {"name": row["name"], "command": argv, "state": "STARTED"}
+                receipt["cases"].append(entry)
+                retain()
+                try:
+                    process = subprocess.run(argv, capture_output=True, timeout=1200)
+                    stdout, stderr, code = process.stdout, process.stderr, process.returncode
+                except subprocess.TimeoutExpired as error:
+                    stdout, stderr, code = error.stdout or b"", error.stderr or b"", 124
+                    entry["state"] = "UNKNOWN_NO_RETRY"
+                for label, raw in (("stdout", stdout), ("stderr", stderr)):
+                    name = f"{index:02d}-{label}.log"
+                    with (out / name).open("xb") as handle:
+                        handle.write(raw)
+                    entry[label] = {"name": name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+                entry["exit_code"] = code
+                retain()
+                entry.update(require_exact_case(row["name"], stdout, code))
+                entry["state"] = "PASS"
+                retain()
+            receipt["source_after"] = source_state()
+            if receipt["source_after"] != before:
+                raise ValueError("Rust source changed during verification")
+            receipt["status"] = "PASS"
+        except Exception as error:
+            receipt["status"] = "FAIL"
+            receipt["error"] = str(error)
+            raise
+        finally:
+            retain()
+        PY
+    - name: Install verified Blender and sandbox dependencies
+      env:
+        BLENDER_URL: https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
+        BLENDER_SHA256: 9ba871ff2ecd36526b77432745980b7e6664ecd0c7ca11c48849073dcfe06da3
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y \
+          bubblewrap fontconfig xz-utils libpipewire-0.3-dev pkg-config clang
+        curl --fail --location --retry 3 --output /tmp/blender.tar.xz "$BLENDER_URL"
+        echo "$BLENDER_SHA256  /tmp/blender.tar.xz" | sha256sum --check -
+        sudo tar -xJf /tmp/blender.tar.xz -C /usr/local
+        test "$("$SEMWRIGHT_TEST_BLENDER_ROOT/blender" --version | head -1)" = "Blender 4.5.14 LTS"
+        bwrap --version
+      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene')
+    - name: Configure disposable-runner Driver Host sandbox
+      run: |
+        bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+          "$GITHUB_WORKSPACE/verification/native-blender-e2e/sandbox-profile.txt"
+      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene')
+    - name: Build exact Semwright Broker, sandbox and Blender provider
+      working-directory: _semwright
+      run: |
+        cargo build --locked -p semwright-daemon -p semwright-cli --bins
+        cargo build --locked \
+          -p semwright-plugin-host --bin semwright-sandbox \
+          -p semwright-driver-blender \
+          --bin semwright-blender-driver \
+          --bin semwright-blender-session-runner
+      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene')
+    - name: Realize application-owned scene through real Broker and Blender Driver Host
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      env:
+        SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+        SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+      run: |
+        python3 tooling/native_blender_e2e.py \
+          | tee verification/native-blender-e2e/run.log
+    - name: Run one explicit original Scene save-edit-reopen attempt
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'original-scene'
+      env:
+        MOTIONWRIGHT_BLENDER_SCOPE: original-scene
+        MOTIONWRIGHT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+        MOTIONWRIGHT_PRIVATE_EVIDENCE_RECIPIENT: ${{ inputs.recovery_recipient }}
+        SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+        SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+      run: |
+        "$RUNNER_TEMP/blender-original-venv/bin/python" tooling/native_blender_e2e.py
+    - name: Reject unsafe public Blender and Manim scene media
+      run: python3 -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
+    - name: Verify Blender review evidence
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      run: |
+        test -s "verification/native-blender-e2e/${GITHUB_SHA}/result.json"
+        test -s "verification/native-blender-e2e/${GITHUB_SHA}/motionwright-blender-evidence.json"
+        test -s "verification/native-blender-e2e/${GITHUB_SHA}/motionwright-contribution.glb"
+        python3 - <<'PY'
+        import json, os, struct
+        from pathlib import Path
+        root = Path("verification/native-blender-e2e") / os.environ["GITHUB_SHA"]
+        result = json.loads((root / "result.json").read_text())
+        assert result["native_blender_e2e"] == "PASS"
+        assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
+        assert len(result["semwright_sha"]) == 40
+        assert result["glb"]["meshes"] >= 2
+        assert result["glb"]["materials"] >= 2
+        data = (root / "motionwright-contribution.glb").read_bytes()
+        magic, version, length = struct.unpack("<4sII", data[:12])
+        assert magic == b"glTF" and version == 2 and length == len(data)
+        PY
+    - name: Stage only verified Blender GLB, not original Broker receipts
+      if: always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      env:
+        NATIVE_CI_JOB_STATUS: ${{ job.status }}
+      run: |
+        python3 tooling/native_scene_public_artifact.py \
+          --scene blender \
+          --source-sha "$GITHUB_SHA" \
+          --evidence-root "verification/native-blender-e2e/$GITHUB_SHA" \
+          --output-root "verification/native-blender-public" \
+          --job-status "$NATIVE_CI_JOB_STATUS"
+        python3 -m json.tool verification/native-blender-public/public-evidence.json >/dev/null
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      if: always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
+      with:
+        name: motionwright-native-blender-${{ github.sha }}
+        path: verification/native-blender-public
+        if-no-files-found: error
+        retention-days: 14
+    - name: Stage closed original Scene metadata and sealed custody
+      if: always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'original-scene'
+      id: original_public
+      env:
+        NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        EXACT_SEMWRIGHT_SHA: ${{ steps.pin.outputs.sha }}
+      run: |
+        "$RUNNER_TEMP/blender-original-venv/bin/python" tooling/native_blender_original_evidence.py \
+          --source verification/native-blender-original-public \
+          --output verification/native-blender-original-staged \
+          --expected-source "$GITHUB_SHA" --expected-semwright "$EXACT_SEMWRIGHT_SHA" \
+          --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+          --job-status "$NATIVE_CI_JOB_STATUS"
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      if: always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'original-scene' && steps.original_public.outcome == 'success'
+      with:
+        name: motionwright-blender-original-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          verification/native-blender-original-staged/public-evidence.json
+          verification/native-blender-original-staged/private-evidence.mwseal
+        if-no-files-found: error
+        retention-days: 14
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      if: always()
+      with:
+        name: motionwright-blender-original-source-tests-${{ github.sha }}-${{ github.run_id }}
+        path: |
+          ${{ runner.temp }}/blender-original-source-tests.json
+          ${{ runner.temp }}/blender-original-source-tests-*.log
+          ${{ runner.temp }}/blender-required-rust
+        if-no-files-found: warn
+        retention-days: 14
