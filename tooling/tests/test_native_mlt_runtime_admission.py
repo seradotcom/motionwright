@@ -76,7 +76,7 @@ class NativeModuleAdmissionTests(unittest.TestCase):
         self.assertEqual(gate.ORIGINAL_SHA,
             "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910")
         self.assertEqual(gate.REPAIRED_SHA,
-            "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0")
+            "fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121")
 
     def test_simulated_windows_machine_can_never_admit_module_on_either_runner(self):
         # This control is deliberately portable: run the Windows platform

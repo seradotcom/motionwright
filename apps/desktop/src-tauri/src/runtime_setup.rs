@@ -3,6 +3,8 @@
 //! Every subsequent native command still reloads and validates the canonical
 //! connection, resource, executable digest and Semwright policy gates.
 use serde::{Deserialize, Serialize};
+#[cfg(not(windows))]
+use std::sync::Arc;
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -16,6 +18,51 @@ const MAX_CONFIG_BYTES: u64 = 8 * 1024;
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeConnectionRegistry {
     root: PathBuf,
+    root_identity: RuntimeDirectoryIdentity,
+}
+
+#[cfg(not(windows))]
+#[derive(Debug, Clone)]
+struct RuntimeDirectoryIdentity(Arc<same_file::Handle>);
+
+#[cfg(not(windows))]
+impl RuntimeDirectoryIdentity {
+    fn capture(path: &Path) -> std::io::Result<Self> {
+        Ok(Self(Arc::new(same_file::Handle::from_path(path)?)))
+    }
+
+    fn matches(&self, path: &Path) -> std::io::Result<bool> {
+        Ok(self.0.as_ref() == &same_file::Handle::from_path(path)?)
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuntimeDirectoryIdentity {
+    volume: u64,
+    index: u64,
+    creation_time: Option<u64>,
+}
+
+#[cfg(windows)]
+impl RuntimeDirectoryIdentity {
+    fn capture(path: &Path) -> std::io::Result<Self> {
+        // An open child-directory handle prevents ancestor renames on NTFS,
+        // even with share-delete enabled. Capture identity, then close it.
+        let handle = winapi_util::Handle::from_path_any(path)?;
+        let information = winapi_util::file::information(&handle)?;
+        let identity = Self {
+            volume: information.volume_serial_number(),
+            index: information.file_index(),
+            creation_time: information.creation_time(),
+        };
+        drop(handle);
+        Ok(identity)
+    }
+
+    fn matches(&self, path: &Path) -> std::io::Result<bool> {
+        Ok(self == &Self::capture(path)?)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,7 +107,14 @@ impl RuntimeConnectionRegistry {
         // an existing registry does not follow a later retarget of that alias.
         let root = fs::canonicalize(&root)
             .map_err(|_| "Runtime settings directory could not be resolved")?;
-        let registry = Self { root };
+        // Keep the initial identity across clones. A canonical pathname alone
+        // cannot identify an ordinary directory replaced at that name.
+        let root_identity = RuntimeDirectoryIdentity::capture(&root)
+            .map_err(|_| "Runtime settings directory identity could not be established")?;
+        let registry = Self {
+            root,
+            root_identity,
+        };
         registry.validate_root()?;
         Ok(registry)
     }
@@ -83,7 +137,14 @@ impl RuntimeConnectionRegistry {
         if current != self.root {
             return Err("Runtime settings directory location has changed".into());
         }
-        // This rejects redirection already present before the operation.
+        if !self
+            .root_identity
+            .matches(&self.root)
+            .map_err(|_| "Runtime settings directory identity is unavailable")?
+        {
+            return Err("Runtime settings directory identity has changed".into());
+        }
+        // This rejects redirection and ordinary replacement already present.
         // Path checks do not provide atomic directory-handle confinement.
         Ok(())
     }
@@ -1141,6 +1202,199 @@ mod tests {
         #[ignore = "requires runner-provisioned NTFS junctions"]
         fn retargeted_initial_alias_keeps_original_physical_registry() {
             alias_round_trip("alias-retarget", true);
+        }
+    }
+
+    mod ordinary_directory_identity {
+        use super::*;
+        use std::ffi::OsString;
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct Snapshot(Vec<(OsString, Vec<u8>)>);
+
+        fn snapshot(root: &Path) -> Snapshot {
+            let metadata = fs::symlink_metadata(root).expect("physical directory must exist");
+            assert!(metadata.is_dir() && !is_link_or_reparse(&metadata));
+            let mut entries: Vec<_> = fs::read_dir(root)
+                .expect("read physical directory")
+                .map(|entry| {
+                    let entry = entry.expect("read directory entry");
+                    let metadata =
+                        fs::symlink_metadata(entry.path()).expect("inspect fixture file");
+                    assert!(metadata.is_file() && !is_link_or_reparse(&metadata));
+                    (
+                        entry.file_name(),
+                        fs::read(entry.path()).expect("read complete fixture file"),
+                    )
+                })
+                .collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            Snapshot(entries)
+        }
+
+        #[derive(Debug, Clone, Copy)]
+        enum Operation {
+            Read,
+            Write,
+            Clear,
+        }
+
+        fn substitution(operation: Operation, ancestor: bool) {
+            let temporary = TempDir::new().unwrap();
+            // Keep a system temporary-directory alias out of the boundary under test.
+            let base = fs::canonicalize(temporary.path()).unwrap();
+            let original_parent = base.join("original");
+            let decoy_parent = base.join("decoy");
+            let app_data = original_parent.join("app-data");
+            let decoy_app_data = decoy_parent.join("app-data");
+            let project = Uuid::now_v7();
+            let generation = Uuid::now_v7();
+            let original_reference = base.join("synthetic-original.json");
+            let decoy_reference = base.join("synthetic-decoy.json");
+            let replacement_reference = base.join("synthetic-replacement.json");
+            let initial = RuntimeConnectionRegistry::new(&app_data).unwrap();
+            initial
+                .remember_verified(project, generation, &original_reference)
+                .unwrap();
+            assert_eq!(
+                initial.resolve(project, generation),
+                Ok(Some(original_reference))
+            );
+            // Only the clone survives the substitution. It must retain the original
+            // directory identity rather than reacquire whatever occupies its path.
+            let registry = initial.clone();
+            drop(initial);
+            {
+                let decoy = RuntimeConnectionRegistry::new(&decoy_app_data).unwrap();
+                decoy
+                    .remember_verified(project, generation, &decoy_reference)
+                    .unwrap();
+                assert_eq!(
+                    decoy.resolve(project, generation),
+                    Ok(Some(decoy_reference))
+                );
+            }
+            let original_root = app_data.join("owner-native-connections");
+            let decoy_root = decoy_app_data.join("owner-native-connections");
+            let before = (snapshot(&original_root), snapshot(&decoy_root));
+            assert_ne!(before.0, before.1, "two distinct physical fixture records");
+            let preserved = base.join("preserved-original");
+            assert!(!preserved.exists());
+            let preserved_root = if ancestor {
+                fs::rename(&original_parent, &preserved).expect("preserve original ancestor");
+                fs::rename(&decoy_parent, &original_parent).expect("replace ordinary ancestor");
+                preserved.join("app-data").join("owner-native-connections")
+            } else {
+                fs::rename(&original_root, &preserved).expect("preserve original registry");
+                fs::rename(&decoy_root, &original_root).expect("replace ordinary registry");
+                preserved
+            };
+            assert_eq!(
+                fs::canonicalize(&original_root).unwrap(),
+                registry.root,
+                "the same canonical pathname must now name the different directory"
+            );
+            assert_eq!(
+                (snapshot(&preserved_root), snapshot(&original_root)),
+                before,
+                "the substitution itself must retain both physical records"
+            );
+            // These are synthetic reference operations, not runtime/Broker launches.
+            let result = match operation {
+                Operation::Read => registry.resolve(project, generation).map(|_| ()),
+                Operation::Write => {
+                    registry.remember_verified(project, generation, &replacement_reference)
+                }
+                Operation::Clear => registry.clear_saved(project).map(|_| ()),
+            };
+            let after = (snapshot(&preserved_root), snapshot(&original_root));
+            assert_eq!(
+                after, before,
+                "{operation:?} changed the original or replacement tree; result={result:?}"
+            );
+            assert!(
+                result.is_err(),
+                "{operation:?} accepted an ordinary replacement directory: {result:?}"
+            );
+        }
+
+        #[test]
+        fn read_rejects_replaced_root() {
+            substitution(Operation::Read, false);
+        }
+
+        #[test]
+        fn write_rejects_replaced_root() {
+            substitution(Operation::Write, false);
+        }
+
+        #[test]
+        fn clear_rejects_replaced_root() {
+            substitution(Operation::Clear, false);
+        }
+
+        #[test]
+        fn read_rejects_replaced_ancestor() {
+            substitution(Operation::Read, true);
+        }
+
+        #[test]
+        fn write_rejects_replaced_ancestor() {
+            substitution(Operation::Write, true);
+        }
+
+        #[test]
+        fn clear_rejects_replaced_ancestor() {
+            substitution(Operation::Clear, true);
+        }
+
+        #[test]
+        fn original_identity_survives_clone_mutations_and_reopen() {
+            let temporary = TempDir::new().unwrap();
+            let base = fs::canonicalize(temporary.path()).unwrap();
+            let registry = RuntimeConnectionRegistry::new(&base).unwrap();
+            let cloned = registry.clone();
+            let project_a = Uuid::now_v7();
+            let project_b = Uuid::now_v7();
+            let generation = Uuid::now_v7();
+            let first = base.join("synthetic-first.json");
+            let replacement = base.join("synthetic-replacement.json");
+            let other = base.join("synthetic-other.json");
+            registry
+                .remember_verified(project_a, generation, &first)
+                .unwrap();
+            let original_bytes = fs::read(registry.destination(project_a)).unwrap();
+            assert_eq!(cloned.resolve(project_a, generation), Ok(Some(first)));
+            cloned
+                .remember_verified(project_a, generation, &replacement)
+                .unwrap();
+            assert_ne!(
+                fs::read(registry.destination(project_a)).unwrap(),
+                original_bytes,
+                "the existing record must really have been replaced"
+            );
+            let reopened = RuntimeConnectionRegistry::new(&base).unwrap();
+            assert_eq!(
+                reopened.resolve(project_a, generation),
+                Ok(Some(replacement.clone()))
+            );
+            assert_eq!(
+                registry.resolve(project_a, generation),
+                Ok(Some(replacement))
+            );
+            reopened
+                .remember_verified(project_b, generation, &other)
+                .unwrap();
+            let other_bytes = fs::read(registry.destination(project_b)).unwrap();
+            assert!(cloned.clear_saved(project_a).unwrap());
+            assert!(!registry.destination(project_a).exists());
+            assert_eq!(
+                fs::read(registry.destination(project_b)).unwrap(),
+                other_bytes
+            );
+            assert_eq!(registry.resolve(project_b, generation), Ok(Some(other)));
+            assert!(cloned.clear_saved(project_b).unwrap());
+            assert!(snapshot(&registry.root).0.is_empty());
         }
     }
 }

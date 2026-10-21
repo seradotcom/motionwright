@@ -19,9 +19,17 @@ import stat
 import sys
 
 ORIGINAL_SHA256 = "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-REPAIRED_SHA256 = "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"
+REPAIRED_SHA256 = "fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121"
 INSTRUMENTED_SHA256 = "9190366bf2cddfd8214497fa9ec42fa2ef55dfbed5f8248c69b7aaae7854cabb"
-COMBINED_SHA256 = "579eba9bb5a128e78cf078e0ae47f72a6ddbeb9147cf4451a4900541ed9eb56c"
+COMBINED_SHA256 = "9d4794bcc825f5c7bd717f630dc3dbaa3c675278a3bad9610bf97ef6c42b04fa"
+LAST_FRAME_BOUNDARY = 1302
+LAST_FRAME_REPAIR_PAYLOAD = (
+    8, 487, "611f559a486bbda6ebcaafc0a597ca745f4a4770b2b92de45a64208c407b30df",
+)
+LAST_FRAME_OBSERVER_PAYLOAD = (
+    2, 179, "4275625b883eaf9617a09c8df14e90da031167b1374e6f9ee6a6e090c8c4103f",
+)
+LAST_FRAME_RESOLVED_SHA256 = "9e771791e3f355eb5e054b565cc33ea1a8a04a038cc65d06518c32ff54b22fd0"
 HELPER_SHA256 = "d90db74a261da8053a7f8258f1b9975e692ab54888408cd0a2818ee26e720bf9"
 LEGACY_HELPER_SHA256 = "fa56e6635f8731f62c9fca1305ee1b916e752526bbeeaaa4404addb24e327013"
 LEGACY_HELPER_REFERENCE = {
@@ -80,10 +88,11 @@ DIAGNOSTIC_DIGESTS = {
     "README.md": "ce82e3ce647603385ca3233b1bdebc1c25cf732a6ad9758a7d0a8fad7ec51e1d",
     "audio_tap.h": "06bd150f81728aa0339ac70f9f4d19f29100f4a7902144cd092643f48b7e9d2c",
     "instrument_consumer.py": "b211aedb430412bb36f7e5e86d708d9dd4b11c0287a31ba85f183380223f2576",
-    "repair_planar_source.py": "028d1f6e7e2a034aeb60b0e40dfc5154af401691f960483c3d0b77fe09bde87d",
+    "repair_planar_source.py": "76c4c00139483c44f47c56c297392f20764568fbbed9f15be7e34235c4858084",
     "test_audio_tap.c": "4d19fdfdf37d8380d318b731269fe08a835db89de8b671dbb60fe9e61b1f3c1b",
     "test_planar_padding.c": "ab44f0a12a583d878cfbbb0272a209c8526446128cef660b505053d9463e5b9b",
-    "test_repair_planar_source.py": "33753a745e38f77b11ca29d875e47d39a291badc57dc10cb90fb58a1fc149ae4",
+    "test_repair_planar_source.py": "74433bb1f85b3420b3f545589d77599d5d14f2ad50c3cc8afdee0779b911ab2d",
+    "test_encoder_last_frame.c": "5b20a7d05b02258da6f611e7dd81da3c6067dc254fca0597f6041b1941fc552f",
     "test_verify_trace.py": "ffd144a932604e2beb9681a9608dc449b360623717be4d90c74cdc7475bbc261",
     "verify_trace.py": "7d2c809c0beea42ebf2e1183fc13bb16871032892a8b6f12fa6ff926ee854ed6",
 }
@@ -275,6 +284,46 @@ def merge_disjoint(original: bytes, repaired: bytes, instrumented: bytes) -> tup
                       "observer_edits": describe(observer_edits), "overlapping_edits": 0}
 
 
+def _resolve_last_frame_boundary(repair_edits: list[tuple],
+                                 observer_edits: list[tuple]) -> tuple[list[tuple], dict]:
+    """Resolve only the two authenticated insertions before the original send."""
+    overlaps = [(i, j) for i, left in enumerate(repair_edits)
+                for j, right in enumerate(observer_edits) if conflicts(left, right)]
+    require(len(overlaps) == 1, "expected one pinned last-frame overlap")
+    repair_index, observer_index = overlaps[0]
+    left, right = repair_edits[repair_index], observer_edits[observer_index]
+    boundary = (LAST_FRAME_BOUNDARY, LAST_FRAME_BOUNDARY)
+    require(left[:2] == boundary and right[:2] == boundary,
+            "pinned last-frame shared boundary differs")
+    for edit, expected, label in (
+        (left, LAST_FRAME_REPAIR_PAYLOAD, "repair"),
+        (right, LAST_FRAME_OBSERVER_PAYLOAD, "observer"),
+    ):
+        payload = b"".join(edit[2])
+        require((len(edit[2]), len(payload), sha(payload)) == expected,
+                "pinned last-frame " + label + " payload differs")
+    replacement = left[2] + right[2]
+    require(sha(b"".join(replacement)) == LAST_FRAME_RESOLVED_SHA256,
+            "pinned last-frame resolved payload differs")
+    merged = [edit for i, edit in enumerate(repair_edits) if i != repair_index]
+    merged += [edit for j, edit in enumerate(observer_edits) if j != observer_index]
+    merged.append((*boundary, replacement))
+    require(not any(conflicts(left, right) for i, left in enumerate(merged)
+                    for right in merged[i + 1:]), "unresolved source edits overlap")
+    return merged, {
+        "start_line_zero_based": LAST_FRAME_BOUNDARY,
+        "stop_line_exclusive": LAST_FRAME_BOUNDARY,
+        "repair_payload_lines": LAST_FRAME_REPAIR_PAYLOAD[0],
+        "repair_payload_bytes": LAST_FRAME_REPAIR_PAYLOAD[1],
+        "repair_payload_sha256": LAST_FRAME_REPAIR_PAYLOAD[2],
+        "observer_payload_lines": LAST_FRAME_OBSERVER_PAYLOAD[0],
+        "observer_payload_bytes": LAST_FRAME_OBSERVER_PAYLOAD[1],
+        "observer_payload_sha256": LAST_FRAME_OBSERVER_PAYLOAD[2],
+        "order": ["repair", "observer"],
+        "resolved_payload_sha256": LAST_FRAME_RESOLVED_SHA256,
+    }
+
+
 def compose_pinned(original: bytes, repaired: bytes, instrumented: bytes) -> tuple[bytes, dict]:
     for data, expected, label in (
         (original, ORIGINAL_SHA256, "original"),
@@ -282,9 +331,29 @@ def compose_pinned(original: bytes, repaired: bytes, instrumented: bytes) -> tup
         (instrumented, INSTRUMENTED_SHA256, "instrumented original"),
     ):
         require(sha(data) == expected, label + " consumer digest differs")
-    combined, proof = merge_disjoint(original, repaired, instrumented)
+    base = original.splitlines(keepends=True)
+    require(base[LAST_FRAME_BOUNDARY] == (
+        b"            int ret = avcodec_send_frame(codec, samples ? ctx->audio_avframe : NULL);\n"
+    ), "pinned last-frame original send boundary differs")
+    repair_edits = changes(base, repaired.splitlines(keepends=True))
+    observer_edits = changes(base, instrumented.splitlines(keepends=True))
+    require(apply_changes(base, repair_edits) == repaired, "repair reconstruction differs")
+    require(apply_changes(base, observer_edits) == instrumented, "observer reconstruction differs")
+    merged, resolved = _resolve_last_frame_boundary(repair_edits, observer_edits)
+    combined = apply_changes(base, merged)
     require(sha(combined) == COMBINED_SHA256, "combined consumer digest differs")
-    return combined, proof
+
+    def describe(edits: list[tuple]) -> list[dict]:
+        return [{"start_line_zero_based": start, "stop_line_exclusive": stop,
+                 "replacement_lines": len(lines), "replacement_sha256": sha(b"".join(lines))}
+                for start, stop, lines in edits]
+    return combined, {
+        "composition_policy": "motionwright.mlt-pinned-last-frame-boundary/1",
+        "repair_edits": describe(repair_edits),
+        "observer_edits": describe(observer_edits),
+        "overlapping_edits": 1,
+        "resolved_boundary": resolved,
+    }
 
 
 def load_exact(name: str, path: Path):
