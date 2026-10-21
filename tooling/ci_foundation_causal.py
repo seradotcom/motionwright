@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify four frozen Foundation baseline/repair pairs on one selected Linux runner.
+"""Verify a closed selection of frozen Foundation pairs on one Linux runner.
 
 Named assertion failures plus passing controls establish a causal baseline.
 Compiler/setup failures, skipped cases and UNKNOWN never establish that result.
@@ -41,7 +41,10 @@ TARGETS = {'jobs': {'package': 'motionwright-service',
                     'kind': 'lib',
                     'name': 'motionwright_storage',
                     'source': 'crates/storage/src/lib.rs',
-                    'prefixes': ('file_import::source_open_tests::',)},
+                    'prefixes': ('file_import::source_open_tests::',),
+                    'repair_prefixes': ('file_import::source_open_tests::',
+                                        'file_import::tests::',
+                                        'file_import::staging_tests::')},
  'import-service': {'package': 'motionwright-service',
                     'kind': 'test',
                     'name': 'file_import_idempotency',
@@ -51,7 +54,23 @@ TARGETS = {'jobs': {'package': 'motionwright-service',
              'kind': 'test',
              'name': 'apply_receipt_integrity',
              'source': 'crates/storage/tests/apply_receipt_integrity.rs',
-             'prefixes': None}}
+             'prefixes': None},
+ 'budget-service': {'package': 'motionwright-service',
+                    'kind': 'test',
+                    'name': 'file_import_limits',
+                    'source': 'crates/service/tests/file_import_limits.rs',
+                    'prefixes': None},
+ 'budget-storage': {'package': 'motionwright-storage',
+                    'kind': 'lib',
+                    'name': 'motionwright_storage',
+                    'source': 'crates/storage/src/lib.rs',
+                    'prefixes': ('file_import::source_budget_tests::',)},
+ 'budget-service-unit': {'package': 'motionwright-service',
+                         'kind': 'lib',
+                         'name': 'motionwright_service',
+                         'source': 'crates/service/src/lib.rs',
+                         'prefixes': ('import_limits::tests::',
+                                      'audio::measurement_budget_tests::')}}
 
 PAIRS = [{'id': 'jobs',
   'failures': {'cancel_request_survives_failed_status_read_and_reopen': {'source': 'crates/service/tests/production_jobs_cancellation_recovery.rs',
@@ -344,6 +363,220 @@ PAIRS = [{'id': 'jobs',
              'fixture_sha256': {'crates/storage/tests/apply_receipt_integrity.rs': 'cc995895ccfae9c8f584e15555e38aeccdca684f3afcc5b64d72b69619428883'}}}]
 
 
+IMPORT_BUDGET_PAIR = {
+    "id": "import-resource-budget",
+    "failures": {
+        "source_byte_boundary_applies_to_asset_voice_and_both_host_constructors": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 375,
+            "markers": [
+                "expected source byte budget",
+                "got Ok("
+            ]
+        },
+        "known_source_hash_respects_reduced_bytes_but_source_free_recovery_survives": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 411,
+            "markers": [
+                "expected source byte budget",
+                "got Ok("
+            ]
+        },
+        "audio_duration_accepts_one_second_and_rejects_one_additional_frame": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 549,
+            "markers": [
+                "expected audio measurement limit exceeded: audio_seconds",
+                "got Ok("
+            ]
+        },
+        "stereo_sample_budget_counts_both_channels_without_duration_preemption": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 576,
+            "markers": [
+                "expected audio measurement limit exceeded: decoded_samples",
+                "got Ok("
+            ]
+        },
+        "packet_byte_budget_rejects_valid_pcm_before_publication": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 357,
+            "markers": [
+                "expected audio measurement limit exceeded: packet_bytes",
+                "got Ok("
+            ]
+        },
+        "declared_packet_sample_budget_rejects_valid_pcm_before_publication": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 357,
+            "markers": [
+                "expected audio measurement limit exceeded: packet_samples",
+                "got Ok("
+            ]
+        },
+        "demux_packet_budget_accepts_one_packet_and_rejects_a_three_packet_wav": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 357,
+            "markers": [
+                "expected audio measurement limit exceeded: demux_packets",
+                "got Ok("
+            ]
+        },
+        "audio_read_budget_rejects_valid_wav_during_probe_without_publication": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 357,
+            "markers": [
+                "expected audio measurement limit exceeded: audio_read_bytes",
+                "got Ok("
+            ]
+        },
+        "demux_budget_counts_real_packets_from_unselected_tracks": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 797,
+            "markers": [
+                "expected audio measurement limit exceeded: demux_packets",
+                "got Ok("
+            ]
+        },
+        "actual_decode_sample_budget_applies_without_declared_frame_count": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 814,
+            "markers": [
+                "expected audio measurement limit exceeded: decoded_samples",
+                "got Ok("
+            ]
+        },
+        "actual_decode_packet_budget_applies_without_declared_packet_frames": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 833,
+            "markers": [
+                "expected audio measurement limit exceeded: packet_samples",
+                "got Ok("
+            ]
+        },
+        "actual_duration_budget_rejects_one_extra_frame_without_declared_duration": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 852,
+            "markers": [
+                "expected audio measurement limit exceeded: audio_seconds",
+                "got Ok("
+            ]
+        },
+        "declared_svg_budget_also_respects_a_lower_host_byte_limit": {
+            "source": "crates/service/tests/file_import_limits.rs",
+            "line": 885,
+            "markers": [
+                "expected source byte budget",
+                "got Ok("
+            ]
+        },
+        "file_import::source_budget_tests::bounded_replay_hash_accepts_exact_budget_and_rejects_initial_excess": {
+            "source": "crates/storage/src/file_import.rs",
+            "line": 1152,
+            "markers": [
+                "expected initial source-size rejection",
+                "got Ok("
+            ]
+        },
+        "file_import::source_budget_tests::bounded_replay_hash_rejects_growth_after_first_read": {
+            "source": "crates/storage/src/file_import.rs",
+            "line": 1180,
+            "markers": [
+                "expected stream-growth rejection",
+                "got Ok("
+            ]
+        }
+    },
+    "baseline": {
+        "sha": "d3cbb9e875ebf39a9bcd1c02ca2786d852378e40",
+        "tree": "1e093ebcaa998ddb30e43dab93390fc583cb13ef",
+        "targets": {
+            "budget-service": [
+                "source_byte_boundary_applies_to_asset_voice_and_both_host_constructors",
+                "known_source_hash_respects_reduced_bytes_but_source_free_recovery_survives",
+                "known_voice_replay_does_not_remeasure_or_rehydrate_under_tiny_audio_budgets",
+                "source_free_recovery_ignores_all_import_limits_after_reopen",
+                "audio_duration_accepts_one_second_and_rejects_one_additional_frame",
+                "stereo_sample_budget_counts_both_channels_without_duration_preemption",
+                "packet_byte_budget_rejects_valid_pcm_before_publication",
+                "declared_packet_sample_budget_rejects_valid_pcm_before_publication",
+                "demux_packet_budget_accepts_one_packet_and_rejects_a_three_packet_wav",
+                "audio_read_budget_rejects_valid_wav_during_probe_without_publication",
+                "real_multitrack_control_has_unknown_duration_and_exact_selected_pcm",
+                "demux_budget_counts_real_packets_from_unselected_tracks",
+                "actual_decode_sample_budget_applies_without_declared_frame_count",
+                "actual_decode_packet_budget_applies_without_declared_packet_frames",
+                "actual_duration_budget_rejects_one_extra_frame_without_declared_duration",
+                "declared_svg_budget_also_respects_a_lower_host_byte_limit"
+            ],
+            "budget-storage": [
+                "file_import::source_budget_tests::bounded_replay_hash_accepts_exact_budget_and_rejects_initial_excess",
+                "file_import::source_budget_tests::bounded_replay_hash_rejects_growth_after_first_read",
+                "file_import::source_budget_tests::bounded_replay_hash_includes_growth_to_exact_budget",
+                "file_import::source_budget_tests::staging_rejects_growth_without_touching_sql_cas_or_another_capture",
+                "file_import::source_budget_tests::staging_captures_growth_to_exact_budget_then_removes_its_private_file"
+            ]
+        },
+        "fixture_sha256": {
+            "crates/service/tests/file_import_limits.rs": "6e09c0069069c84f3e2ca36514852e078aea484f80a62aa5f6cded6d7045a45f",
+            "crates/service/src/import_limits.rs": "21a58b974f1c440350581a2c7ca5d54b4907401fd9a33a8a4cc48389e2310d1e",
+            "crates/storage/src/file_import.rs": "ca57ad6e19cebafbd8e54981ab68a8be8744cf63efbaa15fd3b017e35febf69c",
+            "crates/service/src/audio.rs": "c189e5daf526427cf7371659676c22357891476485f280e5c74ea3624de820e9"
+        }
+    },
+    "repair": {
+        "sha": "ec0ed076efe7e9fabbf1385ca83bd747e3b2fade",
+        "tree": "922799c1b36813cda2d5bbd3658472f698ef1c25",
+        "targets": {
+            "budget-service": [
+                "source_byte_boundary_applies_to_asset_voice_and_both_host_constructors",
+                "known_source_hash_respects_reduced_bytes_but_source_free_recovery_survives",
+                "known_voice_replay_does_not_remeasure_or_rehydrate_under_tiny_audio_budgets",
+                "source_free_recovery_ignores_all_import_limits_after_reopen",
+                "audio_duration_accepts_one_second_and_rejects_one_additional_frame",
+                "stereo_sample_budget_counts_both_channels_without_duration_preemption",
+                "packet_byte_budget_rejects_valid_pcm_before_publication",
+                "declared_packet_sample_budget_rejects_valid_pcm_before_publication",
+                "demux_packet_budget_accepts_one_packet_and_rejects_a_three_packet_wav",
+                "audio_read_budget_rejects_valid_wav_during_probe_without_publication",
+                "real_multitrack_control_has_unknown_duration_and_exact_selected_pcm",
+                "demux_budget_counts_real_packets_from_unselected_tracks",
+                "actual_decode_sample_budget_applies_without_declared_frame_count",
+                "actual_decode_packet_budget_applies_without_declared_packet_frames",
+                "actual_duration_budget_rejects_one_extra_frame_without_declared_duration",
+                "declared_svg_budget_also_respects_a_lower_host_byte_limit"
+            ],
+            "budget-storage": [
+                "file_import::source_budget_tests::bounded_replay_hash_accepts_exact_budget_and_rejects_initial_excess",
+                "file_import::source_budget_tests::bounded_replay_hash_rejects_growth_after_first_read",
+                "file_import::source_budget_tests::bounded_replay_hash_includes_growth_to_exact_budget",
+                "file_import::source_budget_tests::staging_rejects_growth_without_touching_sql_cas_or_another_capture",
+                "file_import::source_budget_tests::staging_captures_growth_to_exact_budget_then_removes_its_private_file"
+            ],
+            "budget-service-unit": [
+                "import_limits::tests::every_limit_rejects_zero_and_an_increase",
+                "import_limits::tests::reduced_limits_cannot_be_raised_again",
+                "import_limits::tests::reducing_a_copy_preserves_the_original_and_other_limits",
+                "audio::measurement_budget_tests::bounded_file_accepts_exact_budget_and_true_eof",
+                "audio::measurement_budget_tests::bounded_file_seek_charges_rereads_and_keeps_exhaustion",
+                "audio::measurement_budget_tests::bounded_file_consumes_only_one_excess_probe_byte"
+            ]
+        },
+        "fixture_sha256": {
+            "crates/service/tests/file_import_limits.rs": "6e09c0069069c84f3e2ca36514852e078aea484f80a62aa5f6cded6d7045a45f",
+            "crates/service/src/import_limits.rs": "21a58b974f1c440350581a2c7ca5d54b4907401fd9a33a8a4cc48389e2310d1e",
+            "crates/storage/src/file_import.rs": "7f080115695b37d48f7bdf3f09addc20ac8325c859541c259a90a5ba4ef82ffb",
+            "crates/service/src/audio.rs": "0e02e56cc9546ae5570a424aca653c966e7ec17a7679dee5426418f9263f047c"
+        }
+    }
+}
+
+SELECTIONS = ("foundation-causal", "foundation-import-budget")
+PASS_STATUSES = {
+    "foundation-causal": "PASS_FOUR_EXACT_CAUSAL_PAIRS",
+    "foundation-import-budget": "PASS_IMPORT_BUDGET_CAUSAL_PAIR",
+}
+
 WORKFLOW = ".github/workflows/security-delivery.yml"
 GATE_FILES = (
     WORKFLOW, "tooling/ci_foundation_causal.py",
@@ -374,13 +607,10 @@ def require(ok, message):
     custody.require(ok, message)
 
 
-def validate_catalogue(pairs=None):
-    pairs = PAIRS if pairs is None else pairs
-    require([p["id"] for p in pairs] ==
-            ["jobs", "svg", "retained-import", "bounded-receipt"],
-            "the four reviewed pairs are required exactly once")
-    for pair, expected_counts, expected_red in zip(
-            pairs, ((4, 4), (13, 17), (4, 22), (12, 12)), (2, 9, 3, 11)):
+def validate_pairs(pairs, identities, counts, red_counts):
+    require([p["id"] for p in pairs] == identities,
+            "the reviewed selection requires each frozen pair exactly once")
+    for pair, expected_counts, expected_red in zip(pairs, counts, red_counts):
         baseline_names = []
         for role, count in zip(ROLES, expected_counts):
             source = pair[role]
@@ -410,14 +640,43 @@ def validate_catalogue(pairs=None):
                     "a causal assertion site and message are required")
     return pairs
 
+def validate_catalogue(pairs=None):
+    pairs = PAIRS if pairs is None else pairs
+    return validate_pairs(pairs, ["jobs", "svg", "retained-import", "bounded-receipt"],
+                          ((4, 4), (13, 17), (4, 22), (12, 12)), (2, 9, 3, 11))
 
-def execution_context(environment, runtime_platform=None):
+
+def validate_import_budget(pair=None):
+    pair = IMPORT_BUDGET_PAIR if pair is None else pair
+    validate_pairs([pair], ["import-resource-budget"], ((21, 27),), (15,))
+    expected_targets = (("budget-service", "budget-storage"),
+                        ("budget-service", "budget-storage", "budget-service-unit"))
+    for role, targets, counts in zip(ROLES, expected_targets, ((16, 5), (16, 5, 6))):
+        actual = pair[role]["targets"]
+        require(tuple(actual) == targets
+                and tuple(map(len, actual.values())) == counts,
+                "import budget target selection changed")
+    require(all(pair["baseline"]["targets"][target] == pair["repair"]["targets"][target]
+                for target in expected_targets[0]),
+            "import budget causal cases differ across roles")
+    require(all("got Ok(" in failure["markers"] for failure in pair["failures"].values()),
+            "import budget RED must identify an admitted over-budget value")
+    return [pair]
+
+
+def selected_pairs(selection):
+    require(selection in SELECTIONS, "unknown or unselected verification scope")
+    return validate_catalogue() if selection == "foundation-causal" else validate_import_budget()
+
+
+def execution_context(environment, runtime_platform=None, selection="foundation-causal"):
+    require(selection in SELECTIONS, "unknown or unselected verification scope")
     runtime_platform = sys.platform if runtime_platform is None else runtime_platform
     require(runtime_platform == "linux" and environment.get("RUNNER_OS") == "Linux"
             and environment.get("RUNNER_ARCH") == "X64", "requires the selected Linux x64 runner")
     require(environment.get("GITHUB_ACTIONS") == "true"
             and environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and environment.get("FOUNDATION_CAUSAL_SELECTION") == "foundation-causal",
+            and environment.get("FOUNDATION_CAUSAL_SELECTION") == selection,
             "causal execution requires the explicit selected dispatch")
     for name in ("GITHUB_SHA", "GITHUB_WORKFLOW_SHA"):
         require(SHA.fullmatch(environment.get(name, "")), "full gate workflow SHA required")
@@ -554,9 +813,8 @@ def selected_roster(raw, code, spec, expected, role):
     remainder = re.sub(r"(?m)^\d+ tests?, 0 benchmarks?\s*$", "", remainder)
     require(not remainder.strip(), "unrecognized test enumeration output")
     prefixes = spec["prefixes"]
-    if spec["name"] == "motionwright_storage" and role == "repair":
-        prefixes = ("file_import::source_open_tests::",
-                    "file_import::tests::", "file_import::staging_tests::")
+    if role == "repair":
+        prefixes = spec.get("repair_prefixes", prefixes)
     selected = names if prefixes is None else tuple(n for n in names if n.startswith(prefixes))
     require(len(expected) == len(set(expected))
             and set(selected) == set(expected) and len(selected) == len(expected),
@@ -776,9 +1034,10 @@ def verify_originals(output, observations, receipt):
             "files": verified}
 
 
-def run_pairs(callback):
+def run_pairs(callback, pairs=None):
+    pairs = PAIRS if pairs is None else pairs
     results = []
-    for pair in PAIRS:
+    for pair in pairs:
         result = {"id": pair["id"], "status": "FAIL", "roles": []}
         for role in ROLES:
             observed = callback(pair, role)
@@ -795,9 +1054,9 @@ def run_pairs(callback):
     return results
 
 
-def run(workspace, output):
-    context = execution_context(dict(os.environ))
-    validate_catalogue()
+def run(workspace, output, selection="foundation-causal"):
+    pairs = selected_pairs(selection)
+    context = execution_context(dict(os.environ), selection=selection)
     gate = Path(__file__).resolve().parents[1]
     workspace, output = workspace.resolve(strict=True), output.resolve()
     require(workspace == Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
@@ -807,15 +1066,27 @@ def run(workspace, output):
             "gate, product worktrees and output require separate workspace paths")
     output.mkdir(parents=True, exist_ok=False)
     receipt = {"schema": "motionwright.foundation-causal-linux/1", "status": "FAIL",
+               "selection": selection, "selected_pairs": [p["id"] for p in pairs],
+               "not_selected_pairs": [p["id"] for p in [*PAIRS, IMPORT_BUDGET_PAIR]
+                                      if p["id"] not in {x["id"] for x in pairs}],
+               "not_selected_credit": "NONE",
                "context": context, "pairs": [], "formal_acceptance": False,
                "installed_application": "NOT_RUN", "operations_retried": False,
-               "scope": "Only the eight frozen product sources and selected synthetic Rust contracts",
+               "scope": "Only the " + str(len(pairs) * 2)
+                        + " frozen product sources and selected synthetic Rust contracts",
                "limitations": [
                    "Schema4 is a distinct unexecuted pair.",
                    "Same-payload receipt substitution remains outside the limited receipt repair.",
                    "No provider cancellation, installed application or human acceptance is established.",
                    "Seven original decoded SVG cases are a subset of thirteen, not additional executions.",
                ]}
+    if selection == "foundation-import-budget":
+        receipt["limitations"] = [
+            "Only import resource budgets and source-free recovery contracts are selected.",
+            "The four historical pairs, Schema4 migration and SDK/desktop suites are NOT_RUN here.",
+            "The SavedMix full-cut limit, physical audio and installed application are NOT_RUN.",
+            "Synthetic contract outcomes do not grant normative or human acceptance.",
+        ]
     custody.write_new(output / "started.json", {**receipt, "started_utc": custody.now()})
     try:
         target, temporary = workspace / "foundation-target", workspace / "foundation-tmp"
@@ -840,7 +1111,7 @@ def run(workspace, output):
             "RUST_BACKTRACE")}
         receipt["pairs"] = run_pairs(lambda pair, role: run_role(
             pair, role, gate, workspace, output, target, temporary,
-            environment, context, toolchain, observations))
+            environment, context, toolchain, observations), pairs)
         if any(p["status"] == "UNKNOWN" for p in receipt["pairs"]):
             receipt.update(status="UNKNOWN", terminal_custody="UNSEALED_DESCENDANTS_NOT_OBSERVED")
         if receipt["status"] != "UNKNOWN":
@@ -853,33 +1124,35 @@ def run(workspace, output):
                 require({k: tool[k] for k in ("path", "bytes", "sha256", "identity")} ==
                         custody.fingerprint(path, path.parent), "tool executable changed")
             receipt["originals_final"] = verify_originals(output, observations[1], receipt)
-            if len(receipt["pairs"]) == 4 and all(
+            if len(receipt["pairs"]) == len(pairs) and all(
                     p["status"] == "PASS_EXACT_CAUSAL_PAIR" for p in receipt["pairs"]):
-                receipt["status"] = "PASS_FOUR_EXACT_CAUSAL_PAIRS"
+                receipt["status"] = PASS_STATUSES[selection]
     except UnknownExecution as error:
         receipt.update(status="UNKNOWN", error=str(error),
                        terminal_custody="UNSEALED_DESCENDANTS_NOT_OBSERVED")
     except Exception as error:
         receipt.update(error=type(error).__name__ + ": " + str(error))
     receipt["finished_utc"] = custody.now()
-    receipt["not_run_pairs"] = [p["id"] for p in PAIRS
+    receipt["not_run_pairs"] = [p["id"] for p in pairs
                                if p["id"] not in {row["id"] for row in receipt["pairs"]}]
-    receipt["expected_invocations"] = 88
+    receipt["expected_invocations"] = sum(len(names) for p in pairs for role in ROLES
+                                          for names in p[role]["targets"].values())
     receipt["actual_case_results"] = sum(len(r["results"]) for p in receipt["pairs"] for r in p["roles"])
     custody.write_new(output / "receipt.json", receipt)
     print(json.dumps({k: receipt.get(k) for k in
                      ("status", "actual_case_results", "not_run_pairs", "error")}))
-    return 0 if receipt["status"] == "PASS_FOUR_EXACT_CAUSAL_PAIRS" else 1
+    return 0 if receipt["status"] == PASS_STATUSES[selection] else 1
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--selection", choices=SELECTIONS, default="foundation-causal")
     parser.add_argument("--execute", action="store_true", required=True)
     args = parser.parse_args(argv)
     try:
-        return run(args.workspace, args.output)
+        return run(args.workspace, args.output, args.selection)
     except (ValueError, OSError, UnicodeError) as error:
         print("Foundation causal verification refused: " + str(error), file=sys.stderr)
         return 2

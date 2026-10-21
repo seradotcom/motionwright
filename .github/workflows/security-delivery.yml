@@ -63,9 +63,9 @@ on:
   workflow_dispatch:
       inputs:
         verification_scope:
-          description: Select the established checks or the four frozen causal pairs
+          description: Select established checks, four frozen pairs, or the import budget pair
           type: choice
-          options: [full, foundation-causal]
+          options: [full, foundation-causal, foundation-import-budget]
           default: full
 
 permissions:
@@ -77,7 +77,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'foundation-causal'
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -232,7 +232,7 @@ jobs:
         run: python -m unittest discover -s tooling/tests -p "test_acceptance*.py" -v
 
   foundation-causal-g0:
-    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'foundation-causal'
+    if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'foundation-causal' || inputs.verification_scope == 'foundation-import-budget')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -268,14 +268,14 @@ jobs:
           if-no-files-found: error
 
   foundation-causal:
-    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'foundation-causal'
+    if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'foundation-causal' || inputs.verification_scope == 'foundation-import-budget')
     needs: foundation-causal-g0
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUTF8: "1"
-      FOUNDATION_CAUSAL_SELECTION: foundation-causal
+      FOUNDATION_CAUSAL_SELECTION: ${{ inputs.verification_scope }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -288,10 +288,11 @@ jobs:
         with:
           toolchain: 1.98.1
           components: clippy
-      - name: Observe four frozen causal pairs sequentially
+      - name: Observe the selected frozen causal pairs sequentially
         run: |
           python3 gate/tooling/ci_foundation_causal.py \
             --workspace "$GITHUB_WORKSPACE" \
+            --selection "$FOUNDATION_CAUSAL_SELECTION" \
             --output "$GITHUB_WORKSPACE/verification/foundation-causal" --execute
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

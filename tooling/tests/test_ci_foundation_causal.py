@@ -513,17 +513,17 @@ class FoundationCausalTests(unittest.TestCase):
         end = original.index("\npermissions:\n", start)
         original = original[:start] + original[end:]
         original = original.replace(
-            "    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'foundation-causal'\n", "", 1)
+            "    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget')\n", "", 1)
         self.assertEqual(hashlib.sha256(original.encode()).hexdigest(),
                          "a2acf46f418b035186c9a7b9dce068b3f266e99703f4c773da183a579eb45725")
         self.assertIn("default: full", text)
-        self.assertIn("options: [full, foundation-causal]", text)
+        self.assertIn("options: [full, foundation-causal, foundation-import-budget]", text)
 
     def test_selected_workflow_requires_g0_and_pins_one_sequential_linux_execution(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(encoding="utf-8")
         selected = text.split("\n  foundation-causal:\n", 1)[1]
         self.assertIn("needs: foundation-causal-g0", selected)
-        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'foundation-causal'", selected)
+        self.assertIn("github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'foundation-causal' || inputs.verification_scope == 'foundation-import-budget')", selected)
         self.assertIn("runs-on: ubuntu-24.04", selected)
         self.assertIn("toolchain: 1.98.1", selected)
         self.assertIn("components: clippy", selected)
@@ -534,6 +534,299 @@ class FoundationCausalTests(unittest.TestCase):
         self.assertIn("if: always()", selected)
         self.assertTrue(all(re.fullmatch(r"[0-9a-f]{40}", ref)
                             for ref in re.findall(r"uses: [^@\s]+@([^\s]+)", selected)))
+
+
+class ImportBudgetCausalTests(unittest.TestCase):
+    context_environment = FoundationCausalTests.context_environment
+    raw_case = FoundationCausalTests.raw_case
+    observed = FoundationCausalTests.observed
+    roster_bytes = FoundationCausalTests.roster_bytes
+
+    def setUp(self):
+        FoundationCausalTests.setUp(self)
+        self.pair = gate.IMPORT_BUDGET_PAIR
+
+    def test_reviewed_pair_pins_rosters_fixtures_and_assertions_are_frozen(self):
+        pair = gate.validate_import_budget()[0]
+        digest = hashlib.sha256(json.dumps(
+            pair, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(digest, "f3ea904aec670392c4577167bba8537109cbb0030367d523d2e637d2d2c6ba56")
+        self.assertEqual([sum(map(len, pair[role]["targets"].values()))
+                          for role in gate.ROLES], [21, 27])
+        self.assertEqual(len(pair["failures"]), 15)
+        self.assertEqual(len({name for names in pair["repair"]["targets"].values()
+                              for name in names}), 27)
+        self.assertEqual([pair[role]["sha"] for role in gate.ROLES],
+                         ["d3cbb9e875ebf39a9bcd1c02ca2786d852378e40",
+                          "ec0ed076efe7e9fabbf1385ca83bd747e3b2fade"])
+
+    def test_selection_is_closed_and_never_combines_the_five_pairs(self):
+        self.assertEqual([p["id"] for p in gate.selected_pairs("foundation-causal")],
+                         ["jobs", "svg", "retained-import", "bounded-receipt"])
+        self.assertEqual([p["id"] for p in gate.selected_pairs("foundation-import-budget")],
+                         ["import-resource-budget"])
+        for value in ("full", "all", "", "import-resource-budget",
+                      "foundation-causal,foundation-import-budget", "1" * 40):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                gate.selected_pairs(value)
+
+    def test_explicit_selection_must_match_environment_in_both_directions(self):
+        for selection in gate.SELECTIONS:
+            environment = dict(self.context_environment(),
+                               FOUNDATION_CAUSAL_SELECTION=selection)
+            result = gate.execution_context(environment, "linux", selection)
+            self.assertEqual(result["GITHUB_JOB"], "foundation-causal")
+            other = next(s for s in gate.SELECTIONS if s != selection)
+            with self.assertRaises(ValueError):
+                gate.execution_context(environment, "linux", other)
+        with self.assertRaises(ValueError):
+            gate.execution_context(self.context_environment(), "linux", "full")
+
+    def test_cli_passes_only_the_closed_choice_and_preserves_old_default(self):
+        arguments = ["--workspace", str(self.root), "--output", str(self.root / "output"),
+                     "--execute"]
+        for selection in gate.SELECTIONS:
+            with patch.object(gate, "run", return_value=0) as invoked:
+                self.assertEqual(gate.main(arguments + ["--selection", selection]), 0)
+                invoked.assert_called_once_with(self.root, self.root / "output", selection)
+        with patch.object(gate, "run", return_value=0) as invoked:
+            self.assertEqual(gate.main(arguments), 0)
+            self.assertEqual(invoked.call_args.args[2], "foundation-causal")
+
+    def test_cli_rejects_unselected_scope_before_any_execution(self):
+        arguments = ["--workspace", str(self.root), "--output", str(self.root / "output"),
+                     "--execute"]
+        with patch.object(gate, "run") as invoked, patch("sys.stderr"), \
+                self.assertRaises(SystemExit) as stopped:
+            gate.main(arguments + ["--selection", "full"])
+        self.assertEqual(stopped.exception.code, 2)
+        invoked.assert_not_called()
+
+    def test_import_catalogue_rejects_missing_duplicate_moved_or_uncausal_cases(self):
+        for mutation in ("missing", "duplicate", "moved", "repair_replaced", "wrong_cause"):
+            pair = copy.deepcopy(self.pair)
+            target = pair["repair"]["targets"]["budget-service"]
+            if mutation == "missing":
+                target.pop()
+            elif mutation == "duplicate":
+                target[-1] = target[0]
+            elif mutation == "moved":
+                name = pair["baseline"]["targets"]["budget-service"].pop()
+                pair["baseline"]["targets"]["budget-storage"].append(name)
+            elif mutation == "repair_replaced":
+                target[-1] = "unreviewed_case"
+            else:
+                next(iter(pair["failures"].values()))["markers"][-1] = "got Err("
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.validate_import_budget(pair)
+
+    def test_new_storage_roster_stays_in_budget_namespace_for_both_roles(self):
+        names = self.pair["baseline"]["targets"]["budget-storage"]
+        historical = gate.PAIRS[2]["repair"]["targets"]["import-storage"]
+        raw = self.roster_bytes([*names, *historical, "unrelated::test"])
+        for role in gate.ROLES:
+            result = gate.selected_roster(raw, 0, gate.TARGETS["budget-storage"], names, role)
+            self.assertEqual(result["selected"], tuple(names))
+            self.assertEqual(set(result["not_selected"]), {*historical, "unrelated::test"})
+            self.assertEqual(result["not_selected_credit"], "NONE")
+
+    def test_old_storage_roster_never_absorbs_new_budget_cases(self):
+        budget = self.pair["baseline"]["targets"]["budget-storage"]
+        for role in gate.ROLES:
+            names = gate.PAIRS[2][role]["targets"]["import-storage"]
+            result = gate.selected_roster(self.roster_bytes([*names, *budget]), 0,
+                                          gate.TARGETS["import-storage"], names, role)
+            self.assertEqual(result["selected"], tuple(names))
+            self.assertEqual(result["not_selected"], tuple(budget))
+
+    def test_service_unit_roster_selects_six_and_retains_unselected_names(self):
+        names = self.pair["repair"]["targets"]["budget-service-unit"]
+        other = ["audio::tests::historical_mix", "jobs::tests::unrelated"]
+        result = gate.selected_roster(self.roster_bytes([*names, *other]), 0,
+                                      gate.TARGETS["budget-service-unit"], names, "repair")
+        self.assertEqual(result["selected"], tuple(names))
+        self.assertEqual(result["not_selected"], tuple(other))
+
+    def test_budget_enumeration_rejects_missing_duplicate_and_extra_in_namespace(self):
+        names = self.pair["repair"]["targets"]["budget-storage"]
+        for changed in (names[:-1], [*names, names[0]],
+                        [*names, "file_import::source_budget_tests::unreviewed_case"]):
+            with self.assertRaises(ValueError):
+                gate.selected_roster(self.roster_bytes(changed), 0,
+                                     gate.TARGETS["budget-storage"], names, "repair")
+
+    def case_fixture(self, name, role):
+        names = next(names for names in self.pair[role]["targets"].values() if name in names)
+        all_names = [*names, "unselected::control"]
+        roster = {"all": tuple(all_names), "selected": tuple(names)}
+        failure = self.pair["failures"].get(name) if role == "baseline" else None
+        raw = self.raw_case(name, failure, len(all_names))
+        observed = self.observed(name, role, self.pair)
+        return raw, observed, roster
+
+    def admit_fixture(self, name, role="baseline", raw=None, observed=None):
+        original_raw, original_observed, roster = self.case_fixture(name, role)
+        return gate.admit_case(
+            self.pair, role, name, original_raw if raw is None else raw,
+            original_observed if observed is None else observed,
+            self.binary, dict(self.binary), roster, self.context)
+
+    def test_all_fifteen_predicted_reds_require_exact_site_and_admitted_value(self):
+        for name in self.pair["failures"]:
+            with self.subTest(name=name):
+                self.assertEqual(self.admit_fixture(name)["status"], "EXPECTED_CAUSAL_RED")
+        failures = self.pair["failures"]
+        self.assertEqual(failures[
+            "source_byte_boundary_applies_to_asset_voice_and_both_host_constructors"]["line"],
+            375)
+        self.assertEqual(failures[
+            "known_source_hash_respects_reduced_bytes_but_source_free_recovery_survives"]["line"],
+            411)
+        self.assertEqual(failures[
+            "packet_byte_budget_rejects_valid_pcm_before_publication"]["line"], 357)
+
+    def test_wrong_err_or_missing_got_ok_never_establishes_import_red(self):
+        for name in self.pair["failures"]:
+            raw, _, _ = self.case_fixture(name, "baseline")
+            for changed in (raw.replace(b"got Ok(", b"got Err("),
+                            raw.replace(b"got Ok(", b"")):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    self.admit_fixture(name, raw=changed)
+
+    def test_import_red_rejects_wrong_source_track_caller_or_limit(self):
+        for name, failure in self.pair["failures"].items():
+            raw, _, _ = self.case_fixture(name, "baseline")
+            changed_outputs = [
+                raw.replace(failure["source"].encode(), b"setup.rs"),
+                raw.replace((":" + str(failure["line"]) + ":9:").encode(), b":1:9:"),
+                raw.replace(failure["markers"][0].encode(), b"expected a different limit"),
+            ]
+            for changed in changed_outputs:
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    self.admit_fixture(name, raw=changed)
+
+    def test_import_red_rejects_compile_exit_pass_and_ignored_case(self):
+        name = next(iter(self.pair["failures"]))
+        raw, observed, _ = self.case_fixture(name, "baseline")
+        for code in (0, 1, 2, 124, -9, None):
+            with self.subTest(code=code), self.assertRaises(ValueError):
+                self.admit_fixture(name, observed=dict(observed, exit_code=code))
+        with self.assertRaises(ValueError):
+            self.admit_fixture(name, raw=raw.replace(b" ... FAILED", b" ... ignored"))
+
+    def test_six_baseline_controls_and_twenty_seven_repairs_require_pass(self):
+        counts = []
+        for role in gate.ROLES:
+            names = [n for cases in self.pair[role]["targets"].values() for n in cases
+                     if role == "repair" or n not in self.pair["failures"]]
+            counts.append(len(names))
+            for name in names:
+                self.assertEqual(self.admit_fixture(name, role)["status"], "PASS")
+                _, observed, _ = self.case_fixture(name, role)
+                with self.assertRaises(ValueError):
+                    self.admit_fixture(name, role, observed=dict(observed, exit_code=101))
+        self.assertEqual(counts, [6, 27])
+
+    def test_complete_import_roles_reject_missing_extra_changed_or_unclippied_result(self):
+        for role in gate.ROLES:
+            names = [n for cases in self.pair[role]["targets"].values() for n in cases]
+            result = {"results": [
+                {"name": n, "status": "EXPECTED_CAUSAL_RED"
+                 if role == "baseline" and n in self.pair["failures"] else "PASS"}
+                for n in names],
+                "source_before": {"sha": self.pair[role]["sha"]},
+                "source_after": {"sha": self.pair[role]["sha"]},
+                "clippy": "PASS" if role == "repair" else "NOT_SELECTED"}
+            self.assertEqual(gate.role_complete(self.pair, role, result)["cases"], len(names))
+            for mutation in ("missing", "extra", "changed", "clippy"):
+                changed = copy.deepcopy(result)
+                if mutation == "missing":
+                    changed["results"].pop()
+                elif mutation == "extra":
+                    changed["results"].append(changed["results"][0])
+                elif mutation == "changed":
+                    changed["source_after"]["sha"] = "0" * 40
+                else:
+                    changed["clippy"] = "NOT_RUN"
+                with self.subTest(role=role, mutation=mutation), self.assertRaises(ValueError):
+                    gate.role_complete(self.pair, role, changed)
+
+    def synthetic_scope(self, unknown=False):
+        source = self.root / "gate" / "tooling" / "ci_foundation_causal.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("# synthetic gate path only\n", encoding="utf-8")
+        tool = self.root / "synthetic-tool"
+        tool.write_bytes(b"synthetic tool; not executed")
+        fingerprint = {"absolute_path": str(tool), **gate.custody.fingerprint(tool, self.root)}
+        seen = []
+
+        def role(pair, selected_role, *unused):
+            seen.append((pair["id"], selected_role))
+            return {"status": "UNKNOWN" if unknown else "PASS_EXACT_CAUSAL_ROLE",
+                    "results": [] if unknown else [
+                        {"name": name, "status": "EXPECTED_CAUSAL_RED"
+                         if selected_role == "baseline" and name in pair["failures"] else "PASS"}
+                        for names in pair[selected_role]["targets"].values() for name in names]}
+
+        output = self.root / "output"
+        with patch.object(gate, "__file__", str(source)), \
+                patch.dict(gate.os.environ, {"GITHUB_WORKSPACE": str(self.root)}, clear=True), \
+                patch.object(gate, "execution_context", return_value={"GITHUB_SHA": "1" * 40}), \
+                patch.object(gate, "build_environment", return_value={}), \
+                patch.object(gate.custody, "source_snapshot",
+                             return_value={"sha": "1" * 40, "files": {}}) as snapshot, \
+                patch.object(gate, "retain_source", return_value={}), \
+                patch.object(gate, "tools_identity", return_value={"rustc": fingerprint}), \
+                patch.object(gate, "run_role", side_effect=role), \
+                patch.object(gate, "verify_originals",
+                             return_value={"status": "SYNTHETIC_TERMINAL_CHECK"}) as terminal, \
+                patch("builtins.print"):
+            code = gate.run(self.root, output, "foundation-import-budget")
+        return code, json.loads((output / "receipt.json").read_text(encoding="utf-8")), \
+            seen, snapshot.call_count, terminal.call_count
+
+    def test_import_terminal_receipt_counts_only_48_and_omits_historical_pairs(self):
+        code, receipt, seen, snapshots, terminals = self.synthetic_scope()
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, [("import-resource-budget", "baseline"),
+                                ("import-resource-budget", "repair")])
+        self.assertEqual(receipt["status"], "PASS_IMPORT_BUDGET_CAUSAL_PAIR")
+        self.assertEqual(receipt["expected_invocations"], 48)
+        self.assertEqual(receipt["actual_case_results"], 48)
+        self.assertEqual(receipt["selected_pairs"], ["import-resource-budget"])
+        self.assertEqual(receipt["not_selected_pairs"],
+                         ["jobs", "svg", "retained-import", "bounded-receipt"])
+        self.assertEqual(receipt["not_selected_credit"], "NONE")
+        self.assertEqual(receipt["not_run_pairs"], [])
+        self.assertFalse(receipt["formal_acceptance"])
+        self.assertFalse(receipt["operations_retried"])
+        self.assertEqual((snapshots, terminals), (2, 1))
+
+    def test_unknown_import_stops_before_repair_and_never_seals_or_replays(self):
+        code, receipt, seen, snapshots, terminals = self.synthetic_scope(unknown=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(seen, [("import-resource-budget", "baseline")])
+        self.assertEqual(receipt["status"], "UNKNOWN")
+        self.assertEqual(receipt["actual_case_results"], 0)
+        self.assertEqual(receipt["terminal_custody"], "UNSEALED_DESCENDANTS_NOT_OBSERVED")
+        self.assertFalse(receipt["operations_retried"])
+        self.assertEqual((snapshots, terminals), (1, 0))
+
+    def test_both_choices_share_one_guarded_workflow_observer(self):
+        text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(
+            encoding="utf-8")
+        self.assertIn("options: [full, foundation-causal, foundation-import-budget]", text)
+        self.assertIn("default: full", text)
+        self.assertEqual(text.count(
+            "github.event_name == 'workflow_dispatch' && "
+            "(inputs.verification_scope == 'foundation-causal' || "
+            "inputs.verification_scope == 'foundation-import-budget')"), 2)
+        self.assertIn(
+            "FOUNDATION_CAUSAL_SELECTION: $" + "{{ inputs.verification_scope }}", text)
+        self.assertIn('--selection "$FOUNDATION_CAUSAL_SELECTION"', text)
+        self.assertEqual(text.count("gate/tooling/ci_foundation_causal.py"), 1)
+        self.assertEqual(text.count("needs: foundation-causal-g0"), 1)
+        self.assertNotIn("\n  foundation-import-budget:", text)
 
 
 if __name__ == "__main__":
