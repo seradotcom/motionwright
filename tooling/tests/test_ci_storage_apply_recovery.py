@@ -891,5 +891,287 @@ class Binding4Contracts(unittest.TestCase):
         self.assertEqual(result["commands"][-1]["observation"], "UNKNOWN_TIMEOUT_NO_RETRY")
         self.assertFalse((output / "compile.command.json").exists())
 
+
+class CurrentProductContracts(unittest.TestCase):
+    """Current-source admission controls; never execute a Rust product or native UI."""
+
+    def setUp(self):
+        self.fixture = Binding4Contracts("test_mode_source_platform_selection_is_closed")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.fixture.context = gate.binding4_context(
+            environment(), gate.CURRENT_SOURCE_SHA, "current-process", "win32")
+        self.fixture.product_context = gate.binding4_command_context(self.fixture.context, "product")
+
+    def snapshot(self):
+        result = self.fixture.snapshot()
+        result.pop("baseline")
+        result["product"].update(
+            sha=gate.CURRENT_SOURCE_SHA, tree=gate.CURRENT_SOURCE_TREE,
+            files={path: {"sha256": digest} for path, digest in gate.CURRENT_REVIEWED.items()})
+        return result
+
+    def finish(self, before, rows, context=None):
+        fixture = self.fixture
+        binaries = {"motionwright_storage": fixture.binaries["motionwright_storage"]}
+        rosters = {"motionwright_storage": fixture.lib_names}
+        return gate.finish_binding4(
+            before, copy.deepcopy(before), binaries, rows, rosters,
+            fixture.context if context is None else context, None)
+
+    def test_current_identity_is_additive_and_historical_profiles_are_unchanged(self):
+        self.assertEqual(gate.SOURCE_SHA, "5faedc090aa45b33833b229050c09bf424de938f")
+        self.assertEqual(gate.BINDING4_SOURCE_SHA, "449de7a315a513468610d517e78f9ab87f76ae9d")
+        self.assertEqual(gate.CURRENT_SOURCE_SHA, "be7d0377425f9eec201852450b5a7c53e4a1f403")
+        self.assertEqual(gate.CURRENT_SOURCE_TREE, "5f9e92f6640a39c7adddb249501399cc97e958f8")
+        self.assertEqual(gate.binding4_product_profile("binding4-process"),
+                         (gate.BINDING4_SOURCE_SHA, gate.BINDING4_SOURCE_TREE, gate.BINDING4_REVIEWED))
+        self.assertEqual(gate.binding4_product_profile("binding4-core44"),
+                         gate.binding4_product_profile("binding4-process"))
+        self.assertEqual(set(gate.CURRENT_REVIEWED), set(gate.BINDING4_REVIEWED))
+        self.assertNotEqual(gate.CURRENT_REVIEWED["Cargo.lock"], gate.BINDING4_REVIEWED["Cargo.lock"])
+        with self.assertRaises(TypeError):
+            gate.CURRENT_REVIEWED["Cargo.lock"] = "0" * 64
+
+    def test_current_source_selection_cannot_claim_or_select_execution(self):
+        selection = gate.select_mode("current-source", gate.CURRENT_SOURCE_SHA, "both")
+        self.assertEqual(selection["matrix"], {"include": []})
+        self.assertEqual(selection["tests_executed"], 0)
+        self.assertFalse(selection["formal_acceptance"])
+        for source, platforms in ((gate.BINDING4_SOURCE_SHA, "both"), (gate.CURRENT_SOURCE_SHA, "windows"),
+                                  (gate.CURRENT_SOURCE_SHA, "linux"), (gate.CURRENT_SOURCE_SHA[:12], "both")):
+            with self.subTest(source=source, platforms=platforms), self.assertRaises(gate.VerificationError):
+                gate.select_mode("current-source", source, platforms)
+
+    def test_current_process_selection_is_only_exact_windows_and_macos_five(self):
+        for platforms, expected in (("windows", ["windows"]), ("macos", ["macos"]),
+                                    ("both", ["windows", "macos"])):
+            selected = gate.select_mode("current-process", gate.CURRENT_SOURCE_SHA, platforms)
+            self.assertEqual([row["platform"] for row in selected["matrix"]["include"]], expected)
+            self.assertEqual(selected["tests_executed"], 0)
+        for mode, source, platform in (
+                ("current-process", gate.SOURCE_SHA, "windows"),
+                ("current-process", gate.BINDING4_SOURCE_SHA, "macos"),
+                ("current-process", gate.CURRENT_SOURCE_SHA[:12], "windows"),
+                ("current-process", gate.CURRENT_SOURCE_SHA, "linux"),
+                ("binding4-process", gate.CURRENT_SOURCE_SHA, "both"),
+                ("binding4-core44", gate.CURRENT_SOURCE_SHA, "linux"),
+                ("current-core44", gate.CURRENT_SOURCE_SHA, "linux")):
+            with self.subTest(mode=mode, source=source, platform=platform), self.assertRaises(gate.VerificationError):
+                gate.select_mode(mode, source, platform)
+        self.assertEqual(sum(len(gate.binding4_group(group, self.fixture.base_binary)[1])
+                             for group in gate.BINDING4_PROCESS_GROUPS), 5)
+
+    def test_current_context_requires_explicit_dispatch_and_matching_job(self):
+        for change in ({"GITHUB_EVENT_NAME": "push"}, {"RUNNER_OS": "macOS"},
+                       {"GITHUB_JOB": "storage-apply-binding-core"}, {"GITHUB_RUN_ATTEMPT": ""},
+                       {"GITHUB_WORKFLOW_SHA": "f" * 40}):
+            with self.subTest(change=change), self.assertRaises(gate.VerificationError):
+                gate.binding4_context(environment() | change, gate.CURRENT_SOURCE_SHA,
+                                      "current-process", "win32")
+        context = gate.binding4_context(environment("macOS"), gate.CURRENT_SOURCE_SHA,
+                                        "current-process", "darwin")
+        self.assertEqual(context["product_source_sha"], gate.CURRENT_SOURCE_SHA)
+        self.assertIsNone(context["baseline_source_sha"])
+        with self.assertRaises(gate.VerificationError):
+            gate.binding4_context(environment("Linux"), gate.CURRENT_SOURCE_SHA,
+                                  "current-process", "linux")
+
+    def test_current_command_cannot_use_historical_source_or_baseline(self):
+        context = self.fixture.context
+        command = gate.binding4_command_context(context, "product")
+        self.assertEqual(command["command_source_sha"], gate.CURRENT_SOURCE_SHA)
+        for changed in (context | {"product_source_sha": gate.BINDING4_SOURCE_SHA},
+                        context | {"mode": "binding4-process"}, context | {"cohort": "historical5fa"}):
+            with self.subTest(context=changed), self.assertRaises(gate.VerificationError):
+                gate.binding4_command_context(changed, "product")
+        with self.assertRaises(gate.VerificationError):
+            gate.binding4_command_context(context, "baseline")
+
+    def test_current_snapshot_requires_exact_commit_tree_inventory_and_hashes(self):
+        expected = self.snapshot()["product"]
+        with mock.patch.object(gate, "source_snapshot", return_value=expected) as observe:
+            self.assertEqual(gate.binding4_source_snapshot(
+                self.fixture.repo, "product", mode="current-process"), expected)
+            self.assertEqual(observe.call_args.args[1:],
+                             (gate.CURRENT_SOURCE_SHA, tuple(gate.CURRENT_REVIEWED), gate.CURRENT_SOURCE_TREE))
+        variants = [expected | {"sha": gate.BINDING4_SOURCE_SHA},
+                    expected | {"tree": gate.BINDING4_SOURCE_TREE}]
+        changed = copy.deepcopy(expected)
+        changed["files"]["Cargo.lock"]["sha256"] = "0" * 64
+        variants.append(changed)
+        changed = copy.deepcopy(expected)
+        changed["files"].pop("Cargo.lock")
+        variants.append(changed)
+        changed = copy.deepcopy(expected)
+        changed["files"]["unreviewed"] = {"sha256": "0" * 64}
+        variants.append(changed)
+        for changed in variants:
+            with self.subTest(snapshot=changed), mock.patch.object(
+                    gate, "source_snapshot", return_value=changed), self.assertRaises(gate.VerificationError):
+                gate.binding4_source_snapshot(self.fixture.repo, "product", mode="current-process")
+        with self.assertRaises(gate.VerificationError):
+            gate.binding4_source_snapshot(self.fixture.base, "baseline", mode="current-process")
+
+    def test_current_compilation_admits_one_library_binary_and_no_core_integrations(self):
+        fixture = self.fixture
+        record = fixture.compiler_record("motionwright_storage")
+        selected = gate.select_binding4_binaries(
+            fixture.compiler_output([record]), 0, fixture.repo, fixture.target, "current-process")
+        self.assertEqual(selected, {"motionwright_storage": fixture.binaries["motionwright_storage"]})
+        for records in ([record, record], [fixture.compiler_record(name) for name in fixture.binaries]):
+            with self.subTest(records=records), self.assertRaises(gate.VerificationError):
+                gate.select_binding4_binaries(
+                    fixture.compiler_output(records), 0, fixture.repo, fixture.target, "current-process")
+        with self.assertRaises(gate.VerificationError):
+            gate.select_binding4_binaries(fixture.compiler_output([record]), 0,
+                                          fixture.repo, fixture.target, "current-process", baseline=True)
+
+    def test_foreign_current_product_refuses_before_output_or_process_effects(self):
+        fixture = self.fixture
+        output = fixture.root / "must-not-exist"
+        with mock.patch.dict(os.environ, environment(), clear=True), \
+                mock.patch.object(gate.sys, "platform", "win32"), \
+                mock.patch.object(gate, "execute") as execute, self.assertRaises(gate.VerificationError):
+            gate.run_binding4(fixture.repo, output, gate.BINDING4_SOURCE_SHA, "current-process")
+        execute.assert_not_called()
+        self.assertFalse(output.exists())
+
+    def test_current_group_rejects_old_source_unknown_and_missing_original_log(self):
+        fixture = self.fixture
+        group = "ddl"
+        raw, command, binary, after, names, context = fixture.admission(group)
+        self.assertEqual(gate.admit_binding4_group(group, raw, command, binary, after, names, context)["status"], "PASS")
+        for change in ({"product_source_sha": gate.BINDING4_SOURCE_SHA},
+                       {"command_source_sha": gate.BINDING4_SOURCE_SHA}, {"mode": "binding4-process"}):
+            bad = context | change
+            with self.subTest(context=bad), self.assertRaises(gate.VerificationError):
+                gate.admit_binding4_group(group, raw, command | {"context": bad}, binary, after, names, bad)
+        for change in ({"exit_code": None, "observation": "UNKNOWN_TIMEOUT_NO_RETRY"},
+                       {"exit_code": 1}, {"log_custody": "INCOMPLETE"}):
+            with self.subTest(command=change), self.assertRaises(gate.VerificationError):
+                gate.admit_binding4_group(group, raw, command | change, binary, after, names, context)
+        with self.assertRaises(gate.VerificationError):
+            gate.admit_binding4_group("binding-unit7", *fixture.admission("binding-unit7"))
+
+    def test_current_final_scope_requires_five_and_keeps_all_claim_limits(self):
+        rows = [self.fixture.row(group) for group in gate.BINDING4_PROCESS_GROUPS]
+        result = self.finish(self.snapshot(), rows)
+        self.assertEqual((result["required"], result["executed"], result["passed"]), (5, 5, 5))
+        self.assertEqual((result["phase_jsons_retained"], result["child_process_originals_retained"]), (20, 12))
+        self.assertEqual(result["ddl_retained_child_originals"], 0)
+        for flag in ("baseline_expected_failure_observed", "raw_sqlite_snapshots_retained",
+                     "full_cas_archive_retained", "formal_acceptance", "human_acceptance",
+                     "release_authorized", "other_source_or_platform_claims"):
+            self.assertFalse(result[flag])
+
+    def test_current_final_receipt_cannot_reuse_historical_context_or_product_evidence(self):
+        rows = [self.fixture.row(group) for group in gate.BINDING4_PROCESS_GROUPS]
+        before = self.snapshot()
+        variants = []
+        changed = copy.deepcopy(before)
+        changed["product"]["sha"] = gate.BINDING4_SOURCE_SHA
+        variants.append(changed)
+        changed = copy.deepcopy(before)
+        changed["product"]["tree"] = gate.BINDING4_SOURCE_TREE
+        variants.append(changed)
+        changed = copy.deepcopy(before)
+        changed["product"]["files"]["Cargo.lock"]["sha256"] = gate.BINDING4_REVIEWED["Cargo.lock"]
+        variants.append(changed)
+        changed = copy.deepcopy(before)
+        changed["baseline"] = self.fixture.snapshot()["baseline"]
+        variants.append(changed)
+        for changed in variants:
+            with self.subTest(snapshot=changed), self.assertRaises(gate.VerificationError):
+                self.finish(changed, rows)
+        changed_rows = copy.deepcopy(rows)
+        for row in changed_rows:
+            historical = row["context"] | {"mode": "binding4-process",
+                "product_source_sha": gate.BINDING4_SOURCE_SHA, "command_source_sha": gate.BINDING4_SOURCE_SHA}
+            row["context"] = historical
+            row["command"]["context"] = historical
+        with self.assertRaises(gate.VerificationError):
+            self.finish(before, changed_rows)
+
+    def test_current_final_cannot_omit_custody_repeat_groups_or_upgrade_ddl_claims(self):
+        rows = [self.fixture.row(group) for group in gate.BINDING4_PROCESS_GROUPS]
+        variants = [rows[:-1], [rows[0], *rows[:-1]]]
+        changed = copy.deepcopy(rows)
+        changed[0].pop("phase_custody")
+        variants.append(changed)
+        changed = copy.deepcopy(rows)
+        changed[-1]["retained_child_originals"] = 2
+        variants.append(changed)
+        for changed in variants:
+            with self.subTest(rows=changed), self.assertRaises(gate.VerificationError):
+                self.finish(self.snapshot(), changed)
+
+    def test_current_workflow_keeps_historical_checkout_and_dispatch_only_processes(self):
+        text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(encoding="utf-8")
+        self.assertIn("options: [source, historical5fa, binding4-core44, binding4-process, current-source, current-process]", text)
+        self.assertIn("ref: '449de7a315a513468610d517e78f9ab87f76ae9d'", text)
+        self.assertIn("default: '5faedc090aa45b33833b229050c09bf424de938f'", text)
+        self.assertIn("ref: " + "$" + "{{ needs.g0.outputs.source_sha }}", text)
+        current_lines = [line.strip() for line in text.splitlines()
+                         if line.strip().startswith("if:") and "current-process" in line]
+        self.assertEqual(len(current_lines), 8)
+        self.assertTrue(all("github.event_name == 'workflow_dispatch'" in line for line in current_lines))
+        self.assertIn("and selected['mode'] not in {'source', 'current-source'}", text)
+        self.assertNotIn("current-core44", text)
+
+    def test_current_source_cli_cannot_launch_the_product_engine(self):
+        import io
+        argv = ["gate", "--repo", str(self.fixture.repo), "--output", str(self.fixture.root / "unused"),
+                "--source-sha", gate.CURRENT_SOURCE_SHA, "--mode", "current-source"]
+        with mock.patch.object(gate.sys, "argv", argv), mock.patch.object(gate.sys, "stderr", io.StringIO()), \
+                mock.patch.object(gate, "run_binding4") as run, self.assertRaises(SystemExit) as error:
+            gate.main()
+        self.assertEqual(error.exception.code, 2)
+        run.assert_not_called()
+
+    def test_current_timeout_preserves_unknown_and_never_retries_or_starts_second_case(self):
+        fixture = self.fixture
+        work = fixture.root / "runner"
+        work.mkdir()
+        g, s = work / "g", work / "s"
+        for path in (g, s):
+            path.mkdir()
+        output = work / "v" / "e"
+        snapshots = {"product": {"checkout": str(s), "files": {}}}
+        env = environment() | {"GITHUB_WORKSPACE": str(work), "CARGO_TARGET_DIR": str(work / "v" / "t")}
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[:2] in (["rustc", "-Vv"], ["cargo", "-V"]):
+                return subprocess.CompletedProcess(argv, 0)
+            if argv[0] == "cargo":
+                path = work / "v" / "t" / "current-test.exe"
+                path.write_bytes(b"synthetic binary, subprocess execution is mocked")
+                kwargs["stdout"].write(fixture.compiler_output([fixture.compiler_record("motionwright_storage", path, s)]))
+                return subprocess.CompletedProcess(argv, 0)
+            if "--list" in argv:
+                kwargs["stdout"].write("".join(name + ": test\n" for name in fixture.lib_names).encode())
+                return subprocess.CompletedProcess(argv, 0)
+            raise subprocess.TimeoutExpired(argv, 120)
+
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(gate.sys, "platform", "win32"), \
+                mock.patch.object(gate, "__file__", str(g / "tooling" / "ci_storage_apply_recovery.py")), \
+                mock.patch.object(gate, "binding4_source_snapshot", side_effect=lambda _path, role, **_kw: snapshots[role]), \
+                mock.patch.object(gate, "source_snapshot", return_value={"files": {}}), \
+                mock.patch.object(gate.subprocess, "run", side_effect=fake_run) as process:
+            self.assertEqual(gate.run_binding4(s, output, gate.CURRENT_SOURCE_SHA, "current-process"), 1)
+        receipt = json.loads((output / "receipt.json").read_bytes())
+        self.assertEqual(receipt["product_source_sha"], gate.CURRENT_SOURCE_SHA)
+        self.assertEqual(receipt["status"], "UNKNOWN")
+        self.assertEqual(receipt["case_processes_started"], 1)
+        self.assertEqual(process.call_count, 5)
+        self.assertEqual(sum(argv[0] == "cargo" and "--no-run" in argv for argv in calls), 1)
+        self.assertEqual(receipt["results"], [])
+        self.assertFalse(receipt["operations_retried"])
+        self.assertFalse((output / "case-02.command.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

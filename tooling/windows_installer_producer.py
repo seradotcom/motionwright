@@ -31,7 +31,7 @@ from windows_cold_start import native_windows_launch_environment
 FIXED_PREDECESSOR = json.loads(r'''{"run":39032220978,"source":"679cc48baf7c6f9bb4a0b803508c9b2a9891d944","tree":"4ce7c4423c73da4f3af638427088ee6e962d12d5","packageArtifact":{"id":12101032310,"bytes":7134483,"sha256":"740ff6b52b1c655755f693ab9e620b36e15d5d5b642199f38e9a122d1b28155e"},"evidenceArtifact":{"id":12101216495,"bytes":125856,"sha256":"cab9c044019be1909162b9541b21f9a34bc46a44b4406a6bbda5b23aaf4f7e55"},"package":{"member":"target/release/bundle/nsis/Motionwright_0.1.0_x64-setup.exe","bytes":7149373,"sha256":"c071870c1c5f12f1728389f526471bee43b23eb7ad0bae3410147349a8da9f46"},"main":{"member":"motionwright-desktop.exe","bytes":32794112,"sha256":"4c1f8f492a505340ec3ca8e521254ff753a01875c92052a48c0dc42ad1314de8"},"self":{"member":"unchanged-control-original-uninstaller.exe","bytes":79338,"sha256":"dd03a5e87b450ae24950d67d2935dd18f78a27b45e1c52558625d47b60852224"},"receipt":{"member":"receipt.json","bytes":17792,"sha256":"ae15f0e7f21678b9fd950ec46a0b9cfe3601290851744a3d9aea158e39c5193e"}}''')
 
 # Physical schema-four selection remains closed until a reviewed product is frozen.
-REVIEWED_SCHEMA4_PRODUCT_SHA = None
+REVIEWED_SCHEMA4_PRODUCT_SHA = "be7d0377425f9eec201852450b5a7c53e4a1f403"
 REVIEWED_SCHEMA4_ORACLE_SHA = "0d17946cb9a233f491bf6f199906f1d20f88f929"
 LEGACY_ORACLE_SHA = "016cd88c4ef20ada70fcc446361c40e4a0b81ca1"
 FIXED_PREDECESSOR_STORAGE = {

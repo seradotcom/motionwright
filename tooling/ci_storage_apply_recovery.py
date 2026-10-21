@@ -638,7 +638,37 @@ BINDING4_BASELINE_CASE = "versioned_binding_rejects_same_change_from_a_later_exe
 BINDING4_CORE_GROUPS = ("integrity12", "binding13", "migration7", "binding-unit7",
                        *(f"phase:{name}" for name in BINDING4_PHASE_CASES), "ddl")
 BINDING4_PROCESS_GROUPS = (*BINDING4_CORE_GROUPS[4:],)
-MODES = ("source", "historical5fa", "binding4-core44", "binding4-process")
+# The current product is a separate reviewed source, not a relabelled historical run.
+CURRENT_SOURCE_SHA = "be7d0377425f9eec201852450b5a7c53e4a1f403"
+CURRENT_SOURCE_TREE = "5f9e92f6640a39c7adddb249501399cc97e958f8"
+CURRENT_REVIEWED = MappingProxyType({'Cargo.lock': 'cf5d0fe15f6a1ca3aa63681f9a1d9b5d646efda9bee214243f1b2efa77119f1b',
+ 'Cargo.toml': '455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0',
+ 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1',
+ 'crates/storage/Cargo.toml': '02d305e94bf37f92d643ec9b7bae0eeab104dffcea08be44029d86f4bd76b8cb',
+ 'crates/storage/src/apply_crash_tests.rs': '9febb826879b1180ddd8afc84256a7fd6d7b76c3c5769c726ad612c2adc3e974',
+ 'crates/storage/src/apply_receipt_binding.rs': '9922802f0deaa32c9e2b2dee7d3d0d7fbcfdfa58b2047b506f0432fd9db4d4af',
+ 'crates/storage/src/file_import.rs': '037564e6894a59075f295739ae93967825c6a96429b3f113b53ed87b6d4c9039',
+ 'crates/storage/src/lib.rs': 'db8976efd0cccbb2a3c36f0a4b21dd78738e76166297cd21cfd33f7f21bcd8a4',
+ 'crates/storage/src/production.rs': '3d106e93c8c4a5fe163f9bcb8443b8d364d88db009f856de6001971461dcafa9',
+ 'crates/storage/src/project_creation.rs': '8b025a21443ba73ef9f712264e010d3fda605ebf37df71d10c7d79d2063b0dc9',
+ 'crates/storage/tests/apply_binding_migration.rs': '25500c33cbb4ad19079ad8e5bfa396bcf21afb7fd9595818493c082d11313ace',
+ 'crates/storage/tests/apply_receipt_binding.rs': 'b74d2e616e880da1b9be515d3dcb5d92332af557f291b88bc9b34245b6c45274',
+ 'crates/storage/tests/apply_receipt_integrity.rs': 'cc995895ccfae9c8f584e15555e38aeccdca684f3afcc5b64d72b69619428883',
+ 'crates/storage/tests/schema_migration_atomicity.rs': '0df1d3e87dbd2b1b14687ed58cd1a51fc60e58aa56d3c1467cb5951a8f3b870b',
+ 'docs/reliability/apply-receipt-binding.md': '7fe6cecacb86b0965ebcb4ab0dd71c581d3be417c8295c3c45bc839d1c74c92c'})
+BINDING4_EXECUTION_MODES = ("binding4-core44", "binding4-process", "current-process")
+MODES = ("source", "historical5fa", "binding4-core44", "binding4-process",
+         "current-source", "current-process")
+
+
+
+def binding4_product_profile(mode):
+    """Select an exact reviewed product without changing historical identities."""
+    require(mode in BINDING4_EXECUTION_MODES, "unknown binding4 product mode")
+    if mode == "current-process":
+        return CURRENT_SOURCE_SHA, CURRENT_SOURCE_TREE, CURRENT_REVIEWED
+    return BINDING4_SOURCE_SHA, BINDING4_SOURCE_TREE, BINDING4_REVIEWED
+
 
 
 def select_mode(mode, source_sha, platforms):
@@ -652,13 +682,19 @@ def select_mode(mode, source_sha, platforms):
     elif mode == "binding4-core44":
         require(source_sha == BINDING4_SOURCE_SHA and platforms == "linux",
                 "core44 requires reviewed binding4 source and Linux")
-    else:
+    elif mode == "binding4-process":
         require(source_sha == BINDING4_SOURCE_SHA and platforms in {"both", "windows", "macos"},
                 "binding4 process source or platform differs")
+    elif mode == "current-source":
+        require(source_sha == CURRENT_SOURCE_SHA and platforms == "both",
+                "current source controls require the exact reviewed product and both selection")
+    else:
+        require(source_sha == CURRENT_SOURCE_SHA and platforms in {"both", "windows", "macos"},
+                "current process source or platform differs")
     rows = [{"platform": "windows", "runner": "windows-2025"},
             {"platform": "macos", "runner": "macos-15"}]
     matrix = {"include": [row for row in rows if platforms in {"both", row["platform"]}]} \
-        if mode in {"historical5fa", "binding4-process"} else {"include": []}
+        if mode in {"historical5fa", "binding4-process", "current-process"} else {"include": []}
     return {"mode": mode, "source_sha": source_sha, "platforms": platforms, "matrix": matrix,
             "tests_executed": 0, "formal_acceptance": False}
 
@@ -669,7 +705,7 @@ def binding4_context(env, source_sha, mode, runtime_platform=None):
                 "darwin": ("macOS", "macos")}.get(runtime_platform)
     require(platform is not None, "unsupported binding4 runtime platform")
     select_mode(mode, source_sha, platform[1])
-    require(mode in {"binding4-core44", "binding4-process"}, "not a binding4 execution mode")
+    require(mode in BINDING4_EXECUTION_MODES, "not a binding4 execution mode")
     require(env.get("RUNNER_OS") == platform[0], "binding4 runner OS differs")
     require(env.get("GITHUB_ACTIONS") == "true" and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
             "binding4 execution requires explicit dispatch")
@@ -690,25 +726,35 @@ def binding4_context(env, source_sha, mode, runtime_platform=None):
             **{key: env.get(key, "") for key in keys}}
 
 
+
 def binding4_command_context(context, role):
     require(role in {"product", "baseline"}, "unknown command source role")
+    source_sha, _tree, _reviewed = binding4_product_profile(context["mode"])
+    require(context.get("product_source_sha") == source_sha
+            and context.get("cohort") == "binding4", "command product source differs")
     require(role != "baseline" or context["mode"] == "binding4-core44", "unselected baseline")
     return {**context, "command_source_role": role,
-            "command_source_sha": BASELINE_SOURCE_SHA if role == "baseline" else BINDING4_SOURCE_SHA}
+            "command_source_sha": BASELINE_SOURCE_SHA if role == "baseline" else source_sha}
 
 
-def binding4_source_snapshot(repo, role):
+
+def binding4_source_snapshot(repo, role, *, mode="binding4-process"):
     require(role in {"product", "baseline"}, "unknown snapshot source role")
-    sha, tree, reviewed = (BINDING4_SOURCE_SHA, BINDING4_SOURCE_TREE, BINDING4_REVIEWED) \
-        if role == "product" else (BASELINE_SOURCE_SHA, BASELINE_SOURCE_TREE, BASELINE_REVIEWED)
+    if role == "product":
+        sha, tree, reviewed = binding4_product_profile(mode)
+    else:
+        require(mode in {"binding4-core44", "binding4-process"}, "unselected current baseline")
+        sha, tree, reviewed = BASELINE_SOURCE_SHA, BASELINE_SOURCE_TREE, BASELINE_REVIEWED
     observed = source_snapshot(repo, sha, tuple(reviewed), tree)
+    require(observed["sha"] == sha and observed["tree"] == tree
+            and set(observed["files"]) == set(reviewed), "binding4 source inventory differs")
     require(all(observed["files"][name]["sha256"] == value for name, value in reviewed.items()),
             "binding4 reviewed source bytes differ")
     return observed
 
 
 def select_binding4_binaries(raw, code, repo, target, mode, baseline=False):
-    require(mode in {"binding4-core44", "binding4-process"}, "unknown binary selection mode")
+    require(mode in BINDING4_EXECUTION_MODES, "unknown binary selection mode")
     require(not baseline or mode == "binding4-core44", "unselected baseline build")
     require(code == 0, "compilation did not succeed")
     messages = [strict_json(line) for line in raw.decode().splitlines() if line.strip()]
@@ -789,11 +835,11 @@ def admit_binding4_group(group, raw, command, binary, after, enumerated, context
     target, wanted, argv, _timeout = binding4_group(group, binary)
     baseline = group == "baseline"
     role = "baseline" if baseline else "product"
-    require(context.get("product_source_sha") == BINDING4_SOURCE_SHA
+    source_sha, _tree, _reviewed = binding4_product_profile(context.get("mode"))
+    require(context.get("product_source_sha") == source_sha
             and context.get("cohort") == "binding4"
-            and context.get("mode") in {"binding4-core44", "binding4-process"}
             and context.get("command_source_role") == role
-            and context.get("command_source_sha") == (BASELINE_SOURCE_SHA if baseline else BINDING4_SOURCE_SHA),
+            and context.get("command_source_sha") == (BASELINE_SOURCE_SHA if baseline else source_sha),
             "test source context differs")
     allowed = BINDING4_CORE_GROUPS if context["mode"] == "binding4-core44" else BINDING4_PROCESS_GROUPS
     require(group in allowed or (baseline and context["mode"] == "binding4-core44"), "unselected group")
@@ -830,13 +876,14 @@ def admit_binding4_group(group, raw, command, binary, after, enumerated, context
 
 def finish_binding4(before, after, binaries, results, rosters, context, baseline_result, baseline_binary=None):
     require(before == after, "source inputs changed during execution")
-    require(before["product"]["sha"] == context["product_source_sha"] == BINDING4_SOURCE_SHA
-            and before["product"]["tree"] == BINDING4_SOURCE_TREE
-            and before["gate"]["sha"] == context["GITHUB_SHA"], "current source binding missing")
-    require(all(before["product"]["files"][p]["sha256"] == h for p, h in BINDING4_REVIEWED.items()),
-            "reviewed product evidence differs")
     mode = context["mode"]
-    require(mode in {"binding4-core44", "binding4-process"}, "unknown final mode")
+    source_sha, tree, reviewed = binding4_product_profile(mode)
+    require(before["product"]["sha"] == context["product_source_sha"] == source_sha
+            and before["product"]["tree"] == tree
+            and before["gate"]["sha"] == context["GITHUB_SHA"], "current source binding missing")
+    require(set(before["product"]["files"]) == set(reviewed)
+            and all(before["product"]["files"][p]["sha256"] == h for p, h in reviewed.items()),
+            "reviewed product evidence differs")
     groups = BINDING4_CORE_GROUPS if mode == "binding4-core44" else BINDING4_PROCESS_GROUPS
     expected_binaries = {"motionwright_storage", *BINDING4_INTEGRATIONS} if mode == "binding4-core44" else {"motionwright_storage"}
     require(set(binaries) == expected_binaries and set(rosters) == expected_binaries, "selected binary set differs")
@@ -927,7 +974,9 @@ def run_binding4(repo, output, source_sha, mode, baseline_repo=None):
                "formal_acceptance": False, "human_acceptance": False, "release_authorized": False}
     write_new(output / "started.json", {**receipt, "started_utc": now()})
     def snapshot():
-        result = {"product": binding4_source_snapshot(repo, "product"),
+        product = binding4_source_snapshot(repo, "product", mode=mode) \
+            if mode == "current-process" else binding4_source_snapshot(repo, "product")
+        result = {"product": product,
                   "gate": source_snapshot(gate, context["GITHUB_SHA"], GATE_FILES)}
         if "baseline" in roots:
             result["baseline"] = binding4_source_snapshot(roots["baseline"], "baseline")
@@ -1083,8 +1132,8 @@ def main():
     parser.add_argument("--mode", choices=MODES, default="historical5fa")
     parser.add_argument("--baseline-repo", type=Path)
     args = parser.parse_args()
-    if args.mode == "source":
-        parser.error("source mode runs complete workflow G0 controls; it is not a product execution")
+    if args.mode in {"source", "current-source"}:
+        parser.error("source modes run complete workflow G0 controls; they are not product executions")
     if args.mode == "historical5fa":
         if args.baseline_repo is not None:
             parser.error("historical mode does not select a baseline checkout")

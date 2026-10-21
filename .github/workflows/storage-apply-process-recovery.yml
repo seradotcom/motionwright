@@ -10,11 +10,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Source controls, historical recovery, binding4 Linux core, or selected OS recovery
+        description: Source controls, historical recovery, or exact current Windows/macOS process recovery
         required: true
         default: source
         type: choice
-        options: [source, historical5fa, binding4-core44, binding4-process]
+        options: [source, historical5fa, binding4-core44, binding4-process, current-source, current-process]
       source_sha:
         description: Exact reviewed product source; independently checked out
         required: true
@@ -91,7 +91,7 @@ jobs:
               stream.write('source_sha=' + selected['source_sha'] + '\n')
           print(json.dumps({**selected, 'workflow_source': os.environ['GITHUB_SHA'],
                             'execution_selected': os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
-                            and selected['mode'] != 'source'}))
+                            and selected['mode'] not in {'source', 'current-source'}}))
           PY
       - name: Retain original G0 controls and source receipt
         if: always()
@@ -185,7 +185,7 @@ jobs:
           retention-days: 14
   storage-apply-recovery:
     name: ${{ matrix.platform }} Store.apply ${{ needs.g0.outputs.mode }}
-    if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process')
+    if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
     needs: g0
     strategy:
       fail-fast: false
@@ -200,14 +200,14 @@ jobs:
       TMPDIR: ${{ github.workspace }}/v/x
     steps:
       - name: Prepare short isolated build and temporary paths
-        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process')
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
         working-directory: .
         run: |
           set -euo pipefail
           test ! -e v
           mkdir -p v/x v/c
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process')
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
         env:
           GIT_CONFIG_COUNT: '2'
           GIT_CONFIG_KEY_0: core.autocrlf
@@ -219,7 +219,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process')
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
         env:
           GIT_CONFIG_COUNT: '2'
           GIT_CONFIG_KEY_0: core.autocrlf
@@ -231,15 +231,15 @@ jobs:
           ref: ${{ needs.g0.outputs.source_sha }}
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process')
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
         with:
           python-version: '3.13'
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
-        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process')
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
         with:
           toolchain: stable
       - name: Execute the selected four or five real process cases
-        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process')
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
         env:
           REQUESTED_SOURCE: ${{ needs.g0.outputs.source_sha }}
           REQUESTED_MODE: ${{ needs.g0.outputs.mode }}
@@ -248,7 +248,7 @@ jobs:
           python -B -I -S tooling/ci_storage_apply_recovery.py \
             --repo ../s --output ../v/e --mode "$REQUESTED_MODE" --source-sha "$REQUESTED_SOURCE"
       - name: Retain original partial or complete selected evidence
-        if: always() && github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process')
+        if: always() && github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: storage-apply-${{ needs.g0.outputs.mode }}-${{ matrix.platform }}-product-${{ needs.g0.outputs.source_sha }}-gate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
