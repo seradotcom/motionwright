@@ -96,6 +96,59 @@ NARRATIVE_TITLES = (
     'a real objective validation refusal preserves both fields until fresh review and correction',
     "an independent service author's overlapping premise is reviewed without consuming a disjoint objective draft",
 )
+BEAT_DRAFT_TITLES = (
+    'beat raw drafts survive actual workspace navigation and reload before one exact SQLite commit and restart',
+    'a held original beat receipt preserves later raw edits through actual workspace remount and a separate save',
+    'an uncertain beat committed outcome requires real project/history review before any separate intent',
+    'an uncertain beat preempted outcome requires real project/history review before any separate intent',
+    'a peer retime preserves the local beat draft until explicit text with saved timing is committed',
+    'a peer removal retains beat text across reload and only an explicit recreation creates a new event',
+    'a shorter saved scene retains invalid beat times until the author explicitly compares and repairs them',
+    'a silent beat writer pointer failure blocks real grants and saves until an explicit copy restore',
+    'a failed beat ACK checkpoint preserves original UNKNOWN bytes and later text until real fresh review',
+    'a real original beat removal keeps later typing through restart without an automatic recreation event',
+    'a beat exported during local recovery failure imports without a write and saves exactly once to SQLite after repair',
+)
+
+BEAT_TIME_TITLES = (
+    'copy-only scene beat edits retain exact fractional frame times in SQLite and after process restart',
+    'authored decimal and sample times save exactly while incomplete and out-of-scene inputs cannot commit',
+    'Fill timing gap commits the exact shared frame boundary and preserves both beats after restart',
+    'a saved sub-microsecond gap remains editable and cannot display exact coverage until filled',
+)
+
+DELIVERY_RECIPE_TITLES = (
+    'two profiles retain both canonical groups through explicit saves, clear and fresh-process reopen',
+    'a committed reply held across reload preserves Sent then Old until fresh history review and explicit conflict resolution',
+    'typing across Film profile and mix scopes during a real save retains every unsent input',
+    'two real clients reject a stale save, review current history and resolve only the overlapping field with keep saved',
+    'two real clients reject a stale save, review current history and resolve only the overlapping field with keep draft',
+    'invalid numeric raw survives a real reload and only corrected values reach the service',
+    'a full recovery budget preserves memory and blocks service writes until a verified copy fits',
+    'an unreadable own copy is retained until explicit discard without losing newer typed input',
+    "a new window with copied session storage offers another window's draft only by explicit recovery",
+    'project content locks and a real revoked grant retain inputs for a fresh reviewed intent without replay',
+    'Film and PCM guards use saved options and expose unsupported combinations without pretending a native result',
+    "portable export and verified import preserve both recipes and CAS while isolating the new generation's drafts",
+)
+
+RECIPE_AUTHORITY_TITLES = (
+    'real film peer values never acknowledge an uncertain recipe request; fresh history review precedes a separate save',
+    'real mix peer values never acknowledge an uncertain recipe request; fresh history review precedes a separate save',
+    'a real original recipe ACK preserves later raw numeric typing even when it returns to the submitted value',
+    'silent recipe data recovery failure prevents a real grant or SQLite write; verified retry saves once',
+    'silent recipe pointer recovery failure prevents a real grant or SQLite write; verified retry saves once',
+)
+
+REVIEW_TITLES = (
+    'review raw range survives actual App navigation and reload before one exact SQLite commit and restart',
+    'a held original review reply preserves later input before a distinct granted save',
+    'a committed but lost review reply remains UNKNOWN through explicit saved-history inspection and a separate intent',
+    'denied review custody prevents any SQLite mutation until a confirmed copy and explicit save',
+    'an original resolution keeps a later raw reason through actual reopen and new SQLite acknowledgement',
+    'an actual saved alternative retains raw rationale and records only an open manual review',
+)
+
 SELECTIONS = (
     ("canvas", "canvas-draft-service.spec.ts", CANVAS_TITLES),
     ("ink", "visual-language-draft-service.spec.ts", (INK_TITLE,)),
@@ -107,10 +160,21 @@ SELECTIONS = (
     ("camera", "camera-reframe-service.spec.ts", CAMERA_TITLES),
     ("gesture", "canvas-gesture-service.spec.ts", GESTURE_TITLES),
     ("narrative", "narrative-service.spec.ts", NARRATIVE_TITLES),
+    ('beat-draft', 'scene-beat-draft-service.spec.ts', BEAT_DRAFT_TITLES),
+    ('beat-time', 'scene-beat-time-service.spec.ts', BEAT_TIME_TITLES),
+    ('delivery-recipe', 'delivery-recipe.spec.ts', DELIVERY_RECIPE_TITLES),
+    ('recipe-authority', 'delivery-recipe-authority-service.spec.ts', RECIPE_AUTHORITY_TITLES),
+    ('review', 'review-service.spec.ts', REVIEW_TITLES),
 )
-# Retain the existing 43-case process limits. New bounds include the declared
-# Camera 7x120s / Gesture 7x90s cases and the configured 120s server startup.
-# These are execution bounds; only an original run can establish actual timing.
+# Preserve the original per-file process limits. Each authoring bound includes
+# every declared test timeout and the configured 120s server startup. These are
+# execution bounds; only an original run establishes the actual timing.
+SELECTION_GROUPS = {
+    "authoring-drafts": {
+        "labels": ("beat-draft", "beat-time", "delivery-recipe", "recipe-authority", "review"),
+        "required_tests": 38,
+    },
+}
 SELECTION_TIMEOUTS = {
     "canvas": 1800,
     "ink": 180,
@@ -122,6 +186,11 @@ SELECTION_TIMEOUTS = {
     "camera": 1200,
     "gesture": 900,
     "narrative": 1200,
+    'beat-draft': 1500,
+    'beat-time': 660,
+    'delivery-recipe': 1260,
+    'recipe-authority': 780,
+    'review': 900,
 }
 
 
@@ -135,6 +204,18 @@ def selected_selections(selection):
     require(isinstance(selection, str), "selection must be a single named scope")
     if selection == "all":
         return SELECTIONS
+    if selection in SELECTION_GROUPS:
+        group = SELECTION_GROUPS[selection]
+        labels, expected = group.get("labels"), group.get("required_tests")
+        require(isinstance(labels, tuple) and labels and all(isinstance(x, str) for x in labels),
+                "group must declare a nonempty tuple of file selections")
+        require(len(set(labels)) == len(labels), "group repeats a file selection")
+        require(type(expected) is int and expected > 0, "group must declare its exact case count")
+        chosen = tuple(row for row in SELECTIONS if row[0] in labels)
+        require(len(chosen) == len(labels), "group contains an unknown or duplicate file selection")
+        require(sum(len(titles) for _, _, titles in chosen) == expected,
+                "group case count differs from its declared closed scope")
+        return chosen
     chosen = tuple(row for row in SELECTIONS if row[0] == selection)
     require(len(chosen) == 1, "unknown or empty service selection")
     return chosen
@@ -252,6 +333,41 @@ def source_observation(repo):
         "apps/studio/src/canvasCamera.ts",
         "apps/studio/tests/camera-reframe-service.spec.ts",
         "apps/studio/tests/canvas-gesture-service.spec.ts",
+        "apps/studio/src/CreativeAlternativesPanel.tsx",
+        "apps/studio/src/DeliveryProfiles.tsx",
+        "apps/studio/src/HistoryWorkspaces.tsx",
+        "apps/studio/src/NativeOriginalMixReview.tsx",
+        "apps/studio/src/ReviewWorkspace.tsx",
+        "apps/studio/src/SceneBeatEditor.tsx",
+        "apps/studio/src/audioNarrationProtectedMarkup.test.ts",
+        "apps/studio/src/deliveryRecipe.test.ts",
+        "apps/studio/src/deliveryRecipe.ts",
+        "apps/studio/src/deliveryRecipeDraft.test.ts",
+        "apps/studio/src/deliveryRecipeDraft.ts",
+        "apps/studio/src/deliveryRecipeRecoveryReview.test.ts",
+        "apps/studio/src/reviewDraft.test.ts",
+        "apps/studio/src/reviewDraft.ts",
+        "apps/studio/src/sceneBeatDraft.test.ts",
+        "apps/studio/src/sceneBeatDraft.ts",
+        "apps/studio/src/sceneBeatTiming.test.ts",
+        "apps/studio/src/sceneBeatTiming.ts",
+        "apps/studio/tests/delivery-recipe-authority-service.spec.ts",
+        "apps/studio/tests/delivery-recipe-authority.spec.ts",
+        "apps/studio/tests/delivery-recipe-recovery-review.spec.ts",
+        "apps/studio/tests/delivery-recipe.spec.ts",
+        "apps/studio/tests/fixtures/delivery-recipe-authority.html",
+        "apps/studio/tests/fixtures/delivery-recipe-authority.tsx",
+        "apps/studio/tests/fixtures/review-authority.html",
+        "apps/studio/tests/fixtures/review-authority.tsx",
+        "apps/studio/tests/fixtures/scene-beat-authority.html",
+        "apps/studio/tests/fixtures/scene-beat-authority.tsx",
+        "apps/studio/tests/native-original-mix-voice-binding.spec.ts",
+        "apps/studio/tests/native-original-mix.spec.ts",
+        "apps/studio/tests/review-preservation.spec.ts",
+        "apps/studio/tests/review-service.spec.ts",
+        "apps/studio/tests/scene-beat-draft-service.spec.ts",
+        "apps/studio/tests/scene-beat-preservation.spec.ts",
+        "apps/studio/tests/scene-beat-time-service.spec.ts",
         "tooling/ci_canvas_service.py",
         "tooling/tests/test_ci_canvas_service.py",
     )
@@ -295,7 +411,7 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--selection", default="all", choices=["all", *(row[0] for row in SELECTIONS)])
+    parser.add_argument("--selection", default="all", choices=["all", *SELECTION_GROUPS, *(row[0] for row in SELECTIONS)])
     args = parser.parse_args()
     selections = selected_selections(args.selection)
     repo, output, target = (p.resolve() for p in (args.repo, args.output, args.target))

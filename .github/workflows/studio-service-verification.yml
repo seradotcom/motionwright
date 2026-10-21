@@ -13,8 +13,8 @@ on:
         description: Run only the required real-service selection; all is the complete defined roster
         type: choice
         required: true
-        default: narrative
-        options: [narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture]
+        default: authoring-drafts
+        options: [authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review]
 permissions:
   contents: read
 concurrency:
@@ -70,7 +70,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: g0
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Include source build, all declared case bounds and setup/retention time.
+    timeout-minutes: ${{ inputs.selection == 'all' && 300 || inputs.selection == 'authoring-drafts' && 120 || 60 }}
     env:
       CARGO_HOME: ${{ github.workspace }}/v/c
       CARGO_TARGET_DIR: ${{ github.workspace }}/v/t
