@@ -23,14 +23,16 @@ The evidence input must contain all of these originals:
 | Compile summary | Both normal and opt-in variants were compiled from the exact product and gate; source observations before and after agree. |
 | Normal and opt-in setups | Hashes match their compile records, differ from each other, and bind the same current main executable. |
 | Current main executable | Bytes match the compile record, recovered installation and Windows version resources. |
-| Predecessor profile | Independently pinned profile identifies the original installed inventory and targets this current main/version. |
+| Predecessor profile | Independently pinned profile identifies the exact owned subset of the complete original installation and targets this current main/version. |
 | Checkpoint, live context and interruption terminal | The canonical reader confirms their operation, original process identity, candidate bytes and known termination. |
 | Recovery terminal | A separate original normal-setup process has a known successful terminal in the same product/run context. |
-| Before and recovered snapshots | They bind the interrupted and recovery operations and preserve the complete original project database family. |
+| Before and recovered snapshots | They bind the interrupted and recovery operations and retain the complete installed namespace and project database family. Original foreign files and the database family survive recovery byte for byte. |
 
 The three operation UUIDs—interruption, recovery and this observation—must differ. A successful reader or compiler process does not supply a recovery terminal. A caller-authored PASS field, an installer exit inferred from a later file, or an unconfirmed termination cannot substitute for an original.
 
-The predecessor include generator is reused to validate and retain the pinned profile. This is an integrity check over previously reviewed ownership material. It does not grant ownership authority to an arbitrary inventory or execute a generated include.
+The predecessor include generator is reused to validate and retain the pinned profile with the producer's exact architecture identity, **x64**. This is an integrity check over previously reviewed ownership material. It does not grant ownership authority to an arbitrary inventory or execute a generated include.
+
+Every owned entry must match its original before-snapshot bytes. All other original installation entries remain foreign and must occur unchanged in the recovered snapshot. Complete snapshots are retained; they are never filtered down to the owned roster. The profile's package, capture receipt and owned source files must remain available at their original relative paths beside the profile, so the canonical helper can revalidate and capture the entire input family.
 
 ## Closed input
 
@@ -53,7 +55,7 @@ The refs object has exactly these members: compile_summary, normal_setup, opt_in
 
 Each reference has path, bytes and sha256. Paths are relative to the separately supplied evidence root. Existing lifecycle guards reject aliases, reparse points, missing originals and changed bytes. JSON with duplicate keys or nonfinite values is rejected.
 
-The recovery terminal uses the existing **motionwright.windows-lifecycle-terminal/1** shape with phase **upgrade**. Its context binds the recovery operation UUID, original PID and creation filetime, normal-setup identity, source SHA and run. Its original_terminal must be the lifecycle helper's known exit-zero observation. The before and recovered references use **motionwright.windows-lifecycle-snapshot/1**.
+The recovery terminal uses the existing **motionwright.windows-lifecycle-terminal/1** shape with phase **upgrade**. Its context binds the recovery operation UUID, original PID and creation filetime, normal-setup identity, source SHA and run. Its original_terminal must be the lifecycle helper's known exit-zero observation. Recovery uses the separately admitted normal variant, built from the same exact product source, target version and captured main payload as the opt-in variant, with a distinct setup digest. It is a new operation after admitted known termination and interrupted state; UNKNOWN does not authorize it. The before and recovered references use **motionwright.windows-lifecycle-snapshot/1**.
 
 The input file's SHA-256 is a separate command-line pin. This binds the reviewed assembled input; it does not replace independent provenance review of the originals it names.
 
@@ -131,7 +133,7 @@ The tool does not prove power-loss recovery, broad installer compatibility, visu
 
 ## Synthetic verification
 
-Focused Python controls exercise malformed or foreign originals, unknown outcomes with matching SQLite state, complete database-family capture, WAL visibility, migration and rename semantics, receipt preservation and the no-replay boundary. Direct lifetime and orchestration controls inject controller timeouts, ambiguous process errors, output-read failures and finalization failures while using synthetic files and SQLite databases. OS process and UI boundaries are mocked; these controls do not execute an installed application. UI source contracts check the controller against the actual project library and Brief controls.
+Focused Python controls exercise malformed or foreign originals, unknown outcomes with matching SQLite state, complete database-family capture, WAL visibility, migration and rename semantics, receipt preservation and the no-replay boundary. Direct lifetime and orchestration controls inject controller timeouts, ambiguous process errors, output-read failures and finalization failures while using synthetic files and SQLite databases. OS process and UI boundaries are mocked; these controls do not execute an installed application. Producer-compatibility controls run the original predecessor include generator and retained-file/snapshot helpers against complete synthetic profiles and inventories, including preserved foreign files, missing or modified entries, invalid pins and path aliases. The orchestration control reaches a simulated application boundary only after the real profile helper admits the input; its prior checkpoint and PE observations remain synthetic. UI source contracts check the controller against the actual project library and Brief controls.
 
 ~~~text
 python -B -m unittest discover -s tooling/tests -p test_windows_updated_application.py -v

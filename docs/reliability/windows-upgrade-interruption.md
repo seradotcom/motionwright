@@ -128,10 +128,12 @@ comparison. Record both logical Project/journal equality and byte identities.
 ## Permitted recovery operation
 
 After the termination and interrupted state have both been admitted, a
-separately identified recovery operation may invoke the same setup bytes once,
-with the interruption variable absent. It references the completed interrupted
-operation and its original receipt. This is an explicit repair of a known state;
-it is not a retry of UNKNOWN.
+separately identified recovery operation may invoke the separately admitted
+normal setup variant once, with the interruption variable absent. The normal
+and opt-in variants bind the same exact product source, target version and
+captured main payload; their setup digests differ. Recovery references the
+completed interrupted operation and its original receipt. It is an explicit
+repair of a known state and never a retry of UNKNOWN.
 
 The existing preflight and ownership guard remain authoritative. A changed or
 unowned payload, redirected path or unsupported version must refuse recovery.

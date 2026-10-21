@@ -232,8 +232,14 @@ def admit_originals(root, value, gate):
     records = profile.get("files")
     require(isinstance(records, list) and records, "predecessor_inventory_missing")
     old = {x["relative"]: {"bytes": x["bytes"], "sha256": x["sha256"]} for x in records}
-    require(len(old) == len(records) and old == life.file_map(before),
+    before_files = life.file_map(before)
+    require(len(old) == len(records)
+            and all(before_files.get(path) == identity for path, identity in old.items()),
             "predecessor_inventory_not_original_snapshot")
+    foreign = {path: identity for path, identity in before_files.items() if path not in old}
+    recovered_files = life.file_map(recovered)
+    require(all(recovered_files.get(path) == identity for path, identity in foreign.items()),
+            "foreign_inventory_not_preserved")
     return {"compile": compiled, "interruption_id": interrupted_id, "recovery_id": recovery_id,
             "before": before, "recovered": recovered, "profile": profile, "main": main}
 
@@ -666,7 +672,7 @@ def observe(args):
         profile = admitted["profile"]
         profile_path = life.bound_file(root, value["refs"]["predecessor_profile"])
         profile_result = emit_predecessor_include(profile_dir / "predecessor.nsh",
-            application="Motionwright", bundle_id="com.seradotcom.motionwright", arch="x86_64",
+            application="Motionwright", bundle_id="com.seradotcom.motionwright", arch="x64",
             target_version=value["version"], target_main_sha256=admitted["main"]["sha256"],
             environment={"MW_NSIS_PREDECESSOR_MANIFEST": str(profile_path),
                          "MW_NSIS_PREDECESSOR_MANIFEST_SHA256": value["refs"]["predecessor_profile"]["sha256"]})
