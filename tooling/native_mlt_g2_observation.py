@@ -30,8 +30,8 @@ REFERENCE_WAV_SHA256 = "66aeaa3aa6fff53834ab4003671ce79068bcbd6f631609f0f988b3ac
 REFERENCE_MANIFEST_SHA256 = "ca02511c2e7028a666d8c54f1494af096e19a47640d3cffe40865bfa7049f4b8"
 REFERENCE_CHECKOUT = "a31505e3c0884a419b0b3b1072af0ba4057f9442"
 REFERENCE_PR_HEAD = "30f02fd0b744cda36035a4473c98e066f89d3d00"
-REPAIRED_MODULE_SHA256 = "c97df9c4b1d33dd6ea0ad5745501a70734f883709480622b680b8fcd512f7404"
-COMPILER_RECEIPT_SHA256 = "0ec0d1a8fd000c3abd32f3b50d94fb20708b6d61327b216727b7a4551b202f75"
+REPAIRED_MODULE_SHA256 = "e0d32f13536d568762be4b426edf9dce11602a3ec0eea4bc334d5346316b515a"
+COMPILER_RECEIPT_SHA256 = "cefa3ed54d02eaf894245248c07a39439489566d56a94b7f356748eba63cb2e8"
 SEMWRIGHT_PIN = "54d3459a051adbce4cae9f60c0dea8f60c824be6"
 MELT = Path("/usr/bin/melt-7")
 MELT_ALIAS = Path("/usr/bin/melt")
@@ -46,6 +46,7 @@ INPUT_KEYS = {
     "compiled_module_sha256", "compiler_receipt_path", "compiler_receipt_sha256",
     "installation_receipt_path", "installation_receipt_sha256",
 }
+RUNTIME_INPUT_KEYS = INPUT_KEYS - {"schema", "original_artifact_zip", "private_evidence_dir"}
 
 
 class G2Unverified(AssertionError):
@@ -874,6 +875,56 @@ class LiveObserver:
         return proof
 
 
+def verify_runtime_inputs(data: dict, *, source_sha: str, semwright_sha: str) -> tuple[dict, dict]:
+    """Canonical source, installation and process preflight for original native media."""
+    require(type(data) is dict and set(data) == RUNTIME_INPUT_KEYS, "g2_runtime_inputs_schema")
+    require(re.fullmatch(r"[0-9a-f]{40}", source_sha) is not None
+            and data["motionwright_sha"] == source_sha
+            and data["semwright_sha"] == semwright_sha == SEMWRIGHT_PIN
+            and data["run_id"] == os.environ.get("GITHUB_RUN_ID")
+            and data["run_attempt"] == os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and type(data["run_id"]) is str and data["run_id"].isdecimal()
+            and type(data["run_attempt"]) is str and data["run_attempt"].isdecimal(),
+            "g2_current_execution_binding")
+    for key in RUNTIME_INPUT_KEYS:
+        if key.endswith("_sha256"):
+            require(type(data[key]) is str and re.fullmatch(r"[0-9a-f]{64}", data[key]),
+                    "g2_required_digest_invalid")
+    require(data["compiled_module_sha256"] == REPAIRED_MODULE_SHA256
+            and data["compiler_receipt_sha256"] == COMPILER_RECEIPT_SHA256,
+            "g2_repair_only_original_G1_binary_changed")
+    official_bytes = admission.checked_bytes(Path(data["official_runtime_receipt_path"]), 512 * 1024)
+    require(sha(official_bytes) == data["official_runtime_receipt_sha256"],
+            "g2_official_runtime_receipt_changed")
+    official = strict_object(official_bytes)
+    verify_official_runtime_bindings(
+        official, data["known_original_module_sha256"], data["known_melt_sha256"])
+    closure = admission.source_compiler_closure(
+        Path(data["original_c_source"]), Path(data["repaired_c_source"]),
+        Path(data["compiled_module"]), data["compiled_module_sha256"],
+        Path(data["compiler_receipt_path"]), data["compiler_receipt_sha256"],
+    )
+    installed_bytes = admission.checked_bytes(Path(data["installation_receipt_path"]), 64 * 1024)
+    require(sha(installed_bytes) == data["installation_receipt_sha256"],
+            "g2_installation_receipt_changed")
+    installed = strict_object(installed_bytes)
+    require(installed.get("schema") == "motionwright.native.mlt-module-installed/1"
+            and installed.get("installed_path") == str(admission.INSTALLED)
+            and installed.get("original_module_sha256") == data["known_original_module_sha256"]
+            and installed.get("original_backup_sha256") == data["known_original_module_sha256"]
+            and installed.get("actual_installed_module_sha256") == REPAIRED_MODULE_SHA256
+            and installed.get("module_replaced") is True
+            and installed.get("new_native_master_issued") is False
+            and all(installed.get(key) == value for key, value in closure.items()),
+            "g2_installation_source_closure")
+    require(sha(admission.checked_bytes(admission.INSTALLED, admission.MAX_ELF_BYTES))
+            == REPAIRED_MODULE_SHA256, "g2_installed_repaired_module_changed")
+    alias_observation = verified_installed_melt_alias(data["known_melt_sha256"])
+    require(not admission.live_melt_pids(), "g2_melt_exists_before_original_assembly")
+    return closure, alias_observation
+
+
 class G2Session:
     def __init__(self, inputs: dict, evidence_dir: Path, wav: bytes, provenance: dict):
         self.inputs = inputs
@@ -902,50 +953,10 @@ class G2Session:
         runner = admission.disposable_linux_runner()
         data = strict_object(admission.checked_bytes(path, 64 * 1024))
         require(set(data) == INPUT_KEYS and data["schema"] == SCHEMA, "g2_inputs_schema")
-        require(re.fullmatch(r"[0-9a-f]{40}", source_sha) is not None
-                and data["motionwright_sha"] == source_sha
-                and data["semwright_sha"] == semwright_sha == SEMWRIGHT_PIN
-                and data["run_id"] == os.environ.get("GITHUB_RUN_ID")
-                and data["run_attempt"] == os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
-                and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-                and type(data["run_id"]) is str and data["run_id"].isdecimal()
-                and type(data["run_attempt"]) is str and data["run_attempt"].isdecimal(),
-                "g2_current_execution_binding")
-        for key in INPUT_KEYS:
-            if key.endswith("_sha256"):
-                require(type(data[key]) is str and re.fullmatch(r"[0-9a-f]{64}", data[key]),
-                        "g2_required_digest_invalid")
-        require(data["compiled_module_sha256"] == REPAIRED_MODULE_SHA256
-                and data["compiler_receipt_sha256"] == COMPILER_RECEIPT_SHA256,
-                "g2_repair_only_original_G1_binary_changed")
-        official_bytes = admission.checked_bytes(Path(data["official_runtime_receipt_path"]), 512 * 1024)
-        require(sha(official_bytes) == data["official_runtime_receipt_sha256"],
-                "g2_official_runtime_receipt_changed")
-        official = strict_object(official_bytes)
-        verify_official_runtime_bindings(
-            official, data["known_original_module_sha256"], data["known_melt_sha256"])
-        closure = admission.source_compiler_closure(
-            Path(data["original_c_source"]), Path(data["repaired_c_source"]),
-            Path(data["compiled_module"]), data["compiled_module_sha256"],
-            Path(data["compiler_receipt_path"]), data["compiler_receipt_sha256"],
+        closure, alias_observation = verify_runtime_inputs(
+            {key: data[key] for key in RUNTIME_INPUT_KEYS},
+            source_sha=source_sha, semwright_sha=semwright_sha,
         )
-        installed_bytes = admission.checked_bytes(Path(data["installation_receipt_path"]), 64 * 1024)
-        require(sha(installed_bytes) == data["installation_receipt_sha256"],
-                "g2_installation_receipt_changed")
-        installed = strict_object(installed_bytes)
-        require(installed.get("schema") == "motionwright.native.mlt-module-installed/1"
-                and installed.get("installed_path") == str(admission.INSTALLED)
-                and installed.get("original_module_sha256") == data["known_original_module_sha256"]
-                and installed.get("original_backup_sha256") == data["known_original_module_sha256"]
-                and installed.get("actual_installed_module_sha256") == REPAIRED_MODULE_SHA256
-                and installed.get("module_replaced") is True
-                and installed.get("new_native_master_issued") is False
-                and all(installed.get(key) == value for key, value in closure.items()),
-                "g2_installation_source_closure")
-        require(sha(admission.checked_bytes(admission.INSTALLED, admission.MAX_ELF_BYTES))
-                == REPAIRED_MODULE_SHA256, "g2_installed_repaired_module_changed")
-        alias_observation = verified_installed_melt_alias(data["known_melt_sha256"])
-        require(not admission.live_melt_pids(), "g2_melt_exists_before_original_assembly")
         wav, provenance = reference_source(
             admission.checked_bytes(Path(data["original_artifact_zip"]), 32 * 1024 * 1024)
         )

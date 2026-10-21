@@ -33,6 +33,12 @@ import native_mlt_runtime_admission as admission
 DISPATCH_SCHEMA = "motionwright.native.mlt-g2-dispatch/1"
 SOURCE_DISPATCH_SCHEMA = "motionwright.native.mlt-g2-dispatch/2"
 SOURCE_MODE = "pinned-upstream-reconstruction"
+FILM_SCOPE = "film180-g2"
+FILM_DISPATCH_SCHEMA = "motionwright.native.film180-g2-dispatch/1"
+FILM_INPUT_SCHEMA = "motionwright.native.film180-g2-inputs/1"
+FILM_FINAL_SCHEMA = "motionwright.native.film180-g2-custody/1"
+FILM_TERMINAL_SCOPE = "original_and_edited_film180_native_commands"
+RUNTIME_INPUT_KEYS = g2.RUNTIME_INPUT_KEYS
 UPSTREAM_URL = "https://archive.ubuntu.com/ubuntu/pool/universe/m/mlt/mlt_7.22.0.orig.tar.gz"
 UPSTREAM_ARCHIVE_SHA256 = "7cf4d9573a061d76902c6e12a2f09f5f461e7c697635233df82a63a3fe4d6da6"
 UPSTREAM_MEMBER = "mlt-7.22.0/src/modules/avformat/consumer_avformat.c"
@@ -58,7 +64,7 @@ def context(env):
             and env.get("RUNNER_OS") == "Linux"
             and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
             and env.get("GITHUB_RUN_ATTEMPT") == "1"
-            and env.get("MW_MLT_SCOPE") == "repaired-g2", "closed_manual_selection_required")
+            and env.get("MW_MLT_SCOPE") in {"repaired-g2", FILM_SCOPE}, "closed_manual_selection_required")
     require(SOURCE.fullmatch(env.get("GITHUB_SHA", "")) is not None
             and re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ID", "")) is not None,
             "execution_identity_invalid")
@@ -100,11 +106,13 @@ def safe_member(value):
     return value
 
 
-def validate_dispatch(raw, current):
+def validate_dispatch(raw, current, *, scenario="repaired-g2"):
+    require(scenario in {"repaired-g2", FILM_SCOPE}, "dispatch_scenario")
+    schemas = (FILM_DISPATCH_SCHEMA,) if scenario == FILM_SCOPE else (DISPATCH_SCHEMA, SOURCE_DISPATCH_SCHEMA)
     value = strict(raw)
     require(set(value) == {"schema", "motionwright_sha", "semwright_sha",
                            "official_runtime", "compiler", "recipient"}
-            and value["schema"] in (DISPATCH_SCHEMA, SOURCE_DISPATCH_SCHEMA)
+            and value["schema"] in schemas
             and value["motionwright_sha"] == current["source_sha"]
             and value["semwright_sha"] == current["semwright_sha"], "dispatch_source_binding")
     official = value["official_runtime"]
@@ -116,7 +124,7 @@ def validate_dispatch(raw, current):
                 for k in ("receipt_sha256", "known_original_module_sha256", "known_melt_sha256")),
             "official_runtime_pins_required")
     compiler = value["compiler"]
-    source_reconstruction = value["schema"] == SOURCE_DISPATCH_SCHEMA
+    source_reconstruction = value["schema"] in (SOURCE_DISPATCH_SCHEMA, FILM_DISPATCH_SCHEMA)
     keys = {"artifact", "members", "source_mode"} if source_reconstruction else {"artifact", "members"}
     require(type(compiler) is dict and set(compiler) == keys, "compiler_contract")
     if source_reconstruction:
@@ -133,7 +141,8 @@ def validate_dispatch(raw, current):
     return value
 
 
-def source_guard(repo, current):
+def source_guard(repo, current, *, scenario="repaired-g2"):
+    require(scenario in {"repaired-g2", FILM_SCOPE}, "source_scenario")
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_SYSTEM=os.devnull,
                GIT_CONFIG_GLOBAL=os.devnull, GIT_GRAFT_FILE=os.devnull,
@@ -152,6 +161,11 @@ def source_guard(repo, current):
         "tooling/native_mlt_ci_pcm_envelope.py", "tooling/native_pcm_source_fidelity.py",
         "crates/native/examples/native-mlt-sequence-e2e.rs", REPAIR_GENERATOR,
     ]
+    if scenario == FILM_SCOPE:
+        selected += [
+            "tooling/native_film180_original_g2.py", "tooling/native_film180_media_readback.py",
+            "tooling/native_av_failure_guard.py", "crates/native/examples/native-film180-e2e.rs",
+        ]
     result = {}
     for path in selected:
         raw = git("show", current["source_sha"] + ":" + path)
@@ -352,7 +366,8 @@ def intake_compiler(dispatch, repo, directory):
 def prepare(env):
     require(sys.platform == "linux" and os.geteuid() != 0, "prepare_requires_normal_Linux_runner")
     current = context(env)
-    dispatch = validate_dispatch(env.get("MW_MLT_G2_ADMISSION", "").encode(), current)
+    dispatch = validate_dispatch(env.get("MW_MLT_G2_ADMISSION", "").encode(), current,
+                                 scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     control, installed, session = names(env)
     require(not installed.exists() and not session.exists(), "original_effect_directory_preexists")
     control.mkdir(mode=0o700, exist_ok=False)
@@ -360,12 +375,21 @@ def prepare(env):
         (control / name).mkdir(mode=0o700)
     new_json(control / "records/dispatch.json", dispatch)
     new_json(control / "records/context.json", current)
-    new_json(control / "records/source-before.json", source_guard(Path(env["GITHUB_WORKSPACE"]), current))
-    original = {"artifact_id": 12109323512, "run_id": 39054798740, "run_attempt": 1,
-                "source_sha": g2.REFERENCE_PR_HEAD, "zip_sha256": g2.REFERENCE_ZIP_SHA256}
-    archive = download_artifact(original, "reference", control / "intake")
-    g2.reference_source(archive)
-    new_bytes(control / "intake/original-artifact.zip", archive)
+    new_json(control / "records/source-before.json", source_guard(Path(env["GITHUB_WORKSPACE"]), current,
+                 scenario=env.get("MW_MLT_SCOPE", "repaired-g2")))
+    if env.get("MW_MLT_SCOPE", "repaired-g2") != FILM_SCOPE:
+        original = {"artifact_id": 12109323512, "run_id": 39054798740, "run_attempt": 1,
+                    "source_sha": g2.REFERENCE_PR_HEAD, "zip_sha256": g2.REFERENCE_ZIP_SHA256}
+        archive = download_artifact(original, "reference", control / "intake")
+        g2.reference_source(archive)
+        new_bytes(control / "intake/original-artifact.zip", archive)
+    else:
+        new_json(control / "records/film-source-intent.json", {
+            "schema": "motionwright.native.film180-source-intent/1",
+            "origin": "FIRST_PARTY_CANONICAL_SIX_SECOND_SOURCE_PENDING",
+            "frame_count": 180, "frame_rate": 30, "pcm_frames": 288000,
+            "historical_reference_WAV_reused": False, "native_effect_started": False,
+        })
     official = dispatch["official_runtime"]
     raw = download_artifact(official["artifact"], "official", control / "intake")
     receipt = zip_member(raw, "distribution/official-runtime-receipt.json",
@@ -392,7 +416,8 @@ def handoff(env, uid, gid):
     control, installed, _ = names(env)
     require(control.stat().st_uid == uid and control.stat().st_gid == gid
             and control.resolve(strict=True) == control, "handoff_control_owner")
-    dispatch = validate_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], context(env))
+    dispatch = validate_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], context(env),
+                                 scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     directory = control / "handoff"
     require(directory.stat().st_uid == uid and not any(directory.iterdir()), "handoff_target_not_fresh")
     official = dispatch["official_runtime"]
@@ -461,7 +486,8 @@ def make_inputs(env):
     require(sys.platform == "linux" and os.geteuid() != 0, "inputs_require_normal_runner")
     control, _, session = names(env)
     current = context(env)
-    dispatch = validate_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], current)
+    dispatch = validate_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], current,
+                                 scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     handoff_proof = strict(regular(control / "handoff/handoff.json", MAX_JSON)[0])
     installed = control / "handoff/installation.json"
     require(handoff_proof["context"] == current and handoff_proof["recipient_uid"] == os.getuid()
@@ -486,7 +512,12 @@ def make_inputs(env):
     }
     data.update({name: str(control / "intake" / name) for name in (
         "original_c_source", "repaired_c_source", "compiled_module", "compiler_receipt_path")})
-    require(set(data) == g2.INPUT_KEYS, "producer_input_contract_changed")
+    expected_keys = g2.INPUT_KEYS
+    if env.get("MW_MLT_SCOPE", "repaired-g2") == FILM_SCOPE:
+        data["schema"] = FILM_INPUT_SCHEMA
+        del data["original_artifact_zip"]
+        expected_keys = RUNTIME_INPUT_KEYS | {"schema", "private_evidence_dir"}
+    require(set(data) == expected_keys, "producer_input_contract_changed")
     new_json(control / "records/g2-inputs.json", data)
 
 
@@ -494,7 +525,8 @@ def guard_before_admission(env):
     require(sys.platform == "linux" and os.geteuid() != 0, "guard_requires_normal_runner")
     control, _, _ = names(env)
     current = context(env)
-    observed = source_guard(Path(env["GITHUB_WORKSPACE"]), current)
+    observed = source_guard(Path(env["GITHUB_WORKSPACE"]), current,
+                 scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     require(strict(regular(control / "records/source-before.json", MAX_JSON)[0]) == observed,
             "source_changed_before_admission")
     new_json(control / "records/source-before-admission.json", observed)
@@ -507,12 +539,16 @@ def begin(env):
     require(sys.platform == "linux" and os.geteuid() != 0, "producer_must_not_be_root")
     control, _, _ = names(env)
     require((control / "records/g2-inputs.json").is_file(), "producer_inputs_absent")
-    observed = source_guard(Path(env["GITHUB_WORKSPACE"]), context(env))
+    observed = source_guard(Path(env["GITHUB_WORKSPACE"]), context(env),
+                            scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     require(strict(regular(control / "records/source-before.json", MAX_JSON)[0]) == observed,
             "source_changed_before_producer")
     new_json(control / "records/source-before-producer.json", observed)
+    command = ("tooling/native_film180_original_g2.py --g2-inputs"
+               if env.get("MW_MLT_SCOPE", "repaired-g2") == FILM_SCOPE else
+               "tooling/native_mlt_sequence_e2e.py --g2-inputs")
     new_json(control / "records/producer-started.json",
-             {"context": context(env), "command": "tooling/native_mlt_sequence_e2e.py --g2-inputs",
+             {"context": context(env), "command": command,
               "automatic_retry": False, "producer_uid": os.getuid()})
 
 
@@ -525,15 +561,18 @@ def record_exit(env, code):
 
 
 def projection(current, final, exit_code, job_status, encrypted, recipient, *,
-               producer_started=False, source_unchanged=False, selected_originals_complete=True):
+               producer_started=False, source_unchanged=False, selected_originals_complete=True,
+               scenario="repaired-g2"):
+    require(scenario in {"repaired-g2", FILM_SCOPE}, "projection_scenario")
+    film = scenario == FILM_SCOPE
     require(job_status in {"success", "failure", "cancelled"} and
             (exit_code is None or type(exit_code) is int and 0 <= exit_code <= 255),
             "public_terminal_inputs")
     terminal = "NOT_STARTED"
     verified = False
     if final is not None:
-        require(final.get("schema") == "motionwright.native.mlt-g2-custody/1"
-                and final.get("terminal_scope") == g2.TERMINAL_SCOPE
+        require(final.get("schema") == (FILM_FINAL_SCHEMA if film else "motionwright.native.mlt-g2-custody/1")
+                and final.get("terminal_scope") == (FILM_TERMINAL_SCOPE if film else g2.TERMINAL_SCOPE)
                 and final.get("native_operation_retried") is False, "private_final_contract")
         terminal = final.get("native_terminal")
         require(terminal in {"NOT_STARTED", "ERROR_OR_UNKNOWN", "SUCCESS_REPORTED",
@@ -548,8 +587,10 @@ def projection(current, final, exit_code, job_status, encrypted, recipient, *,
                     and final.get("human_acceptance") is False)
     elif producer_started or exit_code is not None:
         terminal = "ERROR_OR_UNKNOWN"
-    result = {"schema": PUBLIC_SCHEMA, "context": current,
-              "scope": "source-content-and-live-module-only",
+    result = {"schema": "motionwright.native.film180-g2-public/1" if film else PUBLIC_SCHEMA,
+              "context": current,
+              "scope": ("film180-original-and-edited-content-and-live-module-only" if film else
+                        "source-content-and-live-module-only"),
               "native_terminal": terminal, "producer_exit_code": exit_code,
               "source_content_and_live_module_verified": verified,
               "job_outcome_at_seal": job_status, "sealed_originals_sha256": sha(encrypted),
@@ -568,14 +609,15 @@ def seal(env, job_status):
     require(sys.platform == "linux" and os.geteuid() != 0, "seal_requires_normal_runner")
     control, _, session = names(env)
     current = context(env)
-    dispatch = validate_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], current)
+    dispatch = validate_dispatch(regular(control / "records/dispatch.json", MAX_JSON)[0], current,
+                                 scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     repo = Path(env["GITHUB_WORKSPACE"])
     source_unchanged, custody_valid = False, True
     def retain_error(name, error):
         new_json(control / ("records/" + name + ".json"),
                  {"error_type": type(error).__name__, "error": str(error), "no_retry": True})
     try:
-        source_after = source_guard(repo, current)
+        source_after = source_guard(repo, current, scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
         new_json(control / "records/source-after.json", source_after)
         source_unchanged = strict(regular(control / "records/source-before.json", MAX_JSON)[0]) == source_after
     except Exception as error:
@@ -603,14 +645,19 @@ def seal(env, job_status):
     try:
         # Validate the terminal contract before capturing originals. A corrupt
         # terminal is retained privately and yields ERROR_OR_UNKNOWN publicly.
-        projection(current, final, exit_code, job_status, b"validation", dispatch["recipient"])
+        projection(current, final, exit_code, job_status, b"validation", dispatch["recipient"],
+                   scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     except Exception as error:
         custody_valid = False
         final = None
         retain_error("terminal-contract-error", error)
     roots = {name: control / name for name in ("records", "intake", "handoff", "logs")}
-    roots.update(observation=session, producer=repo / "verification/native-mlt-sequence-e2e",
+    roots.update(observation=session,
                  contracts=runner_root(env) / ("mw-mlt-g2-contracts-" + current["run_id"] + "-1"))
+    if env.get("MW_MLT_SCOPE", "repaired-g2") != FILM_SCOPE:
+        roots["producer"] = repo / "verification/native-mlt-sequence-e2e"
+    else:
+        roots["film-contracts"] = runner_root(env) / ("mw-film180-contracts-" + current["run_id"] + "-1")
     owner_marker = session / "owner-workspace.json"
     try:
         if owner_marker.exists():
@@ -639,7 +686,8 @@ def seal(env, job_status):
     encrypted = encrypt_snapshot(raw, dispatch["recipient"], current)
     public = projection(current, final, exit_code, job_status, encrypted, dispatch["recipient"],
                         producer_started=started, source_unchanged=source_unchanged,
-                        selected_originals_complete=captured and custody_valid)
+                        selected_originals_complete=captured and custody_valid,
+                        scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     output = control / "public"
     require(not any(output.iterdir()), "public_output_preexists")
     new_bytes(output / "sealed-originals.bin", encrypted)
