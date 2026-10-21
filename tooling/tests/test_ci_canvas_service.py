@@ -84,6 +84,7 @@ class CanvasServiceReportTests(unittest.TestCase):
              ('inspector', 'scene-inspector-service.spec.ts'),
              ('profile-metadata', 'delivery-profile-preservation.spec.ts'),
              ('profile-authority', 'delivery-profile-authority-service.spec.ts'),
+             ('projection-navigation', 'project-projection-service.spec.ts'),
              ],
         )
 
