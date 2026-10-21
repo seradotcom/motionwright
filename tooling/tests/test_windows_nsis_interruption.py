@@ -506,5 +506,73 @@ class CompileCustodyTests(unittest.TestCase):
                 nsis.source_observation(self.root, "1" * 40, ("a",))
 
 
+
+class ReviewedPredecessorControls(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-nsis-profile-reader-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        sys.path.insert(0, str(Path(__file__).parent))
+        sys.path.insert(0, str(Path(__file__).parents[1]))
+        from test_windows_installer_lifecycle import Fixture
+        self.fixture = Fixture(self.root)
+        self.folder = self.root / "variant"
+        self.capture = self.folder / "render/x64"
+        self.capture.mkdir(parents=True)
+        from nsis_owned_files import emit_predecessor_include
+        self.profile = self.root / self.fixture.profile_ref["path"]
+        self.pin = self.fixture.profile_ref["sha256"]
+        emit_predecessor_include(self.capture / "mw-predecessor.nsh",
+            application="Motionwright", bundle_id="com.seradotcom.motionwright", arch="x64",
+            target_version="0.1.1", target_main_sha256=self.fixture.new_main["sha256"],
+            environment={"MW_NSIS_PREDECESSOR_MANIFEST": str(self.profile),
+                         "MW_NSIS_PREDECESSOR_MANIFEST_SHA256": self.pin})
+
+    def test_optional_predecessor_mode_is_closed_and_default_remains_compile_only(self):
+        self.assertFalse(nsis.reviewed_predecessor_mode("none"))
+        self.assertTrue(nsis.reviewed_predecessor_mode("reviewed-synthetic"))
+        for value in ("", "physical", "yes", None, True):
+            with self.subTest(value=value), self.assertRaises(nsis.ContractError):
+                nsis.reviewed_predecessor_mode(value)
+
+    def test_actual_canonical_profile_include_and_complete_captures_match(self):
+        result = nsis.inspect_predecessor_capture(self.folder, self.profile, self.pin)
+        self.assertEqual(result["state"], "ADMITTED")
+        self.assertEqual(result["profile_sha256"], self.pin)
+        self.assertEqual(len(result["captures"]), 5)
+        self.assertEqual(result["captures"]["mw-predecessor-file-0000.capture.bin"],
+                         self.fixture.ident(self.fixture.old_main))
+
+    def test_profile_capture_missing_tampered_or_foreign_entry_is_rejected(self):
+        capture = self.capture / "mw-predecessor-file-0000.capture.bin"
+        original = capture.read_bytes()
+        capture.write_bytes(original + b"changed")
+        with self.assertRaisesRegex(nsis.ContractError, "predecessor_capture_changed"):
+            nsis.inspect_predecessor_capture(self.folder, self.profile, self.pin)
+        capture.write_bytes(original)
+        extra = self.capture / "mw-predecessor-file-0002.capture.bin"
+        extra.write_bytes(b"foreign")
+        with self.assertRaisesRegex(nsis.ContractError, "predecessor_capture_roster"):
+            nsis.inspect_predecessor_capture(self.folder, self.profile, self.pin)
+        extra.unlink()
+        capture.unlink()
+        with self.assertRaisesRegex(nsis.ContractError, "predecessor_capture_roster"):
+            nsis.inspect_predecessor_capture(self.folder, self.profile, self.pin)
+
+    def test_profile_include_cannot_relabel_pin_or_arch(self):
+        include = self.capture / "mw-predecessor.nsh"
+        original = include.read_bytes()
+        include.write_bytes(original.replace(self.pin.encode(), b"0" * 64))
+        with self.assertRaisesRegex(nsis.ContractError, "predecessor_include_not_canonical"):
+            nsis.inspect_predecessor_capture(self.folder, self.profile, self.pin)
+        with self.assertRaisesRegex(nsis.ContractError, "predecessor_profile_pin_changed"):
+            nsis.inspect_predecessor_capture(self.folder, self.profile, "1" * 64)
+
+    def test_gate_product_rosters_keep_new_producer_out_of_older_product(self):
+        self.assertIn("tooling/windows_installer_producer.py", nsis.GATE_PATHS)
+        self.assertNotIn("tooling/windows_installer_producer.py", nsis.PRODUCT_PATHS)
+        self.assertNotIn("tooling/windows_updated_application.py", nsis.PRODUCT_PATHS)
+        self.assertIn("docs/reliability/windows-upgrade-interruption.md", nsis.PRODUCT_PATHS)
+
 if __name__ == "__main__":
     unittest.main()

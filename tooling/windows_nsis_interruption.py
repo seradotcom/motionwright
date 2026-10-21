@@ -21,7 +21,12 @@ import uuid
 
 GATE_PATHS = (".github/workflows/windows-nsis-interruption.yml",
               "tooling/windows_nsis_interruption.py",
-              "tooling/tests/test_windows_nsis_interruption.py", "tooling/ci_test_runner.py")
+              "tooling/tests/test_windows_nsis_interruption.py", "tooling/ci_test_runner.py",
+              "tooling/windows_installer_producer.py", "tooling/tests/test_windows_installer_producer.py",
+              "tooling/windows_installer_lifecycle.py", "tooling/nsis_owned_files.py",
+              "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
+              "tooling/candidate_smoke.py", "tooling/package_receipt.py", "tooling/release_manifest.py",
+              ".github/workflows/package-candidate.yml", "docs/reliability/windows-nsis-verification.md")
 PRODUCT_PATHS = (
     "apps/desktop/src-tauri/windows/installer.nsi",
     "apps/desktop/src-tauri/windows/uninstall-ownership.nsh",
@@ -497,12 +502,78 @@ def inspect_variant(folder: Path, variant: str, main_identity: dict[str, Any],
             "installer_execution": "NOT_RUN", "predecessor_profile": "NOT_ADMITTED"}
 
 
+
+def inspect_predecessor_capture(folder: Path, profile_path: Path, pin: str) -> dict[str, Any]:
+    """Compare original include/captures with the existing canonical generator."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from nsis_owned_files import _predecessor_include
+    raw, identity = bounded_read(profile_path, MAX_RENDER_BYTES)
+    require(identity["sha256"] == pin, "predecessor_profile_pin_changed")
+    document = json.loads(raw)
+    includes = list((folder / "render").rglob("mw-predecessor.nsh"))
+    require(len(includes) == 1, "predecessor_include_cardinality")
+    parent = includes[0].parent
+    require(bounded_read(includes[0], MAX_INCLUDE_BYTES)[0] == _predecessor_include(document, pin),
+            "predecessor_include_not_canonical")
+    expected = {"mw-predecessor-manifest.capture.json": identity,
+                "mw-predecessor-package.capture.bin": {key: document["package"][key] for key in ("bytes", "sha256")},
+                "mw-predecessor-receipt.capture.bin": {key: document["capture_receipt"][key] for key in ("bytes", "sha256")}}
+    expected.update({f"mw-predecessor-file-{i:04d}.capture.bin":
+                     {key: row[key] for key in ("bytes", "sha256")}
+                     for i, row in enumerate(document["files"])})
+    require({path.name for path in parent.glob("mw-predecessor-*.capture.*")} == set(expected),
+            "predecessor_capture_roster")
+    for name, original in expected.items():
+        require(regular_file(parent / name, MAX_PAYLOAD_BYTES) == original,
+                "predecessor_capture_changed:" + name)
+    return {"state": "ADMITTED", "profile_sha256": pin, "captures": expected}
+
+
+
+def inspect_synthetic_resources(folder: Path, expected: dict[str, Any]) -> dict[str, Any]:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from windows_installer_lifecycle import validate_rendered_resource_directories
+    renders = list((folder / "render").rglob("installer.nsi"))
+    require(len(renders) == 1 and set(expected) == {
+        "mw-ci-render/resource-alpha.dat", "mw-ci-render/resource-beta.dat"}, "synthetic_resource_roster")
+    render = renders[0]
+    text = bounded_read(render, MAX_RENDER_BYTES)[0].decode("utf-8-sig", errors="strict")
+    validate_rendered_resource_directories(text, sorted(expected))
+    entries = re.findall(r'(?m)^[ \t]*!insertmacro MWINST_INSTALL_PAYLOAD "([^"\r\n]+)" (MW_RESOURCE_[0-9]+)[ \t]*\r?$', text)
+    require(len(entries) == 2 and {symbol for _, symbol in entries} == {"MW_RESOURCE_0", "MW_RESOURCE_1"}
+            and {name.replace("\\", "/") for name, _ in entries} == set(expected),
+            "synthetic_resource_install_mapping")
+    custody = json.loads(bounded_read(folder / "retained-files.json", MAX_RENDER_BYTES)[0])
+    original_parent = Path(custody["trees"]["render"]["original_root"]) / render.parent.relative_to(folder / "render")
+    observations = {}
+    for name, symbol in entries:
+        name = name.replace("\\", "/")
+        identity = {key: expected[name][key] for key in ("bytes", "sha256")}
+        require(regular_file(render.parent / ("mw-owned-" + symbol + ".bin")) == identity,
+                "synthetic_resource_capture_changed")
+        include = bounded_read(render.parent / ("mw-owned-" + symbol + ".nsh"), MAX_INCLUDE_BYTES)[0]
+        require(include.startswith(b"\xef\xbb\xbf"), "synthetic_resource_include_bom")
+        expected_text = (f'!define {symbol}_SOURCE "{original_parent / ("mw-owned-" + symbol + ".bin")}"\n'
+                         f'!define {symbol}_SHA256 "{identity["sha256"]}"\n'
+                         f'!define {symbol}_SIZE {identity["bytes"]}\n')
+        require(include.decode("utf-8-sig").replace("\r\n", "\n") == expected_text,
+                "synthetic_resource_include_changed")
+        observations[name] = identity
+    return observations
+
+
+def reviewed_predecessor_mode(value: str) -> bool:
+    require(value in ("none", "reviewed-synthetic"), "predecessor_mode_closed")
+    return value == "reviewed-synthetic"
+
+
 def compile_fixtures(args: argparse.Namespace) -> int:
     require(os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true",
             "disposable_windows_actions_required")
     gate, product, output = (Path(args.gate_repo).absolute(), Path(args.product_repo).absolute(),
                              Path(args.output).absolute())
     require(gate != product, "gate_product_checkout_must_be_separate")
+    with_profile = reviewed_predecessor_mode(getattr(args, "predecessor_mode", "none"))
     output.mkdir(parents=True)
     report: dict[str, Any] = {
         "schema": "motionwright.nsis-interruption-compile/1",
@@ -588,6 +659,19 @@ def compile_fixtures(args: argparse.Namespace) -> int:
         report["real_application"] = main_identity
         application = retain_built_application(main, output, main_identity)
         report["retained_application"] = application
+        preparation = None
+        if with_profile:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from windows_installer_producer import prepare_predecessor
+            preparation = prepare_predecessor(root=product, source=args.product_sha,
+                work=output / "inputs/predecessor",
+                proof_path=output / "inputs/predecessor-admission.json",
+                version_path=version_overlay, main_path=main, source_paths=PRODUCT_PATHS,
+                fixture_shape="resources", export_environment=False, child_environment=environment)
+            environment["MW_NSIS_PREDECESSOR_MANIFEST"] = str(preparation["profile"])
+            environment["MW_NSIS_PREDECESSOR_MANIFEST_SHA256"] = preparation["profile_sha256"]
+            report["predecessor_profile"] = "ADMITTED"
+            report["predecessor_profile_sha256"] = preparation["profile_sha256"]
         report["diagnostics_after_application"] = diagnostic_budget(output)
         expected_defines = {"PRODUCTNAME": config["productName"], "BUNDLEID": config["identifier"],
                             "ARCH": "x64", "INSTALLMODE": "currentUser", "VERSION": "0.1.1",
@@ -605,8 +689,10 @@ def compile_fixtures(args: argparse.Namespace) -> int:
                     and not (target / "release/bundle/nsis").exists(), "render_output_not_fresh")
             template = source_template if variant == "normal" else fixture_template
             overlay = output / ("inputs/" + variant + "-overlay.json")
-            write_json(overlay, {"version": "0.1.1", "bundle": {"windows": {"nsis": {
-                "template": str(template)}}}})
+            overlay_value = (json.loads(json.dumps(preparation["overlay"])) if preparation is not None
+                             else {"version": "0.1.1", "bundle": {}})
+            overlay_value["bundle"]["windows"] = {"nsis": {"template": str(template)}}
+            write_json(overlay, overlay_value)
             folder = output / "variants" / variant
             try:
                 command(output, "compile-" + variant, [str(node), str(cli), "bundle", "--bundles",
@@ -625,9 +711,17 @@ def compile_fixtures(args: argparse.Namespace) -> int:
                         "outputs_moved": False, "retry": "PROHIBITED",
                         "original_paths": ["target/release/nsis", "target/release/bundle/nsis"]})
             require(regular_file(main) == main_identity, "main_changed_during_bundle")
-            report["variants"].append(inspect_variant(
-                folder, variant, main_identity, expected_defines, application))
+            observed = inspect_variant(folder, variant, main_identity, expected_defines, application)
+            if preparation is not None:
+                observed["predecessor_capture"] = inspect_predecessor_capture(
+                    folder, preparation["profile"], preparation["profile_sha256"])
+                observed["predecessor_profile"] = "ADMITTED"
+                observed["synthetic_resources"] = inspect_synthetic_resources(
+                    folder, preparation["expected_payloads"])
+            report["variants"].append(observed)
             report["diagnostics_after_" + variant] = diagnostic_budget(output)
+        require(report["variants"][0]["setup"] != report["variants"][1]["setup"],
+                "setup_variants_not_distinct")
         after = {"gate": source_observation(gate, args.gate_sha, GATE_PATHS),
                  "product": source_observation(product, args.product_sha, PRODUCT_PATHS)}
         report["source_after"] = after
@@ -638,7 +732,7 @@ def compile_fixtures(args: argparse.Namespace) -> int:
         report["compile"] = "TWO_VARIANTS_COMPILED"
         exit_code = 0
     except (ContractError, OSError, subprocess.SubprocessError, UnicodeError,
-            KeyError, json.JSONDecodeError) as error:
+            KeyError, json.JSONDecodeError, RuntimeError, ValueError) as error:
         report["compile"] = "FAILED_OR_INCOMPLETE"
         report["error"] = {"type": type(error).__name__, "message": str(error)}
     finally:
@@ -668,6 +762,7 @@ def main() -> int:
     compile_parser = subcommands.add_parser("compile", help="Compile only; never execute a setup")
     for name in ("gate-repo", "gate-sha", "product-repo", "product-sha", "output"):
         compile_parser.add_argument("--" + name, required=True)
+    compile_parser.add_argument("--predecessor-mode", choices=("none", "reviewed-synthetic"), default="none")
     return compile_fixtures(parser.parse_args())
 
 

@@ -7,9 +7,38 @@ Readonly custody, checkpoint and lifecycle readers remain separate modules.
 from __future__ import annotations
 
 import argparse
+import ctypes
+from ctypes import wintypes
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import windows_installer_lifecycle as life
+import windows_nsis_interruption as nsis
+from nsis_owned_files import _capture, emit_predecessor_include, _predecessor_include
+from release_manifest import write_new_manifest
+from windows_cold_start import native_windows_launch_environment
 
 
-def prepare_predecessor():
+FIXED_PREDECESSOR = json.loads(r'''{"run":39032220978,"source":"679cc48baf7c6f9bb4a0b803508c9b2a9891d944","tree":"4ce7c4423c73da4f3af638427088ee6e962d12d5","packageArtifact":{"id":12101032310,"bytes":7134483,"sha256":"740ff6b52b1c655755f693ab9e620b36e15d5d5b642199f38e9a122d1b28155e"},"evidenceArtifact":{"id":12101216495,"bytes":125856,"sha256":"cab9c044019be1909162b9541b21f9a34bc46a44b4406a6bbda5b23aaf4f7e55"},"package":{"member":"target/release/bundle/nsis/Motionwright_0.1.0_x64-setup.exe","bytes":7149373,"sha256":"c071870c1c5f12f1728389f526471bee43b23eb7ad0bae3410147349a8da9f46"},"main":{"member":"motionwright-desktop.exe","bytes":32794112,"sha256":"4c1f8f492a505340ec3ca8e521254ff753a01875c92052a48c0dc42ad1314de8"},"self":{"member":"unchanged-control-original-uninstaller.exe","bytes":79338,"sha256":"dd03a5e87b450ae24950d67d2935dd18f78a27b45e1c52558625d47b60852224"},"receipt":{"member":"receipt.json","bytes":17792,"sha256":"ae15f0e7f21678b9fd950ec46a0b9cfe3601290851744a3d9aea158e39c5193e"}}''')
+
+def prepare_predecessor(*, root=None, source=None, work=None, proof_path=None,
+                        version_path=None, main_path=None, source_paths=None,
+                        fixture_shape="legacy", export_environment=True,
+                        child_environment=None):
+    """Admit the same pinned predecessor for legacy or canonical compilation.
+
+    The canonical caller supplies its own product roster and retained build;
+    no new gate path is required to exist in the older product checkout.
+    """
+    nsis.require(fixture_shape in ("legacy", "resources"), "fixture_shape_closed")
     import hashlib
     import json
     import os
@@ -30,15 +59,16 @@ def prepare_predecessor():
     from release_manifest import _checkout, _path_has_reparse
     from windows_cold_start import native_windows_launch_environment
 
-    ROOT = Path(os.environ["GITHUB_WORKSPACE"])
-    SOURCE = os.environ["GITHUB_SHA"]
-    WORK = Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-guarded-update"
+    ROOT = Path(root) if root is not None else Path(os.environ["GITHUB_WORKSPACE"])
+    SOURCE = source if source is not None else os.environ["GITHUB_SHA"]
+    WORK = Path(work) if work is not None else Path(os.environ["RUNNER_TEMP"]) / "motionwright-nsis-guarded-update"
     INPUT = WORK / "input"
-    PROOF = ROOT / "ci-evidence/windows-nsis-update-inputs.json"
-    CHILD_ENV = native_windows_launch_environment(os.environ)
+    PROOF = Path(proof_path) if proof_path is not None else ROOT / "ci-evidence/windows-nsis-update-inputs.json"
+    CHILD_ENV = (dict(child_environment) if child_environment is not None
+                 else native_windows_launch_environment(os.environ))
     CHILD_ENV.pop("GH_TOKEN", None)
     CHILD_ENV.pop("GITHUB_TOKEN", None)
-    FIXED = json.loads(r'''{"run":39032220978,"source":"679cc48baf7c6f9bb4a0b803508c9b2a9891d944","tree":"4ce7c4423c73da4f3af638427088ee6e962d12d5","packageArtifact":{"id":12101032310,"bytes":7134483,"sha256":"740ff6b52b1c655755f693ab9e620b36e15d5d5b642199f38e9a122d1b28155e"},"evidenceArtifact":{"id":12101216495,"bytes":125856,"sha256":"cab9c044019be1909162b9541b21f9a34bc46a44b4406a6bbda5b23aaf4f7e55"},"package":{"member":"target/release/bundle/nsis/Motionwright_0.1.0_x64-setup.exe","bytes":7149373,"sha256":"c071870c1c5f12f1728389f526471bee43b23eb7ad0bae3410147349a8da9f46"},"main":{"member":"motionwright-desktop.exe","bytes":32794112,"sha256":"4c1f8f492a505340ec3ca8e521254ff753a01875c92052a48c0dc42ad1314de8"},"self":{"member":"unchanged-control-original-uninstaller.exe","bytes":79338,"sha256":"dd03a5e87b450ae24950d67d2935dd18f78a27b45e1c52558625d47b60852224"},"receipt":{"member":"receipt.json","bytes":17792,"sha256":"ae15f0e7f21678b9fd950ec46a0b9cfe3601290851744a3d9aea158e39c5193e"}}''')
+    FIXED = FIXED_PREDECESSOR
 
     def require(ok, code):
         if not ok:
@@ -76,6 +106,8 @@ def prepare_predecessor():
 
 
     from windows_installer_lifecycle import SOURCE_PATHS, read_pe_versions, require_pe_version
+    if source_paths is not None:
+        SOURCE_PATHS = tuple(source_paths)
 
     def source_bytes(relative):
         require(relative in SOURCE_PATHS, "source_path_outside_the_explicit_gate_set")
@@ -180,7 +212,7 @@ def prepare_predecessor():
     plain_directory(WORK.parent)
     WORK.mkdir()
     INPUT.mkdir()
-    (ROOT / "ci-evidence").mkdir(exist_ok=True)
+    PROOF.parent.mkdir(parents=True, exist_ok=True)
     source_before = source_observation()
     repo = os.environ["GITHUB_REPOSITORY"]
     require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) is not None,
@@ -240,7 +272,7 @@ def prepare_predecessor():
     require(identity(seven) == seven_before, "static_extraction_tool_changed")
 
     config = json.loads(source_bytes("apps/desktop/src-tauri/tauri.conf.json"))
-    version_overlay_path = ROOT / "ci-evidence/windows-nsis-update-version-overlay.json"
+    version_overlay_path = Path(version_path) if version_path is not None else ROOT / "ci-evidence/windows-nsis-update-version-overlay.json"
     version_overlay_identity = identity(version_overlay_path)
     version_overlay = json.loads(version_overlay_path.read_bytes())
     require(version_overlay == {"version": "0.1.1"}
@@ -257,7 +289,7 @@ def prepare_predecessor():
             and windows["nsis"]["template"] == "windows/installer.nsi"
             and windows["nsis"]["installerHooks"] == "windows/uninstall-ownership.nsh",
             "guarded_update_template_not_configured")
-    main = ROOT / "target/release/motionwright-desktop.exe"
+    main = Path(main_path) if main_path is not None else ROOT / "target/release/motionwright-desktop.exe"
     main_before = identity(main)
     require(main_before["sha256"] != FIXED["main"]["sha256"], "new_main_is_not_a_distinct_build")
     previous_pe = read_pe_versions(INPUT / "previous-main.exe")
@@ -279,18 +311,19 @@ def prepare_predecessor():
         resource_inputs[str(resource)] = target
         expected_fixture[target] = {"kind": "resource", **identity(resource)}
     external_inputs = []
-    for stem, binary_source in (("mw-ci-current-sidecar", main),
-                                ("mw-ci-previous-sidecar", INPUT / "previous-main.exe")):
-        sidecar = fixture / (stem + "-x86_64-pc-windows-msvc.exe")
-        digest, size, captured = _capture(binary_source, sidecar)
-        expected_fixture[stem + ".exe"] = {
-            "kind": "external_binary", "bytes": size, "sha256": digest}
-        require(identity(sidecar) == {"bytes": size, "sha256": digest},
-                "sidecar_capture_changed")
-        external_inputs.append(str(fixture / stem))
-    require(expected_fixture["mw-ci-current-sidecar.exe"]["sha256"]
-            != expected_fixture["mw-ci-previous-sidecar.exe"]["sha256"],
-            "the_two_render_sidecars_need_distinct_literal_bytes")
+    if fixture_shape == "legacy":
+        for stem, binary_source in (("mw-ci-current-sidecar", main),
+                                    ("mw-ci-previous-sidecar", INPUT / "previous-main.exe")):
+            sidecar = fixture / (stem + "-x86_64-pc-windows-msvc.exe")
+            digest, size, captured = _capture(binary_source, sidecar)
+            expected_fixture[stem + ".exe"] = {
+                "kind": "external_binary", "bytes": size, "sha256": digest}
+            require(identity(sidecar) == {"bytes": size, "sha256": digest},
+                    "sidecar_capture_changed")
+            external_inputs.append(str(fixture / stem))
+        require(expected_fixture["mw-ci-current-sidecar.exe"]["sha256"]
+                != expected_fixture["mw-ci-previous-sidecar.exe"]["sha256"],
+                "the_two_render_sidecars_need_distinct_literal_bytes")
     overlay = {"version": fixture_version, "bundle": {"resources": resource_inputs, "externalBin": external_inputs}}
     overlay_path = INPUT / "render-overlay.json"
     overlay_raw = (json.dumps(overlay, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -370,7 +403,8 @@ def prepare_predecessor():
         "version_scope": "ISOLATED_INSTALLER_AND_PE_FIXTURE",
         "previous_pe_version": previous_pe, "current_pe_version": current_pe,
         "render_overlay": overlay_identity, "expected_fixture_payloads": expected_fixture,
-        "fixture_scope": "two_resources_and_two_nonexecuted_pe_sidecars_only",
+        "fixture_scope": ("two_resources_and_two_nonexecuted_pe_sidecars_only"
+                          if fixture_shape == "legacy" else "two_synthetic_resources_only"),
         "previous_package_archive": package_admission, "previous_evidence_archive": evidence_admission,
         "previous_run_conclusion": prior_run.get("conclusion"),
         "original_stock_modified_owned_case": "FAIL_PRESERVED_AS_HISTORICAL_RESULT",
@@ -384,20 +418,59 @@ def prepare_predecessor():
         "native_installer_execution": "NOT_RUN", "human_install_acceptance": "NOT_RUN",
         "release_published": False,
     }
+    if fixture_shape == "resources":
+        import base64
+        metadata = WORK / "previous-source-metadata"
+        metadata.mkdir()
+        records = {}
+        for relative in ("SOURCE_LOCK.json", "Cargo.toml", "apps/desktop/src-tauri/tauri.conf.json"):
+            record = api_json("/contents/" + relative + "?ref=" + FIXED["source"])
+            require(record.get("type") == "file" and record.get("path") == relative
+                    and record.get("encoding") == "base64", "previous_metadata_api_contract")
+            body = base64.b64decode(record["content"], validate=False)
+            require(0 < len(body) <= 1024 * 1024 and len(body) == record["size"]
+                    and hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest() == record["sha"],
+                    "previous_metadata_git_blob_mismatch")
+            destination = metadata / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            write_new(destination, body)
+            records[relative] = identity(destination)
+        proof["previous_source_metadata"] = records
     write_new(PROOF, (json.dumps(proof, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     require(not any(c in str(profile_path) for c in "\r\n"), "profile_environment_path_invalid")
-    with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
-        environment.write("MW_NSIS_PREDECESSOR_MANIFEST=" + str(profile_path) + "\n")
-        environment.write("MW_NSIS_PREDECESSOR_MANIFEST_SHA256=" + profile_sha + "\n")
-        require(not any(c in str(overlay_path) for c in "\r\n"), "overlay_environment_path_invalid")
-        environment.write("MW_NSIS_RENDER_OVERLAY=" + str(overlay_path) + "\n")
-        for variable, value in (("MW_NSIS_BUNDLE_NODE", str(node)),
-                                ("MW_NSIS_BUNDLE_CLI", str(cli_root / "cli/tauri.js"))):
-            require(not any(c in value for c in "\r\n"), "bundle_tool_environment_path_invalid")
-            environment.write(variable + "=" + value + "\n")
+    if export_environment:
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
+            environment.write("MW_NSIS_PREDECESSOR_MANIFEST=" + str(profile_path) + "\n")
+            environment.write("MW_NSIS_PREDECESSOR_MANIFEST_SHA256=" + profile_sha + "\n")
+            require(not any(c in str(overlay_path) for c in "\r\n"), "overlay_environment_path_invalid")
+            environment.write("MW_NSIS_RENDER_OVERLAY=" + str(overlay_path) + "\n")
+            for variable, value in (("MW_NSIS_BUNDLE_NODE", str(node)),
+                                    ("MW_NSIS_BUNDLE_CLI", str(cli_root / "cli/tauri.js"))):
+                require(not any(c in value for c in "\r\n"), "bundle_tool_environment_path_invalid")
+                environment.write(variable + "=" + value + "\n")
     print("nsis-predecessor-profile=ADMITTED source=" + SOURCE
           + " owned_files=2 installer_execution=NOT_RUN human=NOT_RUN")
+    return {"profile": profile_path, "profile_sha256": profile_sha,
+            "overlay": overlay, "proof": proof, "proof_path": PROOF,
+            "expected_payloads": expected_fixture, "input_root": INPUT}
 
+
+
+def process_identity(process):
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetProcessTimes.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME)]
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    creation, exited, kernel_time, user_time = (wintypes.FILETIME() for unused in range(4))
+    life.require(kernel.GetProcessTimes(
+        wintypes.HANDLE(int(process._handle)), ctypes.byref(creation),
+        ctypes.byref(exited), ctypes.byref(kernel_time), ctypes.byref(user_time)),
+        "installer_process_creation_unavailable")
+    stamp = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+    life.require(process.pid > 0 and stamp > 0, "installer_process_identity_invalid")
+    return {"pid": process.pid, "creation_filetime": stamp}
 
 def run_legacy_lifecycle():
     import ctypes
@@ -549,21 +622,6 @@ def run_legacy_lifecycle():
 
     # The identity is read from the handle returned by this one Popen invocation,
     # not from a PID search that could attach to another installer.
-    def process_identity(process):
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.GetProcessTimes.argtypes = [
-            wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
-            ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
-            ctypes.POINTER(wintypes.FILETIME)]
-        kernel.GetProcessTimes.restype = wintypes.BOOL
-        creation, exited, kernel_time, user_time = (wintypes.FILETIME() for unused in range(4))
-        require(kernel.GetProcessTimes(
-            wintypes.HANDLE(int(process._handle)), ctypes.byref(creation),
-            ctypes.byref(exited), ctypes.byref(kernel_time), ctypes.byref(user_time)),
-            "installer_process_creation_unavailable")
-        stamp = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
-        require(process.pid > 0 and stamp > 0, "installer_process_identity_invalid")
-        return {"pid": process.pid, "creation_filetime": stamp}
 
     def observe_phase(phase, executable, command, arguments):
         oid = str(uuid.uuid4())
@@ -607,30 +665,10 @@ def run_legacy_lifecycle():
             "source_sha": SOURCE, "run": RUN, "operation_id": oid,
             "phase": phase, "command": command, "executable": executable_before,
             "arguments": arguments, "launch_limit": 1, "replay_authorized": False})
-        process = None
-        identity_value = None
-        secondary = []
-        # Even launch/wait uncertainty is a terminal UNKNOWN; it cannot authorize
-        # another launch. No kill, recovery launch, polling launch, or retry exists.
-        original = observed_terminal(None)
-        try:
-            process = subprocess.Popen(
-                command_line, executable=str(executable), cwd=str(executable.parent),
-                env=CHILD_ENV, stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            try:
-                identity_value = process_identity(process)
-            except Exception as error:
-                secondary.append(custody_error("process_identity", error))
-            try:
-                code = process.wait(timeout=180)
-                original = observed_terminal(code)
-            except subprocess.TimeoutExpired:
-                original = observed_terminal(None, timed_out=True)
-            except Exception as error:
-                secondary.append(custody_error("installer_wait", error))
-        except Exception as error:
-            secondary.append(custody_error("installer_launch", error))
+        launched = launch_once_and_observe(executable, command_line, CHILD_ENV)
+        identity_value = launched["process"]
+        secondary = launched["custody_errors"]
+        original = launched["original_terminal"]
         context = {"operation_id": oid, "process": identity_value,
                    "executable": executable_before, "source_sha": SOURCE, "run": RUN}
         def after_observation():
@@ -802,10 +840,949 @@ def run_legacy_lifecycle():
     raise SystemExit(0 if ok else 1)
 
 
+
+def launch_once_and_observe(executable, command_line, environment, *,
+                            timeout=180, token=None, live_observer=None,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL):
+    """One launch, original handle only; uncertainty never authorizes a replay."""
+    original = life.observed_terminal(None)
+    identity_value, live, child_token = None, None, None
+    secondary = []
+    try:
+        process = subprocess.Popen(
+            command_line, executable=str(executable), cwd=str(executable.parent),
+            env=environment, stdin=subprocess.DEVNULL,
+            stdout=stdout, stderr=stderr)
+        try:
+            identity_value = process_identity(process)
+        except Exception as error:
+            secondary.append(life.custody_error("process_identity", error))
+        try:
+            if token is not None:
+                child_token = observe_non_elevated_token(process)
+                require_same_token(token, child_token)
+                require_original_image(process, executable)
+            if live_observer is not None and not secondary:
+                live = live_observer(process, identity_value)
+        except Exception as error:
+            secondary.append(life.custody_error("live_observation", error))
+        try:
+            original = life.observed_terminal(process.wait(timeout=timeout))
+        except subprocess.TimeoutExpired:
+            original = life.observed_terminal(None, timed_out=True)
+        except Exception as error:
+            secondary.append(life.custody_error("installer_wait", error))
+    except Exception as error:
+        secondary.append(life.custody_error("installer_launch", error))
+    return {"original_terminal": original, "process": identity_value,
+            "custody_errors": secondary, "live_observation": live, "token": child_token}
+
+
+def observe_non_elevated_token(process=None):
+    """Read the actual current/child token, not a manifest or currentUser label."""
+    nsis.require(os.name == "nt", "token_windows_required")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                       ctypes.POINTER(wintypes.HANDLE)]
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int,
+        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    advapi.GetTokenInformation.restype = wintypes.BOOL
+    handle = kernel.GetCurrentProcess() if process is None else wintypes.HANDLE(int(process._handle))
+    token = wintypes.HANDLE()
+    nsis.require(advapi.OpenProcessToken(handle, 0x0008, ctypes.byref(token)), "token_open_failed")
+    try:
+        def information(kind):
+            needed = wintypes.DWORD()
+            advapi.GetTokenInformation(token, kind, None, 0, ctypes.byref(needed))
+            nsis.require(0 < needed.value <= 65536, "token_information_bound")
+            buffer = ctypes.create_string_buffer(needed.value)
+            nsis.require(advapi.GetTokenInformation(token, kind, buffer, len(buffer),
+                                                  ctypes.byref(needed)), "token_information_failed")
+            return buffer
+
+        elevation = ctypes.cast(information(20), ctypes.POINTER(wintypes.DWORD)).contents.value
+        session = ctypes.cast(information(12), ctypes.POINTER(wintypes.DWORD)).contents.value
+        class SidAttributes(ctypes.Structure):
+            _fields_ = [("sid", ctypes.c_void_p), ("attributes", wintypes.DWORD)]
+        user_buffer, integrity_buffer = information(1), information(25)
+        user = ctypes.cast(user_buffer, ctypes.POINTER(SidAttributes)).contents.sid
+        integrity = ctypes.cast(integrity_buffer, ctypes.POINTER(SidAttributes)).contents.sid
+        advapi.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+        advapi.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+        advapi.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+        advapi.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
+        count = advapi.GetSidSubAuthorityCount(integrity).contents.value
+        nsis.require(0 < count <= 15, "token_integrity_sid_invalid")
+        level = advapi.GetSidSubAuthority(integrity, count - 1).contents.value
+        advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+        text = wintypes.LPWSTR()
+        nsis.require(advapi.ConvertSidToStringSidW(user, ctypes.byref(text)), "token_user_sid_failed")
+        try:
+            sid = text.value
+        finally:
+            kernel.LocalFree.argtypes = [ctypes.c_void_p]
+            kernel.LocalFree.restype = ctypes.c_void_p
+            kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+        value = {"elevated": bool(elevation), "integrity_rid": int(level),
+                 "user_sid": sid, "session_id": int(session)}
+        admit_token(value)
+        return value
+    finally:
+        kernel.CloseHandle(token)
+
+
+def admit_token(value):
+    nsis.require(isinstance(value, dict) and set(value) == {
+        "elevated", "integrity_rid", "user_sid", "session_id"}, "token_fields")
+    nsis.require(value["elevated"] is False and type(value["integrity_rid"]) is int
+                 and 0x2000 <= value["integrity_rid"] < 0x3000
+                 and type(value["session_id"]) is int and value["session_id"] > 0
+                 and isinstance(value["user_sid"], str)
+                 and re.fullmatch(r"S-1-[0-9]+(?:-[0-9]+){1,15}", value["user_sid"]),
+                 "actual_non_elevated_interactive_token_required")
+    return value
+
+
+def require_same_token(before, after):
+    admit_token(before)
+    admit_token(after)
+    nsis.require(before == after, "installer_token_changed")
+
+
+def require_original_image(process, executable):
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    buffer = ctypes.create_unicode_buffer(32768)
+    size = wintypes.DWORD(len(buffer))
+    nsis.require(kernel.QueryFullProcessImageNameW(wintypes.HANDLE(int(process._handle)),
+        0, buffer, ctypes.byref(size)), "original_process_image_unavailable")
+    nsis.require(os.path.normcase(os.path.abspath(buffer.value))
+                 == os.path.normcase(os.path.abspath(executable)),
+                 "original_process_image_changed")
+    return {"path": buffer.value, "identity": life.file_identity(executable)}
+
+
+def actual_profile(environment):
+    """Match native known folders before effects; never redirect an application profile."""
+    nsis.require(os.name == "nt", "profile_windows_required")
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    ole = ctypes.WinDLL("ole32", use_last_error=True)
+    shell.SHGetKnownFolderPath.argtypes = [ctypes.c_void_p, wintypes.DWORD,
+                                          wintypes.HANDLE, ctypes.POINTER(wintypes.LPWSTR)]
+    shell.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    paths = {}
+    for key, guid in (("LOCALAPPDATA", "F1B32785-6FBA-4FCF-9D55-7B8E7F157091"),
+                      ("APPDATA", "3EB685DB-65F9-4CF6-A03A-E3EF65729F3D")):
+        identifier = ctypes.create_string_buffer(uuid.UUID(guid).bytes_le)
+        value = wintypes.LPWSTR()
+        nsis.require(shell.SHGetKnownFolderPath(identifier, 0, None, ctypes.byref(value)) == 0,
+                     "native_profile_path_unavailable")
+        try:
+            path = Path(value.value).absolute()
+        finally:
+            ole.CoTaskMemFree(ctypes.cast(value, ctypes.c_void_p))
+        nsis.require(key in environment and Path(environment[key]).absolute() == path,
+                     "redirected_profile_not_admitted")
+        plain_directory(path)
+        paths[key] = path
+    return paths
+
+
+def plain_directory(path):
+    for parent in (path, *path.parents):
+        info = parent.lstat()
+        nsis.require(__import__("stat").S_ISDIR(info.st_mode)
+                     and not __import__("stat").S_ISLNK(info.st_mode)
+                     and not getattr(info, "st_file_attributes", 0) & 0x400,
+                     "nonordinary_directory")
+
+
+def physical_scope(environment, case):
+    nsis.require(case in ("default-uninstall", "interruption-recovery"), "physical_case_closed")
+    nsis.require(os.name == "nt" and environment.get("GITHUB_ACTIONS") == "true"
+                 and environment.get("RUNNER_ENVIRONMENT") == "github-hosted"
+                 and environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                 and environment.get("MW_NSIS_VERIFICATION_SCOPE") == "physical",
+                 "explicit_synthetic_disposable_windows_required")
+    nsis.require(environment.get("GITHUB_RUN_ATTEMPT") == "1", "physical_rerun_not_admitted")
+    return {"repository": environment["GITHUB_REPOSITORY"],
+            "run_id": int(environment["GITHUB_RUN_ID"]), "run_attempt": 1}
+
+
+def installer_arguments(phase, install_root=None):
+    if phase == "default":
+        nsis.require(install_root is None, "default_install_must_not_override_destination")
+        return ["/S"]
+    nsis.require(phase in ("previous", "interrupt", "recover", "uninstall")
+                 and isinstance(install_root, Path) and install_root.is_absolute()
+                 and not any(x in str(install_root) for x in '"\r\n\0'),
+                 "installer_arguments_closed")
+    if phase == "uninstall":
+        return ["/S", "_?=" + str(install_root)]
+    return ["/S", *(["/UPDATE"] if phase in ("interrupt", "recover") else []),
+            "/D=" + str(install_root)]
+
+
+def command_line(executable, arguments):
+    # Only NSIS's documented last destination argument is left unquoted.
+    if arguments and (arguments[-1].startswith("/D=") or arguments[-1].startswith("_?=")):
+        return subprocess.list2cmdline([str(executable), *arguments[:-1]]) + " " + arguments[-1]
+    return subprocess.list2cmdline([str(executable), *arguments])
+
+
+def preserve_project(before, after):
+    nsis.require(before["install_root"] == after["install_root"]
+                 and before["database"] == after["database"]
+                 and life.family_map(before) == life.family_map(after)
+                 and before["project"] == after["project"], "project_family_changed")
+
+
+def admit_interrupted_state(before, after, checkpoint, previous, main, keys):
+    preserve_project(before, after)
+    old, actual = life.file_map(before), life.file_map(after)
+    nsis.require(all(old.get(name) == value for name, value in previous.items()),
+                 "predecessor_owned_subset_changed")
+    stage = checkpoint["stage"].replace("\\", "/")
+    nsis.require(stage not in old and "motionwright-desktop.exe" not in actual,
+                 "interrupted_main_not_withdrawn")
+    expected = {key: value for key, value in old.items() if key != "motionwright-desktop.exe"}
+    expected[stage] = main
+    nsis.require(actual == expected and after["registry"] == before["registry"],
+                 "interrupted_namespace_or_registry_changed")
+    nsis.require(before["project"] is not None, "synthetic_project_baseline_missing")
+    life.installed_registry(before, keys[0], "0.1.0")
+    return {"state": "INTERRUPTED_STATE_ADMITTED", "stage": stage,
+            "foreign_preserved": sorted(set(old) - set(previous))}
+
+
+def admit_recovered_state(before, interrupted, after, current, previous, keys, stage):
+    preserve_project(before, after)
+    old, actual = life.file_map(before), life.file_map(after)
+    foreign = {key: value for key, value in old.items() if key not in previous}
+    expected = {**foreign, **current, stage: life.file_map(interrupted)[stage]}
+    nsis.require(actual.get("uninstall.exe") is not None
+                 and actual["uninstall.exe"] != previous["uninstall.exe"],
+                 "new_uninstaller_not_observed")
+    expected["uninstall.exe"] = actual["uninstall.exe"]
+    nsis.require(actual == expected, "recovery_payload_foreign_or_stage_changed")
+    life.installed_registry(after, keys[0], "0.1.1")
+    nsis.require(all(before["registry"][view][keys[1]] == after["registry"][view][keys[1]]
+                     for view in ("32", "64")), "recovery_product_registration_changed")
+    return {"state": "RECOVERED_STATE_ADMITTED", "foreign_preserved": sorted(foreign)}
+
+
+def admit_default_install(before, after, current, keys, expected_root, arguments):
+    nsis.require(arguments == ["/S"] and after["install_root"] == str(expected_root)
+                 and before["install_root"] == str(expected_root),
+                 "current_default_destination_not_observed")
+    nsis.require(not life.file_map(before)
+                 and all(row is None for view in before["registry"].values() for row in view.values())
+                 and all(value is None for value in life.family_map(before).values()),
+                 "default_namespace_not_fresh")
+    actual = life.file_map(after)
+    nsis.require(set(actual) == set(current) | {"uninstall.exe"}
+                 and all(actual.get(key) == value for key, value in current.items()),
+                 "default_current_payload_mismatch")
+    preserve_project(before, after)
+    life.installed_registry(after, keys[0], "0.1.1")
+    return {"state": "CURRENT_DEFAULT_INSTALL_OBSERVED", "destination_override": False}
+
+
+def admit_mixed_uninstall(before, after, current, keys, changed, intact, foreign):
+    preserve_project(before, after)
+    old, actual = life.file_map(before), life.file_map(after)
+    nsis.require(changed in current and intact in current and changed != intact
+                 and old.get(changed) is not None and old[changed] != current[changed]
+                 and old.get(intact) == current[intact] and foreign not in current
+                 and foreign in old, "mixed_uninstall_fixture_invalid")
+    # Every intact owned file must disappear; every modified/foreign byte remains.
+    expected = {key: value for key, value in old.items()
+                if key not in current or value != current[key]}
+    nsis.require(actual == expected and intact not in actual
+                 and actual.get(changed) == old[changed]
+                 and actual.get(foreign) == old[foreign], "mixed_uninstall_preservation_failed")
+    nsis.require(all(rows[keys[0]] is None for rows in after["registry"].values()),
+                 "uninstall_registration_retained")
+    nsis.require(all(before["registry"][view][keys[1]] == after["registry"][view][keys[1]]
+                     for view in ("32", "64")), "uninstall_product_metadata_changed")
+    return {"state": "MIXED_UNINSTALL_OBSERVED", "modified_owned": changed,
+            "removed_intact_owned": intact, "foreign": foreign}
+
+
+def admit_profile_family(profile_path, pin, target_main, output):
+    nsis.require(life.file_identity(profile_path)["sha256"] == pin, "profile_pin_changed")
+    output.mkdir()
+    admitted = emit_predecessor_include(output / "mw-predecessor.nsh",
+        application="Motionwright", bundle_id="com.seradotcom.motionwright", arch="x64",
+        target_version="0.1.1", target_main_sha256=target_main["sha256"],
+        environment={"MW_NSIS_PREDECESSOR_MANIFEST": str(profile_path),
+                     "MW_NSIS_PREDECESSOR_MANIFEST_SHA256": pin})
+    nsis.require(admitted["enabled"] is True and admitted["files"] == 2,
+                 "complete_reviewed_predecessor_not_admitted")
+    return admitted
+
+
+def admit_compiled(root, gate_sha, product_sha, run):
+    """Verify transported original bytes without rewriting their old absolute paths."""
+    nsis.archive_inventory(root)
+    summary = json.loads(nsis.bounded_read(root / "compile-summary.json", nsis.MAX_RENDER_BYTES)[0])
+    nsis.require(summary["schema"] == "motionwright.nsis-interruption-compile/1"
+                 and summary["compile"] == "TWO_VARIANTS_COMPILED"
+                 and summary["gate_sha"] == gate_sha and summary["product_sha"] == product_sha
+                 and summary["run_id"] == str(run["run_id"])
+                 and summary["run_attempt"] == str(run["run_attempt"])
+                 and summary["source_before"] == summary["source_after"]
+                 and summary["source_before"]["gate"]["sha"] == gate_sha
+                 and summary["source_before"]["product"]["sha"] == product_sha
+                 and summary["predecessor_profile"] == "ADMITTED",
+                 "physical_compile_source_or_profile_not_admitted")
+    main_path = root / "inputs/compiled-application/motionwright-desktop.exe"
+    main = nsis.regular_file(main_path, nsis.MAX_PAYLOAD_BYTES)
+    nsis.require(main == summary["real_application"], "compiled_main_transport_changed")
+    profile = root / "inputs/predecessor/input/predecessor.json"
+    preparation = json.loads(nsis.bounded_read(
+        root / "inputs/predecessor-admission.json", nsis.MAX_RENDER_BYTES)[0])
+    nsis.require(preparation["fixture_scope"] == "two_synthetic_resources_only"
+                 and preparation["profile_sha256"] == life.file_identity(profile)["sha256"]
+                 and preparation["new_main_before_bundle"] == main
+                 and preparation["source_sha"] == product_sha, "physical_fixture_profile_changed")
+    variants = summary["variants"]
+    nsis.require([item["variant"] for item in variants] == ["normal", "opt-in"],
+                 "compile_variant_roster")
+    paths = {}
+    for variant in variants:
+        folder = root / "variants" / variant["variant"]
+        custody_path = folder / "retained-files.json"
+        nsis.require(life.file_identity(custody_path) == variant["variant_custody"],
+                     "variant_transport_custody_changed")
+        custody = json.loads(nsis.bounded_read(custody_path, nsis.MAX_RENDER_BYTES)[0])
+        nsis.require(custody["schema"] == "motionwright.nsis-variant-custody/1"
+                     and set(custody["trees"]) == {"render", "bundle"}, "variant_custody_roster")
+        for part in ("render", "bundle"):
+            nsis.require(nsis.tree_manifest(folder / part) == custody["trees"][part]["files"],
+                         "variant_original_transport_changed")
+        setup = folder / "bundle/Motionwright_0.1.1_x64-setup.exe"
+        nsis.require(life.file_identity(setup) == variant["setup"]
+                     and variant["result"] == "COMPILE_ONLY" and variant["main_capture"] == main,
+                     "variant_setup_transport_changed")
+        nsis.inspect_predecessor_capture(folder, profile, preparation["profile_sha256"])
+        resources = nsis.inspect_synthetic_resources(folder, preparation["expected_fixture_payloads"])
+        nsis.require(resources == variant["synthetic_resources"], "resource_transport_changed")
+        nsis.require(variant["predecessor_profile"] == "ADMITTED", "variant_profile_not_admitted")
+        paths[variant["variant"]] = setup
+    nsis.require(life.file_identity(paths["normal"]) != life.file_identity(paths["opt-in"]),
+                 "setup_variants_not_distinct")
+    current = {key: {"bytes": value["bytes"], "sha256": value["sha256"]}
+               for key, value in preparation["expected_fixture_payloads"].items()}
+    nsis.require(set(current) == {"mw-ci-render/resource-alpha.dat", "mw-ci-render/resource-beta.dat"},
+                 "physical_resource_roster")
+    current["motionwright-desktop.exe"] = main
+    document = json.loads(profile.read_bytes())
+    admit_reviewed_predecessor(document)
+    nsis.require(document == preparation["profile"]
+                 and preparation["source_before"] == preparation["source_after"]
+                 and preparation["source_before"]["checkout"] == product_sha,
+                 "preparation_source_or_profile_changed")
+    previous = {item["relative"]: {"bytes": item["bytes"], "sha256": item["sha256"]}
+                for item in document["files"]}
+    return {"summary": summary, "main": main, "main_path": main_path,
+            "profile": profile, "profile_pin": preparation["profile_sha256"],
+            "previous": previous, "current": current, "setups": paths,
+            "profile_document": document, "preparation": preparation}
+
+
+def observe_installer(root, label, phase, executable, arguments, environment, token, source, run,
+                      observe_after, *, live_observer=None, operation=None):
+    """Retain the original result before state inspection; never launch in callbacks."""
+    operation = str(uuid.uuid4()) if operation is None else life.operation_id(operation)
+    directory = root / "operations" / label
+    directory.mkdir(parents=True)
+    executable_before = life.file_identity(executable)
+    nsis.write_json(directory / "intent.json", {
+        "schema": "motionwright.synthetic-windows-installer-intent/1", "phase": phase,
+        "operation_id": operation, "source_sha": source, "run": run,
+        "executable": executable_before, "arguments": arguments,
+        "launch_limit": 1, "replay_authorized": False})
+    outcome = launch_once_and_observe(executable, command_line(executable, arguments),
+        environment, token=token, live_observer=live_observer)
+    context = {"operation_id": operation, "process": outcome["process"],
+               "executable": executable_before, "source_sha": source, "run": run}
+    def after():
+        nsis.require(outcome["original_terminal"]["exit_code"] is not None,
+                     "installer_terminal_not_quiescent")
+        return observe_after(operation, outcome)
+    retained = life.retain_observed_result(directory, phase, outcome["original_terminal"], after,
+                                          context=context)
+    errors = outcome["custody_errors"] + retained["custody_errors"]
+    record = {"schema": "motionwright.synthetic-windows-installer-operation/1",
+              "operation_id": operation, "phase": phase, "context": context,
+              "original_terminal": outcome["original_terminal"], "custody_errors": errors,
+              "token": outcome["token"], "observation": retained["observation"],
+              "live_observation": outcome["live_observation"], "launch_count": 1}
+    nsis.write_json(directory / "operation.json", record)
+    nsis.require(not errors and life.file_identity(executable) == executable_before,
+                 "installer_custody_incomplete")
+    return record, life.retained_ref(root, directory / (phase + "-terminal.json"))
+
+
+def require_known_success(record):
+    nsis.require(record["original_terminal"] == life.observed_terminal(0)
+                 and not record["custody_errors"] and record["observation"] is not None,
+                 "known_success_and_state_required")
+
+
+def terminate_original_once(process):
+    """One TerminateProcess on the retained original handle; never locate by PID."""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.TerminateProcess.restype = wintypes.BOOL
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    handle = wintypes.HANDLE(int(process._handle))
+    # The caller has published the one-attempt intent and checked liveness.
+    succeeded = bool(kernel.TerminateProcess(handle, 99))
+    waited = kernel.WaitForSingleObject(handle, 15000)
+    code = wintypes.DWORD()
+    observed = bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) if waited == 0 else False
+    return {"termination_attempts": 1, "same_original_handle": True,
+            "terminate_returned_success": succeeded,
+            "wait_result": "WAIT_OBJECT_0" if waited == 0 else "UNKNOWN",
+            "exit_code": int(code.value) if observed else None,
+            "ambiguous": not (succeeded and waited == 0 and observed and code.value == 99),
+            "state": "TERMINATED" if succeeded and waited == 0 and observed and code.value == 99 else "UNKNOWN"}
+
+
+def interrupt_observer(root, checkpoint_dir, operation, compiled, gate_sha, product_sha, run):
+    checkpoint_path = checkpoint_dir / ("motionwright-nsis-" + operation + ".checkpoint")
+    nsis.require(not checkpoint_path.exists(), "checkpoint_original_already_exists")
+    setup = compiled["setups"]["opt-in"]
+    def observe(process, initial):
+        nsis.require(initial is not None, "original_process_identity_missing")
+        deadline = time.monotonic() + 20
+        raw = None
+        # Observe one existing process and one CREATE_NEW receipt; do not replay it.
+        while time.monotonic() < deadline:
+            nsis.require(process.poll() is None, "original_exited_before_checkpoint")
+            if checkpoint_path.exists():
+                try:
+                    raw, identity = nsis.bounded_read(checkpoint_path, 2048)
+                except PermissionError:
+                    # The producer has not closed its no-sharing handle yet.
+                    time.sleep(0.05)
+                    continue
+                break
+            time.sleep(0.05)
+        nsis.require(raw is not None, "checkpoint_not_observed")
+        checkpoint = nsis.parse_checkpoint(raw)
+        retained = root / "interruption/checkpoint.original"
+        nsis.write_new(retained, raw)
+        nsis.require(life.file_identity(checkpoint_path) == identity
+                     and life.file_identity(retained) == identity, "checkpoint_original_changed")
+        nsis.require(process.poll() is None and process_identity(process) == initial,
+                     "original_handle_expired_or_changed")
+        require_original_image(process, setup)
+        nsis.require(checkpoint["id"] == operation
+                     and checkpoint["pid"] == str(initial["pid"])
+                     and checkpoint["creation_filetime"] == str(initial["creation_filetime"])
+                     and checkpoint["candidate_sha256"] == compiled["main"]["sha256"]
+                     and checkpoint["candidate_size"] == str(compiled["main"]["bytes"]),
+                     "checkpoint_original_identity_mismatch")
+        context = {"schema": "motionwright.nsis-live-context/1", "state": "LIVE",
+            "original_handle_retained": True, "same_handle_identity_observed": True,
+            "private_directory_admitted": True, "predecessor_profile_admitted": True,
+            **{key: checkpoint[key] for key in ("id", "pid", "creation_filetime",
+                                               "candidate_sha256", "candidate_size")},
+            "setup_sha256": life.file_identity(setup)["sha256"],
+            "predecessor_profile_sha256": compiled["profile_pin"],
+            "gate_sha": gate_sha, "product_sha": product_sha,
+            "run_id": str(run["run_id"]), "run_attempt": str(run["run_attempt"]),
+            "job": os.environ["GITHUB_JOB"], "launch_count": 1}
+        nsis.validate_live_context(checkpoint, context)
+        nsis.write_json(root / "interruption/live-context.json", context)
+        # Publication failure here authorizes no termination. A possible effect is never repeated.
+        nsis.write_json(root / "interruption/termination-intent.json", {
+            "operation_id": operation, "original_process": initial,
+            "termination_limit": 1, "replay_authorized": False})
+        nsis.require(process.poll() is None and process_identity(process) == initial,
+                     "original_handle_not_live_at_termination")
+        original = terminate_original_once(process)
+        terminal = {"schema": "motionwright.nsis-terminal/1",
+            **{key: context[key] for key in ("id", "pid", "creation_filetime", "setup_sha256",
+                "predecessor_profile_sha256", "gate_sha", "product_sha", "run_id", "run_attempt", "job")},
+            **original}
+        nsis.write_json(root / "interruption/terminal.json", terminal)
+        nsis.validate_termination(checkpoint, context, terminal)
+        return {"checkpoint": checkpoint, "context": context, "terminal": terminal,
+                "checkpoint_ref": life.retained_ref(root, retained),
+                "context_ref": life.retained_ref(root, root / "interruption/live-context.json"),
+                "terminal_ref": life.retained_ref(root, root / "interruption/terminal.json")}
+    return observe
+
+
+def recovery_environment(source, normal, opt_in):
+    nsis.require(life.file_identity(normal) != life.file_identity(opt_in),
+                 "recovery_requires_distinct_normal_setup")
+    environment = dict(source)
+    environment.pop("MOTIONWRIGHT_NSIS_INTERRUPT_ID", None)
+    nsis.require("MOTIONWRIGHT_NSIS_INTERRUPT_ID" not in environment, "recovery_interrupt_not_cleared")
+    return environment
+
+
+def bootstrap_previous(root, compiled, installed, scratch):
+    """Use the existing real cold-start bootstrap with only the pinned old metadata."""
+    import candidate_smoke
+    from windows_cold_start import run_installed_relaunch, select_first_use_contract
+    previous = compiled["profile_document"]
+    capture = json.loads((compiled["profile"].parent / "previous-capture-receipt.json").read_bytes())
+    metadata = compiled["profile"].parent.parent / "previous-source-metadata"
+    pins = compiled["preparation"]["previous_source_metadata"]
+    nsis.require(set(pins) == {"SOURCE_LOCK.json", "Cargo.toml", "apps/desktop/src-tauri/tauri.conf.json"},
+                 "previous_metadata_roster")
+    for relative, value in pins.items():
+        nsis.require(life.file_identity(metadata / relative) == value, "previous_metadata_changed")
+    config = json.loads((metadata / "apps/desktop/src-tauri/tauri.conf.json").read_bytes())
+    nsis.require(config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser",
+                 "previous_elevation_not_admitted")
+    package_path = root / "previous-bootstrap/Motionwright_0.1.0_x64-setup.exe"
+    package_path.parent.mkdir()
+    _capture(compiled["profile"].parent / "previous-setup.exe", package_path)
+    candidate = package_path.parent / "candidate.json"
+    nsis.write_json(candidate, capture["candidate"])
+    before = candidate_smoke.ROOT
+    try:
+        candidate_smoke.ROOT = metadata
+        smoke = candidate_smoke.build_receipt(candidate_receipt=candidate, artifact=package_path,
+            installed_binary=installed, kind="nsis", method="nsis_silent_current_user")
+    finally:
+        candidate_smoke.ROOT = before
+    smoke_path = package_path.parent / "installed-smoke.json"
+    nsis.write_json(smoke_path, smoke)
+    contract = select_first_use_contract(previous["source_sha"],
+                                        compiled["previous"]["motionwright-desktop.exe"]["sha256"])
+    output = package_path.parent / "real-project.json"
+    run_installed_relaunch(executable=installed, smoke_receipt=smoke_path,
+        expected_sha=previous["source_sha"], scratch=scratch, output=output,
+        first_use_contract=contract)
+    return life.retained_ref(root, output), contract
+
+
+def snapshot(root, label, operation, position, install, database, keys, contract):
+    return life.capture_snapshot(root, snapshot_name=label, operation=operation,
+        position=position, install_root=install, database=database, registry_keys=keys,
+        first_use_contract=contract)
+
+
+def read_snapshot(root, reference, operation, position, keys):
+    return life.snapshot_value(root, reference, operation, position, keys)
+
+
+def run_default_uninstall_case(context):
+    root, compiled, environment, token, source, run, install, database, keys, contract = context
+    oid = str(uuid.uuid4())
+    before_ref = snapshot(root, "default-before", oid, "before", install, database, keys, contract)
+    before = read_snapshot(root, before_ref, oid, "before", keys)
+    args = installer_arguments("default")
+    def installed(operation, outcome):
+        nsis.require(outcome["original_terminal"] == life.observed_terminal(0), "default_not_known_success")
+        after_ref = snapshot(root, "default-after", operation, "after", install, database, keys, contract)
+        after = read_snapshot(root, after_ref, operation, "after", keys)
+        admit_default_install(before, after, compiled["current"], keys, install, args)
+        life.require_pe_version(life.read_pe_versions(install / "motionwright-desktop.exe"),
+                                "0.1.1", compiled["main"])
+        return after_ref
+    row, terminal = observe_installer(root, "default-install", "install", compiled["setups"]["normal"],
+        args, environment, token, source, run, installed, operation=oid)
+    require_known_success(row)
+    changed, intact = "mw-ci-render/resource-alpha.dat", "mw-ci-render/resource-beta.dat"
+    foreign = "synthetic-user-foreign.txt"
+    nsis.require(life.file_identity(install / changed) == compiled["current"][changed],
+                 "owned_fixture_changed_before_deliberate_edit")
+    # One deliberate synthetic user edit, only after the current installation was admitted.
+    with (install / changed).open("ab") as stream:
+        body = b"Synthetic user modification: preserve these bytes.\n"
+        nsis.require(stream.write(body) == len(body), "synthetic_edit_short_write")
+        stream.flush()
+        os.fsync(stream.fileno())
+    nsis.write_new(install / foreign, b"Synthetic foreign data: never installer ownership.\n")
+    uninstall_id = str(uuid.uuid4())
+    mixed_ref = snapshot(root, "uninstall-before", uninstall_id, "before",
+                         install, database, keys, contract)
+    mixed = read_snapshot(root, mixed_ref, uninstall_id, "before", keys)
+    def uninstalled(operation, outcome):
+        nsis.require(outcome["original_terminal"] == life.observed_terminal(0), "uninstall_not_known_success")
+        after_ref = snapshot(root, "uninstall-after", operation, "after", install, database, keys, contract)
+        after = read_snapshot(root, after_ref, operation, "after", keys)
+        admit_mixed_uninstall(mixed, after, compiled["current"], keys, changed, intact, foreign)
+        return after_ref
+    row, uninstall_terminal = observe_installer(root, "mixed-uninstall", "uninstall",
+        install / "uninstall.exe", installer_arguments("uninstall", install),
+        environment, token, source, run, uninstalled, operation=uninstall_id)
+    require_known_success(row)
+    return {"state": "CURRENT_DEFAULT_AND_MIXED_UNINSTALL_OBSERVED",
+            "default_terminal": terminal, "uninstall_terminal": uninstall_terminal,
+            "default_before": before_ref, "mixed_before": mixed_ref, "mixed_after": row["observation"]}
+
+
+def assemble_updated_application_input(root, compiled, refs, *, source, gate_sha, run,
+                                       install, database, keys, project):
+    required = {"compile_summary", "normal_setup", "opt_in_setup", "current_main",
+                "predecessor_profile", "checkpoint", "interruption_context",
+                "interruption_terminal", "recovery_terminal", "before_snapshot", "recovered_snapshot"}
+    nsis.require(set(refs) == required, "observer_reference_roster")
+    for ref in refs.values():
+        life.bound_file(root, ref)
+    interruption = life.bound_json(root, refs["interruption_context"])
+    recovery = life.bound_json(root, refs["recovery_terminal"])
+    life.validate_terminal(recovery["original_terminal"])
+    nsis.require(recovery["original_terminal"] == life.observed_terminal(0)
+                 and recovery["context"]["executable"] == life.ref_identity(refs["normal_setup"])
+                 and refs["normal_setup"]["sha256"] != refs["opt_in_setup"]["sha256"],
+                 "observer_requires_known_normal_recovery")
+    operation = str(uuid.uuid4())
+    nsis.require(len({operation, str(uuid.UUID(interruption["id"].strip("{}"))),
+                      recovery["context"]["operation_id"]}) == 3, "observer_operation_reused")
+    value = {"schema": "motionwright.windows-updated-application-input/1",
+        "operation_id": operation, "run": run, "product_sha": source, "gate_sha": gate_sha,
+        "version": "0.1.1", "refs": refs, "registry_keys": keys, "install_root": str(install),
+        "database": str(database), "executable": str(install / "motionwright-desktop.exe"),
+        "project_id": project["project_id"], "generation": project["generation"],
+        "revision": project["revision"], "old_title": project["title"],
+        "new_title": "Motionwright synthetic recovered project"}
+    output = root / "updated-application-input.json"
+    nsis.write_json(output, value)
+    return output, life.file_identity(output)["sha256"]
+
+
+def run_interruption_recovery_case(context, *, gate, gate_sha, oracle, oracle_sha, workspace):
+    root, compiled, environment, token, source, run, install, database, keys, contract = context
+    previous_setup = compiled["profile"].parent / "previous-setup.exe"
+    previous_id = str(uuid.uuid4())
+    before_ref = snapshot(root, "previous-before", previous_id, "before",
+                          install, database, keys, contract)
+    before = read_snapshot(root, before_ref, previous_id, "before", keys)
+    nsis.require(not life.file_map(before)
+                 and all(v is None for rows in before["registry"].values() for v in rows.values())
+                 and all(v is None for v in life.family_map(before).values()), "previous_namespace_not_fresh")
+    def previous_installed(operation, outcome):
+        nsis.require(outcome["original_terminal"] == life.observed_terminal(0), "previous_not_known_success")
+        ref = snapshot(root, "previous-after", operation, "after", install, database, keys, contract)
+        value = read_snapshot(root, ref, operation, "after", keys)
+        nsis.require(life.file_map(value) == compiled["previous"]
+                     and all(x is None for x in life.family_map(value).values()), "previous_inventory_changed")
+        life.installed_registry(value, keys[0], "0.1.0")
+        return ref
+    row, previous_terminal = observe_installer(root, "previous-install", "install", previous_setup,
+        installer_arguments("previous", install), environment, token, source, run,
+        previous_installed, operation=previous_id)
+    require_known_success(row)
+    origin, contract = bootstrap_previous(root, compiled, install / "motionwright-desktop.exe",
+                                         workspace / "synthetic-bootstrap")
+    nsis.write_new(install / "synthetic-user-foreign.txt", b"Synthetic foreign preservation control.\n")
+    old_stage = install / ("mw-stage-{" + str(uuid.uuid4()).upper() + "}")
+    nsis.write_new(old_stage / "unrelated-stage.bin", b"Earlier unrelated synthetic stage.\n")
+    interruption_guid = "{" + str(uuid.uuid4()).upper() + "}"
+    interruption_id = str(uuid.UUID(interruption_guid.strip("{}")))
+    original_ref = snapshot(root, "interruption-before", interruption_id, "before",
+                            install, database, keys, contract)
+    original = read_snapshot(root, original_ref, interruption_id, "before", keys)
+    checkpoint_dir = workspace / "synthetic-checkpoint"
+    private_directory = create_private_checkpoint_directory(checkpoint_dir, token)
+    nsis.write_json(root / "interruption/private-directory.json", private_directory)
+    interrupt_env = dict(environment)
+    interrupt_env.update({"TEMP": str(checkpoint_dir), "TMP": str(checkpoint_dir),
+                          "MOTIONWRIGHT_NSIS_INTERRUPT_ID": interruption_guid})
+    live = interrupt_observer(root, checkpoint_dir, interruption_guid, compiled,
+                              gate_sha, source, run)
+    def interrupted(operation, outcome):
+        observed = outcome["live_observation"]
+        nsis.require(observed is not None and not outcome["custody_errors"]
+                     and outcome["original_terminal"]["exit_code"] == observed["terminal"]["exit_code"],
+                     "interruption_not_known_terminal")
+        ref = snapshot(root, "interruption-after", operation, "after", install, database, keys, contract)
+        value = read_snapshot(root, ref, operation, "after", keys)
+        admission = admit_interrupted_state(original, value, observed["checkpoint"],
+                                            compiled["previous"], compiled["main"], keys)
+        nsis.write_json(root / "interruption/state-admission.json", admission)
+        return ref
+    row, unused = observe_installer(root, "interrupt-once", "upgrade", compiled["setups"]["opt-in"],
+        installer_arguments("interrupt", install), interrupt_env, token, source, run,
+        interrupted, live_observer=live, operation=interruption_id)
+    live_result = row["live_observation"]
+    nsis.require(live_result is not None and row["observation"] is not None
+                 and row["original_terminal"]["exit_code"] == 99, "recovery_not_authorized")
+    interrupted_state = read_snapshot(root, row["observation"], interruption_id, "after", keys)
+    recovery_id = str(uuid.uuid4())
+    nsis.require(recovery_id != interruption_id, "recovery_operation_reused")
+    recovery_env = recovery_environment(environment, compiled["setups"]["normal"], compiled["setups"]["opt-in"])
+    stage = live_result["checkpoint"]["stage"].replace("\\", "/")
+    def recovered(operation, outcome):
+        nsis.require(outcome["original_terminal"] == life.observed_terminal(0), "recovery_not_known_success")
+        ref = snapshot(root, "recovery-after", operation, "after", install, database, keys, contract)
+        after = read_snapshot(root, ref, operation, "after", keys)
+        admission = admit_recovered_state(original, interrupted_state, after, compiled["current"],
+                                          compiled["previous"], keys, stage)
+        nsis.write_json(root / "recovery-state-admission.json", admission)
+        return ref
+    recovery, terminal = observe_installer(root, "normal-recovery", "upgrade", compiled["setups"]["normal"],
+        installer_arguments("recover", install), recovery_env, token, source, run,
+        recovered, operation=recovery_id)
+    require_known_success(recovery)
+    refs = {"compile_summary": life.retained_ref(root, root / "compile/compile-summary.json"),
+            "normal_setup": life.retained_ref(root, compiled["setups"]["normal"]),
+            "opt_in_setup": life.retained_ref(root, compiled["setups"]["opt-in"]),
+            "current_main": life.retained_ref(root, compiled["main_path"]),
+            "predecessor_profile": life.retained_ref(root, compiled["profile"]),
+            "checkpoint": live_result["checkpoint_ref"],
+            "interruption_context": live_result["context_ref"],
+            "interruption_terminal": live_result["terminal_ref"], "recovery_terminal": terminal,
+            "before_snapshot": original_ref, "recovered_snapshot": recovery["observation"]}
+    input_path, pin = assemble_updated_application_input(root, compiled, refs, source=source,
+        gate_sha=gate_sha, run=run, install=install, database=database, keys=keys, project=original["project"])
+    output = workspace / "observer-output"
+    nsis.write_json(root / "observer-intent.json", {"oracle_source": oracle_sha,
+        "input_sha256": pin, "launch_limit": 1, "replay_authorized": False})
+    arguments = [sys.executable, "-B", "-E", "-s",
+        str(oracle / "tooling/windows_updated_application.py"),
+        "--product-repo", str(workspace.parents[1] / "product"),
+        "--gate-repo", str(gate), "--product-source", source, "--gate-source", gate_sha,
+        "--oracle-source", oracle_sha, "--input", str(input_path), "--input-sha256", pin,
+        "--evidence-root", str(root), "--output", str(output)]
+    invoke_updated_observer(root, arguments, recovery_env)
+    return {"state": "INTERRUPTION_RECOVERY_AND_UPDATED_APPLICATION_OBSERVED",
+            "previous_terminal": previous_terminal, "project_origin": origin,
+            "interruption_terminal": refs["interruption_terminal"], "normal_recovery_terminal": terminal,
+            "observer_input_sha256": pin, "oracle_source": oracle_sha,
+            "human_acceptance": "NOT_RUN"}
+
+
+def run_physical_case(args):
+    environment = native_windows_launch_environment(dict(os.environ))
+    run = physical_scope(environment, args.case)
+    for name in ("GH_TOKEN", "GITHUB_TOKEN", "MOTIONWRIGHT_NSIS_INTERRUPT_ID",
+                 "MW_NSIS_PREDECESSOR_MANIFEST", "MW_NSIS_PREDECESSOR_MANIFEST_SHA256"):
+        environment.pop(name, None)
+    nsis.require(args.oracle_sha == "016cd88c4ef20ada70fcc446361c40e4a0b81ca1",
+                 "oracle_source_outside_reviewed_contract")
+    for value in (args.gate_sha, args.product_sha, args.oracle_sha):
+        nsis.require(nsis.SHA40.fullmatch(value), "physical_source_not_exact")
+    workspace = Path(os.environ["GITHUB_WORKSPACE"]).absolute()
+    gate, product, oracle = (workspace / name for name in ("gate", "product", "oracle"))
+    case_root = workspace / "nsis-physical" / args.case
+    root = case_root / "originals"
+    nsis.require(root.is_dir() and {path.name for path in root.iterdir()} == {"compile"},
+                 "physical_output_not_fresh")
+    sources = {"gate": nsis.source_observation(gate, args.gate_sha, nsis.GATE_PATHS),
+               "product": nsis.source_observation(product, args.product_sha, nsis.PRODUCT_PATHS),
+               "oracle": nsis.source_observation(oracle, args.oracle_sha, ORACLE_PATHS)}
+    nsis.write_json(root / "source-before.json", sources)
+    result = {"schema": "motionwright.synthetic-windows-nsis-case/1", "case": args.case,
+              "status": "INCOMPLETE", "source_before": sources, "run": run,
+              "human_acceptance": "NOT_RUN", "release_published": False}
+    try:
+        token = observe_non_elevated_token()
+        profile = actual_profile(environment)
+        nsis.write_json(root / "actual-token-and-profile.json",
+                        {"token": token, "profile": {k: str(v) for k, v in profile.items()}})
+        from windows_cold_start import known_databases, CURRENT_FIRST_USE_CONTRACT
+        nsis.require(not known_databases(list(profile.values())), "physical_project_store_not_fresh")
+        compiled = admit_compiled(root / "compile", args.gate_sha, args.product_sha, run)
+        admit_profile_family(compiled["profile"], compiled["profile_pin"], compiled["main"],
+                             root / "profile-admission")
+        life.require_pe_version(life.read_pe_versions(compiled["main_path"]), "0.1.1", compiled["main"])
+        renders = list((root / "compile/variants/normal/render").rglob("installer.nsi"))
+        nsis.require(len(renders) == 1, "registry_render_count")
+        manufacturer = life.rendered_define(renders[0].read_text(encoding="utf-8-sig"), "MANUFACTURER")
+        nsis.require(re.fullmatch(r"[A-Za-z0-9_. -]{1,128}", manufacturer), "registry_manufacturer_invalid")
+        keys = [r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Motionwright",
+                "Software\\" + manufacturer + r"\Motionwright"]
+        install = (profile["LOCALAPPDATA"] / "Motionwright" if args.case == "default-uninstall"
+                   else Path(os.environ["RUNNER_TEMP"]) / "motionwright-synthetic-recovery-install")
+        nsis.require(not install.exists(), "physical_install_root_not_fresh")
+        database = profile["APPDATA"] / "com.seradotcom.motionwright/motionwright.sqlite3"
+        context = (root, compiled, environment, token, args.product_sha, run,
+                   install, database, keys, CURRENT_FIRST_USE_CONTRACT)
+        if args.case == "default-uninstall":
+            result["observation"] = run_default_uninstall_case(context)
+        else:
+            result["observation"] = run_interruption_recovery_case(context, gate=gate,
+                gate_sha=args.gate_sha, oracle=oracle, oracle_sha=args.oracle_sha, workspace=case_root)
+        after = {"gate": nsis.source_observation(gate, args.gate_sha, nsis.GATE_PATHS),
+                 "product": nsis.source_observation(product, args.product_sha, nsis.PRODUCT_PATHS),
+                 "oracle": nsis.source_observation(oracle, args.oracle_sha, ORACLE_PATHS)}
+        nsis.require(after == sources, "physical_source_changed")
+        result.update(status="OBSERVED", source_after=after)
+    except Exception as error:
+        result["error"] = life.custody_error("physical_case", error)
+    finally:
+        try:
+            result["upload_budget"] = synthetic_upload_budget(case_root)
+        except Exception as error:
+            result["status"] = "INCOMPLETE"
+            result["upload_admission"] = {"state": "NOT_ADMITTED", "error": type(error).__name__,
+                                          "originals_removed": False}
+        nsis.write_json(root / "case-result.json", result)
+    print(json.dumps({"case": args.case, "status": result["status"], "human_acceptance": "NOT_RUN"}))
+    return 0 if result["status"] == "OBSERVED" else 1
+
+
+ORACLE_PATHS = (
+    "tooling/windows_updated_application.py", "tooling/windows_updated_application_ui.ps1",
+    "tooling/tests/test_windows_updated_application.py",
+    "tooling/tests/test_windows_updated_application_ui_contract.py",
+    "docs/reliability/windows-updated-application.md",
+    "tooling/windows_cold_start.py", "tooling/windows_installer_lifecycle.py",
+    "tooling/nsis_owned_files.py", "tooling/release_manifest.py",
+)
+
+
+
+def create_private_checkpoint_directory(path, token):
+    """Create the receipt directory with a protected DACL, then inspect it."""
+    admit_token(token)
+    plain_directory(path.parent)
+    nsis.require(not path.exists(), "checkpoint_directory_not_fresh")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    descriptor = ctypes.c_void_p()
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    sddl = "D:P(A;;FA;;;SY)(A;;FA;;;" + token["user_sid"] + ")"
+    nsis.require(advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, 1, ctypes.byref(descriptor), None), "checkpoint_security_descriptor_failed")
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("length", wintypes.DWORD), ("descriptor", ctypes.c_void_p),
+                    ("inherit", wintypes.BOOL)]
+    attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+    kernel.CreateDirectoryW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(SecurityAttributes)]
+    kernel.CreateDirectoryW.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    try:
+        nsis.require(kernel.CreateDirectoryW(str(path), ctypes.byref(attributes)),
+                     "private_checkpoint_directory_create_failed")
+    finally:
+        kernel.LocalFree(descriptor)
+    observed = ctypes.c_void_p()
+    advapi.GetNamedSecurityInfoW.argtypes = [wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p)]
+    advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    nsis.require(advapi.GetNamedSecurityInfoW(str(path), 1, 4, None, None, None, None,
+        ctypes.byref(observed)) == 0, "checkpoint_dacl_readback_failed")
+    text = wintypes.LPWSTR()
+    advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPWSTR), ctypes.c_void_p]
+    advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
+    try:
+        nsis.require(advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            observed, 1, 4, ctypes.byref(text), None), "checkpoint_dacl_encoding_failed")
+        actual = text.value
+        nsis.require(actual in (sddl, "D:P(A;;FA;;;" + token["user_sid"] + ")(A;;FA;;;SY)"),
+                     "checkpoint_dacl_not_private")
+    finally:
+        if text:
+            kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+        kernel.LocalFree(observed)
+    plain_directory(path)
+    return {"path": str(path), "dacl": actual, "private_directory_admitted": True}
+
+
+def synthetic_upload_budget(case_root):
+    """Bound only newly produced originals, excluding the separately retained compile artifact."""
+    total = 0
+    files = 0
+    originals = case_root / "originals"
+    for path in sorted(originals.iterdir()):
+        if path.name == "compile":
+            continue
+        if path.is_dir():
+            inventory = nsis.archive_inventory(path)
+            total += sum(inventory.values())
+            files += len(inventory)
+        else:
+            observed = nsis.regular_file(path, nsis.file_bound(path))
+            total += observed["bytes"]
+            files += 1
+    for relative in ("observer-output", "synthetic-bootstrap", "synthetic-checkpoint"):
+        path = case_root / relative
+        if path.exists():
+            inventory = nsis.archive_inventory(path)
+            total += sum(inventory.values())
+            files += len(inventory)
+    nsis.require(total <= nsis.MAX_DIAGNOSTIC_BYTES and files <= nsis.MAX_DIAGNOSTIC_FILES,
+                 "synthetic_upload_budget_exceeded")
+    return {"bytes": total, "files": files, "maximum_bytes": nsis.MAX_DIAGNOSTIC_BYTES,
+            "maximum_files": nsis.MAX_DIAGNOSTIC_FILES, "compile_artifact": "RETAINED_SEPARATELY"}
+
+
+
+def admit_reviewed_predecessor(document):
+    fixed = FIXED_PREDECESSOR
+    nsis.require(document["source_sha"] == fixed["source"]
+                 and document["source_tree"] == fixed["tree"]
+                 and document["identity"] == {"application": "Motionwright",
+                     "bundle_id": "com.seradotcom.motionwright", "arch": "x64"}
+                 and document["version"] == "0.1.0", "predecessor_literal_authority_changed")
+    for key, label, path in (("package", "package", "previous-setup.exe"),
+                             ("capture_receipt", "receipt", "previous-capture-receipt.json")):
+        nsis.require(document[key] == {"path": path,
+            "bytes": fixed[label]["bytes"], "sha256": fixed[label]["sha256"]},
+            "predecessor_literal_family_changed")
+    expected = [
+        {"relative": "motionwright-desktop.exe", "source": "previous-main.exe", "kind": "main",
+         "bytes": fixed["main"]["bytes"], "sha256": fixed["main"]["sha256"]},
+        {"relative": "uninstall.exe", "source": "previous-uninstall.exe", "kind": "uninstaller",
+         "bytes": fixed["self"]["bytes"], "sha256": fixed["self"]["sha256"]}]
+    nsis.require(document["files"] == expected, "predecessor_literal_owned_inventory_changed")
+
+
+def invoke_updated_observer(root, arguments, environment):
+    """One controller process; a timeout does not kill or replay its application."""
+    original = life.observed_terminal(None)
+    errors = []
+    try:
+        with (root / "observer.stdout").open("xb") as out, (root / "observer.stderr").open("xb") as err:
+            launched = launch_once_and_observe(Path(arguments[0]),
+                subprocess.list2cmdline(arguments), environment, timeout=360,
+                stdout=out, stderr=err)
+            original = launched["original_terminal"]
+            errors.extend(launched["custody_errors"])
+    except Exception as error:
+        errors.append(life.custody_error("observer_stream_custody", error))
+    finally:
+        nsis.write_json(root / "observer-terminal.json", {
+            "original_terminal": original, "custody_errors": errors,
+            "launch_limit": 1, "replay_authorized": False})
+    nsis.require(original == life.observed_terminal(0) and not errors, "updated_application_incomplete")
+    return original
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("scope", choices=("prepare-legacy", "legacy-lifecycle"))
+    parser.add_argument("scope", choices=("prepare-legacy", "legacy-lifecycle", "physical"))
+    parser.add_argument("--case", choices=("default-uninstall", "interruption-recovery"))
+    for name in ("gate-sha", "product-sha", "oracle-sha"):
+        parser.add_argument("--" + name)
     args = parser.parse_args(argv)
+    if args.scope == "physical":
+        if args.case is None or any(getattr(args, key) is None for key in ("gate_sha", "product_sha", "oracle_sha")):
+            parser.error("physical requires one closed case and three exact source identities")
+        return run_physical_case(args)
+    if any(getattr(args, key) is not None for key in ("case", "gate_sha", "product_sha", "oracle_sha")):
+        parser.error("legacy scopes do not accept physical inputs")
     if args.scope == "prepare-legacy":
         prepare_predecessor()
     elif args.scope == "legacy-lifecycle":
