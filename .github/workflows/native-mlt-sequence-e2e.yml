@@ -145,7 +145,7 @@ jobs:
         assert "source_postcheck_error" not in result
         expected = {
             "dotted:tooling.tests.test_native_mlt_owner_workspace": 8,
-            "dotted:tooling.tests.test_native_mlt_g2_custody": 27,
+            "dotted:tooling.tests.test_native_mlt_g2_custody": 28,
             "dotted:tooling.tests.test_native_mlt_g2_observation": 23,
             "dotted:tooling.tests.test_native_mlt_live_observer_diagnostics": 30,
             "dotted:tooling.tests.test_native_mlt_host_tool_observation": 44,
@@ -182,7 +182,7 @@ jobs:
         assert result["executed_source_sha"] == os.environ["GITHUB_SHA"]
         assert "source_postcheck_error" not in result
         expected = {
-            "dotted:tooling.tests.test_native_film180_original_g2": 77,
+            "dotted:tooling.tests.test_native_film180_original_g2": 78,
             "dotted:tooling.tests.test_native_film180_media_readback": 24,
         }
         assert {step["entry_point"] for step in result["steps"]} == set(expected)
@@ -360,7 +360,7 @@ jobs:
           assert "source_postcheck_error" not in result
           expected = {
               "dotted:tooling.tests.test_native_mlt_owner_workspace": 8,
-              "dotted:tooling.tests.test_native_mlt_g2_custody": 27,
+              "dotted:tooling.tests.test_native_mlt_g2_custody": 28,
               "dotted:tooling.tests.test_native_mlt_g2_observation": 23,
               "dotted:tooling.tests.test_native_mlt_live_observer_diagnostics": 30,
               "dotted:tooling.tests.test_native_mlt_host_tool_observation": 44,
@@ -399,7 +399,7 @@ jobs:
           assert result["executed_source_sha"] == os.environ["GITHUB_SHA"]
           assert "source_postcheck_error" not in result
           expected = {
-              "dotted:tooling.tests.test_native_film180_original_g2": 77,
+              "dotted:tooling.tests.test_native_film180_original_g2": 78,
               "dotted:tooling.tests.test_native_film180_media_readback": 24,
           }
           assert {step["entry_point"] for step in result["steps"]} == set(expected)

@@ -38,7 +38,7 @@ FILM_DISPATCH_SCHEMA = "motionwright.native.film180-g2-dispatch/1"
 FILM_INPUT_SCHEMA = "motionwright.native.film180-g2-inputs/1"
 FILM_FINAL_SCHEMA = "motionwright.native.film180-g2-custody/1"
 FILM_TERMINAL_SCOPE = "original_and_edited_film180_native_commands"
-RUNTIME_INPUT_KEYS = g2.INPUT_KEYS - {"schema", "original_artifact_zip", "private_evidence_dir"}
+RUNTIME_INPUT_KEYS = g2.RUNTIME_INPUT_KEYS
 UPSTREAM_URL = "https://archive.ubuntu.com/ubuntu/pool/universe/m/mlt/mlt_7.22.0.orig.tar.gz"
 UPSTREAM_ARCHIVE_SHA256 = "7cf4d9573a061d76902c6e12a2f09f5f461e7c697635233df82a63a3fe4d6da6"
 UPSTREAM_MEMBER = "mlt-7.22.0/src/modules/avformat/consumer_avformat.c"
@@ -57,56 +57,6 @@ PUBLIC_KEYS = {
     "native_operation_retried", "packet_PTS_and_AAC_priming_verified",
     "physical_AV_master_acceptance", "human_acceptance", "release_authorized",
 }
-
-
-def verify_runtime_inputs(data: dict, *, source_sha: str, semwright_sha: str) -> tuple[dict, dict]:
-    """Reuse the source, installation and process preflight independently of a media fixture."""
-    g2.require(type(data) is dict and set(data) == RUNTIME_INPUT_KEYS, "g2_runtime_inputs_schema")
-    g2.require(re.fullmatch(r"[0-9a-f]{40}", source_sha) is not None
-            and data["motionwright_sha"] == source_sha
-            and data["semwright_sha"] == semwright_sha == g2.SEMWRIGHT_PIN
-            and data["run_id"] == os.environ.get("GITHUB_RUN_ID")
-            and data["run_attempt"] == os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
-            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and type(data["run_id"]) is str and data["run_id"].isdecimal()
-            and type(data["run_attempt"]) is str and data["run_attempt"].isdecimal(),
-            "g2_current_execution_binding")
-    for key in RUNTIME_INPUT_KEYS:
-        if key.endswith("_sha256"):
-            g2.require(type(data[key]) is str and re.fullmatch(r"[0-9a-f]{64}", data[key]),
-                    "g2_required_digest_invalid")
-    g2.require(data["compiled_module_sha256"] == g2.REPAIRED_MODULE_SHA256
-            and data["compiler_receipt_sha256"] == g2.COMPILER_RECEIPT_SHA256,
-            "g2_repair_only_original_G1_binary_changed")
-    official_bytes = admission.checked_bytes(Path(data["official_runtime_receipt_path"]), 512 * 1024)
-    g2.require(g2.sha(official_bytes) == data["official_runtime_receipt_sha256"],
-            "g2_official_runtime_receipt_changed")
-    official = g2.strict_object(official_bytes)
-    g2.verify_official_runtime_bindings(
-        official, data["known_original_module_sha256"], data["known_melt_sha256"])
-    closure = admission.source_compiler_closure(
-        Path(data["original_c_source"]), Path(data["repaired_c_source"]),
-        Path(data["compiled_module"]), data["compiled_module_sha256"],
-        Path(data["compiler_receipt_path"]), data["compiler_receipt_sha256"],
-    )
-    installed_bytes = admission.checked_bytes(Path(data["installation_receipt_path"]), 64 * 1024)
-    g2.require(g2.sha(installed_bytes) == data["installation_receipt_sha256"],
-            "g2_installation_receipt_changed")
-    installed = g2.strict_object(installed_bytes)
-    g2.require(installed.get("schema") == "motionwright.native.mlt-module-installed/1"
-            and installed.get("installed_path") == str(admission.INSTALLED)
-            and installed.get("original_module_sha256") == data["known_original_module_sha256"]
-            and installed.get("original_backup_sha256") == data["known_original_module_sha256"]
-            and installed.get("actual_installed_module_sha256") == g2.REPAIRED_MODULE_SHA256
-            and installed.get("module_replaced") is True
-            and installed.get("new_native_master_issued") is False
-            and all(installed.get(key) == value for key, value in closure.items()),
-            "g2_installation_source_closure")
-    g2.require(g2.sha(admission.checked_bytes(admission.INSTALLED, admission.MAX_ELF_BYTES))
-            == g2.REPAIRED_MODULE_SHA256, "g2_installed_repaired_module_changed")
-    alias_observation = g2.verified_installed_melt_alias(data["known_melt_sha256"])
-    g2.require(not admission.live_melt_pids(), "g2_melt_exists_before_original_assembly")
-    return closure, alias_observation
 
 
 def context(env):
@@ -706,6 +656,8 @@ def seal(env, job_status):
                  contracts=runner_root(env) / ("mw-mlt-g2-contracts-" + current["run_id"] + "-1"))
     if env.get("MW_MLT_SCOPE", "repaired-g2") != FILM_SCOPE:
         roots["producer"] = repo / "verification/native-mlt-sequence-e2e"
+    else:
+        roots["film-contracts"] = runner_root(env) / ("mw-film180-contracts-" + current["run_id"] + "-1")
     owner_marker = session / "owner-workspace.json"
     try:
         if owner_marker.exists():

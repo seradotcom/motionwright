@@ -367,10 +367,15 @@ class InputEnvelopeTests(unittest.TestCase):
         }}).encode()
         Path(self.inputs["official_runtime_receipt_path"]).write_bytes(raw)
         self.inputs["official_runtime_receipt_sha256"] = g2.sha(raw)
-        with mock.patch.object(g2.admission, "source_compiler_closure") as closure:
+        with mock.patch.object(g2.admission, "source_compiler_closure") as closure, \
+             mock.patch.object(g2, "verify_runtime_inputs", wraps=g2.verify_runtime_inputs) as shared:
             with self.assertRaisesRegex(g2.G2Unverified, "official_runtime_binary_bindings"):
                 self.prepare()
             closure.assert_not_called()
+            shared.assert_called_once_with(
+                {key: self.inputs[key] for key in g2.RUNTIME_INPUT_KEYS},
+                source_sha=self.source, semwright_sha=g2.SEMWRIGHT_PIN,
+            )
 
 
 if __name__ == "__main__":

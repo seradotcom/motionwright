@@ -794,7 +794,7 @@ class FilmAttempt:
         require(type(data) is dict
                 and set(data) == custody.RUNTIME_INPUT_KEYS | {"schema", "private_evidence_dir"}
                 and data["schema"] == custody.FILM_INPUT_SCHEMA, "Film180_inputs_schema")
-        closure, alias = custody.verify_runtime_inputs(
+        closure, alias = observed.verify_runtime_inputs(
             {key: data[key] for key in custody.RUNTIME_INPUT_KEYS},
             source_sha=RUN_SHA, semwright_sha=PIN)
         private = Path(data["private_evidence_dir"])
@@ -885,6 +885,19 @@ class FilmAttempt:
 
     def retain_error(self, error):
         self.error = error
+        if isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            try:
+                self.capture("original.failed-subprocess")({
+                    "stdout": error.stdout if error.stdout is not None else b"",
+                    "stderr": error.stderr if error.stderr is not None else b"",
+                    "argv": error.cmd,
+                    "exit_code": getattr(error, "returncode", None),
+                    "deadline_exceeded": isinstance(error, subprocess.TimeoutExpired),
+                    "error_class": type(error).__name__, "error": str(error),
+                    "automatic_retry": False,
+                })
+            except BaseException:
+                self.secondary("original-subprocess-custody")
         try:
             write_private_json(self.evidence_dir / "original-attempt-error.json", {
                 "error_class": type(error).__name__, "error": str(error),

@@ -722,7 +722,7 @@ class FilmRuntimeEnvelopeTests(unittest.TestCase):
             with self.subTest(extra=extra), \
                  mock.patch.object(observed.admission, "checked_bytes") as read, \
                  self.assertRaisesRegex(observed.G2Unverified, "runtime_inputs_schema"):
-                custody.verify_runtime_inputs(data, source_sha="a" * 40, semwright_sha=observed.SEMWRIGHT_PIN)
+                observed.verify_runtime_inputs(data, source_sha="a" * 40, semwright_sha=observed.SEMWRIGHT_PIN)
             read.assert_not_called()
 
     def test_film_prepare_rejects_reference_archive_before_runtime_or_effects(self):
@@ -735,7 +735,7 @@ class FilmRuntimeEnvelopeTests(unittest.TestCase):
             path.write_bytes(custody.json_bytes(data))
             with mock.patch.dict(os.environ, film_env(root)), \
                  mock.patch.object(observed.admission, "disposable_linux_runner", return_value=root), \
-                 mock.patch.object(custody, "verify_runtime_inputs") as runtime, \
+                 mock.patch.object(observed, "verify_runtime_inputs") as runtime, \
                  self.assertRaisesRegex(runner.Film180G2Rejected, "inputs_schema"):
                 runner.FilmAttempt.prepare(path)
             runtime.assert_not_called()
@@ -750,7 +750,7 @@ class FilmRuntimeEnvelopeTests(unittest.TestCase):
             path.write_bytes(custody.json_bytes(data))
             with mock.patch.dict(os.environ, film_env(root)), \
                  mock.patch.object(observed.admission, "disposable_linux_runner", return_value=root), \
-                 mock.patch.object(custody, "verify_runtime_inputs", return_value=(
+                 mock.patch.object(observed, "verify_runtime_inputs", return_value=(
                      {"compiler": "test double only"}, {"alias": "test double only"})) as runtime:
                 attempt = runner.FilmAttempt.prepare(path)
             runtime.assert_called_once()
