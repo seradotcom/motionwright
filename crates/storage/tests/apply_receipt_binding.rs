@@ -501,11 +501,23 @@ fn malformed_or_oversized_binding_never_downgrades_or_repairs() {
             }
             "missing-binding" => fixture.replace_binding(1, None),
             "empty-binding" => fixture.replace_binding(1, Some("")),
-            "oversized-binding" | "v0-oversized" => {
-                fixture.replace_binding(
-                    if case == "v0-oversized" { 0 } else { 1 },
-                    Some(&" ".repeat(MAX_APPLY_BINDING_BYTES + 1)),
+            "oversized-binding" => {
+                let mut oversized = raw.clone();
+                assert!(oversized.len() <= MAX_APPLY_BINDING_BYTES);
+                oversized.extend(std::iter::repeat_n(
+                    ' ',
+                    MAX_APPLY_BINDING_BYTES + 1 - oversized.len(),
+                ));
+                assert_eq!(oversized.len(), MAX_APPLY_BINDING_BYTES + 1);
+                assert_eq!(
+                    serde_json::from_str::<VerifiedApplyReceiptV1>(&oversized).unwrap(),
+                    serde_json::from_str::<VerifiedApplyReceiptV1>(&raw).unwrap(),
+                    "the over-budget fixture remains the same valid binding",
                 );
+                fixture.replace_binding(1, Some(&oversized));
+            }
+            "v0-oversized" => {
+                fixture.replace_binding(0, Some(&" ".repeat(MAX_APPLY_BINDING_BYTES + 1)));
             }
             "v0-nonnull" => fixture.replace_binding(0, Some("")),
             "changed-result" | "result-whitespace" => {
