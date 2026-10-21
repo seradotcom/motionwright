@@ -22,17 +22,43 @@ on:
       - 'docs/creative-production/V05_ORIGINAL_NATIVE_PCM_MIX.md'
       - 'docs/creative-production/requirements-status.json'
       - '.github/workflows/v05-original-native-mix.yml'
+      - 'crates/native/src/mlt_av_audio.rs'
+      - 'crates/native/src/production.rs'
+      - 'crates/native/src/production/mlt_multisegment_av.rs'
+      - 'crates/native/tests/saved_original_mix.rs'
+      - 'crates/native/tests/saved_mix_native_consumers.rs'
+      - 'apps/desktop/src-tauri/src/av_master.rs'
+      - 'apps/desktop/src-tauri/Cargo.toml'
+      - 'apps/desktop/src-tauri/build.rs'
+      - 'crates/native/Cargo.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'SOURCE_LOCK.json'
+      - 'tooling/ci_saved_original_mix.py'
+      - 'tooling/tests/test_ci_saved_original_mix.py'
+      - 'tooling/ci_test_runner.py'
+      - 'tooling/ci_storage_apply_recovery.py'
   workflow_dispatch:
+    inputs:
+      verification:
+        description: "Select the original meter/audition checks or saved-recipe source contracts"
+        type: choice
+        required: true
+        default: original
+        options:
+          - original
+          - saved-mix
 
 permissions:
   contents: read
 
 concurrency:
-  group: v05-original-native-mix-${{ github.ref }}
-  cancel-in-progress: true
+  group: v05-original-native-mix-${{ github.ref }}-${{ inputs.verification || 'original' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}
 
 jobs:
   native-source-and-independent-meter:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
@@ -78,6 +104,7 @@ jobs:
           retention-days: 7
 
   studio-audition:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     defaults:
@@ -97,3 +124,59 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test tests/native-original-mix.spec.ts --project=chromium
+
+  saved-mix-g0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Selected source gate admission controls
+        run: |
+          python3 -B -E -s tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --mode both --pattern test_ci_saved_original_mix.py --require-complete \
+            --expected-source "$GITHUB_SHA" --report "$RUNNER_TEMP/saved-mix-g0/receipt.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: saved-mix-G0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/saved-mix-g0/
+          if-no-files-found: error
+          retention-days: 7
+
+  saved-mix:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification == 'saved-mix' }}
+    needs: saved-mix-g0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SAVED_MIX_SELECTION: ${{ inputs.verification }}
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+          components: clippy
+      - name: Desktop build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - name: Execute exactly 41 selected source contracts
+        run: |
+          python3 -B -E -s tooling/ci_saved_original_mix.py --repo "$GITHUB_WORKSPACE" \
+            --expected-source "$GITHUB_SHA" --selection saved-mix \
+            --output "$RUNNER_TEMP/saved-mix-evidence" --target "$RUNNER_TEMP/saved-mix-target"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: saved-mix-source-contracts-NOT_NATIVE_RENDER-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/saved-mix-evidence/
+          if-no-files-found: error
+          retention-days: 7

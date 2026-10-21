@@ -21,7 +21,10 @@ use media_integrity::{
 };
 mod native_preview;
 
-use av_master::{canonical_av_request_id, stage_measured_wav, validate_master_voice_timing};
+use av_master::{
+    canonical_av_request_id, stage_measured_wav, stage_original_mix_wav,
+    validate_master_voice_timing,
+};
 use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
@@ -1566,6 +1569,10 @@ async fn assemble_av_master(
         motion.frame_rate.den,
     )?;
 
+    let saved_mix =
+        original_mix_native::saved_mix_for_master(&state.service, &project, request.deliverable_id)
+            .await?;
+
     // This is a production mutation and consumes only the corresponding
     // one-time revision/request-scoped local render effect capability.
     state.effect_grants.consume(
@@ -1593,7 +1600,11 @@ async fn assemble_av_master(
         project.revision,
         request.deliverable_id,
         &segment.fingerprint,
-        &selected_voice.source_sha256,
+        saved_mix
+            .as_ref()
+            .map_or(selected_voice.source_sha256.as_str(), |mix| {
+                mix.audio_inputs_sha256()
+            }),
     );
     let output_root = connection.output_root.clone();
     let export_root = output_root.clone();
@@ -1603,10 +1614,17 @@ async fn assemble_av_master(
     let base = expected.clone();
     let stable_identity = canonical_request_id.clone();
     let audio = tauri::async_runtime::spawn_blocking(move || {
-        let source = service
-            .verified_master_voice(id, &base, track)
-            .map_err(sanitized)?;
-        stage_measured_wav(&output_root, &source, &stable_identity)
+        if let Some(mix) = saved_mix {
+            let latest = service.project(id).map_err(sanitized)?;
+            mix.verify_project(&latest, mix.plan().deliverable_profile_id)
+                .map_err(|error| error.to_string())?;
+            stage_original_mix_wav(&output_root, &mix, &stable_identity)
+        } else {
+            let source = service
+                .verified_master_voice(id, &base, track)
+                .map_err(sanitized)?;
+            stage_measured_wav(&output_root, &source, &stable_identity)
+        }
     })
     .await
     .map_err(|_| "Verified WAV preparation task failed.".to_string())??;
@@ -1713,6 +1731,10 @@ async fn assemble_multisegment_av_master(
     .await
     .map_err(|_| "Multisegment source preflight task failed.".to_string())??;
 
+    let saved_mix =
+        original_mix_native::saved_mix_for_master(&state.service, &project, request.deliverable_id)
+            .await?;
+
     // This is a mutating native production request. Authorization is a
     // scoped, short-lived, single-use desktop effect grant.
     state.effect_grants.consume(
@@ -1743,7 +1765,11 @@ async fn assemble_multisegment_av_master(
         project.revision,
         request.deliverable_id,
         &hex::encode(source_digest.finalize()),
-        &selected_voice.source_sha256,
+        saved_mix
+            .as_ref()
+            .map_or(selected_voice.source_sha256.as_str(), |mix| {
+                mix.audio_inputs_sha256()
+            }),
     );
     // Source + speaker identity are 256-bit hashed into the stage name.
     // The native MLT subrequest is still short enough to accommodate typed
@@ -1756,10 +1782,17 @@ async fn assemble_multisegment_av_master(
     let id = project.id;
     let stable = canonical.clone();
     let staged = tauri::async_runtime::spawn_blocking(move || {
-        let original = service
-            .verified_master_voice(id, &source, voice_track)
-            .map_err(sanitized)?;
-        stage_measured_wav(&root, &original, &stable)
+        if let Some(mix) = saved_mix {
+            let latest = service.project(id).map_err(sanitized)?;
+            mix.verify_project(&latest, mix.plan().deliverable_profile_id)
+                .map_err(|error| error.to_string())?;
+            stage_original_mix_wav(&root, &mix, &stable)
+        } else {
+            let original = service
+                .verified_master_voice(id, &source, voice_track)
+                .map_err(sanitized)?;
+            stage_measured_wav(&root, &original, &stable)
+        }
     })
     .await
     .map_err(|_| "Native multisegment source WAV staging failed.".to_string())??;
