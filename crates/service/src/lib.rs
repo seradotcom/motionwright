@@ -7,6 +7,7 @@ mod models;
 mod portability;
 mod project_creation;
 mod project_projection;
+mod svg_admission;
 pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodedPcm, WAVEFORM_FRAMES_PER_PEAK,
     WaveformPage,
@@ -375,6 +376,9 @@ fn validate_importable_asset(
             "active or externally-referencing SVG assets are not admitted",
         ));
     }
+    svg_admission::check_svg_xml_css(text, MAX_SVG_IMPORT_BYTES as usize).map_err(|_| {
+        invalid_import("active or externally-referencing SVG assets are not admitted")
+    })?;
     Ok(())
 }
 
