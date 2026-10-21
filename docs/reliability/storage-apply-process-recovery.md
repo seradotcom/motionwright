@@ -61,3 +61,39 @@ specific derived-cache eviction outbox participating in Store.apply. It does
 not simulate physical power loss, defective storage hardware, portable import
 publication, concurrent writer admission or atomicity with external provider
 effects. Those capabilities require their own independently attributable tests.
+
+## Optional phase evidence
+
+Set MOTIONWRIGHT_TEST_APPLY_EVIDENCE_ROOT to an existing, absolute evidence
+container before selecting the four tests. Use a unique container for each run,
+outside source checkouts and worktrees. A repository's private knowledge/runtime
+area is also accepted. Each checkpoint creates its own new subdirectory;
+an existing checkpoint destination is refused without replacing its contents.
+The variable is removed from each child process. Without the variable, the
+original temporary-fixture lifecycle remains unchanged.
+
+The parent retains the original case identity and serializes the exact Snapshot
+values at five observation points: before, interrupted, cleaned, after_retry and
+final. Each capture occurs before the assertions following that observation and
+before a later recovery step can remove a derived manifest. Snapshots include
+the SQL document, journal, receipts, cache registrations and eviction outbox,
+plus the observed manifest and immutable blob bytes.
+
+Every writer and observer's original stdout and stderr and terminal metadata are
+retained before exit/marker/stderr assertions. The metadata distinguishes a
+normal exit, spawn or wait error, and an owned-process timeout. The test never
+resends an external provider operation.
+
+A custody.json manifest lists actual retained files with byte counts and
+SHA-256, captured and unavailable phases, and explicit capture errors. It is
+written on successful completion and attempted during assertion unwinding.
+Missing observations are unavailable; they are never replaced by expected
+values. A successful test requires a complete manifest when evidence is enabled.
+The caller retains the unique container even when the parent exits with failure.
+
+This option does not archive the raw SQLite files or the complete CAS. It does
+not turn a source-equivalence comparison into a new execution, or change the
+four original test oracles. Runner identity, exact source/tree/lock, toolchain,
+test binary and original parent output remain the surrounding runner's
+responsibility. Earlier executions without the option keep their original
+assertion evidence; they do not acquire retrospective phase files.

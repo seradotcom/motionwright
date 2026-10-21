@@ -17,6 +17,181 @@ const REQUEST: &str = "MOTIONWRIGHT_TEST_APPLY_REQUEST";
 const SNAPSHOT_PATH: &str = "MOTIONWRIGHT_TEST_APPLY_SNAPSHOT";
 const EXIT_AT_CHECKPOINT: i32 = 86;
 
+const EVIDENCE_ROOT: &str = "MOTIONWRIGHT_TEST_APPLY_EVIDENCE_ROOT";
+const EVIDENCE_PHASES: [&str; 5] = ["before", "interrupted", "cleaned", "after_retry", "final"];
+
+struct Evidence {
+    directory: PathBuf,
+    test_name: String,
+    checkpoint: String,
+    captured: Vec<String>,
+    errors: Vec<String>,
+    complete: bool,
+    published: bool,
+}
+
+impl Evidence {
+    fn begin(name: &str, phase: &str) -> Option<Self> {
+        let requested = PathBuf::from(std::env::var_os(EVIDENCE_ROOT)?);
+        assert!(
+            requested.is_absolute(),
+            "evidence container must be absolute"
+        );
+        let root = requested
+            .canonicalize()
+            .expect("existing evidence container");
+        assert!(root.is_dir(), "evidence container must be a directory");
+        for ancestor in root.ancestors() {
+            let git = ancestor.join(".git");
+            if git.exists() {
+                assert!(
+                    git.is_dir() && root.starts_with(ancestor.join("knowledge").join("runtime")),
+                    "evidence must be outside checkouts and worktrees"
+                );
+            }
+        }
+        let directory = root.join(phase);
+        fs::create_dir(&directory).expect("evidence destination must be new");
+        Some(Self {
+            directory,
+            test_name: name.to_owned(),
+            checkpoint: phase.to_owned(),
+            captured: Vec::new(),
+            errors: Vec::new(),
+            complete: false,
+            published: false,
+        })
+    }
+
+    fn fail(&mut self, message: String) -> ! {
+        self.errors.push(message.clone());
+        panic!("{message}");
+    }
+
+    fn bytes(&mut self, name: &str, bytes: &[u8]) {
+        if let Err(error) =
+            File::create_new(self.directory.join(name)).and_then(|mut file| file.write_all(bytes))
+        {
+            self.fail(format!("cannot retain {name}: {error}"));
+        }
+    }
+
+    fn json(&mut self, name: &str, value: &impl Serialize) {
+        match serde_json::to_vec_pretty(value) {
+            Ok(bytes) => self.bytes(name, &bytes),
+            Err(error) => self.fail(format!("cannot serialize {name}: {error}")),
+        }
+    }
+
+    fn original(&mut self, name: &str, source: &Path) {
+        match fs::read(source) {
+            Ok(bytes) => self.bytes(name, &bytes),
+            Err(error) => self.fail(format!("original {name} unavailable: {error}")),
+        }
+    }
+
+    fn phase(&mut self, name: &str, snapshot: &Snapshot) {
+        self.json(&format!("{name}.json"), snapshot);
+        self.captured.push(name.to_owned());
+    }
+
+    fn publish(&mut self) -> std::io::Result<()> {
+        self.published = true;
+        let mut paths = fs::read_dir(&self.directory)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        paths.sort();
+        let mut errors = self.errors.clone();
+        let files = paths
+            .into_iter()
+            .map(|path| {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                match fs::read(&path) {
+                    Ok(bytes) => serde_json::json!({
+                        "file": name,
+                        "bytes": bytes.len(),
+                        "sha256": hex::encode(Sha256::digest(&bytes)),
+                    }),
+                    Err(error) => {
+                        let message = format!("cannot inventory {name}: {error}");
+                        errors.push(message.clone());
+                        serde_json::json!({"file": name, "unavailable": message})
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        let phases = EVIDENCE_PHASES
+            .iter()
+            .map(|name| {
+                let captured = self.captured.iter().any(|value| value.as_str() == *name);
+                serde_json::json!({
+                    "phase": name,
+                    "status": if captured { "captured" } else { "unavailable" },
+                    "reason": if captured { None } else {
+                        Some("Execution did not complete this capture; consult original parent output")
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let unwinding = thread::panicking();
+        let complete = self.complete
+            && !unwinding
+            && errors.is_empty()
+            && self.captured.len() == EVIDENCE_PHASES.len();
+        let manifest = serde_json::json!({
+            "schema": "motionwright.apply-phase-custody/1",
+            "test_name": self.test_name,
+            "checkpoint": self.checkpoint,
+            "status": if complete {
+                "complete"
+            } else {
+                "incomplete"
+            },
+            "parent_unwinding": unwinding,
+            "phases": phases,
+            "files": files,
+            "errors": errors,
+            "case_identity": if self.directory.join("case.json").is_file() {
+                Some("case.json")
+            } else {
+                None
+            },
+            "scope": "Observed SQL fields, manifest and immutable blob bytes; no raw database or full CAS archive",
+            "physical_power_loss": "NOT_RUN",
+        });
+        serde_json::to_writer_pretty(
+            File::create_new(self.directory.join("custody.json"))?,
+            &manifest,
+        )
+        .map_err(std::io::Error::other)?;
+        if self.complete && !complete {
+            return Err(std::io::Error::other("phase evidence is incomplete"));
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) {
+        self.complete = true;
+        self.publish().expect("complete phase evidence manifest");
+    }
+}
+
+impl Drop for Evidence {
+    fn drop(&mut self) {
+        if !self.published
+            && let Err(error) = self.publish()
+        {
+            eprintln!("apply evidence manifest unavailable: {error}");
+        }
+    }
+}
+
+fn retain_phase(evidence: &mut Option<Evidence>, name: &str, snapshot: &Snapshot) {
+    if let Some(evidence) = evidence {
+        evidence.phase(name, snapshot);
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct CrashCase {
     database: PathBuf,
@@ -123,14 +298,15 @@ fn snapshot(case: &CrashCase) -> Snapshot {
 }
 
 fn run_child(
-    root: &Path,
     config: &Path,
     case: &CrashCase,
     name: &str,
     phase: &str,
     mode: &str,
     output: Option<&Path>,
+    evidence: &mut Option<Evidence>,
 ) -> (ExitStatus, String) {
+    let root = config.parent().unwrap();
     let call_id = Uuid::now_v7();
     let stdout_path = root.join(format!("{call_id}.stdout"));
     let stderr_path = root.join(format!("{call_id}.stderr"));
@@ -146,21 +322,69 @@ fn run_child(
         .env(CHECKPOINT, phase)
         .env(REQUEST, &case.request_id)
         .env_remove(SNAPSHOT_PATH)
+        .env_remove(EVIDENCE_ROOT)
         .stdin(Stdio::null())
         .stdout(File::create_new(&stdout_path).unwrap())
         .stderr(File::create_new(&stderr_path).unwrap());
     if let Some(output) = output {
         command.env(SNAPSHOT_PATH, output);
     }
-    let mut child = command.spawn().unwrap();
+    let mut retain_terminal =
+        |status: Option<&ExitStatus>, timed_out: bool, error: Option<String>| {
+            if let Some(evidence) = evidence.as_mut() {
+                evidence.json(
+                    &format!("{call_id}.process.json"),
+                    &serde_json::json!({
+                        "test_name": name,
+                        "checkpoint": phase,
+                        "request_id": case.request_id,
+                        "mode": mode,
+                        "exit_code": status.and_then(ExitStatus::code),
+                        "exit_status": status.map(ToString::to_string),
+                        "success": status.map(ExitStatus::success),
+                        "timed_out": timed_out,
+                        "error": error,
+                        "stdout": format!("{call_id}.stdout"),
+                        "stderr": format!("{call_id}.stderr"),
+                    }),
+                );
+                evidence.original(&format!("{call_id}.stdout"), &stdout_path);
+                evidence.original(&format!("{call_id}.stderr"), &stderr_path);
+            }
+        };
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            retain_terminal(None, false, Some(format!("spawn failed: {error}")));
+            panic!("fixture subprocess could not start: {error}");
+        }
+    };
     let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                let killed = child.kill();
+                let waited = child.wait();
+                retain_terminal(
+                    waited.as_ref().ok(),
+                    false,
+                    Some(format!("wait failed: {error}; kill result: {killed:?}")),
+                );
+                panic!("cannot observe owned fixture subprocess: {error}");
+            }
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            let killed = child.kill();
+            let waited = child.wait();
+            retain_terminal(
+                waited.as_ref().ok(),
+                true,
+                Some(format!(
+                    "deadline exceeded; kill: {killed:?}; wait: {waited:?}"
+                )),
+            );
             panic!(
                 "owned fixture subprocess timed out: {}",
                 fs::read_to_string(&stderr_path).unwrap()
@@ -168,6 +392,7 @@ fn run_child(
         }
         thread::sleep(Duration::from_millis(10));
     };
+    retain_terminal(Some(&status), false, None);
     let stdout = fs::read_to_string(stdout_path).unwrap();
     let stderr = fs::read_to_string(stderr_path).unwrap();
     assert!(stderr.is_empty(), "fixture subprocess stderr: {stderr}");
@@ -180,9 +405,18 @@ fn observe_in_fresh_process(
     case: &CrashCase,
     name: &str,
     phase: &str,
+    evidence: &mut Option<Evidence>,
 ) -> Snapshot {
     let output = root.join(format!("snapshot-{}.json", Uuid::now_v7()));
-    let (status, stdout) = run_child(root, config, case, name, phase, "observer", Some(&output));
+    let (status, stdout) = run_child(
+        config,
+        case,
+        name,
+        phase,
+        "observer",
+        Some(&output),
+        evidence,
+    );
     assert!(status.success(), "observer failed: {stdout}");
     assert!(stdout.contains(&format!("APPLY_OBSERVED:{}:{phase}", case.request_id)));
     serde_json::from_slice(&fs::read(output).unwrap()).unwrap()
@@ -254,6 +488,7 @@ fn exercise(name: &str, phase: &str) {
         }
     }
 
+    let mut evidence = Evidence::begin(name, phase);
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let database = root.join("project.sqlite3");
@@ -308,16 +543,21 @@ fn exercise(name: &str, phase: &str) {
     drop(store);
     let config = root.join("case.json");
     serde_json::to_writer(File::create_new(&config).unwrap(), &case).unwrap();
+    if let Some(evidence) = evidence.as_mut() {
+        evidence.original("case.json", &config);
+    }
     let before = snapshot(&case);
+    retain_phase(&mut evidence, "before", &before);
     assert_eq!(before.registrations.len(), 1);
     assert!(before.evictions.is_empty());
     assert!(before.manifest.is_some());
 
-    let (status, stdout) = run_child(&root, &config, &case, name, phase, "writer", None);
+    let (status, stdout) = run_child(&config, &case, name, phase, "writer", None, &mut evidence);
     assert_eq!(status.code(), Some(EXIT_AT_CHECKPOINT), "{stdout}");
     assert!(stdout.contains(&format!("APPLY_CHECKPOINT:{}:{phase}", case.request_id)));
 
-    let interrupted = observe_in_fresh_process(&root, &config, &case, name, phase);
+    let interrupted = observe_in_fresh_process(&root, &config, &case, name, phase, &mut evidence);
+    retain_phase(&mut evidence, "interrupted", &interrupted);
     let committed = phase == "after_commit";
     if committed {
         committed_outcome(&case, &before, &interrupted);
@@ -332,6 +572,7 @@ fn exercise(name: &str, phase: &str) {
 
     let mut recovered = Store::open(&case.database).unwrap();
     let cleaned = snapshot(&case);
+    retain_phase(&mut evidence, "cleaned", &cleaned);
     if committed {
         assert_eq!(cleaned.project, interrupted.project);
         assert_eq!(cleaned.events, interrupted.events);
@@ -359,7 +600,8 @@ fn exercise(name: &str, phase: &str) {
         );
     }
     drop(recovered);
-    let after_retry = observe_in_fresh_process(&root, &config, &case, name, phase);
+    let after_retry = observe_in_fresh_process(&root, &config, &case, name, phase, &mut evidence);
+    retain_phase(&mut evidence, "after_retry", &after_retry);
     committed_outcome(&case, &before, &after_retry);
     assert!(after_retry.registrations.is_empty());
     assert!(after_retry.evictions.is_empty());
@@ -378,7 +620,12 @@ fn exercise(name: &str, phase: &str) {
     assert!(replay.replayed);
     assert_eq!(replay.project, accepted.project);
     drop(reopened);
-    assert_eq!(snapshot(&case), after_retry);
+    let final_snapshot = snapshot(&case);
+    retain_phase(&mut evidence, "final", &final_snapshot);
+    assert_eq!(final_snapshot, after_retry);
+    if let Some(evidence) = evidence.as_mut() {
+        evidence.finish();
+    }
 }
 
 #[test]
