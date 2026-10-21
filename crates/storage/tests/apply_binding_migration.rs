@@ -381,3 +381,151 @@ fn future_binding_schema_is_never_adopted_or_downgraded() {
     drop(conn);
     reject_without_physical_changes(directory.path(), &path);
 }
+
+#[test]
+fn schema3_import_recovery_remains_source_free_and_unverified_after_migration() {
+    fn raw_event_values(conn: &Connection) -> Vec<Vec<Value>> {
+        let mut statement = conn
+            .prepare(
+                "SELECT event_id,project_id,revision,kind,payload_json,created_at
+                 FROM events ORDER BY event_id",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| (0..6).map(|column| row.get(column)).collect())
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("legacy-import.sqlite3");
+    let source = directory.path().join("retained.wav");
+    // Storage-only fixture: these bytes make no claim of audio decoding.
+    let bytes = b"synthetic retained import bytes";
+    fs::write(&source, bytes).unwrap();
+    let mut store = Store::open(&path).unwrap();
+    let initial = store
+        .create_named_project("Legacy import recovery")
+        .unwrap();
+    let descriptor = store.ingest_blob_file(&source).unwrap();
+    let change = Change::AddAsset {
+        asset: motionwright_domain::Asset {
+            id: uuid::Uuid::now_v7(),
+            name: "retained.wav".into(),
+            media_type: "audio/wav".into(),
+            content_sha256: Some(descriptor.sha256.clone()),
+            source_revision: Some("local-import".into()),
+        },
+    };
+    let intent = motionwright_storage::FileImportIntent::Asset {
+        name: "retained.wav".into(),
+        media_type: "audio/wav".into(),
+    };
+    let applied = store
+        .apply(initial.id, &initial.stamp(), "retained-import", &change)
+        .unwrap();
+    let later = store
+        .apply(
+            initial.id,
+            &applied.project.stamp(),
+            "later-import-head",
+            &Change::RenameProject {
+                title: "Later project head".into(),
+            },
+        )
+        .unwrap();
+    let events = store.event_records_since(initial.id, 0, 256).unwrap();
+    let cas = store.verified_blob_path(&descriptor.sha256).unwrap();
+    assert_eq!(fs::read(&cas).unwrap(), bytes);
+    let cas_directory = store.blob_root().to_path_buf();
+    drop(store);
+
+    let conn = Connection::open(&path).unwrap();
+    let receipts = receipt_values(&conn);
+    let original_event_values = raw_event_values(&conn);
+    // Reconstruct schema 3 without altering either historical result or event.
+    // A Store.apply call alone would create V1, even in a "legacy" fixture.
+    conn.execute_batch(
+        "ALTER TABLE receipts DROP COLUMN apply_binding_json;
+         ALTER TABLE receipts DROP COLUMN apply_binding_version;
+         PRAGMA user_version=3;
+         PRAGMA wal_checkpoint(TRUNCATE);
+         PRAGMA journal_mode=DELETE;",
+    )
+    .unwrap();
+    assert_eq!(receipt_values(&conn), receipts);
+    assert_eq!(raw_event_values(&conn), original_event_values);
+    drop(conn);
+    fs::remove_file(&source).unwrap();
+    fs::remove_file(&cas).unwrap();
+    let cas_before = physical_state(&cas_directory);
+
+    let mut store = Store::open(&path).unwrap();
+    let conn =
+        Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .unwrap(),
+        STORAGE_SCHEMA_VERSION
+    );
+    assert_eq!(receipt_values(&conn), receipts);
+    assert_eq!(raw_event_values(&conn), original_event_values);
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM receipts
+             WHERE apply_binding_version != 0 OR apply_binding_json IS NOT NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(store.load_project(initial.id).unwrap(), later.project);
+    assert_eq!(
+        store.event_records_since(initial.id, 0, 256).unwrap(),
+        events
+    );
+
+    for expected in [initial.stamp(), later.project.stamp()] {
+        let recorded = store
+            .inspect_file_import(initial.id, &expected, "retained-import", &intent, true)
+            .unwrap()
+            .unwrap();
+        assert!(recorded.outcome.replayed);
+        assert_eq!(recorded.outcome.project, applied.project);
+        assert_eq!(
+            recorded.outcome.previous_revision,
+            applied.previous_revision
+        );
+        assert_eq!(recorded.outcome.request_id, applied.request_id);
+        assert_eq!(recorded.source_sha256, descriptor.sha256);
+        assert_eq!(
+            store
+                .observe_apply_receipt_v1(initial.id, &expected, "retained-import", &change, 1)
+                .unwrap(),
+            ApplyReceiptObservation::LegacyUnverified
+        );
+    }
+
+    assert_eq!(store.load_project(initial.id).unwrap(), later.project);
+    assert_eq!(
+        store.event_records_since(initial.id, 0, 256).unwrap(),
+        events
+    );
+    assert_eq!(receipt_values(&conn), receipts);
+    assert_eq!(raw_event_values(&conn), original_event_values);
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM receipts
+             WHERE apply_binding_version != 0 OR apply_binding_json IS NOT NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    assert!(!source.exists());
+    assert!(!cas.exists());
+    assert_eq!(physical_state(&cas_directory), cas_before);
+}
