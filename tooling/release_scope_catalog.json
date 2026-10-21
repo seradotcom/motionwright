@@ -7755,8 +7755,8 @@
     },
     {
       "path": ".github/workflows/render-window-cache.yml",
-      "sha256": "4fa6a248443b6406c38fa04b3045e55787b66bb740a698eca32ec00933632e2a",
-      "preamble_sha256": "3015880201a5db37319fc61037da22114fae9d0d6a63a626a2e8cb978781e686",
+      "sha256": "11d34734b409d9db0be94ba059a3092b17ef3aa7aafa9f4045db3351e96ceaf0",
+      "preamble_sha256": "ea65cff676e549fb636e6a21eb342c49bb7277935ec4dc95b56899de0d8cc861",
       "evidence_class": "physical_storage",
       "purpose": "Physical cache eviction, authorization/recovery and SQLite rollback; not native frame speedup evidence.",
       "inputs": {},
@@ -11414,8 +11414,8 @@
     },
     {
       "path": ".github/workflows/verification-plan.yml",
-      "sha256": "c1ff627c3a2eeb1fe7b87cbe949361267664e980c7e8ba24eed49bcf57d04233",
-      "preamble_sha256": "20574f64f22e31807c6bb66046d75555892099174f6a62c12b9e1363a09ccf57",
+      "sha256": "ddef31b02d323fcee44739281d1dfb04efbb9ddd9e81a3ae1303af8df78a9480",
+      "preamble_sha256": "45c2a0a7db1907d3728b8e8a17385f91d28310b1c52777da90323615b4bacfbd",
       "evidence_class": "g0_planning_contracts",
       "purpose": "Linux/Windows source-bound conformance guards and shadow applicability planning; no product verdict.",
       "inputs": {
@@ -11456,7 +11456,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "240e91f3834025eac11e8a2b8e5de491817e0cac95de4014612eabc4587da6d5",
+          "source_sha256": "e6366d90b8c92d2ea07ebdb7511885597bc0ff1efdbea52c1ddd70835fdd4e32",
           "instance_sets": {
             "candidate-plan": [
               {}
@@ -11468,7 +11468,7 @@
               "name": "Exercise conformance and selection controls in both real entrypoints",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "9926b67c4f380d4602a1dbf00a732ac4093139c2079b3cf468c60b2750915cff",
+              "source_block_sha256": "5d1d44f000331cf3643ddb08da15e49cf36af59857b4e459104cbf201a2dbbae",
               "api_binding": "EXPLICIT_NAME"
             },
             {

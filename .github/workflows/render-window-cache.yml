@@ -8,12 +8,14 @@ on:
       - 'crates/service/src/lib.rs'
       - 'crates/domain/src/render_tail_impact.rs'
       - '.github/workflows/render-window-cache.yml'
+      - 'tooling/tests/test_render_window_sql_guard.py'
   pull_request:
     paths:
       - 'crates/storage/**'
       - 'crates/service/src/lib.rs'
       - 'crates/domain/src/render_tail_impact.rs'
       - '.github/workflows/render-window-cache.yml'
+      - 'tooling/tests/test_render_window_sql_guard.py'
   workflow_dispatch:
 
 permissions:
