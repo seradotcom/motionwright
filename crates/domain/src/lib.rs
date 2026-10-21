@@ -172,7 +172,8 @@ pub struct CanvasNode {
 }
 
 impl CanvasNode {
-    fn validate(&self) -> Result<()> {
+    /// Validate node fields; scene membership and graph constraints require the full scene.
+    pub fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() || self.name.len() > 160 {
             return Err(DomainError::Invalid(
                 "canvas node name is out of bounds".into(),

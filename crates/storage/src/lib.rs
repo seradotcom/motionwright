@@ -22,6 +22,7 @@ mod integrity;
 mod portability;
 mod production;
 mod project_creation;
+mod project_projection;
 mod render_window_cache;
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
 pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
@@ -31,6 +32,11 @@ pub use integrity::{
 pub use portability::{BundleFingerprint, InspectedProjectBundle};
 pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
 pub use project_creation::{ProjectCreationIntent, ProjectCreationOutcome};
+pub use project_projection::{
+    MAX_NODE_PAGE_ITEMS, MAX_PROJECTION_RESPONSE_BYTES, MAX_SCENE_PAGE_ITEMS, NodePage,
+    NodePageCursor, ProjectionError, ProjectionHead, ProjectionIdentity, ProjectionResult,
+    ScenePage, ScenePageCursor, SceneRef, SceneSummary,
+};
 pub use render_window_cache::{
     RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
 };
