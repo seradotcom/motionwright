@@ -186,6 +186,15 @@ PROFILE_AUTHORITY_TITLES = (
     'profile recovery budget blocks actual transport without evicting any retained original',
 )
 
+PROJECTION_NAVIGATION_TITLES = (
+    'remembered 65-scene App opening and process restart use bounded native pages without complete reads',
+    'explicit small-project browsing pages 129 native nodes and preserves off-page references',
+    'a real peer revision returns typed stale-page failure and preserves the view until explicit reload',
+    'a lost genuine node-page delivery is reported safely without fallback, replay or lost prior page',
+    'bounded observations retain an original committed Review UNKNOWN and later authored text without replay',
+    'a genuinely missing selected head preserves preference and allows an explicit healthy page choice',
+)
+
 SELECTIONS = (
     ("canvas", "canvas-draft-service.spec.ts", CANVAS_TITLES),
     ("ink", "visual-language-draft-service.spec.ts", (INK_TITLE,)),
@@ -205,6 +214,7 @@ SELECTIONS = (
     ('inspector', 'scene-inspector-service.spec.ts', INSPECTOR_TITLES),
     ('profile-metadata', 'delivery-profile-preservation.spec.ts', PROFILE_METADATA_TITLES),
     ('profile-authority', 'delivery-profile-authority-service.spec.ts', PROFILE_AUTHORITY_TITLES),
+    ('projection-navigation', 'project-projection-service.spec.ts', PROJECTION_NAVIGATION_TITLES),
 )
 # Preserve the original per-file process limits. Each authoring bound includes
 # every declared test timeout and the configured 120s server startup. These are
@@ -239,6 +249,7 @@ SELECTION_TIMEOUTS = {
     'inspector': 900,
     'profile-metadata': 1500,
     'profile-authority': 900,
+    'projection-navigation': 1260,
 }
 
 
@@ -440,6 +451,39 @@ def source_observation(repo):
         "apps/studio/package.json",
         "apps/studio/src/api.ts",
         "apps/studio/src/types.ts",
+        "apps/studio/index.html",
+        "apps/studio/vite.config.ts",
+        "apps/studio/tsconfig.json",
+        "apps/studio/tsconfig.app.json",
+        "apps/studio/src/main.tsx",
+        "apps/studio/src/styles.css",
+        "apps/studio/src/fixture.ts",
+        "apps/studio/src/ProjectLibraryDialog.tsx",
+        "apps/studio/src/projectLibrary.ts",
+        "apps/studio/src/project-library.css",
+        "apps/studio/src/ProjectProjectionWorkspace.tsx",
+        "apps/studio/src/projectProjection.ts",
+        "apps/studio/src/projectProjection.test.ts",
+        "apps/studio/src/projectMutation.test.ts",
+        "apps/studio/tests/project-projection-service.spec.ts",
+        "apps/studio/tests/project-projection.spec.ts",
+        "apps/studio/tests/fixtures/project-projection.html",
+        "apps/studio/tests/fixtures/project-projection.tsx",
+        "apps/desktop/src-tauri/src/effect_grants.rs",
+        "apps/desktop/src-tauri/src/project_library.rs",
+        "apps/desktop/src-tauri/src/project_projection.rs",
+        "apps/desktop/src-tauri/src/caption_export.rs",
+        "apps/desktop/src-tauri/src/file_import.rs",
+        "crates/domain/src/lib.rs",
+        "crates/domain/src/canvas.rs",
+        "crates/domain/src/history.rs",
+        "crates/domain/src/creative.rs",
+        "crates/service/src/lib.rs",
+        "crates/service/src/project_creation.rs",
+        "crates/service/src/project_projection.rs",
+        "crates/storage/src/lib.rs",
+        "crates/storage/src/project_creation.rs",
+        "crates/storage/src/project_projection.rs",
         "tooling/ci_canvas_service.py",
         "tooling/tests/test_ci_canvas_service.py",
     )

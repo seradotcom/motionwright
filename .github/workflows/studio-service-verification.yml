@@ -10,7 +10,7 @@ on:
         type: choice
         required: true
         default: authoring-drafts
-        options: [complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, inspector, profile-metadata, profile-authority]
+        options: [complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, inspector, profile-metadata, profile-authority, projection-navigation]
 permissions:
   contents: read
 concurrency:

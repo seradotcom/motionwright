@@ -2,6 +2,7 @@
 import copy
 import io
 import importlib.util
+import re
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -62,7 +63,7 @@ class CanvasServiceReportTests(unittest.TestCase):
         self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:7]), 43)
         self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:9]), 57)
         self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:10]), 65)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 129)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 135)
         self.assertEqual(
             [(label, filename) for label, filename, _ in gate.SELECTIONS],
             [("canvas", "canvas-draft-service.spec.ts"),
@@ -143,6 +144,7 @@ class CanvasServiceReportTests(unittest.TestCase):
             'inspector': 900,
             'profile-metadata': 1500,
             'profile-authority': 900,
+            'projection-navigation': 1260,
         })
         self.assertEqual(set(gate.SELECTION_TIMEOUTS), {label for label, _, _ in gate.SELECTIONS})
         self.assertGreater(gate.SELECTION_TIMEOUTS["camera"], 7 * 120 + 120)
@@ -267,12 +269,12 @@ class SelectedServiceScopeTests(unittest.TestCase):
     def test_narrative_scope_preserves_full_default_and_declares_every_omission(self):
         plan = gate.selection_plan("narrative")
         self.assertEqual(plan["required_tests"], 8)
-        self.assertEqual(plan["full_default_tests"], 129)
+        self.assertEqual(plan["full_default_tests"], 135)
         self.assertEqual(plan["scope"], "EXPLICIT_SELECTED_SERVICE_CASES")
         self.assertEqual(len(plan["required"]), 1)
         self.assertEqual(plan["required"][0]["file"], "narrative-service.spec.ts")
         self.assertEqual(plan["required"][0]["titles"], list(gate.NARRATIVE_TITLES))
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 121)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 127)
         self.assertEqual({row["label"] for row in plan["not_selected"]},
                          {row[0] for row in gate.SELECTIONS if row[0] != "narrative"})
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
@@ -340,8 +342,8 @@ class AuthoringServiceScopeTests(unittest.TestCase):
             ("review", "review-service.spec.ts", 6),
         ])
         self.assertEqual(plan["required_tests"], 38)
-        self.assertEqual(plan["full_default_tests"], 129)
-        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 91)
+        self.assertEqual(plan["full_default_tests"], 135)
+        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 97)
         self.assertEqual({x["label"] for x in plan["not_selected"]},
                          {row[0] for row in gate.SELECTIONS[:10] + gate.SELECTIONS[15:]})
         self.assertTrue(all(x["status"] == "NOT_SELECTED" and x["technical_credit"] == "NONE"
@@ -355,7 +357,7 @@ class AuthoringServiceScopeTests(unittest.TestCase):
                 plan = gate.selection_plan(label)
                 self.assertEqual(plan["required_tests"], len(titles))
                 self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]),
-                                 129 - len(titles))
+                                 135 - len(titles))
                 verified = gate.validate_report(selection_report(filename, titles), filename, titles)
                 self.assertEqual(verified["passed"], len(titles))
                 cases.extend((filename, title) for title in verified["titles"])
@@ -429,11 +431,11 @@ class AuthoringServiceScopeTests(unittest.TestCase):
 
     def test_full_default_keeps_old_sixty_five_and_new_thirty_eight_distinct_cases(self):
         plan = gate.selection_plan("all")
-        self.assertEqual(plan["required_tests"], 129)
+        self.assertEqual(plan["required_tests"], 135)
         self.assertEqual(plan["not_selected"], [])
         cases = [(x["file"], title) for x in plan["required"] for title in x["titles"]]
-        self.assertEqual(len(cases), 129)
-        self.assertEqual(len(set(cases)), 129)
+        self.assertEqual(len(cases), 135)
+        self.assertEqual(len(set(cases)), 135)
         self.assertEqual(gate.selected_selections("all"), gate.SELECTIONS)
 
 
@@ -452,10 +454,10 @@ class CompleteAuthoringScopeTests(unittest.TestCase):
             ("profile-authority", "delivery-profile-authority-service.spec.ts", 6),
         ])
         self.assertEqual(plan["required_tests"], 64)
-        self.assertEqual(plan["full_default_tests"], 129)
-        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 65)
+        self.assertEqual(plan["full_default_tests"], 135)
+        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 71)
         self.assertEqual({x["label"] for x in plan["not_selected"]},
-                         {row[0] for row in gate.SELECTIONS[:10]})
+                         {row[0] for row in gate.SELECTIONS[:10] + gate.SELECTIONS[18:]})
         self.assertTrue(all(x["status"] == "NOT_SELECTED" and x["technical_credit"] == "NONE"
                             for x in plan["not_selected"]))
         self.assertFalse(plan["formal_acceptance"])
@@ -464,7 +466,7 @@ class CompleteAuthoringScopeTests(unittest.TestCase):
 
     def test_inspector_and_profile_results_require_exact_files_names_and_one_original_result(self):
         observed = []
-        for label, filename, titles in gate.SELECTIONS[15:]:
+        for label, filename, titles in gate.SELECTIONS[15:18]:
             with self.subTest(selection=label):
                 result = gate.validate_report(selection_report(filename, titles), filename, titles)
                 self.assertEqual(result["titles"], list(titles))
@@ -533,7 +535,7 @@ class CompleteAuthoringScopeTests(unittest.TestCase):
                 gate.selected_selections(invalid)
 
     def test_complete_roster_never_converts_unexecuted_or_wrong_browser_results_into_credit(self):
-        for label, filename, titles in gate.SELECTIONS[15:]:
+        for label, filename, titles in gate.SELECTIONS[15:18]:
             for mutation in ("missing-counter", "zero", "flaky", "foreign-browser", "global-error"):
                 with self.subTest(selection=label, mutation=mutation):
                     value = selection_report(filename, titles)
@@ -550,6 +552,237 @@ class CompleteAuthoringScopeTests(unittest.TestCase):
                         value["errors"] = [{"message": "source service unavailable"}]
                     with self.assertRaises(ValueError):
                         gate.validate_report(value, filename, titles)
+
+
+
+class ProjectionNavigationScopeTests(unittest.TestCase):
+    REQUIRED_SOURCE_PATHS = (
+        'apps/studio/index.html',
+        'apps/studio/vite.config.ts',
+        'apps/studio/tsconfig.json',
+        'apps/studio/tsconfig.app.json',
+        'apps/studio/src/main.tsx',
+        'apps/studio/src/styles.css',
+        'apps/studio/src/fixture.ts',
+        'apps/studio/src/ProjectLibraryDialog.tsx',
+        'apps/studio/src/projectLibrary.ts',
+        'apps/studio/src/project-library.css',
+        'apps/studio/src/ProjectProjectionWorkspace.tsx',
+        'apps/studio/src/projectProjection.ts',
+        'apps/studio/src/projectProjection.test.ts',
+        'apps/studio/src/projectMutation.test.ts',
+        'apps/studio/tests/project-projection-service.spec.ts',
+        'apps/studio/tests/project-projection.spec.ts',
+        'apps/studio/tests/fixtures/project-projection.html',
+        'apps/studio/tests/fixtures/project-projection.tsx',
+        'apps/desktop/src-tauri/src/effect_grants.rs',
+        'apps/desktop/src-tauri/src/project_library.rs',
+        'apps/desktop/src-tauri/src/project_projection.rs',
+        'apps/desktop/src-tauri/src/caption_export.rs',
+        'apps/desktop/src-tauri/src/file_import.rs',
+        'crates/domain/src/lib.rs',
+        'crates/domain/src/canvas.rs',
+        'crates/domain/src/history.rs',
+        'crates/domain/src/creative.rs',
+        'crates/service/src/lib.rs',
+        'crates/service/src/project_creation.rs',
+        'crates/service/src/project_projection.rs',
+        'crates/storage/src/lib.rs',
+        'crates/storage/src/project_creation.rs',
+        'crates/storage/src/project_projection.rs',
+        'apps/studio/src/App.tsx',
+        'apps/studio/src/api.ts',
+        'apps/studio/src/types.ts',
+        'apps/studio/src/projectMutation.ts',
+        'apps/studio/tests/support/scopedChangeService.ts',
+        'crates/service/examples/studio_review_session.rs',
+        'Cargo.lock',
+        'SOURCE_LOCK.json',
+        'apps/studio/package-lock.json',
+        'apps/studio/package.json',
+    )
+
+    def selection(self):
+        chosen = gate.selected_selections("projection-navigation")
+        self.assertEqual(len(chosen), 1)
+        return chosen[0]
+
+    def test_projection_scope_uses_the_six_real_source_cases_and_declares_every_omission(self):
+        label, filename, titles = self.selection()
+        source = (PATH.parents[1] / "apps/studio/tests" / filename).read_text(encoding="utf-8")
+        declared = tuple(re.findall(r'test\("([^"]+)",', source))
+        self.assertEqual(len(declared), 6)
+        self.assertEqual(len(set(declared)), 6)
+        self.assertEqual(titles, declared)
+        self.assertEqual(filename, "project-projection-service.spec.ts")
+        plan = gate.selection_plan(label)
+        self.assertEqual(plan["required_tests"], 6)
+        self.assertEqual(plan["full_default_tests"], 135)
+        self.assertEqual(plan["required"], [{"label": label, "file": filename, "titles": list(declared)}])
+        omitted = [(row["file"], title) for row in plan["not_selected"] for title in row["titles"]]
+        self.assertEqual(len(omitted), 129)
+        self.assertEqual(len(set(omitted)), 129)
+        self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
+                            for row in plan["not_selected"]))
+        self.assertFalse(plan["formal_acceptance"])
+        verified = gate.validate_report(selection_report(filename, declared), filename, titles)
+        self.assertEqual(verified, {"passed": 6, "skipped": 0, "retries": 0, "titles": list(declared)})
+        self.assertEqual(gate.selection_plan("complete-authoring")["required_tests"], 64)
+        self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 38)
+
+    def test_projection_success_totals_cannot_hide_missing_extra_duplicate_or_foreign_cases(self):
+        _, filename, titles = self.selection()
+        for mutation in ("missing", "extra", "duplicate", "foreign-title", "component-file"):
+            with self.subTest(mutation=mutation):
+                value = selection_report(filename, titles)
+                rows = value["suites"][0]["suites"][0]["specs"]
+                if mutation == "missing":
+                    rows.pop()
+                elif mutation == "extra":
+                    extra = copy.deepcopy(rows[0])
+                    extra["title"] = "undeclared projection case"
+                    rows.append(extra)
+                elif mutation == "duplicate":
+                    rows[-1] = copy.deepcopy(rows[0])
+                elif mutation == "foreign-title":
+                    rows[-1]["title"] = gate.INK_TITLE
+                else:
+                    rows[-1]["file"] = "project-projection.spec.ts"
+                with self.assertRaises(ValueError):
+                    gate.validate_report(value, filename, titles)
+
+    def test_projection_discovery_skips_retries_and_nonoriginal_results_never_pass(self):
+        _, filename, titles = self.selection()
+        for mutation in ("discovery", "skip", "retry", "second-result", "missing-result",
+                         "expected-failure", "error", "failed", "foreign-browser",
+                         "missing-counter", "zero", "flaky", "global-error"):
+            with self.subTest(mutation=mutation):
+                value = selection_report(filename, titles)
+                case = value["suites"][0]["suites"][0]["specs"][-1]["tests"][0]
+                if mutation == "discovery":
+                    for row in value["suites"][0]["suites"][0]["specs"]:
+                        row["tests"][0].update(expectedStatus="skipped", status="skipped", results=[])
+                    value["stats"].update(expected=0, skipped=6)
+                elif mutation == "skip":
+                    case["expectedStatus"] = "skipped"
+                    case["results"][0]["status"] = "skipped"
+                elif mutation == "retry":
+                    case["results"][0]["retry"] = 1
+                elif mutation == "second-result":
+                    case["results"].append(copy.deepcopy(case["results"][0]))
+                elif mutation == "missing-result":
+                    case["results"].clear()
+                elif mutation == "expected-failure":
+                    case["expectedStatus"] = "failed"
+                elif mutation == "error":
+                    case["results"][0]["errors"] = [{"message": "actual projection service failure"}]
+                elif mutation == "failed":
+                    case["results"][0]["status"] = "failed"
+                elif mutation == "foreign-browser":
+                    case["projectId"] = "firefox"
+                elif mutation == "missing-counter":
+                    del value["stats"]["skipped"]
+                elif mutation == "zero":
+                    value["stats"]["expected"] = 0
+                elif mutation == "flaky":
+                    value["stats"]["flaky"] = 1
+                else:
+                    value["errors"] = [{"message": "source-built service unavailable"}]
+                with self.assertRaises(ValueError):
+                    gate.validate_report(value, filename, titles)
+
+    def test_projection_deadline_covers_actual_case_bounds_and_workflow_remains_manual(self):
+        label, filename, titles = self.selection()
+        source = (PATH.parents[1] / "apps/studio/tests" / filename).read_text(encoding="utf-8")
+        declared = re.findall(r"test\.setTimeout\(([0-9_]+)\)", source)
+        self.assertEqual(len(declared), 1)
+        per_case_ms = int(declared[0].replace("_", ""))
+        self.assertEqual(per_case_ms, 180_000)
+        self.assertGreater(gate.SELECTION_TIMEOUTS[label], len(titles) * per_case_ms / 1000 + 120)
+        workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text(encoding="utf-8")
+        declared_options = re.findall(r"options: \[([^\]]+)\]", workflow)
+        self.assertEqual(len(declared_options), 1)
+        choices = [item.strip() for item in declared_options[0].split(",")]
+        self.assertEqual(len(choices), len(set(choices)))
+        self.assertEqual(set(choices), {"all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS)})
+        service_job = workflow.split("  real-service:\n", 1)[1]
+        conditions = re.findall(r"^    if: (.+)$", service_job, re.MULTILINE)
+        self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch'"])
+        self.assertIn("--selection \"$REQUESTED_SELECTION\"", service_job)
+
+    def source_fixture(self, repo):
+        initializing = [True]
+
+        def content(name):
+            return ("committed source: " + name + "\n").encode("utf-8")
+
+        def git(arguments, *, cwd, timeout):
+            self.assertEqual(Path(cwd), repo)
+            self.assertEqual(timeout, 30)
+            if arguments == ["git", "rev-parse", "HEAD"]:
+                return b"a" * 40
+            if arguments == ["git", "rev-parse", "HEAD^{tree}"]:
+                return b"b" * 40
+            if arguments == ["git", "diff", "--name-only", "HEAD", "--"]:
+                # Model a clean index even when physical bytes are hidden by
+                # assume-unchanged or skip-worktree flags.
+                return b""
+            self.assertEqual(arguments[:2], ["git", "show"])
+            head, separator, name = arguments[2].partition(":")
+            self.assertEqual((head, separator), ("a" * 40, ":"))
+            value = content(name)
+            if initializing[0]:
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(value)
+            return value
+
+        with mock.patch.object(gate.subprocess, "check_output", side_effect=git), \
+                mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+            before = gate.source_observation(repo)
+        initializing[0] = False
+        for name in self.REQUIRED_SOURCE_PATHS:
+            path = repo / name
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content(name))
+        return git, before
+
+    def test_projection_physical_changes_fail_even_when_git_reports_a_clean_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            git, before = self.source_fixture(repo)
+            with mock.patch.object(gate.subprocess, "check_output", side_effect=git), \
+                    mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+                self.assertEqual(gate.source_observation(repo), before)
+                for name in self.REQUIRED_SOURCE_PATHS:
+                    with self.subTest(source=name):
+                        path = repo / name
+                        original = path.read_bytes()
+                        try:
+                            path.write_bytes(original + b"hidden physical change")
+                            with self.assertRaisesRegex(ValueError, "source differs from Git"):
+                                gate.source_observation(repo)
+                        finally:
+                            path.write_bytes(original)
+
+    def test_required_projection_source_absence_cannot_be_omitted_from_custody(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            git, before = self.source_fixture(repo)
+            with mock.patch.object(gate.subprocess, "check_output", side_effect=git), \
+                    mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+                self.assertEqual(gate.source_observation(repo), before)
+                for name in self.REQUIRED_SOURCE_PATHS:
+                    with self.subTest(source=name):
+                        path = repo / name
+                        original = path.read_bytes()
+                        try:
+                            path.unlink()
+                            with self.assertRaisesRegex(ValueError, "regular file required"):
+                                gate.source_observation(repo)
+                        finally:
+                            path.write_bytes(original)
 
 
 class ClosedStudioArchiveTests(unittest.TestCase):
