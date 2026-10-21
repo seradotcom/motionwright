@@ -3,10 +3,6 @@ run-name: Studio service ${{ github.event_name == 'workflow_dispatch' && inputs.
 on:
   push:
     branches: ['verify/studio-service-*']
-    paths:
-      - '.github/workflows/studio-service-verification.yml'
-      - 'tooling/ci_canvas_service.py'
-      - 'tooling/tests/test_ci_canvas_service.py'
   workflow_dispatch:
     inputs:
       selection:
