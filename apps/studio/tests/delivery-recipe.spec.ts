@@ -199,6 +199,10 @@ async function setup(proof: CaseProof, service: ScopedChangeService, withAudio =
     } });
   }
   const a = { ...(project.deliverables[0] ?? makeProfile(randomUUID(), "")), name: "Recipe profile A", frame_rate: { num: "30", den: "1" } };
+  if (withAudio) {
+    expect(project.audio.active_voice_track_id).not.toBeNull();
+    a.voice_track_id = project.audio.active_voice_track_id;
+  }
   const b = { ...makeProfile(randomUUID(), "Recipe profile B"), frame_rate: { num: "24", den: "1" } };
   project = await service.apply(project, { type: "upsert_deliverable", profile: a });
   project = await service.apply(project, { type: "upsert_deliverable", profile: b });
