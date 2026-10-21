@@ -1,7 +1,7 @@
 //! Durable file-import receipt inspection and validated CAS capture.
 use super::{
-    ApplyOutcome, Change, OptionalExtension, Result, RevisionStamp, StorageError, Store,
-    TransactionBehavior, params, request_digest, validate_digest,
+    ApplyOutcome, Change, Result, RevisionStamp, StorageError, Store, TransactionBehavior,
+    validate_digest,
 };
 use motionwright_domain::DomainError;
 use serde::{Deserialize, Serialize};
@@ -136,11 +136,9 @@ impl Store {
         {
             return Err(StorageError::GenerationConflict);
         }
-        let receipt: Option<(String, String)> = tx.query_row(
-            "SELECT request_sha256,result_json FROM receipts WHERE project_id=?1 AND request_id=?2",
-            params![id.to_string(), key], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()?;
-        let Some((stored_digest, result_json)) = receipt else {
+        let receipt = super::apply_receipt_binding::read_receipt(&tx, id, key)
+            .map_err(super::apply_receipt_binding::ReceiptCheckError::into_import_error)?;
+        let Some(receipt) = receipt else {
             if require_current_if_absent && expected.revision != current.revision {
                 return Err(StorageError::Conflict {
                     expected: expected.revision,
@@ -150,49 +148,13 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         };
-        if super::project_creation::is_creation_receipt(&result_json) {
+        if super::project_creation::is_creation_receipt(&receipt.result_json) {
             return Err(StorageError::RequestReuse);
         }
-        let mut outcome: ApplyOutcome = serde_json::from_str(&result_json)
-            .map_err(|_| invalid_receipt("invalid receipt outcome JSON"))?;
-        outcome
-            .project
-            .validate()
-            .map_err(|_| invalid_receipt("invalid receipt outcome project"))?;
-        if outcome.request_id != key
-            || outcome.project.id != id
-            || outcome.project.generation != current.generation
-            || outcome.project.resource_key() != expected.resource
-            || outcome.replayed
-            || outcome.previous_revision.checked_add(1) != Some(outcome.project.revision)
-            || outcome.project.revision > current.revision
-        {
-            return Err(invalid_receipt(
-                "inconsistent receipt identity, generation, revision or replay state",
-            ));
-        }
-        let event_revision = i64::try_from(outcome.project.revision)
-            .map_err(|_| invalid_receipt("receipt revision exceeds SQLite integer range"))?;
-        let (count, event_json): (i64, Option<String>) = tx.query_row(
-            "SELECT COUNT(*),MIN(payload_json) FROM events WHERE project_id=?1 AND revision=?2",
-            params![id.to_string(), event_revision],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        if count != 1 {
-            return Err(invalid_receipt("receipt must reference exactly one event"));
-        }
-        let event_json =
-            event_json.ok_or_else(|| invalid_receipt("receipt event has no payload"))?;
-        let change: Change = serde_json::from_str(&event_json)
-            .map_err(|_| invalid_receipt("invalid receipt event JSON"))?;
-        let event_digest = request_digest(id, &change)
-            .map_err(|_| invalid_receipt("receipt event cannot be hashed"))?;
-        if event_digest != stored_digest {
-            return Err(invalid_receipt(
-                "receipt request digest differs from its recorded event",
-            ));
-        }
-        let source_sha256 = verify_import_binding(&change, &outcome, intent)?;
+        let checked = super::apply_receipt_binding::check_receipt(&tx, &current, key, &receipt)
+            .map_err(super::apply_receipt_binding::ReceiptCheckError::into_import_error)?;
+        let mut outcome = checked.outcome;
+        let source_sha256 = verify_import_binding(&checked.change, &outcome, intent)?;
         outcome.replayed = true;
         tx.commit()?;
         Ok(Some(RecordedFileImport {
