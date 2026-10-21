@@ -28,9 +28,33 @@ export interface ServiceRpcRequest {
   args?: InvokeArgs;
 }
 
+export type ServiceProjectionFailure =
+  | { code: "invalid_request_or_content" | "not_found" | "generation_changed" | "unavailable" }
+  | { code: "too_large"; limit: number }
+  | { code: "stale_revision"; expected: string; actual: string };
+
+const projectionCommands = new Set(["project_projection_head", "project_scene_page", "project_scene_nodes"]);
+
+function projectionFailure(command: string, value: unknown): value is ServiceProjectionFailure {
+  if (!projectionCommands.has(command) || typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const failure = value as Record<string, unknown>;
+  const fields = (...names: string[]) => Object.keys(failure).length === names.length && names.every(name => Object.hasOwn(failure, name));
+  const revision = (input: unknown) => typeof input === "string" && /^(0|[1-9][0-9]{0,19})$/.test(input)
+    && (input.length < 20 || input <= "18446744073709551615");
+  switch (failure.code) {
+    case "invalid_request_or_content": case "not_found": case "generation_changed": case "unavailable":
+      return fields("code");
+    case "too_large":
+      return fields("code", "limit") && typeof failure.limit === "number" && Number.isSafeInteger(failure.limit) && failure.limit > 0;
+    case "stale_revision":
+      return fields("code", "expected", "actual") && revision(failure.expected) && revision(failure.actual);
+    default: return false;
+  }
+}
+
 export type ServiceRpcResponse<T = unknown> =
   | { id: RpcId; ok: true; result: T }
-  | { id: RpcId; ok: false; error: string };
+  | { id: RpcId; ok: false; error: string | ServiceProjectionFailure };
 
 export interface ServiceStartup extends StudioBootstrap {
   test_transport: "service-test-jsonl";
@@ -250,13 +274,17 @@ export class ScopedChangeService {
       if (!(typeof response.id === "string" || typeof response.id === "number") || typeof response.ok !== "boolean") {
         throw new Error("Response lacks a correlation id or boolean ok field");
       }
-      if (response.ok ? !("result" in response) : typeof response.error !== "string") {
+      const key = JSON.stringify(response.id);
+      const pending = this.pending.get(key);
+      // Structured failures require this exact still-pending projection command.
+      // Legacy strings, late legacy responses and lifecycle custody keep their
+      // existing behavior; unrecognized objects are terminal protocol failures.
+      if (response.ok ? !("result" in response)
+        : !(typeof response.error === "string" || (pending && projectionFailure(pending.command, response.error)))) {
         throw new Error("Response lacks its declared result/error payload");
       }
       this.transcript.push({ at: new Date().toISOString(), processId: child.pid, direction: "response", payload: response });
-      const key = JSON.stringify(response.id);
       if (this.timedOutIds.delete(key)) return;
-      const pending = this.pending.get(key);
       if (!pending) throw new Error(`Unexpected response id ${key}`);
       this.pending.delete(key);
       clearTimeout(pending.timer);
@@ -376,7 +404,10 @@ export class ScopedChangeService {
 
   async invoke<T = unknown>(command: string, args: InvokeArgs = {}): Promise<T> {
     const response = await this.rawRequest<T>({ command, args });
-    if (!response.ok) throw new Error(`${command}: ${response.error}`);
+    if (!response.ok) {
+      if (typeof response.error === "string") throw new Error(`${command}: ${response.error}`);
+      throw response.error;
+    }
     return response.result;
   }
 

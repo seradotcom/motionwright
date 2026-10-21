@@ -16,8 +16,9 @@ export interface ProjectLibraryDialogProps {
   currentProjectId: string | null;
   onClose: () => void;
   onList: (request: ListProjectsRequest) => Promise<ProjectLibraryPage>;
-  /** Resolve only after the existing App coordinator has accepted this Project. */
-  onOpen: (projectId: string) => Promise<Project>;
+  /** Resolve only after the existing App coordinator has admitted this identity. */
+  onOpen: (projectId: string) => Promise<Pick<Project, "id">>;
+  onBrowse?: (projectId: string) => Promise<Pick<Project, "id">>;
   /** Omit until creation is supported by the reviewed desktop authority. */
   onCreate?: (title: string) => Promise<Project>;
   creationCopies?: ProjectCreationCopy[];
@@ -49,7 +50,7 @@ function updatedLabel(value: string): string {
  * whose response arrives after the parent has unmounted this dialog.
  */
 export function ProjectLibraryDialog({
-  open, currentProjectId, onClose, onList, onOpen, onCreate, notice,
+  open, currentProjectId, onClose, onList, onOpen, onBrowse, onCreate, notice,
   creationCopies = [], creationLimited = false, creationError = null,
   onRecoverCreation, onDiscardCreation, onRefreshCreations,
 }: ProjectLibraryDialogProps) {
@@ -61,9 +62,9 @@ export function ProjectLibraryDialog({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const visibleRef = useRef(open);
-  const callbacks = useRef({ onClose, onList, onOpen, onCreate });
+  const callbacks = useRef({ onClose, onList, onOpen, onBrowse, onCreate });
   visibleRef.current = open;
-  callbacks.current = { onClose, onList, onOpen, onCreate };
+  callbacks.current = { onClose, onList, onOpen, onBrowse, onCreate };
 
   const session = useRef(0);
   const pageRequest = useRef(0);
@@ -140,8 +141,9 @@ export function ProjectLibraryDialog({
     callbacks.current.onClose();
   }, []);
 
-  async function openSaved(item: ProjectLibrarySummary) {
-    if (operationRef.current) return;
+  async function openSaved(item: ProjectLibrarySummary, mode: "auto" | "pages" = "auto") {
+    const open = mode === "pages" ? callbacks.current.onBrowse : callbacks.current.onOpen;
+    if (!open || operationRef.current) return;
     const startedSession = session.current;
     const request = ++operationRequest.current;
     const operation: Opening = { kind: "open", projectId: item.id, title: item.title };
@@ -153,7 +155,7 @@ export function ProjectLibraryDialog({
       && operationRequest.current === request;
     let accepted = false;
     try {
-      const project = await callbacks.current.onOpen(item.id);
+      const project = await open(item.id);
       if (!current()) return;
       if (project.id.toLowerCase() !== item.id.toLowerCase()) {
         throw new Error("The accepted project does not match the requested identity. Refresh the library to reconcile the result.");
@@ -313,11 +315,16 @@ export function ProjectLibraryDialog({
                     <p>Revision {item.revision} <span aria-hidden="true">·</span> <time dateTime={item.updated_at}>{updatedLabel(item.updated_at)}</time></p>
                     <span className="project-library-id">{item.id}</span>
                   </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                   <button type="button" className="project-library-button project-library-open"
                     disabled={busy} aria-label={`${selected ? "Reopen" : "Open"} ${item.title}`}
                     onClick={() => void openSaved(item)}>
                     {pending ? "Opening…" : selected ? "Reopen" : "Open"}
                   </button>
+                    {onBrowse && <button type="button" className="project-library-button"
+                      disabled={busy} aria-label={"Browse pages of " + item.title}
+                      onClick={() => void openSaved(item, "pages")}>Browse pages</button>}
+                  </div>
                 </li>
               );
             })}

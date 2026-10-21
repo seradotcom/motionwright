@@ -23,6 +23,10 @@ mod effect_grants;
 #[allow(dead_code)] // The exact desktop read/creation module, without Tauri transport.
 mod project_library;
 
+#[path = "../../../apps/desktop/src-tauri/src/project_projection.rs"]
+#[allow(dead_code)] // The exact desktop bounded read module, without Tauri transport.
+mod project_projection;
+
 #[path = "../../../apps/desktop/src-tauri/src/caption_export.rs"]
 mod caption_export;
 
@@ -160,6 +164,22 @@ fn request<T: DeserializeOwned>(args: Value) -> Result<T, String> {
         .get("request")
         .ok_or_else(|| "Expected the desktop invoke args.request payload".to_string())?;
     serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+}
+
+// Only the projection commands use the typed desktop failure vocabulary.
+fn projection_request<T: DeserializeOwned>(args: Value) -> Result<T, Value> {
+    request(args).map_err(|_| Value::String("Invalid project projection request.".into()))
+}
+
+fn projection_encoded(
+    result: Result<impl Serialize, motionwright_service::ProjectionFailure>,
+) -> Result<Value, Value> {
+    let value = result.map_err(|failure| {
+        serde_json::to_value(failure)
+            .unwrap_or_else(|_| Value::String("Cannot encode project projection failure.".into()))
+    })?;
+    serde_json::to_value(value)
+        .map_err(|_| Value::String("Cannot encode project projection response.".into()))
 }
 
 fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
@@ -328,6 +348,24 @@ impl Session {
             return Err("Effect grant scope is stale; refresh the project before retrying.".into());
         }
         Ok(project)
+    }
+
+    fn dispatch_wire(&mut self, command: &str, args: Value) -> Result<Value, Value> {
+        match command {
+            "project_projection_head" => projection_encoded(project_projection::head(
+                &self.service,
+                projection_request(args)?,
+            )),
+            "project_scene_page" => projection_encoded(project_projection::scenes(
+                &self.service,
+                projection_request(args)?,
+            )),
+            "project_scene_nodes" => projection_encoded(project_projection::nodes(
+                &self.service,
+                projection_request(args)?,
+            )),
+            _ => self.dispatch(command, args).map_err(Value::String),
+        }
     }
 
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
@@ -615,7 +653,7 @@ impl Session {
     pub fn handle(&mut self, input: Value) -> Value {
         let id = input.get("id").cloned().unwrap_or(Value::Null);
         match serde_json::from_value::<Invoke>(input) {
-            Ok(invoke) => match self.dispatch(&invoke.command, invoke.args) {
+            Ok(invoke) => match self.dispatch_wire(&invoke.command, invoke.args) {
                 Ok(result) => json!({"id": invoke.id, "ok": true, "result": result}),
                 Err(error) => json!({"id": invoke.id, "ok": false, "error": error}),
             },
