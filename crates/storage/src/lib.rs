@@ -57,6 +57,8 @@ pub enum StorageError {
     Conflict { expected: u64, actual: u64 },
     #[error("request id was reused with a different payload")]
     RequestReuse,
+    #[error("invalid apply receipt: {0}")]
+    InvalidApplyReceipt(String),
     #[error("invalid file import receipt: {0}")]
     InvalidFileImportReceipt(String),
     #[error("invalid project creation receipt: {0}")]
@@ -1332,6 +1334,7 @@ impl Store {
                 return Err(StorageError::RequestReuse);
             }
             let mut outcome: ApplyOutcome = serde_json::from_str(&stored_result)?;
+            validate_apply_receipt(&tx, &project, request_id, &request_sha, &outcome)?;
             outcome.replayed = true;
             tx.commit()?;
             return Ok(outcome);
@@ -1560,6 +1563,56 @@ impl Store {
             .map(|event| (event.revision, event.change))
             .collect())
     }
+}
+
+// A receipt is a historical result, not authority to return another project.
+// Revalidate its original identity and event on the same transaction snapshot;
+// later legitimate edits do not change the stored result's revision.
+fn validate_apply_receipt(
+    conn: &Connection,
+    current: &Project,
+    request_id: &str,
+    request_sha: &str,
+    outcome: &ApplyOutcome,
+) -> Result<()> {
+    let invalid = |reason: &str| StorageError::InvalidApplyReceipt(reason.to_owned());
+    outcome
+        .project
+        .validate()
+        .map_err(|_| invalid("invalid stored result project"))?;
+    if outcome.project.id != current.id
+        || outcome.project.generation != current.generation
+        || outcome.project.resource_key() != current.resource_key()
+        || outcome.request_id != request_id
+        || outcome.replayed
+        || outcome.previous_revision.checked_add(1) != Some(outcome.project.revision)
+        || outcome.project.revision > current.revision
+    {
+        return Err(invalid(
+            "inconsistent result identity, generation, revision or replay state",
+        ));
+    }
+    let revision = i64::try_from(outcome.project.revision)
+        .map_err(|_| invalid("result revision exceeds SQLite integer range"))?;
+    let (count, kind, payload): (i64, Option<String>, Option<String>) = conn.query_row(
+        "SELECT COUNT(*),MIN(kind),MIN(payload_json)
+         FROM events WHERE project_id=?1 AND revision=?2",
+        params![current.id.to_string(), revision],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if count != 1 || kind.as_deref() != Some("change") {
+        return Err(invalid("result must reference exactly one change event"));
+    }
+    let payload = payload.ok_or_else(|| invalid("recorded event has no payload"))?;
+    let change: Change =
+        serde_json::from_str(&payload).map_err(|_| invalid("invalid recorded event payload"))?;
+    if request_digest(current.id, &change)
+        .map_err(|_| invalid("recorded event cannot be hashed"))?
+        != request_sha
+    {
+        return Err(invalid("recorded event differs from the requested intent"));
+    }
+    Ok(())
 }
 
 fn request_digest(id: Uuid, change: &Change) -> Result<String> {
