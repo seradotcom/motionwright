@@ -12,9 +12,10 @@ const missingBinding = "Explicitly bind this delivery profile to the active meas
 const differentBinding = "The delivery profile is bound to a different voice take than the active Audio take.";
 const permissionLabel = /I confirm I have permission to use these exact original sources/;
 
-// Reuses the selected-project and browser authoring fixtures. Only bootstrap and
-// runtime status are simulated; no native PCM, SQLite, media, grant or receipt
-// is supplied. The real component's saved-state blockers decide eligibility.
+// Reuses the selected-project and browser authoring fixtures. Bootstrap and
+// runtime status are simulated; read-only waveform requests remain unavailable.
+// No native PCM, SQLite, media, grant or receipt is supplied. The real component's
+// saved-state blockers decide eligibility.
 async function openBindingFixture(page: Page, binding: VoiceBinding) {
   const boot = structuredClone(fixtureBootstrap);
   boot.native_sdk.mode = "tauri";
@@ -53,12 +54,18 @@ async function openBindingFixture(page: Page, binding: VoiceBinding) {
       __TAURI_INTERNALS__: {
         invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
       };
-      __MIX_VOICE_BINDING_CALLS__: string[];
+      __MIX_VOICE_BINDING_CALLS__: { reads: string[]; auditions: string[]; other: string[] };
     };
-    const calls: string[] = [];
+    const calls = { reads: [] as string[], auditions: [] as string[], other: [] as string[] };
     runtime.__MIX_VOICE_BINDING_CALLS__ = calls;
     runtime.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-      calls.push(command);
+      if (["bootstrap", "production_runtime_status", "waveform_page"].includes(command)) {
+        calls.reads.push(command);
+      } else if (command === "native_original_mix_audition") {
+        calls.auditions.push(command);
+      } else {
+        calls.other.push(command);
+      }
       if (command === "bootstrap") {
         const selectedId = (args as { request?: { project_id?: string | null } } | undefined)
           ?.request?.project_id;
@@ -73,6 +80,9 @@ async function openBindingFixture(page: Page, binding: VoiceBinding) {
         version_compatible: true, executable_sha256: "a".repeat(64),
         connection_identity: "b".repeat(64), pinned_revision: boot.native_sdk.pinned_revision,
       };
+      if (command === "waveform_page") {
+        throw new Error("Waveform reads are unavailable in this synthetic voice-binding fixture.");
+      }
       throw new Error("No write or native operation is authorized by this synthetic fixture: " + command);
     } };
   }, { boot });
@@ -94,10 +104,14 @@ async function expectNoNativeOrWrite(page: Page, revision: number) {
   await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + revision);
   await expect(page.locator('details[aria-label="Original three-bus native PCM audition"] audio')).toHaveCount(0);
   const calls = await page.evaluate(() => (window as unknown as {
-    __MIX_VOICE_BINDING_CALLS__: string[];
+    __MIX_VOICE_BINDING_CALLS__: { reads: string[]; auditions: string[]; other: string[] };
   }).__MIX_VOICE_BINDING_CALLS__);
-  expect(calls).toContain("bootstrap");
-  expect(calls.filter(command => !["bootstrap", "production_runtime_status"].includes(command))).toEqual([]);
+  await test.info().attach("synthetic-ipc-calls", {
+    body: JSON.stringify(calls), contentType: "application/json",
+  });
+  expect(calls.reads).toContain("bootstrap");
+  expect(calls.auditions).toEqual([]);
+  expect(calls.other).toEqual([]);
 }
 
 test("an unbound saved profile blocks audition before permission or a native request", async ({ page }) => {
