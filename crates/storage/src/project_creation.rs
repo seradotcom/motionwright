@@ -98,7 +98,7 @@ fn read_creation(
         super::apply_receipt_binding::read_receipt(conn, id, &key).map_err(|error| match error
             .into_storage_error()
         {
-            StorageError::InvalidApplyReceipt(reason) => invalid_receipt(reason),
+            StorageError::InvalidApplyReceipt(reason) => invalid_receipt(&reason),
             other => other,
         })?;
     let Some(stored) = stored else {
