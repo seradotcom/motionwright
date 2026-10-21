@@ -1,5 +1,6 @@
 """Synthetic gate controls, disposable SQLite and PCM; never a product G2."""
 import copy
+from contextlib import closing
 import json
 from pathlib import Path
 import shutil
@@ -79,7 +80,7 @@ class ReferenceGateControls(unittest.TestCase):
         self.assertEqual([p[2] for p in gate.PLAN[1:4]], ["S", "M", "L"])
         self.assertEqual([p[3] for p in gate.PLAN[4:]], ["truncated-profile", "uneditable-reopen"])
         self.assertEqual(sum(9 if p[2] is None else 1 for p in gate.PLAN), 14)
-        self.assertEqual(gate.PRODUCT_SHA, "77d56a8804457fd2120818a6f87b7ae8afa36665")
+        self.assertEqual(gate.PRODUCT_SHA, "cbf3e7ed1f2d6d3145ebd2a743aba0c5639cad38")
 
     def test_foreign_pin_rejected_before_git(self):
         with mock.patch.object(gate, "source_identity") as git:
@@ -261,13 +262,13 @@ class ReferenceGateControls(unittest.TestCase):
     def test_sqlite_bytes_preserved_and_authority_verified(self):
         original = self.root / "original.sqlite3"
         expected = {"id": "id", "generation": "generation", "revision": 11, "title": "Fixture"}
-        with sqlite3.connect(original) as database:
+        with closing(sqlite3.connect(original)) as database, database:
             database.execute("CREATE TABLE projects(id TEXT,generation TEXT,revision INTEGER,title TEXT,document_json TEXT)")
             database.execute("INSERT INTO projects VALUES(?,?,?,?,?)", (*expected.values(), json.dumps(expected)))
         before = gate.digest(original)
         gate.verify_sqlite(original, expected, self.root)
         self.assertEqual(gate.digest(original), before)
-        with sqlite3.connect(original) as database:
+        with closing(sqlite3.connect(original)) as database, database:
             database.execute("UPDATE projects SET revision=12")
         with self.assertRaisesRegex(gate.ContractError, "authority"):
             gate.verify_sqlite(original, expected, self.root)
