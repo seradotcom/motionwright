@@ -1648,6 +1648,43 @@ impl ProductionCoordinator {
             &audio.sha256,
             MLT_MASTER_MAX_BYTES,
         )?;
+        let has_saved_mix = project
+            .production_design
+            .delivery_recipes
+            .get(&deliverable_id)
+            .and_then(|recipe| recipe.original_mix.as_ref())
+            .is_some();
+        if !project.audio.sfx_cues.is_empty()
+            || project.audio.mix.target_lufs.is_some()
+            || project.audio.mix.target_true_peak_dbfs.is_some()
+            || (!has_saved_mix && project.audio.mix.voice_gain_db != 0.0)
+        {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Native master cannot omit authored gain/SFX or claim unmeasured loudness targets",
+            ));
+        }
+        if has_saved_mix {
+            let mix = crate::original_mix::prepare_saved_original_mix(
+                &self.service,
+                project_id,
+                expected,
+                deliverable_id,
+            )
+            .map_err(|error| Error::new(ErrorCode::Unsupported, error.to_string()))?;
+            let audio_clock =
+                u128::from(mix.plan().sample_frames) * u128::from(motion.frame_rate.num);
+            let video_clock =
+                u128::from(segment.frame_count) * u128::from(motion.frame_rate.den) * 48_000;
+            if mix.wav_sha256() != audio.sha256
+                || audio_clock.abs_diff(video_clock) > u128::from(motion.frame_rate.num)
+            {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Staged soundtrack differs from the saved source mix or exact visual cut",
+                ));
+            }
+        }
 
         let token = hex::encode(Sha256::digest(request_id.as_bytes()));
         let token = &token[..16];

@@ -1,4 +1,7 @@
-use motionwright_native::production::{MltAudioArtifact, verified_native_media_path};
+use motionwright_native::{
+    original_mix::PreparedOriginalMix,
+    production::{MltAudioArtifact, verified_native_media_path},
+};
 use motionwright_service::VerifiedMasterVoice;
 use sha2::{Digest, Sha256};
 use std::{
@@ -82,7 +85,7 @@ fn read_u32(bytes: &[u8]) -> u32 {
 
 /// Only an existing, regular, uncompressed 48 kHz stereo PCM/float WAV may
 /// be handed to the pinned MLT H.264/AAC 48 kHz AV master.
-fn validate_bounded_wav(file: &mut File, actual_bytes: u64) -> Result<(), String> {
+fn validate_bounded_wav<R: Read + Seek>(file: &mut R, actual_bytes: u64) -> Result<(), String> {
     if !(44..=MAX_AUDIO_SOURCE_BYTES).contains(&actual_bytes) {
         return Err("Measured source WAV is outside the bounded size policy.".into());
     }
@@ -172,11 +175,6 @@ pub fn stage_measured_wav(
     voice: &VerifiedMasterVoice,
     master_identity: &str,
 ) -> Result<MltAudioArtifact, String> {
-    let root = fs::symlink_metadata(owner_output_root)
-        .map_err(|_| "Canonical output root is inaccessible.")?;
-    if root.file_type().is_symlink() || !root.is_dir() {
-        return Err("Canonical output root is not a real directory.".into());
-    }
     let input_meta =
         fs::symlink_metadata(&voice.path).map_err(|_| "Measured source audio is inaccessible.")?;
     if input_meta.file_type().is_symlink()
@@ -187,11 +185,48 @@ pub fn stage_measured_wav(
         return Err("Measured source does not match its verified bounded file.".into());
     }
     let mut input = File::open(&voice.path).map_err(|_| "Measured voice cannot be opened.")?;
-    validate_bounded_wav(&mut input, voice.size_bytes)?;
+    stage_verified_wav_reader(
+        owner_output_root,
+        &mut input,
+        &voice.sha256,
+        voice.size_bytes,
+        master_identity,
+    )
+}
+
+/// The source is produced by the native saved-recipe factory, not a claimed
+/// VoiceTrack or a browser-supplied path. It uses the same idempotent staging.
+pub fn stage_original_mix_wav(
+    owner_output_root: &Path,
+    mix: &PreparedOriginalMix,
+    master_identity: &str,
+) -> Result<MltAudioArtifact, String> {
+    let mut input = std::io::Cursor::new(mix.wav_bytes());
+    stage_verified_wav_reader(
+        owner_output_root,
+        &mut input,
+        mix.wav_sha256(),
+        mix.wav_bytes().len() as u64,
+        master_identity,
+    )
+}
+
+fn stage_verified_wav_reader<R: Read + Seek>(
+    owner_output_root: &Path,
+    input: &mut R,
+    source_sha256: &str,
+    source_size_bytes: u64,
+    master_identity: &str,
+) -> Result<MltAudioArtifact, String> {
+    let root = fs::symlink_metadata(owner_output_root)
+        .map_err(|_| "Canonical output root is inaccessible.")?;
+    if root.file_type().is_symlink() || !root.is_dir() {
+        return Err("Canonical output root is not a real directory.".into());
+    }
+    validate_bounded_wav(input, source_size_bytes)?;
     input
         .rewind()
-        .map_err(|_| "Measured voice could not be rewound.")?;
-
+        .map_err(|_| "Verified audio could not be rewound.")?;
     let Some(identity_digest) = master_identity.strip_prefix("mwav-") else {
         return Err("Canonical mastering identity is malformed.".into());
     };
@@ -220,7 +255,7 @@ pub fn stage_measured_wav(
             let previous = verified_native_media_path(
                 owner_output_root,
                 &relative,
-                &voice.sha256,
+                source_sha256,
                 MAX_AUDIO_SOURCE_BYTES,
             )
             .map_err(|_| {
@@ -229,7 +264,7 @@ pub fn stage_measured_wav(
             })?;
             let metadata = fs::metadata(previous)
                 .map_err(|_| "Previously staged source WAV is unreadable.".to_string())?;
-            if metadata.len() != voice.size_bytes {
+            if metadata.len() != source_size_bytes {
                 return Err("Previously staged source WAV byte count changed.".into());
             }
             #[cfg(unix)]
@@ -241,7 +276,7 @@ pub fn stage_measured_wav(
             }
             return Ok(MltAudioArtifact {
                 relative_path: relative,
-                sha256: voice.sha256.clone(),
+                sha256: source_sha256.to_string(),
                 sample_rate: 48_000,
                 channels: 2,
             });
@@ -260,7 +295,7 @@ pub fn stage_measured_wav(
                 break;
             }
             count += read as u64;
-            if count > voice.size_bytes {
+            if count > source_size_bytes {
                 return Err("Measured audio changed during copy.".into());
             }
             output
@@ -271,7 +306,7 @@ pub fn stage_measured_wav(
         output
             .sync_all()
             .map_err(|_| "Native audio staging sync failed.")?;
-        if count != voice.size_bytes || hex::encode(hashed.finalize()) != voice.sha256 {
+        if count != source_size_bytes || hex::encode(hashed.finalize()) != source_sha256 {
             return Err("Measured audio SHA-256 changed during mastering handoff.".into());
         }
         Ok(())
@@ -285,7 +320,7 @@ pub fn stage_measured_wav(
     }
     Ok(MltAudioArtifact {
         relative_path: relative,
-        sha256: voice.sha256.clone(),
+        sha256: source_sha256.to_string(),
         sample_rate: 48_000,
         channels: 2,
     })
@@ -399,6 +434,50 @@ mod tests {
             "reviewed-visual-input",
             &"a".repeat(64),
         )
+    }
+
+    #[test]
+    fn prepared_pcm_reader_retains_exact_bytes_and_never_replaces_a_prior_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = wav_data();
+        let digest = hex::encode(Sha256::digest(&bytes));
+        let identity = fixture_master_identity();
+        let mut first = std::io::Cursor::new(&bytes);
+        let artifact = stage_verified_wav_reader(
+            root.path(),
+            &mut first,
+            &digest,
+            bytes.len() as u64,
+            &identity,
+        )
+        .unwrap();
+        let mut second = std::io::Cursor::new(&bytes);
+        let repeated = stage_verified_wav_reader(
+            root.path(),
+            &mut second,
+            &digest,
+            bytes.len() as u64,
+            &identity,
+        )
+        .unwrap();
+        assert_eq!(artifact.sha256, repeated.sha256);
+        let path = root.path().join(&artifact.relative_path);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        let mut changed = bytes.clone();
+        changed[44] = 1;
+        let wrong_digest = hex::encode(Sha256::digest(&changed));
+        let mut wrong = std::io::Cursor::new(&changed);
+        assert!(
+            stage_verified_wav_reader(
+                root.path(),
+                &mut wrong,
+                &wrong_digest,
+                changed.len() as u64,
+                &identity,
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(path).unwrap(), bytes);
     }
 
     #[test]
@@ -553,5 +632,115 @@ mod tests {
         fs::write(&source, input.get_ref()).unwrap();
         let mut file = File::open(source).unwrap();
         assert!(validate_bounded_wav(&mut file, input.get_ref().len() as u64).is_err());
+    }
+
+    #[test]
+    fn real_saved_factory_stages_exact_mix_bytes_idempotently() {
+        use crate::original_mix_native::tests::saved_mix_fixture;
+        use motionwright_domain::RevisionStamp;
+        use motionwright_native::original_mix::prepare_saved_original_mix;
+
+        let (source_root, service, project) = saved_mix_fixture();
+        let profile_id = project.deliverables[0].id;
+        let mix = prepare_saved_original_mix(
+            &service,
+            project.id,
+            &RevisionStamp::from(&project),
+            profile_id,
+        )
+        .unwrap();
+        assert_ne!(
+            mix.wav_sha256(),
+            project.audio.voice_tracks[0].source_sha256
+        );
+        let identity = canonical_av_request_id(
+            project.id,
+            project.generation,
+            project.revision,
+            profile_id,
+            "synthetic-reviewed-visual-cut",
+            mix.audio_inputs_sha256(),
+        );
+        let output = tempfile::tempdir().unwrap();
+        let first = stage_original_mix_wav(output.path(), &mix, &identity).unwrap();
+        let repeated = stage_original_mix_wav(output.path(), &mix, &identity).unwrap();
+        assert_eq!(first.relative_path, repeated.relative_path);
+        assert_eq!(first.sha256, repeated.sha256);
+        assert_eq!(first.sha256, mix.wav_sha256());
+        assert_eq!(first.sample_rate, 48_000);
+        assert_eq!(first.channels, 2);
+        assert_eq!(
+            fs::read(output.path().join(&first.relative_path)).unwrap(),
+            mix.wav_bytes(),
+        );
+        assert_eq!(fs::read_dir(output.path()).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(output.path().join(&first.relative_path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o077,
+                0,
+            );
+        }
+        assert_eq!(service.project(project.id).unwrap(), project);
+        drop(service);
+        let reopened =
+            motionwright_service::StudioService::open(source_root.path().join("studio.sqlite3"))
+                .unwrap();
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+    }
+
+    #[test]
+    fn real_saved_factory_refuses_changed_prior_stage_without_overwrite() {
+        use crate::original_mix_native::tests::saved_mix_fixture;
+        use motionwright_domain::RevisionStamp;
+        use motionwright_native::original_mix::prepare_saved_original_mix;
+
+        let (source_root, service, project) = saved_mix_fixture();
+        let profile_id = project.deliverables[0].id;
+        let mix = prepare_saved_original_mix(
+            &service,
+            project.id,
+            &RevisionStamp::from(&project),
+            profile_id,
+        )
+        .unwrap();
+        let identity = canonical_av_request_id(
+            project.id,
+            project.generation,
+            project.revision,
+            profile_id,
+            "synthetic-reviewed-visual-cut",
+            mix.audio_inputs_sha256(),
+        );
+        let output = tempfile::tempdir().unwrap();
+        let first = stage_original_mix_wav(output.path(), &mix, &identity).unwrap();
+        let path = output.path().join(&first.relative_path);
+        let mut changed = mix.wav_bytes().to_vec();
+        changed[44] ^= 1;
+        assert_eq!(changed.len(), mix.wav_bytes().len());
+        assert_ne!(hex::encode(Sha256::digest(&changed)), mix.wav_sha256());
+        fs::write(&path, &changed).unwrap();
+        assert_eq!(
+            stage_original_mix_wav(output.path(), &mix, &identity).unwrap_err(),
+            "Previously staged source WAV is missing or changed; reconcile the native request before retrying."
+        );
+        assert_eq!(fs::read(&path).unwrap(), changed);
+        assert_eq!(
+            stage_original_mix_wav(output.path(), &mix, "mwav-not-a-digest").unwrap_err(),
+            "Canonical mastering identity is malformed."
+        );
+        assert_eq!(fs::read(&path).unwrap(), changed);
+        assert_eq!(fs::read_dir(output.path()).unwrap().count(), 1);
+        assert_eq!(service.project(project.id).unwrap(), project);
+        drop(service);
+        let reopened =
+            motionwright_service::StudioService::open(source_root.path().join("studio.sqlite3"))
+                .unwrap();
+        assert_eq!(reopened.project(project.id).unwrap(), project);
     }
 }

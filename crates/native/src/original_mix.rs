@@ -6,7 +6,11 @@
 //! normalization. EBU R128 / intersample true peak need an independent decode.
 //! This 3-bus PCM implementation remains inside motionwright-native and
 //! uses the same pinned Semwright SDK authority as other production paths.
-use motionwright_domain::{AlignmentEvidence, Project, RationalTime};
+use motionwright_domain::{
+    AlignmentEvidence, DeliverableProfile, OriginalMixRecipe, Project, RationalTime, RevisionStamp,
+    VoiceTrack, variant_dependency_fingerprint,
+};
+use motionwright_service::StudioService;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -248,35 +252,23 @@ impl OriginalMixPlan {
             )?;
             prev = w.end_exclusive;
         }
-        // Windows are taken from the existing, manually/reliably aligned
-        // measured voice transcript. There is no amplitude-based voice activity
-        // guess and no template guess based on word count.
-        let mut accepted = project
-            .audio
-            .transcript
-            .iter()
-            .filter(|s| s.voice_track_id == track.id)
-            .map(|s| {
-                let source_is_measured = match &s.alignment {
-                    AlignmentEvidence::Manual => true,
-                    AlignmentEvidence::Measured {
-                        confidence_millis: Some(conf),
-                        ..
-                    } if *conf >= 800 => true,
-                    _ => false,
-                };
-                if !source_is_measured {
-                    return Err(MixError(
-                        "Unreviewed ASR timing cannot drive approved ducking".into(),
-                    ));
-                }
-                Ok(VoiceActivityWindow {
-                    start_sample: time_to_sample(s.start)?,
-                    end_exclusive: time_to_sample(s.end)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        accepted.sort_by_key(|w| w.start_sample);
+        if let Some(saved) = project
+            .production_design
+            .delivery_recipes
+            .get(&self.deliverable_profile_id)
+            .and_then(|recipe| recipe.original_mix.as_ref())
+        {
+            check(
+                saved.music_asset_id == Some(self.original_music.asset_id)
+                    && saved.sfx_asset_id == Some(self.original_sfx.asset_id)
+                    && saved.sfx_gain_db == self.sfx_gain_db
+                    && saved.duck_attenuation_db == self.duck_attenuation_db
+                    && saved.duck_attack_samples == self.duck_attack_samples
+                    && saved.duck_release_samples == self.duck_release_samples,
+                "Mix sources or envelopes differ from the saved delivery recipe",
+            )?;
+        }
+        let accepted = reviewed_voice_windows(project, track.id)?;
         check(
             accepted == self.voice_windows,
             "Mix duck windows differ from the project's source-bound reviewed transcript",
@@ -427,4 +419,248 @@ pub fn write_mix_wav<W: Write>(
     out.write_all(&pcm)
         .map_err(|e| MixError(format!("PCM source could not be written: {e}")))?;
     Ok(evidence)
+}
+
+/// Derive sample windows from the existing authored transcript. Measured
+/// alignment belongs to the selected source bytes, not only a confidence score.
+pub fn reviewed_voice_windows(
+    project: &Project,
+    voice_track_id: Uuid,
+) -> Result<Vec<VoiceActivityWindow>> {
+    let track = project
+        .audio
+        .voice_tracks
+        .iter()
+        .find(|track| track.id == voice_track_id)
+        .ok_or_else(|| MixError("Selected source voice is absent".into()))?;
+    let mut windows = project
+        .audio
+        .transcript
+        .iter()
+        .filter(|segment| segment.voice_track_id == voice_track_id)
+        .map(|segment| {
+            let admitted = match &segment.alignment {
+                AlignmentEvidence::Manual => true,
+                AlignmentEvidence::Measured {
+                    source_sha256,
+                    confidence_millis: Some(confidence),
+                    ..
+                } => source_sha256 == &track.source_sha256 && *confidence >= 800,
+                _ => false,
+            };
+            check(
+                admitted,
+                "Ducking requires known intervals bound to the selected voice SHA-256",
+            )?;
+            Ok(VoiceActivityWindow {
+                start_sample: time_to_sample(segment.start)?,
+                end_exclusive: time_to_sample(segment.end)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    windows.sort_by_key(|window| window.start_sample);
+    Ok(windows)
+}
+
+fn saved_mix_inputs(
+    project: &Project,
+    profile_id: Uuid,
+) -> Result<(&OriginalMixRecipe, &VoiceTrack, &DeliverableProfile)> {
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| MixError("Saved mix has no current delivery profile".into()))?;
+    let recipe = project
+        .production_design
+        .delivery_recipes
+        .get(&profile_id)
+        .and_then(|recipe| recipe.original_mix.as_ref())
+        .ok_or_else(|| {
+            MixError("Save an original mix in the delivery recipe before production".into())
+        })?;
+    recipe
+        .validate(&project.assets)
+        .map_err(|error| MixError(error.to_string()))?;
+    check(
+        project.audio.mix.target_lufs.is_none()
+            && project.audio.mix.target_true_peak_dbfs.is_none(),
+        "Saved mix has no native loudness/true-peak certification; measurement targets remain unsupported",
+    )?;
+    check(
+        project.audio.sfx_cues.is_empty(),
+        "A semantic SFX schedule requires its verified derived bus; an original WAV cannot silently replace those cues",
+    )?;
+    check(
+        profile.included_scene_ids.is_empty()
+            || profile.included_scene_ids
+                == project
+                    .scenes
+                    .iter()
+                    .map(|scene| scene.id)
+                    .collect::<Vec<_>>(),
+        "Saved original mix requires the full original cut; no implicit audio trim, reorder or padding",
+    )?;
+    let voice_id = profile.voice_track_id.ok_or_else(|| {
+        MixError("Bind one measured voice to the saved mix delivery profile".into())
+    })?;
+    check(
+        project.audio.active_voice_track_id == Some(voice_id),
+        "Saved mix delivery voice differs from the active measured voice",
+    )?;
+    let track = project
+        .audio
+        .voice_tracks
+        .iter()
+        .find(|track| track.id == voice_id)
+        .ok_or_else(|| MixError("Saved mix voice is no longer present".into()))?;
+    Ok((recipe, track, profile))
+}
+
+/// An application-owned result of the existing deterministic mixer. Private
+/// fields and no deserializer prevent a WebView receipt from authorizing PCM.
+/// The source voice remains a VoiceTrack; the mixed WAV never becomes one.
+pub struct PreparedOriginalMix {
+    plan: OriginalMixPlan,
+    evidence: OriginalMixEvidence,
+    wav_bytes: Vec<u8>,
+    wav_sha256: String,
+    audio_inputs_sha256: String,
+}
+
+impl PreparedOriginalMix {
+    pub fn plan(&self) -> &OriginalMixPlan {
+        &self.plan
+    }
+
+    pub fn evidence(&self) -> &OriginalMixEvidence {
+        &self.evidence
+    }
+
+    pub fn wav_bytes(&self) -> &[u8] {
+        &self.wav_bytes
+    }
+
+    pub fn wav_sha256(&self) -> &str {
+        &self.wav_sha256
+    }
+
+    pub fn audio_inputs_sha256(&self) -> &str {
+        &self.audio_inputs_sha256
+    }
+
+    pub fn verify_project(&self, project: &Project, profile_id: Uuid) -> Result<()> {
+        check(
+            self.plan.deliverable_profile_id == profile_id,
+            "Prepared mix belongs to another output profile",
+        )?;
+        saved_mix_inputs(project, profile_id)?;
+        self.plan.validate(project)?;
+        let fingerprint = variant_dependency_fingerprint(project, profile_id)
+            .map_err(|error| MixError(error.to_string()))?;
+        check(
+            fingerprint.audio_inputs_sha256 == self.audio_inputs_sha256
+                && canonical_digest(&self.plan)? == self.evidence.source_plan_sha256
+                && self.wav_bytes.len() as u64 == 44 + self.plan.sample_frames * 4
+                && hex::encode(Sha256::digest(&self.wav_bytes)) == self.wav_sha256,
+            "Prepared mix source, plan or exact WAV bytes changed",
+        )
+    }
+}
+
+/// Read the existing canonical recipe and source custody, then use the same
+/// PCM DSP as audition. This has no filesystem effects and grants no release,
+/// human-listening or loudness authority. Staging and native mux remain in
+/// their existing owner-scoped production operations.
+pub fn prepare_saved_original_mix(
+    service: &StudioService,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    profile_id: Uuid,
+) -> Result<PreparedOriginalMix> {
+    let project = service
+        .project(project_id)
+        .map_err(|_| MixError("Saved mix source project is unavailable".into()))?;
+    check(
+        expected.resource == project.resource_key()
+            && expected.generation == project.generation
+            && expected.revision == project.revision,
+        "Saved mix source revision or generation changed",
+    )?;
+    project
+        .validate()
+        .map_err(|error| MixError(error.to_string()))?;
+    let (recipe, track, profile) = saved_mix_inputs(&project, profile_id)?;
+    let music_id = recipe.music_asset_id.ok_or_else(|| {
+        MixError("Saved original mix has no selected music asset; no invented silent source".into())
+    })?;
+    let sfx_id = recipe.sfx_asset_id.ok_or_else(|| {
+        MixError("Saved original mix has no selected SFX asset; no invented silent source".into())
+    })?;
+    let decode = |asset_id| {
+        service
+            .decoded_stem_for_original_mix(project.id, project.revision, asset_id)
+            .map_err(|_| {
+                MixError("Saved mix PCM source failed current project/CAS verification".into())
+            })
+    };
+    let voice = decode(track.asset_id)?;
+    let music = decode(music_id)?;
+    let sfx = decode(sfx_id)?;
+    let receipt = |asset_id, pcm: &motionwright_service::OriginalMixDecodedPcm| PcmStemReceipt {
+        asset_id,
+        source_asset_sha256: pcm.original_asset_sha256.clone(),
+        decoded_pcm_sha256: pcm.decoded_pcm_sha256.clone(),
+        sample_frames: pcm.sample_frames,
+    };
+    let plan = OriginalMixPlan {
+        schema: "motionwright.original-audio-mix/1".into(),
+        project_id: project.id,
+        generation: project.generation,
+        project_revision: project.revision,
+        deliverable_profile_id: profile.id,
+        language: profile.language.clone(),
+        sample_rate: 48_000,
+        channels: 2,
+        sample_frames: voice.sample_frames,
+        measured_voice: receipt(track.asset_id, &voice),
+        original_music: receipt(music_id, &music),
+        original_sfx: receipt(sfx_id, &sfx),
+        voice_gain_db: f64::from(project.audio.mix.voice_gain_db),
+        music_gain_db: f64::from(project.audio.mix.music_gain_db),
+        sfx_gain_db: recipe.sfx_gain_db,
+        duck_attenuation_db: recipe.duck_attenuation_db,
+        duck_attack_samples: recipe.duck_attack_samples,
+        duck_release_samples: recipe.duck_release_samples,
+        voice_windows: reviewed_voice_windows(&project, track.id)?,
+        sample_peak_guard_dbfs: -1.0,
+        source_classification: "ORIGINAL_LICENSED_SOURCE_REQUIRED_NOT_SPEECH_VERIFIED".into(),
+        owner_mixing_approval_authenticated: false,
+        is_mastered: false,
+    };
+    let mut wav_bytes = Vec::new();
+    let evidence = write_mix_wav(
+        &plan,
+        &project,
+        &voice.interleaved_s16le,
+        &music.interleaved_s16le,
+        &sfx.interleaved_s16le,
+        &mut wav_bytes,
+    )?;
+    let fingerprint = variant_dependency_fingerprint(&project, profile_id)
+        .map_err(|error| MixError(error.to_string()))?;
+    let result = PreparedOriginalMix {
+        plan,
+        evidence,
+        wav_sha256: hex::encode(Sha256::digest(&wav_bytes)),
+        wav_bytes,
+        audio_inputs_sha256: fingerprint.audio_inputs_sha256,
+    };
+    // All three reads and DSP may have overlapped a real edit or a generation
+    // replacement. Never return an artifact from the stale source snapshot.
+    let latest = service
+        .project(project_id)
+        .map_err(|_| MixError("Saved mix project became unavailable during preparation".into()))?;
+    result.verify_project(&latest, profile_id)?;
+    Ok(result)
 }
