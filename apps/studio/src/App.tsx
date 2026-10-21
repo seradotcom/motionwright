@@ -45,10 +45,15 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProjectMutationGate, ProjectReadSupersededError } from "./projectMutation";
 import { ProjectLibraryDialog } from "./ProjectLibraryDialog";
+import ProjectProjectionWorkspace from "./ProjectProjectionWorkspace";
+import {
+  openSavedProjectView, projectViewId, projectViewRevision,
+  type ProjectOpenMode, type StudioProjectView,
+} from "./projectProjection";
 import FileImportRecovery, { type FileImportConfirmation } from "./FileImportRecovery";
 import { removeFileImport, type RetainedFileImport } from "./fileImport";
 import {
-  forgetProjectSelection, listProjectLibrary, openProjectFromLibrary,
+  forgetProjectSelection, listProjectLibrary,
   readProjectSelection, rememberOpenedProject, type ProjectSelectionRead,
   createProjectWithRetainedIntent, discardProjectCreationCopy, readProjectCreations,
   recoverRetainedProjectCreation, PROJECT_CREATION_PREFIX, type ProjectCreationCopy,
@@ -1418,7 +1423,14 @@ function Timeline({
   );
 }
 export default function App() {
-  const [boot, setBoot] = useState<Bootstrap | null>(null);
+  const [view, setView] = useState<StudioProjectView | null>(null);
+  const viewRef = useRef<StudioProjectView | null>(view);
+  const boot = view?.kind === "full" ? view.boot : null;
+  const setBoot = useCallback((next: Bootstrap) => {
+    const accepted: StudioProjectView = { kind: "full", boot: next };
+    viewRef.current = accepted;
+    setView(accepted);
+  }, []);
   const [workspace, setWorkspace] = useState<Workspace>("Timeline");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
@@ -1473,9 +1485,29 @@ export default function App() {
     setNativeRenderReceipt(null);
     setNativeAvReceipt(null);
     setNativeExportReceipt(null);
-  }, []);
+  }, [setBoot]);
 
-  const rememberSelection = useCallback((opened: Project, before: ProjectSelectionRead) => {
+  const publishOpenedView = useCallback((next: StudioProjectView) => {
+    if (next.kind === "full") {
+      publishOpenedProject(next.boot.project, next.boot.native_sdk);
+      return;
+    }
+    // A saved-page observation has no complete Project or editable branch.
+    bootRef.current = null;
+    viewRef.current = next;
+    shellSdkRef.current = next.native_sdk;
+    setView(next);
+    setBootReady(true);
+    setBootError(null);
+    setSelectedSceneId(null);
+    setPlaying(false);
+    setPaletteOpen(false);
+    setNativeRenderReceipt(null);
+    setNativeAvReceipt(null);
+    setNativeExportReceipt(null);
+  }, [publishOpenedProject]);
+
+  const rememberSelection = useCallback((opened: Pick<Project, "id">, before: ProjectSelectionRead) => {
     // Preference failure must never turn an admitted open into a reported
     // project failure or roll back the editor's real canonical snapshot.
     try {
@@ -1488,69 +1520,90 @@ export default function App() {
     }
   }, []);
 
+  const admitSavedView = useCallback(async (id: string, mode: ProjectOpenMode = "auto"): Promise<StudioProjectView> => {
+    const source = viewRef.current;
+    return mutationGate.current.readView({
+      source: projectViewRevision(source),
+      current: () => projectViewRevision(viewRef.current),
+      requestedProjectId: id,
+      load: () => openSavedProjectView(id, mode, sdk => {
+        // Shell information is not project authority. Keep library creation
+        // available when the selected saved identity cannot be opened.
+        if (viewRef.current === source) shellSdkRef.current = sdk;
+      }),
+      view: projectViewRevision,
+      publish: publishOpenedView,
+      pending: setBusy,
+    });
+  }, [publishOpenedView]);
+
   const loadProject = useCallback(async () => {
-    const openingFrom = bootRef.current;
+    const openingFrom = viewRef.current;
     setBootError(null);
     const desktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-    // Preserve the existing explicitly labelled browser demo. Library commands
-    // have no demo fallback and are exposed only when the desktop bridge exists.
+    // Preserve the explicitly labelled browser demo. Saved project reads have
+    // no demo fallback and are exposed only when the desktop bridge exists.
     if (!desktop) {
       try {
         const value = await bootstrap();
-        if (bootRef.current !== openingFrom) return;
+        if (viewRef.current !== openingFrom) return;
         if (value.project) publishOpenedProject(value.project, value.native_sdk);
       } catch (reason) {
-        if (bootRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
+        if (viewRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
       }
       return;
     }
     const saved = readProjectSelection();
     selectionRef.current = saved;
     if (saved.status === "invalid" || saved.status === "unavailable") setLibraryNotice(saved.message);
-    const requestedId = openingFrom?.project.id ?? (saved.status === "remembered" ? saved.projectId : null);
+    const requestedId = openingFrom ? projectViewId(openingFrom) : saved.status === "remembered" ? saved.projectId : null;
     try {
-      await mutationGate.current.read<Project, StudioBootstrap>({
-        source: openingFrom?.project ?? null,
-        current: () => bootRef.current?.project ?? null,
-        requestedProjectId: requestedId,
-        load: () => bootstrap(requestedId),
-        project: value => value.project,
-        publish: value => {
-          shellSdkRef.current = value.native_sdk;
-          setBootReady(true);
-          if (value.project) {
-            publishOpenedProject(value.project, value.native_sdk);
-          } else {
-            // A failed selected identity retains the editor and preference.
-            // Healthy projects remain reachable through an explicit library choice.
-            setBootError(value.project_selection.status === "unavailable" ? value.project_selection.message : null);
+      if (requestedId !== null) {
+        await admitSavedView(requestedId);
+      } else {
+        await mutationGate.current.readView<StudioBootstrap>({
+          source: projectViewRevision(openingFrom),
+          current: () => projectViewRevision(viewRef.current),
+          requestedProjectId: null,
+          load: () => bootstrap(null),
+          view: () => null,
+          publish: value => {
+            shellSdkRef.current = value.native_sdk;
+            setBootReady(true);
             setLibraryOpen(true);
-          }
-        },
-        pending: setBusy,
-      });
+          },
+          pending: setBusy,
+        });
+      }
     } catch (reason) {
       if (reason instanceof ProjectReadSupersededError) return;
-      if (bootRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
+      if (viewRef.current === openingFrom) setBootError(reason instanceof Error ? reason.message : String(reason));
     }
-  }, [publishOpenedProject]);
+  }, [admitSavedView, publishOpenedProject]);
 
-  const openLibraryProject = useCallback(async (id: string): Promise<Project> => {
-    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
-    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+  const openLibraryProject = useCallback(async (id: string, mode: ProjectOpenMode = "auto"): Promise<Pick<Project, "id">> => {
     const saved = readProjectSelection();
-    const opened = await mutationGate.current.read<Project, Project>({
-      source: boot?.project ?? null,
-      current: () => bootRef.current?.project ?? null,
-      requestedProjectId: id,
-      load: () => openProjectFromLibrary(id),
-      project: value => value,
-      publish: value => publishOpenedProject(value, nativeSdk),
+    const opened = await admitSavedView(id, mode);
+    const identity = { id: projectViewId(opened) };
+    rememberSelection(identity, saved);
+    return identity;
+  }, [admitSavedView, rememberSelection]);
+
+  const readProjectedPage = useCallback(async <R,>(load: () => Promise<R>, publish: (result: R) => void): Promise<R> => {
+    // Bind a page callback to its rendered view. A newer opening must not
+    // silently give an older scene request another project's identity.
+    const source = view;
+    if (source?.kind !== "projection") throw new Error("The saved-page view is no longer active.");
+    return mutationGate.current.readView({
+      source: projectViewRevision(source),
+      current: () => projectViewRevision(viewRef.current),
+      requestedProjectId: source.head.identity.project_id,
+      load,
+      view: () => projectViewRevision(source),
+      publish,
       pending: setBusy,
     });
-    rememberSelection(opened, saved);
-    return opened;
-  }, [boot, publishOpenedProject, rememberSelection]);
+  }, [view]);
 
   const refreshCreations = useCallback(() => {
     try {
@@ -1583,6 +1636,7 @@ export default function App() {
     const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
     if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
     const saved = readProjectSelection();
+    const source = projectViewRevision(viewRef.current);
     let observed: Awaited<ReturnType<typeof createProjectWithRetainedIntent>> | undefined;
     try {
       const opened = await mutationGate.current.create<Project>(bootRef.current?.project ?? null,
@@ -1591,8 +1645,11 @@ export default function App() {
           observed = await createProjectWithRetainedIntent(title);
           // The receipt is the original r0. Read current authority separately,
           // including revisions authored after the creation transaction.
-          return openProjectFromLibrary(observed.outcome.project.id);
-        }, value => publishOpenedProject(value, nativeSdk), setBusy);
+          const current = await openSavedProjectView(observed.outcome.project.id, "editor");
+          if (current.kind !== "full") throw new Error("The new project's complete editor is unavailable. Recover its original creation request.");
+          return current.boot.project;
+        }, value => publishOpenedProject(value, nativeSdk), setBusy,
+        { source, current: () => projectViewRevision(viewRef.current) });
       rememberSelection(opened, saved);
       if (observed) finishObservedCreation(observed.copy, observed.warning);
       return opened;
@@ -1600,9 +1657,7 @@ export default function App() {
   }, [publishOpenedProject, rememberSelection, finishObservedCreation, refreshCreations]);
 
   const recoverLibraryCreation = useCallback(async (copy: ProjectCreationCopy): Promise<Project | null> => {
-    const source = bootRef.current?.project ?? null;
-    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
-    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+    const source = projectViewRevision(viewRef.current);
     const saved = readProjectSelection();
     try {
       const observed = await recoverRetainedProjectCreation(copy);
@@ -1610,17 +1665,18 @@ export default function App() {
         setLibraryNotice(observed.warning);
         return null;
       }
-      const opened = await mutationGate.current.read<Project, Project>({
-        source, current: () => bootRef.current?.project ?? null,
+      const opened = await mutationGate.current.readView({
+        source, current: () => projectViewRevision(viewRef.current),
         requestedProjectId: observed.outcome.project.id,
-        load: () => openProjectFromLibrary(observed.outcome!.project.id),
-        project: value => value, publish: value => publishOpenedProject(value, nativeSdk), pending: setBusy,
+        load: () => openSavedProjectView(observed.outcome!.project.id, "editor"),
+        view: projectViewRevision, publish: publishOpenedView, pending: setBusy,
       });
-      rememberSelection(opened, saved);
+      if (opened.kind !== "full") throw new Error("The recovered project's complete editor is unavailable. Its creation record was retained.");
+      rememberSelection(opened.boot.project, saved);
       finishObservedCreation(observed.copy, observed.warning);
-      return opened;
+      return opened.boot.project;
     } finally { refreshCreations(); }
-  }, [publishOpenedProject, rememberSelection, finishObservedCreation, refreshCreations]);
+  }, [publishOpenedView, rememberSelection, finishObservedCreation, refreshCreations]);
 
   const discardLibraryCreation = useCallback((copy: ProjectCreationCopy) => {
     try { discardProjectCreationCopy(copy); }
@@ -1723,7 +1779,7 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (libraryOpen) return;
+      if (libraryOpen || !project) return;
       if (isPaletteShortcut(event)) {
         event.preventDefault();
         event.stopPropagation();
@@ -1761,7 +1817,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [stepFrame, paletteOpen, libraryOpen]);
+  }, [stepFrame, paletteOpen, libraryOpen, project]);
 
   const transactProject = useCallback(async (operation: (source: Project) => Promise<Project>) => {
     // Bind intent to the rendered snapshot; do not silently rebase an old UI callback.
@@ -1894,14 +1950,30 @@ export default function App() {
 
   const libraryDialog = desktopBridge ? (
     <ProjectLibraryDialog key="project-library" open={libraryOpen}
-      currentProjectId={project?.id ?? null} onClose={() => setLibraryOpen(false)}
+      currentProjectId={view ? projectViewId(view) : null} onClose={() => setLibraryOpen(false)}
       onList={listProjectLibrary} onOpen={openLibraryProject}
+      onBrowse={id => openLibraryProject(id, "pages")}
       onCreate={createLibraryProject} creationCopies={creationCopies}
       creationLimited={creationLimited} creationError={creationError}
       onRecoverCreation={recoverLibraryCreation} onDiscardCreation={discardLibraryCreation}
       onRefreshCreations={refreshCreations}
       notice={[bootError, libraryNotice].filter(Boolean).join(" ") || null} />
   ) : null;
+
+  if (view?.kind === "projection") {
+    const id = view.head.identity.project_id;
+    return (
+      <main className="projection-shell" style={{ minHeight: "100vh", overflow: "auto" }}>
+        <ProjectProjectionWorkspace
+          key={JSON.stringify([id, view.head.identity.generation, view.head.identity.revision])}
+          view={view} busy={busy} notice={[bootError, libraryNotice].filter(Boolean).join(" ") || null}
+          read={readProjectedPage} onLibrary={() => setLibraryOpen(true)}
+          onReload={async () => { await openLibraryProject(id, "pages"); }}
+          onOpenEditor={async () => { await openLibraryProject(id, "editor"); }} />
+        {libraryDialog}
+      </main>
+    );
+  }
 
   if (!project || !boot) {
     return (

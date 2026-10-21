@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootstrap } from "./api";
 import { fixtureBootstrap, fixtureProject } from "./fixture";
-import { ProjectMutationGate, ProjectReadSupersededError, type ProjectRevision } from "./projectMutation";
+import { ProjectMutationGate, ProjectReadSupersededError, type ProjectRevision, type ProjectViewRevision } from "./projectMutation";
 
 const base = (): ProjectRevision => ({ id: "project-a", generation: "generation-a", revision: 12, active_branch: "branch-a" });
 function deferred<T>() {
@@ -355,5 +355,138 @@ describe("synthetic desktop bootstrap transport contract", () => {
     const reply={project,project_selection:{status:"selected",project_id:project.id},native_sdk};
     transport(reply);
     expect((await bootstrap(project.id)).project).toEqual(project);
+  });
+});
+
+
+describe("bounded observations share the existing project actor", () => {
+  const id = "f1000000-0000-4000-8000-000000000001";
+  const generation = "f1000000-0000-4000-8000-000000000002";
+  const projected = (revision = "18446744073709551615"): ProjectViewRevision =>
+    ({ kind: "projection", identity: { project_id: id, generation, revision } });
+  const observedRead = (gate: ProjectMutationGate, source: ProjectViewRevision | null,
+    current: () => ProjectViewRevision | null, result: Promise<ProjectViewRevision>,
+    publish = vi.fn(), pending = vi.fn()) => gate.readView({
+      source, current, requestedProjectId: id, load: () => result, view: value => value, publish, pending,
+    });
+
+  it("keeps a native u64 revision exact without inventing an editable branch", async () => {
+    const source = projected();
+    const publish = vi.fn();
+    await observedRead(new ProjectMutationGate(), source, () => source, Promise.resolve(projected()), publish);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(source);
+    expect(source).toEqual({ kind: "projection", identity: { project_id: id, generation, revision: "18446744073709551615" } });
+    expect("project" in source).toBe(false);
+  });
+
+  it.each([
+    ["9007199254740993", "9007199254740992"],
+    ["18446744073709551615", "18446744073709551614"],
+    ["100", "99"],
+  ])("refuses exact decimal regression %s to %s", async (before, after) => {
+    const source = projected(before), publish = vi.fn();
+    await expect(observedRead(new ProjectMutationGate(), source, () => source, Promise.resolve(projected(after)), publish))
+      .rejects.toThrow("does not match");
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it.each(["01", "18446744073709551616", "1e4", "-1"])("rejects a noncanonical source before dispatch: %s", async revision => {
+    const source = projected(revision), load = vi.fn(async () => projected());
+    await expect(new ProjectMutationGate().readView({
+      source, current: () => source, requestedProjectId: id, load, view: value => value, publish: vi.fn(),
+    })).rejects.toThrow("before opening");
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it.each(["older first", "newer first"])("uses one read epoch across full and projected views: %s", async order => {
+    const gate = new ProjectMutationGate(), old = deferred<ProjectViewRevision>(), latest = deferred<ProjectRevision>();
+    let visible: ProjectViewRevision | null = null;
+    const pending = vi.fn(), publish = vi.fn((value: ProjectViewRevision) => { visible = value; });
+    const first = observedRead(gate, null, () => visible, old.promise, publish, pending);
+    const refused = expect(first).rejects.toBeInstanceOf(ProjectReadSupersededError);
+    const second = gate.read({ source: null, current: () => visible?.kind === "full" ? visible.project : null,
+      requestedProjectId: "newer-full", load: () => latest.promise, project: value => value,
+      publish: value => publish({ kind: "full", project: value }), pending });
+    if (order === "older first") { old.resolve(projected()); await refused; expect(visible).toBeNull(); }
+    latest.resolve({ ...base(), id: "newer-full" }); await second;
+    if (order === "newer first") { old.resolve(projected()); await refused; }
+    expect(visible).toEqual({ kind: "full", project: { ...base(), id: "newer-full" } });
+    expect(publish).toHaveBeenCalledOnce();
+    expect(pending.mock.calls).toEqual([[true], [true], [false]]);
+  });
+
+  it("a page read synchronously blocks both an edit and creation on the shared latch", async () => {
+    const gate = new ProjectMutationGate(), source = projected(), reply = deferred<ProjectViewRevision>();
+    const reading = observedRead(gate, source, () => source, reply.promise);
+    const effect = vi.fn(async () => ({ ...base(), id: "created" }));
+    await expect(gate.run(base(), base, effect, vi.fn())).rejects.toThrow("Finish the current");
+    await expect(gate.create(null, () => null, effect, vi.fn())).rejects.toThrow("Finish the current");
+    expect(effect).not.toHaveBeenCalled(); expect(gate.activity.busy).toBe(true);
+    reply.resolve(source); await reading; expect(gate.activity.busy).toBe(false);
+  });
+
+  it("an actual mutation latch blocks a projected read before its load runs", async () => {
+    const gate = new ProjectMutationGate(), reply = deferred<ProjectRevision>();
+    const editing = gate.run(base(), base, () => reply.promise, vi.fn());
+    const load = vi.fn(async () => projected());
+    await expect(gate.readView({ source: null, current: () => null, requestedProjectId: id,
+      load, view: value => value, publish: vi.fn() })).rejects.toThrow("Finish the current");
+    expect(load).not.toHaveBeenCalled(); reply.resolve({ ...base(), revision: 13 }); await editing;
+  });
+
+  it.each(["project", "generation", "revision", "view kind"])("refuses a late page after an observed %s change", async field => {
+    const gate = new ProjectMutationGate(), source = projected("12"), reply = deferred<ProjectViewRevision>(), publish = vi.fn();
+    let visible = source;
+    const reading = observedRead(gate, source, () => visible, reply.promise, publish);
+    const refused = expect(reading).rejects.toThrow("changed while opening");
+    visible = field === "view kind" ? { kind: "full", project: { id, generation, revision: 12, active_branch: "real-full-branch" } }
+      : { kind: "projection", identity: {
+        project_id: field === "project" ? "f1000000-0000-4000-8000-000000000003" : id,
+        generation: field === "generation" ? "f1000000-0000-4000-8000-000000000004" : generation,
+        revision: field === "revision" ? "13" : "12",
+      } };
+    reply.resolve(source); await refused; expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("admits an explicit restored generation without treating a lower revision as the old generation", async () => {
+    const source = projected(), next: ProjectViewRevision = { kind: "projection", identity: {
+      project_id: id, generation: "f1000000-0000-4000-8000-000000000004", revision: "0",
+    } };
+    const publish = vi.fn();
+    await observedRead(new ProjectMutationGate(), source, () => source, Promise.resolve(next), publish);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(next);
+  });
+
+  it("a failed projection observation is read once and preserves the current view", async () => {
+    const gate = new ProjectMutationGate(), source = projected("12"), load = vi.fn(async () => { throw { code: "unavailable" }; });
+    let visible = source;
+    const publish = vi.fn((next: ProjectViewRevision) => { visible = next; });
+    await expect(gate.readView({ source, current: () => source, requestedProjectId: id, load,
+      view: () => source, publish })).rejects.toEqual({ code: "unavailable" });
+    expect(load).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled();
+    expect(visible).toBe(source); expect(gate.activity).toEqual({ serial: 1, busy: false });
+  });
+
+  it("refuses a create callback whose projected source already changed without dispatch", async () => {
+    const source = projected("12"), operation = vi.fn(async () => base());
+    await expect(new ProjectMutationGate().create(null, () => null, operation, vi.fn(), undefined,
+      { source, current: () => projected("13") })).rejects.toThrow("before creation");
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("preserves a newer projected view when the original creation returns late", async () => {
+    const gate = new ProjectMutationGate(), source = projected("12"), reply = deferred<ProjectRevision>(), publish = vi.fn();
+    let visible = source;
+    const creation = gate.create(null, () => null, () => reply.promise, publish, undefined, { source, current: () => visible });
+    const refused = expect(creation).rejects.toThrow("changed during creation");
+    visible = projected("13"); reply.resolve({ ...base(), id: "created", revision: 0 }); await refused;
+    expect(publish).not.toHaveBeenCalled(); expect(visible).toEqual(projected("13"));
+  });
+
+  it("a creation from pages must return a distinct actual document", async () => {
+    const source = projected("12"), publish = vi.fn();
+    await expect(new ProjectMutationGate().create(null, () => null, async () => ({ ...base(), id, revision: 0 }),
+      publish, undefined, { source, current: () => source })).rejects.toThrow("expected new document");
+    expect(publish).not.toHaveBeenCalled();
   });
 });
