@@ -27,11 +27,15 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Select complete portability, cache publication, or desktop OTIO export contracts
+        description: Select portability, cache publication, desktop OTIO export, or bounded projection contracts
         required: true
         default: full
         type: choice
-        options: [full, derived_cache, otio_export]
+        options: [full, derived_cache, otio_export, project_projection]
+      product_source_sha:
+        description: Reviewed product commit required for project_projection
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -42,7 +46,7 @@ env:
 
 jobs:
   storage-contracts:
-    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export' && inputs.verification_scope != 'project_projection') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,27 +65,34 @@ jobs:
         run: cargo clippy --locked -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
 
   file-import-platforms:
-    name: File import authority and CAS (${{ matrix.os }})
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && 'Bounded project projection' || 'File import authority and CAS' }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'otio_export' && 1 || 3 }}
       matrix:
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'derived_cache' || inputs.verification_scope == 'otio_export') && '["macos-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'derived_cache' || inputs.verification_scope == 'otio_export') && '["macos-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     env:
       CARGO_TERM_COLOR: never
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && 2 || 1 }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
-          components: rustfmt
+          components: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && 'rustfmt, clippy' || 'rustfmt' }}
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install selected desktop compilation dependencies
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
       - name: Always verify selected export source and fast contracts
         if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'otio_export'
         shell: python
@@ -102,70 +113,129 @@ jobs:
       - name: Verify exact checkout and selective file import contracts
         shell: python
         run: |
-          import hashlib, json, os, re, subprocess
+          import hashlib, json, os, re, subprocess, sys, time
           from pathlib import Path
+
+          WORKFLOW_PATH = ".github/workflows/project-portability.yml"
+          PROJECTION_PRODUCT = "f4e7f4930940ce48b243f67dee13556172b1de89"
+          PROJECTION_PRODUCT_TREE = "6737ed76dfba064001ce409c5901a243ca3dda86"
+          PROJECTION_PRODUCT_PATHS = (
+              "crates/domain/src/lib.rs",
+              "crates/service/src/lib.rs",
+              "crates/service/src/project_projection.rs",
+              "crates/service/tests/project_projection.rs",
+              "crates/storage/src/lib.rs",
+              "crates/storage/src/project_projection.rs",
+              "docs/reliability/project-projection-paging.md",
+              "apps/desktop/src-tauri/src/main.rs",
+              "apps/desktop/src-tauri/src/project_projection.rs",
+              "crates/service/tests/desktop_project_projection.rs",
+          )
+          PROJECTION_DEPENDENCIES = (
+              "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml",
+              "crates/domain/Cargo.toml", "crates/storage/Cargo.toml",
+              "crates/service/Cargo.toml", "apps/desktop/src-tauri/Cargo.toml",
+              "tooling/ci_test_runner.py", "tooling/tests/test_ci_test_runner.py",
+          )
 
           def git(*args):
               return subprocess.check_output(["git", *args], encoding="utf-8", errors="replace").strip()
 
+          def source_snapshot(source, paths, product=None):
+              captured = {}
+              for source_path in paths:
+                  git_bytes = subprocess.check_output(["git", "show", source + ":" + source_path])
+                  checkout_bytes = Path(source_path).read_bytes()
+                  exact_checkout = checkout_bytes == git_bytes
+                  checkout_crlf = b"\r\n" not in git_bytes and checkout_bytes == git_bytes.replace(b"\n", b"\r\n")
+                  if not exact_checkout and not checkout_crlf:
+                      raise RuntimeError("portability-source-bytes-mismatch:" + source_path)
+                  captured[source_path] = {
+                      "git_blob_oid": git("rev-parse", source + ":" + source_path),
+                      "git_sha256": hashlib.sha256(git_bytes).hexdigest(), "git_bytes": len(git_bytes),
+                      "checkout_sha256": hashlib.sha256(checkout_bytes).hexdigest(), "checkout_bytes": len(checkout_bytes),
+                      "bytes_equal": exact_checkout, "equal_after_exact_lf_to_crlf": checkout_crlf,
+                  }
+                  if product and source_path != WORKFLOW_PATH:
+                      product_bytes = subprocess.check_output(["git", "show", product + ":" + source_path])
+                      if product_bytes != git_bytes:
+                          raise RuntimeError("projection-product-bytes-mismatch:" + source_path)
+                      captured[source_path]["product_git_blob_oid"] = git("rev-parse", product + ":" + source_path)
+                      captured[source_path]["product_sha256"] = hashlib.sha256(product_bytes).hexdigest()
+              return captured
+
+          def verify_test_output(returncode, output, expected):
+              observed = re.findall(r"^test (\S+) \.\.\. (\w+)\s*$", output, re.MULTILINE)
+              summary = re.findall(
+                  r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",
+                  output, re.MULTILINE,
+              )
+              passed = (
+                  returncode == 0
+                  and len(observed) == len(expected)
+                  and dict(observed) == {name: "ok" for name in expected}
+                  and len(summary) == 1
+                  and summary[0][:5] == ("ok", str(len(expected)), "0", "0", "0")
+              )
+              return passed, observed, summary
+
+          def checkpoint():
+              (root / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          def run_logged(stage, expected=None):
+              stage["status"] = "RUNNING"
+              checkpoint()
+              started = time.monotonic()
+              data = b""
+              try:
+                  result = subprocess.run(stage["command"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  data = result.stdout
+                  output = data.decode("utf-8", errors="replace")
+                  print(output, end="", flush=True)
+                  stage["returncode"] = result.returncode
+                  if expected is None:
+                      stage["status"] = "PASS" if result.returncode == 0 else "FAIL"
+                  else:
+                      passed, observed, summary = verify_test_output(result.returncode, output, expected)
+                      stage.update({
+                          "status": "PASS" if passed else "FAIL",
+                          "observed_tests": observed, "summary": summary,
+                          "filtered_out": int(summary[0][5]) if len(summary) == 1 else None,
+                      })
+              except Exception as exc:
+                  stage["status"] = "FAIL"
+                  stage["error"] = {"type": type(exc).__name__, "message": str(exc)}
+                  raise
+              finally:
+                  stage["elapsed_seconds"] = time.monotonic() - started
+                  stage["log"] = stage["suite"] + ".log"
+                  (root / stage["log"]).write_bytes(data)
+                  stage["log_sha256"] = hashlib.sha256(data).hexdigest()
+                  checkpoint()
+
           actual = git("rev-parse", "HEAD")
-          if actual != os.environ["GITHUB_SHA"] or git("status", "--porcelain", "--untracked-files=no"):
-              raise SystemExit("file-import-platform-checkout-mismatch")
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
           selection = "full"
           if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
               selection = (event.get("inputs") or {}).get("verification_scope", "full")
-          if selection not in {"full", "derived_cache", "otio_export"}:
+          if selection not in {"full", "derived_cache", "otio_export", "project_projection"}:
               raise SystemExit("portability-selection-unsupported")
+          projection = selection == "project_projection"
           pr = event.get("pull_request") or {}
           root = Path("verification/file-import-platforms")
-          root.mkdir(parents=True, exist_ok=True)
+          root.mkdir(parents=True, exist_ok=not projection)
           receipt = {
               "schema": "motionwright.file-import-platform-check/1",
-              "actual_checkout": actual, "tree": git("rev-parse", "HEAD^{tree}"),
-              "parents": [line.removeprefix("parent ") for line in
-                          git("cat-file", "-p", "HEAD").split("\n\n", 1)[0].splitlines()
-                          if line.startswith("parent ")],
+              "actual_checkout": actual, "tree": None, "parents": [],
               "event": os.environ["GITHUB_EVENT_NAME"],
               "pr_head": (pr.get("head") or {}).get("sha"),
               "pr_base": (pr.get("base") or {}).get("sha"),
               "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "runner_os": os.environ["RUNNER_OS"],
-              "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
-              "cargo": subprocess.check_output(["cargo", "--version"], text=True).strip(),
+              "job": os.environ.get("GITHUB_JOB"), "runner_os": os.environ["RUNNER_OS"],
               "selection": selection, "selected_sources": {}, "results": [],
+              "status": "NOT_RUN", "terminal_custody": "NOT_RUN",
           }
-          source_paths = (
-              ".github/workflows/project-portability.yml", "Cargo.lock", "SOURCE_LOCK.json",
-              "crates/storage/src/derived_cache.rs", "crates/service/tests/derived_cache_publication.rs",
-              "crates/storage/tests/schema_migration_atomicity.rs",
-          )
-          if selection == "otio_export":
-              source_paths = (
-                  ".github/workflows/project-portability.yml",
-                  "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml",
-                  "crates/service/Cargo.toml",
-                  "crates/service/tests/desktop_project_export.rs",
-                  "apps/desktop/src-tauri/Cargo.toml",
-                  "apps/desktop/src-tauri/src/effect_grants.rs",
-                  "apps/desktop/src-tauri/src/local_error.rs",
-                  "apps/desktop/src-tauri/src/project_export.rs",
-                  "apps/desktop/src-tauri/src/project_library.rs",
-              )
-          for source_path in source_paths:
-              git_bytes = subprocess.check_output(["git", "show", actual + ":" + source_path])
-              checkout_bytes = Path(source_path).read_bytes()
-              exact_checkout = checkout_bytes == git_bytes
-              checkout_crlf = b"\r\n" not in git_bytes and checkout_bytes == git_bytes.replace(b"\n", b"\r\n")
-              if not exact_checkout and not checkout_crlf:
-                  raise SystemExit("portability-source-bytes-mismatch:" + source_path)
-              receipt["selected_sources"][source_path] = {
-                  "git_blob_oid": git("rev-parse", actual + ":" + source_path),
-                  "git_sha256": hashlib.sha256(git_bytes).hexdigest(), "git_bytes": len(git_bytes),
-                  "checkout_sha256": hashlib.sha256(checkout_bytes).hexdigest(), "checkout_bytes": len(checkout_bytes),
-                  "bytes_equal": exact_checkout, "equal_after_exact_lf_to_crlf": checkout_crlf,
-              }
-          print(json.dumps(receipt, sort_keys=True), flush=True)
+
           cases = [
               ("service", ["-p", "motionwright-service", "--test", "file_import_idempotency"], {
                   "asset_import_replays_identical_bytes_and_metadata_after_reopen",
@@ -297,44 +367,195 @@ jobs:
               ]
               if len(cases) != 1 or len(cases[0][2]) != 9:
                   raise SystemExit("otio-export-selection-incomplete")
+          elif selection == "project_projection":
+              cases = [('projection-storage',
+                ['-p', 'motionwright-storage', '--lib', 'project_projection::tests::'],
+                {'project_projection::tests::projection_authority_rejects_json_coercions_and_row_mismatches',
+                 'project_projection::tests::projection_keyframes_keep_rational_half_open_scene_bounds',
+                 'project_projection::tests::projection_keys_reject_duplicates_and_nul_aliases_without_truncating_values',
+                 'project_projection::tests::projection_oversized_fragment_and_malformed_schema_errors_are_bounded',
+                 'project_projection::tests::projection_preserves_accepted_uuid_forms_and_escaped_valid_field_names',
+                 'project_projection::tests::projection_read_transaction_keeps_one_snapshot_during_real_peer_apply',
+                 'project_projection::tests::projection_revision_wire_is_exact_and_rejects_noncanonical_decimals',
+                 'project_projection::tests::projection_validates_selected_content_without_inventing_a_complete_scene'}),
+               ('projection-service',
+                ['-p', 'motionwright-service', '--test', 'project_projection'],
+                {'empty_and_terminal_pages_are_distinct_from_invalid_requests',
+                 'existing_full_loader_round_trips_all_500_scenes_and_15000_objects',
+                 'large_project_opens_in_bounded_pages_and_matches_persisted_content',
+                 'node_pages_preserve_cross_page_parents_and_all_logical_storage_rows',
+                 'oversized_pages_fail_without_truncating_valid_unicode_nodes',
+                 'pages_reject_stale_and_mis_scoped_cursors_after_real_peer_commit',
+                 'response_budget_includes_restored_defaults_and_wire_envelope',
+                 'utf16_database_preserves_utf8_page_budgets_and_escaped_text'}),
+               ('projection-desktop-adapter',
+                ['-p', 'motionwright-service', '--test', 'desktop_project_projection'],
+                {'desktop_errors_preserve_identity_conflicts_and_reject_malformed_requests',
+                 'desktop_oversized_pages_return_a_bounded_error_without_truncating_content',
+                 'desktop_pages_round_trip_requests_and_returned_cursors_without_a_full_load',
+                 'desktop_storage_failures_expose_no_sql_paths_or_document_text'})]
+
           if not cases:
               raise SystemExit("portability-selection-empty")
           receipt["selected_suites"] = [case[0] for case in cases]
           receipt["expected_invocations"] = sum(len(case[2]) for case in cases)
           for suite, selector, expected in cases:
               test_options = ["--nocapture"] if selection == "otio_export" else ["--test-threads=1"]
-              command = ["cargo", "test", "--locked", *selector, "--", *test_options]
-              result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-              data = result.stdout
-              output = data.decode("utf-8", errors="replace")
-              print(output, end="", flush=True)
-              (root / (suite + ".log")).write_bytes(data)
-              observed = re.findall(r"^test (\S+) \.\.\. (\w+)\s*$", output, re.MULTILINE)
-              summary = re.findall(
-                  r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",
-                  output, re.MULTILINE,
-              )
-              passed = (
-                  result.returncode == 0
-                  and len(observed) == len(expected)
-                  and dict(observed) == {name: "ok" for name in expected}
-                  and len(summary) == 1
-                  and summary[0][:5] == ("ok", str(len(expected)), "0", "0", "0")
-              )
+              if projection:
+                  test_options = ["--test-threads=1"]
               receipt["results"].append({
-                  "suite": suite, "command": command, "returncode": result.returncode,
-                  "status": "PASS" if passed else "FAIL",
-                  "expected_tests": sorted(expected), "observed_tests": observed,
-                  "summary": summary, "log_sha256": hashlib.sha256(data).hexdigest(),
+                  "suite": suite, "command": ["cargo", "test", "--locked", *selector, "--", *test_options],
+                  "returncode": None, "status": "NOT_RUN", "expected_tests": sorted(expected),
+                  "observed_tests": [], "summary": [],
               })
-          receipt["tracked_source_unchanged"] = (
-              git("rev-parse", "HEAD") == actual
-              and git("rev-parse", "HEAD^{tree}") == receipt["tree"]
-              and not git("status", "--porcelain", "--untracked-files=no")
+          receipt["g0"] = []
+          receipt["compile"] = []
+          if projection:
+              if len(cases) != 3 or [len(case[2]) for case in cases] != [8, 8, 4]:
+                  raise SystemExit("project-projection-selection-incomplete")
+              all_names = [name for _, _, expected in cases for name in expected]
+              if len(set(all_names)) != 20:
+                  raise SystemExit("project-projection-roster-not-unique")
+              for policy in ("source_policy", "acceptance_policy", "creative_status_policy", "public_surface_policy"):
+                  receipt["g0"].append({
+                      "suite": "g0-" + policy, "status": "NOT_RUN", "returncode": None,
+                      "command": [sys.executable, "-B", "tooling/" + policy + ".py"],
+                  })
+              g0_checkout = Path(os.environ["RUNNER_TEMP"]) / "project-portability-projection-g0-source"
+              receipt["g0"].extend([
+                  {"suite": "g0-format", "status": "NOT_RUN", "returncode": None,
+                   "command": ["cargo", "fmt", "--all", "--", "--check"]},
+                  {"suite": "g0-source-clone", "status": "NOT_RUN", "returncode": None,
+                   "command": ["git", "clone", "--no-hardlinks", "--no-checkout", str(Path.cwd()), str(g0_checkout)]},
+                  {"suite": "g0-source-checkout", "status": "NOT_RUN", "returncode": None,
+                   "command": ["git", "-C", str(g0_checkout), "checkout", "--detach", actual]},
+                  {"suite": "g0-runner", "status": "NOT_RUN", "returncode": None,
+                   "command": [sys.executable, "-B", "tooling/ci_test_runner.py", "--repo", str(g0_checkout),
+                               "--mode", "both", "--pattern", "test_ci_test_runner.py",
+                               "--expected-source", os.environ["GITHUB_SHA"],
+                               "--report", str(root / "g0" / "receipt.json"), "--require-complete"]},
+              ])
+              receipt["compile"] = [
+                  {"suite": "projection-storage-service-clippy", "status": "NOT_RUN", "returncode": None,
+                   "command": ["cargo", "clippy", "--locked", "-p", "motionwright-storage",
+                               "-p", "motionwright-service", "--all-targets", "--", "-D", "warnings"]},
+                  {"suite": "projection-desktop-check", "status": "NOT_RUN", "returncode": None,
+                   "command": ["cargo", "check", "--locked", "-p", "motionwright-desktop"]},
+                  {"suite": "projection-desktop-clippy", "status": "NOT_RUN", "returncode": None,
+                   "command": ["cargo", "clippy", "--locked", "-p", "motionwright-desktop",
+                               "--all-targets", "--", "-D", "warnings"]},
+              ]
+              receipt["execution_scope"] = {
+                  "source_tests": True, "desktop_compilation": True, "platform": "Linux",
+                  "windows": "NOT_RUN", "macos": "NOT_RUN", "installed_application": "NOT_RUN",
+                  "tauri_transport": "NOT_RUN", "ui_consumer": "NOT_RUN", "performance": "NOT_RUN",
+                  "human_acceptance": False,
+              }
+          stage_names = [stage["suite"] for key in ("g0", "results", "compile") for stage in receipt[key]]
+          if len(stage_names) != len(set(stage_names)):
+              raise SystemExit("portability-stage-name-duplicate")
+          source_paths = (
+              WORKFLOW_PATH, "Cargo.lock", "SOURCE_LOCK.json",
+              "crates/storage/src/derived_cache.rs", "crates/service/tests/derived_cache_publication.rs",
+              "crates/storage/tests/schema_migration_atomicity.rs",
           )
-          passed = receipt["tracked_source_unchanged"] and all(item["status"] == "PASS" for item in receipt["results"])
-          receipt["status"] = "PASS" if passed else "FAIL"
-          (root / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          if selection == "otio_export":
+              source_paths = (
+                  WORKFLOW_PATH,
+                  "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml",
+                  "crates/service/Cargo.toml",
+                  "crates/service/tests/desktop_project_export.rs",
+                  "apps/desktop/src-tauri/Cargo.toml",
+                  "apps/desktop/src-tauri/src/effect_grants.rs",
+                  "apps/desktop/src-tauri/src/local_error.rs",
+                  "apps/desktop/src-tauri/src/project_export.rs",
+                  "apps/desktop/src-tauri/src/project_library.rs",
+              )
+          if projection:
+              source_paths = (WORKFLOW_PATH, *PROJECTION_PRODUCT_PATHS, *PROJECTION_DEPENDENCIES)
+          product = None
+          checkpoint()
+          try:
+              if actual != os.environ["GITHUB_SHA"] or git("status", "--porcelain", "--untracked-files=no"):
+                  raise RuntimeError("file-import-platform-checkout-mismatch")
+              receipt["tree"] = git("rev-parse", "HEAD^{tree}")
+              receipt["parents"] = [line.removeprefix("parent ") for line in
+                                    git("cat-file", "-p", "HEAD").split("\n\n", 1)[0].splitlines()
+                                    if line.startswith("parent ")]
+              if projection:
+                  product = (event.get("inputs") or {}).get("product_source_sha", "")
+                  if not re.fullmatch(r"[0-9a-f]{40}", product) or product != PROJECTION_PRODUCT:
+                      raise RuntimeError("project-projection-product-source-mismatch")
+                  if receipt["parents"] != [product]:
+                      raise RuntimeError("project-projection-gate-parent-mismatch")
+                  product_tree = git("rev-parse", product + "^{tree}")
+                  if product_tree != PROJECTION_PRODUCT_TREE:
+                      raise RuntimeError("project-projection-product-tree-mismatch")
+                  changed_paths = git("diff", "--name-only", product, actual).splitlines()
+                  if changed_paths != [WORKFLOW_PATH]:
+                      raise RuntimeError("project-projection-gate-delta-mismatch")
+                  if os.environ["RUNNER_OS"] != "Linux":
+                      raise RuntimeError("project-projection-platform-mismatch")
+                  receipt["product_source"] = {"sha": product, "tree": product_tree}
+                  receipt["gate_delta"] = changed_paths
+              receipt["rustc"] = subprocess.check_output(["rustc", "--version"], text=True).strip()
+              receipt["cargo"] = subprocess.check_output(["cargo", "--version"], text=True).strip()
+              if projection:
+                  receipt["rustc_verbose"] = subprocess.check_output(["rustc", "-Vv"], text=True).strip()
+              receipt["selected_sources"] = source_snapshot(actual, source_paths, product)
+              print(json.dumps(receipt, sort_keys=True), flush=True)
+              checkpoint()
+              for stage in receipt["g0"]:
+                  run_logged(stage)
+                  if stage["status"] != "PASS":
+                      raise RuntimeError("project-projection-g0-not-verified:" + stage["suite"])
+              if projection:
+                  g0_path = root / "g0" / "receipt.json"
+                  g0_bytes = g0_path.read_bytes()
+                  g0_receipt = json.loads(g0_bytes)
+                  expected_g0_source = {"executed_source_sha": actual, "tree_sha": receipt["tree"]}
+                  if (
+                      g0_receipt.get("status") != "PASS" or g0_receipt.get("exit_code") != 0
+                      or g0_receipt.get("executed_source_sha") != actual
+                      or g0_receipt.get("tree_sha") != receipt["tree"]
+                      or "source_postcheck_error" in g0_receipt
+                  ):
+                      raise RuntimeError("project-projection-g0-source-receipt-mismatch")
+                  receipt["g0_original"] = {
+                      "path": str(g0_path), "sha256": hashlib.sha256(g0_bytes).hexdigest(),
+                      "source_checkout": str(g0_checkout), **expected_g0_source,
+                  }
+              for stage, (_, _, expected) in zip(receipt["results"], cases):
+                  run_logged(stage, expected)
+                  if projection and stage["status"] != "PASS":
+                      raise RuntimeError("project-projection-tests-not-verified:" + stage["suite"])
+              for stage in receipt["compile"]:
+                  run_logged(stage)
+                  if stage["status"] != "PASS":
+                      raise RuntimeError("project-projection-compile-not-verified:" + stage["suite"])
+          except Exception as exc:
+              receipt["failure"] = {"type": type(exc).__name__, "message": str(exc)}
+          finally:
+              try:
+                  receipt["selected_sources_after"] = source_snapshot(actual, source_paths, product)
+                  receipt["tracked_source_unchanged"] = (
+                      git("rev-parse", "HEAD") == actual
+                      and git("rev-parse", "HEAD^{tree}") == receipt["tree"]
+                      and not git("status", "--porcelain", "--untracked-files=no")
+                      and receipt["selected_sources_after"] == receipt["selected_sources"]
+                  )
+                  receipt["terminal_custody"] = "PASS" if receipt["tracked_source_unchanged"] else "FAIL"
+              except Exception as exc:
+                  receipt["tracked_source_unchanged"] = False
+                  receipt["terminal_custody"] = "FAIL"
+                  receipt["custody_error"] = {"type": type(exc).__name__, "message": str(exc)}
+              stages = [stage for key in ("g0", "results", "compile") for stage in receipt[key]]
+              passed = (
+                  receipt["tracked_source_unchanged"] and "failure" not in receipt
+                  and bool(stages) and all(stage["status"] == "PASS" for stage in stages)
+              )
+              receipt["status"] = "PASS" if passed else "FAIL"
+              checkpoint()
           if receipt["status"] != "PASS":
               raise SystemExit("file-import-platform-tests-not-verified")
       - name: Retain source binding and selective test evidence
