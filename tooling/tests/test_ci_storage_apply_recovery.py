@@ -1339,5 +1339,39 @@ class OwnedProcessObservationContracts(unittest.TestCase):
             self.assertFalse(gate.execution_unknown({"observation": value}))
 
 
+    def test_known_exit_with_unreadable_stream_is_custody_unknown(self):
+        for error_type in (OSError, gate.VerificationError):
+            with self.subTest(error_type=error_type.__name__):
+                folder = self.root / error_type.__name__
+                folder.mkdir()
+                with mock.patch.object(gate.subprocess, "Popen", return_value=SyntheticObservedProcess()) as spawn, \
+                        mock.patch.object(gate, "supports_owned_process_group", return_value=False), \
+                        mock.patch.object(gate, "fingerprint", side_effect=error_type("stream unavailable")), \
+                        mock.patch.object(gate, "stop_observed_process") as cleanup:
+                    row = gate.execute(["synthetic"], folder, {}, folder, "case", 17, {})
+                self.assertEqual(row["observation"], "UNKNOWN_CUSTODY_NO_RETRY")
+                self.assertEqual(row["uncertainty_reason"], "STREAM_LOG_CUSTODY_FAILED")
+                self.assertEqual(row["exit_code"], 0)
+                self.assertEqual(row["pid"], 123456789)
+                self.assertEqual(row["log_custody"], "INCOMPLETE")
+                self.assertTrue(gate.execution_unknown(row))
+                self.assertEqual(json.loads((folder / "case.command.json").read_bytes()), row)
+                spawn.assert_called_once()
+                cleanup.assert_not_called()
+
+    def test_known_launch_refusal_with_unreadable_stream_stays_not_started(self):
+        with mock.patch.object(gate.subprocess, "Popen", side_effect=FileNotFoundError("missing command")) as spawn, \
+                mock.patch.object(gate, "fingerprint", side_effect=OSError("stream unavailable")), \
+                mock.patch.object(gate, "stop_observed_process") as cleanup:
+            row = gate.execute(["synthetic"], self.root, {}, self.root, "case", 17, {})
+        self.assertEqual(row["observation"], "NOT_STARTED_LAUNCH_ERROR")
+        self.assertIsNone(row["exit_code"])
+        self.assertIsNone(row["pid"])
+        self.assertEqual(row["log_custody"], "INCOMPLETE")
+        self.assertFalse(gate.execution_unknown(row))
+        spawn.assert_called_once()
+        cleanup.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

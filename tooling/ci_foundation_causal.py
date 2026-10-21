@@ -990,8 +990,8 @@ COMPOSED_COMPOSITION_PAIR["repair"]["targets"] = {
 CURRENT_PHASE_SELECTIONS = ("foundation-current", "foundation-composed-current")
 
 # Gate dependencies are independent of the frozen product source.
-COMPOSED_DEPENDENCY_HASHES = {'tooling/ci_storage_apply_recovery.py': 'b238db82b3c774f56d403ee897f6399183173d2823ea42a9bdfe0413386dc87e',
- 'tooling/tests/test_ci_storage_apply_recovery.py': '18019c8070dfbf8f904a0bf1516c5bbd8195c5c6573ea122957622b330be0da8',
+COMPOSED_DEPENDENCY_HASHES = {'tooling/ci_storage_apply_recovery.py': 'f89f31122b6f02d0032037706f3feb175bf0b18c2157ac808f040a7eb626c767',
+ 'tooling/tests/test_ci_storage_apply_recovery.py': 'c9a73ece260c9f92fc3bfd7eedaceb2c626a70bfe197780fd637dfb775ffbc61',
  '.github/workflows/storage-apply-process-recovery.yml': 'fab7d4e12b1d56e732b03d90ce840ee9f436968b986c335a350a86ab3734e5ce',
  'docs/reliability/storage-apply-process-recovery.md': 'c1e4ec2eac4f25eb26698d0ef6501a197da3e86f03aaf769b02c145b9b09fa0c'}
 

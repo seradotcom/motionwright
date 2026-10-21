@@ -521,7 +521,10 @@ def execute(argv, cwd, env, output, label, timeout, context):
         except BaseException as error:
             row["log_custody"] = "INCOMPLETE"
             row[stream] = {"path": path.name, "custody_error": type(error).__name__ + ": " + str(error)}
-            if not isinstance(error, (OSError, VerificationError)):
+            if row.get("observation") == "DIRECT_PROCESS_EXIT_OBSERVED":
+                row.update(observation="UNKNOWN_CUSTODY_NO_RETRY",
+                           uncertainty_reason="STREAM_LOG_CUSTODY_FAILED")
+            elif not execution_unknown(row) and not isinstance(error, (OSError, VerificationError)):
                 row.update(observation="UNKNOWN_PROCESS_NO_RETRY",
                            uncertainty_reason="STREAM_OBSERVATION_INTERRUPTED")
     try:

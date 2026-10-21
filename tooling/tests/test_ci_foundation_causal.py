@@ -1747,5 +1747,49 @@ class SharedObservationStopContracts(unittest.TestCase):
         stop.assert_not_called()
 
 
+    def test_stream_custody_failure_stops_role_scheduler_after_known_exit(self):
+        workspace, output = self.root / "workspace", self.root / "evidence"
+        workspace.mkdir()
+        output.mkdir()
+        pair = {"id": "synthetic-stream-custody", "baseline": {
+            "sha": "1" * 40, "tree": "2" * 40, "targets": {}}, "repair": {
+            "sha": "3" * 40, "tree": "4" * 40, "targets": {}}}
+        visits = []
+        original_fingerprint = gate.custody.fingerprint
+
+        class ObservedExit:
+            pid = 123456789
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fingerprint(path, *args, **kwargs):
+            if str(path).endswith((".stdout.log", ".stderr.log")):
+                raise OSError("controlled stream readback failure")
+            return original_fingerprint(path, *args, **kwargs)
+
+        def callback(spec, role):
+            visits.append(role)
+            return gate.run_role(spec, role, self.root, workspace, output,
+                                 self.root / "unused-target", self.root / "unused-temp", {}, {}, {})
+
+        with patch.object(gate.custody.subprocess, "Popen", return_value=ObservedExit()) as spawn, \
+                patch.object(gate.custody, "supports_owned_process_group", return_value=False), \
+                patch.object(gate.custody, "fingerprint", side_effect=fingerprint), \
+                patch.object(gate.custody, "stop_observed_process") as stop:
+            results = gate.run_pairs(callback, [pair])
+        self.assertEqual(visits, ["baseline"])
+        self.assertEqual(results[0]["status"], "UNKNOWN")
+        command = results[0]["roles"][0]["unsealed_command"]
+        self.assertEqual(command["exit_code"], 0)
+        self.assertEqual(command["pid"], 123456789)
+        self.assertEqual(command["observation"], "UNKNOWN_CUSTODY_NO_RETRY")
+        self.assertEqual(command["uncertainty_reason"], "STREAM_LOG_CUSTODY_FAILED")
+        self.assertEqual(command["log_custody"], "INCOMPLETE")
+        self.assertFalse((output / pair["id"] / "repair").exists())
+        spawn.assert_called_once()
+        stop.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
