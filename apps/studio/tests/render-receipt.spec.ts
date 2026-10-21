@@ -100,11 +100,8 @@ test("synthetic native receipt remains scene/revision scoped across Deliver and 
           };
         }
 
-        if (cmd === "bootstrap") {
-          const syntheticResponse = { ...initialBoot, project: structuredClone(savedProject) };
-          const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
-          if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic mock requires selected project identity.");
-          return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+        if (cmd === "bootstrap" || cmd === "project_projection_head" || cmd === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(cmd, args, { ...initialBoot, project: structuredClone(savedProject) });
         }
         if (cmd === "issue_effect_grant") return { token: "synthetic-grant" };
         if (cmd === "render_motion_canvas") return structuredClone(initialReceipt);

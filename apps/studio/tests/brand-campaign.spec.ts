@@ -30,11 +30,8 @@ async function syntheticBrand(page:Page,failSecond=false){
     rt.__BRAND_CALLS__=calls;
     rt.__TAURI_INTERNALS__={invoke:async(name,args)=>{
       const request=args?.request as Record<string,unknown> | undefined;
-      if (name === "bootstrap") {
-        const syntheticResponse = {...boot,project:structuredClone(project)};
-        const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
-        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic mock requires selected project identity.");
-        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      if (name === "bootstrap" || name === "project_projection_head" || name === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(name, args, {...boot,project:structuredClone(project)});
       }
       if(name==="production_runtime_status")return {
         status:"ready",reason:null,expected_version:"1.0.0",observed_version:"1.0.0",

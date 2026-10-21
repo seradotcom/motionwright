@@ -82,13 +82,8 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
           return structuredClone(initialBoot.project);
         }
 
-        if (command === "bootstrap") {
-          const syntheticResponse = structuredClone(initialBoot);
-          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
-            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
-          }
-          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initialBoot));
         }
         if(command==="production_runtime_status"){
           const request=args?.request as {project_id:string;expected_generation:string;expected_revision:number};

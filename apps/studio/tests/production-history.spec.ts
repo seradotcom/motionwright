@@ -51,13 +51,8 @@ test("history enumerates all local jobs beyond recent-window limit with no drive
     };
     app.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") {
-          const syntheticResponse = structuredClone(initialBoot);
-          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
-            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
-          }
-          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initialBoot));
         }
         if (command === "production_jobs") return structuredClone(historical.slice(0, 1));
         if (command === "production_jobs_history") {
@@ -154,13 +149,8 @@ test("independent status append invalidates history cursor and requires explicit
     app.__APPEND_STATUS__ = { changed: false, initialReads: 0 };
     app.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") {
-          const syntheticResponse = structuredClone(initialBoot);
-          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
-            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
-          }
-          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initialBoot));
         }
         if (command === "production_jobs") return [structuredClone(initialJob)];
         if (command === "production_jobs_history") {
@@ -268,15 +258,8 @@ async function installIdentityBridge(
     app.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
         app.__SCOPED_JOB_IDENTITY__.commands.push(command);
-        if (command === "bootstrap") {
-          const requested = (args?.request as { project_id?: string | null } | undefined)?.project_id;
-          if (!initial.project || requested !== initial.project.id) {
-            throw new Error("Synthetic identity bridge requires explicitly selected project.");
-          }
-          return {
-            ...structuredClone(initial),
-            project_selection: { status: "selected", project_id: initial.project.id },
-          };
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initial));
         }
         if (command === "production_jobs") return structuredClone(historical.slice(0, 32));
         if (command === "production_jobs_history") {
@@ -399,7 +382,7 @@ for (const difference of ["provider", "generation", "revision"] as const) {
         (request.cursor as { offset: number } | null)?.offset ?? 0)).toEqual([0, 16]);
       expect(bridge.statusRequests).toEqual([]);
       expect(bridge.commands.filter((command) => ![
-        "bootstrap", "production_jobs", "production_jobs_history",
+        "bootstrap", "project_projection_head", "open_project", "production_jobs", "production_jobs_history",
       ].includes(command))).toEqual([]);
       expect(duplicateKeyErrors).toEqual([]);
       await expect(page.locator(".revision-chip").first()).toHaveText(revision);
@@ -461,7 +444,7 @@ test("an original Motion Canvas observation never decorates another provider or 
       revision: boot.project.revision, job_ref: original.job_ref,
     }]);
     expect(bridge.commands.filter((command) => ![
-      "bootstrap", "production_jobs", "production_jobs_history", "read_original_native_job_status",
+      "bootstrap", "project_projection_head", "open_project", "production_jobs", "production_jobs_history", "read_original_native_job_status",
     ].includes(command))).toEqual([]);
     await expect(page.locator(".revision-chip").first()).toHaveText(revision);
   });

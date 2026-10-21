@@ -31,13 +31,8 @@ test("v0.1 owner sees explicit UNKNOWN recovery path without any automatic retry
     owner.__OWNER_RECOVERY__ = { reads: 0, forbidden: [] };
     owner.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") {
-          const syntheticResponse = structuredClone(boot);
-          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
-            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
-          }
-          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
         }
         if (command === "production_jobs") {
           owner.__OWNER_RECOVERY__.reads++;
