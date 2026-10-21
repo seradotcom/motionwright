@@ -1,0 +1,162 @@
+name: Store.apply process recovery (selected Windows and macOS G2)
+run-name: Store.apply ${{ github.event_name == 'workflow_dispatch' && 'G2' || 'G0 only' }} / product 5c2d496 / gate ${{ github.sha }}
+on:
+  push:
+    branches: ['verify/storage-apply-g2-*']
+    paths:
+      - '.github/workflows/storage-apply-process-recovery.yml'
+      - 'tooling/ci_storage_apply_recovery.py'
+      - 'tooling/tests/test_ci_storage_apply_recovery.py'
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact reviewed product source; independently checked out
+        required: true
+        default: '5c2d4962291f31fccff8533520c01083f17c225f'
+        type: string
+      platforms:
+        description: Select only the missing OS evidence
+        required: true
+        default: both
+        type: choice
+        options: [both, windows, macos]
+permissions:
+  contents: read
+concurrency:
+  group: storage-apply-recovery-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+defaults:
+  run:
+    shell: bash
+    working-directory: g
+jobs:
+  g0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.selection.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: g
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Always run source, contract and format checks
+        run: |
+          set -euo pipefail
+          python -B tooling/source_policy.py
+          python -B tooling/acceptance_policy.py
+          python -B tooling/creative_status_policy.py
+          python -B tooling/public_surface_policy.py
+          cargo fmt --all -- --check
+      - name: Require complete source-bound G0 controls
+        run: |
+          set -euo pipefail
+          python -B tooling/ci_test_runner.py --repo . --mode both \
+            --pattern test_ci_storage_apply_recovery.py \
+            --report ../v/g0/unittest.json --expected-source "$GITHUB_SHA" --require-complete
+      - name: Bind the requested product and select missing platforms
+        id: selection
+        env:
+          REQUESTED_SOURCE: ${{ inputs.source_sha || '5c2d4962291f31fccff8533520c01083f17c225f' }}
+          REQUESTED_PLATFORMS: ${{ inputs.platforms || 'both' }}
+        run: |
+          set -euo pipefail
+          python -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          from tooling.ci_storage_apply_recovery import SOURCE_SHA
+          if os.environ['REQUESTED_SOURCE'] != SOURCE_SHA:
+              raise SystemExit('Unreviewed product source: obtain a new source review')
+          chosen = os.environ['REQUESTED_PLATFORMS']
+          if chosen not in {'both', 'windows', 'macos'}:
+              raise SystemExit('Invalid platform selection')
+          rows = [{'platform': 'windows', 'runner': 'windows-2025'},
+                  {'platform': 'macos', 'runner': 'macos-15'}]
+          matrix = {'include': [row for row in rows if chosen in {'both', row['platform']}]}
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as stream:
+              stream.write('matrix=' + json.dumps(matrix, separators=(',', ':')) + '\n')
+          print(json.dumps({'product_source': SOURCE_SHA, 'workflow_source': os.environ['GITHUB_SHA'],
+                            'G2_selected': os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch',
+                            'platforms': chosen, 'tests_executed': 0, 'formal_acceptance': False}))
+          PY
+      - name: Retain original G0 controls and source receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: storage-apply-g0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: v/g0
+          if-no-files-found: warn
+          retention-days: 14
+  storage-apply-recovery:
+    name: ${{ matrix.platform }} Store.apply process recovery
+    if: github.event_name == 'workflow_dispatch'
+    needs: g0
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.g0.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      CARGO_HOME: ${{ github.workspace }}/v/c
+      CARGO_TARGET_DIR: ${{ github.workspace }}/v/t
+      TMP: ${{ github.workspace }}/v/x
+      TEMP: ${{ github.workspace }}/v/x
+      TMPDIR: ${{ github.workspace }}/v/x
+    steps:
+      - name: Prepare short isolated build and temporary paths
+        working-directory: .
+        run: |
+          set -euo pipefail
+          test ! -e v
+          mkdir -p v/x v/c
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        env:
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
+        with:
+          path: g
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        env:
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
+        with:
+          path: s
+          ref: '5c2d4962291f31fccff8533520c01083f17c225f'
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+      - name: Execute exactly the four real Store.apply process-termination cases
+        env:
+          REQUESTED_SOURCE: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python -B -I -S tooling/ci_storage_apply_recovery.py --repo ../s --output ../v/e --source-sha "$REQUESTED_SOURCE"
+      - name: Retain original partial or complete evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: storage-apply-${{ matrix.platform }}-product-5c2d4962291f31fccff8533520c01083f17c225f-gate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: v/e
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
