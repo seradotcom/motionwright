@@ -59,7 +59,8 @@ class CanvasServiceReportTests(unittest.TestCase):
         self.assertEqual(len(gate.GESTURE_TITLES), 7)
         self.assertEqual(len(set(gate.GESTURE_TITLES)), 7)
         self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:7]), 43)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 57)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:9]), 57)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 65)
         self.assertEqual(
             [(label, filename) for label, filename, _ in gate.SELECTIONS],
             [("canvas", "canvas-draft-service.spec.ts"),
@@ -70,12 +71,13 @@ class CanvasServiceReportTests(unittest.TestCase):
              ("brief-uncertain", "brief-uncertain-outcome-service.spec.ts"),
              ("active-voice", "audio-active-voice-service.spec.ts"),
              ("camera", "camera-reframe-service.spec.ts"),
-             ("gesture", "canvas-gesture-service.spec.ts")],
+             ("gesture", "canvas-gesture-service.spec.ts"),
+             ("narrative", "narrative-service.spec.ts")],
         )
 
     def test_all_57_exact_names_have_one_original_result(self):
         observed = []
-        for label, filename, titles in gate.SELECTIONS:
+        for label, filename, titles in gate.SELECTIONS[:9]:
             with self.subTest(selection=label):
                 verified = gate.validate_report(selection_report(filename, titles), filename, titles)
                 self.assertEqual(verified, {"passed": len(titles), "skipped": 0,
@@ -85,7 +87,7 @@ class CanvasServiceReportTests(unittest.TestCase):
         self.assertEqual(len(set(observed)), 57)
 
     def test_camera_and_gesture_counts_cannot_substitute_named_inventory(self):
-        for label, filename, titles in gate.SELECTIONS[-2:]:
+        for label, filename, titles in (row for row in gate.SELECTIONS if row[0] in {"camera", "gesture"}):
             for mutation in ("missing", "duplicate", "foreign-title", "foreign-file"):
                 with self.subTest(selection=label, mutation=mutation):
                     value = selection_report(filename, titles)
@@ -102,7 +104,7 @@ class CanvasServiceReportTests(unittest.TestCase):
                         gate.validate_report(value, filename, titles)
 
     def test_new_selections_reject_skips_and_repeated_attempts(self):
-        for label, filename, titles in gate.SELECTIONS[-2:]:
+        for label, filename, titles in (row for row in gate.SELECTIONS if row[0] in {"camera", "gesture"}):
             for mutation in ("skip", "retry", "second-result"):
                 with self.subTest(selection=label, mutation=mutation):
                     value = selection_report(filename, titles)
@@ -121,7 +123,7 @@ class CanvasServiceReportTests(unittest.TestCase):
         self.assertEqual(gate.SELECTION_TIMEOUTS, {
             "canvas": 1800, "ink": 180, "program": 600, "brief": 900,
             "brief-recovery": 180, "brief-uncertain": 900, "active-voice": 900,
-            "camera": 1200, "gesture": 900,
+            "camera": 1200, "gesture": 900, "narrative": 1200,
         })
         self.assertEqual(set(gate.SELECTION_TIMEOUTS), {label for label, _, _ in gate.SELECTIONS})
         self.assertGreater(gate.SELECTION_TIMEOUTS["camera"], 7 * 120 + 120)
@@ -240,6 +242,71 @@ class CanvasServiceReportTests(unittest.TestCase):
             self.assertNotIn("verified", result)
             self.assertTrue((output / "timeout.command.json").is_file())
 
+
+
+class SelectedServiceScopeTests(unittest.TestCase):
+    def test_narrative_scope_preserves_full_default_and_declares_every_omission(self):
+        plan = gate.selection_plan("narrative")
+        self.assertEqual(plan["required_tests"], 8)
+        self.assertEqual(plan["full_default_tests"], 65)
+        self.assertEqual(plan["scope"], "EXPLICIT_SELECTED_SERVICE_CASES")
+        self.assertEqual(len(plan["required"]), 1)
+        self.assertEqual(plan["required"][0]["file"], "narrative-service.spec.ts")
+        self.assertEqual(plan["required"][0]["titles"], list(gate.NARRATIVE_TITLES))
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 57)
+        self.assertEqual({row["label"] for row in plan["not_selected"]},
+                         {row[0] for row in gate.SELECTIONS[:9]})
+        self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
+                            for row in plan["not_selected"]))
+        self.assertFalse(plan["formal_acceptance"])
+        self.assertEqual(gate.selection_plan("all")["not_selected"], [])
+        self.assertEqual(gate.selected_selections("all"), gate.SELECTIONS)
+
+    def test_unknown_empty_combined_and_nonstring_selection_are_rejected(self):
+        for selection in ("", "Narrative", "narrative,canvas", "all ", "foreign", None, ["narrative"]):
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                gate.selected_selections(selection)
+
+    def test_narrative_requires_each_of_eight_original_results(self):
+        titles = gate.NARRATIVE_TITLES
+        self.assertEqual(len(titles), 8)
+        self.assertEqual(len(set(titles)), 8)
+        value = selection_report("narrative-service.spec.ts", titles)
+        observed = gate.validate_report(value, "narrative-service.spec.ts", titles)
+        self.assertEqual(observed["passed"], 8)
+        self.assertEqual(observed["titles"], list(titles))
+        self.assertGreater(gate.SELECTION_TIMEOUTS["narrative"], 8 * 120 + 120)
+
+    def test_narrative_count_cannot_hide_missing_duplicate_foreign_or_mock_results(self):
+        for mutation in ("missing", "duplicate", "foreign-title", "foreign-file"):
+            with self.subTest(mutation=mutation):
+                value = selection_report("narrative-service.spec.ts", gate.NARRATIVE_TITLES)
+                rows = value["suites"][0]["suites"][0]["specs"]
+                if mutation == "missing":
+                    rows.pop()
+                elif mutation == "duplicate":
+                    rows[-1] = copy.deepcopy(rows[0])
+                elif mutation == "foreign-title":
+                    rows[-1]["title"] = gate.INK_TITLE
+                else:
+                    rows[-1]["file"] = "narrative-preservation.spec.ts"
+                with self.assertRaises(ValueError):
+                    gate.validate_report(value, "narrative-service.spec.ts", gate.NARRATIVE_TITLES)
+
+    def test_narrative_skip_retry_or_second_result_cannot_satisfy_scope(self):
+        for mutation in ("skip", "retry", "second-result"):
+            with self.subTest(mutation=mutation):
+                value = selection_report("narrative-service.spec.ts", gate.NARRATIVE_TITLES)
+                test = value["suites"][0]["suites"][0]["specs"][-1]["tests"][0]
+                if mutation == "skip":
+                    test["expectedStatus"] = "skipped"
+                    test["results"][0]["status"] = "skipped"
+                elif mutation == "retry":
+                    test["results"][0]["retry"] = 1
+                else:
+                    test["results"].append(copy.deepcopy(test["results"][0]))
+                with self.assertRaises(ValueError):
+                    gate.validate_report(value, "narrative-service.spec.ts", gate.NARRATIVE_TITLES)
 
 
 if __name__ == "__main__":

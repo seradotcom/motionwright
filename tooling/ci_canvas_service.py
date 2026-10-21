@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Canvas, Program, Brief, Audio, Camera and Gesture contracts against the freshly built SQLite service."""
+"""Run selected Studio contracts against the freshly built SQLite service."""
 from __future__ import annotations
 
 import argparse
@@ -86,6 +86,16 @@ GESTURE_TITLES = (
     "a keyed gesture cannot overwrite a peer after same-view reopen and release",
     "a keyed gesture cannot overwrite a peer after same-view reopen and cancel",
 )
+NARRATIVE_TITLES = (
+    'Narrative drafts survive actual workspace navigation/reload; separate premise and objective commits survive SQLite restart',
+    'a held original premise receipt preserves newer typing across actual workspace remount',
+    'a held original objective receipt preserves newer typing across actual workspace remount',
+    'an uncertain Narrative unrelated outcome survives reload and is reviewed before a separate intent',
+    'an uncertain Narrative committed outcome survives reload and is reviewed before a separate intent',
+    'a lost Narrative writer pointer blocks real grants and writes; explicit Restore commits exactly once',
+    'a real objective validation refusal preserves both fields until fresh review and correction',
+    "an independent service author's overlapping premise is reviewed without consuming a disjoint objective draft",
+)
 SELECTIONS = (
     ("canvas", "canvas-draft-service.spec.ts", CANVAS_TITLES),
     ("ink", "visual-language-draft-service.spec.ts", (INK_TITLE,)),
@@ -96,6 +106,7 @@ SELECTIONS = (
     ("active-voice", "audio-active-voice-service.spec.ts", ACTIVE_VOICE_TITLES),
     ("camera", "camera-reframe-service.spec.ts", CAMERA_TITLES),
     ("gesture", "canvas-gesture-service.spec.ts", GESTURE_TITLES),
+    ("narrative", "narrative-service.spec.ts", NARRATIVE_TITLES),
 )
 # Retain the existing 43-case process limits. New bounds include the declared
 # Camera 7x120s / Gesture 7x90s cases and the configured 120s server startup.
@@ -110,12 +121,40 @@ SELECTION_TIMEOUTS = {
     "active-voice": 900,
     "camera": 1200,
     "gesture": 900,
+    "narrative": 1200,
 }
 
 
 def require(condition, reason):
     if not condition:
         raise ValueError(reason)
+
+
+def selected_selections(selection):
+    """Return a closed scope; an explicit subset never claims the full roster."""
+    require(isinstance(selection, str), "selection must be a single named scope")
+    if selection == "all":
+        return SELECTIONS
+    chosen = tuple(row for row in SELECTIONS if row[0] == selection)
+    require(len(chosen) == 1, "unknown or empty service selection")
+    return chosen
+
+
+def selection_plan(selection):
+    chosen = selected_selections(selection)
+    labels = {row[0] for row in chosen}
+    return {
+        "requested": selection,
+        "scope": "ALL_DEFINED_SERVICE_CASES" if selection == "all" else "EXPLICIT_SELECTED_SERVICE_CASES",
+        "required": [{"label": label, "file": filename, "titles": list(titles)}
+                     for label, filename, titles in chosen],
+        "not_selected": [{"label": label, "file": filename, "titles": list(titles),
+                          "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                         for label, filename, titles in SELECTIONS if label not in labels],
+        "required_tests": sum(len(titles) for _, _, titles in chosen),
+        "full_default_tests": sum(len(titles) for _, _, titles in SELECTIONS),
+        "formal_acceptance": False,
+    }
 
 
 def validate_report(document, filename, titles):
@@ -183,7 +222,8 @@ def source_observation(repo):
         require(head == os.environ.get("GITHUB_SHA"), "checkout differs from the selected CI source")
     require(git("diff", "--name-only", "HEAD", "--") == "", "tracked source has changed")
     paths = (
-        ".github/workflows/ci.yml", "Cargo.lock", "apps/studio/package-lock.json",
+        ".github/workflows/ci.yml", ".github/workflows/studio-service-verification.yml",
+        "Cargo.lock", "apps/studio/package-lock.json",
         "crates/service/examples/studio_review_session.rs",
         "apps/studio/playwright.config.ts",
         "apps/studio/tests/support/scopedChangeService.ts",
@@ -194,6 +234,10 @@ def source_observation(repo):
         "apps/studio/tests/brief-recovery-admission-service.spec.ts",
         "apps/studio/tests/brief-uncertain-outcome-service.spec.ts",
         "apps/studio/src/App.tsx",
+        "apps/studio/src/CreativeWorkspaces.tsx",
+        "apps/studio/src/NarrativeWorkspace.tsx",
+        "apps/studio/src/narrativeDraft.ts",
+        "apps/studio/tests/narrative-service.spec.ts",
         "apps/studio/src/BriefWorkspace.tsx",
         "apps/studio/src/briefDraft.ts",
         "apps/studio/src/AudioWorkspace.tsx",
@@ -251,7 +295,9 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--selection", default="all", choices=["all", *(row[0] for row in SELECTIONS)])
     args = parser.parse_args()
+    selections = selected_selections(args.selection)
     repo, output, target = (p.resolve() for p in (args.repo, args.output, args.target))
     require(repo.is_dir(), "repository missing")
     require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
@@ -259,6 +305,7 @@ def main():
     report = {"schema": "motionwright.canvas-service-ci/1", "status": "FAIL",
               "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
               "job": os.environ.get("GITHUB_JOB"), "selections": [],
+              "selection_plan": selection_plan(args.selection),
               "installed_tauri": "NOT_RUN", "native_render": "NOT_RUN", "human_acceptance": "NOT_RUN"}
     try:
         before = source_observation(repo)
@@ -276,11 +323,15 @@ def main():
         if os.name == "nt":
             binary = binary.with_suffix(".exe")
         report["service_binary"] = {"path": str(binary), **digest(binary)}
+        retained_binary = output / ("executed-studio-service.exe" if os.name == "nt" else "executed-studio-service")
+        shutil.copyfile(binary, retained_binary)
+        report["retained_service_binary"] = {"path": retained_binary.name, **digest(retained_binary)}
+        require(digest(retained_binary) == digest(binary), "retained service binary differs")
         require(source_observation(repo) == before, "source changed during service compilation")
         cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
         report["playwright_cli"] = digest(cli)
         report["node"] = {"path": node, **digest(Path(node))}
-        for label, filename, titles in SELECTIONS:
+        for label, filename, titles in selections:
             case_env = dict(env)
             stores = output / (label + "-stores")
             stores.mkdir()
@@ -313,7 +364,8 @@ def main():
         require(digest(binary) == {k: report["service_binary"][k] for k in ("bytes", "sha256")},
                 "service executable changed")
         require(digest(cli) == report["playwright_cli"], "Playwright CLI changed")
-        require(len(report["selections"]) == len(SELECTIONS)
+        require(digest(retained_binary) == digest(binary), "retained service binary changed")
+        require(len(report["selections"]) == len(selections)
                 and all(x["status"] == "PASS" for x in report["selections"]), "required selection failed")
         report["status"] = "PASS"
     except Exception as error:
