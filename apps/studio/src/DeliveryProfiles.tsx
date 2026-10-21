@@ -9,6 +9,7 @@ import VariantContinuityReview from "./VariantContinuityReview";
 import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import { useDeliveryRecipeDraft } from "./deliveryRecipe";
+import { recipeHasWork } from "./deliveryRecipeDraft";
 import {
   captureDeliveryDispatch, useProfileMetadataDraft, retainedProfileMetadataCopies,
   type DeliveryProjectState, type RetainedProfileMetadataCopy,
@@ -118,9 +119,7 @@ export function RecipeDraftReview({
     && !controller.conflicts.includes(field));
   const pendingControls = Object.keys(controller.edits).filter(field => fields[field]?.controlId
     && !controller.conflicts.includes(field));
-  const cannotSave = !controller.dirty || controller.pending || controller.locked
-    || controller.sourceBehind || controller.recoveryBlocked || controller.conflicts.length > 0
-    || Boolean(blockedReason);
+  const cannotSave = !controller.canSave || Boolean(blockedReason);
   const cannotReplace = controller.dirty || controller.awaiting || controller.pending
     || controller.recoveryBlocked || controller.sourceBehind;
   const showValue = (value: string | undefined) => value === "" || value === undefined ? "Not set" : value;
@@ -138,7 +137,8 @@ export function RecipeDraftReview({
   return <section ref={review} aria-label={title + " draft review"} onKeyDown={containRecipeKeyboard}>
     <p ref={status} tabIndex={-1} role="status" className="production-help">
       {controller.pending ? "Save requested; waiting for the project service. You may continue editing recipe inputs."
-        : controller.awaiting ? "A save was requested. Inputs remain pending until they agree with a newer saved project or you resolve them explicitly."
+        : controller.unconfirmed ? "The recipe save result is unconfirmed. Matching saved values cannot acknowledge its original request; your input is retained."
+        : controller.notSent ? "The recipe request was not sent. Confirm the recovery copy before an explicit save."
         : controller.dirty ? Object.keys(controller.edits).length + " recipe field(s) have pending input."
         : "Showing saved recipe values at revision r" + revision + "."}
     </p>
@@ -148,23 +148,44 @@ export function RecipeDraftReview({
     {controller.error && <p className="portable-message error" role="alert">{controller.error}</p>}
     {controller.message && <p className="production-help" role="status">{controller.message}</p>}
     {controller.recoveryBlocked && <div className="portable-operation-copy">
+      <p className="production-help">Saving requires a recovery copy and writer pointer that can both be read back. Keep editing here or download the current author input while storage is unavailable.</p>
+      <button type="button" className="button" disabled={controller.pending}
+        onClick={() => afterAction(controller.retryBackup)}>Retry {title.toLowerCase()} recovery copy</button>
+    </div>}
+    {controller.unreadableCopy && <div className="portable-operation-copy">
       <p className="production-help">The unreadable copy is retained. Saving and replacing this draft are blocked until you explicitly discard that copy; new input stays in this window.</p>
       <button type="button" className="button" disabled={controller.pending}
         onClick={() => afterAction(controller.discardUnreadableCopy)}>
         Discard unreadable {title.toLowerCase()} copy
       </button>
     </div>}
+    {controller.unconfirmed && <section aria-label={title + " unconfirmed save"}>
+      <p className="production-help">No request will be replayed. Read this exact saved project and its revision history, then explicitly retain the earlier attempt before creating a separate intent.</p>
+      <button type="button" className="button" disabled={controller.pending || controller.reviewing}
+        onClick={() => { onDraftAction?.(); void controller.readOutcome(); }}>
+        {controller.reviewing ? "Reading saved recipe and history…" : "Read saved recipe and history"}
+      </button>
+      {controller.review && <div role="status" className="portable-operation-copy">
+        <p>Read saved revision r{controller.review.project.revision} and {controller.review.events.length} contiguous change(s).
+          {controller.review.matchingValueRevisions.length > 0
+            ? " Matching recipe values appear at r" + controller.review.matchingValueRevisions.join(", r") + ". They do not identify the author of this request."
+            : " No matching recipe values occur in this history range."}</p>
+        <button type="button" className="button" disabled={controller.pending || controller.recoveryBlocked}
+          onClick={() => afterAction(controller.continueAfterReview)}>Keep earlier recipe attempt and continue editing</button>
+      </div>}
+      <p className="production-help">If the saved project changed, reload it and read the history again. The uncertain comparison stays in recovery; reading or continuing never writes the project.</p>
+    </section>}
     {controller.conflicts.length > 0 && <section aria-label={title + " conflicts"}>
       <p className="production-help">The saved project changed these fields. Choose each value before saving; resolving a conflict does not save it.</p>
       {controller.conflicts.map(field => <div key={field} aria-label={label(field) + " conflict"} role="group">
         <strong>{label(field)}</strong>
         {comparison(field)}
         <div className="delivery-editor-actions">
-          <button type="button" className="button" disabled={controller.pending || controller.sourceBehind}
+          <button type="button" className="button" disabled={controller.pending || controller.sourceBehind || controller.unconfirmed || controller.recoveryBlocked}
             onClick={() => afterAction(() => controller.resolve(field, "saved"), field)}>
             Keep saved {label(field)}
           </button>
-          <button type="button" className="button" disabled={controller.pending || controller.sourceBehind}
+          <button type="button" className="button" disabled={controller.pending || controller.sourceBehind || controller.unconfirmed || controller.recoveryBlocked}
             onClick={() => afterAction(() => controller.resolve(field, "draft"), field)}>
             Keep my draft {label(field)}
           </button>
@@ -176,7 +197,7 @@ export function RecipeDraftReview({
       {missingControls.map(field => <div key={field}>
         <strong>{label(field)}</strong>
         {comparison(field)}
-        <button type="button" className="button" disabled={controller.pending || controller.sourceBehind}
+        <button type="button" className="button" disabled={controller.pending || controller.sourceBehind || controller.unconfirmed || controller.recoveryBlocked}
           onClick={() => afterAction(() => controller.resolve(field, "saved"))}>
           Discard pending {label(field)}
         </button>
@@ -187,7 +208,7 @@ export function RecipeDraftReview({
       {pendingControls.map(field => <div key={field}>
         <strong>{label(field)}</strong>
         {comparison(field)}
-        <button type="button" className="button" disabled={controller.pending || controller.sourceBehind}
+        <button type="button" className="button" disabled={controller.pending || controller.sourceBehind || controller.unconfirmed || controller.recoveryBlocked}
           onClick={() => afterAction(() => controller.resolve(field, "saved"), field)}>
           Keep saved {label(field)}
         </button>
@@ -201,6 +222,9 @@ export function RecipeDraftReview({
       <button type="button" className="button"
         disabled={!hasSavedGroup || cannotReplace || controller.locked || Boolean(blockedReason)}
         onClick={() => afterAction(controller.clearGroup)}><Trash2 size={14} aria-hidden="true" />{clearLabel}</button>
+      <button type="button" className="button" onClick={() => afterAction(controller.download)}>
+        Download {title.toLowerCase()} author input
+      </button>
     </div>
     <p className="production-help">Clearing creates a pending recipe change; save it explicitly. Recovery stores authoring inputs in this browser profile, with a 256 KiB copy limit and a shared 64-copy / 2 MiB budget. It does not store execution grants or review approval.</p>
     <details aria-label={title + " recovery copies"}>
@@ -212,10 +236,11 @@ export function RecipeDraftReview({
         style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))" }}>
         <div className="portable-operation-copy">
           <strong>Copy {index + 1}</strong>
-          <span>{copy.readable ? "Revision r" + copy.revision + " · " + copy.fields + " pending field(s)" : "Unreadable copy · original bytes retained"}</span>
+          <span>{copy.state && !recipeHasWork(copy.state) ? "Clean checkpoint · no pending author fields"
+            : copy.readable ? "Revision r" + copy.revision + " · " + copy.fields + " pending field(s)" : "Unreadable copy · original bytes retained"}</span>
         </div>
         <div className="delivery-editor-actions">
-          <button type="button" className="button" disabled={!copy.readable || cannotReplace}
+          <button type="button" className="button" disabled={!copy.state || !recipeHasWork(copy.state) || cannotReplace}
             onClick={() => afterAction(() => controller.recoverCopy(copy.key))}>Recover {title.toLowerCase()} copy {index + 1}</button>
           <button type="button" className="button" disabled={controller.pending}
             onClick={() => afterAction(() => controller.discardCopy(copy.key))}>Discard {title.toLowerCase()} copy {index + 1}</button>
@@ -330,6 +355,7 @@ function RetainedProfileDrafts({ project }: { project: Project }) {
 export default function DeliveryProfiles({
   project,
   commit,
+  commitRecipe,
   desktopMode,
   renderEvidence,
   onRenderEvidence,
@@ -342,6 +368,7 @@ export default function DeliveryProfiles({
 }: {
   project: Project;
   commit: Commit;
+  commitRecipe: (change: Change) => Promise<Project>;
   desktopMode: boolean;
   onOpenAudio: () => void;
   currentProjectState: () => DeliveryProjectState;
@@ -394,7 +421,7 @@ export default function DeliveryProfiles({
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
   const monoFontFamily = "IBM Plex Mono";
-  const filmDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "film", commit);
+  const filmDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "film", commitRecipe);
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
   const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "new" | null>(null);

@@ -113,7 +113,7 @@ describe("recipe input review and observed canonical revisions", () => {
     expect(pending.edits[sceneA + ":role"].base).toBe("hook");
   });
 
-  it("does not use a returned callback or same-revision value as proof that authored input was saved", () => {
+  it("does not use a callback observation or any matching Project revision as proof that authored input was saved", () => {
     const { draft, current, sceneA } = context();
     const field = sceneA + ":role";
     const sent = recipe.submitRecipeDraft(changed(draft, field, "reveal", current), 20);
@@ -124,33 +124,34 @@ describe("recipe input review and observed canonical revisions", () => {
     expect(sameRevision.edits[field]?.value).toBe("reveal");
     expect(sameRevision.awaiting).toBeDefined();
     const observed = recipe.reconcileRecipeDraft(sent, { ...current, [field]: "reveal" }, 21);
-    expect(observed.edits).toEqual({});
-    expect(observed.awaiting).toBeUndefined();
+    expect(observed.edits).toEqual(sent.edits);
+    expect(observed.awaiting).toEqual(sent.awaiting);
   });
 
-  it("acknowledges only submitted fields when an unrelated scene or the other group changes", () => {
+  it("retains every submitted field when another author saves equal values with unrelated changes", () => {
     const { draft, current, sceneA, sceneB } = context();
     const field = sceneA + ":role";
     const sent = recipe.submitRecipeDraft(changed(draft, field, "reveal", current), 20);
     expect(Object.keys(sent.awaiting!.fields)).toEqual([field]);
     const peer = { ...current, [field]: "reveal", [sceneB + ":archetype"]: "metric" };
     const observed = recipe.reconcileRecipeDraft(sent, peer, 22);
-    expect(observed.edits).toEqual({});
-    expect(observed.awaiting).toBeUndefined();
+    expect(observed.edits).toEqual(sent.edits);
+    expect(observed.awaiting).toEqual(sent.awaiting);
   });
 
-  it("keeps later keystrokes across an observed save, requiring explicit conflict review before another save", () => {
+  it("keeps later keystrokes and UNKNOWN across an observed matching value, requiring saved-history review first", () => {
     const { draft, current, sceneA } = context();
     const field = sceneA + ":role";
     const sent = recipe.submitRecipeDraft(changed(draft, field, "reveal", current), 20);
     const later = changed(sent, field, "payoff", current);
     const observed = recipe.reconcileRecipeDraft(later, { ...current, [field]: "reveal" }, 21);
     expect(observed.edits[field]).toEqual({ base: "hook", value: "payoff", intent: true });
-    expect(observed.awaiting).toBeUndefined();
+    expect(observed.awaiting).toEqual(sent.awaiting);
     expect(recipe.recipeConflicts(observed, { ...current, [field]: "reveal" })).toEqual([field]);
+    expect(() => recipe.resolveRecipeField(observed, field, { ...current, [field]: "reveal" }, "draft")).toThrow("unconfirmed recipe outcome");
   });
 
-  it("preserves Old → Sent → Old through remount, an unrelated revision and eventual observed Sent", async () => {
+  it("preserves Old → Sent → Old and UNKNOWN through remount, an unrelated revision and eventual observed Sent", async () => {
     const { draft, current, sceneA, key, scope } = context();
     const field = sceneA + ":role";
     recipe.loadRecipeDraft(key, scope, "film", 20);
@@ -171,24 +172,23 @@ describe("recipe input review and observed canonical revisions", () => {
     const observed = recipe.reconcileRecipeDraft(unrelated, savedSent, 22);
     expect(observed.edits[field]?.value).toBe("hook");
     expect(recipe.recipeConflicts(observed, savedSent)).toEqual([field]);
-    const resolved = recipe.resolveRecipeField(observed, field, savedSent, "draft");
-    expect(resolved.edits[field]).toEqual({ base: "reveal", value: "hook" });
-    const resubmitted = recipe.submitRecipeDraft(resolved, 22);
-    const savedOld = recipe.reconcileRecipeDraft(resubmitted, current, 23);
-    expect(savedOld.edits).toEqual({});
-    expect(savedOld.awaiting).toBeUndefined();
+    expect(observed.awaiting).toEqual(sent.awaiting);
+    expect(() => recipe.resolveRecipeField(observed, field, savedSent, "draft")).toThrow("unconfirmed recipe outcome");
+    expect(() => recipe.submitRecipeDraft(observed, 22)).toThrow("unconfirmed recipe outcome");
+    // The positive review/fork/resave and original-ACK routes are covered in
+    // deliveryRecipeDraft.test.ts; a Project observation cannot stand in for either.
     expect(local.getItem(key)).toBe(raw); // Pure readback never auto-submits or writes.
   });
 
-  it("preserves a raw number through recovery and clears it only when its submitted canonical number is observed", () => {
+  it("preserves raw numeric input and UNKNOWN through recovery even when its canonical number is observed", () => {
     const { draft, current, scope } = context("mix");
     const raw = "  -04.500e0  ";
     const sent = recipe.submitRecipeDraft(changed(draft, "sfx_gain_db", raw, current), 20);
     const recovered = recipe.decodeRecipeDraft(JSON.stringify(sent), scope, "mix");
     expect(recovered.edits.sfx_gain_db.value).toBe(raw);
     const observed = recipe.reconcileRecipeDraft(recovered, { ...current, sfx_gain_db: "-4.5" }, 21);
-    expect(observed.edits).toEqual({});
-    expect(observed.awaiting).toBeUndefined();
+    expect(observed.edits).toEqual(recovered.edits);
+    expect(observed.awaiting).toEqual(recovered.awaiting);
     const later = changed(recovered, "sfx_gain_db", "-6", current);
     expect(recipe.reconcileRecipeDraft(later, { ...current, sfx_gain_db: "-4.5" }, 21).edits.sfx_gain_db.value).toBe("-6");
     expect(recipe.recipeConflicts(recovered, { ...current, sfx_gain_db: "-4.5" })).toEqual([]);
@@ -206,16 +206,16 @@ describe("recipe input review and observed canonical revisions", () => {
     expect(() => recipe.submitRecipeDraft(draft, 20)).toThrow("no edited recipe input");
   });
 
-  it("lets explicit abandonment end pending review one field at a time after an unconfirmed request", () => {
+  it("requires saved-history review before any field can abandon an unconfirmed request", () => {
     const { draft, current, sceneA, sceneB } = context();
     let pending = changed(draft, sceneA + ":role", "reveal", current);
     pending = changed(pending, sceneB + ":role", "comparison", current);
     const sent = recipe.submitRecipeDraft(pending, 20);
-    const one = recipe.resolveRecipeField(sent, sceneA + ":role", current, "saved");
-    expect(one.awaiting?.fields).toEqual({ [sceneB + ":role"]: "comparison" });
-    const all = recipe.resolveRecipeField(one, sceneB + ":role", current, "saved");
-    expect(all.edits).toEqual({});
-    expect(all.awaiting).toBeUndefined();
+    expect(() => recipe.resolveRecipeField(sent, sceneA + ":role", current, "saved")).toThrow("unconfirmed recipe outcome");
+    expect(() => recipe.resolveRecipeField(sent, sceneB + ":role", current, "saved")).toThrow("unconfirmed recipe outcome");
+    expect(sent.awaiting?.fields).toEqual({ [sceneA + ":role"]: "reveal", [sceneB + ":role"]: "comparison" });
+    // One-field-at-a-time abandonment remains covered after a real history
+    // review in the new authority helper, rather than bypassing UNKNOWN here.
   });
 
   it("keeps orphan scene input visible for explicit discard instead of silently removing it", () => {
@@ -369,7 +369,7 @@ describe("strict recovery decoding", () => {
 });
 
 describe("recovery storage and editing-window ownership", () => {
-  it("warns on inaccessible storage without blocking edits or valid service-bound recipe projection", () => {
+  it("warns on inaccessible storage while retaining editable input and a validation-only recipe projection", () => {
     const { key, scope, current, canonical, profileA, project } = context("mix");
     local.fail = "read";
     const loaded = recipe.loadRecipeDraft(key, scope, "mix", 20);
@@ -398,7 +398,7 @@ describe("recovery storage and editing-window ownership", () => {
     expect(recipe.loadRecipeDraft(key, scope, "mix", 20).draft.edits.sfx_gain_db.value).toBe("-4");
   });
 
-  it("keeps the backup warning through submission and clears it only after a successful backup", () => {
+  it("keeps the backup warning on a prepared comparison snapshot until a successful backup", () => {
     const { key, scope, current } = context("mix");
     const loaded = recipe.loadRecipeDraft(key, scope, "mix", 20);
     local.fail = "write";
@@ -466,7 +466,8 @@ describe("recovery storage and editing-window ownership", () => {
     recipe.persistRecipeDraft(keyB, draftB);
     recipe.persistRecipeDraft(key, recipe.reconcileRecipeDraft(sent, { ...current, sfx_gain_db: "-4" }, 21));
     expect(recipe.loadRecipeDraft(keyB, scopeB, "mix", 21).draft).toEqual(draftB);
-    expect(recipe.loadRecipeDraft(key, scope, "mix", 21).draft.edits).toEqual({});
+    expect(recipe.loadRecipeDraft(key, scope, "mix", 21).draft.edits).toEqual(sent.edits);
+    expect(recipe.loadRecipeDraft(key, scope, "mix", 21).draft.awaiting).toEqual(sent.awaiting);
   });
 
   it("uses the same pointer on an own reload and restores the raw pending copy", async () => {
@@ -566,8 +567,8 @@ describe("recovery storage and editing-window ownership", () => {
     expect(recipe.readRecipeRecoveryCopies(scope, "mix", key).copies).toEqual([]);
     expect([...local.entries]).toEqual(originals);
     recipe.validateDeliveryRecipe(project, profileA, recipe.proposedDeliveryRecipe(canonical, pending));
-    // This is an explicit limit: no global copy manager and no reload guarantee
-    // when backup failed. Successful project saving remains available.
+    // This projection validates values only. The authority-aware UI separately
+    // blocks project dispatch until recovery data and its writer pointer read back.
   });
 
   it("enforces the total byte budget without deleting originals or preventing later backup after space is freed", () => {

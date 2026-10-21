@@ -35,6 +35,7 @@ function render(protectedSource:boolean):string{
   };
   return renderToStaticMarkup(createElement(AudioWorkspace,{
     project,commit:async()=>{},commitRequired:async()=>{},desktopMode:true,
+    commitRecipe:async()=>{throw new Error("Recipe mutations are unavailable in this markup fixture.");},
     importVoice:async()=>{},playhead:0,onSeek:()=>{}
   }));
 }
