@@ -1,0 +1,120 @@
+name: Performance Reference Profiles
+
+on:
+  push:
+    branches: ["verify/performance-reference-*"]
+  workflow_dispatch:
+    inputs:
+      run_reference:
+        description: "Run the pinned product's isolated six-process G2 (14 retained fixtures)"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-reference-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: "1"
+
+jobs:
+  g0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TMPDIR: ${{ github.workspace }}/.performance-g0-tmp
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: gate
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Prepare isolated lightweight tests
+        run: mkdir -p "$TMPDIR"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Always enforce source, contract, format and whitespace checks
+        working-directory: gate
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 -B tooling/source_policy.py
+          python3 -B tooling/acceptance_policy.py
+          python3 -B tooling/creative_status_policy.py
+          python3 -B tooling/public_surface_policy.py
+          cargo fmt --all -- --check
+      - name: Execute complete source-bound runner controls in both entry modes
+        working-directory: gate
+        run: >-
+          python3 -B tooling/ci_test_runner.py --repo . --mode both
+          --pattern test_ci_performance_reference.py
+          --expected-source "$GITHUB_SHA" --require-complete
+          --report ../performance-g0-evidence/receipt.json
+      - name: Retain original G0 receipts even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: performance-reference-g0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: performance-g0-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  reference-profiles:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_reference
+    needs: g0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.performance-tools/cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.performance-tools/rustup
+      TMPDIR: ${{ github.workspace }}/.performance-tmp
+      PERF_PRODUCT_SHA: cbf3e7ed1f2d6d3145ebd2a743aba0c5639cad38
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: gate
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cbf3e7ed1f2d6d3145ebd2a743aba0c5639cad38
+          path: product
+          persist-credentials: false
+      - name: Create isolated configurable tool directories
+        run: mkdir -p "$CARGO_HOME" "$RUSTUP_HOME" "$TMPDIR"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.1
+      - name: Compile once and execute the pinned retained reference profiles
+        run: |
+          python3 -B gate/tooling/ci_performance_reference.py run \
+            --gate "$GITHUB_WORKSPACE/gate" \
+            --gate-sha "$GITHUB_SHA" \
+            --product "$GITHUB_WORKSPACE/product" \
+            --product-sha "$PERF_PRODUCT_SHA" \
+            --output "$GITHUB_WORKSPACE/performance-reference-evidence"
+      - name: Seal full SQLite, CAS, original WAV, logs, sources and binary evidence
+        if: always()
+        run: |
+          test -d performance-reference-evidence
+          tar -czf performance-reference-evidence.tar.gz performance-reference-evidence
+          sha256sum performance-reference-evidence.tar.gz > performance-reference-evidence.tar.gz.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: performance-reference-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            performance-reference-evidence.tar.gz
+            performance-reference-evidence.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
