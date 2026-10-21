@@ -1,5 +1,6 @@
 mod audio;
 mod file_import;
+mod import_limits;
 mod jobs;
 mod mlt_cleanup;
 mod models;
@@ -10,6 +11,7 @@ pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodedPcm, WAVEFORM_FRAMES_PER_PEAK,
     WaveformPage,
 };
+pub use import_limits::ImportLimits;
 pub use jobs::{
     ProductionJobApplicability, ProductionJobProgress, ProductionJobProjection, ProductionJobState,
     ProductionObservationState,
@@ -379,19 +381,38 @@ fn validate_importable_asset(
 #[derive(Clone)]
 pub struct StudioService {
     store: Arc<Mutex<Store>>,
+    import_limits: ImportLimits,
 }
 
 impl StudioService {
     pub fn open(path: impl AsRef<Path>) -> StorageResult<Self> {
-        Ok(Self {
-            store: Arc::new(Mutex::new(Store::open(path)?)),
-        })
+        Self::open_with_import_limits(path, ImportLimits::default())
     }
 
     pub fn from_store(store: Store) -> Self {
+        Self::from_store_with_import_limits(store, ImportLimits::default())
+    }
+
+    /// Native-host resource policy; request payloads cannot choose these limits.
+    pub fn open_with_import_limits(
+        path: impl AsRef<Path>,
+        limits: ImportLimits,
+    ) -> StorageResult<Self> {
+        Ok(Self::from_store_with_import_limits(
+            Store::open(path)?,
+            limits,
+        ))
+    }
+
+    pub fn from_store_with_import_limits(store: Store, limits: ImportLimits) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
+            import_limits: limits,
         }
+    }
+
+    pub fn import_limits(&self) -> ImportLimits {
+        self.import_limits
     }
 
     pub fn store(&self) -> Arc<Mutex<Store>> {
