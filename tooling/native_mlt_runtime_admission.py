@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 ORIGINAL_SHA = "c1c8850ff049a8775bb3d24c64be9b9365659773ce019902585c056f5be2f910"
-REPAIRED_SHA = "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0"
+REPAIRED_SHA = "fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121"
 INSTALLED = Path("/usr/lib/x86_64-linux-gnu/mlt-7/libmltavformat.so")
 MAX_ELF_BYTES = 64 * 1024 * 1024
 MAX_SOURCE_BYTES = 256 * 1024
@@ -71,7 +71,7 @@ def source_compiler_closure(original: Path, repaired: Path,
     raw = checked_bytes(compiler_receipt, 32 * 1024)
     require(len(a) == 96690 and sha(a) == ORIGINAL_SHA,
             "original_MLT_722_source_not_the_frozen_original")
-    require(len(b) == 98847 and sha(b) == REPAIRED_SHA,
+    require(len(b) == 99266 and sha(b) == REPAIRED_SHA,
             "repaired_MLT_U8P_source_not_the_frozen_candidate")
     require(elf.startswith(b"\x7fELF") and sha(elf) == candidate_sha,
             "compiled_MLT_candidate_not_exact_expected_ELF")

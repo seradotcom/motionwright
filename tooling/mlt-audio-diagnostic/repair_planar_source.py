@@ -22,6 +22,16 @@ SAMPLE_TYPES = ("float", "int16_t", "int32_t", "uint8_t")
 OLD_PREFIX = "p = interleaved_to_planar(samples, ctx->channels, p, sizeof("
 OPTIMIZED_START = "// Optimized for single track and no channel remap"
 PREPARED_ASSIGNMENT = "ctx->audio_avframe->nb_samples = FFMAX(samples, ctx->audio_input_frame_size);"
+CLOCK_ADVANCE = "            ctx->sample_count[i] += ctx->audio_avframe->nb_samples;\n"
+SEND_FRAME = "            int ret = avcodec_send_frame(codec, samples ? ctx->audio_avframe : NULL);"
+VALID_LAST_FRAME = """            // Keep the prepared planar stride from avcodec_fill_audio_frame.
+            // Only the encoder-visible count changes for a supported short tail.
+            if (samples > 0 && samples < ctx->audio_avframe->nb_samples
+                && codec->codec
+                && (codec->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME)) {
+                ctx->audio_avframe->nb_samples = samples;
+            }
+"""
 
 # FFmpeg owns the actual planar stride. align=0 is the same argument passed
 # to avcodec_fill_audio_frame in this *original* consumer; never guess stride
@@ -133,6 +143,13 @@ def repair_exact_original(raw: bytes) -> tuple[bytes, bytes]:
         "            }\n"
         "            " + PREPARED_ASSIGNMENT,
     )
+    if scoped.count(CLOCK_ADVANCE) != 1 or scoped.count(SEND_FRAME) != 1:
+        raise ValueError("original encoder sample clock or send boundary differs")
+    # Fill the AVFrame with its prepared capacity first: reducing nb_samples
+    # before fill would move planar channel pointers back into the old defect.
+    # Keep the existing NULL-drain clock behavior outside this positive-tail fix.
+    scoped = scoped.replace(CLOCK_ADVANCE, "", 1)
+    scoped = scoped.replace(SEND_FRAME, VALID_LAST_FRAME + CLOCK_ADVANCE + SEND_FRAME, 1)
     text = text[:optimize] + scoped + text[stop:]
     if text.count("p = interleaved_to_planar(samples,") != 4:
         raise ValueError("planar conversion calls were not conserved")

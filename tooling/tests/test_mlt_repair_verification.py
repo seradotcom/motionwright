@@ -64,6 +64,67 @@ class SourceCompositionTests(unittest.TestCase):
             verify.compose_pinned(b"foreign\n", b"repair\n", b"tap\n")
 
 
+class PinnedLastFrameResolutionTests(unittest.TestCase):
+    def fixture(self):
+        repair_payload = b'            // Keep the prepared planar stride from avcodec_fill_audio_frame.\n            // Only the encoder-visible count changes for a supported short tail.\n            if (samples > 0 && samples < ctx->audio_avframe->nb_samples\n                && codec->codec\n                && (codec->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME)) {\n                ctx->audio_avframe->nb_samples = samples;\n            }\n            ctx->sample_count[i] += ctx->audio_avframe->nb_samples;\n'
+        observer_payload = b'            size_t mw_record = mw_tap_frame(ctx->mw_tap, codec, ctx->audio_avframe,\n                                            samples, mw_fill_rc, p, AUDIO_ENCODE_BUFFER_SIZE);\n'
+        return ([(8, 9, [b"repair-other\n"]), (1302, 1302, repair_payload.splitlines(keepends=True))],
+                [(12, 12, [b"observer-other\n"]), (1302, 1302, observer_payload.splitlines(keepends=True))])
+
+    def test_only_pinned_boundary_resolves_repair_before_observer(self):
+        repair, observer = self.fixture()
+        merged, proof = verify._resolve_last_frame_boundary(repair, observer)
+        joined = next(edit for edit in merged if edit[:2] == (1302, 1302))
+        self.assertEqual(joined[2], repair[1][2] + observer[1][2])
+        self.assertEqual(proof["order"], ["repair", "observer"])
+        self.assertEqual(proof["repair_payload_sha256"], verify.LAST_FRAME_REPAIR_PAYLOAD[2])
+        self.assertEqual(proof["observer_payload_sha256"], verify.LAST_FRAME_OBSERVER_PAYLOAD[2])
+        self.assertEqual(verify.sha(b"".join(joined[2])), verify.LAST_FRAME_RESOLVED_SHA256)
+        self.assertIn(repair[0], merged)
+        self.assertIn(observer[0], merged)
+
+    def test_either_changed_shared_payload_is_rejected(self):
+        for which in (0, 1):
+            repair, observer = self.fixture()
+            selected = (repair, observer)[which]
+            payload = selected[1][2][:]
+            payload[0] = payload[0].replace(b" ", b"X", 1)
+            selected[1] = (1302, 1302, payload)
+            with self.subTest(which=which):
+                with self.assertRaisesRegex(ValueError, "payload differs"):
+                    verify._resolve_last_frame_boundary(repair, observer)
+
+    def test_moved_or_noninsertion_boundary_is_rejected(self):
+        for left, right in (((1303, 1303), (1303, 1303)),
+                            ((1302, 1303), (1302, 1302)),
+                            ((1303, 1303), (1302, 1302))):
+            repair, observer = self.fixture()
+            repair[1] = (*left, repair[1][2])
+            observer[1] = (*right, observer[1][2])
+            with self.subTest(left=left, right=right):
+                with self.assertRaisesRegex(ValueError, "pinned last-frame"):
+                    verify._resolve_last_frame_boundary(repair, observer)
+
+    def test_second_shared_boundary_is_rejected(self):
+        repair, observer = self.fixture()
+        repair.append((20, 20, [b"another repair\n"]))
+        observer.append((20, 20, [b"another observer\n"]))
+        with self.assertRaisesRegex(ValueError, "expected one pinned last-frame overlap"):
+            verify._resolve_last_frame_boundary(repair, observer)
+
+    def test_duplicate_pinned_insertion_is_rejected(self):
+        repair, observer = self.fixture()
+        repair.append(repair[1])
+        with self.assertRaisesRegex(ValueError, "expected one pinned last-frame overlap"):
+            verify._resolve_last_frame_boundary(repair, observer)
+
+    def test_other_internal_overlap_is_not_hidden_by_resolution(self):
+        repair, observer = self.fixture()
+        repair.append((8, 8, [b"same-source conflicting edit\n"]))
+        with self.assertRaisesRegex(ValueError, "unresolved source edits overlap"):
+            verify._resolve_last_frame_boundary(repair, observer)
+
+
 class SourceBindingTests(unittest.TestCase):
     def valid_fixture(self):
         sources = {"tooling/example.py": b"source\n"}

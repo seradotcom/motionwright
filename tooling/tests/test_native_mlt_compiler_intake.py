@@ -19,8 +19,8 @@ import native_mlt_g2_custody as custody
 CURRENT = {"source_sha": "a" * 40, "semwright_sha": custody.g2.SEMWRIGHT_PIN,
            "run_id": "123", "run_attempt": "1"}
 ORIGINAL = b"C" * 96690
-REPAIRED = b"R" * 98847
-GENERATOR = b"def repair_exact_original(raw):\n    return b'R' * 98847, b'helper'\n"
+REPAIRED = b"R" * 99266
+GENERATOR = b"def repair_exact_original(raw):\n    return b'R' * 99266, b'helper'\n"
 
 
 def artifact():
@@ -199,7 +199,7 @@ class CompilerSourceIntakeTests(unittest.TestCase):
     def test_wrong_repaired_copy_is_rejected_before_source_admission(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            bad = b"def repair_exact_original(raw):\n    return b'X' * 98847, b'helper'\n"
+            bad = b"def repair_exact_original(raw):\n    return b'X' * 99266, b'helper'\n"
             with self.assertRaisesRegex(custody.CustodyRejected, "reconstructed_source_digest"):
                 self.reconstruct(root, tarball(), generator=bad)
             self.assertFalse((root / "intake/repaired_c_source").exists())

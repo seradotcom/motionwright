@@ -34,6 +34,28 @@ def digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def encoder_submission(source: bytes) -> bytes:
+    """Extract the authenticated actual callsite for the separate C gate."""
+    if digest(source) not in {
+        "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0",
+        "fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121",
+    }:
+        raise ValueError("encoder callsite requires an exact authenticated consumer")
+    text = source.decode("utf-8")
+    start = text.index(repair.OPTIMIZED_START)
+    stop = text.index("} else {", start)
+    scoped = text[start:stop]
+    first = "            void *p = ctx->audio_buf_1;\n"
+    last = "            int ret = avcodec_send_frame(codec, samples ? ctx->audio_avframe : NULL);\n"
+    if scoped.count(first) != 1 or scoped.count(last) != 1:
+        raise ValueError("encoder callsite boundary is not unique")
+    begin = scoped.index(first)
+    end = scoped.index(last) + len(last)
+    if begin >= end:
+        raise ValueError("encoder callsite boundaries are reversed")
+    return scoped[begin:end].encode("utf-8")
+
+
 def synthetic_tail(samples: int = 576, prepared: int = 1024) -> tuple[bytes, bytes]:
     """Model solely the source's compact-vs-declared-stride channel placement.
 
@@ -71,10 +93,10 @@ class OriginalPlanarRepairTests(unittest.TestCase):
         self.assertEqual(digest(original_bytes), repair.ORIGINAL_SHA256)
         transformed, helper = repair.repair_exact_original(original_bytes)
         self.assertNotEqual(transformed, original_bytes)
-        self.assertEqual(len(transformed), 98847)
+        self.assertEqual(len(transformed), 99266)
         self.assertEqual(
             digest(transformed),
-            "246e84b02d25d0fe5ea08d59d5abb03c6dfd42d5d15dabeb464c8051f8ed8de0",
+            "fd5095ba7a676733b4b0642e92b931b986ee5fbfb23c800066d8996e4f428121",
         )
         self.assertEqual(digest(helper), "d90db74a261da8053a7f8258f1b9975e692ab54888408cd0a2818ee26e720bf9")
         self.assertEqual(original.read_bytes(), original_bytes)
@@ -95,6 +117,37 @@ class OriginalPlanarRepairTests(unittest.TestCase):
         self.assertIn("avcodec_fill_audio_frame(ctx->audio_avframe,", text)
         self.assertIn("if (!p) {", text)
         self.assertEqual(transformed.count(helper), 1)
+
+    def test_last_frame_callsite_preserves_stride_and_valid_clock_order(self):
+        source = repair.checked_original(self.require_original())
+        transformed, helper = repair.repair_exact_original(source)
+        callsite = encoder_submission(transformed).decode("utf-8")
+        self.assertEqual(digest(helper), "d90db74a261da8053a7f8258f1b9975e692ab54888408cd0a2818ee26e720bf9")
+        self.assertIn("samples > 0 && samples < ctx->audio_avframe->nb_samples", callsite)
+        self.assertIn("codec->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME", callsite)
+        positions = [callsite.index(token) for token in (
+            repair.PREPARED_ASSIGNMENT,
+            "ctx->audio_avframe->pts = ctx->sample_count[i];",
+            "avcodec_fill_audio_frame(",
+            "ctx->audio_avframe->nb_samples = samples;",
+            "ctx->sample_count[i] += ctx->audio_avframe->nb_samples;",
+            "avcodec_send_frame(codec, samples ? ctx->audio_avframe : NULL);",
+        )]
+        self.assertEqual(positions, sorted(positions))
+        # The mapped branch and termination/NULL-drain loops remain authentic.
+        def unchanged_suffix(raw):
+            text = raw.decode("utf-8")
+            begin = text.index(repair.OPTIMIZED_START)
+            return text[text.index("} else {", begin):]
+        self.assertEqual(unchanged_suffix(source), unchanged_suffix(transformed))
+
+    def test_last_frame_callsite_refuses_unbound_source(self):
+        source = repair.checked_original(self.require_original())
+        transformed, _ = repair.repair_exact_original(source)
+        for foreign in (b"", source, transformed + b"\n", transformed[:-1]):
+            with self.subTest(size=len(foreign)):
+                with self.assertRaisesRegex(ValueError, "exact authenticated consumer"):
+                    encoder_submission(foreign)
 
     def test_unsigned_u8p_silence_is_nonzero_and_legacy_zero_is_rejected(self):
         """Independent byte-level guard; libavutil is checked by the C lane."""
