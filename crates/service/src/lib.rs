@@ -20,8 +20,8 @@ pub use models::{
 };
 pub use project_projection::{
     MAX_NODE_PAGE_ITEMS, MAX_PROJECTION_RESPONSE_BYTES, MAX_SCENE_PAGE_ITEMS, NodePage,
-    NodePageCursor, ProjectionError, ProjectionHead, ProjectionIdentity, ProjectionResult,
-    ScenePage, ScenePageCursor, SceneRef, SceneSummary,
+    NodePageCursor, ProjectionError, ProjectionFailure, ProjectionHead, ProjectionIdentity,
+    ProjectionResult, ScenePage, ScenePageCursor, SceneRef, SceneSummary,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

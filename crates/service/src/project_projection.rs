@@ -8,6 +8,39 @@ pub use motionwright_storage::{
     ScenePage, ScenePageCursor, SceneRef, SceneSummary,
 };
 
+use motionwright_storage::StorageError;
+use serde::Serialize;
+
+/// Bounded public failure for read-only project projection commands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum ProjectionFailure {
+    InvalidRequestOrContent,
+    TooLarge { limit: usize },
+    NotFound,
+    StaleRevision { expected: String, actual: String },
+    GenerationChanged,
+    Unavailable,
+}
+
+impl From<ProjectionError> for ProjectionFailure {
+    fn from(error: ProjectionError) -> Self {
+        match error {
+            ProjectionError::Invalid(_) => Self::InvalidRequestOrContent,
+            ProjectionError::TooLarge { limit } => Self::TooLarge { limit },
+            ProjectionError::Storage(error) => match error {
+                StorageError::NotFound => Self::NotFound,
+                StorageError::Conflict { expected, actual } => Self::StaleRevision {
+                    expected: expected.to_string(),
+                    actual: actual.to_string(),
+                },
+                StorageError::GenerationConflict => Self::GenerationChanged,
+                _ => Self::Unavailable,
+            },
+        }
+    }
+}
+
 impl StudioService {
     pub fn project_projection_head(&self, project_id: Uuid) -> ProjectionResult<ProjectionHead> {
         self.store.lock().project_projection_head(project_id)
