@@ -1,5 +1,5 @@
-import { LockKeyhole, Sparkles, Type } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { LockKeyhole, Sparkles } from "lucide-react";
+import { useMemo } from "react";
 import ModelContextInspector from "./ModelContextInspector";
 import type { Change, Project, Scene } from "./types";
 
@@ -7,58 +7,7 @@ type Commit = (change: Change) => Promise<void>;
 
 export { default as RichBriefView } from "./BriefWorkspace";
 
-export function RichNarrativeView({ project, scene, commit }: { project: Project; scene: Scene | null; commit: Commit }) {
-  const [premise, setPremise] = useState(project.narrative.premise);
-  const [objective, setObjective] = useState(scene?.objective ?? "");
-
-  useEffect(() => setPremise(project.narrative.premise), [project.narrative.premise]);
-  useEffect(() => setObjective(scene?.objective ?? ""), [scene?.id, scene?.objective]);
-
-  if (!scene) {
-    return (
-      <div className="empty-workspace">
-        <Type size={24} />
-        <strong>Select a scene</strong>
-        <span>Narrative editing is bound to persistent scene identity.</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="workspace-scroll narrative-view">
-      <header className="workspace-heading">
-        <div>
-          <h2>Narrative</h2>
-          <p>The project premise and selected-scene objective remain semantic intent, independent of renderer code.</p>
-        </div>
-        <span className={"status-pill status-" + scene.status}>{scene.status.replace("_", " ").toUpperCase()}</span>
-      </header>
-      <div className="narrative-columns">
-        <section className="narrative-sheet">
-          <span className="sheet-label">Project premise</span>
-          <textarea aria-label="Narrative premise" rows={8} value={premise} onChange={(event) => setPremise(event.target.value)} />
-          <div className="sheet-actions">
-            <span>{project.narrative.beats.length} narrative beats</span>
-            <button type="button" className="button button-primary"
-              disabled={premise === project.narrative.premise}
-              onClick={() => commit({ type: "set_narrative_premise", premise })}>Commit premise</button>
-          </div>
-        </section>
-        <section className="narrative-sheet">
-          <span className="sheet-label">Selected scene objective</span>
-          <h3>{scene.name}</h3>
-          <textarea aria-label="Scene objective" rows={8} value={objective} onChange={(event) => setObjective(event.target.value)} />
-          <div className="sheet-actions">
-            <span>{objective.length} / 4000</span>
-            <button type="button" className="button button-primary"
-              disabled={!objective.trim() || objective === scene.objective}
-              onClick={() => commit({ type: "update_scene_objective", scene_id: scene.id, objective: objective.trim() })}>Commit objective</button>
-          </div>
-        </section>
-      </div>
-    </div>
-  );
-}
+export { default as RichNarrativeView } from "./NarrativeWorkspace";
 
 export function RichAlternativesView({ project, scene, commit }: { project: Project; scene: Scene | null; commit: Commit }) {
   const proposalSet = useMemo(() => {
