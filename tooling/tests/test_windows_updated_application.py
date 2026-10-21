@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
-from contextlib import closing, redirect_stdout
+from contextlib import ExitStack, closing, contextmanager, redirect_stdout
 import json
 import os
 from pathlib import Path
@@ -89,6 +89,221 @@ def replace_db(db, snap):
             db.execute("INSERT INTO " + name + " VALUES(?,?,?,?,?)", [p["id"], *row])
 
 
+
+class SyntheticLifetimeBoundary:
+    """Fake OS boundaries while the actual lifetime/oracle code runs."""
+
+    def __init__(self, root, fault=None, on_dispatch=None):
+        self.fault = fault
+        self.on_dispatch = on_dispatch
+        self.system_root = root / "synthetic-system"
+        powershell = self.system_root / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        powershell.parent.mkdir(parents=True)
+        powershell.write_bytes(b"synthetic controller marker; never executable")
+        self.environment = {"SystemRoot": str(self.system_root)}
+        self.process = mock.Mock(pid=PROCESS["pid"], returncode=None)
+        self.process.poll.side_effect = self.poll
+        self.process.kill.side_effect = self.kill
+        self.process.wait.side_effect = lambda timeout=None: self.process.returncode
+        self.gracefully_closed = False
+        self.ack_records_written = 0
+        self.application_launch = None
+        self.controller_dispatch = None
+
+    def poll(self):
+        if self.fault == "cleanup-poll" and self.gracefully_closed:
+            raise OSError("synthetic original-handle final observation failure")
+        return self.process.returncode
+
+    def kill(self):
+        self.process.returncode = -9
+
+    def close(self, window, process):
+        if window != PROCESS["window_handle"] or process is not self.process:
+            raise AssertionError("cleanup must retain the original process and window")
+        self.gracefully_closed = True
+        self.process.returncode = 0
+
+    def dispatch(self, command, **kwargs):
+        if self.on_dispatch is not None:
+            self.on_dispatch()
+        if self.fault == "opaque-oserror":
+            raise OSError("synthetic opaque controller boundary failure")
+        if self.fault == "timeout-empty":
+            raise oracle.subprocess.TimeoutExpired(command, 90)
+        mode = command[command.index("-Mode") + 1]
+        record = ui_record(mode)
+        code = 0
+        if self.fault == "original-not-sent":
+            record.update(state="NOT_SENT", phase="PRECHECK_REFUSED", save_attempts=0,
+                          selection_confirmed=False, future_ack_absent=False,
+                          revision=0, title="Preserved project", ack_marker=None)
+            code = 75
+        kwargs["stdout"].write(encode(record))
+        kwargs["stdout"].flush()
+        self.ack_records_written += int(record["state"] == "ACK")
+        if self.fault == "timeout-ack":
+            raise oracle.subprocess.TimeoutExpired(command, 90)
+        return SimpleNamespace(returncode=code)
+
+    @contextmanager
+    def active(self):
+        real_open, real_read, real_exists = Path.open, Path.read_bytes, Path.exists
+        real_retain, real_ref = oracle.retain_observation, oracle.life.retained_ref
+        fault = self.fault
+
+        class FailingClose:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self.stream.__enter__()
+
+            def __exit__(self, *args):
+                self.stream.__exit__(*args)
+                raise OSError("synthetic controller stream-close failure")
+
+        def open_file(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if fault == "pre-dispatch-open" and path.name == "controller.stdout.log" and mode == "xb":
+                raise PermissionError("synthetic pre-dispatch output refusal")
+            stream = real_open(path, *args, **kwargs)
+            if fault == "stream-close" and path.name == "controller.stderr.log" and mode == "xb":
+                return FailingClose(stream)
+            return stream
+
+        def read_file(path):
+            if fault == "stdout-read" and path.name == "controller.stdout.log":
+                raise PermissionError("synthetic original stdout unavailable")
+            return real_read(path)
+
+        def exists(path):
+            if fault == "log-exists" and path.name == "controller.stdout.log":
+                raise OSError("synthetic final log observation failure")
+            return real_exists(path)
+
+        def retain(output, name, original):
+            if fault == "ui-publication" and name.endswith("/ui-original.json"):
+                def failed_publisher(*_):
+                    raise OSError("synthetic ACK publication failure")
+                return real_retain(output, name, original, failed_publisher)
+            return real_retain(output, name, original)
+
+        def reference(output, path):
+            if fault == "log-reference" and path.name == "controller.stdout.log":
+                raise OSError("synthetic retained-log publication failure")
+            return real_ref(output, path)
+
+        with ExitStack() as stack:
+            self.application_launch = stack.enter_context(mock.patch.object(
+                oracle.subprocess, "Popen", return_value=self.process))
+            self.controller_dispatch = stack.enter_context(mock.patch.object(
+                oracle.subprocess, "run", side_effect=self.dispatch))
+            stack.enter_context(mock.patch.object(oracle, "process_identity", return_value={
+                "pid": PROCESS["pid"], "creation_filetime": PROCESS["creation_filetime"]}))
+            stack.enter_context(mock.patch.object(oracle.cold, "windows_motionwright_window",
+                                                 return_value=PROCESS["window_handle"]))
+            stack.enter_context(mock.patch.object(oracle.cold, "graceful_close", side_effect=self.close))
+            stack.enter_context(mock.patch.object(Path, "open", open_file))
+            stack.enter_context(mock.patch.object(Path, "read_bytes", read_file))
+            stack.enter_context(mock.patch.object(Path, "exists", exists))
+            stack.enter_context(mock.patch.object(oracle, "retain_observation", side_effect=retain))
+            stack.enter_context(mock.patch.object(oracle.life, "retained_ref", side_effect=reference))
+            yield self
+
+
+class NativeLifetimeBoundaryContracts(unittest.TestCase):
+    def exercise(self, fault=None, invalid_main=False):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "output"
+            output.mkdir()
+            executable = root / "application.exe"
+            executable.write_bytes(b"synthetic installed bytes; never executable")
+            expected = oracle.life.file_identity(executable)
+            if invalid_main:
+                expected["sha256"] = "0" * 64
+            boundary = SyntheticLifetimeBoundary(root, fault)
+            escaped = None
+            result = None
+            with boundary.active():
+                try:
+                    result = oracle.run_lifetime(output, "first", "edit", values(),
+                                                 executable, expected, boundary.environment)
+                except Exception as error:
+                    escaped = type(error).__name__ + ": " + str(error)
+            saved = output / "first/ui-original.json"
+            original = json.loads(saved.read_text()) if saved.is_file() else None
+            if escaped is not None:
+                self.fail("run_lifetime lost its local outcome: " + escaped
+                          + "; retained original=" + json.dumps(original))
+            return SimpleNamespace(result=result, original=original,
+                                   launches=boundary.application_launch.call_count,
+                                   dispatches=boundary.controller_dispatch.call_count,
+                                   ack_records=boundary.ack_records_written)
+
+    def assert_incomplete(self, outcome, state, launches=1, dispatches=1):
+        self.assertEqual(outcome.result["ui"]["state"], state)
+        self.assertEqual(outcome.launches, launches)
+        self.assertEqual(outcome.dispatches, dispatches)
+        with self.assertRaises(oracle.OracleError):
+            oracle.require_lifetime(outcome.result, "edit")
+
+    def test_preflight_and_precontroller_failures_never_dispatch(self):
+        self.assert_incomplete(self.exercise(invalid_main=True), "NOT_STARTED", 0, 0)
+        self.assert_incomplete(self.exercise("pre-dispatch-open"), "NOT_STARTED", 1, 0)
+
+    def test_validated_zero_save_original_is_not_sent(self):
+        outcome = self.exercise("original-not-sent")
+        self.assert_incomplete(outcome, "NOT_SENT")
+        self.assertEqual(outcome.result["ui"]["record"]["save_attempts"], 0)
+        self.assertEqual(outcome.ack_records, 0)
+
+    def test_stdout_read_failure_after_dispatch_is_unknown(self):
+        outcome = self.exercise("stdout-read")
+        self.assert_incomplete(outcome, "UNKNOWN")
+        self.assertEqual(outcome.ack_records, 1)
+        self.assertIsNone(outcome.result["ui"].get("record"))
+
+    def test_controller_stream_close_failure_is_unknown(self):
+        outcome = self.exercise("stream-close")
+        self.assert_incomplete(outcome, "UNKNOWN")
+        self.assertEqual(outcome.ack_records, 1)
+
+    def test_opaque_controller_oserror_is_unknown(self):
+        outcome = self.exercise("opaque-oserror")
+        self.assert_incomplete(outcome, "UNKNOWN")
+        self.assertIsNone(outcome.result["ui"].get("record"))
+        self.assertNotEqual(outcome.result["ui"].get("reason"), "CONTROLLER_NOT_STARTED")
+
+    def test_ack_survives_final_original_process_poll_failure(self):
+        outcome = self.exercise("cleanup-poll")
+        self.assert_incomplete(outcome, "ACK")
+        self.assertEqual(outcome.original["state"], "ACK")
+        self.assertTrue(outcome.result["custody_errors"])
+
+    def test_ack_survives_custody_failures_in_direct_lifetime(self):
+        for fault in ("ui-publication", "log-reference", "log-exists"):
+            with self.subTest(fault=fault):
+                outcome = self.exercise(fault)
+                self.assert_incomplete(outcome, "ACK")
+                self.assertTrue(outcome.result["custody_errors"])
+                self.assertEqual(outcome.ack_records, 1)
+
+    def test_complete_original_ack_survives_timeout_without_completion(self):
+        for exit_code in (None, 0):
+            with self.subTest(exit_code=exit_code):
+                observed = oracle.classify_ui(encode(ui_record()), exit_code, True,
+                                              "edit", values(), PROCESS)
+                self.assertEqual(observed["state"], "ACK")
+                self.assertEqual(observed["record"], ui_record())
+                self.assertFalse(observed["controller_complete"])
+        outcome = self.exercise("timeout-ack")
+        self.assert_incomplete(outcome, "ACK")
+        self.assertEqual(outcome.original["state"], "ACK")
+        self.assertFalse(outcome.result["ui"]["controller_complete"])
+
+
 class NativeUiResultContracts(unittest.TestCase):
     def classify(self, record, code=0, timeout=False, mode="edit"):
         return oracle.classify_ui(encode(record), code, timeout, mode, values(), PROCESS)
@@ -110,7 +325,11 @@ class NativeUiResultContracts(unittest.TestCase):
             self.assertEqual(self.classify(ui_record() | {"ack_marker": marker})["state"], "UNKNOWN")
 
     def test_timeout_does_not_admit_even_a_partial_ack_record(self):
-        self.assertEqual(self.classify(ui_record(), timeout=True)["state"], "UNKNOWN")
+        raw = encode(ui_record())[:-1]
+        result = oracle.classify_ui(raw, None, True, "edit", values(), PROCESS)
+        self.assertEqual(result["state"], "UNKNOWN")
+        self.assertIsNone(result["record"])
+        self.assertFalse(result["controller_complete"])
 
     def test_missing_duplicate_or_nonfinite_original_json_is_unknown(self):
         for raw in (b"", b'{"schema":1,"schema":2}', b'{"value":NaN}', b"partial"):
@@ -535,6 +754,79 @@ class OriginalAdmissionContracts(unittest.TestCase):
         self.assertFalse(receipt["release_authorized"])
         self.assertEqual(receipt["installer_execution"], "NOT_RUN")
 
+
+
+
+    def run_direct_synthetic_observation(self, fault):
+        """Run the real lifetime; only OS boundaries and prior admission are fake."""
+        product, gate_repo = self.root / "product", self.root / "gate"
+        product.mkdir()
+        gate_repo.mkdir()
+        self.gate.source_observation = lambda _repo, sha, _paths: {
+            "sha": sha, "tree": "c" * 40, "files": {}}
+        self.gate.GATE_PATHS = ("tooling/canonical-gate.py",)
+        self.gate.PRODUCT_PATHS = ("installer.nsi",)
+        input_ref = self.ref("direct-input.json", self.value)
+        output = self.root / "direct-observation"
+        args = SimpleNamespace(output=output, evidence_root=self.evidence,
+                               product_repo=product, gate_repo=gate_repo,
+                               input=self.evidence / input_ref["path"],
+                               input_sha256=input_ref["sha256"],
+                               product_source="a" * 40, gate_source="b" * 40,
+                               oracle_source="f" * 40)
+        environment = {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows",
+                       "GITHUB_REPOSITORY": RUN["repository"], "GITHUB_RUN_ID": "12",
+                       "GITHUB_RUN_ATTEMPT": "1"}
+        _, after = snapshots()
+
+        def saved_effect():
+            with closing(sqlite3.connect(self.database)) as db, db:
+                replace_db(db, after)
+
+        boundary = SyntheticLifetimeBoundary(self.root, fault, saved_effect)
+        original_lifetime = oracle.run_lifetime
+        with (mock.patch.object(oracle, "os", SimpleNamespace(name="nt", environ=environment)),
+              mock.patch.object(oracle, "load_canonical_gate", return_value=self.gate),
+              mock.patch.object(oracle.life, "read_pe_versions", return_value={}),
+              mock.patch.object(oracle.life, "require_pe_version"),
+              mock.patch.object(oracle, "emit_predecessor_include", return_value={"enabled": True}),
+              mock.patch.object(oracle.cold, "native_windows_launch_environment",
+                                return_value=environment | boundary.environment),
+              boundary.active(),
+              mock.patch.object(oracle, "run_lifetime", wraps=original_lifetime) as lifetimes,
+              redirect_stdout(io.StringIO())):
+            result = oracle.observe(args)
+        return (result, json.loads((output / "receipt.json").read_text()),
+                lifetimes.call_args_list, boundary)
+
+    def test_direct_unknown_controller_with_matching_sql_does_not_reopen(self):
+        code, receipt, calls, boundary = self.run_direct_synthetic_observation("timeout-empty")
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["application_result"], "UNKNOWN")
+        self.assertEqual(receipt["after_edit"]["semantic"]["document"]["title"], "Updated project")
+        self.assertEqual(receipt["after_edit"]["semantic"]["document"]["revision"], 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].args[2], "edit")
+        self.assertEqual(boundary.application_launch.call_count, 1)
+        self.assertEqual(boundary.controller_dispatch.call_count, 1)
+        self.assertNotIn("after_reopen", receipt)
+        self.assertFalse(receipt["human_acceptance"])
+        self.assertFalse(receipt["release_authorized"])
+
+    def test_direct_ack_cleanup_failure_preserves_result_and_blocks_reopen(self):
+        code, receipt, calls, boundary = self.run_direct_synthetic_observation("cleanup-poll")
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["application_result"], "ACK")
+        self.assertEqual(receipt["status"], "INCOMPLETE")
+        self.assertTrue(receipt["lifetimes"][0]["custody_errors"])
+        self.assertEqual(receipt["after_edit"]["semantic"]["document"]["revision"], 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].args[2], "edit")
+        self.assertEqual(boundary.application_launch.call_count, 1)
+        self.assertEqual(boundary.controller_dispatch.call_count, 1)
+        self.assertNotIn("after_reopen", receipt)
+        self.assertFalse(receipt["human_acceptance"])
+        self.assertFalse(receipt["release_authorized"])
 
 
 if __name__ == "__main__":
