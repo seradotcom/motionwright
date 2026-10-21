@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Source contracts, existing static scene, or one original 120-frame camera job
+        description: Source contracts, static scene, original camera, or one saved-source camera cycle
         type: choice
-        options: [source-contracts, static-scene, camera120]
+        options: [source-contracts, static-scene, camera120, camera120-source-cycle]
         default: static-scene
       evidence_recipient_spki:
         description: Canonical RSA-3072 public SPKI DER in base64 for private originals
@@ -29,11 +29,13 @@ on:
       - 'crates/driver-manim-community/**'
       - 'tooling/native_manim_e2e.py'
       - 'tooling/native_manim_camera_evidence.py'
+      - 'tooling/native_manim_camera_cycle.py'
       - 'tooling/native_manim_camera_pixels.py'
       - 'tooling/ci_private_evidence.py'
       - 'tooling/mlt_official_runtime_intake.py'
       - 'tooling/requirements/mlt-g2-custody.txt'
       - 'tooling/tests/test_native_manim_camera_evidence.py'
+      - 'tooling/tests/test_native_manim_camera_cycle.py'
       - 'tooling/tests/test_native_manim_camera_pixels.py'
       - 'tooling/ci_test_runner.py'
       - 'tooling/native_scene_public_artifact.py'
@@ -45,7 +47,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.scenario == 'camera120' && 'native-manim-camera-original' || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  group: ${{ (inputs.scenario == 'camera120' || inputs.scenario == 'camera120-source-cycle') && 'native-manim-camera-original' || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
   cancel-in-progress: false
 
 defaults:
@@ -80,7 +82,7 @@ jobs:
           event = os.environ["WORKFLOW_EVENT"]
           scenario = os.environ["MANIM_REQUESTED_SCENARIO"]
           if event == "workflow_dispatch":
-              if scenario not in {"source-contracts", "static-scene", "camera120"}:
+              if scenario not in {"source-contracts", "static-scene", "camera120", "camera120-source-cycle"}:
                   raise SystemExit("Unsupported Manim workflow scenario")
           elif event != "pull_request":
               raise SystemExit("Unsupported Manim workflow event")
@@ -126,6 +128,22 @@ jobs:
           assert counts["skipped"] == counts["expected_failures"] == 0
           PY
 
+      - name: Require 35 complete saved-source camera cycle regressions
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_manim_camera_cycle.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-camera-cycle-g0/report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-camera-cycle-g0/report.json").read_text())
+          assert value["status"] == "PASS" and value["exit_code"] == 0 and len(value["steps"]) == 1
+          counts = value["steps"][0]["counts"]
+          assert counts["tests_run"] == counts["passed"] == 35
+          assert counts["skipped"] == counts["expected_failures"] == 0
+          PY
+
       - name: Retain original source-contract reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -134,6 +152,7 @@ jobs:
           path: |
             ${{ runner.temp }}/manim-camera-pixel-g0/
             ${{ runner.temp }}/manim-camera-custody-g0/
+            ${{ runner.temp }}/manim-camera-cycle-g0/
           if-no-files-found: error
           retention-days: 14
 
@@ -143,7 +162,8 @@ jobs:
       ${{ github.event_name == 'pull_request' ||
           (github.event_name == 'workflow_dispatch' &&
            (inputs.scenario == 'static-scene' ||
-            inputs.scenario == 'camera120')) }}
+            inputs.scenario == 'camera120' ||
+            inputs.scenario == 'camera120-source-cycle')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -158,8 +178,8 @@ jobs:
             --disable-pip-version-check --require-hashes \
             -r tooling/requirements/mlt-g2-custody.txt
 
-      - name: Validate one original camera dispatch and public recovery key
-        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'camera120'
+      - name: Validate one camera dispatch and public recovery key
+        if: github.event_name == 'workflow_dispatch' && (inputs.scenario == 'camera120' || inputs.scenario == 'camera120-source-cycle')
         env:
           PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
           PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
@@ -275,7 +295,8 @@ jobs:
           cargo clippy --locked -p motionwright-manim-profile -p motionwright-manim-community-driver \
             --all-targets -- -D warnings
           cargo build --locked -p motionwright-native \
-            --example native-manim-e2e --example native-manim-camera-seed
+            --example native-manim-e2e --example native-manim-camera-seed \
+            --example native-manim-camera-e2e
           cargo test --locked -p motionwright-native --example native-manim-camera-seed
           cargo test --locked -p motionwright-native multi_renderer::tests -- --nocapture
           cargo test --locked -p motionwright-native \
@@ -290,7 +311,15 @@ jobs:
           PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
           PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
         run: |
-          if [ "$MANIM_NATIVE_SCENARIO" = "camera120" ]; then
+          if [ "$MANIM_NATIVE_SCENARIO" = "camera120-source-cycle" ]; then
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_e2e.py \
+              --scenario camera120-source-cycle \
+              --evidence-root "$RUNNER_TEMP/manim-camera-private/original-$GITHUB_SHA" \
+              --sealed-originals "$RUNNER_TEMP/manim-camera-sealed/originals.mwci" \
+              --edited-evidence-root "$RUNNER_TEMP/manim-camera-private/edited-$GITHUB_SHA" \
+              --sealed-edited "$RUNNER_TEMP/manim-camera-sealed/edited.mwci" \
+              | tee "$RUNNER_TEMP/manim-camera-cycle-wrapper.log"
+          elif [ "$MANIM_NATIVE_SCENARIO" = "camera120" ]; then
             "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_e2e.py \
               --scenario camera120 \
               --evidence-root "$RUNNER_TEMP/manim-camera-private/$GITHUB_SHA" \
@@ -322,7 +351,7 @@ jobs:
           PY
 
       - name: Verify Manim review evidence
-        if: inputs.scenario != 'camera120'
+        if: inputs.scenario != 'camera120' && inputs.scenario != 'camera120-source-cycle'
         run: |
           test -s "verification/native-manim-e2e/${GITHUB_SHA}/result.json"
           test -s "verification/native-manim-e2e/${GITHUB_SHA}/motionwright-manim-evidence.json"
@@ -349,7 +378,192 @@ jobs:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
           MANIM_NATIVE_SCENARIO: ${{ inputs.scenario || 'static-scene' }}
         run: |
-          if [ "$MANIM_NATIVE_SCENARIO" = "camera120" ]; then
+          if [ "$MANIM_NATIVE_SCENARIO" = "camera120-source-cycle" ]; then
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+
+          def verified_cycle_summary(original, edited, sealed_original, sealed_edited, source, pin):
+              # Publication reads the already retained outcomes. It never invokes a producer.
+              from native_manim_camera_evidence import (
+                  EVIDENCE_NAME, read, read_object, require, sha, verified_publication,
+              )
+              from native_manim_camera_cycle import _checked_edit_contract, _verify_native_link
+
+              require(type(source) is str and re.fullmatch(r"[0-9a-f]{40}", source)
+                      and type(pin) is str and re.fullmatch(r"[0-9a-f]{40}", pin),
+                      "cycle_public_source_identity")
+              require(len({original, edited, sealed_original, sealed_edited}) == 4,
+                      "cycle_public_distinct_paths")
+              first_media, first = verified_publication(
+                  original, source, pin, sealed_original, fixture="original")
+              first_media_sha = sha(first_media)
+              del first_media
+              second_media, second = verified_publication(
+                  edited, source, pin, sealed_edited, fixture="edited1040")
+              second_media_sha = sha(second_media)
+              del second_media
+              require(first["sealed_originals_recipient_sha256"]
+                          == second["sealed_originals_recipient_sha256"]
+                      and first["sealed_originals_sha256"] != second["sealed_originals_sha256"],
+                      "cycle_public_two_distinct_seals")
+              observation = read_object(edited / "source-cycle-observation.json")
+              first_native = read_object(original / EVIDENCE_NAME)
+              second_native = read_object(edited / EVIDENCE_NAME)
+              first_result = read_object(original / "result.json")
+              second_result = read_object(edited / "result.json")
+              require(observation.get("schema") == "motionwright.manim.camera.source-cycle-observation/1"
+                      and observation.get("source_cycle_observation") == "PASS_REQUIRES_SEALED_CUSTODY"
+                      and observation.get("motionwright_sha") == source
+                      and observation.get("semwright_sha") == pin
+                      and type(observation.get("native_effect_invocations")) is int
+                      and observation["native_effect_invocations"] == 2,
+                      "cycle_public_observation_scope")
+              require(all(observation.get(key) is True for key in (
+                  "saved_camera_source_cycle_verified", "same_sqlite_store_reopened_in_fresh_process",
+                  "current_export_equals_second_native_carrier", "original_native_receipts_unchanged",
+                  "fresh_requests_and_distinct_once_scopes",
+              )) and all(observation.get(key) is False for key in (
+                  "source_export_grants_native_authority", "motion_canvas_equivalence_verified",
+                  "voice_or_caption_mixing_verified", "human_acceptance", "automatic_retry",
+              )), "cycle_public_observation_authority")
+              require(observation.get("original_request_id") == first_native["request_id"]
+                      and observation.get("edited_request_id") == second_native["request_id"]
+                      and first_native["request_id"] != second_native["request_id"],
+                      "cycle_public_fresh_requests")
+              require(observation.get("original_plan_sha256") == first["compiled_plan_sha256"]
+                      and observation.get("edited_plan_sha256") == second["compiled_plan_sha256"]
+                      and first["compiled_plan_sha256"] != second["compiled_plan_sha256"]
+                      and first_media_sha != second_media_sha,
+                      "cycle_public_distinct_source_and_media")
+              retained = {
+                  "original_native_evidence_sha256": original / EVIDENCE_NAME,
+                  "edited_native_evidence_sha256": edited / EVIDENCE_NAME,
+                  "edit_receipt_sha256": edited / "source-cycle-edit.json",
+                  "fresh_source_readback_sha256": edited / "source-cycle-readback.json",
+                  "original_media_negative_sha256": edited / "original-media-edited-geometry-negative.json",
+              }
+              require(all(observation.get(key) == sha(read(path)) for key, path in retained.items()),
+                      "cycle_public_retained_receipt_digest")
+              edit = read_object(retained["edit_receipt_sha256"])
+              binding = _checked_edit_contract(edit, {
+                  "prepared": {"binding": first_result["project"]},
+                  "native": first_native, "native_path": original / EVIDENCE_NAME,
+              })
+              require(binding == second_result["project"], "cycle_public_edited_binding")
+              readback = read_object(retained["fresh_source_readback_sha256"])
+              stamp = {key: binding[key] for key in ("generation", "revision")}
+              stamp["resource"] = "project:" + binding["project_id"]
+              require(readback.get("schema") == "motionwright.manim.camera.source-cycle/1"
+                      and readback.get("phase") == "source-cycle-readback"
+                      and readback.get("canonical_stamp") == stamp
+                      and all(readback.get(key) == binding[key]
+                              for key in ("project_id", "scene_id", "deliverable_id"))
+                      and readback.get("production_receipt_window_limit") == 256,
+                      "cycle_public_readback_binding")
+              require(all(readback.get(key) is True for key in (
+                  "fresh_sqlite_readback", "original_native_receipts_unchanged",
+                  "production_receipt_window_unchanged", "saved_export_matches_native_carrier",
+              )) and all(readback.get(key) is False for key in (
+                  "source_changed_by_example", "native_execution_performed",
+                  "native_compiler_registered", "provider_dispatch_performed",
+                  "new_render_job_created", "imported_source_authority_used",
+                  "fresh_registered_source_reopen_verified", "native_video_frame_content_verified",
+                  "human_acceptance",
+              )), "cycle_public_readback_authority")
+              require(all(readback.get(key) == edit[key] for key in (
+                  "original_source_asset_id", "edited_source_asset_id", "original_source_sha256",
+                  "edited_source_sha256", "source_project_sha256", "current_export_bundle_sha256",
+              )) and readback.get("edit_receipt_sha256") == sha(read(retained["edit_receipt_sha256"])),
+                  "cycle_public_source_history")
+              carrier = _verify_native_link(readback.get("edited_native"), second_native,
+                                            edited / EVIDENCE_NAME)
+              inspected = readback.get("current_source_inspection", {})
+              require(inspected == edit["current_source_inspection"]
+                      and inspected.get("current_binding") == binding
+                      and inspected.get("current_closure") == carrier.get("closure")
+                      and carrier.get("sha256") == readback.get("current_export_bundle_sha256")
+                      and carrier.get("closure", {}).get("plan_sha256") == second["compiled_plan_sha256"]
+                      and carrier.get("closure", {}).get("source_sha256") == second_result["program_sha256"],
+                      "cycle_public_export_carrier_closure")
+              negative = read_object(retained["original_media_negative_sha256"])
+              require(negative.get("schema") == "motionwright.manim.camera.original-media-negative/1"
+                      and negative.get("status") == "EXPECTED_GEOMETRIC_REJECTION"
+                      and negative.get("original_media_sha256") == first_media_sha
+                      and negative.get("edited_plan_sha256") == second["compiled_plan_sha256"]
+                      and negative.get("original_native_evidence_sha256")
+                          == observation["original_native_evidence_sha256"]
+                      and negative.get("decoded_frame_count") == 120
+                      and negative.get("metadata_and_original_digest_verified_before_geometry") is True
+                      and all(negative.get(key) is False for key in (
+                          "synthetic_media_used", "provider_dispatch_performed",
+                          "automatic_retry", "human_acceptance",
+                      )), "cycle_public_original_media_negative")
+              # This explicit allowlist omits native identities, file paths and original receipts.
+              return {
+                  "schema": "motionwright.manim.camera.source-cycle-public/1",
+                  "status": "VERIFIED_SCOPED_CAMERA_CYCLE",
+                  "motionwright_sha": source, "semwright_sha": pin,
+                  "profile": "camera120-source-cycle",
+                  "native_effect_invocations": 2, "publisher_native_effect_invocations": 0,
+                  "original": {
+                      "media_sha256": first_media_sha, "plan_sha256": first["compiled_plan_sha256"],
+                      "sealed_originals_sha256": first["sealed_originals_sha256"],
+                      "decoded_frame_count": first["decoded_frame_count"],
+                  },
+                  "edited": {
+                      "media_sha256": second_media_sha, "plan_sha256": second["compiled_plan_sha256"],
+                      "sealed_originals_sha256": second["sealed_originals_sha256"],
+                      "decoded_frame_count": second["decoded_frame_count"],
+                  },
+                  "saved_camera_source_cycle_observed": True,
+                  "original_media_rejected_by_edited_geometry": True,
+                  "source_export_grants_native_authority": False,
+                  "motion_canvas_equivalence_verified": False,
+                  "voice_or_caption_mixing_verified": False,
+                  "full_manim_fidelity_verified": False, "human_acceptance": False,
+                  "automatic_retry": False, "release_approved": False,
+              }
+
+
+          def main():
+              sys.path.insert(0, "tooling")
+              summary = {
+                  "schema": "motionwright.manim.camera.source-cycle-public/1",
+                  "status": "NOT_PUBLISHED",
+                  "reason": "cycle_or_prior_job_verification_incomplete",
+                  "publisher_native_effect_invocations": 0,
+                  "human_acceptance": False, "automatic_retry": False, "release_approved": False,
+              }
+              if os.environ.get("NATIVE_CI_JOB_STATUS") == "success":
+                  try:
+                      source = os.environ["GITHUB_SHA"]
+                      pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+                      temporary = Path(os.environ["RUNNER_TEMP"])
+                      summary = verified_cycle_summary(
+                          temporary / "manim-camera-private" / ("original-" + source),
+                          temporary / "manim-camera-private" / ("edited-" + source),
+                          temporary / "manim-camera-sealed" / "originals.mwci",
+                          temporary / "manim-camera-sealed" / "edited.mwci", source, pin)
+                  except BaseException:
+                      # Private exceptions remain in encrypted originals, never in the public artifact.
+                      pass
+              output = Path("verification/native-manim-public")
+              output.mkdir(parents=True, exist_ok=False)
+              with (output / "public-evidence.json").open("x", encoding="utf-8") as stream:
+                  stream.write(json.dumps(summary, sort_keys=True, indent=2) + "\n")
+              if summary["status"] != "VERIFIED_SCOPED_CAMERA_CYCLE":
+                  raise SystemExit("Camera cycle publication withheld; inspect encrypted originals. No replay.")
+
+
+          if __name__ == "__main__":
+              main()
+          PY
+          elif [ "$MANIM_NATIVE_SCENARIO" = "camera120" ]; then
             "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_scene_public_artifact.py \
               --scene manim --profile camera120 \
               --source-sha "$GITHUB_SHA" \
@@ -375,22 +589,22 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Retain both encrypted source-cycle outcomes without replay
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.scenario == 'camera120-source-cycle'
+        with:
+          name: motionwright-manim-camera-cycle-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-camera-sealed/originals.mwci
+            ${{ runner.temp }}/manim-camera-sealed/edited.mwci
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Retain encrypted camera originals on every terminal outcome
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always() && github.event_name == 'workflow_dispatch' && inputs.scenario == 'camera120'
         with:
           name: motionwright-manim-camera-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/manim-camera-sealed/originals.mwci
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Retain synthetic source gates separately from native originals
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: motionwright-manim-camera-source-g0-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/manim-camera-pixel-g0
-            ${{ runner.temp }}/manim-camera-custody-g0
           if-no-files-found: error
           retention-days: 14

@@ -29,6 +29,7 @@ SEMWRIGHT = Path(os.environ.get("SEMWRIGHT_CHECKOUT", ROOT / "_semwright")).reso
 SW_BINS = SEMWRIGHT / "target" / "debug"
 MW_EXAMPLE = ROOT / "target" / "debug" / "examples" / "native-manim-e2e"
 MW_CAMERA_SEED = ROOT / "target" / "debug" / "examples" / "native-manim-camera-seed"
+MW_CAMERA_SOURCE = ROOT / "target" / "debug" / "examples" / "native-manim-camera-e2e"
 MW_DRIVER = ROOT / "target" / "debug" / "motionwright-manim-community-driver"
 MW_RUNNER = ROOT / "target" / "debug" / "motionwright-manim-runner"
 MANIM_RUNTIME = Path(
@@ -321,6 +322,8 @@ def camera_options(args):
                                        text=True).strip()
     require(observed == GITHUB_SHA, "camera_original_checkout_identity")
     require(MW_CAMERA_SEED.is_file(), "camera_source_seed_binary_absent")
+    if getattr(args, "source_cycle_enabled", False):
+        require(MW_CAMERA_SOURCE.is_file(), "camera_source_cycle_binary_absent")
     recipient = {
         "spki_der_base64": os.environ.get("PRIVATE_EVIDENCE_RECIPIENT_SPKI", ""),
         "sha256": os.environ.get("PRIVATE_EVIDENCE_RECIPIENT_SHA256", ""),
@@ -335,34 +338,41 @@ def camera_options(args):
     return recipient, current
 
 
-def main(argv=None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=("static-scene", "camera120"), default="static-scene")
-    parser.add_argument("--evidence-root", type=Path)
-    parser.add_argument("--sealed-originals", type=Path)
-    args = parser.parse_args(argv)
+def _run_single(args, *, source_cycle=None):
     camera = args.scenario == "camera120"
-    exact_inputs()
+    cycle_observation = None
+    if source_cycle is not None and not camera:
+        raise ValueError("camera source cycle requires the camera producer")
     if camera:
         from native_manim_camera_evidence import (
             CameraCustody, EVIDENCE_NAME, finish_render, prepare_seed, private_json,
         )
         recipient, current = camera_options(args)
+        if source_cycle is not None and current != source_cycle["current"]:
+            raise ValueError("camera cycle context changed between native phases")
     elif args.evidence_root is not None or args.sealed_originals is not None:
         raise ValueError("private camera custody arguments require camera120")
     evidence = args.evidence_root if camera else EVIDENCE
     evidence.mkdir(parents=True, exist_ok=False, mode=0o700)
     # Camera originals remain in their private directory until runner disposal,
     # including when sealing fails. They are never automatically removed here.
-    workspace = (contextlib.nullcontext(tempfile.mkdtemp(
-        prefix="motionwright-native-manim-camera-", dir=os.environ["RUNNER_TEMP"]))
-        if camera else tempfile.TemporaryDirectory(prefix="motionwright-native-manim-"))
+    workspace = (
+        contextlib.nullcontext(str(source_cycle["owner"]))
+        if source_cycle is not None else
+        (contextlib.nullcontext(tempfile.mkdtemp(
+            prefix="motionwright-native-manim-camera-", dir=os.environ["RUNNER_TEMP"]))
+         if camera else tempfile.TemporaryDirectory(prefix="motionwright-native-manim-"))
+    )
     with workspace as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
         scope = (CameraCustody(root, evidence, args.sealed_originals, recipient, current)
                  if camera else contextlib.nullcontext(None))
         with scope as camera_custody:
+            phase_root = root
+            if source_cycle is not None:
+                phase_root = root / "edited1040"
+                phase_root.mkdir(mode=0o700, exist_ok=False)
             paths: dict[str, Path] = {}
             for name in [
                 "runtime",
@@ -374,8 +384,13 @@ def main(argv=None) -> None:
                 "output",
                 "motionwright-data",
             ]:
-                path = root / name
-                path.mkdir(mode=0o700)
+                if source_cycle is not None and name == "motionwright-data":
+                    path = source_cycle["database"].parent
+                    if path != root / "motionwright-data":
+                        raise ValueError("camera cycle must reuse its original persisted store")
+                else:
+                    path = phase_root / name
+                    path.mkdir(mode=0o700)
                 paths[name] = path
 
             env = {
@@ -394,9 +409,20 @@ def main(argv=None) -> None:
 
             database = paths["motionwright-data"] / "motionwright.sqlite3"
             if camera:
-                seeded = captured_json([str(MW_CAMERA_SEED), str(database)], env=env,
-                                       evidence=evidence, label="source-seed")
-                prepared_camera = prepare_seed(seeded, evidence)
+                if source_cycle is None:
+                    seeded = captured_json([str(MW_CAMERA_SEED), str(database)], env=env,
+                                           evidence=evidence, label="source-seed")
+                    prepared_camera = prepare_seed(seeded, evidence)
+                else:
+                    from native_manim_camera_cycle import prepare_edited_seed, reject_original_media
+                    seeded = prepare_edited_seed(
+                        source_cycle, evidence, database, env,
+                        source_binary=MW_CAMERA_SOURCE, capture=captured_json,
+                    )
+                    prepared_camera = prepare_seed(seeded, evidence, fixture="edited1040")
+                    reject_original_media(
+                        prepared_camera, source_cycle, evidence, str(FFPROBE), str(FFMPEG),
+                    )
                 # This spelling is the canonical Project.resource_key implementation.
                 seeded = {**seeded, "resource": "project:" + seeded["project_id"]}
                 private_json(evidence / "native-input-identities.json", {
@@ -405,6 +431,8 @@ def main(argv=None) -> None:
                     "source_lock_sha256": digest(ROOT / "SOURCE_LOCK.json"),
                     "binaries": {name: digest(path) for name, path in {
                         "source_seed": MW_CAMERA_SEED, "native_example": MW_EXAMPLE,
+                        **({"source_cycle_example": MW_CAMERA_SOURCE}
+                           if getattr(args, "source_cycle_enabled", False) else {}),
                         "driver": MW_DRIVER, "runner": MW_RUNNER,
                         "broker": SW_BINS / "semwrightd", "client": SW_BINS / "semwright",
                         "sandbox": SW_BINS / "semwright-sandbox",
@@ -533,6 +561,8 @@ def main(argv=None) -> None:
             config_path.chmod(0o600)
 
             socket = paths["runtime"] / "broker.sock"
+            if sys.platform == "linux" and len(os.fsencode(socket)) > 107:
+                raise ValueError("camera owner socket exceeds Linux address capacity")
             session = paths["runtime"] / "motionwright.session"
             daemon_log = evidence / "semwrightd.log"
             log_stream = daemon_log.open("wb")
@@ -596,6 +626,8 @@ def main(argv=None) -> None:
 
                 if camera:
                     request_id = f"camera-{current['run_id']}-{current['run_attempt']}-{GITHUB_SHA[:12]}"
+                    if source_cycle is not None:
+                        request_id += "-edited1040"
                     native = camera_custody.once(lambda: captured_json(
                         [str(MW_EXAMPLE), "realize-camera", str(database), str(connection_path),
                          str(evidence / EVIDENCE_NAME), seeded["project_id"], seeded["scene_id"],
@@ -603,8 +635,18 @@ def main(argv=None) -> None:
                         env=env, evidence=evidence, label="native-example", timeout=420,
                         camera_custody=camera_custody,
                     ))
-                    finish_render(native, prepared_camera, evidence, paths["output"], paths["work"],
-                                  GITHUB_SHA, PIN, str(FFPROBE), str(FFMPEG))
+                    finish_render(
+                        native, prepared_camera, evidence, paths["output"], paths["work"],
+                        GITHUB_SHA, PIN, str(FFPROBE), str(FFMPEG),
+                        fixture="original" if source_cycle is None else "edited1040",
+                    )
+                    if source_cycle is not None:
+                        from native_manim_camera_cycle import verify_edited_source_readback
+                        cycle_observation = verify_edited_source_readback(
+                            source_cycle, prepared_camera, native, evidence, database,
+                            paths["output"], env, source_binary=MW_CAMERA_SOURCE,
+                            capture=captured_json,
+                        )
                 else:
                     result = run_json(
                         [
@@ -681,24 +723,54 @@ def main(argv=None) -> None:
                         raise
                     camera_custody.secondary("broker-cleanup", cleanup_error)
 
-    print(
-        json.dumps(
-            {
-                ("native_manim_camera_e2e" if camera else "native_manim_e2e"): "PASS",
-                "motionwright_sha": GITHUB_SHA,
-                "semwright_sha": PIN,
-                "evidence": "private sealed originals" if camera else str(evidence),
-            },
-            sort_keys=True,
-        )
+    if camera:
+        return {
+            "owner": root, "database": database, "evidence": evidence,
+            "sealed_originals": args.sealed_originals, "current": current,
+            "prepared": prepared_camera, "native": native,
+            "native_path": evidence / EVIDENCE_NAME, "output_root": paths["output"],
+            "cycle_observation": cycle_observation,
+        }
+    return None
+
+
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--scenario", choices=("static-scene", "camera120", "camera120-source-cycle"),
+        default="static-scene",
     )
+    parser.add_argument("--evidence-root", type=Path)
+    parser.add_argument("--sealed-originals", type=Path)
+    parser.add_argument("--edited-evidence-root", type=Path)
+    parser.add_argument("--sealed-edited", type=Path)
+    args = parser.parse_args(argv)
+    exact_inputs()
+    camera = args.scenario != "static-scene"
+    if args.scenario == "camera120-source-cycle":
+        from native_manim_camera_cycle import run_source_cycle
+        from native_manim_camera_evidence import verified_publication
+        run_source_cycle(
+            args, run_phase=_run_single, validate_phase=camera_options,
+            publish_phase=verified_publication,
+        )
+        status_key = "native_manim_camera_source_cycle_e2e"
+    else:
+        if args.edited_evidence_root is not None or args.sealed_edited is not None:
+            raise ValueError("edited custody paths require camera120-source-cycle")
+        _run_single(args)
+        status_key = "native_manim_camera_e2e" if camera else "native_manim_e2e"
+    print(json.dumps({
+        status_key: "PASS", "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN,
+        "evidence": "private sealed originals" if camera else str(EVIDENCE),
+    }, sort_keys=True))
 
 
 if __name__ == "__main__":
     try:
         main()
     except BaseException:
-        if "camera120" not in sys.argv:
+        if not any(value in sys.argv for value in ("camera120", "camera120-source-cycle")):
             raise
         # Original stdout/stderr, Rust diagnostics, journal and wrapper error
         # belong in the private snapshot, never in public Actions logs.
