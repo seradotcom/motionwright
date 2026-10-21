@@ -5,7 +5,11 @@ use super::project_library::{OpenProjectRequest, open_project};
 use motionwright_domain::{Project, otio_interchange};
 use motionwright_service::StudioService;
 use serde::{Deserialize, Serialize};
-use std::{fs::OpenOptions, io::Write, path::PathBuf};
+use std::{
+    fs::File,
+    io::Write,
+    path::{Path, PathBuf},
+};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -120,27 +124,48 @@ fn execute_otio_export(
     if !parent.is_dir() {
         return Err("OTIO export directory must already exist.".into());
     }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "OTIO export destination already exists; Motionwright will not overwrite it."
-                    .to_string()
-            } else {
-                "Motionwright could not create the OTIO export.".to_string()
-            }
-        })?;
-    file.write_all(interchange.body.as_bytes())
-        .map_err(|_| "Motionwright could not write the OTIO export.".to_string())?;
-    file.sync_all()
-        .map_err(|_| "Motionwright could not finalize the OTIO export.".to_string())?;
+    publish_otio(&destination, interchange.body.as_bytes())?;
+
     Ok(OtioExportResponse {
         path: destination.display().to_string(),
         scene_count: interchange.scene_count,
         loss_report: interchange.loss_report,
     })
+}
+
+fn publish_otio(destination: &Path, body: &[u8]) -> Result<(), String> {
+    publish_otio_with(destination, |file| {
+        file.write_all(body)
+            .map_err(|_| "Motionwright could not write the OTIO export.".to_string())?;
+        file.sync_all()
+            .map_err(|_| "Motionwright could not finalize the OTIO export.".to_string())
+    })
+}
+
+fn otio_create_error(error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        "OTIO export destination already exists; Motionwright will not overwrite it.".to_string()
+    } else {
+        "Motionwright could not create the OTIO export.".to_string()
+    }
+}
+
+fn publish_otio_with(
+    destination: &Path,
+    write_and_sync: impl FnOnce(&mut File) -> Result<(), String>,
+) -> Result<(), String> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "OTIO export destination has no parent directory.".to_string())?;
+    let mut staging = tempfile::Builder::new()
+        .prefix(".motionwright-otio-")
+        .tempfile_in(parent)
+        .map_err(otio_create_error)?;
+    write_and_sync(staging.as_file_mut())?;
+    staging
+        .persist_noclobber(destination)
+        .map_err(|error| otio_create_error(error.error))?;
+    Ok(())
 }
 
 fn absolute_otio_path(value: &str) -> Result<PathBuf, String> {
@@ -456,5 +481,93 @@ mod tests {
             assert!(consume_again(&grants, &f.project, &original, token).is_err());
             assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
         }
+    }
+
+    fn interrupted_publication(finalization: bool) {
+        let f = fixture();
+        let area = f.root.path().join("exports");
+        let destination = area.join("interrupted.otio");
+        fs::write(area.join("foreign.txt"), b"untouched foreign export").unwrap();
+        let before = files(&area);
+        let body = otio_interchange(&f.project).unwrap().body;
+        assert!(body.len() > 7);
+        let mut visible_during_write = None;
+        let result = publish_otio_with(&destination, |file| {
+            let bytes = if finalization {
+                body.as_bytes()
+            } else {
+                &body.as_bytes()[..7]
+            };
+            file.write_all(bytes).unwrap();
+            visible_during_write = fs::read(&destination).ok();
+            Err(if finalization {
+                "injected finalization failure after complete real write".to_string()
+            } else {
+                "injected write failure after a real prefix".to_string()
+            })
+        });
+        assert!(result.is_err());
+        assert!(
+            visible_during_write.is_none(),
+            "unconfirmed OTIO bytes were visible before publication"
+        );
+        assert!(
+            !destination.exists(),
+            "failed OTIO export remained published"
+        );
+        assert_eq!(
+            files(&area),
+            before,
+            "foreign bytes changed or staging leaked"
+        );
+    }
+
+    #[test]
+    fn failed_otio_write_never_exposes_or_retains_a_partial_destination() {
+        interrupted_publication(false);
+    }
+
+    #[test]
+    fn failed_otio_finalization_never_exposes_or_retains_unconfirmed_bytes() {
+        interrupted_publication(true);
+    }
+
+    #[test]
+    fn late_otio_competitor_is_preserved_and_staging_is_removed() {
+        let f = fixture();
+        let area = f.root.path().join("exports");
+        let destination = area.join("contended.otio");
+        fs::write(area.join("foreign.txt"), b"untouched foreign export").unwrap();
+        let losing_body = otio_interchange(&f.project).unwrap().body;
+        let winner_project = peer_edit(&f);
+        let winner_body = otio_interchange(&winner_project).unwrap().body;
+        assert_ne!(losing_body, winner_body);
+        let mut expected = files(&area);
+        expected.insert(
+            PathBuf::from("contended.otio"),
+            winner_body.as_bytes().to_vec(),
+        );
+        let result = publish_otio_with(&destination, |staging| {
+            staging.write_all(losing_body.as_bytes()).unwrap();
+            staging.sync_all().unwrap();
+            assert!(!destination.exists());
+            let mut winner = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+                .unwrap();
+            winner.write_all(winner_body.as_bytes()).unwrap();
+            winner.sync_all().unwrap();
+            drop(winner);
+            Ok(())
+        });
+        assert_eq!(
+            result,
+            Err(otio_create_error(std::io::Error::from(
+                std::io::ErrorKind::AlreadyExists
+            )))
+        );
+        assert_eq!(files(&area), expected, "winner changed or staging leaked");
+        assert_eq!(f.service.project(f.project.id).unwrap(), winner_project);
     }
 }

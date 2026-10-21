@@ -20,6 +20,7 @@ uuid.workspace = true
 sha2.workspace = true
 hex.workspace = true
 same-file = "=1.0.6"
+tempfile.workspace = true
 tauri = { version = "2.8", features = [] }
 tauri-plugin-dialog = "=2.8.1"
 
