@@ -1,16 +1,16 @@
-name: Selected Studio service verification
-run-name: Studio service ${{ github.event_name == 'workflow_dispatch' && inputs.selection || 'G0 only' }} / ${{ github.sha }}
+name: Selected Studio verification
+run-name: Studio verification ${{ github.event_name == 'workflow_dispatch' && inputs.selection || 'G0 only' }} / ${{ github.sha }}
 on:
   push:
     branches: ['verify/studio-service-*']
   workflow_dispatch:
     inputs:
       selection:
-        description: Run only the required real-service selection; all is the complete defined roster
+        description: Run a closed service or synthetic browser selection; all remains the complete service roster
         type: choice
         required: true
         default: authoring-drafts
-        options: [complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, inspector, profile-metadata, profile-authority, projection-navigation]
+        options: [complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts]
 permissions:
   contents: read
 concurrency:
@@ -62,12 +62,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   real-service:
-    name: Real SQLite and Studio / ${{ inputs.selection }}
+    name: ${{ inputs.selection == 'browser-contracts' && 'Synthetic browser contracts' || 'Real SQLite and Studio' }} / ${{ inputs.selection }}
     if: github.event_name == 'workflow_dispatch'
     needs: g0
     runs-on: ubuntu-24.04
     # Include source build, all declared case bounds and setup/retention time.
-    timeout-minutes: ${{ inputs.selection == 'all' && 360 || inputs.selection == 'complete-authoring' && 180 || inputs.selection == 'authoring-drafts' && 120 || 60 }}
+    timeout-minutes: ${{ inputs.selection == 'browser-contracts' && 210 || inputs.selection == 'all' && 360 || inputs.selection == 'complete-authoring' && 180 || inputs.selection == 'authoring-drafts' && 120 || 60 }}
     env:
       CARGO_HOME: ${{ github.workspace }}/v/c
       CARGO_TARGET_DIR: ${{ github.workspace }}/v/t
@@ -95,13 +95,18 @@ jobs:
         with:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        if: inputs.selection != 'browser-contracts'
         with:
           toolchain: '1.98.1'
-      - name: Retain tool identities
+      - name: Retain real-service Rust identities
+        if: inputs.selection != 'browser-contracts'
         run: |
           set -euo pipefail
           rustc -Vv > ../v/tools/rustc.txt
           cargo -V > ../v/tools/cargo.txt
+      - name: Retain shared tool identities
+        run: |
+          set -euo pipefail
           node --version > ../v/tools/node.txt
           npm --version > ../v/tools/npm.txt
           python --version > ../v/tools/python.txt
@@ -111,7 +116,7 @@ jobs:
           set -euo pipefail
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
-      - name: Execute selected cases against the real source-built service
+      - name: Execute the closed selection through the canonical observer
         env:
           REQUESTED_SELECTION: ${{ inputs.selection }}
         run: |

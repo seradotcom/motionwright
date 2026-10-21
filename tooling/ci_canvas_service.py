@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run selected Studio contracts against the freshly built SQLite service."""
+"""Run closed Studio selections with original source and process custody."""
 from __future__ import annotations
 
 import argparse
@@ -253,6 +253,498 @@ SELECTION_TIMEOUTS = {
 }
 
 
+# Synthetic browser scope is separate from every real-service selection.
+BROWSER_SELECTIONS = (('browser-asset-integrity',
+  'asset-integrity.spec.ts',
+  ('Dependencies audits real CAS identities in pages without inventing scene consumers',
+   'browser demo cannot claim local CAS integrity or fabricate Graph associations')),
+ ('browser-brand-campaign',
+  'brand-campaign.spec.ts',
+  ('browser with no canonical BrandProfile cannot claim campaign admission',
+   'two-scene source-bound brand rollout is reviewed before one canonical mutation',
+   'failed synthetic late CAS never claims a successful campaign revision')),
+ ('browser-canvas-native-linear-motion',
+  'canvas-native-linear-motion.spec.ts',
+  ('Canvas issues exactly one source-scoped native linear move and preserves base pose',
+   'native move UI blocks beat-constrained scenes and never claims native render in browser demo')),
+ ('browser-canvas-native-outcubic',
+  'canvas-native-outcubic.spec.ts',
+  ('Canvas writes one atomic cubic-out X/Y move through the saved native bridge',
+   'browser demo never pretends exact native Film motion is already proven')),
+ ('browser-editor',
+  'editor.spec.ts',
+  ('editor exposes real workspaces and browser-demo mutations',
+   'renderer and locks mutate the same visible project revision',
+   'keyboard focus is visible and workspace navigation remains operable',
+   'theme preference persists without mutating the project revision',
+   'scene selection and timeline seeking share one playhead context',
+   'beat and cue selection share scene and playhead without mutating project state',
+   'design preview transport steps and plays without claiming a project edit',
+   'scene beat locks are enforced while unlocked beats stay synchronized with the timeline',
+   'offline state is explicit while local editing remains available',
+   'workflow intelligence never fabricates canonical evidence in browser demo',
+   'model preflight exposes minimal context without dispatch or silent fallback',
+   'canvas edits and stored alternatives use project revisions rather than local-only UI state',
+   'scene duration ripple reflows the shared timeline and journals one change',
+   'visual system commits a new version and project style lock is enforceable',
+   'canvas hierarchy style relations and safe removal are versioned',
+   'production jobs workspace never fabricates runtime evidence in browser demo mode',
+   'portable project delivery is truthful in browser demo mode',
+   'delivery profiles are versioned and filesystem claims remain truthful',
+   'delivery variants keep lineage, replan alternate aspect ratios and require explicit crop approval',
+   'audio workspace keeps measurement claims honest and versions mix intent',
+   'optional renderers stay closed until a reviewed project extension is explicitly enabled',
+   'Launchwright handoffs use public refs and exact output digests without remote mutation claims',
+   'OpenTimelineIO export stays filesystem-gated and never implies lossless interchange in browser mode',
+   'audio cue seeking and canvas share the same global editorial clock',
+   'canvas scrubbing and keyframe jumps use scene-relative time without splitting the clock',
+   'review point anchors capture the global timeline and seek without making an edit',
+   'review time ranges are validated and historical anchors do not imply renewed approval',
+   'desktop job receipts reread active jobs and preserve explicit manual refresh for terminal receipts')),
+ ('browser-evaluator-experiment',
+  'evaluator-experiment.spec.ts',
+  ('a browser can compare original data but cannot claim trusted candidate admission',
+   're-editing a candidate or selecting a different scene invalidates the previous comparison',
+   'an approved owner registration sends one scoped canonical evaluator change, never an executable skill')),
+ ('browser-film-preflight',
+  'film-preflight.spec.ts',
+  ('native semantic Film preflight is read-only and cannot be mistaken for real render',
+   'unsupported Film projection prevents native dispatch for unchanged inputs',
+   'browser demo cannot invent native Film semantic projection readiness')),
+ ('browser-generation-journal',
+  'generation-journal.spec.ts',
+  ('desktop preflight, intent commit, and exact reservation are separate user actions',
+   'late preflight cannot become a confirmation for another working scene',
+   'browser demo never simulates provider jobs or spending')),
+ ('browser-history-pagination',
+  'history-pagination.spec.ts',
+  ('recent-first committed history exposes all 260 revisions with bounded older pages',
+   'an earlier-history read error keeps the recent page and allows retry')),
+ ('browser-multi-segment-readiness',
+  'multi-segment-readiness.spec.ts',
+  ('Deliver checks multi-segment source readiness with only an owner preview token',
+   'Browser demo has no native multi-segment readiness source')),
+ ('browser-native-av-master',
+  'native-av-master.spec.ts',
+  ('desktop AV master is linked only to session-native visual evidence and a measured saved voice',
+   'UI refuses to offer native mastering for incompatible measured voice duration',
+   'browser demo never claims native AV master authority')),
+ ('browser-native-multisegment-av',
+  'native-multisegment-av.spec.ts',
+  ('desktop multisegment final AV is source-token-bound, measured and export-authorized',
+   'desktop multisegment captioned MP4 remains review-only')),
+ ('browser-native-original-mix-voice-binding',
+  'native-original-mix-voice-binding.spec.ts',
+  ('an unbound saved profile blocks audition before permission or a native request',
+   'a different saved voice binding remains blocked without a native request',
+   'a matching saved voice binding enables local confirmation without dispatch')),
+ ('browser-native-original-mix',
+  'native-original-mix.spec.ts',
+  ('browser-only Audio cannot fabricate a mixed WAV or rights receipt',
+   'explicit desktop audition reads a saved recipe and leaves that project revision unchanged')),
+ ('browser-native-pixel-contrast',
+  'native-pixel-contrast.spec.ts',
+  ('browser demo without native source never fabricates visual metrics',
+   'exact native PNG and two manually chosen opaque colors measure 21:1, never change the project',
+   'tampered synthetic PNG is refused before any contrast metric exists')),
+ ('browser-native-preview',
+  'native-preview.spec.ts',
+  ('sampled native PNG readback uses only a session grant and follows the editorial playhead',
+   'invalid synthetic frame bytes display a truthful readback error and a retry')),
+ ('browser-native-progressive-preview',
+  'native-progressive-preview.spec.ts',
+  ('rapid editorial seeks coalesce delayed native reads and settle on exact source frame',)),
+ ('browser-native-review-repair',
+  'native-review-repair.spec.ts',
+  ('a sampled native frame becomes a user-authored scoped repair, never an automatic edit',)),
+ ('browser-otio-owner-cut',
+  'otio-owner-cut.spec.ts',
+  ('browser demo cannot admit a forged cut or mutate the active project',
+   'owner reviews explicit native changes and accepts one project transaction',
+   'explicit loss confirmation does not permit a tampered OTIO scene extension')),
+ ('browser-portable-mp4-integrity',
+  'portable-mp4-integrity.spec.ts',
+  ('local portable MP4 verification is explicit, read-only and supports an independent hash',
+   'browser preview cannot claim to verify local files')),
+ ('browser-production-history',
+  'production-history.spec.ts',
+  ('history enumerates all local jobs beyond recent-window limit with no driver mutation',
+   'independent status append invalidates history cursor and requires explicit restart',
+   'browser demo cannot synthesize historical jobs or a mutable backend',
+   'history keeps colliding job references across provider without duplicate identity rows',
+   'history keeps colliding job references across generation without duplicate identity rows',
+   'history keeps colliding job references across revision without duplicate identity rows',
+   'an original Motion Canvas observation never decorates another provider or historical stamp')),
+ ('browser-program-av-monitor',
+  'program-av-monitor.spec.ts',
+  ('Program AV monitor reads exact source token only for matching scene, profile and revision',
+   'browser demo cannot invent final AV monitoring from a semantic project')),
+ ('browser-project-mutation',
+  'project-mutation.spec.ts',
+  ('pending asset import shares the ordinary edit latch and publishes its revision',
+   'pending voice import shares the ordinary edit latch and publishes its revision',
+   'a pending portable restore cannot race source edits or publish into another revision',
+   'New profile: failed native CAS does not select an unsaved delivery profile',
+   'Derive selected: failed native CAS does not select an unsaved delivery profile',
+   "rejected scene creation keeps the editor's draft open until a confirmed CAS",
+   'rejected Canvas node creation never selects an object that was not committed',
+   'a successful node request in scene A preserves a later scene B selection',
+   'a rejected node request in scene A preserves a later scene B selection',
+   'a successful create preserves later selection and text',
+   'a successful create preserves later text on the same selected node',
+   'a rejected create preserves later selection and text',
+   'a rejected create preserves later text on the same selected node',
+   'a successful create preserves a later transform on the same selected node',
+   'a successful create preserves a later motion value on the same selected node',
+   'returning to the original selection still supersedes a delayed create',
+   'a successful delayed create selects its saved object when the inspector was untouched',
+   'a delayed initial project read cannot roll back a project already published by a mutation')),
+ ('browser-render-receipt',
+  'render-receipt.spec.ts',
+  ('synthetic native receipt remains scene/revision scoped across Deliver and Timeline',)),
+ ('browser-reproducible-capture',
+  'reproducible-capture.spec.ts',
+  ('pinned first-party browser scenario yields a repeatable redacted screenshot linked to a source claim',)),
+ ('browser-v01-mlt-cleanup-inventory',
+  'v01-mlt-cleanup-inventory.spec.ts',
+  ('installed Jobs can inspect MLT creation receipts without driver dispatch or consent',
+   'foreign source receipt inventory cannot be displayed as current project',
+   'browser preview cannot inspect installed MLT receipts or invent cleanup')),
+ ('browser-v01-native-recovery',
+  'v01-native-recovery.spec.ts',
+  ('v0.1 owner sees explicit UNKNOWN recovery path without any automatic retry',
+   'browser-only owner Jobs has no fabricated recovery warning')),
+ ('browser-v01-original-native-status',
+  'v01-original-native-status.spec.ts',
+  ('owner explicitly observes only original native job; no render restart or forged media success',
+   'foreign response with fake verified media is rejected, never becomes success',
+   'historical, other-provider and browser-only jobs cannot trigger original status read')),
+ ('browser-v01-owner-first-render',
+  'v01-owner-first-render.spec.ts',
+  ('v0.1 first owner render requires exact Film and rechecked CLI without faking a provider',
+   'browser demo explicitly rejects owner-native dispatch without any grants')),
+ ('browser-command-palette',
+  'command-palette.spec.ts',
+  ('palette navigates workspaces without mutating the shared project',
+   'global shortcut works in focused fields, and Escape restores focus',
+   'palette consumes transport keys and executes exactly one frame-step action',
+   'keyboard guide, zero results, focus trap, and reopen keep the palette usable',
+   'palette view actions can toggle light theme without a content edit',
+   'keyboard selection follows visible grouped results rather than hidden search-score order',
+   'palette footer and help stay reachable at desktop and compact viewport heights')),
+ ('browser-scene-beat-preservation',
+  'scene-beat-preservation.spec.ts',
+  ('all raw beat fields survive workspace remount and page reload, including incomplete fractions and '
+   'exponents',
+   "equal saved beats under another id cannot adopt the original scope's raw draft",
+   "equal saved beats under another generation cannot adopt the original scope's raw draft",
+   "equal saved beats under another active_branch cannot adopt the original scope's raw draft",
+   "equal saved beats under another sceneId cannot adopt the original scope's raw draft",
+   "equal saved beats under another beatId cannot adopt the original scope's raw draft",
+   'the original beat reply preserves later raw edits through remount and a second explicit save',
+   'returning to the old objective during a save remains a later decision after the original ACK',
+   'matching saved props cannot acknowledge an unresolved original beat request',
+   'UNKNOWN keeps submitted and later raw values across reload without replay',
+   'a silent copy write failure prevents dispatch and explicit retry recovers the draft',
+   'a silent pointer write failure prevents dispatch and explicit retry recovers the draft',
+   'a pointer failure leaves a readable orphan which can be explicitly restored after reload',
+   'a failed ACK checkpoint retains the armed original and later input without treating reload as '
+   'confirmation',
+   'a concurrent retime keeps raw text until the author explicitly combines it with saved timing',
+   'a shortened scene retains an out-of-range raw draft until explicit comparison and repair',
+   'a concurrently removed beat keeps raw input and needs explicit recreation before any command',
+   'late typing during the original removal stays recoverable without automatically recreating the beat',
+   'Fill timing gap uses a retained UNKNOWN draft if its original creation reply is unavailable',
+   'two windows retain separate beat writers and never choose the newest foreign copy on reload',
+   'a corrupt own beat copy stays intact and cannot silently adopt a readable foreign copy',
+   'a cloned tab inherits a readable draft but forks its writer before independent edits',
+   "a late original reply cannot replace a different selected owner's beat draft",
+   'a downloaded draft survives complete local recovery failure and imports as editable raw input',
+   'import cannot overwrite current unbacked input, and foreign-owner files are rejected',
+   'explicit catalog restore keeps clean checkpoint A when the saved beat is B',
+   'explicit file restore keeps clean checkpoint A when the saved beat is B',
+   'restoring a clean checkpoint retains the prior unsent draft as a separately recoverable copy',
+   'automatic reload of a clean checkpoint follows the newer saved beat without creating author intent',
+   'a closed recovery catalog exposes every retained copy after storage enumeration changes')))
+BROWSER_OMITTED_SERVICE_CASES = (('project-mutation.spec.ts',
+  'real asset import already persisted holds the Brief latch until its real reply is published'),
+ ('project-mutation.spec.ts',
+  'real voice import already persisted holds the Brief latch until its real reply is published'),
+ ('project-mutation.spec.ts',
+  'real import grants reject missing authority, path/effect/scope/generation mismatches, stale sources and '
+  'reopen replay'),
+ ('project-mutation.spec.ts',
+  'real portable export and verified restore rotate generation, preserve CAS and serialize the next Brief '
+  'edit'))
+BROWSER_DESCRIBE_TITLES = {('project-mutation.spec.ts', 'a successful create preserves later selection and text'): ('Canvas '
+                                                                                          'interaction '
+                                                                                          'during delayed '
+                                                                                          'creation — '
+                                                                                          'synthetic UI '
+                                                                                          'contract',),
+ ('project-mutation.spec.ts', 'a successful create preserves later text on the same selected node'): ('Canvas '
+                                                                                                      'interaction '
+                                                                                                      'during '
+                                                                                                      'delayed '
+                                                                                                      'creation '
+                                                                                                      '— '
+                                                                                                      'synthetic '
+                                                                                                      'UI '
+                                                                                                      'contract',),
+ ('project-mutation.spec.ts', 'a rejected create preserves later selection and text'): ('Canvas interaction '
+                                                                                        'during delayed '
+                                                                                        'creation — '
+                                                                                        'synthetic UI '
+                                                                                        'contract',),
+ ('project-mutation.spec.ts', 'a rejected create preserves later text on the same selected node'): ('Canvas '
+                                                                                                    'interaction '
+                                                                                                    'during '
+                                                                                                    'delayed '
+                                                                                                    'creation '
+                                                                                                    '— '
+                                                                                                    'synthetic '
+                                                                                                    'UI '
+                                                                                                    'contract',),
+ ('project-mutation.spec.ts', 'a successful create preserves a later transform on the same selected node'): ('Canvas '
+                                                                                                             'interaction '
+                                                                                                             'during '
+                                                                                                             'delayed '
+                                                                                                             'creation '
+                                                                                                             '— '
+                                                                                                             'synthetic '
+                                                                                                             'UI '
+                                                                                                             'contract',),
+ ('project-mutation.spec.ts', 'a successful create preserves a later motion value on the same selected node'): ('Canvas '
+                                                                                                                'interaction '
+                                                                                                                'during '
+                                                                                                                'delayed '
+                                                                                                                'creation '
+                                                                                                                '— '
+                                                                                                                'synthetic '
+                                                                                                                'UI '
+                                                                                                                'contract',),
+ ('project-mutation.spec.ts', 'returning to the original selection still supersedes a delayed create'): ('Canvas '
+                                                                                                         'interaction '
+                                                                                                         'during '
+                                                                                                         'delayed '
+                                                                                                         'creation '
+                                                                                                         '— '
+                                                                                                         'synthetic '
+                                                                                                         'UI '
+                                                                                                         'contract',),
+ ('project-mutation.spec.ts', 'a successful delayed create selects its saved object when the inspector was untouched'): ('Canvas '
+                                                                                                                         'interaction '
+                                                                                                                         'during '
+                                                                                                                         'delayed '
+                                                                                                                         'creation '
+                                                                                                                         '— '
+                                                                                                                         'synthetic '
+                                                                                                                         'UI '
+                                                                                                                         'contract',),
+ ('project-mutation.spec.ts', 'real asset import already persisted holds the Brief latch until its real reply is published'): ('real '
+                                                                                                                               'service '
+                                                                                                                               'imports '
+                                                                                                                               'and '
+                                                                                                                               'portable '
+                                                                                                                               'restore',),
+ ('project-mutation.spec.ts', 'real voice import already persisted holds the Brief latch until its real reply is published'): ('real '
+                                                                                                                               'service '
+                                                                                                                               'imports '
+                                                                                                                               'and '
+                                                                                                                               'portable '
+                                                                                                                               'restore',),
+ ('project-mutation.spec.ts', 'real import grants reject missing authority, path/effect/scope/generation mismatches, stale sources and reopen replay'): ('real '
+                                                                                                                                                         'service '
+                                                                                                                                                         'imports '
+                                                                                                                                                         'and '
+                                                                                                                                                         'portable '
+                                                                                                                                                         'restore',),
+ ('project-mutation.spec.ts', 'real portable export and verified restore rotate generation, preserve CAS and serialize the next Brief edit'): ('real '
+                                                                                                                                               'service '
+                                                                                                                                               'imports '
+                                                                                                                                               'and '
+                                                                                                                                               'portable '
+                                                                                                                                               'restore',)}
+BROWSER_SOURCE_PATHS = ('apps/studio/src/App.tsx',
+ 'apps/studio/src/AudioWorkspace.tsx',
+ 'apps/studio/src/BrandCampaignWorkbench.tsx',
+ 'apps/studio/src/BrandTasteWorkbench.tsx',
+ 'apps/studio/src/BriefWorkspace.tsx',
+ 'apps/studio/src/CameraReframeWorkbench.tsx',
+ 'apps/studio/src/CanvasStructureEditor.tsx',
+ 'apps/studio/src/CanvasWorkspace.tsx',
+ 'apps/studio/src/CaptionReadabilityReview.tsx',
+ 'apps/studio/src/CaptureSourceWorkbench.tsx',
+ 'apps/studio/src/CommandPalette.tsx',
+ 'apps/studio/src/ComponentDistillationWorkbench.tsx',
+ 'apps/studio/src/CompositionStudy.tsx',
+ 'apps/studio/src/CreativeAlternativesPanel.tsx',
+ 'apps/studio/src/CreativeEvaluatorWorkbench.tsx',
+ 'apps/studio/src/CreativePatchWorkbench.tsx',
+ 'apps/studio/src/CreativeRuntimeDoctorPanel.tsx',
+ 'apps/studio/src/CreativeWorkspaces.tsx',
+ 'apps/studio/src/DeliveryProfiles.tsx',
+ 'apps/studio/src/DeliveryVariantImpactReview.tsx',
+ 'apps/studio/src/DependenciesWorkspace.tsx',
+ 'apps/studio/src/EvaluatorExperimentWorkbench.tsx',
+ 'apps/studio/src/ExpandedStudy.tsx',
+ 'apps/studio/src/FileImportRecovery.tsx',
+ 'apps/studio/src/HistoryWorkspaces.tsx',
+ 'apps/studio/src/IdentityOriginWorkbench.tsx',
+ 'apps/studio/src/IntegrationsWorkspace.tsx',
+ 'apps/studio/src/MeasuredDataWorkbench.tsx',
+ 'apps/studio/src/ModelContextInspector.tsx',
+ 'apps/studio/src/MusicClockWorkbench.tsx',
+ 'apps/studio/src/MusicConformWorkbench.tsx',
+ 'apps/studio/src/NarrationTakeReview.tsx',
+ 'apps/studio/src/NarrativeWorkspace.tsx',
+ 'apps/studio/src/NativeAvReview.tsx',
+ 'apps/studio/src/NativeContrastWorkbench.tsx',
+ 'apps/studio/src/NativeFrameStage.tsx',
+ 'apps/studio/src/NativeInspectionWorkbench.tsx',
+ 'apps/studio/src/NativeOriginalMixReview.tsx',
+ 'apps/studio/src/NativePropertyFidelityWorkbench.tsx',
+ 'apps/studio/src/OtioCutReviewWorkbench.tsx',
+ 'apps/studio/src/PaidGenerationWorkspace.tsx',
+ 'apps/studio/src/ProceduralFieldWorkbench.tsx',
+ 'apps/studio/src/ProductStageWorkbench.tsx',
+ 'apps/studio/src/ProductionDesignWorkspace.tsx',
+ 'apps/studio/src/ProductionJobs.tsx',
+ 'apps/studio/src/ProgramDesignStudy.tsx',
+ 'apps/studio/src/ProjectLibraryDialog.tsx',
+ 'apps/studio/src/ProjectProjectionWorkspace.tsx',
+ 'apps/studio/src/RenderTailWorkbench.tsx',
+ 'apps/studio/src/ReviewWorkspace.tsx',
+ 'apps/studio/src/SceneBeatEditor.tsx',
+ 'apps/studio/src/SceneInspector.tsx',
+ 'apps/studio/src/SemanticSfxWorkbench.tsx',
+ 'apps/studio/src/TypographySafetyReview.tsx',
+ 'apps/studio/src/VariantContinuityReview.tsx',
+ 'apps/studio/src/VisualLanguageEditor.tsx',
+ 'apps/studio/src/WorkflowWorkspace.tsx',
+ 'apps/studio/src/api.ts',
+ 'apps/studio/src/audioDraft.css',
+ 'apps/studio/src/audioDraft.ts',
+ 'apps/studio/src/brand-campaign.css',
+ 'apps/studio/src/brandCampaign.ts',
+ 'apps/studio/src/brandGovernance.ts',
+ 'apps/studio/src/briefDraft.ts',
+ 'apps/studio/src/cameraReframe.ts',
+ 'apps/studio/src/cameraReframeDraft.ts',
+ 'apps/studio/src/canvasCamera.ts',
+ 'apps/studio/src/canvasInheritedInk.ts',
+ 'apps/studio/src/canvasMotion.ts',
+ 'apps/studio/src/canvasWorkspaceDraft.ts',
+ 'apps/studio/src/caption-readability.css',
+ 'apps/studio/src/captionReadability.ts',
+ 'apps/studio/src/captureSource.ts',
+ 'apps/studio/src/command-palette.css',
+ 'apps/studio/src/componentDistillation.ts',
+ 'apps/studio/src/creative-alternatives.css',
+ 'apps/studio/src/creative-runtime-doctor.css',
+ 'apps/studio/src/creativeAlternativeEvidence.ts',
+ 'apps/studio/src/creativeDoctor.ts',
+ 'apps/studio/src/creativeEvaluator.ts',
+ 'apps/studio/src/creativeProduction.ts',
+ 'apps/studio/src/creativeUndo.ts',
+ 'apps/studio/src/delivery-variant-impact.css',
+ 'apps/studio/src/deliveryProfileDraft.ts',
+ 'apps/studio/src/deliveryRecipe.ts',
+ 'apps/studio/src/deliveryRecipeDraft.ts',
+ 'apps/studio/src/deliveryVariantImpact.ts',
+ 'apps/studio/src/editorCommandSearch.ts',
+ 'apps/studio/src/evaluator-experiment.css',
+ 'apps/studio/src/evaluatorExperiment.ts',
+ 'apps/studio/src/file-import.css',
+ 'apps/studio/src/fileImport.ts',
+ 'apps/studio/src/firstNativeProduction.ts',
+ 'apps/studio/src/fixture.ts',
+ 'apps/studio/src/generationJournalApi.ts',
+ 'apps/studio/src/historyPaging.ts',
+ 'apps/studio/src/identityOrigin.ts',
+ 'apps/studio/src/jobRefresh.ts',
+ 'apps/studio/src/main.tsx',
+ 'apps/studio/src/measuredData.ts',
+ 'apps/studio/src/musicClock.ts',
+ 'apps/studio/src/narration-review.css',
+ 'apps/studio/src/narrationReviewApi.ts',
+ 'apps/studio/src/narrationReviewTypes.ts',
+ 'apps/studio/src/narrativeDraft.ts',
+ 'apps/studio/src/native-contrast.css',
+ 'apps/studio/src/nativeFrameSelection.ts',
+ 'apps/studio/src/nativeInspection.ts',
+ 'apps/studio/src/nativeMixTypes.ts',
+ 'apps/studio/src/nativePixelContrast.ts',
+ 'apps/studio/src/nativeProgressivePreview.ts',
+ 'apps/studio/src/nativeRecovery.ts',
+ 'apps/studio/src/nativeReviewRepair.ts',
+ 'apps/studio/src/otioCutReview.ts',
+ 'apps/studio/src/otioCutReviewTestFixtures.ts',
+ 'apps/studio/src/paidGenerationTypes.ts',
+ 'apps/studio/src/proceduralField.ts',
+ 'apps/studio/src/productStage.ts',
+ 'apps/studio/src/production-design.css',
+ 'apps/studio/src/programMaster.ts',
+ 'apps/studio/src/project-library.css',
+ 'apps/studio/src/projectLibrary.ts',
+ 'apps/studio/src/projectMutation.ts',
+ 'apps/studio/src/projectProjection.ts',
+ 'apps/studio/src/renderReceipt.ts',
+ 'apps/studio/src/renderTailImpact.ts',
+ 'apps/studio/src/reviewDraft.ts',
+ 'apps/studio/src/sceneBeatDraft.ts',
+ 'apps/studio/src/sceneBeatTiming.ts',
+ 'apps/studio/src/sceneInspectorDraft.ts',
+ 'apps/studio/src/scopedChangeDraft.ts',
+ 'apps/studio/src/semanticSfx.ts',
+ 'apps/studio/src/stageCapture.ts',
+ 'apps/studio/src/styles.css',
+ 'apps/studio/src/timecode.ts',
+ 'apps/studio/src/types.ts',
+ 'apps/studio/src/typographySafety.css',
+ 'apps/studio/src/typographySafety.ts',
+ 'apps/studio/src/variant-continuity.css',
+ 'apps/studio/src/variantContinuity.ts',
+ 'apps/studio/src/visualLanguageDraft.ts',
+ 'apps/studio/tests/asset-integrity.spec.ts',
+ 'apps/studio/tests/brand-campaign.spec.ts',
+ 'apps/studio/tests/canvas-native-linear-motion.spec.ts',
+ 'apps/studio/tests/canvas-native-outcubic.spec.ts',
+ 'apps/studio/tests/command-palette.spec.ts',
+ 'apps/studio/tests/editor.spec.ts',
+ 'apps/studio/tests/evaluator-experiment.spec.ts',
+ 'apps/studio/tests/film-preflight.spec.ts',
+ 'apps/studio/tests/fixtures/scene-beat-authority.tsx',
+ 'apps/studio/tests/generation-journal.spec.ts',
+ 'apps/studio/tests/history-pagination.spec.ts',
+ 'apps/studio/tests/multi-segment-readiness.spec.ts',
+ 'apps/studio/tests/native-av-master.spec.ts',
+ 'apps/studio/tests/native-multisegment-av.spec.ts',
+ 'apps/studio/tests/native-original-mix-voice-binding.spec.ts',
+ 'apps/studio/tests/native-original-mix.spec.ts',
+ 'apps/studio/tests/native-pixel-contrast.spec.ts',
+ 'apps/studio/tests/native-preview.spec.ts',
+ 'apps/studio/tests/native-progressive-preview.spec.ts',
+ 'apps/studio/tests/native-review-repair.spec.ts',
+ 'apps/studio/tests/otio-owner-cut.spec.ts',
+ 'apps/studio/tests/portable-mp4-integrity.spec.ts',
+ 'apps/studio/tests/production-history.spec.ts',
+ 'apps/studio/tests/program-av-monitor.spec.ts',
+ 'apps/studio/tests/project-mutation.spec.ts',
+ 'apps/studio/tests/render-receipt.spec.ts',
+ 'apps/studio/tests/reproducible-capture.spec.ts',
+ 'apps/studio/tests/scene-beat-preservation.spec.ts',
+ 'apps/studio/tests/support/scopedChangeService.ts',
+ 'apps/studio/tests/support/selectedSyntheticProject.ts',
+ 'apps/studio/tests/support/syntheticProjectReads.ts',
+ 'apps/studio/tests/v01-mlt-cleanup-inventory.spec.ts',
+ 'apps/studio/tests/v01-native-recovery.spec.ts',
+ 'apps/studio/tests/v01-original-native-status.spec.ts',
+ 'apps/studio/tests/v01-owner-first-render.spec.ts',
+ 'apps/studio/unit/synthetic-project-reads.test.mjs')
+BROWSER_SELECTION_TIMEOUTS = {label: 180 + 30 * len(titles) for label, _, titles in BROWSER_SELECTIONS}
+
+
 def require(condition, reason):
     if not condition:
         raise ValueError(reason)
@@ -261,6 +753,8 @@ def require(condition, reason):
 def selected_selections(selection):
     """Return a closed scope; an explicit subset never claims the full roster."""
     require(isinstance(selection, str), "selection must be a single named scope")
+    if selection == "browser-contracts":
+        return browser_selections()
     if selection == "all":
         return SELECTIONS
     if selection in SELECTION_GROUPS:
@@ -282,6 +776,20 @@ def selected_selections(selection):
 
 def selection_plan(selection):
     chosen = selected_selections(selection)
+    if selection == "browser-contracts":
+        return {
+            "requested": selection, "scope": "EXPLICIT_SYNTHETIC_BROWSER_CONTRACTS",
+            "required": [{"label": label, "file": filename, "titles": list(titles)}
+                         for label, filename, titles in chosen],
+            "not_selected": [{"label": label, "file": filename, "titles": list(titles),
+                             "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                             for label, filename, titles in SELECTIONS],
+            "excluded_service_cases": [{"file": filename, "title": title,
+                                       "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                                      for filename, title in BROWSER_OMITTED_SERVICE_CASES],
+            "required_tests": 148, "discovery_tests": 152, "full_default_tests": 135,
+            "formal_acceptance": False,
+        }
     labels = {row[0] for row in chosen}
     return {
         "requested": selection,
@@ -352,7 +860,8 @@ def write_new(path, value):
         os.fsync(stream.fileno())
 
 
-def source_observation(repo):
+def source_observation(repo, selection=None):
+    require(selection in (None, "browser-contracts"), "unknown source observation scope")
     def git(*arguments):
         return subprocess.check_output(["git", *arguments], cwd=repo, timeout=30).decode().strip()
 
@@ -487,6 +996,8 @@ def source_observation(repo):
         "tooling/ci_canvas_service.py",
         "tooling/tests/test_ci_canvas_service.py",
     )
+    if selection == "browser-contracts":
+        paths = tuple(dict.fromkeys((*paths, *BROWSER_SOURCE_PATHS)))
     files = {}
     for name in paths:
         original = subprocess.check_output(["git", "show", head + ":" + name], cwd=repo, timeout=30)
@@ -643,11 +1154,13 @@ def archive_json(root, inventory, name):
 
 
 def archive_closed_bindings(root, inventory, source):
-    for tool in ("rustc", "cargo", "node", "npm", "python"):
+    receipt = archive_json(root, inventory, "e/receipt.json")
+    browser_mode = receipt.get("selection_plan", {}).get("requested") == "browser-contracts"
+    tools = ("node", "npm", "python") if browser_mode else ("rustc", "cargo", "node", "npm", "python")
+    for tool in tools:
         identity = inventory["entries"].get("tools/" + tool + ".txt", {})
         require(identity.get("kind") == "file" and identity.get("bytes", 0) > 0,
                 "archive tool identity missing")
-    receipt = archive_json(root, inventory, "e/receipt.json")
     require(receipt.get("status") == "PASS", "unsealed failed or incomplete service execution")
     require(receipt.get("source_before") == receipt.get("source_after") == source
             and archive_json(root, inventory, "e/source-before.json") == source,
@@ -677,17 +1190,68 @@ def archive_closed_bindings(root, inventory, source):
                     and command.get(stream) == {k: item.get(k) for k in ("bytes", "sha256")},
                     "archive original stream differs")
 
-    command_closed(receipt.get("build", {}), "build")
+    if browser_mode:
+        require(receipt.get("execution_scope") == "SYNTHETIC_BROWSER_CONTRACTS"
+                and receipt.get("service_runtime") == receipt.get("service_build") == "NOT_RUN"
+                and receipt.get("service_target_absent") is True
+                and not any(key in receipt for key in ("build", "service_binary", "retained_service_binary")),
+                "browser receipt claims service execution")
+        require(receipt.get("service_environment") == {
+            "MOTIONWRIGHT_SERVICE_TEST_BIN": "ABSENT", "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": "ABSENT"},
+            "browser service authority was not excluded")
+        require(all(receipt.get(key) == "NOT_RUN" for key in
+                    ("installed_tauri", "native_render", "human_acceptance")),
+                "browser receipt claims native or installed execution")
+        repo = root.parent / "g"
+        cwd = str(repo / "apps/studio")
+        node = receipt.get("node", {}).get("path")
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        require(isinstance(node, str) and node and receipt.get("playwright_cli", {}).get("path") == str(cli),
+                "browser tool paths differ")
+        for identity in (receipt.get("node", {}), receipt.get("playwright_cli", {})):
+            require(type(identity.get("bytes")) is int and identity["bytes"] > 0
+                    and re.fullmatch("[0-9a-f]{64}", identity.get("sha256", "")) is not None,
+                    "browser executable identity missing")
+        discovery = receipt.get("discovery", {})
+        command_closed(discovery.get("command", {}), "browser-discovery")
+        require(discovery.get("status") == "LISTED_NOT_EXECUTED"
+                and discovery["command"].get("argv") == browser_command(node, cli, root / "e")
+                and discovery["command"].get("cwd") == cwd, "browser discovery command differs")
+        original = inventory["entries"].get("e/browser-discovery.json", {})
+        require(discovery.get("original_report") == {key: original.get(key) for key in ("bytes", "sha256")}
+                and discovery.get("verified") == validate_browser_discovery(
+                    archive_json(root, inventory, "e/browser-discovery.json")),
+                "browser discovery original differs")
+    else:
+        command_closed(receipt.get("build", {}), "build")
     for selection, (_, filename, titles) in zip(selections, required):
         label = selection["label"]
         command_closed(selection.get("command", {}), label)
+        if browser_mode:
+            require(selection["command"].get("argv") == browser_command(
+                node, cli, root / "e", (label, filename, titles))
+                and selection["command"].get("cwd") == cwd, "browser selected command differs")
         original = inventory["entries"].get("e/" + label + ".json", {})
         require(selection.get("status") == "PASS" and selection.get("expected_tests") == len(titles)
                 and selection.get("original_report") == {k: original.get(k) for k in ("bytes", "sha256")},
                 "archive report binding differs")
-        require(selection.get("verified") == validate_report(
+        verify = validate_browser_execution if browser_mode else validate_report
+        require(selection.get("verified") == verify(
             archive_json(root, inventory, "e/" + label + ".json"), filename, titles),
             "archive original selected results differ")
+    if browser_mode:
+        for name in inventory["entries"]:
+            parts = name.split("/")
+            require(not any(part.endswith("-stores") or part.startswith("executed-studio-service") for part in parts)
+                    and not name.endswith((".sqlite", ".sqlite3", ".db", ".sqlite-wal", ".sqlite-shm")),
+                    "browser archive contains service storage or executable evidence")
+            if name.endswith("/manifest.json"):
+                manifest = archive_json(root, inventory, name)
+                require(not any(key in manifest for key in ("snapshotDirectory", "snapshotSha256", "databaseRelativePath")),
+                        "browser archive contains a closed-service store claim")
+        return {"receipt": {key: inventory["entries"]["e/receipt.json"][key] for key in ("bytes", "sha256")},
+                "selection_plan": plan, "discovery": discovery["verified"], "captures": [],
+                "service_runtime": "NOT_RUN"}
     binary = receipt.get("retained_service_binary", {})
     require(binary.get("path") in ("executed-studio-service", "executed-studio-service.exe"),
             "archive retained executable name differs")
@@ -863,16 +1427,19 @@ def retain_closed_archive(repo, root):
               "human_acceptance": False, "formal_acceptance": False,
               "scope": "Original e/tools tree, direct command exits and declared helper closures; no additional app reopen"}
     try:
-        source = source_observation(repo)
-        report["source"] = source
         before = archive_inventory(root)
+        selected = archive_json(root, before, "e/receipt.json").get("selection_plan", {}).get("requested")
+        source_mode = "browser-contracts" if selected == "browser-contracts" else None
+        source = source_observation(repo, source_mode) if source_mode else source_observation(repo)
+        report["source"] = source
         report["bindings"] = archive_closed_bindings(root, before, source)
         write_new(output / "input-inventory.json", before)
         archive = output / "closed-evidence.tar"
         write_closed_tar(root, archive, before)
         report["verified"] = verify_closed_tar(archive, before)
         require(archive_inventory(root) == before, "original evidence changed during retention")
-        require(source_observation(repo) == source, "source changed during retention")
+        after = source_observation(repo, source_mode) if source_mode else source_observation(repo)
+        require(after == source, "source changed during retention")
         require(archive_file_digest(archive, ARCHIVE_LIMITS["total_bytes"] + ARCHIVE_LIMITS["members"] * 4096 + 11264)
                 == report["verified"]["archive_digest"], "retained archive changed")
         report["archive"] = {"path": archive.name, **report["verified"]["archive_digest"]}
@@ -901,13 +1468,200 @@ def archive_main(arguments):
     return 0 if report["status"] == "PASS" else 1
 
 
+def browser_selections():
+    require(len(BROWSER_SELECTIONS) == 31, "browser file count differs")
+    labels, files = set(), set()
+    count = 0
+    for label, filename, titles in BROWSER_SELECTIONS:
+        require(label.startswith("browser-") and label not in labels, "duplicate browser selection")
+        require(filename.endswith(".spec.ts") and "/" not in filename and filename not in files,
+                "invalid or duplicate browser filename")
+        require(isinstance(titles, tuple) and titles and all(isinstance(x, str) and x for x in titles)
+                and len(set(titles)) == len(titles), "invalid browser title inventory")
+        labels.add(label)
+        files.add(filename)
+        count += len(titles)
+    require(count == 148, "browser case count differs")
+    return BROWSER_SELECTIONS
+
+
+def browser_discovery_inventory():
+    selected = {(filename, title) for _, filename, titles in browser_selections() for title in titles}
+    excluded = set(BROWSER_OMITTED_SERVICE_CASES)
+    require(len(excluded) == 4 and all(filename == "project-mutation.spec.ts" for filename, _ in excluded)
+            and not selected.intersection(excluded), "invalid excluded service inventory")
+    return selected, excluded
+
+
+def browser_full_title_path(filename, title):
+    return ("chromium", filename, *BROWSER_DESCRIBE_TITLES.get((filename, title), ()), title)
+
+
+def browser_result_identities(document):
+    found = []
+
+    def visit(suites, parents=()):
+        require(isinstance(suites, list), "browser suite list missing")
+        for suite in suites:
+            require(isinstance(suite, dict), "browser suite must be an object")
+            hierarchy = (*parents, suite.get("title"))
+            require(all(isinstance(name, str) and name for name in hierarchy), "browser suite title missing")
+            for spec in suite.get("specs", []):
+                require(isinstance(spec, dict), "browser case must be an object")
+                pair = (spec.get("file"), spec.get("title"))
+                require(all(isinstance(name, str) and name for name in pair), "browser case identity missing")
+                tests = spec.get("tests", [])
+                require(len(tests) == 1 and isinstance(tests[0], dict), "browser project count differs")
+                case = tests[0]
+                require(case.get("projectId") == case.get("projectName") == "chromium"
+                        and spec.get("tags") == [], "browser project name or tags differ")
+                require(("chromium", *hierarchy, pair[1]) == browser_full_title_path(*pair),
+                        "browser full title path differs")
+                found.append((pair, case))
+            visit(suite.get("suites", []), hierarchy)
+
+    visit(document.get("suites"))
+    return found
+
+
+def validate_browser_discovery(document):
+    """Validate names without interpreting list-only results as executed passes."""
+    require(isinstance(document, dict) and document.get("errors") == [],
+            "discovery has missing or nonempty global errors")
+    selected, excluded = browser_discovery_inventory()
+    expected = selected | excluded
+    stats = document.get("stats", {})
+    require(stats.get("expected") == 0 and stats.get("skipped") == len(expected)
+            and stats.get("unexpected") == 0 and stats.get("flaky") == 0,
+            "discovery must contain only unexecuted list results")
+    found = set()
+    for pair, case in browser_result_identities(document):
+        require(pair in expected and pair not in found, "unknown or duplicate discovered case")
+        require(case.get("results") == [], "discovery contains an execution result")
+        require(case.get("expectedStatus") == ("skipped" if pair in excluded else "passed"),
+                "discovery skip or expected failure differs from the closed scope")
+        found.add(pair)
+    require(found == expected, "discovered browser inventory differs")
+    return {"status": "LISTED_NOT_EXECUTED", "listed": 152, "selected": 148,
+            "excluded_service": 4, "execution_results": 0}
+
+
+def validate_browser_execution(document, filename, titles):
+    verified = validate_report(document, filename, titles)
+    identities = [pair for pair, _ in browser_result_identities(document)]
+    require(set(identities) == {(filename, title) for title in titles}
+            and len(identities) == len(titles), "browser executed full identity differs")
+    return verified
+
+
+def browser_command(node, cli, output, selection=None):
+    if selection is None:
+        return [node, str(cli), "test",
+                *("tests/" + filename for _, filename, _ in browser_selections()),
+                "--project=chromium", "--list", "--reporter=json"]
+    label, filename, titles = selection
+    require(selection in browser_selections(), "unknown browser file selection")
+    pattern = "^(?:" + "|".join(re.escape(" ".join(browser_full_title_path(filename, title)))
+                               for title in titles) + ")$"
+    return [node, str(cli), "test", "tests/" + filename, "--project=chromium",
+            "--workers=1", "--retries=0", "--reporter=json",
+            "--output=" + str(output / (label + "-test-results")), "--grep", pattern]
+
+
+def browser_report_original(path):
+    with path.open("rb") as stream:
+        raw = stream.read(64 * 1024 * 1024 + 1)
+    require(len(raw) <= 64 * 1024 * 1024, "browser report exceeds bound")
+    observed = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    require(digest(path) == observed, "browser original report changed")
+    return observed, json.loads(raw)
+
+
+def run_browser_selection(repo, output, target):
+    """Run synthetic browser contracts through the canonical process observer."""
+    repo, output, target = (path.resolve() for path in (repo, output, target))
+    require(repo.is_dir(), "repository missing")
+    require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
+    output.mkdir(parents=True, exist_ok=False)
+    report = {"schema": "motionwright.canvas-service-ci/1", "status": "FAIL",
+              "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "job": os.environ.get("GITHUB_JOB"), "selections": [],
+              "selection_plan": selection_plan("browser-contracts"),
+              "execution_scope": "SYNTHETIC_BROWSER_CONTRACTS",
+              "service_runtime": "NOT_RUN", "service_build": "NOT_RUN",
+              "installed_tauri": "NOT_RUN", "native_render": "NOT_RUN", "human_acceptance": "NOT_RUN"}
+    try:
+        before = source_observation(repo, "browser-contracts")
+        report["source_before"] = before
+        write_new(output / "source-before.json", before)
+        node = shutil.which("node")
+        require(node is not None, "node is required for browser contracts")
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        report["playwright_cli"] = {"path": str(cli), **digest(cli)}
+        report["node"] = {"path": node, **digest(Path(node))}
+        env = dict(os.environ)
+        for variable in ("MOTIONWRIGHT_SERVICE_TEST_BIN", "MOTIONWRIGHT_SERVICE_TEST_TMPDIR"):
+            env.pop(variable, None)
+        report["service_environment"] = {"MOTIONWRIGHT_SERVICE_TEST_BIN": "ABSENT",
+                                         "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": "ABSENT"}
+        discovery_env = dict(env)
+        discovery_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / "browser-discovery.json")
+        command = execute(browser_command(node, cli, output), repo / "apps/studio",
+                          discovery_env, output, "browser-discovery", 180)
+        report["discovery"] = {"command": command, "status": "UNADMITTED"}
+        require(command["exit_code"] == 0, "browser discovery process did not exit zero")
+        original, document = browser_report_original(output / "browser-discovery.json")
+        report["discovery"].update(original_report=original, verified=validate_browser_discovery(document),
+                                   status="LISTED_NOT_EXECUTED")
+        for selection in browser_selections():
+            label, filename, titles = selection
+            case_env = dict(env)
+            case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
+            command = execute(browser_command(node, cli, output, selection),
+                              repo / "apps/studio", case_env, output, label,
+                              BROWSER_SELECTION_TIMEOUTS[label])
+            observed = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
+            report["selections"].append(observed)
+            try:
+                original, document = browser_report_original(output / (label + ".json"))
+                observed["original_report"] = original
+                observed["verified"] = validate_browser_execution(document, filename, titles)
+                require(command["exit_code"] == 0, "selected browser process did not exit zero")
+                observed["status"] = "PASS"
+            except Exception as error:
+                observed["error"] = str(error)
+            if command["exit_code"] is None:
+                break
+        report["source_after"] = source_observation(repo, "browser-contracts")
+        require(report["source_after"] == before, "source changed during browser execution")
+        require(digest(cli) == {key: report["playwright_cli"][key] for key in ("bytes", "sha256")},
+                "Playwright CLI changed")
+        require(digest(Path(node)) == {key: report["node"][key] for key in ("bytes", "sha256")},
+                "Node executable changed")
+        require(not target.exists(), "browser contracts created a service build target")
+        report["service_target_absent"] = True
+        require(len(report["selections"]) == 31
+                and all(item["status"] == "PASS" for item in report["selections"]),
+                "required browser selection failed")
+        report["status"] = "PASS"
+    except Exception as error:
+        report["error"] = str(error)
+    write_new(output / "receipt.json", report)
+    print(json.dumps({"status": report["status"],
+                      "selected_tests": sum(item["expected_tests"] for item in report["selections"]),
+                      "receipt": str(output / "receipt.json")}))
+    return 0 if report["status"] == "PASS" else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--selection", default="all", choices=["all", *SELECTION_GROUPS, *(row[0] for row in SELECTIONS)])
+    parser.add_argument("--selection", default="all", choices=["all", *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), "browser-contracts"])
     args = parser.parse_args()
+    if args.selection == "browser-contracts":
+        return run_browser_selection(args.repo, args.output, args.target)
     selections = selected_selections(args.selection)
     repo, output, target = (p.resolve() for p in (args.repo, args.output, args.target))
     require(repo.is_dir(), "repository missing")

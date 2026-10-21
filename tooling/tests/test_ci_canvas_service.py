@@ -705,7 +705,7 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         self.assertEqual(len(declared_options), 1)
         choices = [item.strip() for item in declared_options[0].split(",")]
         self.assertEqual(len(choices), len(set(choices)))
-        self.assertEqual(set(choices), {"all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS)})
+        self.assertEqual(set(choices), {"all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), "browser-contracts"})
         service_job = workflow.split("  real-service:\n", 1)[1]
         conditions = re.findall(r"^    if: (.+)$", service_job, re.MULTILINE)
         self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch'"])
@@ -1056,6 +1056,335 @@ class ClosedStudioArchiveTests(unittest.TestCase):
             self.assertEqual((root / "retained/archive-receipt.json").read_bytes(), original)
             with mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}), self.assertRaises(ValueError):
                 gate.archive_main(["--repo", str(root.parent / "g"), "--evidence", str(root)])
+
+
+class BrowserContractSelectionTests(unittest.TestCase):
+    """Synthetic process and archive controls; no browser, Node or service runs."""
+
+    def discovery_document(self):
+        selected, excluded = gate.browser_discovery_inventory()
+        suites = {}
+        for filename, title in sorted(selected | excluded):
+            path = gate.browser_full_title_path(filename, title)[1:-1]
+            current = suites
+            for part in path:
+                current = current.setdefault(part, {"specs": [], "children": {}})["children"]
+            current = suites
+            node = None
+            for part in path:
+                node = current[part]
+                current = node["children"]
+            node["specs"].append({"file": filename, "title": title, "ok": True, "tags": [],
+                                 "tests": [{"projectId": "chromium", "projectName": "chromium",
+                                            "expectedStatus": "skipped" if (filename, title) in excluded else "passed",
+                                            "status": "skipped", "results": []}]})
+
+        def materialize(items):
+            return [{"title": name, "specs": row["specs"], "suites": materialize(row["children"])}
+                    for name, row in items.items()]
+
+        return {"errors": [], "stats": {"expected": 0, "skipped": 152, "unexpected": 0, "flaky": 0},
+                "suites": materialize(suites)}
+
+    def executed_document(self, filename, titles):
+        value = self.discovery_document()
+
+        def selected(suites):
+            result = []
+            for suite in suites:
+                specs = [spec for spec in suite["specs"] if spec["file"] == filename and spec["title"] in titles]
+                children = selected(suite["suites"])
+                for spec in specs:
+                    case = spec["tests"][0]
+                    case.update(expectedStatus="passed", status="expected",
+                                results=[{"status": "passed", "retry": 0, "errors": []}])
+                if specs or children:
+                    result.append({"title": suite["title"], "specs": specs, "suites": children})
+            return result
+
+        value["suites"] = selected(value["suites"])
+        value["stats"] = {"expected": len(titles), "skipped": 0, "unexpected": 0, "flaky": 0}
+        return value
+
+    def fixture(self, directory, mutation=None):
+        repo, root = Path(directory) / "g", Path(directory) / "v"
+        repo.mkdir()
+        tools = root / "tools"
+        tools.mkdir(parents=True)
+        for name in ("node", "npm", "python"):
+            (tools / (name + ".txt")).write_bytes(b"synthetic identity, never executed\n")
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        cli.parent.mkdir(parents=True)
+        cli.write_bytes(b"synthetic CLI, never executed\n")
+        node = repo / "synthetic-node"
+        node.write_bytes(b"synthetic Node identity, never executed\n")
+        output, target = root / "e", root / "t"
+        source = {"checkout": "a" * 40, "tree": "b" * 40, "files": {"synthetic": "only"}}
+        calls = []
+
+        def which(name):
+            self.assertEqual(name, "node", "browser mode must not resolve Cargo")
+            return str(node)
+
+        def execute(argv, cwd, env, destination, label, timeout):
+            self.assertEqual(destination, output)
+            self.assertEqual(cwd, repo / "apps/studio")
+            self.assertNotIn("MOTIONWRIGHT_SERVICE_TEST_BIN", env)
+            self.assertNotIn("MOTIONWRIGHT_SERVICE_TEST_TMPDIR", env)
+            self.assertFalse(target.exists())
+            calls.append((label, argv, timeout))
+            if label == "browser-discovery":
+                document = self.discovery_document()
+                if mutation == "discovery-mismatch":
+                    document["suites"][0]["specs"][0]["title"] = "unknown injected case"
+            else:
+                row = next(row for row in gate.BROWSER_SELECTIONS if row[0] == label)
+                document = self.executed_document(row[1], row[2])
+            gate.write_new(Path(env["PLAYWRIGHT_JSON_OUTPUT_FILE"]), document)
+            for stream in ("stdout", "stderr"):
+                (output / (label + "." + stream + ".log")).write_bytes(b"synthetic original stream\n")
+            timed_out = mutation == "timeout" and label != "browser-discovery"
+            command = {"argv": argv, "cwd": str(cwd), "exit_code": None if timed_out else 0,
+                       "diagnostic_custody": ("UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"
+                                               if timed_out else "DIRECT_PROCESS_EXIT_OBSERVED"),
+                       "stdout": gate.digest(output / (label + ".stdout.log")),
+                       "stderr": gate.digest(output / (label + ".stderr.log"))}
+            if timed_out:
+                command.update(observation="TIMED_OUT_NO_RETRY", timeout_seconds=timeout)
+            gate.write_new(output / (label + ".command.json"), command)
+            return command
+
+        with mock.patch.object(gate, "source_observation", return_value=source), \
+                mock.patch.object(gate.shutil, "which", side_effect=which), \
+                mock.patch.object(gate, "execute", side_effect=execute), \
+                mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false",
+                                                "MOTIONWRIGHT_SERVICE_TEST_BIN": "forbidden-inherited-binary",
+                                                "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": "forbidden-inherited-store"}), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            code = gate.run_browser_selection(repo, output, target)
+        receipt = gate.json.loads((output / "receipt.json").read_bytes())
+        return repo, root, source, receipt, calls, code
+
+    def retain(self, repo, root, source):
+        with mock.patch.object(gate, "source_observation", return_value=source), \
+                mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+            return gate.retain_closed_archive(repo, root)
+
+    def test_browser_scope_is_closed_and_historical_service_groups_are_unchanged(self):
+        rows = gate.selected_selections("browser-contracts")
+        self.assertEqual(len(rows), 31)
+        self.assertEqual(sum(len(row[2]) for row in rows), 148)
+        self.assertEqual(sum(len(row[2]) for row in gate.selected_selections("all")), 135)
+        self.assertEqual(gate.selection_plan("complete-authoring")["required_tests"], 64)
+        self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 38)
+        plan = gate.selection_plan("browser-contracts")
+        self.assertEqual(plan["scope"], "EXPLICIT_SYNTHETIC_BROWSER_CONTRACTS")
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 135)
+        self.assertEqual(len(plan["excluded_service_cases"]), 4)
+        self.assertTrue(all(row["technical_credit"] == "NONE"
+                            for row in plan["not_selected"] + plan["excluded_service_cases"]))
+        for choice in ("browser", "browser-contracts,all", "browser-contracts ", "", None):
+            with self.subTest(choice=choice), self.assertRaises(ValueError):
+                gate.selected_selections(choice)
+        with mock.patch.object(gate, "BROWSER_SELECTIONS", gate.BROWSER_SELECTIONS[:-1]):
+            with self.assertRaises(ValueError):
+                gate.selected_selections("browser-contracts")
+
+    def test_browser_full_title_filter_excludes_four_real_service_cases(self):
+        document = self.discovery_document()
+        self.assertEqual(gate.validate_browser_discovery(document),
+                         {"status": "LISTED_NOT_EXECUTED", "listed": 152, "selected": 148,
+                          "excluded_service": 4, "execution_results": 0})
+        selected, excluded = gate.browser_discovery_inventory()
+        for row in gate.BROWSER_SELECTIONS:
+            argv = gate.browser_command("node", Path("cli"), Path("output"), row)
+            pattern = re.compile(argv[argv.index("--grep") + 1])
+            for title in row[2]:
+                self.assertRegex(" ".join(gate.browser_full_title_path(row[1], title)), pattern)
+            for pair in excluded:
+                self.assertIsNone(pattern.search(" ".join(gate.browser_full_title_path(*pair))))
+        nested_title = "a successful create preserves later selection and text"
+        self.assertEqual(gate.browser_full_title_path("project-mutation.spec.ts", nested_title),
+                         ("chromium", "project-mutation.spec.ts",
+                          "Canvas interaction during delayed creation \u2014 synthetic UI contract", nested_title))
+        for mutation in ("omission", "duplicate", "wrong-describe", "executed", "skip-selected"):
+            changed = copy.deepcopy(document)
+            suite = changed["suites"][0]
+            spec = suite["specs"][0]
+            if mutation == "omission":
+                suite["specs"].pop()
+            elif mutation == "duplicate":
+                suite["specs"].append(copy.deepcopy(spec))
+            elif mutation == "wrong-describe":
+                suite["title"] = "wrong suite"
+            elif mutation == "executed":
+                spec["tests"][0]["results"] = [{"status": "passed", "retry": 0}]
+            else:
+                spec["tests"][0]["expectedStatus"] = "skipped"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.validate_browser_discovery(changed)
+
+    def test_browser_execution_never_builds_or_inherits_real_service_authority(self):
+        with tempfile.TemporaryDirectory(prefix="browser-control-") as directory:
+            repo, root, source, receipt, calls, code = self.fixture(directory)
+            self.assertEqual(code, 0, receipt)
+            self.assertEqual(len(calls), 32)
+            self.assertEqual(calls[0][0], "browser-discovery")
+            self.assertIn("--list", calls[0][1])
+            self.assertFalse((root / "t").exists())
+            self.assertFalse(any(path.name.endswith("-stores") for path in (root / "e").iterdir()))
+            self.assertFalse({"build", "service_binary", "retained_service_binary"}.intersection(receipt))
+            self.assertEqual(receipt["service_runtime"], "NOT_RUN")
+            self.assertEqual(receipt["discovery"]["status"], "LISTED_NOT_EXECUTED")
+        with tempfile.TemporaryDirectory(prefix="browser-control-") as directory:
+            _, _, _, receipt, calls, code = self.fixture(directory, "discovery-mismatch")
+            self.assertEqual(code, 1)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(receipt["selections"], [])
+
+    def test_browser_uses_original_report_validator_and_timeout_certainty(self):
+        with tempfile.TemporaryDirectory(prefix="browser-control-") as directory, \
+                mock.patch.object(gate, "validate_report", wraps=gate.validate_report) as validate:
+            _, _, _, receipt, _, code = self.fixture(directory)
+            self.assertEqual(code, 0, receipt)
+            self.assertEqual(validate.call_count, 31)
+        filename, titles = gate.BROWSER_SELECTIONS[0][1:]
+        for mutation in ("skip", "retry", "duplicate", "missing"):
+            changed = selection_report(filename, titles)
+            rows = changed["suites"][0]["suites"][0]["specs"]
+            if mutation == "skip":
+                changed["stats"]["skipped"] = 1
+            elif mutation == "retry":
+                rows[0]["tests"][0]["results"][0]["retry"] = 1
+            elif mutation == "duplicate":
+                rows.append(copy.deepcopy(rows[0]))
+            else:
+                rows.pop()
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.validate_report(changed, filename, titles)
+        with tempfile.TemporaryDirectory(prefix="browser-control-") as directory:
+            _, _, _, receipt, calls, code = self.fixture(directory, "timeout")
+            self.assertEqual(code, 1)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(receipt["selections"]), 1)
+            self.assertIsNone(receipt["selections"][0]["command"]["exit_code"])
+            self.assertEqual(receipt["selections"][0]["command"]["observation"], "TIMED_OUT_NO_RETRY")
+
+    def test_browser_source_observation_adds_only_declared_inventory(self):
+        with tempfile.TemporaryDirectory(prefix="browser-source-control-") as directory:
+            repo = Path(directory)
+            initializing = [True]
+
+            def git(argv, *, cwd, timeout):
+                self.assertEqual(Path(cwd), repo)
+                self.assertEqual(timeout, 30)
+                if argv == ["git", "rev-parse", "HEAD"]:
+                    return b"a" * 40
+                if argv == ["git", "rev-parse", "HEAD^{tree}"]:
+                    return b"b" * 40
+                if argv == ["git", "diff", "--name-only", "HEAD", "--"]:
+                    return b""
+                self.assertEqual(argv[:2], ["git", "show"])
+                name = argv[2].split(":", 1)[1]
+                raw = ("source " + name + "\n").encode()
+                if initializing[0]:
+                    path = repo / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(raw)
+                return raw
+
+            with mock.patch.object(gate.subprocess, "check_output", side_effect=git), \
+                    mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+                old = gate.source_observation(repo)
+                extended = gate.source_observation(repo, "browser-contracts")
+                initializing[0] = False
+                self.assertEqual(gate.source_observation(repo), old)
+                self.assertEqual(set(extended["files"]) - set(old["files"]),
+                                 set(gate.BROWSER_SOURCE_PATHS) - set(old["files"]))
+                for name in ("apps/studio/tests/support/syntheticProjectReads.ts",
+                             "apps/studio/src/SceneBeatEditor.tsx", "apps/studio/tests/project-mutation.spec.ts"):
+                    path = repo / name
+                    raw = path.read_bytes()
+                    try:
+                        path.write_bytes(raw + b"hidden physical change")
+                        with self.subTest(path=name), self.assertRaisesRegex(ValueError, "source differs from Git"):
+                            gate.source_observation(repo, "browser-contracts")
+                    finally:
+                        path.write_bytes(raw)
+                with self.assertRaises(ValueError):
+                    gate.source_observation(repo, "unknown")
+
+    def test_browser_archive_closes_original_source_commands_reports_without_service_credit(self):
+        with tempfile.TemporaryDirectory(prefix="browser-archive-control-") as directory:
+            repo, root, source, receipt, _, code = self.fixture(directory)
+            self.assertEqual(code, 0, receipt)
+            result = self.retain(repo, root, source)
+            self.assertEqual(result["status"], "PASS", result)
+            self.assertEqual(result["bindings"]["captures"], [])
+            self.assertEqual(result["bindings"]["service_runtime"], "NOT_RUN")
+            self.assertEqual(result["bindings"]["discovery"]["status"], "LISTED_NOT_EXECUTED")
+            with gate.tarfile.open(root / "retained/closed-evidence.tar") as archive:
+                self.assertIn("e/browser-discovery.json", archive.getnames())
+                self.assertIn("e/browser-discovery.command.json", archive.getnames())
+                self.assertFalse(any("executed-studio-service" in name for name in archive.getnames()))
+
+    def test_browser_archive_rejects_service_claims_and_malformed_or_unsealed_commands(self):
+        for mutation in ("service-claim", "store", "argv", "unknown", "discovery-executed", "case-retry"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(prefix="browser-archive-control-") as directory:
+                repo, root, source, receipt, _, code = self.fixture(directory)
+                self.assertEqual(code, 0)
+                output = root / "e"
+                first = receipt["selections"][0]
+                if mutation == "service-claim":
+                    receipt["service_binary"] = {"path": "forged", "sha256": "0" * 64}
+                elif mutation == "store":
+                    (output / "forged-stores").mkdir()
+                elif mutation in ("argv", "unknown"):
+                    command = first["command"]
+                    if mutation == "argv":
+                        command["argv"] = ["unrelated-command"]
+                    else:
+                        command.update(exit_code=None, observation="TIMED_OUT_NO_RETRY",
+                                       diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+                    (output / (first["label"] + ".command.json")).write_text(gate.json.dumps(command))
+                elif mutation == "discovery-executed":
+                    path = output / "browser-discovery.json"
+                    document = gate.json.loads(path.read_bytes())
+                    document["suites"][0]["specs"][0]["tests"][0]["results"] = [{"status": "passed", "retry": 0}]
+                    path.write_text(gate.json.dumps(document))
+                    receipt["discovery"]["original_report"] = gate.digest(path)
+                else:
+                    path = output / (first["label"] + ".json")
+                    document = gate.json.loads(path.read_bytes())
+                    document["suites"][0]["specs"][0]["tests"][0]["results"][0]["retry"] = 1
+                    path.write_text(gate.json.dumps(document))
+                    first["original_report"] = gate.digest(path)
+                (output / "receipt.json").write_text(gate.json.dumps(receipt))
+                result = self.retain(repo, root, source)
+                self.assertEqual(result["status"], "FAIL", result)
+                self.assertEqual(result["custody"], "UNSEALED_DIAGNOSTICS")
+
+    def test_browser_workflow_is_manual_closed_and_within_declared_deadlines(self):
+        workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text(encoding="utf-8")
+        choices = [item.strip() for item in re.findall(r"options: \[([^\]]+)\]", workflow)[0].split(",")]
+        self.assertEqual(choices.count("browser-contracts"), 1)
+        self.assertIn("default: authoring-drafts", workflow)
+        self.assertIn("branches: ['verify/studio-service-*']", workflow)
+        job = workflow.split("  real-service:\n", 1)[1]
+        self.assertEqual(re.findall(r"^    if: (.+)$", job, re.MULTILINE),
+                         ["github.event_name == 'workflow_dispatch'"])
+        self.assertGreaterEqual(job.count("if: inputs.selection != 'browser-contracts'"), 2)
+        self.assertIn("inputs.selection == 'browser-contracts' && 210", job)
+        self.assertIn('tooling/ci_canvas_service.py archive --repo . --evidence ../v', job)
+        self.assertIn('steps.archive.outcome != \'success\'', job)
+        self.assertEqual(sum(gate.BROWSER_SELECTION_TIMEOUTS.values()), 10020)
+        self.assertGreater(210 * 60, sum(gate.BROWSER_SELECTION_TIMEOUTS.values()) + 180 + 1200)
+        for _, filename, titles in gate.BROWSER_SELECTIONS:
+            source = (PATH.parents[1] / "apps/studio/tests" / filename).read_text(encoding="utf-8")
+            if filename == "project-mutation.spec.ts":
+                source = source.split('test.describe("real service imports and portable restore"', 1)[0]
+            self.assertNotRegex(source, r"test(?:Info)?\.setTimeout|test\.slow|describe\.configure")
+            self.assertGreater(180 + 30 * len(titles), 120 + 30 * len(titles))
 
 
 if __name__ == "__main__":
