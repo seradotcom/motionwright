@@ -25,6 +25,13 @@ on:
       - "docs/testing.md"
       - ".github/workflows/project-portability.yml"
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Select the complete portability catalog or the cache publication contracts
+        required: true
+        default: full
+        type: choice
+        options: [full, derived_cache]
 
 permissions:
   contents: read
@@ -35,6 +42,7 @@ env:
 
 jobs:
   storage-contracts:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'derived_cache' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'derived_cache' && '["macos-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     env:
       CARGO_TERM_COLOR: never
     steps:
@@ -84,6 +92,11 @@ jobs:
           if actual != os.environ["GITHUB_SHA"] or git("status", "--porcelain", "--untracked-files=no"):
               raise SystemExit("file-import-platform-checkout-mismatch")
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          selection = "full"
+          if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
+              selection = (event.get("inputs") or {}).get("verification_scope", "full")
+          if selection not in {"full", "derived_cache"}:
+              raise SystemExit("portability-selection-unsupported")
           pr = event.get("pull_request") or {}
           root = Path("verification/file-import-platforms")
           root.mkdir(parents=True, exist_ok=True)
@@ -100,8 +113,25 @@ jobs:
               "runner_os": os.environ["RUNNER_OS"],
               "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
               "cargo": subprocess.check_output(["cargo", "--version"], text=True).strip(),
-              "results": [],
+              "selection": selection, "selected_sources": {}, "results": [],
           }
+          for source_path in (
+              ".github/workflows/project-portability.yml", "Cargo.lock", "SOURCE_LOCK.json",
+              "crates/storage/src/derived_cache.rs", "crates/service/tests/derived_cache_publication.rs",
+              "crates/storage/tests/schema_migration_atomicity.rs",
+          ):
+              git_bytes = subprocess.check_output(["git", "show", actual + ":" + source_path])
+              checkout_bytes = Path(source_path).read_bytes()
+              exact_checkout = checkout_bytes == git_bytes
+              checkout_crlf = b"\r\n" not in git_bytes and checkout_bytes == git_bytes.replace(b"\n", b"\r\n")
+              if not exact_checkout and not checkout_crlf:
+                  raise SystemExit("portability-source-bytes-mismatch:" + source_path)
+              receipt["selected_sources"][source_path] = {
+                  "git_blob_oid": git("rev-parse", actual + ":" + source_path),
+                  "git_sha256": hashlib.sha256(git_bytes).hexdigest(), "git_bytes": len(git_bytes),
+                  "checkout_sha256": hashlib.sha256(checkout_bytes).hexdigest(), "checkout_bytes": len(checkout_bytes),
+                  "bytes_equal": exact_checkout, "equal_after_exact_lf_to_crlf": checkout_crlf,
+              }
           print(json.dumps(receipt, sort_keys=True), flush=True)
           cases = [
               ("service", ["-p", "motionwright-service", "--test", "file_import_idempotency"], {
@@ -189,8 +219,39 @@ jobs:
                   'failed_schema_upgrade_never_publishes_partial_new_tables_or_version',
                   'valid_fresh_open_and_reopen_keep_exact_schema_and_no_extra_objects',
                   'too_new_version_fails_without_rewriting_original_schema',
+                  'production_order_allocation_failure_cannot_publish_a_partial_append_or_claim',
+                  'production_order_backfill_failure_rolls_back_ddl_rows_and_sequence_counter',
+                  'production_order_concurrent_migrations_publish_one_mapping_per_receipt',
+                  'production_order_extension_trigger_failure_rolls_back_every_receipt_effect',
+                  'production_order_migration_preserves_receipts_extension_foreign_keys_and_audit_triggers',
+                  'production_order_missing_mapping_is_never_silently_backfilled_or_hidden',
+                  'production_order_project_mismatch_is_rejected_from_both_scopes',
+                  'production_order_reserved_object_collisions_are_rejected_without_adoption',
               }),
           ])
+          cases.extend([
+              ('cache-storage-publication', ['-p', 'motionwright-storage', '--lib', 'derived_cache::publication_interleaving_tests::'], {
+                  'derived_cache::publication_interleaving_tests::equivalent_late_publication_preserves_the_winner_record',
+                  'derived_cache::publication_interleaving_tests::late_publication_cannot_replace_a_different_winner',
+                  'derived_cache::publication_interleaving_tests::late_publication_preserves_an_unowned_regular_destination',
+              }),
+              ('cache-service-publication', ['-p', 'motionwright-service', '--test', 'derived_cache_publication'], {
+                  'distinct_scopes_and_kinds_remain_independent',
+                  'exact_blob_repair_preserves_manifest_metadata_and_reopens',
+                  'known_conflict_does_not_publish_the_rejected_blob',
+                  'malformed_existing_manifest_does_not_publish_candidate_bytes',
+                  'missing_blob_does_not_authorize_different_output_for_the_same_key',
+              }),
+          ])
+          if selection == "derived_cache":
+              selected_names = {"cache-storage-publication", "cache-service-publication"}
+              cases = [case for case in cases if case[0] in selected_names]
+              if {case[0] for case in cases} != selected_names or len(cases) != 2 or sum(len(case[2]) for case in cases) != 8:
+                  raise SystemExit("derived-cache-selection-incomplete")
+          if not cases:
+              raise SystemExit("portability-selection-empty")
+          receipt["selected_suites"] = [case[0] for case in cases]
+          receipt["expected_invocations"] = sum(len(case[2]) for case in cases)
           for suite, selector, expected in cases:
               command = ["cargo", "test", "--locked", *selector, "--", "--test-threads=1"]
               result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
