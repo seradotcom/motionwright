@@ -860,3 +860,31 @@ fn actual_duration_budget_rejects_one_extra_frame_without_declared_duration() {
         }
     }
 }
+
+#[test]
+fn declared_svg_budget_also_respects_a_lower_host_byte_limit() {
+    let bytes = br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>"#;
+    let length = bytes.len() as u64;
+    for (name, media_type) in [
+        ("vector.svg", "application/octet-stream"),
+        ("vector.bin", "image/svg+xml"),
+    ] {
+        for limit in [length, length - 1] {
+            let fixture = Fixture::for_media(
+                bytes,
+                name,
+                media_type,
+                ImportLimits::default().with_source_bytes(limit).unwrap(),
+                false,
+            );
+            let before = fixture.effects();
+            let result = fixture.import(false, "joint-svg-source-budget");
+            if limit == length {
+                assert_new_accepted(&fixture, result);
+            } else {
+                assert_source_limit(&result, length, limit);
+                assert_new_rejected(&fixture, &before, "joint-svg-source-budget", false, result);
+            }
+        }
+    }
+}

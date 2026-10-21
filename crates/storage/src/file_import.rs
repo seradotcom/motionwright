@@ -191,6 +191,23 @@ fn run_import_source_open_hook(source: &Path) {
     }
 }
 
+#[cfg(test)]
+type ImportSourceReadHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static AFTER_FIRST_IMPORT_SOURCE_READ: std::cell::RefCell<Option<ImportSourceReadHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_import_source_read_hook(source: &Path) {
+    let hook = AFTER_FIRST_IMPORT_SOURCE_READ.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(source);
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_import_source_handle(source: &Path) -> std::io::Result<File> {
     use rustix::fs::{Mode, OFlags, open};
@@ -266,6 +283,8 @@ impl Store {
         let mut input = open_regular_import_source(source, u64::MAX)?;
         let mut digest = Sha256::new();
         let mut chunk = [0_u8; 128 * 1024];
+        #[cfg(test)]
+        let mut first_read = true;
         loop {
             let count = match input.read(&mut chunk) {
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
@@ -274,9 +293,19 @@ impl Store {
             if count == 0 {
                 break;
             }
+            #[cfg(test)]
+            if first_read {
+                first_read = false;
+                run_import_source_read_hook(source);
+            }
             digest.update(&chunk[..count]);
         }
         Ok(hex::encode(digest.finalize()))
+    }
+
+    /// Verify a known import with an explicit source-byte budget.
+    pub fn hash_file_import_source_with_limit(source: &Path, _max_bytes: u64) -> Result<String> {
+        Self::hash_file_import_source(source)
     }
 }
 
@@ -346,10 +375,17 @@ impl Store {
             let mut credentials = super::CredentialScan::default();
             let mut buffer = [0_u8; 128 * 1024];
             let mut size_bytes = 0_u64;
+            #[cfg(test)]
+            let mut first_read = true;
             loop {
                 let count = input.read(&mut buffer)?;
                 if count == 0 {
                     break;
+                }
+                #[cfg(test)]
+                if first_read {
+                    first_read = false;
+                    run_import_source_read_hook(source);
                 }
                 let next_size =
                     size_bytes
@@ -980,5 +1016,269 @@ mod source_open_tests {
         assert!(store.stage_file_import(&source).is_err());
         assert!(!store.blob_root.join(".staging").exists());
         assert_eq!(rows(&store), before);
+    }
+}
+
+#[cfg(test)]
+mod source_budget_tests {
+    use super::{AFTER_FIRST_IMPORT_SOURCE_READ, ImportSourceReadHook};
+    use crate::{StorageError, Store};
+    use motionwright_domain::Change;
+    use rusqlite::types::Value;
+    use sha2::{Digest, Sha256};
+    use std::{
+        cell::Cell,
+        collections::BTreeMap,
+        fs::{self, OpenOptions},
+        io::Write,
+        path::{Path, PathBuf},
+        rc::Rc,
+    };
+
+    struct ReadHookGuard;
+
+    impl Drop for ReadHookGuard {
+        fn drop(&mut self) {
+            AFTER_FIRST_IMPORT_SOURCE_READ.with(|slot| {
+                let _ = slot.borrow_mut().take();
+            });
+        }
+    }
+
+    fn after_first_read(hook: impl FnOnce(&Path) + 'static) -> ReadHookGuard {
+        AFTER_FIRST_IMPORT_SOURCE_READ.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none(), "one read hook per test thread");
+            *slot = Some(Box::new(hook) as ImportSourceReadHook);
+        });
+        ReadHookGuard
+    }
+
+    fn append_after_first_read(
+        initial: &'static [u8],
+        suffix: &'static [u8],
+    ) -> (ReadHookGuard, Rc<Cell<usize>>) {
+        let calls = Rc::new(Cell::new(0_usize));
+        let observed = Rc::clone(&calls);
+        let guard = after_first_read(move |source| {
+            assert_eq!(fs::read(source).unwrap().as_slice(), initial);
+            observed.set(observed.get() + 1);
+            // Extend this same regular file after the retained handle was read.
+            let mut output = OpenOptions::new().append(true).open(source).unwrap();
+            output.write_all(suffix).unwrap();
+        });
+        (guard, calls)
+    }
+
+    fn store_at(root: &Path) -> Store {
+        let mut store = Store::open(root.join("budget.sqlite3")).unwrap();
+        let project = store
+            .create_named_project("Source budget sentinel")
+            .unwrap();
+        store
+            .apply(
+                project.id,
+                &project.stamp(),
+                "retained-receipt",
+                &Change::RenameProject {
+                    title: "Retained project head".into(),
+                },
+            )
+            .unwrap();
+        store
+    }
+
+    fn rows(store: &Store) -> Vec<Vec<Vec<Value>>> {
+        [
+            "SELECT * FROM projects ORDER BY id",
+            "SELECT * FROM events ORDER BY event_id",
+            "SELECT * FROM receipts ORDER BY project_id,request_id",
+        ]
+        .into_iter()
+        .map(|query| {
+            let mut statement = store.conn.prepare(query).unwrap();
+            let columns = statement.column_count();
+            let values: Vec<Vec<Value>> = statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|column| row.get::<_, Value>(column))
+                        .collect::<rusqlite::Result<Vec<Value>>>()
+                })
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect();
+            values
+        })
+        .collect()
+    }
+
+    fn retained_blob_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                let metadata = fs::symlink_metadata(&path).unwrap();
+                assert!(!metadata.file_type().is_symlink());
+                if metadata.is_dir() {
+                    walk(root, &path, files);
+                } else {
+                    assert!(metadata.is_file());
+                    files.insert(
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        fs::read(&path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut files = BTreeMap::new();
+        walk(root, root, &mut files);
+        files
+    }
+
+    #[test]
+    fn bounded_replay_hash_accepts_exact_budget_and_rejects_initial_excess() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("replay.bin");
+        fs::write(&source, b"abcd").unwrap();
+        assert_eq!(
+            Store::hash_file_import_source_with_limit(&source, 4).unwrap(),
+            hex::encode(Sha256::digest(b"abcd")),
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"abcd");
+        fs::write(&source, b"abcde").unwrap();
+        let calls = Rc::new(Cell::new(0_usize));
+        let observed = Rc::clone(&calls);
+        let guard = after_first_read(move |_| observed.set(observed.get() + 1));
+        let result = Store::hash_file_import_source_with_limit(&source, 4);
+        assert!(
+            matches!(
+                &result,
+                Err(StorageError::BlobTooLarge { size: 5, limit: 4 })
+            ),
+            "expected initial source-size rejection, got {result:?}",
+        );
+        assert_eq!(
+            calls.get(),
+            0,
+            "initial excess must be rejected before reading"
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"abcde");
+        drop(guard);
+        assert_eq!(
+            Store::hash_file_import_source(&source).unwrap(),
+            hex::encode(Sha256::digest(b"abcde")),
+        );
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn bounded_replay_hash_rejects_growth_after_first_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("replay.bin");
+        fs::write(&source, b"abcd").unwrap();
+        let (_guard, calls) = append_after_first_read(b"abcd", b"e");
+        let result = Store::hash_file_import_source_with_limit(&source, 4);
+        assert!(
+            matches!(
+                &result,
+                Err(StorageError::BlobTooLarge { size: 5, limit: 4 })
+            ),
+            "expected stream-growth rejection, got {result:?}",
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(fs::read(&source).unwrap(), b"abcde");
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn bounded_replay_hash_includes_growth_to_exact_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("replay.bin");
+        fs::write(&source, b"abc").unwrap();
+        let (_guard, calls) = append_after_first_read(b"abc", b"d");
+        let actual = Store::hash_file_import_source_with_limit(&source, 4).unwrap();
+        assert_eq!(actual, hex::encode(Sha256::digest(b"abcd")));
+        assert_ne!(actual, hex::encode(Sha256::digest(b"abc")));
+        assert_eq!(calls.get(), 1);
+        assert_eq!(fs::read(&source).unwrap(), b"abcd");
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn staging_rejects_growth_without_touching_sql_cas_or_another_capture() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_at(tmp.path());
+        let kept_source = tmp.path().join("kept.bin");
+        let kept_bytes = b"existing retained bytes";
+        fs::write(&kept_source, kept_bytes).unwrap();
+        let kept = store.ingest_blob_file(&kept_source).unwrap();
+        let held = store.stage_file_import(&kept_source).unwrap();
+        let held_path = held.path().to_path_buf();
+        let cas_path = store.verified_blob_path(&kept.sha256).unwrap();
+        let source = tmp.path().join("growing.bin");
+        fs::write(&source, b"abcd").unwrap();
+        let before_rows = rows(&store);
+        let before_files = retained_blob_files(&store.blob_root);
+        let (_guard, calls) = append_after_first_read(b"abcd", b"e");
+        let result = store.stage_file_import_with_limit(&source, 4);
+        assert!(
+            matches!(
+                &result,
+                Err(StorageError::BlobTooLarge { size: 5, limit: 4 })
+            ),
+            "expected stream-growth rejection, got {result:?}",
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(rows(&store), before_rows);
+        assert_eq!(retained_blob_files(&store.blob_root), before_files);
+        assert_eq!(fs::read(&source).unwrap(), b"abcde");
+        assert!(held_path.is_file(), "another capture must remain live");
+        assert_eq!(fs::read(&held_path).unwrap(), kept_bytes);
+        assert_eq!(fs::read(&cas_path).unwrap(), kept_bytes);
+        assert_eq!(
+            store.read_blob(&kept.sha256, kept.size_bytes).unwrap(),
+            kept_bytes
+        );
+        drop(held);
+        assert!(!held_path.exists());
+        assert_eq!(fs::read(&cas_path).unwrap(), kept_bytes);
+    }
+
+    #[test]
+    fn staging_captures_growth_to_exact_budget_then_removes_its_private_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_at(tmp.path());
+        let source = tmp.path().join("growing.bin");
+        fs::write(&source, b"abc").unwrap();
+        let before_rows = rows(&store);
+        let before_files = retained_blob_files(&store.blob_root);
+        let (_guard, calls) = append_after_first_read(b"abc", b"d");
+        let staged = store.stage_file_import_with_limit(&source, 4).unwrap();
+        let staged_path = staged.path().to_path_buf();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(staged.descriptor().size_bytes, 4);
+        assert_eq!(
+            staged.descriptor().sha256,
+            hex::encode(Sha256::digest(b"abcd"))
+        );
+        assert_eq!(fs::read(&staged_path).unwrap(), b"abcd");
+        assert_eq!(fs::read(&source).unwrap(), b"abcd");
+        assert_eq!(rows(&store), before_rows);
+        let mut expected_files = before_files.clone();
+        assert!(
+            expected_files
+                .insert(
+                    staged_path
+                        .strip_prefix(&store.blob_root)
+                        .unwrap()
+                        .to_path_buf(),
+                    b"abcd".to_vec(),
+                )
+                .is_none()
+        );
+        assert_eq!(retained_blob_files(&store.blob_root), expected_files);
+        drop(staged);
+        assert!(!staged_path.exists());
+        assert_eq!(retained_blob_files(&store.blob_root), before_files);
+        assert_eq!(rows(&store), before_rows);
     }
 }
