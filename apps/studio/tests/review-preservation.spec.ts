@@ -327,3 +327,30 @@ test("native UTF-8 comment limits reject an unsaveable request without truncatio
   await expect(page.getByRole("alert").filter({ hasText: "domain contract" })).toHaveCount(1);
   expect(await requests(page)).toEqual([]);
 });
+
+for (const mode of ["resource", "playhead"] as const) {
+  for (const authored of [
+    { name: "fraction and incomplete bound", start: "  1/3  ", end: "  1001/  " },
+    { name: "intentionally empty bounds", start: "", end: "" },
+  ]) {
+    test("range toggle causal: " + authored.name + " survives " + mode + " and return", async ({ page }) => {
+      const anchor = page.getByLabel("Review time anchor", { exact: true });
+      const start = page.getByLabel("Review range start", { exact: true });
+      const end = page.getByLabel("Review range end", { exact: true });
+      await comment(page).fill("  Unsaved review range  ");
+      await anchor.selectOption("range");
+      await start.fill(authored.start);
+      await end.fill(authored.end);
+      await anchor.selectOption(mode);
+      await anchor.selectOption("range");
+      await expect.soft(start).toHaveValue(authored.start);
+      await expect.soft(end).toHaveValue(authored.end);
+      await page.reload();
+      await expect.soft(start).toHaveValue(authored.start);
+      await expect.soft(end).toHaveValue(authored.end);
+      await expect(comment(page)).toHaveValue("  Unsaved review range  ");
+      await expect(button(page, "Add anchored review")).toBeDisabled();
+      expect(await requests(page)).toEqual([]);
+    });
+  }
+}

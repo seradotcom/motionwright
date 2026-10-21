@@ -94,15 +94,7 @@ export default function ReviewWorkspace({
                 <select
                   aria-label="Review time anchor"
                   value={timeMode}
-                  onChange={(event) => {
-                    const mode = event.target.value as typeof timeMode;
-                    setTimeMode(mode);
-                    if (mode === "range") {
-                      const start = Math.min(playhead, projectDuration);
-                      setRangeStart(start.toFixed(3));
-                      setRangeEnd(Math.min(projectDuration, start + 1).toFixed(3));
-                    }
-                  }}
+                  onChange={(event) => setTimeMode(event.target.value as typeof timeMode)}
                 >
                   <option value="resource">Resource only</option>
                   <option value="playhead">Current playhead (project time)</option>
@@ -142,6 +134,7 @@ export default function ReviewWorkspace({
                   <div className={"review-time-hint" + (!rangeValid ? " invalid" : "")}>
                     Allowed {boundsStart.toFixed(3)}–{boundsEnd.toFixed(3)}s on the project clock.
                     End must not precede start; choose project scope for cross-scene reviews.
+                    Switching time anchors keeps these inputs.
                   </div>
                 </>
               )}
