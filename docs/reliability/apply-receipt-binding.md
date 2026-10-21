@@ -9,10 +9,10 @@ original result and the evidence linking that result to its request in one
 transaction. Schema upgrades must preserve old results and must not adopt
 unrelated extension columns as trusted evidence.
 
-This implements the storage portion of A2 Foundation & Reliability: durable
-idempotency, recovery of uncertain local operations, transactional migrations
-and source-free import recovery. It does not complete installed application
-authorization, Broker/provider recovery or independent release acceptance.
+This contract covers durable idempotency, recovery of uncertain local
+operations, transactional migrations and source-free import recovery.
+Installed application authorization, Broker/provider recovery and independent
+release acceptance require their own evidence.
 
 The existing
 [apply process recovery contract](storage-apply-process-recovery.md),
