@@ -27,11 +27,11 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Select the complete portability catalog or the cache publication contracts
+        description: Select complete portability, cache publication, or desktop OTIO export contracts
         required: true
         default: full
         type: choice
-        options: [full, derived_cache]
+        options: [full, derived_cache, otio_export]
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ env:
 
 jobs:
   storage-contracts:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'derived_cache' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,19 +66,39 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'otio_export' && 1 || 3 }}
       matrix:
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'derived_cache' && '["macos-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'derived_cache' || inputs.verification_scope == 'otio_export') && '["macos-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     env:
       CARGO_TERM_COLOR: never
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Always verify selected export source and fast contracts
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'otio_export'
+        shell: python
+        run: |
+          import os, subprocess, sys
+          from pathlib import Path
+
+          for policy in ("source_policy", "acceptance_policy", "creative_status_policy", "public_surface_policy"):
+              subprocess.run([sys.executable, "-B", "tooling/" + policy + ".py"], check=True)
+          subprocess.run(["cargo", "fmt", "--all", "--", "--check"], check=True)
+          report = Path(os.environ["RUNNER_TEMP"]) / "project-portability-g0" / "receipt.json"
+          subprocess.run([
+              sys.executable, "-B", "tooling/ci_test_runner.py", "--repo", ".",
+              "--mode", "both", "--pattern", "test_ci_test_runner.py",
+              "--expected-source", os.environ["GITHUB_SHA"], "--report", str(report),
+              "--require-complete",
+          ], check=True)
       - name: Verify exact checkout and selective file import contracts
         shell: python
         run: |
@@ -95,7 +115,7 @@ jobs:
           selection = "full"
           if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
               selection = (event.get("inputs") or {}).get("verification_scope", "full")
-          if selection not in {"full", "derived_cache"}:
+          if selection not in {"full", "derived_cache", "otio_export"}:
               raise SystemExit("portability-selection-unsupported")
           pr = event.get("pull_request") or {}
           root = Path("verification/file-import-platforms")
@@ -115,11 +135,24 @@ jobs:
               "cargo": subprocess.check_output(["cargo", "--version"], text=True).strip(),
               "selection": selection, "selected_sources": {}, "results": [],
           }
-          for source_path in (
+          source_paths = (
               ".github/workflows/project-portability.yml", "Cargo.lock", "SOURCE_LOCK.json",
               "crates/storage/src/derived_cache.rs", "crates/service/tests/derived_cache_publication.rs",
               "crates/storage/tests/schema_migration_atomicity.rs",
-          ):
+          )
+          if selection == "otio_export":
+              source_paths = (
+                  ".github/workflows/project-portability.yml",
+                  "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml",
+                  "crates/service/Cargo.toml",
+                  "crates/service/tests/desktop_project_export.rs",
+                  "apps/desktop/src-tauri/Cargo.toml",
+                  "apps/desktop/src-tauri/src/effect_grants.rs",
+                  "apps/desktop/src-tauri/src/local_error.rs",
+                  "apps/desktop/src-tauri/src/project_export.rs",
+                  "apps/desktop/src-tauri/src/project_library.rs",
+              )
+          for source_path in source_paths:
               git_bytes = subprocess.check_output(["git", "show", actual + ":" + source_path])
               checkout_bytes = Path(source_path).read_bytes()
               exact_checkout = checkout_bytes == git_bytes
@@ -248,12 +281,29 @@ jobs:
               cases = [case for case in cases if case[0] in selected_names]
               if {case[0] for case in cases} != selected_names or len(cases) != 2 or sum(len(case[2]) for case in cases) != 8:
                   raise SystemExit("derived-cache-selection-incomplete")
+          elif selection == "otio_export":
+              cases = [
+                  ("desktop-otio-export", ["-p", "motionwright-service", "--test", "desktop_project_export", "project_export::tests::"], {
+                      "project_export::tests::bundle_peer_revision_after_consumption_cannot_publish_a_later_snapshot",
+                      "project_export::tests::otio_peer_revision_after_consumption_never_replaces_the_captured_project",
+                      "project_export::tests::exact_bundle_command_exports_verified_project_journal_and_original_blob",
+                      "project_export::tests::exact_otio_command_preserves_the_existing_response_and_document",
+                      "project_export::tests::occupied_destinations_preserve_foreign_files_and_consume_only_the_original_grant",
+                      "project_export::tests::changed_destination_subject_is_rejected_before_any_export",
+                      "project_export::tests::failed_otio_write_never_exposes_or_retains_a_partial_destination",
+                      "project_export::tests::failed_otio_finalization_never_exposes_or_retains_unconfirmed_bytes",
+                      "project_export::tests::late_otio_competitor_is_preserved_and_staging_is_removed",
+                  }),
+              ]
+              if len(cases) != 1 or len(cases[0][2]) != 9:
+                  raise SystemExit("otio-export-selection-incomplete")
           if not cases:
               raise SystemExit("portability-selection-empty")
           receipt["selected_suites"] = [case[0] for case in cases]
           receipt["expected_invocations"] = sum(len(case[2]) for case in cases)
           for suite, selector, expected in cases:
-              command = ["cargo", "test", "--locked", *selector, "--", "--test-threads=1"]
+              test_options = ["--nocapture"] if selection == "otio_export" else ["--test-threads=1"]
+              command = ["cargo", "test", "--locked", *selector, "--", *test_options]
               result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
               data = result.stdout
               output = data.decode("utf-8", errors="replace")
@@ -293,4 +343,11 @@ jobs:
         with:
           name: file-import-platform-${{ matrix.os }}-${{ github.sha }}
           path: verification/file-import-platforms
+          if-no-files-found: error
+      - name: Retain selected export G0 originals
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'otio_export'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: otio-export-g0-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/project-portability-g0
           if-no-files-found: error
