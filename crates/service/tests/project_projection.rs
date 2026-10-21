@@ -514,9 +514,31 @@ fn utf16_database_preserves_utf8_page_budgets_and_escaped_text() {
     let path = directory.path().join("project.sqlite");
     {
         let connection = rusqlite::Connection::open(&path).unwrap();
+        // A schema write persists the selected encoding in the database header.
+        // VACUUM alone on an empty database leaves the encoding unspecified.
         connection
-            .execute_batch("PRAGMA encoding='UTF-16le'; VACUUM;")
+            .execute_batch(
+                "PRAGMA encoding='UTF-16le';
+                 CREATE TABLE encoding_anchor(value TEXT);
+                 DROP TABLE encoding_anchor;
+                 VACUUM;",
+            )
             .unwrap();
+    }
+    {
+        let reopened = rusqlite::Connection::open(&path).unwrap();
+        let encoding: String = reopened
+            .query_row("PRAGMA encoding", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(encoding.to_lowercase(), "utf-16le");
+        let user_objects: i64 = reopened
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(user_objects, 0);
     }
     let mut project = fixture(1, 2);
     for node in &mut project.scenes[0].nodes {
