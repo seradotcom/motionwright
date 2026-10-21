@@ -31,25 +31,118 @@ pub mod support {
     struct BriefSpec {
         slug: &'static str,
         title: &'static str,
+        content: &'static AuthoredContent,
     }
+
+    #[derive(Clone, Copy)]
+    struct SceneContent {
+        objective: &'static str,
+        beat_objective: &'static str,
+        object_caption: &'static str,
+    }
+
+    struct AuthoredContent {
+        objective: &'static str,
+        claim: &'static str,
+        scenes: [SceneContent; 3],
+    }
+
+    // Declared fixture inputs, consumed by the same generator and edit sequence.
+    // Slugs and titles label artifacts; they never select product behavior.
+    const HARBOR_CONTENT: AuthoredContent = AuthoredContent {
+        objective: "Explain a fictional harbor drill from gate alert through muster confirmation.",
+        claim: "The gates, routes and crew counts in this harbor exercise are fictional fixture content.",
+        scenes: [
+            SceneContent {
+                objective: "Show the gate alert and identify the marked quay exit.",
+                beat_objective: "Reveal the gate signal before the exit sign.",
+                object_caption: "Quay evacuation route",
+            },
+            SceneContent {
+                objective: "Connect the assembly area to the crew muster checklist.",
+                beat_objective: "Compare the assembly markers with the muster list.",
+                object_caption: "Crew assembly point",
+            },
+            SceneContent {
+                objective: "Finish the exercise with a radio handoff to the dispatcher.",
+                beat_objective: "Display the radio confirmation after the crew count.",
+                object_caption: "Dispatcher confirmation",
+            },
+        ],
+    };
+    const MUSEUM_CONTENT: AuthoredContent = AuthoredContent {
+        objective: "Present a fictional after-hours exhibition and its visitor programme.",
+        claim: "The exhibition, collection labels and opening programme are invented museum fixture content.",
+        scenes: [
+            SceneContent {
+                objective: "Introduce the night exhibition through its entrance poster.",
+                beat_objective: "Reveal the exhibition headline with its opening slot.",
+                object_caption: "After-hours exhibition",
+            },
+            SceneContent {
+                objective: "Associate an artwork caption with its gallery location.",
+                beat_objective: "Move attention from the artwork label to the gallery map.",
+                object_caption: "Gallery collection label",
+            },
+            SceneContent {
+                objective: "Close with the visitor programme and accessible exit information.",
+                beat_objective: "Sequence the workshop card before the programme summary.",
+                object_caption: "Visitor workshop programme",
+            },
+        ],
+    };
+    const BIKE_CONTENT: AuthoredContent = AuthoredContent {
+        objective: "Explain a fictional cycle-route diversion with maps, stop labels and alternatives.",
+        claim: "The cycle stops, diversion distances and route alternatives are invented transport fixture content.",
+        scenes: [
+            SceneContent {
+                objective: "Locate the closed cycle segment on the route overview.",
+                beat_objective: "Identify the closure marker before showing the diversion.",
+                object_caption: "Cycle segment closure",
+            },
+            SceneContent {
+                objective: "Compare the temporary diversion with the usual cycle path.",
+                beat_objective: "Follow the diversion arrows between the temporary stops.",
+                object_caption: "Temporary cycle diversion",
+            },
+            SceneContent {
+                objective: "Summarize the interchange choices at the final route stop.",
+                beat_objective: "Present the transfer label after the arrival marker.",
+                object_caption: "Route interchange options",
+            },
+        ],
+    };
+    const RESPONSIVENESS_CONTENT: AuthoredContent = AuthoredContent {
+        objective: "Retain authored identities and constraints across measured service edits.",
+        claim: "This project is a synthetic performance fixture with explicitly measured dimensions.",
+        scenes: [SceneContent {
+            objective: "Preserve authored scene and object identities after reopening.",
+            beat_objective: "Authored fixture beat",
+            object_caption: "Object",
+        }; 3],
+    };
 
     const REFERENCE_BRIEFS: [BriefSpec; 3] = [
         BriefSpec {
             slug: "harbor-safety",
             title: "Harbor Safety Explainer",
+            content: &HARBOR_CONTENT,
         },
         BriefSpec {
             slug: "museum-night",
             title: "Museum Night Campaign",
+            content: &MUSEUM_CONTENT,
         },
         BriefSpec {
             slug: "bike-route",
             title: "Bike Route Service Update",
+            content: &BIKE_CONTENT,
         },
     ];
     const RESPONSIVENESS_BRIEF: BriefSpec = BriefSpec {
         slug: "responsiveness",
         title: "Responsiveness reference project",
+        content: &RESPONSIVENESS_CONTENT,
     };
 
     #[derive(Clone, Copy)]
@@ -183,21 +276,23 @@ pub mod support {
 
     fn genesis(profile: Profile, brief: BriefSpec) -> Result<Project> {
         let mut project = Project::new(brief.title)?;
-        project.brief.objective =
-            "Retain authored identities and constraints across measured service edits.".into();
+        project.brief.objective = brief.content.objective.into();
         project.brief.claims.push(Claim {
             id: Uuid::now_v7(),
-            text: "This project is a synthetic performance fixture with explicitly measured dimensions.".into(),
-            source: Some(SourceReference::ManualNote { label: "Benchmark fixture declaration; not a real-world factual claim".into() }),
+            text: brief.content.claim.into(),
+            source: Some(SourceReference::ManualNote {
+                label: "Benchmark fixture declaration; not a real-world factual claim".into(),
+            }),
             context: format!("Reference profile {}", profile.label),
-            source_revision: Some("fixture-v1".into()),
+            source_revision: Some("fixture-v2".into()),
         });
         let beats = profile.required_beats.unwrap_or(profile.scenes * 6);
         for scene_index in 0..profile.scenes {
+            let content = &brief.content.scenes[scene_index % brief.content.scenes.len()];
             let mut scene = Scene {
                 id: Uuid::now_v7(),
                 name: format!("{} scene {:03}", profile.label, scene_index + 1),
-                objective: "Preserve authored scene and object identities after reopening.".into(),
+                objective: content.objective.into(),
                 start: RationalTime::new(
                     profile.seconds * scene_index as i64,
                     profile.scenes as i64,
@@ -215,7 +310,7 @@ pub mod support {
                 scene.beats.push(Beat {
                     id: Uuid::now_v7(),
                     label: format!("Beat {}", index + 1),
-                    objective: "Authored fixture beat".into(),
+                    objective: content.beat_objective.into(),
                     start: RationalTime::new(index as i64, 1)?,
                     duration: RationalTime::new(1, 1)?,
                 });
@@ -240,7 +335,7 @@ pub mod support {
                     opacity: 1.0,
                     text: index
                         .is_multiple_of(5)
-                        .then(|| format!("Object {}", index + 1)),
+                        .then(|| format!("{} {}", content.object_caption, index + 1)),
                     coordinate_space: CoordinateSpace::ProjectPixels,
                     z_index: i32::try_from(index)?,
                     style: NodeStyle::default(),
@@ -1335,6 +1430,45 @@ pub mod support {
             assert_ne!(original.id, relabeled.id);
             assert_ne!(original.title, relabeled.title);
             assert_eq!(content_families(&original), content_families(&relabeled));
+        }
+
+        #[test]
+        fn supplied_content_is_independent_of_a_known_title_and_slug() {
+            const CUSTOM: AuthoredContent = AuthoredContent {
+                objective: "Describe a fictional seed archive and its cataloguing procedure.",
+                claim: "The seed records and accession labels are synthetic archive fixture data.",
+                scenes: [SceneContent {
+                    objective: "Associate a seed sample with its accession drawer.",
+                    beat_objective: "Show the accession label before the storage location.",
+                    object_caption: "Seed accession drawer",
+                }; 3],
+            };
+            let original = reopened_fixture(REFERENCE_BRIEFS[0]);
+            let supplied = reopened_fixture(BriefSpec {
+                content: &CUSTOM,
+                ..REFERENCE_BRIEFS[0]
+            });
+            assert_eq!(original.title, supplied.title);
+            assert_eq!(supplied.brief.objective, CUSTOM.objective);
+            assert_eq!(supplied.brief.claims[0].text, CUSTOM.claim);
+            assert!(supplied.scenes.iter().all(|scene| {
+                scene.objective == CUSTOM.scenes[0].objective
+                    && scene
+                        .beats
+                        .iter()
+                        .all(|beat| beat.objective == CUSTOM.scenes[0].beat_objective)
+                    && scene
+                        .nodes
+                        .iter()
+                        .filter_map(|node| node.text.as_ref())
+                        .all(|text| text.starts_with(CUSTOM.scenes[0].object_caption))
+            }));
+            for (before, after) in content_families(&original)
+                .iter()
+                .zip(content_families(&supplied).iter())
+            {
+                assert_ne!(before, after);
+            }
         }
     }
 
