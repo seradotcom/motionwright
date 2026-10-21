@@ -29,7 +29,7 @@ function measuredVoiceProblem(voice: VoiceTrack): string | null {
 export default function NativeOriginalMixReview({ project, desktopMode, commit }: {
   project: Project;
   desktopMode: boolean;
-  commit: (change: Change) => Promise<void>;
+  commit: (change: Change) => Promise<Project>;
 }) {
   const [profileId, setProfileId] = useState(() => project.deliverables.find(profile =>
     savedDeliveryRecipe(project, profile.id)?.original_mix)?.id ?? project.deliverables[0]?.id ?? "");

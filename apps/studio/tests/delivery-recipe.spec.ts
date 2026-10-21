@@ -101,6 +101,19 @@ async function save(page: Page, service: ScopedChangeService, projectId: string,
   await expect(page.locator(".error-banner")).toHaveCount(0);
   return service.project(projectId);
 }
+async function reviewUnconfirmedRecipe(page: Page, service: ScopedChangeService, projectId: string, title: "Scene intent" | "Original mix") {
+  const before = await service.project(projectId), grants = requests(service, "issue_effect_grant").length, applies = recipeRequests(service).length;
+  const region = page.getByRole("region", { name: title + " unconfirmed save", exact: true });
+  await expect(region).toBeVisible();
+  await button(region, "Read saved recipe and history").click();
+  await expect(region).toContainText("Read saved revision r" + before.revision);
+  await button(region, "Keep earlier recipe attempt and continue editing").click();
+  await expect(region).toHaveCount(0);
+  expect(await service.project(projectId)).toEqual(before);
+  expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+  expect(recipeRequests(service)).toHaveLength(applies);
+}
+
 function outsideRecipes(project: Project) {
   const copy = structuredClone(project);
   copy.revision = 0; copy.updated_at = "";
@@ -147,9 +160,15 @@ async function scenario(info: TestInfo, run: (proof: CaseProof) => Promise<void>
     async attach(service, page) { this.pages.push(page); await service.attachFixturePage(page); await page.goto("/"); },
     track(service, project) { const ids = this.ids.get(service.directory) ?? new Set<string>(); ids.add(project.id); this.ids.set(service.directory, ids); },
   };
+  let primary: { reason: unknown } | undefined;
   try { await run(proof); proof.observations.behaviorAssertionsCompleted = true; }
-  catch (failure) { proof.observations.failure = explain(failure); throw failure; }
-  finally { await closeAndSeal(proof); }
+  catch (reason) { primary = { reason }; proof.observations.failure = explain(reason); }
+  try { await closeAndSeal(proof); }
+  catch (reason) {
+    if (primary) throw new AggregateError([primary.reason, reason], "Recipe scenario and evidence finalization both failed", { cause: primary.reason });
+    throw reason;
+  }
+  if (primary) throw primary.reason;
 }
 async function setup(proof: CaseProof, service: ScopedChangeService, withAudio = false) {
   let project = (await service.fixtureBootstrap()).project;
@@ -355,7 +374,7 @@ test("two profiles retain both canonical groups through explicit saves, clear an
   await page.screenshot({ path: info.outputPath("two-profile-recipes.png"), fullPage: true });
 }));
 
-test("a committed reply held across navigation preserves Sent then Old until explicit conflict resolution", async ({ page }, info) => scenario(info, async proof => {
+test("a committed reply held across reload preserves Sent then Old until fresh history review and explicit conflict resolution", async ({ page }, info) => scenario(info, async proof => {
   const service = await proof.create("service");
   const setupResult = await setup(proof, service);
   const { a } = setupResult;
@@ -382,6 +401,7 @@ test("a committed reply held across navigation preserves Sent then Old until exp
   await expect(button(page, "Save scene intent")).toBeDisabled();
   held.release(); await held.dispose();
   expect(await service.project(project.id)).toEqual(outcome.project);
+  await reviewUnconfirmedRecipe(page, service, project.id, "Scene intent");
   await button(conflict, "Keep my draft " + roleLabel).click();
   await expect(page.getByLabel(roleLabel, { exact: true })).toBeFocused();
   expect(await service.project(project.id)).toEqual(outcome.project);
@@ -429,7 +449,7 @@ test("typing across Film profile and mix scopes during a real save retains every
 }));
 
 for (const keep of ["saved", "draft"] as const) {
-  test(`two real clients reject a stale save and resolve only the overlapping field with keep ${keep}`, async ({ page, context }, info) => scenario(info, async proof => {
+  test(`two real clients reject a stale save, review current history and resolve only the overlapping field with keep ${keep}`, async ({ page, context }, info) => scenario(info, async proof => {
     const service = await proof.create("service");
     const initial = await setup(proof, service);
     const { a } = initial;
@@ -461,6 +481,7 @@ for (const keep of ["saved", "draft"] as const) {
     await expect(page.getByLabel(first.name + " motion archetype", { exact: true })).toHaveValue("metric");
     await expect(page.getByLabel(other.name + " motion archetype", { exact: true })).toHaveValue("evidence_frame");
     await expect(button(page, "Save scene intent")).toBeDisabled();
+    await reviewUnconfirmedRecipe(page, service, project.id, "Scene intent");
     await button(conflicts, (keep === "saved" ? "Keep saved " : "Keep my draft ") + roleLabel).click();
     await expect(page.getByLabel(roleLabel, { exact: true })).toBeFocused();
     expect(await service.project(project.id)).toEqual(winner);
@@ -491,7 +512,7 @@ test("invalid numeric raw survives a real reload and only corrected values reach
   await field(panel, "Attack (samples at 48 kHz)").fill("2.5");
   const grantCount = requests(service, "issue_effect_grant").length;
   const recipeCount = recipeRequests(service).length;
-  await button(page, "Save original mix recipe").click();
+  await expect(button(page, "Save original mix recipe")).toBeDisabled();
   await expect(panel.getByRole("alert")).toContainText(/SFX gain|finite|number/i);
   expect(await service.project(project.id)).toEqual(project);
   expect(requests(service, "issue_effect_grant")).toHaveLength(grantCount);
@@ -500,7 +521,7 @@ test("invalid numeric raw survives a real reload and only corrected values reach
   await expect(field(panel, "SFX gain dB")).toHaveValue("1e");
   await expect(field(panel, "Attack (samples at 48 kHz)")).toHaveValue("2.5");
   await field(panel, "SFX gain dB").fill("-6.75");
-  await button(page, "Save original mix recipe").click();
+  await expect(button(page, "Save original mix recipe")).toBeDisabled();
   await expect(panel.getByRole("alert")).toContainText(/whole|integer|samples/i);
   expect(await service.project(project.id)).toEqual(project);
   await field(panel, "Attack (samples at 48 kHz)").fill("2401");
@@ -511,32 +532,44 @@ test("invalid numeric raw survives a real reload and only corrected values reach
   proof.observations.invalidRawRejectedBeforeGrant = { gain: "1e", attack: "2.5" };
 }));
 
-test("a full recovery budget warns and preserves memory while an explicit service save remains available", async ({ page }, info) => scenario(info, async proof => {
+test("a full recovery budget preserves memory and blocks service writes until a verified copy fits", async ({ page }, info) => scenario(info, async proof => {
   const service = await proof.create("service");
   const { project, a } = await setup(proof, service);
   await proof.attach(service, page);
-  await page.evaluate(prefix => {
-    for (let index = 0; index < 64; index++) localStorage.setItem(prefix + "unrelated-budget-" + index, "{}");
+  const originals = await page.evaluate(prefix => {
+    for (let index = 0; index < 64; index++) localStorage.setItem(prefix + "unrelated-budget-" + index, "retained author copy " + index);
+    return Object.fromEntries(Object.entries(localStorage).filter(([key]) => key.startsWith(prefix + "unrelated-budget-")));
   }, RECIPE_DRAFT_STORAGE_PREFIX);
+  const grants = requests(service, "issue_effect_grant").length, applies = recipeRequests(service).length;
   let panel = await mix(page, a);
   await field(panel, "SFX gain dB").fill("-10.5");
   await expect(panel.getByRole("alert")).toContainText(/budget|64|backup|recovery/i);
   await button(page, "Timeline").click(); panel = await mix(page, a);
   await expect(field(panel, "SFX gain dB")).toHaveValue("-10.5");
-  await expect(panel.getByRole("alert")).toContainText(/budget|backup|recovery/i);
+  await expect(button(page, "Save original mix recipe")).toBeDisabled();
+  expect(await service.project(project.id)).toEqual(project);
+  expect(requests(service, "issue_effect_grant")).toHaveLength(grants); expect(recipeRequests(service)).toHaveLength(applies);
+  expect(await page.evaluate(prefix => Object.fromEntries(Object.entries(localStorage).filter(([key]) => key.startsWith(prefix + "unrelated-budget-"))), RECIPE_DRAFT_STORAGE_PREFIX)).toEqual(originals);
+  // Explicit external fixture cleanup, never automatic product eviction. Two
+  // slots allow the armed author snapshot and a separate original-ACK checkpoint.
+  await page.evaluate(prefix => { localStorage.removeItem(prefix + "unrelated-budget-62"); localStorage.removeItem(prefix + "unrelated-budget-63"); }, RECIPE_DRAFT_STORAGE_PREFIX);
+  await button(panel, "Retry original mix recovery copy").click();
   const final = await save(page, service, project.id, "Save original mix recipe");
   expect(recipeFor(final, a)!.original_mix!.sfx_gain_db).toBe(-10.5);
-  expect(await page.evaluate(prefix => Object.keys(localStorage).filter(key => key.startsWith(prefix + "unrelated-budget-")).length, RECIPE_DRAFT_STORAGE_PREFIX)).toBe(64);
-  // No pending input remains after canonical acknowledgement. A new input
-  // must warn again because the unrelated budget entries were not pruned.
+  expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1); expect(recipeRequests(service)).toHaveLength(applies + 1);
+  const retained = await page.evaluate(prefix => Object.fromEntries(Object.entries(localStorage).filter(([key]) => key.startsWith(prefix + "unrelated-budget-"))), RECIPE_DRAFT_STORAGE_PREFIX);
+  expect(retained).toEqual(Object.fromEntries(Object.entries(originals).filter(([key]) => !key.endsWith("-62") && !key.endsWith("-63"))));
   await field(panel, "SFX gain dB").fill("-10.75");
+  await expect(field(panel, "SFX gain dB")).toHaveValue("-10.75");
   await expect(panel.getByRole("alert")).toContainText(/budget|backup|recovery/i);
+  await expect(button(page, "Save original mix recipe")).toBeDisabled();
   expect(await service.project(project.id)).toEqual(final);
   const pending = panel.locator('details[aria-label="Original mix pending fields"]');
   await pending.locator("summary").click();
-  await button(pending, "Keep saved SFX gain dB").click();
+  await expect(button(pending, "Keep saved SFX gain dB")).toBeDisabled();
   await reopenExact(service, final);
-  proof.observations.recoveryLimit = "64 unrelated namespace entries remain untouched; pending input lived in memory. This does not claim a failed backup survives reload.";
+  proof.observations.recoveryLimit = "All 64 unrelated original bytes survived the blocked attempt. Two entries were then explicitly removed by the test fixture; verified backup allowed one new service save. A later full-budget input stayed in memory, with dispatch and destructive local replacement blocked.";
+  proof.observations.originalBudgetBytes = originals;
 }));
 
 test("an unreadable own copy is retained until explicit discard without losing newer typed input", async ({ page }, info) => scenario(info, async proof => {
@@ -593,7 +626,7 @@ test("a new window with copied session storage offers another window's draft onl
   proof.observations.noAutomaticCopyApplication = true;
 }));
 
-test("project content locks and a real revoked grant reject writes while preserving retryable inputs", async ({ page }, info) => scenario(info, async proof => {
+test("project content locks and a real revoked grant retain inputs for a fresh reviewed intent without replay", async ({ page }, info) => scenario(info, async proof => {
   const service = await proof.create("service");
   const initial = await setup(proof, service);
   const { a } = initial;
@@ -624,6 +657,8 @@ test("project content locks and a real revoked grant reject writes while preserv
   expect(await service.project(project.id)).toEqual(project);
   expect(await service.history(project.id, project.revision)).toEqual([]);
   await expect(page.getByLabel(label, { exact: true })).toHaveValue("evidence");
+  await expect(button(page, "Save scene intent")).toBeDisabled();
+  await reviewUnconfirmedRecipe(page, service, project.id, "Scene intent");
   await expect(button(page, "Save scene intent")).toBeEnabled();
   const final = await save(page, service, project.id, "Save scene intent");
   expect(recipeFor(final, a)!.scene_intents[0].role).toBe("evidence");
