@@ -2432,6 +2432,17 @@ impl ProductionCoordinator {
                     "Production request id was reused with different input",
                 ));
             }
+            // A completed request remains bound to its original authoring stamp.
+            // A fresh expected reference cannot turn an older result into current
+            // evidence; unresolved receipts retain their existing uncertainty path.
+            if prior.stage == "completed"
+                && (prior.generation != project.generation || prior.revision != project.revision)
+            {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "Production request id is bound to another project revision",
+                ));
+            }
             if prior.stage == "completed"
                 && let Some(result) = prior.payload.get("result")
             {
