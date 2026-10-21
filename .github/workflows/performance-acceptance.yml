@@ -38,6 +38,9 @@ env:
 jobs:
   revision-ten:
     runs-on: ubuntu-24.04
+    env:
+      MOTIONWRIGHT_BENCH_ARTIFACT_ROOT: ${{ github.workspace }}/verification/performance/originals
+      MOTIONWRIGHT_REFERENCE_PROFILES: "historical"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -57,12 +60,22 @@ jobs:
           mkdir -p verification/performance
           git rev-parse HEAD > verification/performance/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/performance/checkout-tree.txt
+          test "$(cat verification/performance/checkout-sha.txt)" = "$GITHUB_SHA"
+          git diff --exit-code HEAD -- Cargo.lock crates/service/examples/acceptance_bench.rs crates/service/examples/responsiveness_bench.rs
+          RUSTC_VERSION="$(rustc --version)"
+          export RUSTC_VERSION
+          printf '%s\n' "$RUSTC_VERSION" > verification/performance/compiler-version.txt
+          printf 'RUSTC_VERSION=%s\n' "$RUSTC_VERSION" >> "$GITHUB_ENV"
+          sha256sum Cargo.lock > verification/performance/cargo-lock-before.sha256
           status=0
-          cargo build -p motionwright-service --example acceptance_bench --release \
+          cargo build --locked -p motionwright-service --example acceptance_bench --release \
             > verification/performance/build.stdout.log 2> verification/performance/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/performance/build-exit-code.txt
           cat verification/performance/build.stdout.log
           cat verification/performance/build.stderr.log >&2
+          if [ "$status" -eq 0 ]; then
+            sha256sum --check verification/performance/cargo-lock-before.sha256
+          fi
           exit "$status"
       - name: S M L × three unrelated briefs × revision ten
         env:
@@ -70,6 +83,7 @@ jobs:
         run: |
           mkdir -p verification/performance
           sha256sum target/release/examples/acceptance_bench > verification/performance/benchmark-sha256.txt
+          cp target/release/examples/acceptance_bench verification/performance/acceptance_bench
           status=0
           /usr/bin/time -v -o verification/performance/resource-usage.txt \
             target/release/examples/acceptance_bench \
@@ -84,6 +98,25 @@ jobs:
           from pathlib import Path
           report=json.loads(Path("verification/performance/report.json").read_text())
           assert report["schema"]=="motionwright.performance.v1"
+          import hashlib
+          import os
+          expected_sha=Path("verification/performance/checkout-sha.txt").read_text().strip()
+          expected_compiler=Path("verification/performance/compiler-version.txt").read_text().strip()
+          assert expected_sha==os.environ["GITHUB_SHA"]
+          assert expected_compiler.startswith("rustc ") and expected_compiler==os.environ["RUSTC_VERSION"]
+          assert report["source_sha"]==expected_sha
+          assert report["source_binding_consistent"] is True
+          assert report["source_attribution_verified"] is False
+          binary=Path("target/release/examples/acceptance_bench")
+          retained_binary=Path("verification/performance/acceptance_bench")
+          binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+          assert hashlib.sha256(retained_binary.read_bytes()).hexdigest()==binary_sha
+          for context in (report["source_context"]["before"], report["source_context"]["after"]):
+              assert context["source_sha_compiled"]==expected_sha
+              assert context["source_sha_runtime"]==expected_sha
+              assert context["compiler_version"]==expected_compiler
+              assert context["executable"]["sha256"]==binary_sha
+              assert context["executable"]["size_bytes"]==binary.stat().st_size
           assert report["datasets"]==9 and report["briefs"]==3
           rows=report["results"]
           assert {r["size"] for r in rows}=={"S","M","L"}
@@ -120,7 +153,8 @@ jobs:
 
           directory=Path("verification/performance/budget-failure")
           directory.mkdir(parents=True, exist_ok=True)
-          environment={**os.environ, "MOTIONWRIGHT_LATENCY_BUDGET_MS": "0"}
+          environment={**os.environ, "MOTIONWRIGHT_LATENCY_BUDGET_MS": "0",
+                       "MOTIONWRIGHT_BENCH_ARTIFACT_ROOT": str((directory/"originals").resolve())}
           with (directory/"report.json").open("wb") as stdout, (directory/"stderr.log").open("wb") as stderr:
               result=subprocess.run(
                   ["target/release/examples/acceptance_bench"],
@@ -131,6 +165,25 @@ jobs:
           assert "measured commit budget exceeded:" in diagnostic
           report=json.loads((directory/"report.json").read_text(encoding="utf-8"))
           assert report["schema"]=="motionwright.performance.v1"
+          import hashlib
+          import os
+          expected_sha=Path("verification/performance/checkout-sha.txt").read_text().strip()
+          expected_compiler=Path("verification/performance/compiler-version.txt").read_text().strip()
+          assert expected_sha==os.environ["GITHUB_SHA"]
+          assert expected_compiler.startswith("rustc ") and expected_compiler==os.environ["RUSTC_VERSION"]
+          assert report["source_sha"]==expected_sha
+          assert report["source_binding_consistent"] is True
+          assert report["source_attribution_verified"] is False
+          binary=Path("target/release/examples/acceptance_bench")
+          retained_binary=Path("verification/performance/acceptance_bench")
+          binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+          assert hashlib.sha256(retained_binary.read_bytes()).hexdigest()==binary_sha
+          for context in (report["source_context"]["before"], report["source_context"]["after"]):
+              assert context["source_sha_compiled"]==expected_sha
+              assert context["source_sha_runtime"]==expected_sha
+              assert context["compiler_version"]==expected_compiler
+              assert context["executable"]["sha256"]==binary_sha
+              assert context["executable"]["size_bytes"]==binary.stat().st_size
           assert report["source_sha"]==subprocess.check_output(
               ["git", "rev-parse", "HEAD"], text=True).strip()
           assert report["latency_budget_ms"]==0
@@ -281,6 +334,9 @@ jobs:
 
   responsiveness-service:
     runs-on: ubuntu-24.04
+    env:
+      MOTIONWRIGHT_BENCH_ARTIFACT_ROOT: ${{ github.workspace }}/verification/responsiveness/originals
+      MOTIONWRIGHT_RESPONSIVENESS_PROFILE: "S"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -296,12 +352,22 @@ jobs:
           mkdir -p verification/responsiveness
           git rev-parse HEAD > verification/responsiveness/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/responsiveness/checkout-tree.txt
+          test "$(cat verification/responsiveness/checkout-sha.txt)" = "$GITHUB_SHA"
+          git diff --exit-code HEAD -- Cargo.lock crates/service/examples/acceptance_bench.rs crates/service/examples/responsiveness_bench.rs
+          RUSTC_VERSION="$(rustc --version)"
+          export RUSTC_VERSION
+          printf '%s\n' "$RUSTC_VERSION" > verification/responsiveness/compiler-version.txt
+          printf 'RUSTC_VERSION=%s\n' "$RUSTC_VERSION" >> "$GITHUB_ENV"
+          sha256sum Cargo.lock > verification/responsiveness/cargo-lock-before.sha256
           status=0
-          cargo build -p motionwright-service --example responsiveness_bench --release \
+          cargo build --locked -p motionwright-service --example responsiveness_bench --release \
             > verification/responsiveness/build.stdout.log 2> verification/responsiveness/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/responsiveness/build-exit-code.txt
           cat verification/responsiveness/build.stdout.log
           cat verification/responsiveness/build.stderr.log >&2
+          if [ "$status" -eq 0 ]; then
+            sha256sum --check verification/responsiveness/cargo-lock-before.sha256
+          fi
           exit "$status"
       - name: Measure small commits and S-profile reopen
         env:
@@ -310,6 +376,7 @@ jobs:
         run: |
           mkdir -p verification/responsiveness
           sha256sum target/release/examples/responsiveness_bench > verification/responsiveness/benchmark-sha256.txt
+          cp target/release/examples/responsiveness_bench verification/responsiveness/responsiveness_bench
           status=0
           /usr/bin/time -v -o verification/responsiveness/resource-usage.txt \
             target/release/examples/responsiveness_bench \
@@ -325,6 +392,25 @@ jobs:
 
           report=json.loads(Path("verification/responsiveness/service.json").read_text())
           assert report["schema"]=="motionwright.responsiveness.v1"
+          import hashlib
+          import os
+          expected_sha=Path("verification/responsiveness/checkout-sha.txt").read_text().strip()
+          expected_compiler=Path("verification/responsiveness/compiler-version.txt").read_text().strip()
+          assert expected_sha==os.environ["GITHUB_SHA"]
+          assert expected_compiler.startswith("rustc ") and expected_compiler==os.environ["RUSTC_VERSION"]
+          assert report["source_sha"]==expected_sha
+          assert report["source_binding_consistent"] is True
+          assert report["source_attribution_verified"] is False
+          binary=Path("target/release/examples/responsiveness_bench")
+          retained_binary=Path("verification/responsiveness/responsiveness_bench")
+          binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+          assert hashlib.sha256(retained_binary.read_bytes()).hexdigest()==binary_sha
+          for context in (report["source_context_before"], report["source_context_after"]):
+              assert context["source_sha_compiled"]==expected_sha
+              assert context["source_sha_runtime"]==expected_sha
+              assert context["compiler_version"]==expected_compiler
+              assert context["executable"]["sha256"]==binary_sha
+              assert context["executable"]["size_bytes"]==binary.stat().st_size
           dataset=report["dataset"]
           assert dataset["scenes"]==12
           assert dataset["beats"]==80
@@ -367,6 +453,7 @@ jobs:
                   **os.environ,
                   "MOTIONWRIGHT_SMALL_COMMIT_P95_BUDGET_MS": commit_budget,
                   "MOTIONWRIGHT_S_REOPEN_BUDGET_MS": reopen_budget,
+                  "MOTIONWRIGHT_BENCH_ARTIFACT_ROOT": str((directory/"originals").resolve()),
               }
               with (directory/"report.json").open("wb") as stdout, (directory/"stderr.log").open("wb") as stderr:
                   result=subprocess.run(
@@ -378,6 +465,25 @@ jobs:
               assert expected_diagnostic in diagnostic and "exceeds 0us budget" in diagnostic
               report=json.loads((directory/"report.json").read_text(encoding="utf-8"))
               assert report["schema"]=="motionwright.responsiveness.v1"
+              import hashlib
+              import os
+              expected_sha=Path("verification/responsiveness/checkout-sha.txt").read_text().strip()
+              expected_compiler=Path("verification/responsiveness/compiler-version.txt").read_text().strip()
+              assert expected_sha==os.environ["GITHUB_SHA"]
+              assert expected_compiler.startswith("rustc ") and expected_compiler==os.environ["RUSTC_VERSION"]
+              assert report["source_sha"]==expected_sha
+              assert report["source_binding_consistent"] is True
+              assert report["source_attribution_verified"] is False
+              binary=Path("target/release/examples/responsiveness_bench")
+              retained_binary=Path("verification/responsiveness/responsiveness_bench")
+              binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+              assert hashlib.sha256(retained_binary.read_bytes()).hexdigest()==binary_sha
+              for context in (report["source_context_before"], report["source_context_after"]):
+                  assert context["source_sha_compiled"]==expected_sha
+                  assert context["source_sha_runtime"]==expected_sha
+                  assert context["compiler_version"]==expected_compiler
+                  assert context["executable"]["sha256"]==binary_sha
+                  assert context["executable"]["size_bytes"]==binary.stat().st_size
               assert report["source_sha"]==subprocess.check_output(
                   ["git", "rev-parse", "HEAD"], text=True).strip()
               dataset=report["dataset"]
