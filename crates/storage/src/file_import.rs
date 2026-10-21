@@ -280,9 +280,16 @@ fn open_regular_import_source(source: &Path, max_bytes: u64) -> Result<File> {
 impl Store {
     /// Verify bytes for a known import replay without staging, CAS or database IO.
     pub fn hash_file_import_source(source: &Path) -> Result<String> {
-        let mut input = open_regular_import_source(source, u64::MAX)?;
+        Self::hash_file_import_source_with_limit(source, u64::MAX)
+    }
+
+    /// Hash the retained regular source, rejecting excess bytes before hashing them.
+    pub fn hash_file_import_source_with_limit(source: &Path, max_bytes: u64) -> Result<String> {
+        let input = open_regular_import_source(source, max_bytes)?;
+        let mut input = input.take(max_bytes.saturating_add(1));
         let mut digest = Sha256::new();
         let mut chunk = [0_u8; 128 * 1024];
+        let mut size_bytes = 0_u64;
         #[cfg(test)]
         let mut first_read = true;
         loop {
@@ -298,14 +305,23 @@ impl Store {
                 first_read = false;
                 run_import_source_read_hook(source);
             }
+            let next_size =
+                size_bytes
+                    .checked_add(count as u64)
+                    .ok_or(StorageError::BlobTooLarge {
+                        size: u64::MAX,
+                        limit: max_bytes,
+                    })?;
+            if next_size > max_bytes {
+                return Err(StorageError::BlobTooLarge {
+                    size: next_size,
+                    limit: max_bytes,
+                });
+            }
             digest.update(&chunk[..count]);
+            size_bytes = next_size;
         }
         Ok(hex::encode(digest.finalize()))
-    }
-
-    /// Verify a known import with an explicit source-byte budget.
-    pub fn hash_file_import_source_with_limit(source: &Path, _max_bytes: u64) -> Result<String> {
-        Self::hash_file_import_source(source)
     }
 }
 

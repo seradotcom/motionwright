@@ -1,17 +1,22 @@
+use crate::ImportLimits;
 use motionwright_domain::{DomainError, RationalTime};
 use motionwright_storage::{Result, StorageError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use symphonia::{
     core::{
-        codecs::audio::AudioDecoderOptions,
+        codecs::audio::{AudioCodecParameters, AudioDecoderOptions},
         errors::Error as SymphoniaError,
-        formats::{FormatOptions, TrackType, probe::Hint},
+        formats::{FormatOptions, Track, TrackType, probe::Hint},
         io::MediaSourceStream,
         meta::MetadataOptions,
     },
@@ -123,15 +128,213 @@ fn validate_decoded_format(
     Ok(())
 }
 
-pub fn measure_audio_file(path: impl AsRef<Path>) -> Result<AudioMeasurement> {
-    let path = path.as_ref();
-    let (mut format, mut decoder, track_id) = open_audio(path)?;
+const AUDIO_READ_LIMIT_MESSAGE: &str = "audio measurement limit exceeded: audio_read_bytes";
 
+fn audio_measurement_limit(name: &'static str) -> StorageError {
+    invalid(format!("audio measurement limit exceeded: {name}"))
+}
+
+fn audio_read_limit_error() -> io::Error {
+    io::Error::other(AUDIO_READ_LIMIT_MESSAGE)
+}
+
+fn check_audio_read_limit(exhausted: &AtomicBool) -> Result<()> {
+    if exhausted.load(Ordering::Relaxed) {
+        return Err(audio_measurement_limit("audio_read_bytes"));
+    }
+    Ok(())
+}
+
+/// Counts source reads across seeks; one extra byte distinguishes EOF from excess.
+struct BoundedMeasurementFile {
+    file: File,
+    byte_len: u64,
+    remaining: u64,
+    exhausted: Arc<AtomicBool>,
+}
+
+impl Read for BoundedMeasurementFile {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if self.exhausted.load(Ordering::Relaxed) {
+            return Err(audio_read_limit_error());
+        }
+        let allowed = usize::try_from(self.remaining.saturating_add(1))
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = self.file.read(&mut buffer[..allowed])?;
+        let charged = u64::try_from(read).map_err(|_| {
+            self.exhausted.store(true, Ordering::Relaxed);
+            audio_read_limit_error()
+        })?;
+        if charged > self.remaining {
+            self.remaining = 0;
+            self.exhausted.store(true, Ordering::Relaxed);
+            return Err(audio_read_limit_error());
+        }
+        self.remaining -= charged;
+        Ok(read)
+    }
+}
+
+impl Seek for BoundedMeasurementFile {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        if self.exhausted.load(Ordering::Relaxed) {
+            return Err(audio_read_limit_error());
+        }
+        self.file.seek(position)
+    }
+}
+
+impl symphonia::core::io::MediaSource for BoundedMeasurementFile {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.byte_len)
+    }
+}
+
+fn validate_measurement_track(
+    track: &Track,
+    params: &AudioCodecParameters,
+    limits: &ImportLimits,
+) -> Result<()> {
+    if params
+        .sample_rate
+        .is_some_and(|rate| !(8_000..=384_000).contains(&rate))
+    {
+        return Err(invalid(
+            "declared audio sample rate is outside supported bounds",
+        ));
+    }
+    let declared_channels = match params.channels.as_ref() {
+        Some(channels) => {
+            let count = u64::try_from(channels.count())
+                .map_err(|_| invalid("declared audio channel count overflow"))?;
+            if !(1..=32).contains(&count) {
+                return Err(invalid(
+                    "declared audio channel count is outside supported bounds",
+                ));
+            }
+            Some(count)
+        }
+        None => None,
+    };
+    if let Some(extra_data) = params.extra_data.as_ref() {
+        let bytes =
+            u64::try_from(extra_data.len()).map_err(|_| audio_measurement_limit("packet_bytes"))?;
+        if bytes > limits.packet_bytes() {
+            return Err(audio_measurement_limit("packet_bytes"));
+        }
+    }
+
+    // One channel is only a lower bound when the declared layout is unknown.
+    let channels = declared_channels.unwrap_or(1);
+    if let Some(frames) = params.max_frames_per_packet {
+        let samples = frames
+            .checked_mul(channels)
+            .ok_or_else(|| audio_measurement_limit("packet_samples"))?;
+        if samples > limits.packet_samples() {
+            return Err(audio_measurement_limit("packet_samples"));
+        }
+    }
+    if let Some(frames) = track.num_frames {
+        let samples = frames
+            .checked_mul(channels)
+            .ok_or_else(|| audio_measurement_limit("decoded_samples"))?;
+        if samples > limits.decoded_samples() {
+            return Err(audio_measurement_limit("decoded_samples"));
+        }
+        if let Some(rate) = params.sample_rate
+            && u128::from(frames) > u128::from(limits.audio_seconds()) * u128::from(rate)
+        {
+            return Err(audio_measurement_limit("audio_seconds"));
+        }
+    }
+    // Stream duration uses its own rational time base, not sample frames.
+    if let (Some(duration), Some(time_base)) = (track.duration, track.time_base) {
+        let declared = u128::from(duration.get()) * u128::from(time_base.numer.get());
+        let maximum = u128::from(limits.audio_seconds()) * u128::from(time_base.denom.get());
+        if declared > maximum {
+            return Err(audio_measurement_limit("audio_seconds"));
+        }
+    }
+    Ok(())
+}
+
+/// Import-only opening preserves existing waveform and original-mix contracts.
+fn open_measurement_audio(
+    path: &Path,
+    limits: &ImportLimits,
+) -> Result<(OpenAudio, Arc<AtomicBool>)> {
+    let source = File::open(path)?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() {
+        return Err(invalid("audio measurement source must be a regular file"));
+    }
+    if metadata.len() > limits.source_bytes() {
+        return Err(StorageError::BlobTooLarge {
+            size: metadata.len(),
+            limit: limits.source_bytes(),
+        });
+    }
+    let exhausted = Arc::new(AtomicBool::new(false));
+    let source = BoundedMeasurementFile {
+        file: source,
+        byte_len: metadata.len(),
+        remaining: limits.audio_read_bytes(),
+        exhausted: Arc::clone(&exhausted),
+    };
+    let stream = MediaSourceStream::new(Box::new(source), Default::default());
+    let mut hint = Hint::new();
+    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        hint.with_extension(extension);
+    }
+    let probed = get_probe().probe(
+        &hint,
+        stream,
+        FormatOptions::default(),
+        MetadataOptions::default(),
+    );
+    // A probe may transform an IO error while trying other format candidates.
+    check_audio_read_limit(&exhausted)?;
+    let format = probed.map_err(|error| invalid(format!("audio probe failed: {error}")))?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| invalid("audio source contains no decodable audio track"))?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .ok_or_else(|| invalid("audio codec parameters are unavailable"))?;
+    validate_measurement_track(track, params, limits)?;
+    let decoder = get_codecs()
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
+        .map_err(|error| invalid(format!("audio decoder unavailable: {error}")))?;
+    Ok(((format, decoder, track_id), exhausted))
+}
+
+pub fn measure_audio_file(
+    path: impl AsRef<Path>,
+    limits: &ImportLimits,
+) -> Result<AudioMeasurement> {
+    let ((mut format, mut decoder, track_id), exhausted) =
+        open_measurement_audio(path.as_ref(), limits)?;
+    let mut demux_packets = 0_u64;
     let mut decoded_frames = 0_u64;
+    let mut decoded_samples = 0_u64;
     let mut observed_rate = None;
     let mut observed_channels = None;
     loop {
-        let packet = match format.next_packet() {
+        let next = format.next_packet();
+        // Check on success, error and EOF: exhaustion cannot become truncation.
+        check_audio_read_limit(&exhausted)?;
+        let packet = match next {
             Ok(Some(packet)) => packet,
             Ok(None) => break,
             Err(SymphoniaError::ResetRequired) => {
@@ -141,23 +344,53 @@ pub fn measure_audio_file(path: impl AsRef<Path>) -> Result<AudioMeasurement> {
             }
             Err(error) => return Err(invalid(format!("audio demux failed: {error}"))),
         };
+        demux_packets = demux_packets
+            .checked_add(1)
+            .ok_or_else(|| audio_measurement_limit("demux_packets"))?;
+        if demux_packets > limits.demux_packets() {
+            return Err(audio_measurement_limit("demux_packets"));
+        }
+        let packet_bytes = u64::try_from(packet.data.len())
+            .map_err(|_| audio_measurement_limit("packet_bytes"))?;
+        if packet_bytes > limits.packet_bytes() {
+            return Err(audio_measurement_limit("packet_bytes"));
+        }
+        // Discarding a track does not erase its demux work or encoded bytes.
         if packet.track_id != track_id {
             continue;
         }
-        let decoded = decoder
-            .decode(&packet)
-            .map_err(|error| invalid(format!("audio decode failed: {error}")))?;
+        let decoded_result = decoder.decode(&packet);
+        check_audio_read_limit(&exhausted)?;
+        let decoded =
+            decoded_result.map_err(|error| invalid(format!("audio decode failed: {error}")))?;
         let spec = decoded.spec();
         let rate = spec.rate();
         let channels = u16::try_from(spec.channels().count())
             .map_err(|_| invalid("audio channel count exceeds supported bounds"))?;
         validate_decoded_format(&mut observed_rate, &mut observed_channels, rate, channels)?;
-        decoded_frames = decoded_frames
-            .checked_add(
-                u64::try_from(decoded.frames())
-                    .map_err(|_| invalid("decoded frame count overflow"))?,
-            )
+
+        let frames =
+            u64::try_from(decoded.frames()).map_err(|_| invalid("decoded frame count overflow"))?;
+        let block_samples = frames
+            .checked_mul(u64::from(channels))
+            .ok_or_else(|| audio_measurement_limit("packet_samples"))?;
+        if block_samples > limits.packet_samples() {
+            return Err(audio_measurement_limit("packet_samples"));
+        }
+        let next_samples = decoded_samples
+            .checked_add(block_samples)
+            .ok_or_else(|| audio_measurement_limit("decoded_samples"))?;
+        if next_samples > limits.decoded_samples() {
+            return Err(audio_measurement_limit("decoded_samples"));
+        }
+        let next_frames = decoded_frames
+            .checked_add(frames)
             .ok_or_else(|| invalid("decoded frame count overflow"))?;
+        if u128::from(next_frames) > u128::from(limits.audio_seconds()) * u128::from(rate) {
+            return Err(audio_measurement_limit("audio_seconds"));
+        }
+        decoded_samples = next_samples;
+        decoded_frames = next_frames;
     }
 
     let sample_rate_hz = observed_rate.ok_or_else(|| invalid("audio decoded no frames"))?;
@@ -509,7 +742,7 @@ mod tests {
         let path = temp.path().join("voice.wav");
         let samples = vec![0_i16; 72_000];
         write_pcm16_wav(&path, 48_000, 1, &samples);
-        let measured = measure_audio_file(&path).unwrap();
+        let measured = measure_audio_file(&path, &ImportLimits::default()).unwrap();
         assert_eq!(measured.sample_rate_hz, 48_000);
         assert_eq!(measured.channels, 1);
         assert_eq!(measured.decoded_frames, 72_000);
@@ -747,5 +980,78 @@ mod original_mix_source_tests {
         std::fs::write(&original, &wav).unwrap();
         std::os::unix::fs::symlink(&original, &linked).unwrap();
         assert!(decode_original_mix_pcm(&linked, &hex::encode(Sha256::digest(&wav))).is_err());
+    }
+}
+
+#[cfg(test)]
+mod measurement_budget_tests {
+    use super::*;
+
+    fn reader(path: &Path, limit: u64) -> BoundedMeasurementFile {
+        let file = File::open(path).unwrap();
+        BoundedMeasurementFile {
+            byte_len: file.metadata().unwrap().len(),
+            file,
+            remaining: limit,
+            exhausted: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn bounded_file_accepts_exact_budget_and_true_eof() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("exact.bin");
+        std::fs::write(&path, b"abcd").unwrap();
+        let mut source = reader(&path, 4);
+        let mut captured = Vec::new();
+        source.read_to_end(&mut captured).unwrap();
+        assert_eq!(captured, b"abcd");
+        let mut byte = [0_u8];
+        assert_eq!(source.read(&mut byte).unwrap(), 0);
+        assert_eq!(source.read(&mut byte).unwrap(), 0);
+        assert_eq!(source.remaining, 0);
+        assert!(!source.exhausted.load(Ordering::Relaxed));
+        assert_eq!(source.file.stream_position().unwrap(), 4);
+    }
+
+    #[test]
+    fn bounded_file_seek_charges_rereads_and_keeps_exhaustion() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("seek.bin");
+        std::fs::write(&path, b"abcdef").unwrap();
+        let mut source = reader(&path, 4);
+        let mut pair = [0_u8; 2];
+        source.read_exact(&mut pair).unwrap();
+        assert_eq!(&pair, b"ab");
+        source.seek(SeekFrom::Start(0)).unwrap();
+        source.read_exact(&mut pair).unwrap();
+        assert_eq!(&pair, b"ab");
+        assert_eq!(source.remaining, 0);
+        assert!(source.read(&mut pair).is_err());
+        assert_eq!(source.file.stream_position().unwrap(), 3);
+        assert!(source.exhausted.load(Ordering::Relaxed));
+        assert!(source.seek(SeekFrom::Start(0)).is_err());
+        assert!(source.read(&mut pair).is_err());
+        assert_eq!(source.file.stream_position().unwrap(), 3);
+        assert_eq!(source.remaining, 0);
+    }
+
+    #[test]
+    fn bounded_file_consumes_only_one_excess_probe_byte() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("excess.bin");
+        std::fs::write(&path, [7_u8; 32]).unwrap();
+        let mut source = reader(&path, 4);
+        assert!(source.read_to_end(&mut Vec::new()).is_err());
+        assert_eq!(source.file.stream_position().unwrap(), 5);
+        assert_eq!(source.remaining, 0);
+        assert!(source.exhausted.load(Ordering::Relaxed));
+        for _ in 0..3 {
+            assert!(source.read(&mut [0_u8; 8]).is_err());
+            assert_eq!(source.file.stream_position().unwrap(), 5);
+        }
+        assert_eq!(source.read(&mut []).unwrap(), 0);
+        assert!(source.exhausted.load(Ordering::Relaxed));
+        assert_eq!(source.file.stream_position().unwrap(), 5);
     }
 }
