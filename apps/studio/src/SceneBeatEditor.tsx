@@ -298,6 +298,8 @@ export default function SceneBeatEditor({ project, scene, contentLocked, timingL
     {(catalog.entries.length > 0 || catalog.limited) && <details role="region" aria-label="Beat recovery copies">
       <summary>Local beat recovery copies</summary><p>Copies belong to this project generation, branch, scene and beat. Restoring never saves or recreates a beat.</p>
       {catalog.limited && <p role="status">The recovery list reached its inspection limit. No copy was removed automatically.</p>}
+      {/* Keep the dynamic recovery rows under one stable disclosure child. */}
+      <div>
       {catalog.entries.map((entry, index) => {
         let active = sessions.get(entry.scope)?.custody.writerId === entry.writerId;
         try { active ||= window.sessionStorage.getItem(beatPointerKey(entry.scope)) === entry.writerId; }
@@ -315,6 +317,7 @@ export default function SceneBeatEditor({ project, scene, contentLocked, timingL
             aria-label={"Discard beat copy " + (index + 1)} onClick={() => discard(entry)}>Discard this copy</button>
         </div>;
       })}
+      </div>
     </details>}
   </section>;
 }
