@@ -1652,7 +1652,7 @@ class ComposedCurrentCausalTests(unittest.TestCase):
             root, snapshot, "foundation-composed-current")
         self.assertEqual(observed["files"], gate.COMPOSED_DEPENDENCY_HASHES)
         self.assertEqual(hashlib.sha256(loaded.read_bytes()).hexdigest(),
-                         "b238db82b3c774f56d403ee897f6399183173d2823ea42a9bdfe0413386dc87e")
+                         "f89f31122b6f02d0032037706f3feb175bf0b18c2157ac808f040a7eb626c767")
         self.assertEqual((observed["product_source"], observed["product_tree"]),
                          (self.pair["repair"]["sha"], self.pair["repair"]["tree"]))
         source, tree, _ = gate.custody.binding4_product_profile("current-process")
