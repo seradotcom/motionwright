@@ -40,8 +40,10 @@ jobs:
       - name: Source policy
         run: python3 tooling/source_policy.py
       - name: Production receipt storage
-        run: cargo test -p motionwright-storage production
+        run: cargo test --locked -p motionwright-storage production
       - name: Broker client and coordinator
-        run: cargo test -p motionwright-native production::tests --all-targets
+        run: cargo test --locked -p motionwright-native production::tests --all-targets
+      - name: Original terminal receipt custody
+        run: cargo test --locked -p motionwright-native --lib production::receipt_custody::tests -- --nocapture
       - name: Native production clippy
-        run: cargo clippy -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+        run: cargo clippy --locked -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
