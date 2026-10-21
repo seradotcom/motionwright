@@ -84,7 +84,7 @@ fn execute_bundle_export(
 ) -> Result<BundleExportResponse, String> {
     let destination = absolute_bundle_path(&prepared.path)?;
     let manifest = service
-        .export_project_bundle(prepared.project.id, &destination)
+        .export_project_bundle_at(prepared.project.id, &prepared.project.stamp(), &destination)
         .map_err(sanitized)?;
     let total_blob_bytes = manifest
         .blobs
@@ -108,10 +108,10 @@ pub fn export_otio(
 }
 
 fn execute_otio_export(
-    service: &StudioService,
+    _service: &StudioService,
     prepared: PreparedProjectExport,
 ) -> Result<OtioExportResponse, String> {
-    let project = service.project(prepared.project.id).map_err(sanitized)?;
+    let project = prepared.project;
     let interchange = otio_interchange(&project).map_err(sanitized)?;
     let destination = absolute_otio_path(&prepared.path)?;
     let parent = destination
