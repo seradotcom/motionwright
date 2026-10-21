@@ -4,9 +4,11 @@ mod caption_export;
 mod effect_grants;
 mod file_import;
 mod generation_journal;
+mod local_error;
 mod media_integrity;
 mod narration_native;
 mod original_mix_native;
+mod project_export;
 mod project_library;
 mod runtime_setup;
 
@@ -22,9 +24,8 @@ use av_master::{canonical_av_request_id, stage_measured_wav, validate_master_voi
 use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
-use motionwright_domain::{
-    AlignmentEvidence, Change, CueEvidence, Project, RevisionStamp, otio_interchange,
-};
+use local_error::sanitized;
+use motionwright_domain::{AlignmentEvidence, Change, CueEvidence, Project, RevisionStamp};
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
     build_application,
@@ -47,12 +48,16 @@ use motionwright_service::{
     StudioService, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
+use project_export::{
+    BundleExportResponse, ExportBundleRequest, ExportOtioRequest, OtioExportResponse,
+    absolute_bundle_path,
+};
 use project_library::{BootstrapProjectSelection, BootstrapRequest};
 use runtime_setup::RuntimeConnectionRegistry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{fs::OpenOptions, io::Write, path::PathBuf};
+use std::path::PathBuf;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -433,31 +438,6 @@ struct ImportBundleRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct ExportBundleRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    path: String,
-    effect_grant: Uuid,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExportOtioRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    path: String,
-    effect_grant: Uuid,
-}
-
-#[derive(Debug, Serialize)]
-struct OtioExportResponse {
-    path: String,
-    scene_count: usize,
-    loss_report: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct WaveformPageRequest {
     project_id: Uuid,
     track_id: Uuid,
@@ -475,13 +455,6 @@ struct BundlePlanResponse {
     blob_count: usize,
     total_blob_bytes: String,
     rotates_generation: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct BundleExportResponse {
-    destination: String,
-    blob_count: usize,
-    total_blob_bytes: String,
 }
 
 #[tauri::command]
@@ -2048,33 +2021,7 @@ fn export_project_bundle(
     state: State<'_, AppState>,
     request: ExportBundleRequest,
 ) -> Result<BundleExportResponse, String> {
-    let scope = checked_effect_scope(
-        &state,
-        request.project_id,
-        request.generation,
-        request.revision,
-    )?;
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::DeliverLocal,
-        scope,
-        request.path.trim(),
-    )?;
-    let destination = absolute_bundle_path(&request.path)?;
-    let manifest = state
-        .service
-        .export_project_bundle(request.project_id, &destination)
-        .map_err(sanitized)?;
-    let total_blob_bytes = manifest
-        .blobs
-        .iter()
-        .map(|blob| blob.size_bytes)
-        .sum::<u64>();
-    Ok(BundleExportResponse {
-        destination: destination.display().to_string(),
-        blob_count: manifest.blobs.len(),
-        total_blob_bytes: total_blob_bytes.to_string(),
-    })
+    project_export::export_project_bundle(&state.service, &state.effect_grants, request)
 }
 
 #[tauri::command]
@@ -2090,51 +2037,7 @@ fn export_otio(
     state: State<'_, AppState>,
     request: ExportOtioRequest,
 ) -> Result<OtioExportResponse, String> {
-    let scope = checked_effect_scope(
-        &state,
-        request.project_id,
-        request.generation,
-        request.revision,
-    )?;
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::DeliverLocal,
-        scope,
-        request.path.trim(),
-    )?;
-    let project = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    let interchange = otio_interchange(&project).map_err(sanitized)?;
-    let destination = absolute_otio_path(&request.path)?;
-    let parent = destination
-        .parent()
-        .ok_or_else(|| "OTIO export destination has no parent directory.".to_string())?;
-    if !parent.is_dir() {
-        return Err("OTIO export directory must already exist.".into());
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "OTIO export destination already exists; Motionwright will not overwrite it."
-                    .to_string()
-            } else {
-                "Motionwright could not create the OTIO export.".to_string()
-            }
-        })?;
-    file.write_all(interchange.body.as_bytes())
-        .map_err(|_| "Motionwright could not write the OTIO export.".to_string())?;
-    file.sync_all()
-        .map_err(|_| "Motionwright could not finalize the OTIO export.".to_string())?;
-    Ok(OtioExportResponse {
-        path: destination.display().to_string(),
-        scene_count: interchange.scene_count,
-        loss_report: interchange.loss_report,
-    })
+    project_export::export_otio(&state.service, &state.effect_grants, request)
 }
 
 #[tauri::command]
@@ -2238,62 +2141,6 @@ async fn apply_change(
     })
     .await
     .map_err(|_| "Motionwright project mutation task failed".to_string())?
-}
-
-fn absolute_otio_path(value: &str) -> Result<PathBuf, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("Choose an absolute OTIO export path.".into());
-    }
-    let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
-        return Err("OTIO export paths must be absolute.".into());
-    }
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if extension != "otio" {
-        return Err("OTIO export path must use the .otio extension.".into());
-    }
-    Ok(path)
-}
-
-fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("Choose an absolute portable bundle path.".into());
-    }
-    let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
-        return Err("Portable bundle paths must be absolute.".into());
-    }
-    Ok(path)
-}
-
-fn sanitized(error: impl std::fmt::Display) -> String {
-    let text = error.to_string();
-    if text.contains("stale project base")
-        || text.contains("generation differs")
-        || text.contains("request id was reused")
-    {
-        return text;
-    }
-    if text.contains("locked")
-        || text.contains("invalid project")
-        || text.contains("not found")
-        || text.contains("project already exists")
-        || text.contains("invalid project backup")
-        || text.contains("invalid blob digest")
-        || text.contains("blob ")
-        || text.contains("export destination already exists")
-        || text.contains("unsafe source path")
-        || text.contains("storage schema")
-    {
-        return text;
-    }
-    "Motionwright could not complete the local operation".into()
 }
 
 fn main() {

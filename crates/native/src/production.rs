@@ -2364,6 +2364,17 @@ impl ProductionCoordinator {
                     "Production request id was reused with different input",
                 ));
             }
+            // A completed request remains bound to its original authoring stamp.
+            // A fresh expected reference cannot turn an older result into current
+            // evidence; unresolved receipts retain their existing uncertainty path.
+            if prior.stage == "completed"
+                && (prior.generation != project.generation || prior.revision != project.revision)
+            {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "Production request id is bound to another project revision",
+                ));
+            }
             if prior.stage == "completed"
                 && let Some(result) = prior.payload.get("result")
             {
@@ -4356,5 +4367,154 @@ os._exit(0)
                 b"invoked\n"
             );
         }
+    }
+
+    #[cfg(unix)]
+    async fn assert_completed_replay_keeps_its_original_revision(mutation: bool) {
+        use std::sync::atomic::Ordering;
+        let (service, project, temp) = fixture_service();
+        let connection = if mutation {
+            fake_render_connection(&temp, project.resource_key())
+        } else {
+            fake_connection(&temp, project.resource_key())
+        };
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let (command, args) = if mutation {
+            (
+                "driver.motion-canvas.render.start",
+                json!({
+                    "expected_fingerprint": "a".repeat(64),
+                    "profile": {
+                        "first_frame": 0, "end_frame_exclusive": 60,
+                        "scale": "full", "transparent": false, "timeout_ms": 300_000
+                    }
+                }),
+            )
+        } else {
+            ("driver.motion-canvas.composition.inspect", json!({}))
+        };
+        let key = "completed-original-revision";
+        let first = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                key,
+                command,
+                args.clone(),
+                mutation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first["replayed"], false);
+        let retained = service
+            .latest_production_receipt(project.id, key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.revision, project.revision);
+        let same_scope = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                key,
+                command,
+                args.clone(),
+                mutation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(same_scope["replayed"], true);
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 1);
+        let peer = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        let changed = peer
+            .apply(
+                project.id,
+                &project.stamp(),
+                "peer-edit-after-completed-native-call",
+                &motionwright_domain::Change::RenameProject {
+                    title: "Later project revision".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        assert_eq!(changed.revision, project.revision + 1);
+        let old_scope = coordinator
+            .execute(
+                project.id,
+                &project.stamp(),
+                key,
+                command,
+                args.clone(),
+                mutation,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(old_scope.code, ErrorCode::StaleReference);
+        let cross_revision = coordinator
+            .execute(
+                project.id,
+                &changed.stamp(),
+                key,
+                command,
+                args.clone(),
+                mutation,
+            )
+            .await;
+        let error = cross_revision.expect_err(
+            "a current reference cannot rebind a completed native request from an older revision",
+        );
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(service.project(project.id).unwrap(), changed);
+        assert_eq!(
+            service.production_receipts(project.id, 10).unwrap().len(),
+            2
+        );
+        assert_eq!(
+            service.latest_production_receipt(project.id, key).unwrap(),
+            Some(retained)
+        );
+        let next = coordinator
+            .execute(
+                project.id,
+                &changed.stamp(),
+                "deliberately-new-current-request",
+                command,
+                args,
+                mutation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(next["replayed"], false);
+        assert_eq!(next["receipt"]["revision"], changed.revision);
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 2);
+        drop(peer);
+        drop(coordinator);
+        drop(service);
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        assert_eq!(reopened.project(project.id).unwrap(), changed);
+        assert_eq!(
+            reopened.production_receipts(project.id, 10).unwrap().len(),
+            4
+        );
+        assert_eq!(
+            reopened
+                .latest_production_receipt(project.id, key)
+                .unwrap()
+                .unwrap()
+                .revision,
+            project.revision
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn completed_read_replay_cannot_change_original_project_revision() {
+        assert_completed_replay_keeps_its_original_revision(false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn completed_mutation_replay_cannot_change_original_project_revision() {
+        assert_completed_replay_keeps_its_original_revision(true).await;
     }
 }
