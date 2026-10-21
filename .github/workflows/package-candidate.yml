@@ -619,7 +619,7 @@ jobs:
           assert persistence["same_revision"] is True
           assert persistence["same_domain_document_sha256"] is True
           assert persistence["sqlite_integrity_checked_twice"] is True
-          assert persistence["schema_version"] == 2
+          assert persistence["schema_version"] == 3
           assert persistence["native_receipts"] == 0
           assert all(len(persistence[key]) == 64 for key in ("project_identity_sha256", "generation_sha256", "document_sha256"))
           assert evidence["claims"]["human_install_acceptance"] == "NOT_RUN"
