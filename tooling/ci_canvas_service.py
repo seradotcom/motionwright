@@ -149,6 +149,41 @@ REVIEW_TITLES = (
     'an actual saved alternative retains raw rationale and records only an open manual review',
 )
 
+INSPECTOR_TITLES = (
+    'Inspector raw objective and exact fraction survive actual App navigation before SQLite commits and restart',
+    'held original Inspector reply retains later input before a separately granted save',
+    'committed lost Inspector reply stays UNKNOWN through inspection and a distinct new intent',
+    'denied Inspector custody prevents SQLite mutation until verified recovery and explicit save',
+    'incomplete Inspector duration survives actual service restart without mutation',
+    'Inspector stale input requires explicit retention against actual saved source',
+)
+
+PROFILE_METADATA_TITLES = (
+    'raw fields survive A-B-A, an unrelated real revision, in-app reopen and browser reload without a profile write',
+    'a delayed real save preserves later A input and selected B, then only an explicit valid save reaches SQLite',
+    'an actual stale CAS refusal preserves sent and later raw input without retry before explicit conflict review',
+    'an unreadable local recovery copy stays intact while later input is kept and only explicit discard permits saving',
+    'a newly created output profile does not replace the active draft when its real response arrives late',
+    'a real profile Save stops before its grant when recovery becomes blocked: changed-before-save',
+    'a real profile Save stops before its grant when recovery becomes blocked: readback-differs',
+    'an unknown own copy blocks actual Save until explicit reading proves absence and preserves the later raw',
+    'a known quota failure blocks real Save until verified recovery without changing the authored raw',
+    'custom cut stays empty until an explicit full-sequence choice across reload and real revisions',
+    'a custom cut typed empty after a real save stays empty through ACK, reload and a peer full-sequence conflict',
+    'a locally empty cut does not adopt a peer custom list and reviews repeated saved cuts without losing other raw input',
+    'a draft whose profile was removed remains readable and downloadable, then editable after repeated revisions restore that exact profile',
+    'a removed profile keeps corrupt recovery bytes and later window input as separate downloadable snapshots without a profile write',
+)
+
+PROFILE_AUTHORITY_TITLES = (
+    'original profile reply confirms exact raw-derived fields in SQLite and after process restart',
+    'held original profile reply retains later identical spelling and incomplete input before a separately granted save',
+    'lost committed profile reply retains UNKNOWN through restart and explicit later intent',
+    'lost committed profile reply retains UNKNOWN through restart and explicit clean inspection',
+    'silent profile writer-pointer failure prevents grants and SQLite changes until verified recovery',
+    'profile recovery budget blocks actual transport without evicting any retained original',
+)
+
 SELECTIONS = (
     ("canvas", "canvas-draft-service.spec.ts", CANVAS_TITLES),
     ("ink", "visual-language-draft-service.spec.ts", (INK_TITLE,)),
@@ -165,11 +200,19 @@ SELECTIONS = (
     ('delivery-recipe', 'delivery-recipe.spec.ts', DELIVERY_RECIPE_TITLES),
     ('recipe-authority', 'delivery-recipe-authority-service.spec.ts', RECIPE_AUTHORITY_TITLES),
     ('review', 'review-service.spec.ts', REVIEW_TITLES),
+    ('inspector', 'scene-inspector-service.spec.ts', INSPECTOR_TITLES),
+    ('profile-metadata', 'delivery-profile-preservation.spec.ts', PROFILE_METADATA_TITLES),
+    ('profile-authority', 'delivery-profile-authority-service.spec.ts', PROFILE_AUTHORITY_TITLES),
 )
 # Preserve the original per-file process limits. Each authoring bound includes
 # every declared test timeout and the configured 120s server startup. These are
 # execution bounds; only an original run establishes the actual timing.
 SELECTION_GROUPS = {
+    "complete-authoring": {
+        "labels": ("beat-draft", "beat-time", "delivery-recipe", "recipe-authority", "review",
+                   "inspector", "profile-metadata", "profile-authority"),
+        "required_tests": 64,
+    },
     "authoring-drafts": {
         "labels": ("beat-draft", "beat-time", "delivery-recipe", "recipe-authority", "review"),
         "required_tests": 38,
@@ -191,6 +234,9 @@ SELECTION_TIMEOUTS = {
     'delivery-recipe': 1260,
     'recipe-authority': 780,
     'review': 900,
+    'inspector': 900,
+    'profile-metadata': 1500,
+    'profile-authority': 900,
 }
 
 

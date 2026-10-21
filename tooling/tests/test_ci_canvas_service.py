@@ -61,7 +61,7 @@ class CanvasServiceReportTests(unittest.TestCase):
         self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:7]), 43)
         self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:9]), 57)
         self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:10]), 65)
-        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 103)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS), 129)
         self.assertEqual(
             [(label, filename) for label, filename, _ in gate.SELECTIONS],
             [("canvas", "canvas-draft-service.spec.ts"),
@@ -79,6 +79,9 @@ class CanvasServiceReportTests(unittest.TestCase):
              ('delivery-recipe', 'delivery-recipe.spec.ts'),
              ('recipe-authority', 'delivery-recipe-authority-service.spec.ts'),
              ('review', 'review-service.spec.ts'),
+             ('inspector', 'scene-inspector-service.spec.ts'),
+             ('profile-metadata', 'delivery-profile-preservation.spec.ts'),
+             ('profile-authority', 'delivery-profile-authority-service.spec.ts'),
              ],
         )
 
@@ -136,6 +139,9 @@ class CanvasServiceReportTests(unittest.TestCase):
             'delivery-recipe': 1260,
             'recipe-authority': 780,
             'review': 900,
+            'inspector': 900,
+            'profile-metadata': 1500,
+            'profile-authority': 900,
         })
         self.assertEqual(set(gate.SELECTION_TIMEOUTS), {label for label, _, _ in gate.SELECTIONS})
         self.assertGreater(gate.SELECTION_TIMEOUTS["camera"], 7 * 120 + 120)
@@ -260,12 +266,12 @@ class SelectedServiceScopeTests(unittest.TestCase):
     def test_narrative_scope_preserves_full_default_and_declares_every_omission(self):
         plan = gate.selection_plan("narrative")
         self.assertEqual(plan["required_tests"], 8)
-        self.assertEqual(plan["full_default_tests"], 103)
+        self.assertEqual(plan["full_default_tests"], 129)
         self.assertEqual(plan["scope"], "EXPLICIT_SELECTED_SERVICE_CASES")
         self.assertEqual(len(plan["required"]), 1)
         self.assertEqual(plan["required"][0]["file"], "narrative-service.spec.ts")
         self.assertEqual(plan["required"][0]["titles"], list(gate.NARRATIVE_TITLES))
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 95)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 121)
         self.assertEqual({row["label"] for row in plan["not_selected"]},
                          {row[0] for row in gate.SELECTIONS if row[0] != "narrative"})
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
@@ -333,10 +339,10 @@ class AuthoringServiceScopeTests(unittest.TestCase):
             ("review", "review-service.spec.ts", 6),
         ])
         self.assertEqual(plan["required_tests"], 38)
-        self.assertEqual(plan["full_default_tests"], 103)
-        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 65)
+        self.assertEqual(plan["full_default_tests"], 129)
+        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 91)
         self.assertEqual({x["label"] for x in plan["not_selected"]},
-                         {row[0] for row in gate.SELECTIONS[:10]})
+                         {row[0] for row in gate.SELECTIONS[:10] + gate.SELECTIONS[15:]})
         self.assertTrue(all(x["status"] == "NOT_SELECTED" and x["technical_credit"] == "NONE"
                             for x in plan["not_selected"]))
         self.assertFalse(plan["formal_acceptance"])
@@ -348,7 +354,7 @@ class AuthoringServiceScopeTests(unittest.TestCase):
                 plan = gate.selection_plan(label)
                 self.assertEqual(plan["required_tests"], len(titles))
                 self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]),
-                                 103 - len(titles))
+                                 129 - len(titles))
                 verified = gate.validate_report(selection_report(filename, titles), filename, titles)
                 self.assertEqual(verified["passed"], len(titles))
                 cases.extend((filename, title) for title in verified["titles"])
@@ -422,13 +428,127 @@ class AuthoringServiceScopeTests(unittest.TestCase):
 
     def test_full_default_keeps_old_sixty_five_and_new_thirty_eight_distinct_cases(self):
         plan = gate.selection_plan("all")
-        self.assertEqual(plan["required_tests"], 103)
+        self.assertEqual(plan["required_tests"], 129)
         self.assertEqual(plan["not_selected"], [])
         cases = [(x["file"], title) for x in plan["required"] for title in x["titles"]]
-        self.assertEqual(len(cases), 103)
-        self.assertEqual(len(set(cases)), 103)
+        self.assertEqual(len(cases), 129)
+        self.assertEqual(len(set(cases)), 129)
         self.assertEqual(gate.selected_selections("all"), gate.SELECTIONS)
 
+
+
+class CompleteAuthoringScopeTests(unittest.TestCase):
+    def test_complete_authoring_requires_all_eight_files_and_sixty_four_cases(self):
+        plan = gate.selection_plan("complete-authoring")
+        self.assertEqual([(x["label"], x["file"], len(x["titles"])) for x in plan["required"]], [
+            ("beat-draft", "scene-beat-draft-service.spec.ts", 11),
+            ("beat-time", "scene-beat-time-service.spec.ts", 4),
+            ("delivery-recipe", "delivery-recipe.spec.ts", 12),
+            ("recipe-authority", "delivery-recipe-authority-service.spec.ts", 5),
+            ("review", "review-service.spec.ts", 6),
+            ("inspector", "scene-inspector-service.spec.ts", 6),
+            ("profile-metadata", "delivery-profile-preservation.spec.ts", 14),
+            ("profile-authority", "delivery-profile-authority-service.spec.ts", 6),
+        ])
+        self.assertEqual(plan["required_tests"], 64)
+        self.assertEqual(plan["full_default_tests"], 129)
+        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 65)
+        self.assertEqual({x["label"] for x in plan["not_selected"]},
+                         {row[0] for row in gate.SELECTIONS[:10]})
+        self.assertTrue(all(x["status"] == "NOT_SELECTED" and x["technical_credit"] == "NONE"
+                            for x in plan["not_selected"]))
+        self.assertFalse(plan["formal_acceptance"])
+        self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 38)
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.SELECTIONS[:15]), 103)
+
+    def test_inspector_and_profile_results_require_exact_files_names_and_one_original_result(self):
+        observed = []
+        for label, filename, titles in gate.SELECTIONS[15:]:
+            with self.subTest(selection=label):
+                result = gate.validate_report(selection_report(filename, titles), filename, titles)
+                self.assertEqual(result["titles"], list(titles))
+                self.assertEqual(result["passed"], len(titles))
+                observed.extend((filename, title) for title in result["titles"])
+                self.assertEqual(gate.selection_plan(label)["required_tests"], len(titles))
+                case_bound = 90 if label == "profile-metadata" else 120
+                self.assertGreater(gate.SELECTION_TIMEOUTS[label], len(titles) * case_bound + 120)
+            for mutation in ("missing", "duplicate", "foreign-title", "component-file", "skip",
+                             "retry", "second-result", "missing-result", "expected-failure", "error"):
+                with self.subTest(selection=label, mutation=mutation):
+                    value = selection_report(filename, titles)
+                    rows = value["suites"][0]["suites"][0]["specs"]
+                    case = rows[-1]["tests"][0]
+                    if mutation == "missing":
+                        rows.pop()
+                    elif mutation == "duplicate":
+                        rows[-1] = copy.deepcopy(rows[0])
+                    elif mutation == "foreign-title":
+                        rows[-1]["title"] = gate.INK_TITLE
+                    elif mutation == "component-file":
+                        rows[-1]["file"] = "delivery-profile-authority.spec.ts"
+                    elif mutation == "skip":
+                        case["expectedStatus"] = "skipped"
+                        case["results"][0]["status"] = "skipped"
+                    elif mutation == "retry":
+                        case["results"][0]["retry"] = 1
+                    elif mutation == "second-result":
+                        case["results"].append(copy.deepcopy(case["results"][0]))
+                    elif mutation == "missing-result":
+                        case["results"].clear()
+                    elif mutation == "expected-failure":
+                        case["expectedStatus"] = "failed"
+                    else:
+                        case["results"][0]["errors"] = [{"message": "source service failure"}]
+                    with self.assertRaises(ValueError):
+                        gate.validate_report(value, filename, titles)
+        self.assertEqual(len(observed), 26)
+        self.assertEqual(len(set(observed)), 26)
+
+    def test_complete_group_cannot_drop_repeat_or_replace_a_required_file(self):
+        original = gate.SELECTION_GROUPS["complete-authoring"]
+        for mutation in ("omit", "duplicate", "unknown", "count", "nonstring", "empty"):
+            with self.subTest(mutation=mutation):
+                group = copy.deepcopy(original)
+                labels = list(group["labels"])
+                if mutation == "omit":
+                    labels.pop()
+                elif mutation == "duplicate":
+                    labels[-1] = labels[0]
+                elif mutation == "unknown":
+                    labels[-1] = "unreviewed"
+                elif mutation == "count":
+                    group["required_tests"] = 63
+                elif mutation == "nonstring":
+                    labels[-1] = None
+                else:
+                    labels.clear()
+                group["labels"] = tuple(labels)
+                with mock.patch.dict(gate.SELECTION_GROUPS, {"complete-authoring": group}):
+                    with self.assertRaises(ValueError):
+                        gate.selected_selections("complete-authoring")
+        for invalid in ("complete-authoring ", "Complete-authoring",
+                        "complete-authoring,canvas", ["complete-authoring"]):
+            with self.subTest(selection=invalid), self.assertRaises(ValueError):
+                gate.selected_selections(invalid)
+
+    def test_complete_roster_never_converts_unexecuted_or_wrong_browser_results_into_credit(self):
+        for label, filename, titles in gate.SELECTIONS[15:]:
+            for mutation in ("missing-counter", "zero", "flaky", "foreign-browser", "global-error"):
+                with self.subTest(selection=label, mutation=mutation):
+                    value = selection_report(filename, titles)
+                    case = value["suites"][0]["suites"][0]["specs"][-1]["tests"][0]
+                    if mutation == "missing-counter":
+                        del value["stats"]["skipped"]
+                    elif mutation == "zero":
+                        value["stats"]["expected"] = 0
+                    elif mutation == "flaky":
+                        value["stats"]["flaky"] = 1
+                    elif mutation == "foreign-browser":
+                        case["projectId"] = "firefox"
+                    else:
+                        value["errors"] = [{"message": "source service unavailable"}]
+                    with self.assertRaises(ValueError):
+                        gate.validate_report(value, filename, titles)
 
 if __name__ == "__main__":
     unittest.main()
