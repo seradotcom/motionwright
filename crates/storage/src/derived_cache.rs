@@ -214,8 +214,20 @@ impl Store {
         if existing {
             ensure_regular_file(&destination, "derived cache old manifest")?;
             fs::remove_file(&destination)?;
+            fs::rename(&staging, &destination)?;
+            Ok(record)
+        } else {
+            self.publish_new_derived_cache_manifest(&staging, &destination, record)
         }
-        fs::rename(&staging, &destination)?;
+    }
+
+    fn publish_new_derived_cache_manifest(
+        &self,
+        staging: &Path,
+        destination: &Path,
+        record: DerivedCacheRecord,
+    ) -> Result<DerivedCacheRecord> {
+        fs::rename(staging, destination)?;
         Ok(record)
     }
 
@@ -502,5 +514,122 @@ mod cache_missing_path_tests {
                 .is_none()
         );
         assert!(!dir.path().join("derived-cache").exists());
+    }
+}
+
+#[cfg(test)]
+mod publication_interleaving_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    const SCOPE: &str = "project:publication:generation:one";
+    const KIND: &str = "render-window-proxy";
+
+    fn prepare_candidate(
+        store: &Store,
+        root: &Path,
+        bytes: &[u8],
+    ) -> (PathBuf, PathBuf, DerivedCacheRecord) {
+        let source = root.join("candidate.bin");
+        fs::write(&source, bytes).unwrap();
+        let blob = store.ingest_blob_file(&source).unwrap();
+        let scope_sha256 = digest_text(SCOPE);
+        let fingerprint_sha256 = digest_text("same-admitted-input");
+        store
+            .checked_derived_cache_dirs(&scope_sha256, true)
+            .unwrap();
+        let destination = store
+            .derived_cache_manifest_path(&scope_sha256, KIND, &fingerprint_sha256)
+            .unwrap();
+        let record = DerivedCacheRecord {
+            format_version: DERIVED_CACHE_FORMAT_VERSION,
+            scope_sha256,
+            kind: KIND.into(),
+            fingerprint_sha256,
+            blob_sha256: blob.sha256,
+            size_bytes: blob.size_bytes,
+            work_units: 999,
+            created_at: "2026-01-01T00:00:00+00:00".into(),
+        };
+        let staging = destination
+            .parent()
+            .unwrap()
+            .join(".prepared-candidate.part");
+        fs::write(&staging, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        assert!(
+            !destination.exists(),
+            "candidate observed an absent publication"
+        );
+        (staging, destination, record)
+    }
+
+    #[test]
+    fn late_publication_cannot_replace_a_different_winner() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("project.sqlite3")).unwrap();
+        let (staging, destination, candidate) =
+            prepare_candidate(&store, dir.path(), b"candidate bytes");
+        let source = dir.path().join("winner.bin");
+        fs::write(&source, b"winner bytes").unwrap();
+        let winner = store
+            .put_derived_cache_file(SCOPE, KIND, &candidate.fingerprint_sha256, &source, 7)
+            .unwrap();
+        let before = fs::read(&destination).unwrap();
+        let result = store.publish_new_derived_cache_manifest(&staging, &destination, candidate);
+        let after = fs::read(&destination).unwrap();
+        assert!(
+            after == before,
+            "late publication replaced the real Store winner"
+        );
+        assert!(result.is_err(), "different winner must conflict");
+        assert!(!staging.exists(), "only the contender's staging is cleaned");
+        assert_eq!(
+            store
+                .lookup_derived_cache(SCOPE, KIND, &digest_text("same-admitted-input"))
+                .unwrap()
+                .unwrap()
+                .record,
+            winner
+        );
+        assert_eq!(fs::read(source).unwrap(), b"winner bytes");
+    }
+
+    #[test]
+    fn equivalent_late_publication_preserves_the_winner_record() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("project.sqlite3")).unwrap();
+        let (staging, destination, candidate) =
+            prepare_candidate(&store, dir.path(), b"identical derived bytes");
+        let source = dir.path().join("winner.bin");
+        fs::write(&source, b"identical derived bytes").unwrap();
+        let winner = store
+            .put_derived_cache_file(SCOPE, KIND, &candidate.fingerprint_sha256, &source, 7)
+            .unwrap();
+        assert_ne!(winner.created_at, candidate.created_at);
+        assert_ne!(winner.work_units, candidate.work_units);
+        let before = fs::read(&destination).unwrap();
+        let actual = store
+            .publish_new_derived_cache_manifest(&staging, &destination, candidate)
+            .unwrap();
+        assert!(
+            fs::read(&destination).unwrap() == before,
+            "equivalent contender must not rewrite winner metadata"
+        );
+        assert_eq!(actual, winner);
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn late_publication_preserves_an_unowned_regular_destination() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("project.sqlite3")).unwrap();
+        let (staging, destination, candidate) =
+            prepare_candidate(&store, dir.path(), b"candidate bytes");
+        let foreign = b"unrelated regular file: do not overwrite";
+        fs::write(&destination, foreign).unwrap();
+        let result = store.publish_new_derived_cache_manifest(&staging, &destination, candidate);
+        assert_eq!(fs::read(&destination).unwrap(), foreign);
+        assert!(result.is_err());
+        assert!(!staging.exists());
     }
 }
