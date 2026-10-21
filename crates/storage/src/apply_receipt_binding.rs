@@ -872,7 +872,7 @@ mod tests {
         let change = Change::RenameProject {
             title: "Known commit".into(),
         };
-        store
+        let committed = store
             .apply(original.id, &original.stamp(), "known", &change)
             .unwrap();
         store.conn.pragma_update(None, "query_only", true).unwrap();
@@ -884,11 +884,12 @@ mod tests {
             ApplyReceiptObservation::KnownVerifiedV1 { .. }
         ));
         assert_eq!(store.conn.total_changes(), before);
-        assert!(
-            store
-                .apply(original.id, &original.stamp(), "new", &change)
-                .is_err()
-        );
+        let blocked = store.apply(original.id, &committed.project.stamp(), "new", &change);
+        assert!(matches!(
+            blocked,
+            Err(StorageError::Sql(rusqlite::Error::SqliteFailure(error, _)))
+                if error.code == rusqlite::ErrorCode::ReadOnly
+        ));
         assert_eq!(store.conn.total_changes(), before);
     }
 
