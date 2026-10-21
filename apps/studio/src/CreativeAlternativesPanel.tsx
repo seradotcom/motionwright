@@ -112,7 +112,7 @@ export default function CreativeAlternativesPanel({
         <div className="creative-alternatives-heading">
           <div><ShieldAlert size={17} aria-hidden="true"/><div>
             <h3>Record your observation</h3>
-            <p>Creates a normal, open creative review anchored to this branch and revision</p>
+            <p>Creates an open creative review anchored to this branch and revision, not an approved component</p>
           </div></div>
         </div>
         <div className="creative-alternatives-choice" role="group" aria-label="Manual variation direction">
