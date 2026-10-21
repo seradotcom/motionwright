@@ -90,43 +90,73 @@ class NativeCommandFailure(AssertionError):
 
 
 def run_sanitized_json(
-    argv: list[str], *, env: dict[str, str], timeout: int = 30,
+    argv: list[str], *, env: dict[str, str], timeout: int = 30, capture=None,
 ) -> dict[str, Any]:
-    """Canonical subprocess JSON contract, no private stderr/argv exceptions.
+    """Canonical subprocess JSON contract, with optional private stream custody.
 
-    Used by CI-only native render wrappers. Always refuse a failed or malformed
-    command; never issue an automatic second native operation.
+    A capture callback receives original bytes once, before parsing or validation.
+    Its failure never replaces an original native failure or repeats a command.
+    No raw stream, argv or callback exception enters the public diagnostic.
     """
+    capture_failed = False
+
+    def retain(stdout, stderr, exit_code, deadline, error=None):
+        nonlocal capture_failed
+        if capture is None:
+            return
+        try:
+            capture({"argv": list(argv), "timeout_seconds": timeout,
+                     "stdout": stdout or b"", "stderr": stderr or b"",
+                     "exit_code": exit_code, "deadline_exceeded": deadline,
+                     "error_class": None if error is None else type(error).__name__,
+                     "error": None if error is None else str(error),
+                     "automatic_retry": False})
+        except BaseException:
+            capture_failed = True
+
+    def rejected(diagnostic):
+        failure = NativeCommandFailure(diagnostic)
+        if capture_failed:
+            failure.private_capture_failed = True
+        return failure
+
     try:
         result = subprocess.run(
             argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=timeout, check=False,
         )
-    except subprocess.TimeoutExpired:
-        raise NativeCommandFailure(classify_native_command_failure(
+    except subprocess.TimeoutExpired as error:
+        retain(error.stdout, error.stderr, None, True, error)
+        raise rejected(classify_native_command_failure(
             stdout=b"", stderr=b"", exit_code=None, deadline_exceeded=True,
         )) from None
-    except OSError:
-        raise NativeCommandFailure(classify_native_command_failure(
+    except OSError as error:
+        retain(b"", b"", None, False, error)
+        raise rejected(classify_native_command_failure(
             stdout=b"", stderr=b"", exit_code=None,
         )) from None
 
+    retain(result.stdout, result.stderr, result.returncode, False)
     if result.returncode != 0:
-        raise NativeCommandFailure(classify_native_command_failure(
+        raise rejected(classify_native_command_failure(
             stdout=result.stdout, stderr=result.stderr,
             exit_code=result.returncode,
         )) from None
     try:
         parsed = json.loads(result.stdout)
     except (ValueError, UnicodeError, TypeError):
-        raise NativeCommandFailure(classify_native_command_failure(
+        raise rejected(classify_native_command_failure(
             stdout=b"", stderr=b"invalid-native-response",
             exit_code=result.returncode,
         )) from None
     if not isinstance(parsed, dict):
-        raise NativeCommandFailure(classify_native_command_failure(
+        raise rejected(classify_native_command_failure(
             stdout=b"", stderr=b"invalid-native-response",
             exit_code=result.returncode,
+        )) from None
+    if capture_failed:
+        raise rejected(classify_native_command_failure(
+            stdout=b"", stderr=b"private-capture-failed", exit_code=result.returncode,
         )) from None
     return parsed
 
