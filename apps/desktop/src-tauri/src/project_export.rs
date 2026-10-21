@@ -355,7 +355,8 @@ mod tests {
         );
         assert_eq!(manifest["backup"]["events"].as_array().unwrap().len(), 1);
         assert!(files(&destination).values().any(|bytes| bytes == CONTENT));
-        let inspected = f.service.inspect_project_bundle(&destination).unwrap();
+        let inspection = StudioService::open(f.root.path().join("inspection.sqlite3")).unwrap();
+        let inspected = inspection.inspect_project_bundle(&destination).unwrap();
         assert_eq!(inspected.blob_count, 1);
         assert_eq!(inspected.project.project_id, f.project.id);
         assert_eq!(inspected.project.revision, f.project.revision);
