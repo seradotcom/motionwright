@@ -9,7 +9,10 @@ test.skip(!process.env.MOTIONWRIGHT_SERVICE_TEST_BIN,
   "A source-built StudioService runner is required; no simulated persistence fallback.");
 test.setTimeout(120_000);
 
-const button = (page: Page, name: string) => page.getByRole("button", { name, exact: true });
+const button = (page: Page, name: string) => name === "Commit objective"
+  ? page.getByRole("region", { name: "Scene objective editor", exact: true })
+    .getByRole("button", { name, exact: true })
+  : page.getByRole("button", { name, exact: true });
 const premise = (page: Page) => page.getByLabel("Narrative premise", { exact: true });
 const objective = (page: Page) => page.getByLabel("Scene objective", { exact: true });
 const unconfirmed = (page: Page, field = "premise") => page.getByRole("region", { name: "Unconfirmed " + field + " submission", exact: true });
