@@ -444,8 +444,10 @@ impl OriginalSession<'_> {
                 )
                 .uncertain());
             }
-            native_generation(&result)?;
-            reference = native_string(&result, "ref")?.into();
+            native_generation(&result).map_err(|error| error.uncertain())?;
+            reference = native_string(&result, "ref")
+                .map_err(|error| error.uncertain())?
+                .into();
         }
         Ok(())
     }
@@ -504,8 +506,10 @@ impl OriginalSession<'_> {
                     )
                     .uncertain());
                 }
-                native_generation(&result)?;
-                reference = native_string(&result, "ref")?.into();
+                native_generation(&result).map_err(|error| error.uncertain())?;
+                reference = native_string(&result, "ref")
+                    .map_err(|error| error.uncertain())?
+                    .into();
             }
         }
         Ok(())
@@ -534,7 +538,9 @@ impl OriginalSession<'_> {
                 true,
             )
             .await?;
-        let data_ref = native_string(&data, "ref")?.to_owned();
+        let data_ref = native_string(&data, "ref")
+            .map_err(|error| error.uncertain())?
+            .to_owned();
         let object = self
             .call(
                 "driver.blender.semantic.object.create",
@@ -542,7 +548,9 @@ impl OriginalSession<'_> {
                 true,
             )
             .await?;
-        let object_ref = native_string(&object, "ref")?.to_owned();
+        let object_ref = native_string(&object, "ref")
+            .map_err(|error| error.uncertain())?
+            .to_owned();
         self.set_properties(
             object_ref,
             vec![
