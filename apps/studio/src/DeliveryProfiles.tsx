@@ -393,7 +393,7 @@ export default function DeliveryProfiles({
     setSelectedIdValue(id);
   }, [noteNativeInput]);
   const selected = project.deliverables.find((profile) => profile.id === selectedId) ?? project.deliverables[0] ?? null;
-  const profileDraft = useProfileMetadataDraft(project, selected?.id ?? "", commit, currentProjectState);
+  const profileDraft = useProfileMetadataDraft(project, selected?.id ?? "", commitRecipe, currentProjectState);
   const draft = profileDraft.profile;
   const customCut = profileDraft.values.cut_mode === "custom";
   const emptyCustomCut = customCut && draft?.included_scene_ids.length === 0;
@@ -987,7 +987,7 @@ export default function DeliveryProfiles({
             <section className="caption-export-panel" aria-label="Output profile draft review" onKeyDown={containRecipeKeyboard}>
               <p role="status" className="production-help">
                 {profileDraft.pending ? "Save requested. You may keep editing; later input will remain separate."
-                  : profileDraft.awaiting ? "The submitted input has not been observed in a newer saved revision. Review it before another save."
+                  : profileDraft.awaiting ? "The original profile outcome is UNKNOWN. Matching saved values cannot acknowledge it; the capture and later input remain retained."
                   : dirty ? Object.keys(profileDraft.edits).length + " output field(s) have pending input."
                   : "Showing saved output values at revision r" + project.revision + "."}
               </p>
@@ -997,8 +997,28 @@ export default function DeliveryProfiles({
               {profileDraft.message && <p className="production-help" role="status">{profileDraft.message}</p>}
               {profileDraft.recoveryReadUnverified && <button type="button" className="button" disabled={profileDraft.pending}
                 onClick={() => { noteNativeInput(); profileDraft.rereadRecoveryCopy(); }}>Read profile recovery copy again</button>}
-              {profileDraft.recoveryBlocked && !profileDraft.recoveryReadUnverified && <button type="button" className="button" disabled={profileDraft.pending}
+              {profileDraft.unreadableCopy && !profileDraft.recoveryReadUnverified && !profileDraft.awaiting && <button type="button" className="button" disabled={profileDraft.pending}
                 onClick={() => { noteNativeInput(); profileDraft.discardUnreadableCopy(); }}>Discard blocked profile recovery copy</button>}
+
+              {profileDraft.recoveryBlocked && <div className="portable-operation-copy">
+                <p className="production-help">Saving requires both the exact recovery copy and its tab pointer to be read back. Current input remains available for download.</p>
+                <button type="button" className="button" disabled={profileDraft.pending}
+                  onClick={() => { noteNativeInput(); profileDraft.retryRecovery(); }}>Verify profile recovery copy</button>
+              </div>}
+              {(profileDraft.dirty || profileDraft.awaiting || profileDraft.recoveryBlocked) && <button type="button" className="button"
+                onClick={profileDraft.download}>Download current profile input</button>}
+              {profileDraft.awaiting && <section aria-label="Unconfirmed profile save">
+                <p className="production-help">The original capture remains UNKNOWN. Read this saved project and its history before starting a separate author intent; no original request will be replayed.</p>
+                <button type="button" className="button" disabled={profileDraft.pending || profileDraft.reviewing}
+                  onClick={() => { noteNativeInput(); void profileDraft.readOutcome(); }}>Read saved profile and history</button>
+                {profileDraft.outcome && <div role="region" aria-label="Saved profile outcome">
+                  <p>Saved profile and contiguous history read at r{profileDraft.outcome.project.revision}.
+                    These observations do not identify or acknowledge the original request.</p>
+                  <p>Matching upsert revisions: {profileDraft.outcome.matchingValueRevisions.join(", ") || "none"}.</p>
+                  <button type="button" className="button" disabled={profileDraft.pending || profileDraft.recoveryBlocked}
+                    onClick={() => { noteNativeInput(); profileDraft.continueAfterReview(); }}>Keep original attempt and start a separate profile edit</button>
+                </div>}
+              </section>}
               {Object.keys(profileDraft.edits).length > 0 && <details open={profileDraft.conflicts.length > 0 || profileDraft.awaiting}
                 aria-label="Output profile pending fields">
                 <summary>Review pending output fields ({Object.keys(profileDraft.edits).length})</summary>
@@ -1017,10 +1037,10 @@ export default function DeliveryProfiles({
                         </div>)}
                     </div>
                     <div className="delivery-editor-actions">
-                      <button type="button" className="button" disabled={profileDraft.pending || profileDraft.sourceBehind}
+                      <button type="button" className="button" disabled={profileDraft.pending || profileDraft.sourceBehind || profileDraft.awaiting || profileDraft.recoveryBlocked}
                         onClick={() => { noteNativeInput(); profileDraft.resolve(field, "saved"); }}>Keep saved {label}</button>
                       {(profileDraft.conflicts.includes(field) || sent) && <button type="button" className="button"
-                        disabled={profileDraft.pending || profileDraft.sourceBehind}
+                        disabled={profileDraft.pending || profileDraft.sourceBehind || profileDraft.awaiting || profileDraft.recoveryBlocked}
                         onClick={() => { noteNativeInput(); profileDraft.resolve(field, "draft"); }}>Keep my input {label}</button>}
                     </div>
                   </div>;
