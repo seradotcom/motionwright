@@ -405,9 +405,6 @@ def verify_edit(before, after, reopened, value):
 
 def classify_ui(raw, exit_code, timed_out, mode, expected, process):
     """A returned Invoke and matching SQL values are never an original ACK."""
-    if timed_out:
-        return {"state": "UNKNOWN", "reason": "CONTROLLER_TIMEOUT", "record": None,
-                "controller_complete": False}
     try:
         require(mode in {"edit", "observe"}, "ui_mode_invalid")
         record = strict_json(raw.decode("utf-8-sig"))
@@ -420,7 +417,8 @@ def classify_ui(raw, exit_code, timed_out, mode, expected, process):
                 "ui_save_count")
         require(record["project_id"] == expected["project_id"], "ui_project_mismatch")
         if mode == "observe":
-            require(exit_code == 0 and record["state"] == "OBSERVED" and record["save_attempts"] == 0
+            require(not timed_out and exit_code == 0
+                    and record["state"] == "OBSERVED" and record["save_attempts"] == 0
                     and record["selection_confirmed"] is True and record["ack_marker"] is None
                     and record["revision"] == expected["revision"] + 1
                     and record["title"] == expected["new_title"], "ui_reopen_incomplete")
@@ -435,11 +433,13 @@ def classify_ui(raw, exit_code, timed_out, mode, expected, process):
             require(exit_code != 0 and record["save_attempts"] == 0, "ui_not_sent_unproved")
         else:
             require(record["state"] == "UNKNOWN", "ui_outcome_unproved")
-        return {"state": record["state"], "reason": record["phase"], "record": record,
-                "controller_complete": exit_code == 0}
+        return {"state": record["state"],
+                "reason": "CONTROLLER_TIMEOUT" if timed_out else record["phase"], "record": record,
+                "controller_complete": not timed_out and exit_code == 0}
     except (OracleError, ValueError, UnicodeError, TypeError, KeyError):
-        return {"state": "UNKNOWN", "reason": "CONTROLLER_ORIGINAL_INCOMPLETE", "record": None,
-                "controller_complete": False}
+        return {"state": "UNKNOWN",
+                "reason": "CONTROLLER_TIMEOUT" if timed_out else "CONTROLLER_ORIGINAL_INCOMPLETE",
+                "record": None, "controller_complete": False}
 
 
 def process_identity(process, executable):
@@ -528,16 +528,14 @@ def run_lifetime(output, label, mode, value, executable, expected_main, environm
             exit_code, timed_out = None, False
             with (directory / "controller.stdout.log").open("xb") as out, (
                     directory / "controller.stderr.log").open("xb") as err:
+                result["ui"] = {"state": "UNKNOWN", "reason": "CONTROLLER_DISPATCH_OUTCOME_UNOBSERVED",
+                                "record": None, "controller_complete": False}
                 try:
                     terminal = subprocess.run(command, cwd=script.parent, env=environment,
                         stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=90)
                     exit_code = terminal.returncode
                 except subprocess.TimeoutExpired:
                     timed_out = True
-                except OSError:
-                    result["ui"] = {"state": "NOT_SENT", "reason": "CONTROLLER_NOT_STARTED",
-                                    "record": None}
-                    raise
             raw = (directory / "controller.stdout.log").read_bytes()
             result["ui"] = classify_ui(raw, exit_code, timed_out, mode, value, ui_process)
             result["controller_terminal"] = {"exit_code": exit_code, "timed_out": timed_out}
@@ -554,24 +552,27 @@ def run_lifetime(output, label, mode, value, executable, expected_main, environm
             result["code"] = str(error)
     finally:
         if process is not None:
-            if process.poll() is None:
-                # Cleanup is confined to the retained original handle. It never
-                # authorizes another lifetime or another Save after uncertainty.
-                result["forced_stop"] = True
-                try:
-                    process.kill()
-                    process.wait(timeout=12)
-                except Exception as error:
-                    result["custody_errors"].append(life.custody_error("owned_process_cleanup", error))
-            result["terminal"] = life.observed_terminal(process.poll())
+            try:
+                if process.poll() is None:
+                    # Cleanup is confined to the retained original handle. It never
+                    # authorizes another lifetime or another Save after uncertainty.
+                    result["forced_stop"] = True
+                    try:
+                        process.kill()
+                        process.wait(timeout=12)
+                    except Exception as error:
+                        result["custody_errors"].append(life.custody_error("owned_process_cleanup", error))
+                result["terminal"] = life.observed_terminal(process.poll())
+            except Exception as error:
+                result["custody_errors"].append(life.custody_error("owned_process_observation", error))
         for name in ("application.stdout.log", "application.stderr.log",
                      "controller.stdout.log", "controller.stderr.log"):
             path = directory / name
-            if path.exists():
-                try:
+            try:
+                if path.exists():
                     result[name] = life.retained_ref(output, path)
-                except Exception as error:
-                    result["custody_errors"].append(life.custody_error("original_log", error))
+            except Exception as error:
+                result["custody_errors"].append(life.custody_error("original_log", error))
     saved = retain_observation(output, label + "/lifetime.json", result)
     result["custody_errors"].extend(saved["errors"])
     return result

@@ -117,18 +117,21 @@ An incomplete observation retains the original application outcome separately:
 
 | Outcome | Meaning |
 | --- | --- |
-| NOT_SENT | The controller observed failure before any Save invocation. |
+| NOT_STARTED | The controller was not dispatched. The application process may already have started. |
+| NOT_SENT | A validated original controller record establishes that no Save was invoked. |
 | UNKNOWN | The original save result was not established. Matching later state does not convert it to ACK or authorize replay. |
 | ACK with incomplete custody or terminal | The known original application result remains ACK, but the observation is incomplete and cannot proceed to reopen. |
 | OBSERVED | The second lifetime read the selected project without invoking Save. |
 
-A late receipt-publication error does not rewrite a known application result. Partial logs, intents and observations remain in the exclusive output. Failed final receipt publication returns a nonzero result and a concise custody failure.
+A complete, validated original ACK remains ACK after a controller timeout, nonzero exit, or later custody failure. A timeout never establishes controller completion, even if an exit code is also present. Once controller dispatch is possible, an unobserved result remains UNKNOWN; an opaque process error does not prove that dispatch or Save never occurred.
+
+Late process-observation, log-retention and receipt-publication errors preserve the known application result and record incomplete custody. An incomplete terminal or custody observation cannot proceed to a second application lifetime. Partial logs, intents and observations remain in the exclusive output. Failed final receipt publication returns a nonzero result and a concise custody failure.
 
 The tool does not prove power-loss recovery, broad installer compatibility, visual quality, every project migration, or human acceptance. It does not reconstruct absent historical evidence. A new source composition requires evidence associated with that composition; prior-source results remain attributed to their original source.
 
 ## Synthetic verification
 
-Focused Python controls exercise malformed or foreign originals, unknown outcomes with matching SQLite state, complete database-family capture, WAL visibility, migration and rename semantics, receipt preservation and the no-replay boundary. Native process boundaries are mocked in synthetic orchestration tests. UI source contracts check the controller against the actual project library and Brief controls.
+Focused Python controls exercise malformed or foreign originals, unknown outcomes with matching SQLite state, complete database-family capture, WAL visibility, migration and rename semantics, receipt preservation and the no-replay boundary. Direct lifetime and orchestration controls inject controller timeouts, ambiguous process errors, output-read failures and finalization failures while using synthetic files and SQLite databases. OS process and UI boundaries are mocked; these controls do not execute an installed application. UI source contracts check the controller against the actual project library and Brief controls.
 
 ~~~text
 python -B -m unittest discover -s tooling/tests -p test_windows_updated_application.py -v
