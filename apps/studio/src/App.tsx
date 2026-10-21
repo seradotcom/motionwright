@@ -2331,7 +2331,7 @@ export default function App() {
       case "Brief":
         return <RichBriefView project={project} commit={commitReportedRequired} />;
       case "Narrative":
-        return <RichNarrativeView project={project} scene={selectedScene} commit={commit} />;
+        return <RichNarrativeView project={project} scene={selectedScene} commit={commitCamera} />;
       case "Audio":
         return (
           <AudioWorkspace
