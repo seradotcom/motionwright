@@ -1,13 +1,23 @@
 import ExpandedStudy from "./ExpandedStudy";
 import NativeInspectionWorkbench from "./NativeInspectionWorkbench";
 import NativeContrastWorkbench from "./NativeContrastWorkbench";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, Check, FileBox, Layers, Plus, RefreshCw, Save } from "lucide-react";
 import type { CanvasNode, Change, Project, Scene, DeliverableProfile, MotionCanvasRenderEvidence } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
-import { defaultHeroConfig, emptyProductionDesign, realizeProductHero, sameValue, planContentDigest } from "./creativeProduction";
+import { emptyProductionDesign, realizeProductHero, sameValue } from "./creativeProduction";
+import { bootstrap, projectHistory } from "./api";
+import {
+  acknowledgeProductionDraft, cleanProductionPlan, createProductionDraft, decodeProductionCopy, editProductionDraft,
+  encodeProductionFile, inspectProductionOutcome, prepareProductionSubmission, productionConflict,
+  productionCopyKey, productionHasInput, productionHasWork, productionLabel, productionOutcomeMatches,
+  productionPointerKey, productionPreparationMatches, productionScope, productionUnconfirmed, productionValue,
+  PRODUCTION_RECOVERY_PREFIX, readProductionCopies, reconcileProductionDraft, releaseProductionOutcome,
+  resolveProductionDraft, retainProductionFailure, retainReviewedProductionIntent, writeProductionCopy,
+} from "./productionDesignDraft";
+import type { ProductionCustody, ProductionDraft, ProductionInput, ProductionOperation, ProductionOutcomeReview, ProductionRecoveryEntry, ProductionTarget } from "./productionDesignDraft";
 import type { HeroConfig, ProductionPlan, NarrativeEvidenceKind, NativeCapsule } from "./creativeProduction";
 import PaidGenerationWorkspace from "./PaidGenerationWorkspace";
 import CreativePatchWorkbench from "./CreativePatchWorkbench";
@@ -27,42 +37,295 @@ import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import "./production-design.css";
 
 type Commit = (change: Change) => Promise<void>;
+type ProductionCommit = (change: Change) => Promise<Project>;
 const previewIdentity = "00000000-0000-4000-8000-000000000005";
 const aspects = [{ label:"16:9", width:1920,height:1080 },{ label:"9:16",width:1080,height:1920 },{label:"1:1",width:1080,height:1080}];
 
-function RevisionNotice({ base, current, onReload }: { base:number; current:number; onReload:()=>void }) {
-  return base !== current ? <div className="production-notice" role="status">
-    <strong>This draft is based on revision {base}; the project is now {current}.</strong>
-    <span>Your input has not been overwritten. Reload the current revision before applying another change.</span>
-    <button className="secondary-button" onClick={onReload}><RefreshCw size={14}/> Reload current values</button>
-  </div> : null;
+type ProductionSession = { draft: ProductionDraft; custody: ProductionCustody; inFlight: boolean; preparing: boolean;
+  error: string | null; backupError: string | null; recoveryProblem: string | null; notice: string | null; copies: ProductionRecoveryEntry[]; limited: boolean; notify?: () => void };
+// Author buffers survive tab/workspace navigation. They never own Project state
+// and never replay a stored mutation. App's existing coordinator is the writer.
+const productionSessions = new Map<string, ProductionSession>();
+const productionOwner = (scope: string) => JSON.stringify((JSON.parse(scope) as unknown[]).slice(0, 3));
+const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
+function notifyProduction(session: ProductionSession) {
+  for (const value of productionSessions.values()) if (productionOwner(value.draft.scope) === productionOwner(session.draft.scope)) value.notify?.();
 }
-function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenCanvas, displayProfile }: {
-  project:Project; scene:Scene|null; displayProfile?:DeliverableProfile|null; commit:Commit; busy:boolean; playhead:number; onSeek:(time:number)=>void; onOpenCanvas:()=>void;
+function productionBusy(project: Project) {
+  const owner = JSON.stringify([project.id, project.generation, project.active_branch]);
+  return [...productionSessions.values()].some(value => productionOwner(value.draft.scope) === owner && (value.inFlight || value.preparing));
+}
+function refreshProductionCopies(session: ProductionSession) {
+  try { const result = readProductionCopies(window.localStorage, session.draft.scope); session.copies = result.entries; session.limited = result.limited; }
+  catch (reason) { session.backupError = message(reason); }
+}
+function getProductionSession(project: Project, target: ProductionTarget): ProductionSession {
+  const scope = productionScope(project, target), existing = productionSessions.get(scope);
+  if (existing) return existing;
+  let pointer: string | null = null, recovered: ProductionDraft | null = null, backupError: string | null = null;
+  try {
+    pointer = window.sessionStorage.getItem(productionPointerKey(scope));
+    // A cloned/new tab starts an independent buffer. Recovery of that tab's own
+    // pointer is automatic only on reload; all copies remain explicitly visible.
+    const reload = performance.getEntriesByType("navigation").some(entry => (entry as PerformanceNavigationTiming).type === "reload");
+    if (pointer && reload && !window.opener) {
+      const raw = window.localStorage.getItem(productionCopyKey(scope, pointer));
+      if (raw === null) throw new Error("The Production pointer refers to a missing copy. Earlier author bytes were not replaced.");
+      recovered = decodeProductionCopy(raw, scope, pointer).draft;
+    }
+  } catch (reason) { backupError = message(reason); }
+  const session: ProductionSession = {
+    draft: recovered ? reconcileProductionDraft(recovered, project) : createProductionDraft(project, target),
+    custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: pointer },
+    inFlight: false, preparing: false, error: null, backupError, recoveryProblem: backupError,
+    notice: recovered ? "Recovered this tab's Production input. No saved operation was repeated." : null, copies: [], limited: false,
+  };
+  productionSessions.set(scope, session); refreshProductionCopies(session); return session;
+}
+function forkProductionWriter(session: ProductionSession) {
+  session.custody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: session.custody.expectedPointer };
+}
+function backupProduction(session: ProductionSession): boolean {
+  try {
+    // A failed own-copy recovery is not erased by the first new keystroke.
+    // Keep the original pointer/bytes until an explicit recovery action.
+    if (session.recoveryProblem) throw new Error(session.recoveryProblem + " Retry reading that copy or explicitly keep the current input in a new copy.");
+    if (session.custody.expectedRaw !== null) {
+      const old = decodeProductionCopy(session.custody.expectedRaw, session.draft.scope, session.custody.writerId).draft;
+      if (!productionHasWork(old) && !sameValue(old, session.draft)) forkProductionWriter(session);
+    }
+    writeProductionCopy(window.localStorage, window.sessionStorage, session.draft, session.custody);
+    session.backupError = null; refreshProductionCopies(session); return session.backupError === null;
+  } catch (reason) {
+    session.backupError = message(reason) + " Your current input remains in this editor; saving requires a verified copy and pointer.";
+    refreshProductionCopies(session); return false;
+  }
+}
+function replaceProduction(session: ProductionSession, draft: ProductionDraft, persist = true) {
+  session.draft = draft;
+  const saved = persist ? backupProduction(session) : true;
+  notifyProduction(session); return saved;
+}
+function useProductionEditor(project: Project, target: ProductionTarget, commit: ProductionCommit, externalBusy: boolean) {
+  const [session] = useState(() => getProductionSession(project, target));
+  const [, redraw] = useState(0), [review, setReview] = useState<ProductionOutcomeReview | null>(null), [reviewing, setReviewing] = useState(false);
+  const current = useRef(project), mounted = useRef(true), epoch = useRef(0);
+  current.current = project;
+  const busy = externalBusy || productionBusy(project), conflict = productionConflict(session.draft, project);
+  useEffect(() => {
+    mounted.current = true; const update = () => redraw(value => value + 1); session.notify = update;
+    const changed = (event: StorageEvent) => { if (event.key === null || event.key.startsWith(PRODUCTION_RECOVERY_PREFIX)) { refreshProductionCopies(session); update(); } };
+    window.addEventListener("storage", changed);
+    return () => { mounted.current = false; epoch.current++; if (session.notify === update) delete session.notify; window.removeEventListener("storage", changed); };
+  }, [session]);
+  useEffect(() => {
+    const next = reconcileProductionDraft(session.draft, project);
+    if (next !== session.draft) replaceProduction(session, next);
+    setReview(value => productionOutcomeMatches(session.draft, project, value) ? value : null);
+  }, [project, session]);
+  function edit(input: ProductionInput) {
+    session.error = null; session.notice = null; setReview(null);
+    replaceProduction(session, editProductionDraft(session.draft, input));
+  }
+  async function send(operation: ProductionOperation = "save") {
+    if (externalBusy || productionBusy(current.current) || session.backupError || productionUnconfirmed(session.draft)) return;
+    const source = structuredClone(session.draft), sourceProject = structuredClone(current.current), started = epoch.current, id = crypto.randomUUID();
+    session.preparing = true; session.error = null; session.notice = null; notifyProduction(session);
+    let prepared: Awaited<ReturnType<typeof prepareProductionSubmission>>;
+    try {
+      prepared = await prepareProductionSubmission(source, sourceProject, id, operation);
+      if (!mounted.current || started !== epoch.current || !productionPreparationMatches(source, sourceProject, session.draft, current.current)) {
+        session.notice = "The Production input or selected project changed during preparation. No change was sent; review the current input and save explicitly.";
+        return;
+      }
+      if (!replaceProduction(session, prepared.draft)) {
+        session.draft = retainProductionFailure(session.draft, id, "Local recovery was not confirmed before dispatch.", true);
+        session.error = "NOT_SENT: verify this Production input's recovery before saving."; return;
+      }
+    } catch (reason) { session.error = message(reason); return; }
+    finally { session.preparing = false; notifyProduction(session); }
+    session.inFlight = true; notifyProduction(session);
+    try {
+      const receipt = await commit(prepared.change);
+      if (session.draft.pending?.id !== id) return;
+      const next = acknowledgeProductionDraft(session.draft, id, receipt);
+      // Keep the armed UNKNOWN copy intact even when the post-ACK checkpoint
+      // cannot be retained. A later reload remains conservative.
+      forkProductionWriter(session); session.error = null;
+      session.notice = "Saved " + productionLabel(target) + " at r" + receipt.revision + "."
+        + (productionHasInput(next) ? " Your later input remains editable." : "");
+      replaceProduction(session, next);
+    } catch (reason) { session.error = message(reason); replaceProduction(session, retainProductionFailure(session.draft, id, message(reason))); }
+    finally { session.inFlight = false; notifyProduction(session); }
+  }
+  function choose(choice: "saved" | "draft") {
+    if (busy || productionUnconfirmed(session.draft)) return;
+    try {
+      if (!backupProduction(session)) return;
+      const next = resolveProductionDraft(session.draft, current.current, choice);
+      forkProductionWriter(session); session.error = null;
+      session.notice = "The earlier input remains in a separate copy. " + (choice === "saved" ? "Using saved values." : "Keep editing and save this draft explicitly.");
+      replaceProduction(session, next); setReview(null);
+    } catch (reason) { session.error = message(reason); notifyProduction(session); }
+  }
+  function restore(copy: ProductionRecoveryEntry) {
+    if (busy || productionUnconfirmed(session.draft) || !copy.value) return;
+    try {
+      if (productionHasWork(session.draft) && !backupProduction(session)) return;
+      const raw = window.localStorage.getItem(copy.key);
+      if (raw !== copy.raw) throw new Error("This Production recovery copy changed. Refresh the list first.");
+      const restored = decodeProductionCopy(raw, session.draft.scope, copy.writerId);
+      forkProductionWriter(session); session.error = null;
+      replaceProduction(session, reconcileProductionDraft({ ...restored.draft, intent: true }, current.current));
+      session.notice = "Restored a separate editable Production copy. No Project change was sent."; setReview(null); notifyProduction(session);
+    } catch (reason) { session.error = message(reason); refreshProductionCopies(session); notifyProduction(session); }
+  }
+  async function readOutcome() {
+    if (busy || reviewing || !productionUnconfirmed(session.draft)) return;
+    const started = ++epoch.current; setReviewing(true); setReview(null);
+    try {
+      const result = await inspectProductionOutcome(session.draft, current.current, {
+        readProject: async id => { const result = await bootstrap(id); if (!result.project || result.project_selection.status !== "selected") throw new Error("The saved Production project is unavailable."); return result.project; },
+        readHistory: projectHistory,
+      });
+      if (!mounted.current || started !== epoch.current) return;
+      if (!productionOutcomeMatches(session.draft, current.current, result)) throw new Error("The selected Production state changed during inspection. Read it again.");
+      setReview(result);
+    } catch (reason) { if (mounted.current && started === epoch.current) { session.error = message(reason); notifyProduction(session); } }
+    finally { if (mounted.current && started === epoch.current) setReviewing(false); }
+  }
+  function continueEditing() {
+    if (busy || !review) return;
+    try {
+      const next = releaseProductionOutcome(session.draft, current.current, review);
+      if (!backupProduction(session)) return;
+      session.custody = retainReviewedProductionIntent(window.localStorage, window.sessionStorage, session.draft, next, session.custody, crypto.randomUUID());
+      session.backupError = null; session.error = null; session.notice = "The unconfirmed attempt remains in a separate copy. Nothing was acknowledged or retried; save any new intent explicitly.";
+      replaceProduction(session, next, false); setReview(null); refreshProductionCopies(session); notifyProduction(session);
+    } catch (reason) { session.backupError = message(reason); notifyProduction(session); }
+  }
+  function download() {
+    try {
+      const raw = encodeProductionFile(session.draft), url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = "motionwright-production-" + target.kind + "-" + Date.now() + ".json";
+      document.body.appendChild(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
+      session.notice = "Started downloading the complete Production input. This does not confirm a browser backup or a Project save."; notifyProduction(session);
+    } catch (reason) { session.error = message(reason); notifyProduction(session); }
+  }
+  function discard(copy: ProductionRecoveryEntry) {
+    if (busy || copy.writerId === session.custody.writerId) return;
+    try {
+      if (window.sessionStorage.getItem(productionPointerKey(session.draft.scope)) === copy.writerId && !backupProduction(session)) return;
+      if (window.localStorage.getItem(copy.key) !== copy.raw) throw new Error("This Production recovery changed. Review it before discarding.");
+      window.localStorage.removeItem(copy.key);
+      if (window.localStorage.getItem(copy.key) !== null) throw new Error("Discard was not confirmed. The Production copy remains retained; no second removal was attempted.");
+      session.error = null; session.notice = "Confirmed removal of the selected local Production copy.";
+      refreshProductionCopies(session); notifyProduction(session);
+    } catch (reason) { session.error = message(reason); notifyProduction(session); }
+  }
+  function freshCopy() {
+    if (busy) return;
+    try {
+      session.custody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: window.sessionStorage.getItem(productionPointerKey(session.draft.scope)) };
+      session.recoveryProblem = null;
+      if (backupProduction(session)) session.notice = "Verified a new copy of your current input. Earlier unreadable or changed bytes were retained separately.";
+      notifyProduction(session);
+    } catch (reason) { session.backupError = message(reason); notifyProduction(session); }
+  }
+  function retryBackup() {
+    try {
+      if (session.recoveryProblem) {
+        const pointer = window.sessionStorage.getItem(productionPointerKey(session.draft.scope));
+        if (pointer !== session.custody.expectedPointer) throw new Error("The earlier recovery pointer changed. Review its copies or explicitly keep current input in a new copy.");
+        if (pointer) {
+          const raw = window.localStorage.getItem(productionCopyKey(session.draft.scope, pointer));
+          if (raw === null) throw new Error("The earlier recovery copy is still missing. Current input remains in this editor.");
+          const recovered = decodeProductionCopy(raw, session.draft.scope, pointer).draft;
+          if (productionUnconfirmed(recovered)) {
+            // A restored readable record may reveal a previously uncertain
+            // operation. Carry that comparison forward, preserving newer raw
+            // input and a later sequence; verification cannot clear UNKNOWN.
+            session.draft = { ...recovered, input: session.draft.input, intent: true,
+              sequence: Math.max(recovered.sequence, session.draft.sequence) + 1 };
+          }
+        }
+        // Successful explicit verification retains both inputs; it never loads
+        // an earlier copy over the author's newer typing.
+        session.recoveryProblem = null;
+      }
+      backupProduction(session); notifyProduction(session);
+    } catch (reason) { session.backupError = message(reason); notifyProduction(session); }
+  }
+  return { session, draft: session.draft, busy, conflict, review, reviewing, edit, send, choose, restore, readOutcome, continueEditing, download, discard, freshCopy,
+    retry: retryBackup,
+    blocked: busy || !!session.backupError || conflict || productionUnconfirmed(session.draft) };
+}
+type ProductionEditor = ReturnType<typeof useProductionEditor>;
+function ProductionDraftFeedback({ editor, project }: { editor: ProductionEditor; project: Project }) {
+  const { session, draft, busy, conflict, review } = editor, label = productionLabel(draft.target);
+  const copies = session.copies.filter(copy => copy.writerId !== session.custody.writerId);
+  return <section aria-label={label + " draft recovery"}>
+    {session.notice && <p className="production-notice" role="status">{session.notice}</p>}
+    {session.error && <p className="production-error" role="alert">{session.error}</p>}
+    {session.backupError && <div className="production-notice" role="alert" aria-label={label + " backup warning"}>
+      <strong>Local recovery needs attention.</strong><p>{session.backupError}</p>
+      <button className="secondary-button" type="button" disabled={busy} onClick={editor.retry}><RefreshCw size={14}/> Retry {label} backup</button>
+      <button className="secondary-button" type="button" disabled={busy} onClick={editor.freshCopy}>Keep {label} input in a new copy</button>
+    </div>}
+    {draft.pending?.outcome === "NOT_SENT" && <p role="status">This preparation was NOT_SENT. Confirm its copy before a separate explicit save.</p>}
+    {productionUnconfirmed(draft) && draft.pending && <section className="production-notice" role="region" aria-label={"Unconfirmed " + label}>
+      <strong>Unconfirmed {label} submission from r{draft.pending.revision}</strong>
+      <p>The original response is unconfirmed. Submitted parameters and later input are retained. Observing matching values cannot acknowledge or replay that request.</p>
+      <button className="secondary-button" disabled={busy || editor.reviewing} onClick={() => window.location.reload()}>Reload saved {label}</button>
+      <button className="secondary-button" disabled={busy || editor.reviewing} onClick={() => void editor.readOutcome()}>Read saved {label} and history</button>
+      {review && <div aria-label={label + " outcome review"}>
+        <p>Read saved r{review.project.revision} and {review.events.length} consecutive history records. {review.matchingValueRevisions.length} contain matching values; this does not identify the original request.</p>
+        <details><summary>Submitted and saved parameters</summary><pre>{JSON.stringify({ submitted: draft.pending.value, saved: productionValue(review.project, draft.target) }, null, 2)}</pre></details>
+        <button className="secondary-button" disabled={busy || editor.reviewing || !productionOutcomeMatches(draft, project, review)} onClick={editor.continueEditing}>Keep earlier {label} attempt and continue editing</button>
+      </div>}
+    </section>}
+    {conflict && !productionUnconfirmed(draft) && <section className="production-notice" role="region" aria-label={label + " conflict"}>
+      <strong>Review the current saved revision before applying this draft.</strong><p>Your input started at r{draft.baseRevision}; the current project is r{project.revision}.</p>
+      <details><summary>Compare saved and authored parameters</summary><pre>{JSON.stringify({ base: draft.base, saved: productionValue(project, draft.target), input: draft.input }, null, 2)}</pre></details>
+      <button className="secondary-button" disabled={busy} onClick={() => editor.choose("draft")}>Keep my {label} input</button>
+      <button className="secondary-button" disabled={busy} onClick={() => editor.choose("saved")}>Use saved {label} values</button>
+    </section>}
+    {productionHasInput(draft) && !conflict && !productionUnconfirmed(draft) && <button className="text-button" disabled={busy} onClick={() => editor.choose("saved")}>Use saved {label} values</button>}
+    <button className="text-button" type="button" onClick={editor.download}>Download {label} draft</button>
+    {(copies.length > 0 || session.limited) && <details role="region" aria-label={label + " recovery copies"}>
+      <summary>Local {label} recovery copies</summary><p>Copies are scoped to this project generation, branch, and editor target. Restoring never writes a Project.</p>
+      {session.limited && <p>Only the first 64 copies were inspected. No copy was removed automatically.</p>}
+      {copies.map((copy, index) => <div role="group" aria-label={label + " recovery copy " + (index + 1)} key={copy.key}>
+        <p>{copy.value ? new Date(copy.value.updatedAt).toLocaleString() + (productionUnconfirmed(copy.value.draft) ? " · Unconfirmed attempt" : " · Local input") : "Unreadable copy; original bytes were preserved."}</p>
+        {copy.value && <details><summary>Inspect copied input</summary><pre>{JSON.stringify(copy.value.draft.input, null, 2)}</pre></details>}
+        {copy.value && <button className="secondary-button" disabled={busy || productionUnconfirmed(draft)} onClick={() => editor.restore(copy)}>Restore {label} copy {index + 1}</button>}
+        <button className="text-button" disabled={busy} onClick={() => editor.discard(copy)}>Discard {label} copy {index + 1}</button>
+      </div>)}
+    </details>}
+  </section>;
+}
+function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, onSeek, onOpenCanvas, displayProfile }: {
+  project:Project; scene:Scene|null; displayProfile?:DeliverableProfile|null; commit:Commit; commitCamera:ProductionCommit; busy:boolean; playhead:number; onSeek:(time:number)=>void; onOpenCanvas:()=>void;
 }) {
   const instance = project.production_design?.heroes.find(hero => hero.scene_id === scene?.id);
-  const [draft,setDraft] = useState<HeroConfig>(() => structuredClone(instance?.config ?? defaultHeroConfig()));
+  const editor = useProductionEditor(project, { kind: "hero", sceneId: scene?.id ?? null }, commitCamera, busy);
+  const draft = (editor.draft.input as Extract<ProductionInput, { kind: "hero" }>).config;
+  const setDraft = (config: HeroConfig) => editor.edit({ kind: "hero", config });
   const familyName = draft.layout === "split_explanation" ? "SplitExplanation" :
     draft.layout === "metric_evidence" ? "MetricEvidence" :
     draft.layout === "step_sequence" ? "StepSequence" :
     draft.layout === "contrast_comparison" ? "ContrastComparison" :
     draft.layout === "editorial_quote" ? "EditorialQuote" : "ProductHeroReveal";
-  const [base,setBase] = useState(project.revision);
   const [aspect,setAspect] = useState(aspects[0]);
   const [nodes,setNodes] = useState<CanvasNode[]>([]);
   const [error,setError] = useState<string|null>(null);
   const [previewLoading,setPreviewLoading] = useState(true);
   const [expanded,setExpanded] = useState(false);
-  const reload = () => { setDraft(structuredClone(instance?.config ?? defaultHeroConfig())); setBase(project.revision); setError(null); };
   useEffect(() => {
-    setDraft(structuredClone(instance?.config ?? defaultHeroConfig())); setBase(project.revision);
     if (scene) onSeek(seconds(scene.start)+Math.min(2,Math.max(0,seconds(scene.duration)-1/30)));
-    // Scene changes explicitly reset the form. Revision changes do not discard unsaved input.
+    // Selection changes the study time, never the durable author buffer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene?.id,project.generation]);
-  useEffect(() => {
-    if (instance && sameValue(instance.config,draft)) setBase(project.revision);
-  }, [instance,project.revision,draft]);
+  }, [scene?.id,project.id,project.generation,project.active_branch]);
   useEffect(() => {
     let current = true; setPreviewLoading(true); setError(null);
     realizeProductHero(instance?.id ?? previewIdentity,draft,aspect.width,aspect.height).then(value => {
@@ -73,7 +336,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
   const localTime = scene ? Math.max(0,Math.min(seconds(scene.duration),playhead-seconds(scene.start))) : 2;
   const background = project.visual_language.palette.find(t => ["surface","background"].includes(t.name.toLowerCase()))?.value ?? "#0F1216";
   const locked = project.locks.some(lock => ["project:"+project.id,"scene:"+scene?.id].includes(lock.resource) && ["content","position","style","timing","renderer"].includes(lock.kind));
-  const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !busy && !error && !previewLoading && base===project.revision && !locked;
+  const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !editor.blocked && !error && !previewLoading && !locked;
   return <div className="production-split">
     <section className="production-inspector" aria-label={`${familyName} controls`}>
       <div className="production-section-title"><Layers size={16}/><div><h2>{familyName}</h2><p>Editable first-party composition Â· v1</p></div></div>
@@ -87,7 +350,7 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
         <option value="metric_evidence">MetricEvidence · authored fact and context</option>
         <option value="step_sequence">StepSequence · one editable procedural step</option>
       </select></label>
-      <RevisionNotice base={base} current={project.revision} onReload={reload}/>
+      <ProductionDraftFeedback editor={editor} project={project}/>
       {([ ["eyebrow","Eyebrow",48], ["headline",draft.layout==="split_explanation"?"Left panel idea":draft.layout==="metric_evidence"?"Authored fact / metric":draft.layout==="step_sequence"?"Step heading":draft.layout==="contrast_comparison"?"Before: original concept":draft.layout==="editorial_quote"?"Illustrative quotation":"Headline",64], ["body",draft.layout==="split_explanation"?"Right panel narrative":draft.layout==="metric_evidence"?"Evidence context":draft.layout==="step_sequence"?"What happens at this step":draft.layout==="contrast_comparison"?"After: original concept":draft.layout==="editorial_quote"?"Original quote context":"Supporting copy",150], ["wordmark",draft.layout==="split_explanation"?"Right panel label":draft.layout==="metric_evidence"?"Evidence label":draft.layout==="step_sequence"?"Step index (e.g. 01 / 03)":"Wordmark",8] ] as const).map(([field,label,max]) =>
         <label className="production-field" key={field}><span>{label}<small>{Array.from(draft[field]).length}/{max}</small></span>
           {field === "headline" || field === "body" ? <textarea aria-label={label} rows={field==="headline"?3:4} value={draft[field]} onChange={e => setDraft({...draft,[field]:e.target.value})}/>
@@ -102,10 +365,10 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
       {error && <p className="production-error" role="alert">{error}</p>}
       {!scene && <button className="primary-button" disabled={busy} onClick={() => commit({type:"add_scene",name:"Product hero",objective:"An original, editable product reveal",duration_seconds:6})}><Plus size={14}/> Create a six-second scene</button>}
       {scene && (scene.renderer!=="motion-canvas" || seconds(scene.duration)<2) && <p className="production-error">Select a Motion Canvas scene at least two seconds long. Existing scene settings will not be replaced automatically.</p>}
-      <button className="primary-button" disabled={!canApply} onClick={() => commit({ type:"upsert_product_hero",instance_id:instance?.id ?? crypto.randomUUID(),scene_id:scene!.id,config:draft })}>
+      <button className="primary-button" disabled={!canApply} onClick={() => void editor.send("save")}>
         <Save size={14}/>{instance?"Update component":"Add to scene"}</button>
       {instance && <div className="production-button-row"><button className="secondary-button" onClick={onOpenCanvas}><ArrowUpRight size={14}/> Edit objects</button>
-        <button className="text-button" disabled={busy || locked} onClick={() => commit({type:"detach_product_hero",instance_id:instance.id})}>Detach, keep objects</button></div>}
+        <button className="text-button" disabled={editor.blocked || locked} onClick={() => void editor.send("detach")}>Detach, keep objects</button></div>}
     </section>
     <section className="production-viewer" aria-label="Component study viewer">
       <div className="production-viewer-toolbar"><div><strong>Composition study</strong><span>{sameValue(draft,instance?.config)?"Stored parameters":"Uncommitted parameters"} Â· editorial preview</span></div>
@@ -124,26 +387,18 @@ function HeroWorkbench({ project, scene, commit, busy, playhead, onSeek, onOpenC
   </div>;
 }
 
-function defaultPlan(project:Project):ProductionPlan {
-  return {objective:project.brief.objective || "",audience:project.brief.audience || "",concept:project.narrative.premise || "",reference_constraints:[],exclusions:["Do not present a graphic study as observed product behavior."],
-    shots:project.scenes.map(scene => ({scene_id:scene.id,purpose:scene.objective || scene.name,claim_ids:[],asset_ids:[],evidence_kind:"graphic_study"})),clock:{kind:"timeline"},approval:null};
-}
-function PlanWorkbench({project,commit,busy,onSeek}:{project:Project;commit:Commit;busy:boolean;onSeek:(time:number)=>void}) {
+function PlanWorkbench({project,commit,commitCamera,busy,onSeek}:{project:Project;commit:Commit;commitCamera:ProductionCommit;busy:boolean;onSeek:(time:number)=>void}) {
   const stored = project.production_design?.plan;
-  const [draft,setDraft] = useState<ProductionPlan>(() => structuredClone(stored ?? defaultPlan(project)));
-  const [base,setBase] = useState(project.revision);
-  const [reviewer,setReviewer] = useState(""); const [note,setNote] = useState(""); const [error,setError] = useState<string|null>(null);
-  const reload = () => {setDraft(structuredClone(stored ?? defaultPlan(project)));setBase(project.revision);setError(null);};
-  useEffect(() => { if (stored && sameValue(stored,draft)) setBase(project.revision); },[stored,draft,project.revision]);
-  const patch = (value:Partial<ProductionPlan>) => setDraft({...draft,...value,approval:null});
-  const cleanDraft = ():ProductionPlan => ({...draft,reference_constraints:draft.reference_constraints.map(v=>v.trim()).filter(Boolean),exclusions:draft.exclusions.map(v=>v.trim()).filter(Boolean),approval:null});
-  const approve = async () => {
-    try { const cleaned=cleanDraft(); const approval={reviewer,note,content_sha256:await planContentDigest(cleaned)}; setDraft({...cleaned,approval}); await commit({type:"set_production_plan",plan:{...cleaned,approval}}); }
-    catch (reason) {setError(reason instanceof Error?reason.message:String(reason));}
-  };
+  const editor = useProductionEditor(project, { kind: "plan" }, commitCamera, busy);
+  const input = editor.draft.input as Extract<ProductionInput, { kind: "plan" }>;
+  const draft = input.plan, base = editor.draft.baseRevision, reviewer = input.reviewer, note = input.note;
+  const [error,setError] = useState<string|null>(null);
+  const patch = (value:Partial<ProductionPlan>) => editor.edit({...input, plan:{...draft,...value,approval:null}});
+  const setReviewer = (reviewer:string) => editor.edit({...input,reviewer});
+  const setNote = (note:string) => editor.edit({...input,note});
   return <div className="production-plan">
     <div className="production-section-title"><Check size={18}/><div><h2>Production plan</h2><p>Narrative, evidence, reference constraints and the governing clock.</p></div></div>
-    <RevisionNotice base={base} current={project.revision} onReload={reload}/>
+    <ProductionDraftFeedback editor={editor} project={project}/>
     <div className="production-plan-grid"><label className="production-field"><span>Objective</span><textarea rows={3} value={draft.objective} onChange={e => patch({objective:e.target.value})}/></label>
       <label className="production-field"><span>Audience</span><textarea rows={3} value={draft.audience} onChange={e => patch({audience:e.target.value})}/></label></div>
     <label className="production-field"><span>Creative concept</span><textarea rows={4} value={draft.concept} onChange={e => patch({concept:e.target.value})}/></label>
@@ -163,7 +418,7 @@ function PlanWorkbench({project,commit,busy,onSeek}:{project:Project;commit:Comm
       <option value="music" disabled={!project.assets.some(asset=>asset.media_type.startsWith("audio/") && /^[0-9a-f]{64}$/.test(asset.content_sha256 ?? ""))}>Music Â· author-marked beat grid</option>
     </select></label>
     {draft.clock.kind==="music" && <MusicClockWorkbench project={project} draftClock={draft.clock} storedPlan={stored}
-      draftMatchesSaved={sameValue(draft,stored)} baseRevision={base} busy={busy} onSeek={onSeek} commit={commit}
+      draftMatchesSaved={!!stored && sameValue(cleanProductionPlan(draft),cleanProductionPlan(stored))} baseRevision={base} busy={busy || editor.busy || productionUnconfirmed(editor.draft)} onSeek={onSeek} commit={commit}
       onClockChange={clock=>patch({clock})}/>}
 
     <div className="production-shot-list"><h3>Shot and evidence plan</h3>{draft.shots.map((shot,i) => <div className="production-shot" key={shot.scene_id}>
@@ -174,11 +429,11 @@ function PlanWorkbench({project,commit,busy,onSeek}:{project:Project;commit:Comm
       <label className="production-field"><span>Source asset</span><select value={shot.asset_ids[0] ?? ""} onChange={e => patch({shots:draft.shots.map((s,j)=>j===i?{...s,asset_ids:e.target.value?[e.target.value]:[]}:s)})}><option value="">No source attached</option>{project.assets.filter(a=>a.content_sha256).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
       {!!project.brief.claims.length && <fieldset className="production-claims"><legend>Claims this shot supports</legend>{project.brief.claims.map(claim=><label key={claim.id}><input type="checkbox" checked={shot.claim_ids.includes(claim.id)} onChange={e=>patch({shots:draft.shots.map((s,j)=>j===i?{...s,claim_ids:e.target.checked?[...s.claim_ids,claim.id]:s.claim_ids.filter(id=>id!==claim.id)}:s)})}/>{claim.text}</label>)}</fieldset>}
     </div>)}</div>
-    <div className="production-button-row"><button className="primary-button" disabled={busy || base!==project.revision} onClick={() => {const cleaned=cleanDraft();setDraft(cleaned);return commit({type:"set_production_plan",plan:cleaned});}}><Save size={14}/> Save production plan</button>
+    <div className="production-button-row"><button className="primary-button" disabled={editor.blocked} onClick={() => void editor.send("save")}><Save size={14}/> Save production plan</button>
       <button className="secondary-button" disabled={busy} onClick={() => patch({shots:project.scenes.map(s => draft.shots.find(shot=>shot.scene_id===s.id) ?? {scene_id:s.id,purpose:s.objective || s.name,claim_ids:[],asset_ids:[],evidence_kind:"graphic_study"})})}>Refresh shot list</button></div>
     <section className="production-approval"><h3>Content-bound concept approval</h3><p>A creative decision only. It does not approve renderer fidelity, capture provenance, rights or technical delivery.</p>
       <div className="production-plan-grid"><label className="production-field"><span>Reviewer</span><input value={reviewer} onChange={e=>setReviewer(e.target.value)}/></label><label className="production-field"><span>Approval note</span><input value={note} onChange={e=>setNote(e.target.value)}/></label></div>
-      <button className="secondary-button" disabled={busy || !reviewer.trim() || !note.trim() || base!==project.revision} onClick={approve}>Approve this concept digest</button>
+      <button className="secondary-button" disabled={editor.blocked || !reviewer.trim() || !note.trim()} onClick={() => void editor.send("approve")}>Approve this concept digest</button>
       {stored?.approval && <p className="mono">Recorded for {stored.approval.content_sha256.slice(0,16)}â€¦ by {stored.approval.reviewer}</p>}{error && <p className="production-error" role="alert">{error}</p>}
     </section>
   </div>;
@@ -215,6 +470,6 @@ export default function ProductionDesignWorkspace(props:{project:Project;scene:S
     <header className="production-workspace-header"><div><span className="eyebrow">CREATIVE PRODUCTION</span><h1>Direct the work. Preserve the decisions.</h1><p>{design.heroes.length} component{design.heroes.length===1?"":"s"} Â· {design.capsules.length} native source{design.capsules.length===1?"":"s"} Â· revision {props.project.revision}</p></div>
       <label className="production-scene-select"><span>Working scene</span><select aria-label="Production working scene" value={props.scene?.id ?? ""} onChange={e=>{setRepairDraft(null);props.onSelectScene(e.target.value);}}><option value="" disabled>Select a scene</option>{sceneOptions}</select></label></header>
     <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["stage","ProductStage"],["camera","Camera"],["plan","Production plan"],["brand","Brand & taste"],["sources","Native sources"],["captures","Capture sources"],["identity","Identity & consent"],["generation","Generation journal"],["data","Measured data"],["procedural","Procedural"],["impact","Render impact"],["evaluator","Evaluators"],["distillation","Distillation"],["patch","Scoped changes"],["inspection","Native inspection"],["contrast","Pixel contrast"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>{if(tab==="patch" && key!=="patch") setRepairDraft(null);setTab(key);}}>{label}</button>)}</nav>
-    {tab==="component"?<HeroWorkbench {...props}/>:tab==="stage"?<ProductStageWorkbench {...props}/>:tab==="camera"?<CameraReframeWorkbench {...props}/>:tab==="plan"?<PlanWorkbench key={props.project.generation} {...props}/>:tab==="brand"?<BrandTasteWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="captures"?<CaptureSourceWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="generation"?<PaidGenerationWorkspace key={props.project.generation} project={props.project} scene={props.scene} busy={props.busy} commit={props.commit}/>:tab==="identity"?<IdentityOriginWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="data"?<MeasuredDataWorkbench project={props.project} scene={props.scene} busy={props.busy} commit={props.commit} onOpenCanvas={props.onOpenCanvas}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas} displayProfile={props.displayProfile}/>:tab==="impact"?<RenderTailWorkbench project={props.project}/>:tab==="evaluator"?<CreativeEvaluatorWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="distillation"?<ComponentDistillationWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="contrast"?<NativeContrastWorkbench project={props.project} scene={props.scene} displayProfile={props.displayProfile} evidence={props.evidence} busy={props.busy} onOpenRender={props.onOpenRender}/>:tab==="inspection"?<NativeInspectionWorkbench {...props} onDraftRepair={draft=>{setRepairDraft(draft);setTab("patch");}}/>:<CreativePatchWorkbench {...props} repairDraft={repairDraft} onDismissRepair={()=>setRepairDraft(null)}/>}
+    {tab==="component"?<HeroWorkbench key={productionScope(props.project,{kind:"hero",sceneId:props.scene?.id ?? null})} {...props}/>:tab==="stage"?<ProductStageWorkbench {...props}/>:tab==="camera"?<CameraReframeWorkbench {...props}/>:tab==="plan"?<PlanWorkbench key={productionScope(props.project,{kind:"plan"})} {...props}/>:tab==="brand"?<BrandTasteWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="captures"?<CaptureSourceWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="generation"?<PaidGenerationWorkspace key={props.project.generation} project={props.project} scene={props.scene} busy={props.busy} commit={props.commit}/>:tab==="identity"?<IdentityOriginWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="data"?<MeasuredDataWorkbench project={props.project} scene={props.scene} busy={props.busy} commit={props.commit} onOpenCanvas={props.onOpenCanvas}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas} displayProfile={props.displayProfile}/>:tab==="impact"?<RenderTailWorkbench project={props.project}/>:tab==="evaluator"?<CreativeEvaluatorWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="distillation"?<ComponentDistillationWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="contrast"?<NativeContrastWorkbench project={props.project} scene={props.scene} displayProfile={props.displayProfile} evidence={props.evidence} busy={props.busy} onOpenRender={props.onOpenRender}/>:tab==="inspection"?<NativeInspectionWorkbench {...props} onDraftRepair={draft=>{setRepairDraft(draft);setTab("patch");}}/>:<CreativePatchWorkbench {...props} repairDraft={repairDraft} onDismissRepair={()=>setRepairDraft(null)}/>}
   </section>;
 }

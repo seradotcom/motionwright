@@ -1,0 +1,376 @@
+import { sameProjectRevision } from "./projectMutation";
+import { defaultHeroConfig, planContentDigest, realizeProductHero, sameValue, validateProductionPlan } from "./creativeProduction";
+import type { HeroConfig, ProductHeroInstance, ProductionPlan } from "./creativeProduction";
+import type { CanvasNode, Change, Project, ProjectEvent } from "./types";
+
+export type ProductionTarget = { kind: "hero"; sceneId: string | null } | { kind: "plan" };
+export type ProductionInput = { kind: "hero"; config: HeroConfig }
+  | { kind: "plan"; plan: ProductionPlan; reviewer: string; note: string };
+export type ProductionValue = ProductHeroInstance | ProductionPlan | null;
+export type ProductionOperation = "save" | "approve" | "detach";
+export type ProductionChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" }>;
+export interface ProductionPending {
+  /** Local comparison snapshot, never a service request, grant, or replay token. */
+  id: string; revision: number; sequence: number; operation: ProductionOperation;
+  input: ProductionInput; value: ProductionValue; nodesBefore: CanvasNode[] | null;
+  outcome: "UNKNOWN" | "NOT_SENT"; diagnostic?: string;
+}
+export interface ProductionDraft {
+  schema: "motionwright.production-draft/1"; scope: string; target: ProductionTarget;
+  baseRevision: number; base: ProductionValue; input: ProductionInput;
+  sequence: number; intent: boolean; pending: ProductionPending | null;
+}
+export const PRODUCTION_RECOVERY_PREFIX = "motionwright.production-recovery.v1:";
+export const PRODUCTION_POINTER_PREFIX = "motionwright.production-writer.v1:";
+export const MAX_PRODUCTION_COPY_BYTES = 1024 * 1024;
+export const MAX_PRODUCTION_RECOVERY_BYTES = 4 * 1024 * 1024;
+export const MAX_PRODUCTION_COPIES = 64;
+export const MAX_PRODUCTION_HISTORY = 2048;
+export const productionScope = (project: Project, target: ProductionTarget) => JSON.stringify([
+  project.id, project.generation, project.active_branch, target.kind, target.kind === "hero" ? target.sceneId : null,
+]);
+export const productionCopyKey = (scope: string, writer: string) => PRODUCTION_RECOVERY_PREFIX + encodeURIComponent(scope) + ":" + writer;
+export const productionPointerKey = (scope: string) => PRODUCTION_POINTER_PREFIX + encodeURIComponent(scope);
+export const productionLabel = (target: ProductionTarget) => target.kind === "hero" ? "Component" : "Production plan";
+export const productionHasInput = (draft: ProductionDraft) => draft.intent;
+export const productionHasWork = (draft: ProductionDraft) => draft.intent || draft.pending !== null;
+export const productionUnconfirmed = (draft: ProductionDraft) => draft.pending?.outcome === "UNKNOWN";
+const clone = <T,>(value: T): T => structuredClone(value);
+const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const integer = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const uuid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+const bytes = (value: string) => new TextEncoder().encode(value).length;
+const exact = (value: Record<string, unknown>, keys: readonly string[], optional: readonly string[] = []) =>
+  keys.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => keys.includes(key) || optional.includes(key));
+
+export function defaultProductionPlan(project: Project): ProductionPlan {
+  return { objective: project.brief.objective || "", audience: project.brief.audience || "", concept: project.narrative.premise || "",
+    reference_constraints: [], exclusions: ["Do not present a graphic study as observed product behavior."],
+    shots: project.scenes.map(scene => ({ scene_id: scene.id, purpose: scene.objective || scene.name, claim_ids: [], asset_ids: [], evidence_kind: "graphic_study" })),
+    clock: { kind: "timeline" }, approval: null };
+}
+export function productionValue(project: Project, target: ProductionTarget): ProductionValue {
+  if (target.kind === "plan") return clone(project.production_design?.plan ?? null);
+  if (target.sceneId !== null && project.scenes.filter(scene => scene.id === target.sceneId).length !== 1)
+    throw new Error("The component scene is unavailable or ambiguous in the current project.");
+  const matches = project.production_design?.heroes.filter(hero => hero.scene_id === target.sceneId) ?? [];
+  if (matches.length > 1) throw new Error("The scene has ambiguous managed component identities.");
+  return clone(matches[0] ?? null);
+}
+function inputFromSaved(project: Project, target: ProductionTarget): ProductionInput {
+  const value = productionValue(project, target);
+  return target.kind === "hero" ? { kind: "hero", config: clone((value as ProductHeroInstance | null)?.config ?? defaultHeroConfig()) }
+    : { kind: "plan", plan: { ...clone((value as ProductionPlan | null) ?? defaultProductionPlan(project)), approval: null }, reviewer: "", note: "" };
+}
+function checkScope(draft: ProductionDraft, project: Project) {
+  if (productionScope(project, draft.target) !== draft.scope) throw new Error("This Production input belongs to another project, generation, branch, or scene.");
+  productionValue(project, draft.target);
+}
+export function createProductionDraft(project: Project, target: ProductionTarget): ProductionDraft {
+  return { schema: "motionwright.production-draft/1", scope: productionScope(project, target), target: clone(target),
+    baseRevision: project.revision, base: productionValue(project, target), input: inputFromSaved(project, target), sequence: 0, intent: false, pending: null };
+}
+export function editProductionDraft(draft: ProductionDraft, input: ProductionInput): ProductionDraft {
+  if (input.kind !== draft.target.kind) throw new Error("Production input cannot cross editor targets.");
+  return { ...draft, input: clone(input), sequence: draft.sequence + 1, intent: true };
+}
+/** Changes observed through props never consume an original pending request. */
+export function reconcileProductionDraft(draft: ProductionDraft, project: Project): ProductionDraft {
+  checkScope(draft, project);
+  if (draft.pending || draft.intent) return draft;
+  const value = productionValue(project, draft.target);
+  if (draft.baseRevision === project.revision && sameValue(draft.base, value)) return draft;
+  return { ...draft, base: value, baseRevision: project.revision, input: inputFromSaved(project, draft.target) };
+}
+export function productionConflict(draft: ProductionDraft, project: Project): boolean {
+  checkScope(draft, project);
+  return productionHasWork(draft) && (draft.baseRevision !== project.revision || !sameValue(draft.base, productionValue(project, draft.target)));
+}
+export function resolveProductionDraft(draft: ProductionDraft, project: Project, choice: "saved" | "draft"): ProductionDraft {
+  checkScope(draft, project);
+  if (productionUnconfirmed(draft)) throw new Error("Inspect the unconfirmed Production outcome before choosing another base.");
+  return { ...draft, base: productionValue(project, draft.target), baseRevision: project.revision,
+    input: choice === "saved" ? inputFromSaved(project, draft.target) : draft.input, intent: choice === "draft", pending: null };
+}
+export function cleanProductionPlan(plan: ProductionPlan): ProductionPlan {
+  return { ...clone(plan), reference_constraints: plan.reference_constraints.map(value => value.trim()).filter(Boolean),
+    exclusions: plan.exclusions.map(value => value.trim()).filter(Boolean), approval: null };
+}
+/** No caller may dispatch after this asynchronous preparation unless its source
+ * identity, revision, sequence, and mounted editor epoch are still current. */
+export async function prepareProductionSubmission(draft: ProductionDraft, project: Project, id: string,
+  operation: ProductionOperation = "save"): Promise<{ draft: ProductionDraft; change: ProductionChange }> {
+  checkScope(draft, project);
+  if (!uuid(id) || productionUnconfirmed(draft)) throw new Error("Review the unconfirmed Production attempt before a separate save.");
+  if (productionConflict(draft, project)) throw new Error("Review the current Production revision before saving this draft.");
+  const input = clone(draft.input), target = draft.target;
+  const resource = target.kind === "hero" && target.sceneId ? "scene:" + target.sceneId : null;
+  const lockKinds = target.kind === "hero" && operation !== "detach" ? ["content", "position", "style", "timing", "renderer"] : ["content"];
+  if (project.locks.some(lock => (lock.resource === "project:" + project.id || lock.resource === resource) && lockKinds.includes(lock.kind)))
+    throw new Error("This Production scope is locked. Your input remains editable.");
+  let change: ProductionChange, value: ProductionValue, nodesBefore: CanvasNode[] | null = null;
+  if (target.kind === "hero" && input.kind === "hero") {
+    const scene = project.scenes.find(scene => scene.id === target.sceneId);
+    if (!scene || scene.renderer !== "motion-canvas" || Number(scene.duration.num) / Number(scene.duration.den) < 2)
+      throw new Error("Select a Motion Canvas scene at least two seconds long.");
+    const existing = productionValue(project, target) as ProductHeroInstance | null;
+    if (operation === "approve") throw new Error("Component saving does not grant concept approval.");
+    if (operation === "detach") {
+      if (!existing) throw new Error("The managed component no longer exists.");
+      change = { type: "detach_product_hero", instance_id: existing.id }; value = null; nodesBefore = clone(scene.nodes);
+    } else {
+      const instanceId = existing?.id ?? crypto.randomUUID(), config = { ...clone(input.config), layout: input.config.layout ?? "product_hero_reveal" as const };
+      const baseline = await realizeProductHero(instanceId, config);
+      value = { id: instanceId, scene_id: scene.id, component_version: 1, config, baseline };
+      change = { type: "upsert_product_hero", instance_id: instanceId, scene_id: scene.id, config: clone(config) };
+    }
+  } else if (target.kind === "plan" && input.kind === "plan") {
+    if (operation === "detach") throw new Error("A Production plan is not a detachable component.");
+    const plan = cleanProductionPlan(input.plan);
+    if (operation === "approve") plan.approval = { reviewer: input.reviewer, note: input.note, content_sha256: await planContentDigest(plan) };
+    await validateProductionPlan(project, plan);
+    value = plan; change = { type: "set_production_plan", plan: clone(plan) };
+  } else throw new Error("Production input and target disagree.");
+  return { change, draft: { ...draft, intent: true, pending: { id, revision: project.revision, sequence: draft.sequence,
+    operation, input, value, nodesBefore, outcome: "UNKNOWN" } } };
+}
+export function productionPreparationMatches(source: ProductionDraft, preparedFrom: Project, current: ProductionDraft, project: Project): boolean {
+  return source.scope === current.scope && source.sequence === current.sequence && sameValue(source.input, current.input)
+    && sameValue(source.pending, current.pending) && sameProjectRevision(preparedFrom, project)
+    && productionScope(project, source.target) === source.scope
+    && sameValue(productionValue(preparedFrom, source.target), productionValue(project, source.target));
+}
+export function retainProductionFailure(draft: ProductionDraft, id: string, diagnostic: string, notSent = false): ProductionDraft {
+  return draft.pending?.id === id ? { ...draft, pending: { ...draft.pending, outcome: notSent ? "NOT_SENT" : "UNKNOWN", diagnostic } } : draft;
+}
+/** Only the Project returned by the original throwing coordinator is admissible. */
+export function acknowledgeProductionDraft(draft: ProductionDraft, id: string, receipt: Project): ProductionDraft {
+  const pending = draft.pending;
+  if (!pending || pending.id !== id) return draft;
+  checkScope(draft, receipt);
+  const saved = productionValue(receipt, draft.target);
+  const matches = draft.target.kind === "hero" && pending.operation === "save"
+    ? saved !== null && pending.value !== null && "config" in saved && "config" in pending.value
+      && saved.id === pending.value.id && saved.scene_id === pending.value.scene_id
+      && saved.component_version === pending.value.component_version && sameValue(saved.config, pending.value.config)
+    : sameValue(saved, pending.value);
+  if (receipt.revision !== pending.revision + 1 || !matches)
+    throw new Error("The original Production reply does not confirm the exact submitted snapshot.");
+  if (pending.operation === "detach" && draft.target.kind === "hero") {
+    const sceneId = draft.target.sceneId;
+    if (!sameValue(receipt.scenes.find(scene => scene.id === sceneId)?.nodes, pending.nodesBefore))
+      throw new Error("The original detach reply did not preserve the editable scene objects.");
+  }
+  const later = draft.sequence !== pending.sequence;
+  return { ...draft, base: saved, baseRevision: receipt.revision, pending: null,
+    // Never replace raw author input with the cleaned submission. In particular
+    // list spacing and later reviewer/note changes stay available after an ACK.
+    intent: later || pending.operation === "detach" };
+}
+
+export interface ProductionOutcomeTransport {
+  readProject(projectId: string): Promise<Project>;
+  readHistory(project: Project, afterRevision: number, limit: number): Promise<ProjectEvent[]>;
+}
+export interface ProductionOutcomeReview { scope: string; pending: ProductionPending; project: Project; events: ProjectEvent[]; matchingValueRevisions: number[] }
+const sameObserved = (left: Project, right: Project, target: ProductionTarget) => sameProjectRevision(left, right)
+  && sameValue(productionValue(left, target), productionValue(right, target));
+export function productionOutcomeMatches(draft: ProductionDraft, project: Project, review: ProductionOutcomeReview | null): boolean {
+  return !!review && productionUnconfirmed(draft) && review.scope === draft.scope && productionScope(project, draft.target) === draft.scope
+    && sameValue(draft.pending, review.pending) && sameObserved(project, review.project, draft.target);
+}
+export async function inspectProductionOutcome(draft: ProductionDraft, selected: Project, transport: ProductionOutcomeTransport): Promise<ProductionOutcomeReview> {
+  checkScope(draft, selected);
+  if (!productionUnconfirmed(draft)) throw new Error("There is no unconfirmed Production outcome to inspect.");
+  const pending = clone(draft.pending!), observed = clone(await transport.readProject(selected.id));
+  if (!sameObserved(observed, selected, draft.target) || productionScope(observed, draft.target) !== draft.scope)
+    throw new Error("Reload the current saved project before inspecting this Production outcome.");
+  if (!integer(observed.revision) || observed.revision < pending.revision || observed.revision - pending.revision > MAX_PRODUCTION_HISTORY)
+    throw new Error("The Production history is outside the bounded review window.");
+  const events: ProjectEvent[] = []; let cursor = pending.revision;
+  do {
+    const page = await transport.readHistory(observed, cursor, 256);
+    if (!Array.isArray(page) || page.length > 256 || (!page.length && cursor < observed.revision)) throw new Error("Production history is incomplete.");
+    for (const event of page) {
+      if (!event || !integer(event.revision) || event.revision !== cursor + 1 || event.revision > observed.revision
+        || !event.change || typeof event.change.type !== "string" || typeof event.created_at !== "string" || !event.created_at)
+        throw new Error("Production history is not a contiguous revision sequence.");
+      events.push(clone(event)); cursor = event.revision;
+    }
+  } while (cursor < observed.revision);
+  const after = await transport.readProject(selected.id);
+  if (!sameObserved(after, observed, draft.target)) throw new Error("The project changed during the Production history read. Inspect it again.");
+  return { scope: draft.scope, pending, project: observed, events,
+    matchingValueRevisions: events.filter(event => {
+      if (draft.target.kind === "plan") return event.change.type === "set_production_plan" && sameValue(event.change.plan, pending.value);
+      if (pending.operation === "detach") return event.change.type === "detach_product_hero"
+        && event.change.instance_id === (draft.base as ProductHeroInstance | null)?.id;
+      const expected = pending.value as ProductHeroInstance;
+      return event.change.type === "upsert_product_hero" && event.change.instance_id === expected.id
+        && event.change.scene_id === expected.scene_id && sameValue(event.change.config, expected.config);
+    }).map(event => event.revision) };
+}
+export function releaseProductionOutcome(draft: ProductionDraft, project: Project, review: ProductionOutcomeReview): ProductionDraft {
+  if (!productionOutcomeMatches(draft, project, review)) throw new Error("Read the current saved project and full history before starting a separate Production intent.");
+  return { ...draft, base: productionValue(project, draft.target), baseRevision: project.revision, intent: true, pending: null };
+}
+
+export type ProductionStorage = Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">;
+export interface ProductionCustody { writerId: string; expectedRaw: string | null; expectedPointer: string | null }
+export interface ProductionCopy { schema: "motionwright.production-recovery/1"; scope: string; writerId: string; updatedAt: number; draft: ProductionDraft }
+export interface ProductionRecoveryEntry { key: string; writerId: string; raw: string; value: ProductionCopy | null }
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(part => typeof part === "string");
+function inputShape(value: unknown): value is ProductionInput {
+  if (!record(value)) return false;
+  if (value.kind === "hero") {
+    const config = value.config;
+    return exact(value, ["kind", "config"]) && record(config) && exact(config, ["eyebrow", "headline", "body", "wordmark", "foreground", "accent", "motion"], ["layout"])
+      && ["eyebrow", "headline", "body", "wordmark", "foreground", "accent"].every(key => typeof config[key] === "string")
+      && typeof config.motion === "boolean" && (config.layout === undefined || ["product_hero_reveal", "split_explanation", "metric_evidence", "step_sequence", "contrast_comparison", "editorial_quote"].includes(String(config.layout)));
+  }
+  if (value.kind !== "plan" || !exact(value, ["kind", "plan", "reviewer", "note"]) || typeof value.reviewer !== "string" || typeof value.note !== "string") return false;
+  const plan = value.plan;
+  if (!record(plan) || !exact(plan, ["objective", "audience", "concept", "reference_constraints", "exclusions", "shots", "clock", "approval"])
+    || !["objective", "audience", "concept"].every(key => typeof plan[key] === "string") || !strings(plan.reference_constraints) || !strings(plan.exclusions)
+    || !Array.isArray(plan.shots) || plan.approval !== null || !record(plan.clock)) return false;
+  if (!plan.shots.every(shot => record(shot) && exact(shot, ["scene_id", "purpose", "claim_ids", "asset_ids", "evidence_kind"])
+    && typeof shot.scene_id === "string" && typeof shot.purpose === "string" && strings(shot.claim_ids) && strings(shot.asset_ids)
+    && ["graphic_study", "real_capture", "licensed_footage", "synthetic_labeled"].includes(String(shot.evidence_kind)))) return false;
+  const clock = plan.clock;
+  return clock.kind === "timeline" ? exact(clock, ["kind"])
+    : clock.kind === "voice" ? exact(clock, ["kind", "voice_track_id"]) && typeof clock.voice_track_id === "string"
+      : clock.kind === "music" && exact(clock, ["kind", "asset_id", "beats"]) && typeof clock.asset_id === "string" && Array.isArray(clock.beats)
+        && clock.beats.every(at => record(at) && exact(at, ["num", "den"]) && typeof at.num === "string" && typeof at.den === "string");
+}
+function nodesShape(value: unknown): boolean {
+  return Array.isArray(value) && value.every(node => record(node)
+    && exact(node, ["id", "name", "kind", "parent_id", "x", "y", "width", "height", "rotation_deg", "opacity", "text", "coordinate_space", "z_index", "style", "relations", "property_locks", "keyframes"])
+    && ["id", "name", "kind", "coordinate_space"].every(key => typeof node[key] === "string")
+    && ["parent_id", "text"].every(key => node[key] === null || typeof node[key] === "string")
+    && ["x", "y", "width", "height", "rotation_deg", "opacity", "z_index"].every(key => typeof node[key] === "number" && Number.isFinite(node[key]))
+    && record(node.style) && exact(node.style, ["fill", "stroke", "stroke_width", "font_family", "font_size", "font_weight", "line_height", "blend_mode"])
+    && Object.values(node.style).every(item => item === null || typeof item === "string" || (typeof item === "number" && Number.isFinite(item)))
+    && strings(node.property_locks) && Array.isArray(node.relations)
+    && node.relations.every(relation => record(relation) && exact(relation, ["id", "kind", "target_id"]) && Object.values(relation).every(item => typeof item === "string"))
+    && Array.isArray(node.keyframes) && node.keyframes.every(frame => record(frame) && exact(frame, ["at", "property", "value", "interpolation"])
+      && record(frame.at) && exact(frame.at, ["num", "den"]) && typeof frame.at.num === "string" && typeof frame.at.den === "string"
+      && typeof frame.property === "string" && typeof frame.interpolation === "string" && typeof frame.value === "number" && Number.isFinite(frame.value)));
+}
+function valueShape(value: unknown, kind: ProductionTarget["kind"]): boolean {
+  if (value === null) return true;
+  if (!record(value)) return false;
+  if (kind === "hero") return exact(value, ["id", "scene_id", "component_version", "config", "baseline"])
+    && typeof value.id === "string" && typeof value.scene_id === "string" && integer(value.component_version)
+    && inputShape({ kind: "hero", config: value.config }) && nodesShape(value.baseline);
+  return inputShape({ kind: "plan", plan: { ...value, approval: null }, reviewer: "", note: "" })
+    && (value.approval === null || (record(value.approval) && exact(value.approval, ["reviewer", "note", "content_sha256"])
+      && typeof value.approval.reviewer === "string" && typeof value.approval.note === "string"
+      && typeof value.approval.content_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.approval.content_sha256)));
+}
+function cleanDraft(value: unknown, scope: string): ProductionDraft {
+  if (!record(value) || !exact(value, ["schema", "scope", "target", "baseRevision", "base", "input", "sequence", "intent", "pending"])
+    || value.schema !== "motionwright.production-draft/1" || value.scope !== scope || !record(value.target)
+    || !integer(value.baseRevision) || !integer(value.sequence) || typeof value.intent !== "boolean" || !inputShape(value.input))
+    throw new Error("This Production recovery has an unsupported shape.");
+  const target = value.target, identity: unknown = JSON.parse(scope);
+  if ((target.kind !== "hero" && target.kind !== "plan") || value.input.kind !== target.kind
+    || !exact(target, target.kind === "hero" ? ["kind", "sceneId"] : ["kind"])
+    || (target.kind === "hero" && target.sceneId !== null && (typeof target.sceneId !== "string" || !target.sceneId))
+    || !Array.isArray(identity) || identity.length !== 5 || identity.slice(0, 3).some(item => typeof item !== "string" || !item)
+    || identity[3] !== target.kind || identity[4] !== (target.kind === "hero" ? target.sceneId : null))
+    throw new Error("This Production recovery belongs to another editor identity.");
+  // Closed shapes keep grants and execution authority out of portable copies.
+  // Saved values are comparison data only; they never enter a Project mutation.
+  if (!valueShape(value.base, target.kind)) throw new Error("Unreadable Production base snapshot.");
+  let pending: ProductionPending | null = null;
+  if (value.pending !== null) {
+    const sent = value.pending;
+    if (!record(sent) || !exact(sent, ["id", "revision", "sequence", "operation", "input", "value", "nodesBefore", "outcome"], ["diagnostic"])
+      || !uuid(sent.id) || !integer(sent.revision) || !integer(sent.sequence) || sent.sequence > value.sequence
+      || !["save", "approve", "detach"].includes(String(sent.operation)) || !inputShape(sent.input) || sent.input.kind !== target.kind
+      || !valueShape(sent.value, target.kind) || (sent.nodesBefore !== null && !nodesShape(sent.nodesBefore))
+      || (sent.operation === "approve" && target.kind !== "plan") || (sent.operation === "detach" && target.kind !== "hero")
+      || (sent.operation === "detach" ? sent.value !== null || sent.nodesBefore === null : sent.value === null || sent.nodesBefore !== null)
+      || !["UNKNOWN", "NOT_SENT"].includes(String(sent.outcome)) || (sent.diagnostic !== undefined && typeof sent.diagnostic !== "string"))
+      throw new Error("Unreadable Production pending comparison snapshot.");
+    // A recovered NOT_SENT is never permission to replay or authorize a call.
+    pending = { ...clone(sent), outcome: "UNKNOWN" } as unknown as ProductionPending;
+  }
+  return { schema: "motionwright.production-draft/1", scope, target: clone(target) as ProductionTarget,
+    baseRevision: value.baseRevision, base: clone(value.base) as ProductionValue, input: clone(value.input),
+    sequence: value.sequence, intent: value.intent, pending };
+}
+export function decodeProductionCopy(raw: string, scope: string, writerId: string): ProductionCopy {
+  if (bytes(raw) > MAX_PRODUCTION_COPY_BYTES) throw new Error("The Production recovery exceeds 1 MiB. Download the complete input before reducing it.");
+  const value: unknown = JSON.parse(raw);
+  if (!record(value) || !exact(value, ["schema", "scope", "writerId", "updatedAt", "draft"])
+    || value.schema !== "motionwright.production-recovery/1" || value.scope !== scope || value.writerId !== writerId || !uuid(writerId) || !integer(value.updatedAt))
+    throw new Error("The Production copy is unreadable or belongs to another writer.");
+  return { schema: "motionwright.production-recovery/1", scope, writerId, updatedAt: value.updatedAt, draft: cleanDraft(value.draft, scope) };
+}
+export function encodeProductionCopy(copy: ProductionCopy): string {
+  const raw = JSON.stringify(copy); decodeProductionCopy(raw, copy.scope, copy.writerId); return raw;
+}
+/** Explicit export contains editable input and comparison snapshots, no grant. */
+export function encodeProductionFile(draft: ProductionDraft): string {
+  return JSON.stringify({ schema: "motionwright.production-file/1", exportedAt: Date.now(), draft: cleanDraft(draft, draft.scope) }, null, 2);
+}
+export function readProductionCopies(storage: ProductionStorage, scope: string): { entries: ProductionRecoveryEntry[]; limited: boolean } {
+  const prefix = PRODUCTION_RECOVERY_PREFIX + encodeURIComponent(scope) + ":", entries: ProductionRecoveryEntry[] = [];
+  let limited = false;
+  for (let index = 0; index < storage.length; index++) {
+    const key = storage.key(index);
+    if (!key?.startsWith(prefix)) continue;
+    if (entries.length >= MAX_PRODUCTION_COPIES) { limited = true; continue; }
+    const raw = storage.getItem(key); if (raw === null) continue;
+    const writerId = key.slice(prefix.length); let value: ProductionCopy | null = null;
+    try { value = decodeProductionCopy(raw, scope, writerId); } catch { /* Preserve corrupt bytes until explicit discard. */ }
+    entries.push({ key, writerId, raw, value });
+  }
+  return { entries, limited };
+}
+export function writeProductionCopy(storage: ProductionStorage, session: Pick<Storage, "getItem" | "setItem">,
+  draft: ProductionDraft, custody: ProductionCustody): ProductionCustody {
+  const key = productionCopyKey(draft.scope, custody.writerId), pointerKey = productionPointerKey(draft.scope);
+  const check = () => {
+    const pointer = session.getItem(pointerKey);
+    if (pointer !== custody.expectedPointer && pointer !== custody.writerId) throw new Error("Another writer changed this Production recovery pointer. Earlier copies were kept.");
+    if (storage.getItem(key) !== custody.expectedRaw) throw new Error("The Production copy changed in another window. Earlier bytes were kept.");
+  };
+  check();
+  const raw = encodeProductionCopy({ schema: "motionwright.production-recovery/1", scope: draft.scope,
+    writerId: custody.writerId, updatedAt: Date.now(), draft });
+  if (custody.expectedRaw !== null) {
+    const old = decodeProductionCopy(custody.expectedRaw, draft.scope, custody.writerId).draft;
+    if (!productionHasWork(old) && !sameValue(old, draft)) throw new Error("A clean Production checkpoint is immutable. Use a separate writer.");
+  }
+  let total = bytes(key) + bytes(raw), count = 1;
+  for (let index = 0; index < storage.length; index++) {
+    const other = storage.key(index);
+    if (!other?.startsWith(PRODUCTION_RECOVERY_PREFIX) || other === key) continue;
+    total += bytes(other) + bytes(storage.getItem(other) ?? ""); count++;
+  }
+  if (total > MAX_PRODUCTION_RECOVERY_BYTES || count > MAX_PRODUCTION_COPIES) throw new Error("Production recovery is full (64 copies / 4 MiB). Discard only copies you no longer need.");
+  check(); // Storage enumeration can interleave with another tab's writes.
+  storage.setItem(key, raw);
+  if (storage.getItem(key) !== raw) throw new Error("The Production recovery data write was not confirmed.");
+  custody.expectedRaw = raw;
+  session.setItem(pointerKey, custody.writerId);
+  if (session.getItem(pointerKey) !== custody.writerId) throw new Error("The Production writer pointer was not confirmed.");
+  if (storage.getItem(key) !== raw) throw new Error("The Production copy changed while its writer pointer was published.");
+  custody.expectedPointer = custody.writerId; return custody;
+}
+export function retainReviewedProductionIntent(storage: ProductionStorage, session: Pick<Storage, "getItem" | "setItem">,
+  before: ProductionDraft, next: ProductionDraft, original: ProductionCustody, writerId: string): ProductionCustody {
+  if (!productionUnconfirmed(before) || next.pending || before.scope !== next.scope || !uuid(writerId)
+    || writerId === original.writerId || original.expectedRaw === null) throw new Error("Invalid Production recovery fork.");
+  const key = productionCopyKey(before.scope, original.writerId), raw = storage.getItem(key);
+  if (raw !== original.expectedRaw || raw === null || !sameValue(decodeProductionCopy(raw, before.scope, original.writerId).draft, before))
+    throw new Error("Retain the exact earlier Production attempt before continuing.");
+  const custody = { writerId, expectedRaw: null, expectedPointer: original.expectedPointer };
+  writeProductionCopy(storage, session, before, custody);
+  if (storage.getItem(key) !== raw) throw new Error("The earlier Production attempt changed during review.");
+  writeProductionCopy(storage, session, next, custody);
+  if (storage.getItem(key) !== raw) throw new Error("The earlier Production attempt changed during review.");
+  return custody;
+}
