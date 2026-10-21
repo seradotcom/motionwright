@@ -15,7 +15,7 @@ on:
         description: 'Exact 40-character product source; independent of the gate checkout'
         required: true
         type: string
-        default: '150cd3953a0fb23fc5b1efd1f2f875cc3a85cbc0'
+        default: 'c1a1073688b263a802376ead9d2e62f4420e0946'
 
 permissions:
   contents: read
@@ -44,7 +44,7 @@ jobs:
       - name: Admit explicit source identity without shell interpolation
         id: identity
         env:
-          REQUESTED_PRODUCT_SHA: ${{ inputs.product_source_sha || '150cd3953a0fb23fc5b1efd1f2f875cc3a85cbc0' }}
+          REQUESTED_PRODUCT_SHA: ${{ inputs.product_source_sha || 'c1a1073688b263a802376ead9d2e62f4420e0946' }}
         run: |
           python3 -I -B - <<'PY'
           import os
