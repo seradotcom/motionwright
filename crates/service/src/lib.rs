@@ -9,8 +9,8 @@ mod project_creation;
 mod project_projection;
 mod svg_admission;
 pub use audio::{
-    AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodedPcm, WAVEFORM_FRAMES_PER_PEAK,
-    WaveformPage,
+    AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodeBudget, OriginalMixDecodedPcm,
+    WAVEFORM_FRAMES_PER_PEAK, WaveformPage,
 };
 pub use import_limits::ImportLimits;
 pub use jobs::{
@@ -388,6 +388,23 @@ pub struct StudioService {
     import_limits: ImportLimits,
 }
 
+fn original_mix_source_matches(
+    project: &Project,
+    expected: &RevisionStamp,
+    asset_id: Uuid,
+    digest: &str,
+    media_type: &str,
+) -> bool {
+    project.resource_key() == expected.resource
+        && project.generation == expected.generation
+        && project.revision == expected.revision
+        && project.assets.iter().any(|asset| {
+            asset.id == asset_id
+                && asset.content_sha256.as_deref() == Some(digest)
+                && asset.media_type == media_type
+        })
+}
+
 impl StudioService {
     pub fn open(path: impl AsRef<Path>) -> StorageResult<Self> {
         Self::open_with_import_limits(path, ImportLimits::default())
@@ -431,16 +448,51 @@ impl StudioService {
         self.store.lock().load_project(id)
     }
 
-    /// Read ONLY an already imported/verified exact project audio asset and
-    /// decode short-form stereo PCM without resampling, web execution or
-    /// opening an arbitrary renderer-supplied filename.
+    /// Compatibility entry point for the existing bounded audition.
+    /// The source must already be an imported, exact project-owned WAV.
     pub fn decoded_stem_for_original_mix(
         &self,
         project_id: Uuid,
         expected_revision: u64,
         asset_id: Uuid,
     ) -> StorageResult<OriginalMixDecodedPcm> {
-        let (path, digest) = {
+        self.decoded_stem_for_original_mix_checked(
+            project_id,
+            expected_revision,
+            None,
+            asset_id,
+            OriginalMixDecodeBudget::Audition15Seconds,
+        )
+    }
+
+    /// Decode an imported WAV under a closed native policy and a complete
+    /// project identity. This does not resample or authorize an external effect.
+    pub fn decoded_stem_for_original_mix_with_budget(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        asset_id: Uuid,
+        budget: OriginalMixDecodeBudget,
+    ) -> StorageResult<OriginalMixDecodedPcm> {
+        self.decoded_stem_for_original_mix_checked(
+            project_id,
+            expected.revision,
+            Some(expected),
+            asset_id,
+            budget,
+        )
+    }
+
+    fn decoded_stem_for_original_mix_checked(
+        &self,
+        project_id: Uuid,
+        expected_revision: u64,
+        expected: Option<&RevisionStamp>,
+        asset_id: Uuid,
+        budget: OriginalMixDecodeBudget,
+    ) -> StorageResult<OriginalMixDecodedPcm> {
+        let source_limit = budget.source_bytes();
+        let (initial_stamp, digest, media_type, source_bytes) = {
             let store = self.store.lock();
             let project = store.load_project(project_id)?;
             if project.revision != expected_revision {
@@ -448,10 +500,21 @@ impl StudioService {
                     "Original mix belongs to a stale project revision",
                 ));
             }
+            // Also capture the full identity for the revision-only old API.
+            let initial_stamp = RevisionStamp::from(&project);
+            if expected.is_some_and(|expected| {
+                expected.resource != initial_stamp.resource
+                    || expected.generation != initial_stamp.generation
+                    || expected.revision != initial_stamp.revision
+            }) {
+                return Err(invalid_import(
+                    "Original mix belongs to a stale project identity or revision",
+                ));
+            }
             let asset = project
                 .assets
                 .iter()
-                .find(|item| item.id == asset_id)
+                .find(|asset| asset.id == asset_id)
                 .ok_or_else(|| invalid_import("Selected original mix source asset is absent"))?;
             if !matches!(
                 asset.media_type.as_str(),
@@ -461,26 +524,59 @@ impl StudioService {
                     "Audition needs a previously imported original WAV, not an executable/stream/unknown codec",
                 ));
             }
+            let media_type = asset.media_type.clone();
             let digest = asset
                 .content_sha256
                 .as_ref()
                 .ok_or_else(|| invalid_import("Original mix WAV has no immutable source SHA-256"))?
                 .clone();
-            let path = store.verified_blob_path(&digest)?;
-            (path, digest)
+            let source_bytes = store.read_blob(&digest, source_limit)?;
+
+            // This mutex does not exclude another Store connection committing
+            // while the bounded CAS capture is in progress.
+            let after_capture = store.load_project(project_id)?;
+            if !original_mix_source_matches(
+                &after_capture,
+                &initial_stamp,
+                asset_id,
+                &digest,
+                &media_type,
+            ) {
+                return Err(invalid_import(
+                    "Original audio was changed or removed during source capture",
+                ));
+            }
+            (initial_stamp, digest, media_type, source_bytes)
         };
-        let decoded = audio::decode_original_mix_pcm(&path, &digest)?;
-        // A concurrent editor cannot replace or remove this source while
-        // the bounded audio decoder runs; no stale mixes escape the service.
-        let latest = self.project(project_id)?;
-        if latest.revision != expected_revision
-            || !latest.assets.iter().any(|entry| {
-                entry.id == asset_id && entry.content_sha256.as_deref() == Some(digest.as_str())
-            })
+        let captured_len = source_bytes.len();
+
+        #[cfg(test)]
+        audio::run_original_mix_decode_hook();
+
+        // Move the verified container into the only original-mix decoder.
+        // Its input/reader drop before return, outside the Store mutex.
+        let decoded = audio::decode_original_mix_pcm_bytes(source_bytes, &digest, budget)?;
+
+        #[cfg(test)]
+        audio::run_original_mix_recheck_hook();
+
         {
-            return Err(invalid_import(
-                "Original audio was changed or removed during source decode",
-            ));
+            let store = self.store.lock();
+            // Recheck the current CAS with the same finite reader. This temporary
+            // drops before the fresh project read; it is not the PCM authority.
+            let fresh_len = store.read_blob(&digest, source_limit)?.len();
+            if fresh_len != captured_len {
+                return Err(invalid_import(
+                    "Original audio byte length changed during source decode",
+                ));
+            }
+            let latest = store.load_project(project_id)?;
+            if !original_mix_source_matches(&latest, &initial_stamp, asset_id, &digest, &media_type)
+            {
+                return Err(invalid_import(
+                    "Original audio was changed or removed during source decode",
+                ));
+            }
         }
         Ok(decoded)
     }

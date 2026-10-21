@@ -241,7 +241,7 @@ fn open_import_source_handle(_source: &Path) -> std::io::Result<File> {
 /// Validate and retain the opened source, not just a prior pathname snapshot.
 /// Ancestor aliases and concurrent writes to regular files are outside this
 /// leaf-admission boundary; the capture keeps its independent streaming limit.
-fn open_regular_import_source(source: &Path, max_bytes: u64) -> Result<File> {
+pub(crate) fn open_regular_import_source(source: &Path, max_bytes: u64) -> Result<File> {
     let size = ensure_regular_file(source, "import source")?.len();
     if size > max_bytes {
         return Err(StorageError::BlobTooLarge {

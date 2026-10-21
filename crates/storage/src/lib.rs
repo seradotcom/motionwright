@@ -1763,13 +1763,56 @@ fn run_verified_blob_capture_hook(path: &Path) {
 
 fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> Result<Vec<u8>> {
     let path = checked_existing_blob_path_from_root(blob_root, digest)?;
-    let size = ensure_regular_file(&path, "content-addressed blob")?.len();
-    if size > limit {
-        return Err(StorageError::BlobTooLarge { size, limit });
-    }
+    let input = file_import::open_regular_import_source(&path, limit)?;
+
     #[cfg(test)]
     run_verified_blob_capture_hook(&path);
-    let bytes = fs::read(path)?;
+
+    // Retain the admitted handle and observe at most one excess byte. Concurrent
+    // regular-file writes cannot turn the metadata check into an unbounded read.
+    let mut input = input.take(limit.saturating_add(1));
+    let mut bytes = Vec::new();
+    let mut size = 0_u64;
+    let mut chunk = [0_u8; 128 * 1024];
+    loop {
+        let count = match input.read(&mut chunk) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            break;
+        }
+        let charged = u64::try_from(count).map_err(|_| StorageError::BlobTooLarge {
+            size: u64::MAX,
+            limit,
+        })?;
+        let next_size = size
+            .checked_add(charged)
+            .ok_or(StorageError::BlobTooLarge {
+                size: u64::MAX,
+                limit,
+            })?;
+        if next_size > limit {
+            return Err(StorageError::BlobTooLarge {
+                size: next_size,
+                limit,
+            });
+        }
+        let required = bytes
+            .len()
+            .checked_add(count)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+        if required > bytes.capacity() {
+            let capacity = required
+                .max(bytes.capacity().saturating_mul(2))
+                .min(usize::try_from(limit).unwrap_or(usize::MAX));
+            bytes
+                .try_reserve_exact(capacity - bytes.len())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        size = next_size;
+    }
     if hex::encode(Sha256::digest(&bytes)) != digest {
         return Err(StorageError::InvalidBackup(
             "content-addressed blob failed digest verification".into(),
@@ -1777,7 +1820,6 @@ fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> R
     }
     Ok(bytes)
 }
-
 fn blob_relative_path(digest: &str) -> Result<String> {
     validate_digest(digest)?;
     Ok(format!("blobs/sha256/{}/{}", &digest[..2], digest))
