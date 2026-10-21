@@ -59,21 +59,15 @@ async function openBindingFixture(page: Page, binding: VoiceBinding) {
     const calls = { reads: [] as string[], auditions: [] as string[], other: [] as string[] };
     runtime.__MIX_VOICE_BINDING_CALLS__ = calls;
     runtime.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-      if (["bootstrap", "production_runtime_status", "waveform_page"].includes(command)) {
+      if (["bootstrap", "project_projection_head", "open_project", "production_runtime_status", "waveform_page"].includes(command)) {
         calls.reads.push(command);
       } else if (command === "native_original_mix_audition") {
         calls.auditions.push(command);
       } else {
         calls.other.push(command);
       }
-      if (command === "bootstrap") {
-        const selectedId = (args as { request?: { project_id?: string | null } } | undefined)
-          ?.request?.project_id;
-        if (selectedId !== boot.project.id) {
-          throw new Error("Synthetic bootstrap requires the explicitly selected project identity.");
-        }
-        return { ...structuredClone(boot),
-          project_selection: { status: "selected", project_id: boot.project.id } };
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
       }
       if (command === "production_runtime_status") return {
         status: "ready", reason: null, expected_version: "1.0.0", observed_version: "1.0.0",
@@ -110,6 +104,8 @@ async function expectNoNativeOrWrite(page: Page, revision: number) {
     body: JSON.stringify(calls), contentType: "application/json",
   });
   expect(calls.reads).toContain("bootstrap");
+  expect(calls.reads).toContain("project_projection_head");
+  expect(calls.reads).toContain("open_project");
   expect(calls.auditions).toEqual([]);
   expect(calls.other).toEqual([]);
 }

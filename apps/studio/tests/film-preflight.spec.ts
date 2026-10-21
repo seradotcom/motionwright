@@ -59,10 +59,8 @@ test("native semantic Film preflight is read-only and cannot be mistaken for rea
           return structuredClone(initial.project);
         }
 
-        if (command === "bootstrap") {
-          const requested = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-          if (requested !== initial.project.id) throw new Error("Synthetic bootstrap requires an explicitly selected matching project.");
-          return { ...structuredClone(initial), project_selection: { status: "selected", project_id: initial.project.id } };
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initial));
         }
         if (command === "motion_canvas_preflight") {
           const request = args?.request as {
@@ -143,10 +141,8 @@ test("unsupported Film projection prevents native dispatch for unchanged inputs"
           return structuredClone(initial.project);
         }
 
-        if (command === "bootstrap") {
-          const requested = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-          if (requested !== initial.project.id) throw new Error("Synthetic bootstrap requires an explicitly selected matching project.");
-          return { ...structuredClone(initial), project_selection: { status: "selected", project_id: initial.project.id } };
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initial));
         }
         if (command === "motion_canvas_preflight") {
           const request = args?.request as {

@@ -93,13 +93,8 @@ test("explicit desktop audition reads a saved recipe and leaves that project rev
           return structuredClone(boot.project);
         }
 
-      if (command === "bootstrap") {
-        const syntheticResponse = structuredClone(boot);
-        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
-          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
-        }
-        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
       }
       if(command==="production_runtime_status")return{
         status:"ready",reason:null,expected_version:"1.0.0",

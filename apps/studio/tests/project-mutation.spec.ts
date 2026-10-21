@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
 import { fixtureBootstrap } from "../src/fixture";
 import { seedSyntheticProjectSelection } from "./support/selectedSyntheticProject";
+import { installSyntheticProjectReads } from "./support/syntheticProjectReads";
 import { applyChange as applySyntheticCanvasChange } from "../src/api";
 import type { Change, Project, ProjectEvent } from "../src/types";
 import type { FileImportDispatchRequest, FileImportIntent, FileImportReceipt, PreparedFileImport } from "../src/fileImport";
@@ -53,11 +54,8 @@ for (const kind of ["asset", "voice"] as const) {
       host.__MUTATION_FIXTURE__ = state;
       host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
         state.calls.push(command);
-        if (command === "bootstrap") {
-          const syntheticResponse = { ...structuredClone(boot), project: structuredClone(project) };
-          const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
-          if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
-          return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+        if (command === "bootstrap" || command === "project_projection_head") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, { ...structuredClone(boot), project: structuredClone(project) });
         }
         if (command === "project_history") {
           if (args?.request?.project_id !== project.id) throw new Error("Wrong synthetic history Project");
@@ -118,6 +116,10 @@ for (const kind of ["asset", "voice"] as const) {
     await expect(page.locator(".sdk-chip")).toContainText("desktop mode");
     await expect(page.locator(".sdk-chip")).not.toContainText("connected");
     await expect(page.locator(".command-bar .revision-chip")).toHaveText("r12");
+    const openingReads = await page.evaluate(() => (window as unknown as {
+      __MUTATION_FIXTURE__: { calls: string[] };
+    }).__MUTATION_FIXTURE__.calls.filter(command => command === "open_project").length);
+    expect(openingReads).toBeGreaterThan(0);
     if (kind === "asset") {
       await page.getByRole("button", { name: "Import local asset", exact: true }).click();
       await page.getByLabel("Local asset path").fill("/synthetic-fixture/asset.png");
@@ -145,7 +147,7 @@ for (const kind of ["asset", "voice"] as const) {
     await expect(page.locator(".brand-copy")).toContainText("Synthetic import completed");
     expect(await page.evaluate(() => (window as unknown as {
       __MUTATION_FIXTURE__: { calls: string[] };
-    }).__MUTATION_FIXTURE__.calls.filter(command => command === "open_project"))).toEqual(["open_project"]);
+    }).__MUTATION_FIXTURE__.calls.filter(command => command === "open_project").length)).toBe(openingReads + 1);
     await expect(page.locator(".saving-state")).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Project title", exact: true })).toHaveValue("Do not race an import");
     await expect(page.getByRole("region", { name: "Project title conflict", exact: true })).toBeVisible();
@@ -203,11 +205,8 @@ test("a pending portable restore cannot race source edits or publish into anothe
     host.__RESTORE_FIXTURE__ = state;
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
       state.calls.push(command);
-      if (command === "bootstrap") {
-        const syntheticResponse = structuredClone(boot);
-        const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
-        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
-        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
       }
       if (command === "inspect_project_bundle") return {
         project_id: "01900000-0000-7000-8000-000000000021",
@@ -284,10 +283,8 @@ for (const action of ["New profile", "Derive selected"] as const) {
       const state = { attempts: 0, revisions: [] as number[], successfulIds: [] as string[] };
       host.__PROFILE_CAS_FIXTURE__ = state;
       host.__TAURI_INTERNALS__ = { invoke: async (name, args) => {
-        if (name === "bootstrap") {
-          const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
-          if (requestedId !== boot.project.id) throw new Error("Synthetic profile CAS requires selected project.");
-          return {...structuredClone(boot), project_selection:{status:"selected",project_id:boot.project.id}};
+        if (name === "bootstrap" || name === "project_projection_head" || name === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(name, args, structuredClone(boot));
         }
         if (name === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
         if (name === "production_runtime_status") throw new Error("Synthetic runtime not configured");
@@ -354,11 +351,8 @@ test("rejected scene creation keeps the editor's draft open until a confirmed CA
     };
     host.__SCENE_CAS_FIXTURE__ = state;
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-      if (command === "bootstrap") {
-        const syntheticResponse = structuredClone(boot);
-        const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
-        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
-        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
       }
       if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
       if (command === "apply_change") {
@@ -414,11 +408,8 @@ test("rejected Canvas node creation never selects an object that was not committ
     };
     host.__CANVAS_CAS_FIXTURE__ = state;
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-      if (command === "bootstrap") {
-        const syntheticResponse = structuredClone(boot);
-        const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
-        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
-        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
       }
       if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
       if (command === "apply_change") {
@@ -497,11 +488,8 @@ for (const accepted of [true, false]) {
       };
       host.__CANVAS_NAVIGATION_FIXTURE__ = state;
       host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-        if (command === "bootstrap") {
-          const syntheticResponse = structuredClone(boot);
-          const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
-          if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
-          return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
         }
         if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
         if (command === "apply_change") {
@@ -578,14 +566,12 @@ test.describe("Canvas interaction during delayed creation — synthetic UI contr
       subject?: string; request_id?: string; effect_grant?: string; change?: Change;
     };
     await seedSyntheticProjectSelection(page, initial.project.id);
+    const readSyntheticProject = installSyntheticProjectReads({});
     await page.exposeFunction("__canvasInteractionContractInvoke", async (
       command: string, args?: { request?: Request },
     ) => {
-      if (command === "bootstrap") {
-        const syntheticResponse = { ...initial, project: structuredClone(project) };
-        const requestedId = (args as {request?: {project_id?:string|null}} | undefined)?.request?.project_id;
-        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic fixture requires explicit selected project.");
-        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return readSyntheticProject(command, args, { ...initial, project: structuredClone(project) });
       }
       const request = args?.request;
       if (command !== "issue_effect_grant" && command !== "apply_change") {
@@ -764,17 +750,17 @@ test.describe("Canvas interaction during delayed creation — synthetic UI contr
   });
 });
 
-test("a delayed initial bootstrap cannot roll back a project already published by a mutation", async ({ page }) => {
+test("a delayed initial project read cannot roll back a project already published by a mutation", async ({ page }) => {
   const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
   await seedSyntheticProjectSelection(page, initial.project.id);
   await page.addInitScript(boot => {
     let project = structuredClone(boot.project);
     let releaseInitial: (() => void) | null = null;
     const state = {
-      bootstrapCalls: 0,
+      openCalls: 0,
       revisions: [] as number[],
       release: () => {
-        if (!releaseInitial) throw new Error("No initial bootstrap is waiting");
+        if (!releaseInitial) throw new Error("No initial project read is waiting");
         releaseInitial(); releaseInitial = null;
       },
     };
@@ -786,15 +772,15 @@ test("a delayed initial bootstrap cannot roll back a project already published b
     };
     host.__BOOTSTRAP_MUTATION_FIXTURE__ = state;
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-      if (command === "bootstrap") {
-        const requestedId = (args?.request as {project_id?:string|null}|undefined)?.project_id;
-        if (requestedId !== project.id) throw new Error("Delayed bootstrap mock requires selected project.");
-        state.bootstrapCalls++;
-        const captured = { ...boot, project: structuredClone(project),
-          project_selection: {status:"selected",project_id:project.id} };
-        // The dev acceptance server renders App under StrictMode. Return the
-        // second opening first, then release the old first read after a save.
-        if (state.bootstrapCalls === 1) return new Promise(resolve => { releaseInitial = () => resolve(captured); });
+      if (command === "bootstrap" || command === "project_projection_head") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, { ...boot, project });
+      }
+      if (command === "open_project") {
+        const captured = window.__SYNTHETIC_PROJECT_READ__(command, args, { ...boot, project });
+        state.openCalls++;
+        // StrictMode issues two openings. Resolve the second first, then
+        // release the captured earlier Project after a successful mutation.
+        if (state.openCalls === 1) return new Promise(resolve => { releaseInitial = () => resolve(captured); });
         return captured;
       }
       if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
@@ -806,14 +792,14 @@ test("a delayed initial bootstrap cannot roll back a project already published b
         project = { ...project, revision: project.revision + 1, title: change.title };
         return structuredClone(project);
       }
-      throw new Error("Unsupported synthetic bootstrap command: " + command);
+      throw new Error("Unsupported synthetic project command: " + command);
     } };
   }, initial);
 
   await page.goto("/");
   await expect.poll(() => page.evaluate(() => (window as unknown as {
-    __BOOTSTRAP_MUTATION_FIXTURE__: { bootstrapCalls: number };
-  }).__BOOTSTRAP_MUTATION_FIXTURE__.bootstrapCalls)).toBeGreaterThanOrEqual(2);
+    __BOOTSTRAP_MUTATION_FIXTURE__: { openCalls: number };
+  }).__BOOTSTRAP_MUTATION_FIXTURE__.openCalls)).toBeGreaterThanOrEqual(2);
   await page.getByRole("button", { name: "Brief", exact: true }).click();
   await page.getByRole("textbox", { name: "Project title", exact: true }).fill("Saved before late opening");
   await page.getByRole("button", { name: "Save title", exact: true }).click();

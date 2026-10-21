@@ -32,13 +32,8 @@ test("owner explicitly observes only original native job; no render restart or f
     };
     app.__OWNER_STATUS__={reads:0,forbidden:[],requests:[]};
     app.__TAURI_INTERNALS__={invoke:async(command,args)=>{
-      if (command === "bootstrap") {
-        const syntheticResponse = structuredClone(initial);
-        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
-          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
-        }
-        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initial));
       }
       if(command==="production_jobs")return [structuredClone(job)];
       if(command==="read_original_native_job_status"){
@@ -99,13 +94,8 @@ test("foreign response with fake verified media is rejected, never becomes succe
       __TAURI_INTERNALS__:{invoke:(command:string)=>Promise<unknown>};
     };
     app.__TAURI_INTERNALS__={invoke:async(command,args)=>{
-      if (command === "bootstrap") {
-        const syntheticResponse = structuredClone(initial);
-        const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-        if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
-          throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
-        }
-        return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initial));
       }
       if(command==="production_jobs")return [structuredClone(job)];
       if(command==="read_original_native_job_status")return {

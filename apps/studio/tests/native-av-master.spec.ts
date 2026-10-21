@@ -146,13 +146,8 @@ test("desktop AV master is linked only to session-native visual evidence and a m
           };
         }
 
-        if (command === "bootstrap") {
-          const syntheticResponse = { ...initial, project: structuredClone(project) };
-          const explicitlySelectedId = (args as { request?: { project_id?: string | null } } | undefined)?.request?.project_id;
-          if (!syntheticResponse.project || explicitlySelectedId !== syntheticResponse.project.id) {
-            throw new Error("Synthetic bootstrap requires the explicitly selected matching project identity.");
-          }
-          return { ...syntheticResponse, project_selection: { status: "selected", project_id: syntheticResponse.project.id } };
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, { ...initial, project: structuredClone(project) });
         }
         if (command === "issue_effect_grant") {
           app.__SYNTHETIC_AV__.effects++;
@@ -362,11 +357,8 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
           };
         }
 
-      if (cmd === "bootstrap") {
-        const syntheticResponse = structuredClone(initial);
-        const requestedId = (args as {request?: {project_id?:string|null}}|undefined)?.request?.project_id;
-        if (!syntheticResponse.project || requestedId !== syntheticResponse.project.id) throw new Error("Synthetic mock requires selected project identity.");
-        return {...syntheticResponse, project_selection: {status:"selected",project_id:syntheticResponse.project.id}};
+      if (cmd === "bootstrap" || cmd === "project_projection_head" || cmd === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(cmd, args, structuredClone(initial));
       }
       if (cmd === "issue_effect_grant") return { token: "synthetic-only" };
       if (cmd === "render_motion_canvas") return {

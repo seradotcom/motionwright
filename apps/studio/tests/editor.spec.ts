@@ -630,10 +630,8 @@ test("desktop job receipts reread active jobs and preserve explicit manual refre
     mock.__TEST_RECEIPTS__ = { calls: 0, jobs: [structuredClone(initialJob)] };
     mock.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
-        if (command === "bootstrap") {
-          const id = args?.request?.project_id;
-          if (id !== initialBoot.project.id) throw new Error("Synthetic receipt fixture requires the selected UUID.");
-          return { ...structuredClone(initialBoot), project_selection: {status:"selected",project_id:id} };
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initialBoot));
         }
         if (command === "production_jobs") {
           mock.__TEST_RECEIPTS__.calls += 1;
