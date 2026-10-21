@@ -312,13 +312,27 @@ def decode_selected_video(media: Path, executable: str) -> dict[int, bytes]:
     }
 
 
-def decode_original_audio(media: Path, executable: str) -> bytes:
-    proc = subprocess.run(
-        [executable, "-nostdin", "-v", "error", "-i", str(media), "-map", "0:a:0",
-         "-acodec", "pcm_s16le", "-ac", "2", "-ar", str(PCM_RATE),
-         "-f", "s16le", "pipe:1"],
-        capture_output=True, timeout=120, check=True,
-    )
+def decode_original_audio(media: Path, executable: str, *, capture=None) -> bytes:
+    try:
+        proc = subprocess.run(
+            [executable, "-nostdin", "-v", "error", "-i", str(media), "-map", "0:a:0",
+             "-acodec", "pcm_s16le", "-ac", "2", "-ar", str(PCM_RATE),
+             "-f", "s16le", "pipe:1"],
+            capture_output=True, timeout=120, check=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        if capture is not None:
+            try:
+                capture({"stdout": error.stdout or b"", "stderr": error.stderr or b"",
+                         "exit_code": getattr(error, "returncode", None),
+                         "deadline_exceeded": isinstance(error, subprocess.TimeoutExpired),
+                         "automatic_retry": False})
+            except BaseException:
+                error.private_capture_failed = True
+        raise
+    if capture is not None:
+        capture({"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode,
+                 "deadline_exceeded": False, "automatic_retry": False})
     require(PCM_FRAMES * 4 <= len(proc.stdout) <= AUDIO_BYTES_MAX
             and len(proc.stdout) % 4 == 0, "full_original_aac_pcm_sample_budget_changed")
     return proc.stdout
@@ -329,7 +343,8 @@ def verified_source_readback(project_path: Path, project_hash: str,
                              motion_path: Path, motion_hash: str,
                              master_receipt_path: Path, master_receipt_hash: str,
                              master_path: Path, master_hash: str,
-                             ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe") -> dict:
+                             ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe",
+                             *, pcm_capture=None) -> dict:
     project = load_json(project_path, project_hash, MAX_SOURCE_BYTES)
     motion = load_json(motion_path, motion_hash)
     master = load_json(master_receipt_path, master_receipt_hash)
@@ -338,7 +353,8 @@ def verified_source_readback(project_path: Path, project_hash: str,
     identity = source_identity(project, motion, master, wav_hash, master_hash)
     probe = ffprobe_media(master_path, ffprobe)
     pixels = inspect_selected_pixels(decode_selected_video(master_path, ffmpeg))
-    pcm = decode_original_audio(master_path, ffmpeg)
+    pcm = (decode_original_audio(master_path, ffmpeg) if pcm_capture is None else
+           decode_original_audio(master_path, ffmpeg, capture=pcm_capture))
     audio_content = inspect_source_pcm16_stereo_content(
         wav_path.read_bytes(), pcm,
         original_wav_sha256=wav_hash,
