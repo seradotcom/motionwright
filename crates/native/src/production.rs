@@ -28,6 +28,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod blender_original;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
@@ -35,6 +36,10 @@ mod mlt_timeline;
 mod path_boundary_tests;
 mod receipt_custody;
 mod recovery;
+pub use blender_original::{
+    BlenderOriginalEdit, BlenderOriginalFile, BlenderOriginalJournal, BlenderOriginalPhase,
+    BlenderOriginalRequest,
+};
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
@@ -102,6 +107,20 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.material.create",
     "driver.blender.material.assign",
     "driver.blender.export.glb",
+    "driver.blender.scene.inspect",
+    "driver.blender.semantic.objects",
+    "driver.blender.semantic.relations",
+    "driver.blender.semantic.rename",
+    "driver.blender.semantic.custom.list",
+    "driver.blender.semantic.custom.set",
+    "driver.blender.semantic.object.create",
+    "driver.blender.semantic.datablock.create",
+    "driver.blender.semantic.relation.set",
+    "driver.blender.semantic.relation.unlink",
+    "driver.blender.semantic.property.get",
+    "driver.blender.semantic.property.set",
+    "driver.blender.file.save",
+    "driver.blender.file.open",
 ];
 
 const MANIM_COMMANDS: &[&str] = &[

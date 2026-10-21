@@ -1,4 +1,4 @@
-use motionwright_domain::{CanvasNode, CoordinateSpace, Project, RendererKind, Scene};
+use motionwright_domain::{BlendMode, CanvasNode, CoordinateSpace, Project, RendererKind, Scene};
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -71,6 +71,17 @@ fn ensure_flat_semantics(node: &CanvasNode) -> NativeResult<()> {
         return Err(unsupported(format!(
             "Canvas node {} has opacity/stroke state that this native contribution cannot preserve",
             node.id
+        )));
+    }
+    // Neither the typed Blender geometry/material contribution nor the
+    // bounded Manim primitive format encodes compositing blend state.
+    // Preserving authored Multiply/Screen/Add is mandatory: never silently
+    // replace those semantics with a default Normal material before a
+    // native effect is dispatched.
+    if node.style.blend_mode != BlendMode::Normal {
+        return Err(unsupported(format!(
+            "Canvas node {} uses {:?} blend mode; this native contribution cannot preserve authored compositing",
+            node.id, node.style.blend_mode
         )));
     }
     Ok(())
@@ -269,6 +280,237 @@ pub fn build_blender_contribution(
 
 pub fn blender_export_path(plan: &BlenderSceneContribution) -> String {
     format!("motionwright-blender-scene-{}.glb", plan.scene_id.simple())
+}
+
+const BLENDER_ORIGINAL_SCENE_SCHEMA: &str = "motionwright.blender.original-scene-plan/1";
+
+/// A static camera using the geometry contributor's exact world basis.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BlenderOriginalSceneCamera {
+    pub object_name: String,
+    pub data_name: String,
+    pub source: motionwright_domain::CameraState,
+    pub location: [f64; 3],
+    pub rotation_euler: [f64; 3],
+    pub projection: String,
+    pub sensor_fit: String,
+    pub ortho_scale: f64,
+    pub clip_start: f64,
+    pub clip_end: f64,
+    pub resolution: [u32; 2],
+    pub pixel_aspect: [f64; 2],
+}
+
+/// Native identity properties preserve the complete source UUID.
+/// A camera has a scene identity; the domain assigns it no Canvas node UUID.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BlenderOriginalEntityIdentity {
+    pub root: String,
+    pub name: String,
+    pub properties: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BlenderOriginalScenePlan {
+    pub schema: String,
+    pub project_json_sha256: String,
+    pub native_scene_name: String,
+    pub contribution: BlenderSceneContribution,
+    pub camera: BlenderOriginalSceneCamera,
+    pub identities: Vec<BlenderOriginalEntityIdentity>,
+}
+
+fn original_identity(
+    plan: &BlenderSceneContribution,
+    root: &str,
+    name: &str,
+    role: &str,
+    node_id: Option<Uuid>,
+    project_json_sha256: &str,
+) -> BlenderOriginalEntityIdentity {
+    let mut properties = std::collections::BTreeMap::from([
+        (
+            "motionwright.project_id".into(),
+            plan.project_id.to_string(),
+        ),
+        (
+            "motionwright.generation".into(),
+            plan.generation.to_string(),
+        ),
+        ("motionwright.scene_id".into(), plan.scene_id.to_string()),
+        ("motionwright.revision".into(), plan.revision.to_string()),
+        ("motionwright.role".into(), role.into()),
+        (
+            "motionwright.project_json_sha256".into(),
+            project_json_sha256.into(),
+        ),
+    ]);
+    if let Some(id) = node_id {
+        properties.insert("motionwright.node_id".into(), id.to_string());
+    }
+    BlenderOriginalEntityIdentity {
+        root: root.into(),
+        name: name.into(),
+        properties,
+    }
+}
+
+/// Build a source plan only. This neither executes Blender nor attests a save,
+/// reopen, native render, operator approval, or visual acceptance.
+pub fn build_blender_original_scene_plan(
+    project: &Project,
+    scene_id: Uuid,
+) -> NativeResult<BlenderOriginalScenePlan> {
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeSet;
+
+    let contribution = build_blender_contribution(project, scene_id)?;
+    let scene = renderer_scene(project, scene_id, &RendererKind::Blender)?;
+    if !scene.beats.is_empty()
+        || project
+            .production_design
+            .camera_reframes
+            .iter()
+            .any(|reframe| reframe.scene_id == scene_id)
+    {
+        return Err(unsupported(
+            "Original Blender source supports a static scene without authored beats or camera transitions",
+        ));
+    }
+    if scene.camera.zoom != 1.0 || scene.camera.rotation_deg != 0.0 {
+        return Err(unsupported(
+            "Original Blender source requires unit camera zoom and zero camera rotation; unsupported camera state is not discarded",
+        ));
+    }
+    let mut object_names = BTreeSet::new();
+    let mut material_names = BTreeSet::new();
+    let mut node_ids = BTreeSet::new();
+    let mut min_z = f64::INFINITY;
+    let mut max_z = f64::NEG_INFINITY;
+    for object in &contribution.objects {
+        if !node_ids.insert(object.node_id)
+            || !object_names.insert(object.name.as_str())
+            || !material_names.insert(object.material_name.as_str())
+        {
+            return Err(unsupported(
+                "Original Blender source requires unique full node UUIDs and unambiguous native object/material names",
+            ));
+        }
+        if object
+            .location
+            .iter()
+            .chain(&object.scale)
+            .any(|value| !value.is_finite() || value.abs() > 100_000.0)
+        {
+            return Err(unsupported(
+                "Original Blender source exceeds the bounded native transform profile",
+            ));
+        }
+        min_z = min_z.min(object.location[2]);
+        max_z = max_z.max(object.location[2]);
+    }
+    let camera_location = [
+        (scene.camera.center_x - PROJECT_WIDTH / 2.0) * BLENDER_SCALE,
+        (PROJECT_HEIGHT / 2.0 - scene.camera.center_y) * BLENDER_SCALE,
+        max_z + 10.0,
+    ];
+    let clip_end = max_z - min_z + 20.0;
+    if camera_location
+        .iter()
+        .any(|value| !value.is_finite() || value.abs() > 100_000.0)
+        || !clip_end.is_finite()
+        || !(20.0..=200_020.0).contains(&clip_end)
+    {
+        return Err(unsupported(
+            "Original Blender camera exceeds the bounded position or clip profile",
+        ));
+    }
+    let project_json = serde_json::to_vec(project)
+        .map_err(|_| invalid("The current Project cannot be encoded for source identity"))?;
+    let project_json_sha256 = format!("{:x}", Sha256::digest(&project_json));
+    let camera = BlenderOriginalSceneCamera {
+        object_name: format!("mw-camera-{}", scene_id.simple()),
+        data_name: format!("mw-camera-data-{}", scene_id.simple()),
+        source: scene.camera.clone(),
+        location: camera_location,
+        rotation_euler: [0.0; 3],
+        projection: "ORTHO".into(),
+        sensor_fit: "VERTICAL".into(),
+        ortho_scale: PROJECT_HEIGHT * BLENDER_SCALE,
+        clip_start: 0.1,
+        clip_end,
+        resolution: [PROJECT_WIDTH as u32, PROJECT_HEIGHT as u32],
+        pixel_aspect: [1.0, 1.0],
+    };
+    if object_names.contains(camera.object_name.as_str()) {
+        return Err(unsupported(
+            "Original Blender camera name collides with source geometry",
+        ));
+    }
+    let native_scene_name = format!("mw-native-scene-{}", scene_id.simple());
+    let mut identities = vec![
+        original_identity(
+            &contribution,
+            "scenes",
+            &native_scene_name,
+            "native_scene",
+            None,
+            &project_json_sha256,
+        ),
+        original_identity(
+            &contribution,
+            "collections",
+            &contribution.collection_name,
+            "scene_collection",
+            None,
+            &project_json_sha256,
+        ),
+        original_identity(
+            &contribution,
+            "objects",
+            &camera.object_name,
+            "scene_camera",
+            None,
+            &project_json_sha256,
+        ),
+        original_identity(
+            &contribution,
+            "cameras",
+            &camera.data_name,
+            "scene_camera_data",
+            None,
+            &project_json_sha256,
+        ),
+    ];
+    for object in &contribution.objects {
+        identities.push(original_identity(
+            &contribution,
+            "objects",
+            &object.name,
+            "canvas_object",
+            Some(object.node_id),
+            &project_json_sha256,
+        ));
+        identities.push(original_identity(
+            &contribution,
+            "materials",
+            &object.material_name,
+            "canvas_material",
+            Some(object.node_id),
+            &project_json_sha256,
+        ));
+    }
+    Ok(BlenderOriginalScenePlan {
+        schema: BLENDER_ORIGINAL_SCENE_SCHEMA.into(),
+        project_json_sha256,
+        native_scene_name,
+        contribution,
+        camera,
+        identities,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -544,6 +786,68 @@ mod tests {
     }
 
     #[test]
+    fn blender_projection_negotiates_non_normal_blend_before_dispatch() {
+        // MW05-E01-02: compositing semantics are authored content.
+        // The typed Blender contribution has no blend-mode field, so it
+        // must refuse Multiply/Screen/Add rather than silently output a
+        // Normal material. No SDK, Broker or rendering work is involved.
+        let original = project_with_renderer(RendererKind::Blender);
+        let scene_id = original.scenes[0].id;
+        let original_wire = serde_json::to_value(&original).unwrap();
+        let normal_plan = build_blender_contribution(&original, scene_id).unwrap();
+        assert_eq!(normal_plan.objects.len(), 1);
+        assert_eq!(
+            original.scenes[0].nodes[0].style.blend_mode,
+            BlendMode::Normal
+        );
+
+        for mode in [BlendMode::Multiply, BlendMode::Screen, BlendMode::Add] {
+            let mut edited = original.clone();
+            edited.scenes[0].nodes[0].style.blend_mode = mode;
+            edited.validate().unwrap();
+            let authored_before = serde_json::to_value(&edited).unwrap();
+            let error = build_blender_contribution(&edited, scene_id).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported, "{mode:?}");
+            assert!(error.message.contains("blend mode"), "{mode:?}: {error}");
+            assert!(
+                error.message.contains(&format!("{mode:?}")),
+                "the unsupported mode must be named for the author"
+            );
+            assert_eq!(serde_json::to_value(&edited).unwrap(), authored_before);
+            assert_eq!(edited.scenes[0].nodes[0].style.blend_mode, mode);
+            // A failed projected scene cannot be used to dispatch a
+            // material.create or export operation; the Normal source and
+            // its already accepted pure projection remain unchanged.
+            assert_eq!(serde_json::to_value(&original).unwrap(), original_wire);
+            assert_eq!(
+                build_blender_contribution(&original, scene_id).unwrap(),
+                normal_plan
+            );
+        }
+    }
+
+    #[test]
+    fn manim_projection_rejects_non_normal_blend_before_compiling_scene() {
+        // ManimPrimitive also has no compositing blend-mode member.
+        // Sharing the flat semantics guard must not produce Python for
+        // unsupported creative content either.
+        let original = project_with_renderer(RendererKind::ManimCommunity);
+        let scene_id = original.scenes[0].id;
+        assert!(build_manim_plan(&original, scene_id).is_ok());
+
+        for mode in [BlendMode::Multiply, BlendMode::Screen, BlendMode::Add] {
+            let mut authored = original.clone();
+            authored.scenes[0].nodes[0].style.blend_mode = mode;
+            authored.validate().unwrap();
+            let before = serde_json::to_value(&authored).unwrap();
+            let error = build_manim_plan(&authored, scene_id).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported, "{mode:?}");
+            assert!(error.message.contains("blend mode"));
+            assert_eq!(serde_json::to_value(&authored).unwrap(), before);
+        }
+    }
+
+    #[test]
     fn blender_semantic_names_preserve_readable_identity_with_bounded_uniqueness() {
         let id = Uuid::parse_str("01234567-89ab-cdef-0123-456789abcdef").unwrap();
         let name = blender_semantic_name(
@@ -610,6 +914,141 @@ mod tests {
     fn renderer_projection_fails_closed_on_foreign_renderer() {
         let project = project_with_renderer(RendererKind::MotionCanvas);
         let error = build_manim_plan(&project, project.scenes[0].id).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+    }
+    #[test]
+    fn original_blender_plan_preserves_the_existing_geometry_and_full_identity() {
+        let project = project_with_renderer(RendererKind::Blender);
+        let scene_id = project.scenes[0].id;
+        let plan = build_blender_original_scene_plan(&project, scene_id).unwrap();
+        assert_eq!(
+            plan.contribution,
+            build_blender_contribution(&project, scene_id).unwrap()
+        );
+        assert_eq!(plan.camera.source, project.scenes[0].camera);
+        assert_eq!(plan.camera.resolution, [1920, 1080]);
+        assert_eq!(plan.camera.pixel_aspect, [1.0, 1.0]);
+        assert_eq!(plan.camera.sensor_fit, "VERTICAL");
+        assert_eq!(plan.camera.projection, "ORTHO");
+        assert_eq!(plan.camera.ortho_scale, 10.8);
+        assert_eq!(plan.identities.len(), 6);
+        let object = plan
+            .identities
+            .iter()
+            .find(|identity| identity.properties["motionwright.role"] == "canvas_object")
+            .unwrap();
+        assert_eq!(
+            object.properties["motionwright.node_id"],
+            project.scenes[0].nodes[0].id.to_string()
+        );
+        assert_eq!(
+            object.properties["motionwright.project_id"],
+            project.id.to_string()
+        );
+        assert_eq!(
+            object.properties["motionwright.scene_id"],
+            scene_id.to_string()
+        );
+        assert_eq!(
+            object.properties["motionwright.generation"],
+            project.generation.to_string()
+        );
+        assert_eq!(
+            object.properties["motionwright.revision"],
+            project.revision.to_string()
+        );
+    }
+
+    #[test]
+    fn original_blender_camera_uses_geometry_basis_without_inventing_a_canvas_uuid() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        project.scenes[0].camera.center_x = 1000.0;
+        project.scenes[0].camera.center_y = 600.0;
+        project.scenes[0].camera.safe_margin = 0.08;
+        let plan = build_blender_original_scene_plan(&project, project.scenes[0].id).unwrap();
+        assert_eq!(plan.camera.location[0], 0.4);
+        assert_eq!(plan.camera.location[1], -0.6);
+        assert_eq!(plan.camera.rotation_euler, [0.0; 3]);
+        assert_eq!(plan.camera.source.safe_margin, 0.08);
+        assert!(plan.camera.location[2] > plan.contribution.objects[0].location[2]);
+        for identity in plan
+            .identities
+            .iter()
+            .filter(|identity| identity.properties["motionwright.role"].starts_with("scene_camera"))
+        {
+            assert!(!identity.properties.contains_key("motionwright.node_id"));
+            assert_eq!(
+                identity.properties["motionwright.scene_id"],
+                project.scenes[0].id.to_string()
+            );
+        }
+    }
+
+    #[test]
+    fn original_blender_plan_refuses_unsupported_zoom_and_rotation() {
+        for (zoom, rotation) in [(1.1, 0.0), (1.0, 15.0)] {
+            let mut project = project_with_renderer(RendererKind::Blender);
+            project.scenes[0].camera.zoom = zoom;
+            project.scenes[0].camera.rotation_deg = rotation;
+            let error =
+                build_blender_original_scene_plan(&project, project.scenes[0].id).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported);
+        }
+    }
+
+    #[test]
+    fn original_blender_plan_rejects_native_name_collision_between_distinct_full_uuids() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        project.scenes[0].nodes[0].id =
+            Uuid::parse_str("01234567-89ab-4000-8000-000000000001").unwrap();
+        let mut other = project.scenes[0].nodes[0].clone();
+        other.id = Uuid::parse_str("01234567-89ab-4000-8000-000000000002").unwrap();
+        other.x += 400.0;
+        project.scenes[0].nodes.push(other);
+        let error = build_blender_original_scene_plan(&project, project.scenes[0].id).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("unambiguous"));
+    }
+
+    #[test]
+    fn original_blender_plan_binds_content_beyond_the_revision_label() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        let scene_id = project.scenes[0].id;
+        let original = build_blender_original_scene_plan(&project, scene_id).unwrap();
+        project.scenes[0].nodes[0].style.fill = Some("#114477".into());
+        let changed = build_blender_original_scene_plan(&project, scene_id).unwrap();
+        assert_eq!(
+            original.contribution.revision,
+            changed.contribution.revision
+        );
+        assert_ne!(original.project_json_sha256, changed.project_json_sha256);
+        for identity in &changed.identities {
+            assert_eq!(
+                identity.properties["motionwright.project_json_sha256"],
+                changed.project_json_sha256,
+            );
+        }
+    }
+
+    #[test]
+    fn original_blender_plan_rejects_unbounded_depth_and_camera_position() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        project.scenes[0].nodes[0].z_index = i32::MAX;
+        let error = build_blender_original_scene_plan(&project, project.scenes[0].id).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        project.scenes[0].nodes[0].z_index = 1;
+        project.scenes[0].camera.center_x = 1.0e12;
+        let error = build_blender_original_scene_plan(&project, project.scenes[0].id).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn original_blender_plan_rejects_non_finite_camera_and_foreign_renderer() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        project.scenes[0].camera.center_y = f64::NAN;
+        assert!(build_blender_original_scene_plan(&project, project.scenes[0].id).is_err());
+        let foreign = project_with_renderer(RendererKind::MotionCanvas);
+        let error = build_blender_original_scene_plan(&foreign, foreign.scenes[0].id).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidArgument);
     }
 }
