@@ -1625,13 +1625,7 @@ def run_physical_case(args):
     except Exception as error:
         result["error"] = life.custody_error("physical_case", error)
     finally:
-        try:
-            result["upload_budget"] = synthetic_upload_budget(case_root)
-        except Exception as error:
-            result["status"] = "INCOMPLETE"
-            result["upload_admission"] = {"state": "NOT_ADMITTED", "error": type(error).__name__,
-                                          "originals_removed": False}
-        nsis.write_json(root / "case-result.json", result)
+        finalize_case_result(root, case_root, result)
     print(json.dumps({"case": args.case, "status": result["status"], "human_acceptance": "NOT_RUN"}))
     return 0 if result["status"] == "OBSERVED" else 1
 
@@ -1768,6 +1762,24 @@ def invoke_updated_observer(root, arguments, environment):
             "launch_limit": 1, "replay_authorized": False})
     nsis.require(original == life.observed_terminal(0) and not errors, "updated_application_incomplete")
     return original
+
+
+
+def finalize_case_result(root, case_root, result):
+    """Retain an already known observation even when aggregate custody fails."""
+    try:
+        budget = synthetic_upload_budget(case_root)
+        result["upload_budget"] = budget
+        projected = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        nsis.require(len(projected) <= nsis.MAX_RENDER_BYTES
+                     and budget["bytes"] + len(projected) <= nsis.MAX_DIAGNOSTIC_BYTES
+                     and budget["files"] + 1 <= nsis.MAX_DIAGNOSTIC_FILES,
+                     "synthetic_final_projection_budget_exceeded")
+    except Exception as error:
+        result["status"] = "INCOMPLETE"
+        result["upload_admission"] = {"state": "NOT_ADMITTED", "error": type(error).__name__,
+                                      "originals_removed": False}
+    nsis.write_json(root / "case-result.json", result)
 
 
 def main(argv=None):

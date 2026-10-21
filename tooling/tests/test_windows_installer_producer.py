@@ -520,5 +520,19 @@ class ProducerControls(unittest.TestCase):
                                                 Path(f.install_path), args)
 
 
+    def test_final_projection_budget_does_not_hide_known_observation(self):
+        output = self.root / "final-projection"
+        output.mkdir()
+        result = {"status": "OBSERVED", "observation": {"original_terminal": "ACK"}}
+        budget = {"bytes": nsis.MAX_DIAGNOSTIC_BYTES - 1, "files": 1}
+        with mock.patch.object(producer, "synthetic_upload_budget", return_value=budget):
+            producer.finalize_case_result(output, self.root, result)
+        retained = json.loads((output / "case-result.json").read_bytes())
+        self.assertEqual(retained["status"], "INCOMPLETE")
+        self.assertEqual(retained["observation"], {"original_terminal": "ACK"})
+        self.assertEqual(retained["upload_admission"]["state"], "NOT_ADMITTED")
+        self.assertFalse(retained["upload_admission"]["originals_removed"])
+
+
 if __name__ == "__main__":
     unittest.main()
