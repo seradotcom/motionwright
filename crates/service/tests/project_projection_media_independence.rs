@@ -13,7 +13,9 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::{self, Write},
     path::{Path, PathBuf},
+    time::Instant,
 };
 use tempfile::tempdir;
 use uuid::Uuid;
@@ -144,21 +146,42 @@ fn cas_files(root: &Path) -> BTreeMap<PathBuf, String> {
     result
 }
 
+// Write directly to stderr so progress survives libtest capture and timeout.
+// Stdout remains available for the existing exact-case result oracle.
+fn diagnostic_phase(started: Instant, phase: &str) {
+    let mut output = io::stderr().lock();
+    writeln!(
+        output,
+        "project08-diagnostic: phase={phase} elapsed_us={}",
+        started.elapsed().as_micros()
+    )
+    .expect("write project projection diagnostic phase");
+    output
+        .flush()
+        .expect("flush project projection diagnostic phase");
+}
+
 #[test]
 fn all_large_project_pages_reopen_without_selected_imported_blobs() {
+    let diagnostic_started = Instant::now();
+    diagnostic_phase(diagnostic_started, "start");
     let directory = tempdir().unwrap();
     let database = directory.path().join("project.sqlite3");
     let initial = large_project();
+    diagnostic_phase(diagnostic_started, "fixture_validated");
     {
         let mut store = Store::open(&database).unwrap();
         store.create_project(&initial).unwrap();
     }
+    diagnostic_phase(diagnostic_started, "initial_persistence_complete");
     let service = StudioService::open(&database).unwrap();
+    diagnostic_phase(diagnostic_started, "service_open_complete");
     let other_first = service.create_project("Other project one").unwrap();
     let other_second = service.create_project("Other project two").unwrap();
     let mut expected = initial;
     let mut imports = vec![];
     for index in 0..3 {
+        diagnostic_phase(diagnostic_started, &format!("import_{index}_begin"));
         let source = directory.path().join(format!("source-{index}.wav"));
         let bytes = pcm_wav(500 + i16::try_from(index).unwrap());
         fs::write(&source, &bytes).unwrap();
@@ -201,12 +224,14 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
         };
         assert_eq!(fs::read(&blob).unwrap(), bytes);
         imports.push((source, bytes, digest, blob));
+        diagnostic_phase(diagnostic_started, &format!("import_{index}_complete"));
     }
     assert_eq!(expected.assets.len(), 3);
     assert_eq!(expected.audio.voice_tracks.len(), 1);
     let blob_root = service.store().lock().blob_root().to_path_buf();
     assert_eq!(cas_files(&blob_root).len(), 3);
     drop(service);
+    diagnostic_phase(diagnostic_started, "imports_complete");
 
     // Remove only this test's first two admitted media objects and their inputs.
     // The third object is a positive custody control, not required for page reads.
@@ -220,6 +245,7 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
         }
     };
     assert_missing();
+    diagnostic_phase(diagnostic_started, "missing_media_preconditions_complete");
     let cas_before = cas_files(&blob_root);
     assert_eq!(cas_before.len(), 1);
     let sql_before = logical_rows(&database);
@@ -230,6 +256,7 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
         );
     }
 
+    diagnostic_phase(diagnostic_started, "custody_before_complete");
     let service = StudioService::open(&database).unwrap();
     let expected_library: BTreeMap<_, _> = [&expected, &other_first, &other_second]
         .into_iter()
@@ -272,10 +299,12 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
     assert_eq!(listed, expected_library.keys().copied().collect());
     assert_eq!(library_pages, expected_library.len());
     assert_missing();
+    diagnostic_phase(diagnostic_started, "library_complete");
 
     let head = service.project_projection_head(expected.id).unwrap();
     assert_eq!(head.scene_count as usize, SCENES);
     assert_eq!(head.identity.checked_stamp().unwrap(), expected.stamp());
+    diagnostic_phase(diagnostic_started, "projection_head_complete");
     let mut scene_cursor = None;
     let mut scene_count = 0;
     let mut scene_pages = 0;
@@ -330,6 +359,12 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
             assert_eq!(&nodes, &scene.nodes);
             node_count += nodes.len();
             scene_count += 1;
+            if scene_count.is_multiple_of(50) {
+                diagnostic_phase(
+                    diagnostic_started,
+                    &format!("scenes_{scene_count}_nodes_{node_count}_node_pages_{node_pages}"),
+                );
+            }
         }
         scene_pages += 1;
         scene_cursor = page.next_cursor;
@@ -349,10 +384,12 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
         node_pages,
         SCENES * NODES_PER_SCENE.div_ceil(usize::from(NODE_PAGE_SIZE))
     );
+    diagnostic_phase(diagnostic_started, "all_projection_pages_complete");
     drop(service);
     assert_eq!(logical_rows(&database), sql_before);
     assert_eq!(cas_files(&blob_root), cas_before);
     assert_missing();
+    diagnostic_phase(diagnostic_started, "custody_after_complete");
 
     let reopened = StudioService::open(&database).unwrap();
     assert_eq!(reopened.project(expected.id).unwrap(), expected);
@@ -364,6 +401,7 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
         head.identity
     );
     drop(reopened);
+    diagnostic_phase(diagnostic_started, "reopen_complete");
     assert_eq!(logical_rows(&database), sql_before);
     assert_eq!(cas_files(&blob_root), cas_before);
     let (retained_source, retained_bytes, retained_digest, retained_blob) = &imports[2];
@@ -374,6 +412,7 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
         *retained_digest
     );
     assert_missing();
+    diagnostic_phase(diagnostic_started, "final_custody_complete");
     println!(
         "project08-missing-media: projects={} project_pages={} scenes={} scene_pages={} nodes={} node_pages={} imported_assets=3 missing_blobs=2 retained_blobs=1 sql_unchanged=true",
         expected_library.len(),
