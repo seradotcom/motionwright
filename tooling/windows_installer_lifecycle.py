@@ -49,6 +49,8 @@ SOURCE_PATHS = (
     "tooling/tests/test_nsis_owned_files.py",
     "tooling/windows_installer_lifecycle.py",
     "tooling/tests/test_windows_installer_lifecycle.py",
+    "tooling/windows_installer_producer.py",
+    "tooling/tests/test_windows_installer_producer.py",
     "tooling/ci_test_runner.py",
     "tooling/package_receipt.py",
     "tooling/release_manifest.py",

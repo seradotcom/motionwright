@@ -1,0 +1,251 @@
+name: Windows NSIS source, compile and synthetic lifecycle verification
+
+on:
+  push:
+    branches: ['verify/windows-nsis-interruption-*']
+  workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: 'G0 contracts, compilation only, or explicit synthetic disposable Windows observations'
+        required: true
+        type: choice
+        default: g0
+        options: [g0, compile, physical]
+      product_source_sha:
+        description: 'Exact 40-character product source; independent of the gate checkout'
+        required: true
+        type: string
+        default: 'c1a1073688b263a802376ead9d2e62f4420e0946'
+      oracle_source_sha:
+        description: 'Exact reviewed updated-application oracle source'
+        required: true
+        type: string
+        default: '016cd88c4ef20ada70fcc446361c40e4a0b81ca1'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nsis-interruption-${{ github.ref }}-${{ github.event_name }}-${{ inputs.verification_scope || 'g0' }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  g0:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      product_sha: ${{ steps.identity.outputs.product_sha }}
+      oracle_sha: ${{ steps.identity.outputs.oracle_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13.16'
+      - name: Admit explicit source identity without shell interpolation
+        id: identity
+        env:
+          REQUESTED_PRODUCT_SHA: ${{ inputs.product_source_sha || 'c1a1073688b263a802376ead9d2e62f4420e0946' }}
+          REQUESTED_ORACLE_SHA: ${{ inputs.oracle_source_sha || '016cd88c4ef20ada70fcc446361c40e4a0b81ca1' }}
+          REQUESTED_SCOPE: ${{ inputs.verification_scope || 'g0' }}
+        run: |
+          python3 -I -B - <<'PY'
+          import os
+          import re
+          scope = os.environ['REQUESTED_SCOPE']
+          if scope not in ('g0', 'compile', 'physical'):
+              raise SystemExit('verification_scope must be g0, compile or physical')
+          if os.environ['GITHUB_EVENT_NAME'] != 'workflow_dispatch' and scope != 'g0':
+              raise SystemExit('automatic events only admit source controls')
+          oracle = os.environ['REQUESTED_ORACLE_SHA']
+          if oracle != '016cd88c4ef20ada70fcc446361c40e4a0b81ca1':
+              raise SystemExit('oracle_source_sha is outside the reviewed oracle contract')
+          value = os.environ['REQUESTED_PRODUCT_SHA']
+          if re.fullmatch(r'[0-9a-f]{40}', value) is None:
+              raise SystemExit('product_source_sha must be an exact lowercase Git SHA')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              stream.write('product_sha=' + value + '\n')
+              stream.write('oracle_sha=' + oracle + '\n')
+          PY
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Always enforce source, contract, format and whitespace checks
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 -B -E -s tooling/source_policy.py
+          python3 -B -E -s tooling/acceptance_policy.py
+          python3 -B -E -s tooling/creative_status_policy.py
+          python3 -B -E -s tooling/public_surface_policy.py
+          cargo fmt --all -- --check
+      - name: Discover and execute the complete source-bound checkpoint contract roster
+        run: >-
+          python3 -B -E -s tooling/ci_test_runner.py
+          --repo "$GITHUB_WORKSPACE"
+          --test-directory tooling/tests
+          --pattern test_windows_nsis_interruption.py
+          --pattern test_windows_installer_lifecycle.py
+          --pattern test_windows_installer_producer.py
+          --mode both
+          --expected-source "$GITHUB_SHA"
+          --report "$RUNNER_TEMP/motionwright-nsis-g0/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/receipt.json"
+          --require-complete
+      - name: Preserve original G0 receipts even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nsis-interruption-g0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/motionwright-nsis-g0/${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  compile:
+    if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'compile' || inputs.verification_scope == 'physical')
+    needs: g0
+    runs-on: windows-latest
+    timeout-minutes: 100
+    env:
+      NSIS_OUTPUT: ${{ github.workspace }}/nsis-evidence/${{ github.run_id }}-${{ github.run_attempt }}
+      CARGO_HOME: ${{ github.workspace }}/build-tools/cargo
+      RUSTUP_HOME: ${{ github.workspace }}/build-tools/rustup
+      CARGO_TERM_COLOR: never
+    steps:
+      - name: Checkout exact gate implementation
+        if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'compile' || inputs.verification_scope == 'physical')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: gate
+          persist-credentials: false
+      - name: Checkout independent exact product source
+        if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'compile' || inputs.verification_scope == 'physical')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.g0.outputs.product_sha }}
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'compile' || inputs.verification_scope == 'physical')
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'compile' || inputs.verification_scope == 'physical')
+        with:
+          python-version: '3.13.16'
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'compile' || inputs.verification_scope == 'physical')
+        with:
+          toolchain: 1.98.1
+      - name: Build one real application and compile normal plus opt-in; never launch a setup
+        if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'compile' || inputs.verification_scope == 'physical')
+        shell: pwsh
+        env:
+          PRODUCT_SHA: ${{ needs.g0.outputs.product_sha }}
+          VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $predecessorMode = if ($env:VERIFICATION_SCOPE -eq 'physical') { 'reviewed-synthetic' } else { 'none' }
+          python -I -B "$env:GITHUB_WORKSPACE/gate/tooling/windows_nsis_interruption.py" compile `
+            --gate-repo "$env:GITHUB_WORKSPACE/gate" --gate-sha "$env:GITHUB_SHA" `
+            --product-repo "$env:GITHUB_WORKSPACE/product" --product-sha "$env:PRODUCT_SHA" `
+            --output "$env:NSIS_OUTPUT" --predecessor-mode "$predecessorMode"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve both variants and original command custody even when compilation fails
+        if: always() && github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'compile' || inputs.verification_scope == 'physical')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nsis-compile-${{ github.sha }}-product-${{ needs.g0.outputs.product_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.NSIS_OUTPUT }}/source-before.json
+            ${{ env.NSIS_OUTPUT }}/compile-summary.json
+            ${{ env.NSIS_OUTPUT }}/commands
+            ${{ env.NSIS_OUTPUT }}/inputs
+            ${{ env.NSIS_OUTPUT }}/original-source
+            ${{ env.NSIS_OUTPUT }}/variants
+            ${{ env.NSIS_OUTPUT }}/target/release/nsis
+            ${{ env.NSIS_OUTPUT }}/target/release/bundle/nsis
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  physical:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'physical'
+    needs: [g0, compile]
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        case: [default-uninstall, interruption-recovery]
+    env:
+      MW_NSIS_VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
+      PHYSICAL_CASE: ${{ matrix.case }}
+      PRODUCT_SHA: ${{ needs.g0.outputs.product_sha }}
+      ORACLE_SHA: ${{ needs.g0.outputs.oracle_sha }}
+    steps:
+      - name: Checkout exact gate producer
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'physical'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: gate
+          persist-credentials: false
+      - name: Checkout exact compiled product source
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'physical'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.g0.outputs.product_sha }}
+          path: product
+          persist-credentials: false
+      - name: Checkout exact unchanged updated-application oracle
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'physical'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.g0.outputs.oracle_sha }}
+          path: oracle
+          persist-credentials: false
+      - name: Set up source runner
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'physical'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13.16'
+      - name: Download this run's single compiled candidate and complete profile family
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'physical'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: nsis-compile-${{ github.sha }}-product-${{ needs.g0.outputs.product_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/nsis-physical/${{ matrix.case }}/originals/compile
+      - name: Observe one closed synthetic case without rebuilding
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'physical'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -I -B "$env:GITHUB_WORKSPACE/gate/tooling/windows_installer_producer.py" physical `
+            --case "$env:PHYSICAL_CASE" --gate-sha "$env:GITHUB_SHA" `
+            --product-sha "$env:PRODUCT_SHA" --oracle-sha "$env:ORACLE_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve new synthetic originals and oracle custody on every outcome
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'physical'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nsis-physical-${{ matrix.case }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ github.workspace }}/nsis-physical/${{ matrix.case }}/originals
+            !${{ github.workspace }}/nsis-physical/${{ matrix.case }}/originals/compile
+            ${{ github.workspace }}/nsis-physical/${{ matrix.case }}/observer-output
+            ${{ github.workspace }}/nsis-physical/${{ matrix.case }}/synthetic-bootstrap
+            ${{ github.workspace }}/nsis-physical/${{ matrix.case }}/synthetic-checkpoint
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
