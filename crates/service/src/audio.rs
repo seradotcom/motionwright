@@ -801,6 +801,30 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+pub(super) type OriginalMixPhaseHook = Box<dyn FnOnce()>;
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static BEFORE_ORIGINAL_MIX_DECODE: std::cell::RefCell<Option<OriginalMixPhaseHook>> =
+        const { std::cell::RefCell::new(None) };
+    pub(super) static BEFORE_ORIGINAL_MIX_RECHECK: std::cell::RefCell<Option<OriginalMixPhaseHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn run_original_mix_decode_hook() {
+    let hook = BEFORE_ORIGINAL_MIX_DECODE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+#[cfg(test)]
+pub(super) fn run_original_mix_recheck_hook() {
+    let hook = BEFORE_ORIGINAL_MIX_RECHECK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Exact short-form PCM source bytes for first-party original MixPlan.
 /// Read only after Storage verified a project-owned, content-addressed blob.
 /// Does not resample, infer speech, normalize, or publish a rendered file.
@@ -824,6 +848,8 @@ pub fn decode_original_mix_pcm(
             "Original mix source must be a bounded immutable audio file",
         ));
     }
+    #[cfg(test)]
+    run_original_mix_decode_hook();
     let (mut format, mut decoder, track_id) = open_audio(owner_path)?;
     let mut raw = Vec::new();
     let mut count = 0_u64;
@@ -883,6 +909,8 @@ pub fn decode_original_mix_pcm(
     }
     // Verify bytes again after decode. A file that changed between the
     // initial Storage digest grant and the final decode is never admitted.
+    #[cfg(test)]
+    run_original_mix_recheck_hook();
     let mut reader = File::open(owner_path)?;
     let mut hasher = Sha256::new();
     let mut total = 0_u64;

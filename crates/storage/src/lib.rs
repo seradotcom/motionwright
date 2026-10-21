@@ -1743,12 +1743,32 @@ fn checked_existing_blob_path_from_root(blob_root: &Path, digest: &str) -> Resul
         Err(error) => Err(error.into()),
     }
 }
+#[cfg(test)]
+type VerifiedBlobCaptureHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_VERIFIED_BLOB_CAPTURE:
+        std::cell::RefCell<Option<VerifiedBlobCaptureHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_verified_blob_capture_hook(path: &Path) {
+    let hook = BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(path);
+    }
+}
+
 fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> Result<Vec<u8>> {
     let path = checked_existing_blob_path_from_root(blob_root, digest)?;
     let size = ensure_regular_file(&path, "content-addressed blob")?.len();
     if size > limit {
         return Err(StorageError::BlobTooLarge { size, limit });
     }
+    #[cfg(test)]
+    run_verified_blob_capture_hook(&path);
     let bytes = fs::read(path)?;
     if hex::encode(Sha256::digest(&bytes)) != digest {
         return Err(StorageError::InvalidBackup(
@@ -2754,5 +2774,137 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
+mod verified_blob_capture_budget_tests {
+    use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    struct CaptureHookGuard;
+    impl Drop for CaptureHookGuard {
+        fn drop(&mut self) {
+            let unused = BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| slot.borrow_mut().take());
+            drop(unused);
+        }
+    }
+
+    fn before_capture(hook: impl FnOnce(&Path) + 'static) -> CaptureHookGuard {
+        BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(
+                slot.is_none(),
+                "a verified-blob capture hook is already installed"
+            );
+            *slot = Some(Box::new(hook));
+        });
+        CaptureHookGuard
+    }
+
+    #[test]
+    fn verified_blob_capture_keeps_empty_exact_and_oversize_controls() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("store.sqlite3")).unwrap();
+        for source_bytes in [b"".as_slice(), b"abcd".as_slice()] {
+            let source = temp
+                .path()
+                .join(format!("source-{}.bin", source_bytes.len()));
+            fs::write(&source, source_bytes).unwrap();
+            let descriptor = store.ingest_blob_file(&source).unwrap();
+            let limit = source_bytes.len() as u64;
+            assert_eq!(
+                store.read_blob(&descriptor.sha256, limit).unwrap(),
+                source_bytes
+            );
+            if limit != 0 {
+                assert!(matches!(
+                    store.read_blob(&descriptor.sha256, limit - 1),
+                    Err(StorageError::BlobTooLarge { size: 4, limit: 3 })
+                ));
+            }
+            assert_eq!(fs::read(&source).unwrap(), source_bytes);
+        }
+    }
+
+    #[test]
+    fn verified_blob_capture_rejects_growth_after_metadata_at_limit_plus_one() {
+        const LIMIT: u64 = 4;
+        const GROWN: &[u8] = b"abcdefgh";
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("store.sqlite3")).unwrap();
+        let source = temp.path().join("source.bin");
+        fs::write(&source, GROWN).unwrap();
+        let descriptor = store.ingest_blob_file(&source).unwrap();
+        let cas_path = store.verified_blob_path(&descriptor.sha256).unwrap();
+
+        assert_eq!(descriptor.sha256, hex::encode(Sha256::digest(GROWN)));
+        assert_eq!(
+            store
+                .read_blob(&descriptor.sha256, GROWN.len() as u64)
+                .unwrap(),
+            GROWN
+        );
+
+        // Preserve the same regular file; only shorten its bytes before admission.
+        OpenOptions::new()
+            .write(true)
+            .open(&cas_path)
+            .unwrap()
+            .set_len(LIMIT)
+            .unwrap();
+        assert_eq!(fs::metadata(&cas_path).unwrap().len(), LIMIT);
+        assert_eq!(fs::read(&cas_path).unwrap(), &GROWN[..LIMIT as usize]);
+
+        let calls = Rc::new(Cell::new(0_usize));
+        let hook_calls = Rc::clone(&calls);
+        let expected_path = cas_path.clone();
+        let _hook = before_capture(move |path| {
+            assert_eq!(path, expected_path.as_path());
+            assert_eq!(fs::metadata(path).unwrap().len(), LIMIT);
+            hook_calls.set(hook_calls.get() + 1);
+            let mut append = OpenOptions::new().append(true).open(path).unwrap();
+            append.write_all(&GROWN[LIMIT as usize..]).unwrap();
+            append.flush().unwrap();
+            assert_eq!(append.metadata().unwrap().len(), GROWN.len() as u64);
+        });
+
+        let result = store.read_blob(&descriptor.sha256, LIMIT);
+        assert_eq!(
+            calls.get(),
+            1,
+            "growth must occur exactly at the capture boundary"
+        );
+        BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| {
+            assert!(
+                slot.borrow().is_none(),
+                "the one-shot hook must be consumed"
+            );
+        });
+        assert_eq!(fs::read(&cas_path).unwrap(), GROWN);
+        assert_eq!(fs::read(&source).unwrap(), GROWN);
+
+        match result {
+            Err(StorageError::BlobTooLarge {
+                size,
+                limit: reported_limit,
+            }) => {
+                assert_eq!(
+                    (size, reported_limit),
+                    (LIMIT + 1, LIMIT),
+                    "report bytes actually observed by the bounded capture"
+                );
+            }
+            Ok(bytes) => {
+                assert_eq!(bytes, GROWN, "baseline witness must be the grown object");
+                assert_eq!(hex::encode(Sha256::digest(&bytes)), descriptor.sha256);
+                panic!(
+                    "verified blob capture accepted eight bytes after admitting a four-byte source with limit four"
+                );
+            }
+            Err(error) => {
+                panic!("expected streaming BlobTooLarge {{ size: 5, limit: 4 }}, got {error:?}");
+            }
+        }
     }
 }
