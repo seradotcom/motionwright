@@ -125,6 +125,7 @@ const BLENDER_COMMANDS: &[&str] = &[
 
 const MANIM_COMMANDS: &[&str] = &[
     "driver.manim-community.render.start",
+    "driver.manim-community.static.render.start",
     "driver.manim-community.camera.render.start",
     "driver.manim-community.render.status",
     "driver.manim-community.render.cancel",
@@ -2077,7 +2078,49 @@ impl ProductionCoordinator {
         }))
     }
 
+    /// Normal canonical production preserves the saved deliverable and source
+    /// clock. V1 is available only through the explicitly named legacy method.
     pub async fn realize_manim_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        profile: ManimRenderProfile,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        profile
+            .validate()
+            .map_err(|error| invalid(format!("Manim render profile is invalid: {error}")))?;
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        let deliverable_id =
+            crate::manim_static_projection::select_saved_manim_deliverable_for_profile(
+                &project, expected, scene_id, &profile,
+            )?;
+        if project
+            .production_design
+            .camera_reframes
+            .iter()
+            .any(|row| row.scene_id == scene_id)
+        {
+            return self
+                .realize_manim_camera_scene(
+                    project_id,
+                    expected,
+                    request_id,
+                    scene_id,
+                    deliverable_id,
+                )
+                .await;
+        }
+        self.realize_manim_static_scene(project_id, expected, request_id, scene_id, deliverable_id)
+            .await
+    }
+
+    /// Explicit compatibility projection for the V1 wire contract. This route
+    /// has no canonical clock or editable-source proof and is not the default
+    /// Project realization entrypoint. Callers must select it by name.
+    pub async fn realize_legacy_manim_scene(
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
@@ -2123,6 +2166,42 @@ impl ProductionCoordinator {
                 plan_value,
                 plan_sha256,
                 profile,
+                requires_camera_getters: false,
+            },
+        )
+        .await
+    }
+
+    /// Explicit static V2 production from the current canonical snapshot.
+    /// The legacy command remains a separate compatibility route; a duration,
+    /// source package or native getter proof is never invented for a V1 request.
+    pub async fn realize_manim_static_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        deliverable_id: Uuid,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        let source = crate::manim_static_projection::prepare_saved_manim_static_source(
+            &self.service,
+            project_id,
+            expected,
+            scene_id,
+            deliverable_id,
+        )?;
+        self.realize_prepared_manim_scene(
+            project_id,
+            expected,
+            request_id,
+            scene_id,
+            PreparedManimRender {
+                start_command: "driver.manim-community.static.render.start",
+                plan_value: serde_json::to_value(&source.plan)
+                    .map_err(|_| invalid("Static Manim source cannot be encoded"))?,
+                plan_sha256: source.closure.plan_sha256,
+                profile: source.plan.render_profile,
                 requires_camera_getters: false,
             },
         )
@@ -2374,6 +2453,25 @@ impl ProductionCoordinator {
                 }
             }
         }
+        if start_command == "driver.manim-community.static.render.start" {
+            let source_check = serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Original static Manim plan cannot be reopened"))
+                .and_then(|plan: motionwright_manim_profile::ManimScenePlanV2| {
+                    crate::manim_static_projection::verify_rendered_manim_static_source(
+                        &self.client.connection().output_root,
+                        &relative_path,
+                        &plan,
+                        &artifact,
+                    )
+                });
+            match source_check {
+                Ok(source) => verified_artifact["static_source"] = source,
+                Err(error) => {
+                    verified_artifact["static_source_custody_error"] =
+                        json!({"message": error.to_string()})
+                }
+            }
+        }
         Ok(json!({
             "renderer": "manim-community",
             "native_driver": "driver:manim-community",
@@ -2607,6 +2705,126 @@ mod tests {
         let service = StudioService::from_store(store);
         let project = service.create_project("Production fixture").unwrap();
         (service, project, temp)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn normal_manim_entrypoint_rejects_unrepresented_text_without_native_effect() {
+        use std::sync::atomic::Ordering;
+        let (service, initial, temp) = fixture_service();
+        let mut p = service
+            .apply(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "normal-add-scene",
+                &Change::AddScene {
+                    name: "Authored four seconds".into(),
+                    objective: "Do not silently discard text or the clock".into(),
+                    duration_seconds: 4,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = p.scenes[0].id;
+        for (request, change) in [
+            (
+                "normal-renderer",
+                Change::SetSceneRenderer {
+                    scene_id,
+                    renderer: motionwright_domain::RendererKind::ManimCommunity,
+                },
+            ),
+            (
+                "normal-text",
+                Change::AddCanvasNode {
+                    scene_id,
+                    node: CanvasNode {
+                        id: Uuid::now_v7(),
+                        name: "Authored text".into(),
+                        kind: "text".into(),
+                        parent_id: None,
+                        x: 400.0,
+                        y: 400.0,
+                        width: 220.0,
+                        height: 120.0,
+                        rotation_deg: 0.0,
+                        opacity: 1.0,
+                        text: Some("A native text route must conserve this".into()),
+                        coordinate_space: CoordinateSpace::ProjectPixels,
+                        z_index: 12,
+                        style: NodeStyle {
+                            fill: Some("#FFFFFF".into()),
+                            font_family: Some("Instrument Sans".into()),
+                            font_size: Some(48.0),
+                            ..Default::default()
+                        },
+                        relations: vec![],
+                        property_locks: BTreeSet::new(),
+                        keyframes: vec![],
+                    },
+                },
+            ),
+        ] {
+            p = service
+                .apply(p.id, &RevisionStamp::from(&p), request, &change)
+                .unwrap()
+                .project;
+        }
+        let mut language = p.visual_language.clone();
+        language.palette.retain(|row| row.name != "background");
+        language.palette.push(motionwright_domain::VisualToken {
+            name: "background".into(),
+            value: "#000000".into(),
+        });
+        p = service
+            .apply(
+                p.id,
+                &RevisionStamp::from(&p),
+                "normal-matte",
+                &Change::SetVisualLanguage {
+                    visual_language: language,
+                },
+            )
+            .unwrap()
+            .project;
+        let mut output = p.deliverables[0].clone();
+        output.width = 640;
+        output.height = 360;
+        output.frame_rate = motionwright_domain::RationalTime::new(30, 1).unwrap();
+        output.burn_in_captions = false;
+        p = service
+            .apply(
+                p.id,
+                &RevisionStamp::from(&p),
+                "normal-output",
+                &Change::UpsertDeliverable { profile: output },
+            )
+            .unwrap()
+            .project;
+        let coordinator = ProductionCoordinator::new(
+            service.clone(),
+            fake_render_connection(&temp, p.resource_key()),
+        )
+        .unwrap();
+        let before = p.clone();
+        let error = coordinator
+            .realize_manim_scene(
+                p.id,
+                &RevisionStamp::from(&p),
+                "normal-no-loss",
+                scene_id,
+                ManimRenderProfile {
+                    width: 640,
+                    height: 360,
+                    frame_rate: 30,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+        assert!(coordinator.receipts(p.id, 100).unwrap().is_empty());
+        assert_eq!(service.project(p.id).unwrap(), before);
     }
 
     #[cfg(unix)]
@@ -3547,6 +3765,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     fn manim_observation_error_preserves_diagnostic_and_original_start() {
         for start_command in [
             "driver.manim-community.render.start",
+            "driver.manim-community.static.render.start",
             "driver.manim-community.camera.render.start",
         ] {
             let original = Error::new(
@@ -3609,6 +3828,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
         // They do not execute Manim, prove pixels, or claim native acceptance.
         for start_command in [
             "driver.manim-community.render.start",
+            "driver.manim-community.static.render.start",
             "driver.manim-community.camera.render.start",
         ] {
             for case in [

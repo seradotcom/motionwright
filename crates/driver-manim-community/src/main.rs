@@ -25,6 +25,8 @@ use std::{
 };
 use uuid::Uuid;
 
+mod static_source;
+
 const DRIVER_ID: &str = "manim-community";
 const DRIVER_SCOPE: &str = "driver:manim-community";
 const MANIM_VERSION: &str = "0.21.0";
@@ -93,7 +95,7 @@ struct JobArgs {
 /// This descriptor does not authorize execution or assert visual acceptance.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CameraSourceArtifact {
+struct EditableSourceArtifact {
     relative_path: String,
     sha256: String,
     bytes: u64,
@@ -117,7 +119,11 @@ struct RenderArtifact {
     #[serde(skip_serializing_if = "Option::is_none")]
     camera_getters_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    camera_source: Option<CameraSourceArtifact>,
+    camera_source: Option<EditableSourceArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    static_source: Option<EditableSourceArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    static_getters: Option<static_source::NativeGetterArtifact>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +151,29 @@ impl JobPhase {
     }
 }
 
+/// These variants select trusted compilers, never an alternate execution path.
+#[derive(Debug, Clone)]
+enum OriginalSourcePlan {
+    Legacy,
+    Camera(Box<ManimCameraScenePlanV1>),
+    Static(Box<motionwright_manim_profile::ManimScenePlanV2>),
+}
+
+impl OriginalSourcePlan {
+    fn camera(&self) -> Option<&ManimCameraScenePlanV1> {
+        match self {
+            Self::Camera(plan) => Some(plan),
+            _ => None,
+        }
+    }
+    fn static_shapes(&self) -> Option<&motionwright_manim_profile::ManimScenePlanV2> {
+        match self {
+            Self::Static(plan) => Some(plan),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RenderJob {
     host_job: RuntimeToolJob,
@@ -157,8 +186,9 @@ struct RenderJob {
     diagnostic: Option<String>,
     /// Kept only in the original Driver Host's bounded job lifetime. Imported
     /// source/ZIP cannot assert this typed source identity.
-    camera_plan: Option<ManimCameraScenePlanV1>,
-    camera_source: Option<CameraSourceArtifact>,
+    source_plan: OriginalSourcePlan,
+    camera_source: Option<EditableSourceArtifact>,
+    static_source: Option<EditableSourceArtifact>,
     source_custody_error: Option<String>,
 }
 
@@ -458,15 +488,15 @@ fn camera_source_relative(source_file: &str) -> Result<String> {
     Ok(format!("mw_{token}.mwcam.zip"))
 }
 
-fn bounded_camera_file(root: &Path, relative: &str, maximum: usize) -> Result<Vec<u8>> {
+fn bounded_source_file(root: &Path, relative: &str, maximum: usize) -> Result<Vec<u8>> {
     let (path, size) = safe_output_file(root, relative)?;
     if size > maximum as u64 {
-        return Err(invalid("Manim camera source exceeds its byte budget"));
+        return Err(invalid("Manim source exceeds its byte budget"));
     }
     let mut bytes = Vec::with_capacity(size as usize);
     let mut file = fs::File::open(&path)?;
     if !file.metadata()?.is_file() || file.metadata()?.len() != size {
-        return Err(invalid("Manim camera source changed before bounded read"));
+        return Err(invalid("Manim source changed before bounded read"));
     }
     std::io::Read::by_ref(&mut file)
         .take(maximum as u64 + 1)
@@ -477,7 +507,7 @@ fn bounded_camera_file(root: &Path, relative: &str, maximum: usize) -> Result<Ve
         || after_path != path
         || after_size != size
     {
-        return Err(invalid("Manim camera source changed during bounded read"));
+        return Err(invalid("Manim source changed during bounded read"));
     }
     Ok(bytes)
 }
@@ -486,7 +516,7 @@ fn expected_camera_source(
     source_file: &str,
     plan: &ManimCameraScenePlanV1,
     plan_sha256: &str,
-) -> Result<(CameraSourceArtifact, Vec<u8>, Vec<u8>)> {
+) -> Result<(EditableSourceArtifact, Vec<u8>, Vec<u8>)> {
     let package = camera_source_package_v1(plan).map_err(map_profile_error)?;
     if package.closure.plan_sha256 != plan_sha256 {
         return Err(invalid(
@@ -499,7 +529,7 @@ fn expected_camera_source(
         .get("scene.py")
         .ok_or_else(|| invalid("Closed Manim camera package has no generated program"))?
         .clone();
-    let artifact = CameraSourceArtifact {
+    let artifact = EditableSourceArtifact {
         relative_path: camera_source_relative(source_file)?,
         sha256: hex::encode(Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
@@ -515,10 +545,10 @@ fn retain_camera_source(
     source_file: &str,
     plan: &ManimCameraScenePlanV1,
     plan_sha256: &str,
-) -> Result<CameraSourceArtifact> {
+) -> Result<EditableSourceArtifact> {
     let (artifact, bundle, expected_source) =
         expected_camera_source(source_file, plan, plan_sha256)?;
-    if bounded_camera_file(work_root, source_file, MAX_SOURCE_BYTES)? != expected_source {
+    if bounded_source_file(work_root, source_file, MAX_SOURCE_BYTES)? != expected_source {
         return Err(invalid(
             "Generated Manim source differs from the original typed camera plan",
         ));
@@ -527,7 +557,7 @@ fn retain_camera_source(
     let mut output = OpenOptions::new().write(true).create_new(true).open(path)?;
     output.write_all(&bundle)?;
     output.sync_all()?;
-    if bounded_camera_file(
+    if bounded_source_file(
         output_root,
         &artifact.relative_path,
         MAX_SOURCE_BUNDLE_BYTES_V2,
@@ -546,12 +576,12 @@ fn verify_retained_camera_source(
     source_file: &str,
     plan: &ManimCameraScenePlanV1,
     plan_sha256: &str,
-    recorded: Option<&CameraSourceArtifact>,
-) -> Result<CameraSourceArtifact> {
+    recorded: Option<&EditableSourceArtifact>,
+) -> Result<EditableSourceArtifact> {
     let (expected, bundle, python) = expected_camera_source(source_file, plan, plan_sha256)?;
     if recorded != Some(&expected)
-        || bounded_camera_file(work_root, source_file, MAX_SOURCE_BYTES)? != python
-        || bounded_camera_file(
+        || bounded_source_file(work_root, source_file, MAX_SOURCE_BYTES)? != python
+        || bounded_source_file(
             output_root,
             &expected.relative_path,
             MAX_SOURCE_BUNDLE_BYTES_V2,
@@ -609,8 +639,14 @@ impl ManimCommunityDriver {
         args.profile.validate().map_err(map_profile_error)?;
         let source = compile_manim_python(&args.plan).map_err(map_profile_error)?;
         let plan_sha256 = plan_digest(&args.plan)?;
-        self.start_prepared_source(source, plan_sha256, args.profile, None, context)
-            .await
+        self.start_prepared_source(
+            source,
+            plan_sha256,
+            args.profile,
+            OriginalSourcePlan::Legacy,
+            context,
+        )
+        .await
     }
 
     /// The separate camera command shares the exact same Semwright Host
@@ -629,7 +665,25 @@ impl ManimCommunityDriver {
             program.python_source,
             program.plan_sha256,
             args.profile,
-            Some(args.plan),
+            OriginalSourcePlan::Camera(Box::new(args.plan)),
+            context,
+        )
+        .await
+    }
+
+    async fn start_static(
+        &mut self,
+        args: Value,
+        context: &DriverExecutionContext,
+    ) -> Result<Value> {
+        context.check_cancelled()?;
+        let args: static_source::StaticStartArgs = serde_json::from_value(args)?;
+        let program = static_source::prepare(&args)?;
+        self.start_prepared_source(
+            program.source,
+            program.plan_sha256,
+            args.profile,
+            OriginalSourcePlan::Static(Box::new(args.plan)),
             context,
         )
         .await
@@ -640,7 +694,7 @@ impl ManimCommunityDriver {
         source: String,
         plan_sha256: String,
         profile: ManimRenderProfile,
-        camera_plan: Option<ManimCameraScenePlanV1>,
+        source_plan: OriginalSourcePlan,
         context: &DriverExecutionContext,
     ) -> Result<Value> {
         context.check_cancelled()?;
@@ -673,10 +727,23 @@ impl ManimCommunityDriver {
             .open(&source_path)?;
         file.write_all(source.as_bytes())?;
         file.sync_all()?;
-        let camera_source = camera_plan
-            .as_ref()
+        let camera_source = source_plan
+            .camera()
             .map(|plan| {
                 retain_camera_source(
+                    &self.work_root,
+                    &self.output_root,
+                    &source_file,
+                    plan,
+                    &plan_sha256,
+                )
+            })
+            .transpose()?;
+
+        let static_source = source_plan
+            .static_shapes()
+            .map(|plan| {
+                static_source::retain(
                     &self.work_root,
                     &self.output_root,
                     &source_file,
@@ -753,8 +820,9 @@ impl ManimCommunityDriver {
                 profile,
                 artifact: None,
                 diagnostic: None,
-                camera_plan,
+                source_plan,
                 camera_source,
+                static_source,
                 source_custody_error: None,
             },
         );
@@ -798,7 +866,7 @@ impl ManimCommunityDriver {
                         output.stderr.len()
                     ));
                 } else {
-                    let camera_getters_sha256 = if let Some(plan) = &job.camera_plan {
+                    let camera_getters_sha256 = if let Some(plan) = job.source_plan.camera() {
                         match verified_camera_getters_from_work_root(
                             &self.work_root,
                             &job.source_file,
@@ -819,7 +887,7 @@ impl ManimCommunityDriver {
                     };
                     let (path, bytes) = safe_output_file(&self.output_root, &job.output_relative)?;
                     let sha256 = sha256_file(&path)?;
-                    let camera_source = if let Some(plan) = &job.camera_plan {
+                    let camera_source = if let Some(plan) = job.source_plan.camera() {
                         match verify_retained_camera_source(
                             &self.work_root,
                             &self.output_root,
@@ -839,6 +907,27 @@ impl ManimCommunityDriver {
                     } else {
                         None
                     };
+                    let (static_source, static_getters) =
+                        if let Some(plan) = job.source_plan.static_shapes() {
+                            match static_source::verify_completed(
+                                &self.work_root,
+                                &self.output_root,
+                                &job.source_file,
+                                plan,
+                                &job.plan_sha256,
+                                job.static_source.as_ref(),
+                            ) {
+                                Ok((source, getters)) => (Some(source), Some(getters)),
+                                Err(error) => {
+                                    // Preserve the known native video outcome separately
+                                    // from a failed editable-source or geometry readback.
+                                    job.source_custody_error = Some(error.to_string());
+                                    (None, None)
+                                }
+                            }
+                        } else {
+                            (None, None)
+                        };
                     job.artifact = Some(RenderArtifact {
                         relative_path: job.output_relative.clone(),
                         sha256,
@@ -850,6 +939,8 @@ impl ManimCommunityDriver {
                         plan_sha256: job.plan_sha256.clone(),
                         camera_getters_sha256,
                         camera_source,
+                        static_source,
+                        static_getters,
                     });
                     job.phase = JobPhase::Succeeded;
                 }
@@ -915,6 +1006,7 @@ impl ManimCommunityDriver {
         match command {
             "driver.manim-community.render.start" => self.start(args, context).await,
             "driver.manim-community.camera.render.start" => self.start_camera(args, context).await,
+            static_source::START_COMMAND => self.start_static(args, context).await,
             "driver.manim-community.render.status" => {
                 let args: JobArgs = serde_json::from_value(args)?;
                 self.refresh(&args.job_ref, context).await
@@ -1225,6 +1317,21 @@ fn capability_catalog() -> Result<Vec<Capability>> {
             ],
         }),
         capability(CapabilitySpec {
+            name: static_source::START_COMMAND,
+            description: "Render a closed static V2 source with its authored clock, editable package and native object measurements",
+            schemas: (static_source::start_schema(), job_output_schema()),
+            risk: Risk::MutatingReversible,
+            idempotency: Idempotency::NonIdempotent,
+            dry_run: false,
+            tags: &[
+                "manim",
+                "renderer",
+                "render",
+                "job",
+                "artifact-out:video/clip",
+            ],
+        }),
+        capability(CapabilitySpec {
             name: "driver.manim-community.camera.render.start",
             description: "Render a closed typed planar-camera scene using the original owner-authorized Manim Community Driver Host",
             schemas: (camera_start_schema(), job_output_schema()),
@@ -1293,7 +1400,7 @@ mod tests {
     #[test]
     fn catalog_never_exposes_python_or_shell_execution() {
         let caps = capability_catalog().unwrap();
-        assert_eq!(caps.len(), 6);
+        assert_eq!(caps.len(), 7);
         for capability in caps {
             assert!(
                 capability
