@@ -480,3 +480,92 @@ test("automatic reload of a clean checkpoint follows the newer saved beat withou
   expect(await page.evaluate(key => localStorage.getItem(key), checkpoint.key)).toBe(checkpoint.raw);
   expect(await requests(page)).toEqual([]);
 });
+
+test("a closed recovery catalog exposes every retained copy after storage enumeration changes", async ({ page }) => {
+  // Only storage enumeration varies. The existing synthetic reply fixture
+  // still drives the real editor and coordinator; the override leaves all
+  // stored recovery bytes and returned project snapshots unchanged.
+  await page.evaluate(() => {
+    const originalKey = Storage.prototype.key;
+    window.__BEAT_TEST_RESTORE__ = () => { Storage.prototype.key = originalKey; };
+    Storage.prototype.key = function(index: number) {
+      if (this !== localStorage) return originalKey.call(this, index);
+      const entries = Array.from({ length: this.length }, (_, at) => originalKey.call(this, at))
+        .filter((key): key is string => key !== null)
+        .map(key => ({ key, draft: key.startsWith("motionwright.scene-beat-recovery.v1:")
+          ? JSON.parse(this.getItem(key)!).draft : null }));
+      const hasCurrent = entries.some(entry => entry.draft?.raw.objective === "Current unsent input C");
+      const hasPeer = entries.some(entry => entry.draft?.raw.objective === "Saved peer beat B");
+      const rank = (entry: typeof entries[number]) => {
+        if (!entry.draft) return 9;
+        if (hasCurrent) {
+          if (entry.draft.raw.objective === "Current unsent input C") return 0;
+          if (!entry.draft.pending && entry.draft.raw.objective === "Clean checkpoint A") return 1;
+          return entry.draft.pending ? 2 : 3;
+        }
+        if (hasPeer) return entry.draft.pending ? 0
+          : entry.draft.raw.objective === "Saved peer beat B" ? 1 : 2;
+        return entry.draft.pending ? 0 : 1;
+      };
+      entries.sort((left, right) => rank(left) - rank(right)
+        || (left.key < right.key ? -1 : left.key > right.key ? 1 : 0));
+      return entries[index]?.key ?? null;
+    };
+  });
+  try {
+    const target = await row(page), checkpoint = await savedCleanCheckpoint(page, "Clean checkpoint A");
+    const original = JSON.parse(checkpoint.raw).draft;
+    const armed = (await copies(page)).find(item => JSON.parse(item.raw).draft.pending !== null);
+    if (!armed) throw new Error("The original submitted attempt was not retained.");
+    await changeSavedObjective(page, "Saved peer beat B");
+    await expect(input(target, "objective")).toHaveValue("Saved peer beat B");
+    await input(target, "objective").fill("Current unsent input C");
+    await input(target, "start").fill("1e");
+    const retained = await copies(page);
+    expect(retained).toHaveLength(4);
+    expect(new Set(retained.map(item => item.key)).size).toBe(4);
+    const previous = retained.find(item => {
+      const draft = JSON.parse(item.raw).draft;
+      return draft.pending === null && draft.raw.objective === "Current unsent input C" && draft.raw.start === "1e";
+    });
+    if (!previous) throw new Error("Current author input did not obtain its own recovery copy.");
+    expect(retained.find(item => item.key === checkpoint.key)?.raw).toBe(checkpoint.raw);
+    expect(retained.find(item => item.key === armed.key)?.raw).toBe(armed.raw);
+    const enumerated = await page.evaluate(() => Array.from({ length: localStorage.length }, (_, at) => localStorage.key(at))
+      .filter((key): key is string => key !== null && key.startsWith("motionwright.scene-beat-recovery.v1:"))
+      .map(key => {
+        const draft = JSON.parse(localStorage.getItem(key)!).draft;
+        return [draft.raw.objective, draft.pending === null ? "local" : "unknown"];
+      }));
+    expect(enumerated).toEqual([
+      ["Current unsent input C", "local"], ["Clean checkpoint A", "local"],
+      ["Clean checkpoint A", "unknown"], ["Saved peer beat B", "local"],
+    ]);
+    const recovery = page.getByRole("region", { name: "Beat recovery copies", exact: true });
+    expect(await recovery.getAttribute("open")).toBeNull();
+    await recovery.locator("summary").click();
+    await expect(recovery).toHaveAttribute("open", "");
+    const groups = recovery.getByRole("group");
+    await expect(groups).toHaveCount(4);
+    const clean = groups.filter({ hasText: "Clean checkpoint A" }).filter({ hasText: "Local input" });
+    await expect(clean).toHaveCount(1);
+    await expect(clean).toBeVisible();
+    await expect(groups.filter({ hasText: "Current unsent input C" })).toBeVisible();
+    await expect(groups.filter({ hasText: "Saved peer beat B" })).toBeVisible();
+    await expect(groups.filter({ hasText: "Original unconfirmed attempt" })).toBeVisible();
+    await clean.getByRole("button", { name: /^Restore beat copy / }).click();
+    for (const field of ["label", "objective", "start", "duration"] as const)
+      await expect(input(target, field)).toHaveValue(original.raw[field]);
+    await expect(target.getByRole("region", { name: "Beat draft conflict", exact: true })).toBeVisible();
+    await expect(button(target, "Save beat")).toBeDisabled();
+    expect(await requests(page)).toHaveLength(1);
+    for (const copy of [checkpoint, previous, armed])
+      expect(await page.evaluate(key => localStorage.getItem(key), copy.key)).toBe(copy.raw);
+    await page.reload();
+    await expect(input(target, "objective")).toHaveValue("Clean checkpoint A");
+    await expect(target.getByRole("region", { name: "Beat draft conflict", exact: true })).toBeVisible();
+    expect(await requests(page)).toEqual([]);
+  } finally {
+    await page.evaluate(() => window.__BEAT_TEST_RESTORE__?.());
+  }
+});
