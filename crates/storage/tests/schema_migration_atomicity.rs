@@ -148,6 +148,8 @@ fn retained_v2_store(
         .execute_batch(
             "DROP TRIGGER production_receipt_order_append;
          DROP TABLE production_receipt_order;
+         ALTER TABLE receipts DROP COLUMN apply_binding_json;
+         ALTER TABLE receipts DROP COLUMN apply_binding_version;
          PRAGMA user_version=2;",
         )
         .unwrap();

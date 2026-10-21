@@ -570,5 +570,326 @@ class SourceContracts(unittest.TestCase):
             gate.source_snapshot(self.repo, self.sha, ("source.rs",))
 
 
+
+class Binding4Contracts(unittest.TestCase):
+    """Synthetic protocol controls; no Rust executable or migration is run here."""
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory(prefix="b4-")
+        self.addCleanup(self.scratch.cleanup)
+        self.root = Path(self.scratch.name).resolve()
+        self.repo, self.base, self.target = self.root / "s", self.root / "b", self.root / "t"
+        for path in (self.repo, self.base, self.target):
+            path.mkdir()
+        env = environment("Linux") | {"GITHUB_JOB": "storage-apply-binding-core"}
+        self.context = gate.binding4_context(env, gate.BINDING4_SOURCE_SHA, "binding4-core44", "linux")
+        self.product_context = gate.binding4_command_context(self.context, "product")
+        self.base_context = gate.binding4_command_context(self.context, "baseline")
+        self.binaries = {}
+        for name in ("motionwright_storage", *gate.BINDING4_INTEGRATIONS):
+            path = self.target / name
+            path.write_bytes(("synthetic identity only: " + name).encode())
+            self.binaries[name] = {"absolute_path": str(path), **gate.fingerprint(path, self.target)}
+        path = self.target / "baseline-only"
+        path.write_bytes(b"synthetic baseline identity; never executed")
+        self.base_binary = {"absolute_path": str(path), **gate.fingerprint(path, self.target)}
+        self.lib_names = (*gate.BINDING4_UNIT_CASES, *gate.BINDING4_PHASE_CASES,
+                          gate.BINDING4_DDL_CASE, "unselected::test")
+        self.rosters = {"motionwright_storage": self.lib_names, **gate.BINDING4_INTEGRATIONS}
+
+    def raw(self, group, enumerated=None):
+        baseline = group == "baseline"
+        binary = self.base_binary if baseline else next(iter(self.binaries.values()))
+        target, wanted, _argv, _timeout = gate.binding4_group(group, binary)
+        if enumerated is None:
+            enumerated = (gate.BINDING4_BASELINE_CASE,) if baseline else self.rosters[target]
+        state = "FAILED" if baseline else "ok"
+        output = f"running {len(wanted)} tests\n" + "".join(f"test {name} ... {state}\n" for name in wanted)
+        if baseline:
+            output += ("thread '" + wanted[0] + "' panicked at crates/storage/tests/apply_receipt_binding.rs:90:5:\n"
+                       "accepted corrupt known result: Ok(ApplyOutcome)\n")
+        counts = (0, 1, 0, 0, 0) if baseline else (len(wanted), 0, 0, 0, len(enumerated) - len(wanted))
+        output += (f"\ntest result: {state}. {counts[0]} passed; {counts[1]} failed; {counts[2]} ignored; "
+                   f"{counts[3]} measured; {counts[4]} filtered out; finished in 0.00s\n")
+        return output.encode()
+
+    def admission(self, group):
+        target, _wanted, _argv, _timeout = gate.binding4_group(group, self.base_binary)
+        baseline = group == "baseline"
+        binary = self.base_binary if baseline else self.binaries[target]
+        context = self.base_context if baseline else self.product_context
+        _target, _wanted, argv, _timeout = gate.binding4_group(group, binary)
+        names = (gate.BINDING4_BASELINE_CASE,) if baseline else self.rosters[target]
+        command = {"argv": argv, "cwd": str(self.base if baseline else self.repo),
+                   "exit_code": 101 if baseline else 0, "context": context,
+                   "observation": "DIRECT_PROCESS_EXIT_OBSERVED", "log_custody": "VERIFIED_SNAPSHOT"}
+        return self.raw(group), command, binary, binary, names, context
+
+    def row(self, group):
+        row = gate.admit_binding4_group(group, *self.admission(group))
+        if group.startswith("phase:"):
+            container = self.root / ("phases-" + str(len(list(self.root.glob("phases-*")))))
+            directory = create_phase_fixture(container, group[6:])
+            for phase in gate.PHASES:
+                mutate_json(directory / (phase + ".json"),
+                            lambda x: x.update(receipts=[["request", "digest", "json", "created", "1", "binding"]]))
+                reseal_member(directory, phase + ".json")
+            row["phase_custody"] = gate.admit_phase_custody(container, group[6:], "binding4")
+        return row
+
+    def snapshot(self):
+        return {"product": {"sha": gate.BINDING4_SOURCE_SHA, "tree": gate.BINDING4_SOURCE_TREE,
+                            "checkout": str(self.repo), "files": {p: {"sha256": h} for p, h in gate.BINDING4_REVIEWED.items()}},
+                "baseline": {"sha": gate.BASELINE_SOURCE_SHA, "tree": gate.BASELINE_SOURCE_TREE,
+                             "checkout": str(self.base), "files": {p: {"sha256": h} for p, h in gate.BASELINE_REVIEWED.items()}},
+                "gate": {"sha": self.context["GITHUB_SHA"], "files": dict.fromkeys(gate.GATE_FILES, {})}}
+
+    def compiler_record(self, name, path=None, root=None):
+        root = self.repo if root is None else root
+        is_lib = name == "motionwright_storage"
+        return {"reason": "compiler-artifact", "manifest_path": str(root / "crates/storage/Cargo.toml"),
+                "target": {"name": name, "kind": ["lib"] if is_lib else ["test"],
+                           "src_path": str(root / ("crates/storage/src/lib.rs" if is_lib
+                                                 else "crates/storage/tests/" + name + ".rs"))},
+                "profile": {"test": True},
+                "executable": str(path) if path is not None else self.binaries[name]["absolute_path"]}
+
+    def compiler_output(self, messages):
+        return b"\n".join(json.dumps(row).encode() for row in
+                          [*messages, {"reason": "build-finished", "success": True}])
+
+    def test_mode_source_platform_selection_is_closed(self):
+        self.assertEqual(gate.select_mode("binding4-core44", gate.BINDING4_SOURCE_SHA, "linux")["matrix"],
+                         {"include": []})
+        self.assertEqual(len(gate.select_mode("binding4-process", gate.BINDING4_SOURCE_SHA, "both")
+                             ["matrix"]["include"]), 2)
+        self.assertEqual(gate.select_mode("source", gate.SOURCE_SHA, "both")["tests_executed"], 0)
+        for mode, source, platforms in (("other", gate.SOURCE_SHA, "both"),
+                                       ("source", gate.BINDING4_SOURCE_SHA, "both"),
+                                       ("historical5fa", gate.BINDING4_SOURCE_SHA, "windows"),
+                                       ("historical5fa", gate.SOURCE_SHA, "linux"),
+                                       ("binding4-core44", gate.SOURCE_SHA, "linux"),
+                                       ("binding4-core44", gate.BINDING4_SOURCE_SHA[:12], "linux"),
+                                       ("binding4-core44", gate.BINDING4_SOURCE_SHA, "both"),
+                                       ("binding4-process", gate.BINDING4_SOURCE_SHA, "linux")):
+            with self.subTest(mode=mode, platforms=platforms), self.assertRaises(gate.VerificationError):
+                gate.select_mode(mode, source, platforms)
+
+    def test_binding4_context_requires_dispatch_matching_os_and_logical_job(self):
+        env = environment("Linux") | {"GITHUB_JOB": "storage-apply-binding-core"}
+        for change in ({"GITHUB_EVENT_NAME": "push"}, {"RUNNER_OS": "Windows"},
+                       {"GITHUB_JOB": "storage-apply-recovery"}, {"GITHUB_RUN_ATTEMPT": ""},
+                       {"GITHUB_WORKFLOW_SHA": "f" * 40}):
+            with self.subTest(change=change), self.assertRaises(gate.VerificationError):
+                gate.binding4_context(env | change, gate.BINDING4_SOURCE_SHA, "binding4-core44", "linux")
+        physical = gate.binding4_context(environment(), gate.BINDING4_SOURCE_SHA, "binding4-process", "win32")
+        self.assertIsNone(physical["baseline_source_sha"])
+        with self.assertRaises(gate.VerificationError):
+            gate.binding4_command_context(physical, "baseline")
+
+    def test_explicit_binding4_requires_six_strings_and_legacy_stays_four(self):
+        sample = {"project": ["", "", "", ""], "events": [], "receipts": [[""] * 4],
+                  "registrations": [], "evictions": [], "manifest": None, "immutable_blob": [0]}
+        gate.phase_snapshot_shape(sample)
+        with self.assertRaises(gate.VerificationError):
+            gate.phase_snapshot_shape(sample, "binding4")
+        sample["receipts"] = [[""] * 6]
+        gate.phase_snapshot_shape(sample, "binding4")
+        with self.assertRaises(gate.VerificationError):
+            gate.phase_snapshot_shape(sample)
+        for row in ([""] * 4, [""] * 5, [""] * 7, [""] * 5 + [None], [""] * 5 + [1], [""] * 5 + [False]):
+            with self.subTest(row=row), self.assertRaises(gate.VerificationError):
+                gate.phase_snapshot_shape(sample | {"receipts": [row]}, "binding4")
+        with self.assertRaises(gate.VerificationError):
+            gate.phase_snapshot_shape(sample | {"receipts": []}, "unknown")
+
+    def test_binding4_phase_custody_keeps_closed_manifest_and_original_hashes(self):
+        name = gate.BINDING4_PHASE_CASES[0]
+        row = self.row("phase:" + name)
+        self.assertEqual(len(row["phase_custody"]["files"]), 15)
+        directory = self.root / "phases-0" / gate.CHECKPOINTS[name]
+        (directory / "extra").write_bytes(b"unlisted")
+        with self.assertRaisesRegex(gate.VerificationError, "unlisted"):
+            gate.admit_phase_custody(directory.parent, name, "binding4")
+
+    def test_reviewed_source_wrapper_requires_all_current_and_baseline_hashes(self):
+        for role, key in (("product", "product"), ("baseline", "baseline")):
+            expected = self.snapshot()[key]
+            with mock.patch.object(gate, "source_snapshot", return_value=expected) as observe:
+                self.assertEqual(gate.binding4_source_snapshot(self.repo, role), expected)
+                self.assertEqual(observe.call_args.args[1], expected["sha"])
+            changed = copy.deepcopy(expected)
+            changed["files"]["Cargo.lock"]["sha256"] = "0" * 64
+            with mock.patch.object(gate, "source_snapshot", return_value=changed), self.assertRaises(gate.VerificationError):
+                gate.binding4_source_snapshot(self.repo, role)
+
+    def test_four_compiler_targets_are_unique_real_records_inside_owned_target(self):
+        messages = [self.compiler_record(name) for name in self.binaries]
+        self.assertEqual(gate.select_binding4_binaries(self.compiler_output(messages), 0,
+                         self.repo, self.target, "binding4-core44"), self.binaries)
+        variants = [messages[:-1], [*messages, messages[0]]]
+        for field, value in (("manifest_path", str(self.root / "foreign")), ("executable", str(self.root / "outside"))):
+            changed = copy.deepcopy(messages)
+            changed[-1][field] = value
+            variants.append(changed)
+        changed = copy.deepcopy(messages)
+        changed[-1]["profile"]["test"] = False
+        variants.append(changed)
+        changed = copy.deepcopy(messages)
+        changed[-1]["target"]["src_path"] = str(self.root / "foreign.rs")
+        variants.append(changed)
+        for variant in variants:
+            with self.subTest(messages=variant), self.assertRaises((OSError, gate.VerificationError)):
+                gate.select_binding4_binaries(self.compiler_output(variant), 0,
+                                             self.repo, self.target, "binding4-core44")
+        with self.assertRaises(gate.VerificationError):
+            gate.select_binding4_binaries(self.compiler_output(messages), 101,
+                                         self.repo, self.target, "binding4-core44")
+
+    def test_core44_and_physical5_have_closed_actual_rosters(self):
+        for target, names in self.rosters.items():
+            raw = "".join(name + ": test\n" for name in names).encode()
+            self.assertEqual(gate.binding4_roster(raw, 0, target), tuple(names))
+            for changed in (names[1:], (*names, names[0]), (*names, (
+                    "apply_crash_tests::unreviewed" if target == "motionwright_storage" else "unreviewed"))):
+                with self.subTest(target=target, names=changed), self.assertRaises(gate.VerificationError):
+                    gate.binding4_roster("".join(name + ": test\n" for name in changed).encode(), 0, target)
+        self.assertEqual(sum(len(gate.binding4_group(x, self.base_binary)[1])
+                             for x in gate.BINDING4_CORE_GROUPS), 44)
+        self.assertEqual(sum(len(gate.binding4_group(x, self.base_binary)[1])
+                             for x in gate.BINDING4_PROCESS_GROUPS), 5)
+
+    def test_current_group_requires_every_result_once_and_exact_filtered_count(self):
+        for group in gate.BINDING4_CORE_GROUPS:
+            args = self.admission(group)
+            self.assertEqual(gate.admit_binding4_group(group, *args)["status"], "PASS")
+            filtered = len(args[4]) - len(gate.binding4_group(group, args[2])[1])
+            for raw in (args[0] + args[0], args[0].replace(b" ... ok", b" ... ignored", 1),
+                        args[0].replace(b"0 ignored", b"1 ignored"),
+                        args[0].replace(f"{filtered} filtered out".encode(), f"{filtered + 1} filtered out".encode())):
+                with self.subTest(group=group), self.assertRaises(gate.VerificationError):
+                    gate.admit_binding4_group(group, raw, *args[1:])
+
+    def test_original_baseline_failure_is_admitted_as_a_failure_not_green(self):
+        row = self.row("baseline")
+        self.assertEqual(row["status"], "EXPECTED_CAUSAL_FAILURE_OBSERVED")
+        self.assertEqual(row["command"]["exit_code"], 101)
+        self.assertEqual(row["cases"], [gate.BINDING4_BASELINE_CASE])
+
+    def test_baseline_does_not_accept_compile_failure_wrong_cause_or_unknown(self):
+        raw, command, binary, after, names, context = self.admission("baseline")
+        for changed in (raw.replace(b"accepted corrupt known result: Ok(", b"different assertion: Err("),
+                        raw.replace(b".rs:90:", b".rs:89:"), raw + raw,
+                        raw.replace(b"1 failed", b"0 failed"), raw.replace(b" ... FAILED", b" ... ignored")):
+            with self.subTest(raw=changed), self.assertRaises(gate.VerificationError):
+                gate.admit_binding4_group("baseline", changed, command, binary, after, names, context)
+        for change in ({"exit_code": 0}, {"exit_code": 1}, {"exit_code": 86},
+                       {"exit_code": None, "observation": "UNKNOWN_TIMEOUT_NO_RETRY"},
+                       {"argv": ["cargo", "test", "--no-run"]}, {"log_custody": "INCOMPLETE"}):
+            with self.subTest(change=change), self.assertRaises(gate.VerificationError):
+                gate.admit_binding4_group("baseline", raw, command | change, binary, after, names, context)
+
+    def test_ddl_parent_has_normal_capture_and_no_retained_child_claim(self):
+        args = self.admission("ddl")
+        row = gate.admit_binding4_group("ddl", *args)
+        self.assertNotIn("--nocapture", row["command"]["argv"])
+        self.assertEqual(row["retained_child_originals"], 0)
+        self.assertEqual(row["retained_phase_jsons"], 0)
+        with self.assertRaises(gate.VerificationError):
+            gate.admit_binding4_group("ddl", args[0],
+                args[1] | {"argv": [*args[1]["argv"], "--nocapture"]}, *args[2:])
+
+    def test_core44_final_receipt_keeps_four_phases_and_one_separate_ddl(self):
+        before = self.snapshot()
+        rows = [self.row(group) for group in gate.BINDING4_CORE_GROUPS]
+        baseline = self.row("baseline")
+        result = gate.finish_binding4(before, copy.deepcopy(before), self.binaries, rows,
+                                      self.rosters, self.context, baseline, self.base_binary)
+        self.assertEqual((result["passed"], result["phase_jsons_retained"],
+                          result["child_process_originals_retained"], result["ddl_retained_child_originals"]),
+                         (44, 20, 12, 0))
+        for flag in ("sql_null_distinction_proven_by_phase_strings", "raw_sqlite_snapshots_retained",
+                     "full_cas_archive_retained", "formal_acceptance", "human_acceptance", "release_authorized"):
+            self.assertFalse(result[flag])
+
+    def test_final_receipt_rejects_missing_foreign_or_fabricated_ddl_and_baseline(self):
+        before = self.snapshot()
+        rows = [self.row(group) for group in gate.BINDING4_CORE_GROUPS]
+        baseline = self.row("baseline")
+        variants = [rows[:-1], [rows[0], *rows[:-1]]]
+        for change in ({"retained_child_originals": 2}, {"phase_custody": {"status": "complete"}}):
+            changed = copy.deepcopy(rows)
+            changed[-1].update(change)
+            variants.append(changed)
+        changed = copy.deepcopy(rows)
+        changed[0]["command"]["context"]["GITHUB_RUN_ATTEMPT"] = "2"
+        variants.append(changed)
+        for changed in variants:
+            with self.subTest(rows=changed), self.assertRaises(gate.VerificationError):
+                gate.finish_binding4(before, before, self.binaries, changed,
+                                     self.rosters, self.context, baseline, self.base_binary)
+        for changed in (None, baseline | {"status": "PASS"}, baseline | {"binary_sha256": "f" * 64}):
+            with self.subTest(baseline=changed), self.assertRaises(gate.VerificationError):
+                gate.finish_binding4(before, before, self.binaries, rows,
+                                     self.rosters, self.context, changed, self.base_binary)
+
+
+    def test_process5_final_receipt_has_no_baseline_or_extra_binary(self):
+        self.context = gate.binding4_context(environment(), gate.BINDING4_SOURCE_SHA, "binding4-process", "win32")
+        self.product_context = gate.binding4_command_context(self.context, "product")
+        before = self.snapshot()
+        before.pop("baseline")
+        rows = [self.row(group) for group in gate.BINDING4_PROCESS_GROUPS]
+        binaries = {"motionwright_storage": self.binaries["motionwright_storage"]}
+        rosters = {"motionwright_storage": self.lib_names}
+        result = gate.finish_binding4(before, before, binaries, rows, rosters, self.context, None)
+        self.assertEqual(result["passed"], 5)
+        self.assertFalse(result["baseline_expected_failure_observed"])
+        self.assertEqual(result["child_process_originals_retained"], 12)
+        with self.assertRaises(gate.VerificationError):
+            gate.finish_binding4(before, before, self.binaries, rows, self.rosters, self.context, None)
+
+    def test_selected_baseline_timeout_is_unknown_and_no_current_build_is_dispatched(self):
+        work = self.root / "runner"
+        work.mkdir()
+        g, s, b = work / "g", work / "s", work / "b"
+        for path in (g, s, b):
+            path.mkdir()
+        output = work / "v" / "e"
+        snapshots = {"product": {"checkout": str(s), "files": {}},
+                     "baseline": {"checkout": str(b), "files": {}}}
+        env = environment("Linux") | {"GITHUB_JOB": "storage-apply-binding-core",
+                                     "GITHUB_WORKSPACE": str(work), "CARGO_TARGET_DIR": str(work / "v" / "t")}
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[:2] in (["rustc", "-Vv"], ["cargo", "-V"]):
+                return subprocess.CompletedProcess(argv, 0)
+            if argv[0] == "cargo":
+                path = work / "v" / "bt" / "baseline-test"
+                path.write_bytes(b"synthetic binary, subprocess execution is mocked")
+                record = self.compiler_record("apply_receipt_binding", path, b)
+                kwargs["stdout"].write(self.compiler_output([record]))
+                return subprocess.CompletedProcess(argv, 0)
+            if "--list" in argv:
+                kwargs["stdout"].write((gate.BINDING4_BASELINE_CASE + ": test\n").encode())
+                return subprocess.CompletedProcess(argv, 0)
+            raise subprocess.TimeoutExpired(argv, 120)
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(gate.sys, "platform", "linux"), \
+                mock.patch.object(gate, "__file__", str(g / "tooling" / "ci_storage_apply_recovery.py")), \
+                mock.patch.object(gate, "binding4_source_snapshot", side_effect=lambda _p, role: snapshots[role]), \
+                mock.patch.object(gate, "source_snapshot", return_value={"files": {}}), \
+                mock.patch.object(gate.subprocess, "run", side_effect=fake_run) as process:
+            self.assertEqual(gate.run_binding4(s, output, gate.BINDING4_SOURCE_SHA, "binding4-core44", b), 1)
+        result = json.loads((output / "receipt.json").read_bytes())
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertEqual(process.call_count, 5)
+        self.assertEqual(sum(x[0] == "cargo" and "--no-run" in x for x in calls), 1)
+        self.assertEqual(result["results"], [])
+        self.assertFalse(result["operations_retried"])
+        self.assertEqual(result["commands"][-1]["observation"], "UNKNOWN_TIMEOUT_NO_RETRY")
+        self.assertFalse((output / "compile.command.json").exists())
+
 if __name__ == "__main__":
     unittest.main()

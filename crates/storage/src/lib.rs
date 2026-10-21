@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 #[cfg(test)]
 mod apply_crash_tests;
+mod apply_receipt_binding;
 mod capture_evidence;
 mod derived_cache;
 mod file_import;
@@ -24,6 +25,10 @@ mod production;
 mod project_creation;
 mod project_projection;
 mod render_window_cache;
+pub use apply_receipt_binding::{
+    APPLY_REQUEST_ENCODING_V1, ApplyReceiptInvalid, ApplyReceiptObservation,
+    MAX_APPLY_BINDING_BYTES, VerifiedApplyReceiptV1,
+};
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
 pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
 pub use integrity::{
@@ -57,6 +62,8 @@ pub enum StorageError {
     Conflict { expected: u64, actual: u64 },
     #[error("request id was reused with a different payload")]
     RequestReuse,
+    #[error("invalid apply receipt: {0}")]
+    InvalidApplyReceipt(String),
     #[error("invalid file import receipt: {0}")]
     InvalidFileImportReceipt(String),
     #[error("invalid project creation receipt: {0}")]
@@ -87,7 +94,7 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 3;
+pub const STORAGE_SCHEMA_VERSION: u32 = 4;
 pub const PROJECT_BACKUP_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
@@ -640,7 +647,8 @@ fn validate_existing_project_store_layout(conn: &Connection, version: u32) -> Re
             ));
         }
     }
-    validate_production_receipt_order_layout(conn, version)
+    validate_production_receipt_order_layout(conn, version)?;
+    apply_receipt_binding::validate_schema(conn, version)
 }
 
 /// A SQLite schema is not proof that the caller owns the path to it.
@@ -889,6 +897,7 @@ impl Store {
             "#,
         )?;
         migrate_production_receipt_order(&schema_tx, locked_schema)?;
+        apply_receipt_binding::migrate_schema(&schema_tx, locked_schema)?;
         if locked_schema < STORAGE_SCHEMA_VERSION {
             schema_tx.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }
@@ -1319,19 +1328,16 @@ impl Store {
         {
             return Err(StorageError::GenerationConflict);
         }
-        if let Some((stored_sha, stored_result)) = tx
-            .query_row(
-                "SELECT request_sha256,result_json FROM receipts
-                 WHERE project_id=?1 AND request_id=?2",
-                params![id.to_string(), request_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?
+        if let Some(receipt) = apply_receipt_binding::read_receipt(&tx, id, request_id)
+            .map_err(apply_receipt_binding::ReceiptCheckError::into_storage_error)?
         {
-            if stored_sha != request_sha {
+            if receipt.request_sha256 != request_sha {
                 return Err(StorageError::RequestReuse);
             }
-            let mut outcome: ApplyOutcome = serde_json::from_str(&stored_result)?;
+            let mut outcome =
+                apply_receipt_binding::check_receipt(&tx, &project, request_id, &receipt)
+                    .map_err(apply_receipt_binding::ReceiptCheckError::into_storage_error)?
+                    .outcome;
             outcome.replayed = true;
             tx.commit()?;
             return Ok(outcome);
@@ -1401,8 +1407,21 @@ impl Store {
         }
 
         let previous_revision = project.revision;
+        let base = apply_receipt_binding::ApplyBase::capture(&project);
+        let result_revision = previous_revision
+            .checked_add(1)
+            .filter(|revision| i64::try_from(*revision).is_ok())
+            .ok_or_else(|| {
+                DomainError::Invalid("project revision exceeds SQLite integer range".into())
+            })?;
+        let previous_sql_revision = i64::try_from(previous_revision).map_err(|_| {
+            DomainError::Invalid("project revision exceeds SQLite integer range".into())
+        })?;
+        let result_sql_revision = i64::try_from(result_revision).map_err(|_| {
+            DomainError::Invalid("project revision exceeds SQLite integer range".into())
+        })?;
         project.apply_change(change)?;
-        project.commit_revision(previous_revision.saturating_add(1), change)?;
+        project.commit_revision(result_revision, change)?;
         let project_json = serde_json::to_string(&project)?;
         let changed = tx.execute(
             "UPDATE projects
@@ -1411,17 +1430,17 @@ impl Store {
             params![
                 project.id.to_string(),
                 project.generation.to_string(),
-                project.revision as i64,
+                result_sql_revision,
                 project.title,
                 project_json,
                 project.updated_at.to_rfc3339(),
-                previous_revision as i64,
+                previous_sql_revision,
             ],
         )?;
         if changed != 1 {
             return Err(StorageError::Conflict {
                 expected: previous_revision,
-                actual: previous_revision.saturating_add(1),
+                actual: result_revision,
             });
         }
 
@@ -1434,7 +1453,7 @@ impl Store {
              VALUES(?1,?2,'change',?3,?4)",
             params![
                 project.id.to_string(),
-                project.revision as i64,
+                result_sql_revision,
                 payload,
                 project.updated_at.to_rfc3339(),
             ],
@@ -1450,15 +1469,24 @@ impl Store {
             replayed: false,
         };
         let result_json = serde_json::to_string(&outcome)?;
+        let binding_json = apply_receipt_binding::create_binding(
+            &base,
+            request_id,
+            &request_sha,
+            &outcome,
+            &result_json,
+        )?;
         tx.execute(
-            "INSERT INTO receipts(project_id,request_id,request_sha256,result_json,created_at)
-             VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO receipts(project_id,request_id,request_sha256,result_json,created_at,
+                                  apply_binding_version,apply_binding_json)
+             VALUES(?1,?2,?3,?4,?5,1,?6)",
             params![
                 id.to_string(),
                 request_id,
                 request_sha,
                 result_json,
                 chrono::Utc::now().to_rfc3339(),
+                binding_json,
             ],
         )?;
 
@@ -1560,6 +1588,56 @@ impl Store {
             .map(|event| (event.revision, event.change))
             .collect())
     }
+}
+
+// A receipt is a historical result, not authority to return another project.
+// Revalidate its original identity and event on the same transaction snapshot;
+// later legitimate edits do not change the stored result's revision.
+fn validate_apply_receipt(
+    conn: &Connection,
+    current: &Project,
+    request_id: &str,
+    request_sha: &str,
+    outcome: &ApplyOutcome,
+) -> Result<Change> {
+    let invalid = |reason: &str| StorageError::InvalidApplyReceipt(reason.to_owned());
+    outcome
+        .project
+        .validate()
+        .map_err(|_| invalid("invalid stored result project"))?;
+    if outcome.project.id != current.id
+        || outcome.project.generation != current.generation
+        || outcome.project.resource_key() != current.resource_key()
+        || outcome.request_id != request_id
+        || outcome.replayed
+        || outcome.previous_revision.checked_add(1) != Some(outcome.project.revision)
+        || outcome.project.revision > current.revision
+    {
+        return Err(invalid(
+            "inconsistent result identity, generation, revision or replay state",
+        ));
+    }
+    let revision = i64::try_from(outcome.project.revision)
+        .map_err(|_| invalid("result revision exceeds SQLite integer range"))?;
+    let (count, kind, payload): (i64, Option<String>, Option<String>) = conn.query_row(
+        "SELECT COUNT(*),MIN(kind),MIN(payload_json)
+         FROM events WHERE project_id=?1 AND revision=?2",
+        params![current.id.to_string(), revision],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if count != 1 || kind.as_deref() != Some("change") {
+        return Err(invalid("result must reference exactly one change event"));
+    }
+    let payload = payload.ok_or_else(|| invalid("recorded event has no payload"))?;
+    let change: Change =
+        serde_json::from_str(&payload).map_err(|_| invalid("invalid recorded event payload"))?;
+    if request_digest(current.id, &change)
+        .map_err(|_| invalid("recorded event cannot be hashed"))?
+        != request_sha
+    {
+        return Err(invalid("recorded event differs from the requested intent"));
+    }
+    Ok(change)
 }
 
 fn request_digest(id: Uuid, change: &Change) -> Result<String> {

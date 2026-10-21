@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+cssparser = "=0.37.0"
+quick-xml = "=0.42.0"
 motionwright-domain = { path = "../domain" }
 motionwright-storage = { path = "../storage" }
 parking_lot.workspace = true

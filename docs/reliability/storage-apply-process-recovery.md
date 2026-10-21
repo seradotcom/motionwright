@@ -66,8 +66,8 @@ effects. Those capabilities require their own independently attributable tests.
 
 Set MOTIONWRIGHT_TEST_APPLY_EVIDENCE_ROOT to an existing, absolute evidence
 container before selecting the four tests. Use a unique container for each run,
-outside source checkouts and worktrees. A repository's private knowledge/runtime
-area is also accepted. Each checkpoint creates its own new subdirectory;
+outside source checkouts and worktrees. Each checkpoint creates its own new
+subdirectory;
 an existing checkpoint destination is refused without replacing its contents.
 The variable is removed from each child process. Without the variable, the
 original temporary-fixture lifecycle remains unchanged.
@@ -97,3 +97,120 @@ four original test oracles. Runner identity, exact source/tree/lock, toolchain,
 test binary and original parent output remain the surrounding runner's
 responsibility. Earlier executions without the option keep their original
 assertion evidence; they do not acquire retrospective phase files.
+
+## Source-specific workflow modes
+
+The process-recovery workflow keeps separate product and gate checkouts. Its
+default `source` mode runs policies and the complete Python admission controls
+without compiling or executing the product. Product execution requires an
+explicit `workflow_dispatch` and a reviewed mode/source/platform combination.
+
+| Mode | Product source | Platform selection | Executed product tests |
+| --- | --- | --- | --- |
+| `source` | Historical default input; no product checkout | `both` | None |
+| `historical5fa` | `5faedc090aa45b33833b229050c09bf424de938f` | `both`, `windows` or `macos` | Four mutation interruption cases per selected OS |
+| `binding4-core44` | `449de7a315a513468610d517e78f9ab87f76ae9d` | `linux` | Original causal control and 44 current tests |
+| `binding4-process` | `449de7a315a513468610d517e78f9ab87f76ae9d` | `both`, `windows` or `macos` | Four mutation interruption cases and one DDL migration case per selected OS |
+
+An unknown mode, source or platform combination fails before a product build.
+The existing narrow push trigger runs G0 only. The historical command-line
+default and source constants remain available to existing consumers.
+
+For example, after selecting an exact gate revision:
+
+```sh
+gh workflow run storage-apply-process-recovery.yml --ref <gate-ref> \
+  -f mode=binding4-core44 -f platforms=linux \
+  -f source_sha=449de7a315a513468610d517e78f9ab87f76ae9d
+```
+
+The corresponding OS run uses `mode=binding4-process` and the required
+`platforms` value. To reproduce the historical four-case source, use
+`mode=historical5fa` with the full `5faedc...` commit shown in the table.
+A source-only run is not evidence of either product mode.
+
+### Linux binding4 core
+
+The selected count is closed:
+
+| Target | Tests |
+| --- | ---: |
+| `apply_receipt_integrity` integration target | 12 |
+| `apply_receipt_binding` integration target | 13 |
+| `apply_binding_migration` integration target | 7 |
+| `apply_receipt_binding::tests` unit module | 7 |
+| `apply_crash_tests` unit module | 5 |
+| Total | 44 |
+
+The last migration integration case observes legacy import recovery after its
+source and CAS are unavailable. These 44 cases do not include other migration,
+service, projection, creation or installed-application suites.
+
+The workflow first checks out
+`c9929498f49bcd03101390c44b5a12f31e43f052` in a separate baseline directory
+and target. It compiles and lists the original one-case
+`apply_receipt_binding` integration target before executing
+`versioned_binding_rejects_same_change_from_a_later_execution`.
+The required control is an observed exit code 101 with exactly that failed case and
+the original assertion at line90:
+`accepted corrupt known result: Ok(`.
+Compile failures, setup errors, a different assertion, an ignored case,
+unexpected success or an unknown process outcome do not satisfy this control.
+
+The current source retains the complete original test file as a byte-identical
+prefix. Its three integration targets and one library test binary are compiled
+once, selected from actual compiler records, hashed and enumerated. The gate
+requires every selected title exactly once with no ignored cases, retries or
+missing groups. Filtered counts come from each actual binary's enumeration.
+The baseline failure is recorded separately from the 44 successful current
+cases; it is never counted as a current PASS.
+
+### Six-field phase representation
+
+The historical source retains four strings per receipt snapshot row. The
+binding4 source retains six: the same request, digest, result and creation fields,
+followed by the binding version and JSON representation. The gate selects this
+width from the closed source cohort. Other row types retain their existing
+widths and types.
+
+The Rust snapshot query casts the version to text and coalesces SQL NULL binding
+JSON to an empty string. These retained strings therefore do not independently
+prove the SQL distinction between NULL and an empty string. The corresponding
+typed storage assertions remain authoritative for that distinction.
+
+### Fifth DDL case
+
+`binding_migration_ddl_rolls_back_after_abrupt_exit` creates two owned temporary
+fixtures with a source-equivalent schema3 representation. Each fixture starts
+one owned child that exits with code 86 after one of the two binding-column ALTER statements.
+The parent inspects the schema and original rows before any recovery through
+`Store::open`, then separately verifies a successful reopen that reports the
+legacy receipt as unverified.
+
+This case retains the original parent result, exact source and executable
+identity. Its child logs and databases belong to temporary fixtures and are not
+independently archived. The gate runs this parent with normal libtest capture,
+without `--nocapture` or `MOTIONWRIGHT_TEST_APPLY_EVIDENCE_ROOT`, so internal child
+output cannot be mistaken for extra parent results.
+
+For binding4 process runs, the retained artifact totals remain twenty phase JSON
+files and twelve child-original records from the four mutation cases. The fifth
+parent contributes no independently retained child-original or phase files.
+
+### Attribution and incomplete observations
+
+Every selected execution retains the original commands, stdout, stderr, exact
+source/tree inputs, selected test binaries and before/after custody checks.
+Current binding4 receipts use a separate schema from the historical receipt.
+A timeout remains UNKNOWN, and the gate stops without retrying or assuming that
+descendants were observed to terminate. Partial diagnostic logs cannot become
+complete phase custody.
+
+Compilation is bounded to 1,500 seconds per source; enumeration to 45 seconds;
+selected cases and groups to 120–180 seconds. The Linux baseline-plus-core job
+allows 90 minutes and each selected OS process job 45 minutes. These bounds limit
+the attempt; they do not convert an incomplete attempt into a successful result.
+
+A source revision, workflow or platform does not inherit another revision's
+results. These gates provide no installed-application, physical-power-loss,
+complete raw-database/CAS archive, human-acceptance or stable-release authority.

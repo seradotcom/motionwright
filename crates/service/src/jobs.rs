@@ -196,9 +196,7 @@ fn apply_observed_state(
     if observed == ProductionJobState::OutcomeUnknown {
         return ProductionJobState::OutcomeUnknown;
     }
-    if current == ProductionJobState::OutcomeUnknown {
-        return observed;
-    }
+    // A recovered read does not withdraw an acknowledged pending cancellation.
     if cancellation_requested || current == ProductionJobState::CancelRequested {
         ProductionJobState::CancelRequested
     } else {

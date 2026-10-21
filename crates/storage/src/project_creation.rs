@@ -94,20 +94,20 @@ fn read_creation(
 ) -> Result<Option<ProjectCreationOutcome>> {
     let id = project_id(intent.request_id);
     let key = receipt_key(intent.request_id);
-    let stored: Option<(String, String)> = conn
-        .query_row(
-            "SELECT request_sha256,result_json FROM receipts
-         WHERE project_id=?1 AND request_id=?2",
-            params![id.to_string(), key],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    let Some((stored_digest, json)) = stored else {
+    let stored =
+        super::apply_receipt_binding::read_receipt(conn, id, &key).map_err(|error| match error
+            .into_storage_error()
+        {
+            StorageError::InvalidApplyReceipt(reason) => invalid_receipt(&reason),
+            other => other,
+        })?;
+    let Some(stored) = stored else {
         return Ok(None);
     };
-    let receipt: CreationReceipt = match serde_json::from_str(&json) {
+    let json = &stored.result_json;
+    let receipt: CreationReceipt = match serde_json::from_str(json) {
         Ok(receipt) => receipt,
-        Err(_) if serde_json::from_str::<ApplyOutcome>(&json).is_ok() => {
+        Err(_) if serde_json::from_str::<ApplyOutcome>(json).is_ok() => {
             return Err(StorageError::RequestReuse);
         }
         Err(_) => {
@@ -116,12 +116,19 @@ fn read_creation(
             ));
         }
     };
+    // Creation has its own revision-zero envelope and no Change event.
+    // A generic apply marker must never upgrade or reinterpret this family.
+    if !stored.is_legacy_marker() {
+        return Err(invalid_receipt(
+            "creation receipt carries a generic apply binding",
+        ));
+    }
     receipt
         .intent
         .validate()
         .map_err(|_| invalid_receipt("invalid recorded creation intent"))?;
     if receipt.intent.request_id != intent.request_id
-        || request_digest(&receipt.intent)? != stored_digest
+        || request_digest(&receipt.intent)? != stored.request_sha256
         || hex::encode(Sha256::digest(receipt.project_json.as_bytes())) != receipt.project_sha256
     {
         return Err(invalid_receipt(
@@ -235,8 +242,9 @@ impl Store {
             ],
         )?;
         tx.execute(
-            "INSERT INTO receipts(project_id,request_id,request_sha256,result_json,created_at)
-             VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO receipts(project_id,request_id,request_sha256,result_json,created_at,
+                                  apply_binding_version,apply_binding_json)
+             VALUES(?1,?2,?3,?4,?5,0,NULL)",
             params![
                 id.to_string(),
                 receipt_key(intent.request_id),
