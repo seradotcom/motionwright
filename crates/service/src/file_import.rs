@@ -1,5 +1,7 @@
 //! Stable local-import identity and explicit read-only receipt recovery.
-use super::{StudioService, audio, invalid_import, validate_importable_asset};
+use super::{
+    MAX_SVG_IMPORT_BYTES, StudioService, audio, invalid_import, validate_importable_asset,
+};
 use motionwright_domain::{Asset, Change, RevisionStamp, VoiceTrack};
 use motionwright_storage::{ApplyOutcome, FileImportIntent, Result, StorageError};
 use sha2::{Digest, Sha256};
@@ -125,15 +127,26 @@ impl StudioService {
         {
             return Err(invalid_import("voice import requires an audio media type"));
         }
-        let staged = self.store.lock().stage_file_import(source)?;
+        let svg_extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
+        let max_bytes = match &intent {
+            FileImportIntent::Asset { media_type, .. }
+                if media_type.eq_ignore_ascii_case("image/svg+xml") || svg_extension =>
+            {
+                MAX_SVG_IMPORT_BYTES
+            }
+            _ => u64::MAX,
+        };
+        let staged = self
+            .store
+            .lock()
+            .stage_file_import_with_limit(source, max_bytes)?;
         let source_sha256 = staged.descriptor().sha256.clone();
         let immutable_path = staged.path();
         let change = match &intent {
             FileImportIntent::Asset { name, media_type } => {
-                let svg_extension = source
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
                 validate_importable_asset(immutable_path, media_type, svg_extension)?;
                 Change::AddAsset {
                     asset: Asset {
