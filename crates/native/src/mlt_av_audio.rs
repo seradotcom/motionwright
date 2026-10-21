@@ -2,6 +2,7 @@
 //! multi-segment MLT video. Does not claim a video timeline or mux exists.
 use crate::{
     mlt_edit_plan::MltNativeVideoRecipe,
+    original_mix::PreparedOriginalMix,
     production::{MltPreparedMezzanines, verified_native_media_path},
 };
 use motionwright_domain::{
@@ -332,6 +333,46 @@ pub fn preflight_multi_segment_audio(
     voice: &VerifiedMasterVoice,
     owner_output_root: &Path,
 ) -> NativeResult<MultiSegmentAudioReadiness> {
+    preflight_audio_source(
+        project,
+        deliverable_id,
+        recipe,
+        prepared,
+        voice,
+        None,
+        owner_output_root,
+    )
+}
+
+pub(crate) fn preflight_multi_segment_saved_mix(
+    project: &Project,
+    deliverable_id: Uuid,
+    recipe: &MltNativeVideoRecipe,
+    prepared: &MltPreparedMezzanines,
+    voice: &VerifiedMasterVoice,
+    saved_mix: &PreparedOriginalMix,
+    owner_output_root: &Path,
+) -> NativeResult<MultiSegmentAudioReadiness> {
+    preflight_audio_source(
+        project,
+        deliverable_id,
+        recipe,
+        prepared,
+        voice,
+        Some(saved_mix),
+        owner_output_root,
+    )
+}
+
+fn preflight_audio_source(
+    project: &Project,
+    deliverable_id: Uuid,
+    recipe: &MltNativeVideoRecipe,
+    prepared: &MltPreparedMezzanines,
+    voice: &VerifiedMasterVoice,
+    saved_mix: Option<&PreparedOriginalMix>,
+    owner_output_root: &Path,
+) -> NativeResult<MultiSegmentAudioReadiness> {
     project.validate().map_err(|error| {
         invalid(format!(
             "Project contains invalid versioned semantics: {error}",
@@ -374,13 +415,28 @@ pub fn preflight_multi_segment_audio(
             "Multi-segment AV requires exactly bound measured stereo 48 kHz WAV and H.264/AAC Rec.709 MP4",
         ));
     }
-    if project.audio.mix.voice_gain_db != 0.0
+    if (saved_mix.is_none() && project.audio.mix.voice_gain_db != 0.0)
         || project.audio.mix.target_lufs.is_some()
         || project.audio.mix.target_true_peak_dbfs.is_some()
     {
         return Err(unsupported(
             "Multi-segment AV does not implement gain changes or claimed LUFS/true-peak mastering; clear them or author an independently verified mix",
         ));
+    }
+    let has_saved_mix = project
+        .production_design
+        .delivery_recipes
+        .get(&deliverable_id)
+        .and_then(|recipe| recipe.original_mix.as_ref())
+        .is_some();
+    if has_saved_mix != saved_mix.is_some() || !project.audio.sfx_cues.is_empty() {
+        return Err(unsupported(
+            "Native master cannot omit a saved mix or replace authored semantic SFX with a voice-only WAV",
+        ));
+    }
+    if let Some(mix) = saved_mix {
+        mix.verify_project(project, deliverable_id)
+            .map_err(|error| stale(format!("Saved mix is not current source content: {error}")))?;
     }
     for (resource, generation, revision, profile_id) in [
         (
@@ -497,6 +553,19 @@ pub fn preflight_multi_segment_audio(
         ));
     }
     let samples = verify_measured_voice_file(voice)?;
+    if let Some(mix) = saved_mix
+        && (mix.plan().sample_frames != samples
+            || mix.plan().measured_voice.source_asset_sha256 != voice.sha256)
+    {
+        return Err(stale(
+            "Saved mix differs from the exact measured voice sample clock",
+        ));
+    }
+    let (audio_sha256, audio_size_bytes) = if let Some(mix) = saved_mix {
+        (mix.wav_sha256().to_string(), mix.wav_bytes().len() as u64)
+    } else {
+        (track.source_sha256.clone(), voice.size_bytes)
+    };
     // The sample-count declared by the actual WAV must itself match the
     // source track's measured duration, not just its project-level metadata.
     let measured = i128::from(track.measured_duration.num)
@@ -556,14 +625,28 @@ pub fn preflight_multi_segment_audio(
     } else {
         source_fingerprint
     };
+    let source_fingerprint = if let Some(mix) = saved_mix {
+        hex::encode(Sha256::digest(
+            serde_json::to_vec(&(
+                "native-saved-original-mix-v1",
+                &source_fingerprint,
+                mix.audio_inputs_sha256(),
+                &mix.evidence().source_plan_sha256,
+                mix.wav_sha256(),
+            ))
+            .map_err(|_| invalid("Saved mix source fingerprint could not be serialized"))?,
+        ))
+    } else {
+        source_fingerprint
+    };
     Ok(MultiSegmentAudioReadiness {
         project_resource: project.resource_key(),
         generation: project.generation,
         revision: project.revision,
         deliverable_id,
         voice_track_id: track.id,
-        audio_sha256: track.source_sha256.clone(),
-        audio_size_bytes: voice.size_bytes,
+        audio_sha256,
+        audio_size_bytes,
         audio_pcm_frames: samples,
         audio_sample_rate: 48_000,
         audio_channels: 2,
@@ -575,10 +658,11 @@ pub fn preflight_multi_segment_audio(
         final_profile: recipe.final_mux_profile.clone(),
         caption_cue_count: captions.as_ref().map(|(count, _)| *count),
         source_fingerprint,
-        evidence_scope: if captions.is_some() {
-            "verified-owner-audio-ffv1-native-captioned-source-not-muxed-mp4"
-        } else {
-            "verified-owner-audio-ffv1-inputs-not-muxed-mp4"
+        evidence_scope: match (saved_mix.is_some(), captions.is_some()) {
+            (true, true) => "verified-owner-saved-mix-ffv1-native-captioned-source-not-muxed-mp4",
+            (true, false) => "verified-owner-saved-mix-ffv1-inputs-not-muxed-mp4",
+            (false, true) => "verified-owner-audio-ffv1-native-captioned-source-not-muxed-mp4",
+            (false, false) => "verified-owner-audio-ffv1-inputs-not-muxed-mp4",
         }
         .into(),
     })

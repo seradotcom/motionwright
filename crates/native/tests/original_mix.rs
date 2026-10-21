@@ -347,3 +347,42 @@ fn unknown_fields_cannot_forge_a_live_listening_or_publication_grant() {
     value["publish_now"] = serde_json::json!(true);
     assert!(serde_json::from_value::<OriginalMixPlan>(value).is_err());
 }
+
+#[test]
+fn measured_ducking_intervals_reject_a_different_voice_source_sha256() {
+    let (mut project, plan, [voice, music, sfx]) = fixture();
+    project.audio.transcript[0].alignment = domain::AlignmentEvidence::Measured {
+        engine: "fixture-original-alignment".into(),
+        source_sha256: "ab".repeat(32),
+        confidence_millis: Some(999),
+    };
+    assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_err());
+    project.audio.transcript[0].alignment = domain::AlignmentEvidence::Measured {
+        engine: "fixture-original-alignment".into(),
+        source_sha256: project.audio.voice_tracks[0].source_sha256.clone(),
+        confidence_millis: Some(999),
+    };
+    assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_ok());
+}
+
+#[test]
+fn persisted_mix_recipe_rejects_an_unsaved_duck_or_source_override() {
+    let (mut project, mut plan, [voice, music, sfx]) = fixture();
+    project.production_design.delivery_recipes.insert(
+        plan.deliverable_profile_id,
+        domain::DeliveryRecipe {
+            original_mix: Some(domain::OriginalMixRecipe {
+                music_asset_id: Some(plan.original_music.asset_id),
+                sfx_asset_id: Some(plan.original_sfx.asset_id),
+                sfx_gain_db: plan.sfx_gain_db,
+                duck_attenuation_db: plan.duck_attenuation_db,
+                duck_attack_samples: plan.duck_attack_samples,
+                duck_release_samples: plan.duck_release_samples,
+            }),
+            ..Default::default()
+        },
+    );
+    assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_ok());
+    plan.duck_attenuation_db = 0.0;
+    assert!(render_original_source_mix(&plan, &project, &voice, &music, &sfx).is_err());
+}

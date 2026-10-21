@@ -5,8 +5,12 @@
 use super::*;
 use crate::{
     assembly::preflight_multi_segment_mlt,
-    mlt_av_audio::{MultiSegmentAudioReadiness, preflight_multi_segment_audio},
+    mlt_av_audio::{
+        MultiSegmentAudioReadiness, preflight_multi_segment_audio,
+        preflight_multi_segment_saved_mix,
+    },
     mlt_edit_plan::mlt_native_video_recipe,
+    original_mix::prepare_saved_original_mix,
 };
 
 /// Caller-owned, typed and non-deserializable; never accept a filesystem
@@ -292,16 +296,42 @@ impl ProductionCoordinator {
             .service
             .verified_master_voice(project_id, expected, voice_track_id)
             .map_err(storage_error)?;
-        let audio_readiness = preflight_multi_segment_audio(
-            &project,
-            deliverable_id,
-            &recipe,
-            &visual.source,
-            &voice,
-            output_root,
-        )?;
+        let saved_mix = if project
+            .production_design
+            .delivery_recipes
+            .get(&deliverable_id)
+            .and_then(|recipe| recipe.original_mix.as_ref())
+            .is_some()
+        {
+            Some(
+                prepare_saved_original_mix(&self.service, project_id, expected, deliverable_id)
+                    .map_err(|error| Error::new(ErrorCode::Unsupported, error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        // Re-derive the bounded pure PCM result from canonical CAS/recipe. The
+        // staged audio receipt alone never authorizes a different soundtrack.
+        let audio_readiness = match &saved_mix {
+            Some(mix) => preflight_multi_segment_saved_mix(
+                &project,
+                deliverable_id,
+                &recipe,
+                &visual.source,
+                &voice,
+                mix,
+                output_root,
+            )?,
+            None => preflight_multi_segment_audio(
+                &project,
+                deliverable_id,
+                &recipe,
+                &visual.source,
+                &voice,
+                output_root,
+            )?,
+        };
         if !sha256_literal(&audio.sha256)
-            || voice.sha256 != audio.sha256
             || audio.sample_rate != 48_000
             || audio.channels != 2
             || audio_readiness.audio_sha256 != audio.sha256
@@ -309,7 +339,7 @@ impl ProductionCoordinator {
         {
             return Err(Error::new(
                 ErrorCode::StaleReference,
-                "Native staged 48k stereo voice does not match the measured CAS source",
+                "Native staged 48k stereo audio does not match the exact selected voice or saved mix",
             ));
         }
         verify_output_artifact(
