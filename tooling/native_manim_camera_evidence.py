@@ -281,7 +281,8 @@ def finish_render(native, prepared, evidence, output_root, work_root,
     return summary
 
 
-def verified_publication(root, source_sha, semwright_sha, sealed_originals, *, fixture="original"):
+def verified_publication(root, source_sha, semwright_sha, sealed_originals, *, fixture="original",
+                         scenario=None, current=None):
     """Closed read-only publication; ciphertext custody and original digests are required."""
     result = read_object(root / "result.json")
     require(result.get("schema") == "motionwright.manim.camera.native-e2e/1"
@@ -330,14 +331,19 @@ def verified_publication(root, source_sha, semwright_sha, sealed_originals, *, f
                 "both_axes_moving_camera_verified_from_decoded_centroids") is True,
             "camera_public_decoded_readback")
     sealed = read_object(root / "camera-custody.json")
-    require(sealed.get("schema") == "motionwright.manim.camera.sealed-custody/1"
-            and sealed.get("status") == "PASS"
-            and sealed.get("selected_originals_complete") is True
-            and sealed.get("native_result_retained") is True
-            and sealed.get("context", {}).get("source_sha") == source_sha
-            and sealed.get("context", {}).get("semwright_sha") == semwright_sha
-            and sealed.get("secondary_error_count") == 0,
-            "camera_public_custody_incomplete")
+    from native_manim_evidence_selection import (
+        expected_from_environment, verify_publication_selection,
+    )
+    current = current or expected_from_environment(source_sha, semwright_sha)
+    require(current.get("source_sha") == source_sha
+            and current.get("semwright_sha") == semwright_sha, "camera_public_custody_context")
+    scenario = scenario or os.environ.get("MANIM_NATIVE_SCENARIO", "camera120")
+    try:
+        verify_publication_selection(root, sealed,
+            source_root=Path(__file__).resolve().parents[1], current=current,
+            scenario=scenario, fixture=fixture)
+    except (ValueError, OSError) as error:
+        raise CameraEvidenceError("camera_public_custody_incomplete") from error
     require(type(sealed.get("ciphertext_sha256")) is str
             and SHA.fullmatch(sealed["ciphertext_sha256"])
             and type(sealed.get("recipient_sha256")) is str
@@ -346,6 +352,11 @@ def verified_publication(root, source_sha, semwright_sha, sealed_originals, *, f
     require(sha(ciphertext) == sealed["ciphertext_sha256"]
             and len(ciphertext) == sealed["ciphertext_bytes"]
             and ciphertext.startswith(b"MWCISEAL1\n"), "camera_public_ciphertext_missing_or_changed")
+    from native_manim_evidence_selection import verify_envelope_binding
+    try:
+        verify_envelope_binding(ciphertext, sealed, current)
+    except (ValueError, OSError) as error:
+        raise CameraEvidenceError("camera_public_ciphertext_origin_mismatch") from error
     media = read(root / MEDIA_NAME, MAX_MEDIA)
     require(len(media) == artifact["bytes"] and sha(media) == artifact["sha256"]
             and len(media) >= 12 and media[4:8] == b"ftyp", "camera_public_media_digest")
@@ -365,7 +376,8 @@ def verified_publication(root, source_sha, semwright_sha, sealed_originals, *, f
 
 class CameraCustody:
     """Retain the one invocation's outcome before later observation or cleanup."""
-    def __init__(self, owner, evidence, seal_path, recipient, context, *, engine=None):
+    def __init__(self, owner, evidence, seal_path, recipient, context, *, engine=None,
+                 selection=None, source_root=None, scenario="camera120", fixture="original"):
         self.engine = engine or custody_module()
         self.engine.public_key(recipient)
         self.engine.validate_context(context)
@@ -389,6 +401,15 @@ class CameraCustody:
         self.native_process = None
         self.secondary_errors = []
         self.sealed = False
+        from native_manim_evidence_selection import CameraSelection, scope
+        _, self.phase = scope(context, scenario, fixture)
+        self.scenario, self.fixture = scenario, fixture
+        self.selection = selection if selection is not None else CameraSelection(
+            owner, evidence, source_root or Path(__file__).resolve().parents[1],
+            context, scenario, fixture,
+        )
+        # CameraSelection has compared committed and physical source before
+        # native-invocation-intent and the only native effect.
 
     def __enter__(self):
         return self
@@ -434,18 +455,27 @@ class CameraCustody:
             self.secondary("terminal-custody", error)
         complete = False
         try:
-            snapshot, complete = self.engine.gather_snapshot(
-                {"owner": self.owner, "evidence": self.evidence}, preserve_partial=True)
+            from native_manim_evidence_selection import MANIFEST_NAME, SCHEMA, terminal_complete
+            from native_evidence_projection import canonical
+            snapshot, manifest = self.selection.capture()
+            manifest_bytes = canonical(manifest)
+            self.engine.new_bytes(self.evidence / MANIFEST_NAME, manifest_bytes)
+            native_terminal_complete = terminal_complete(terminal)
+            complete = manifest["required_layers_complete"] and native_terminal_complete
             envelope = self.engine.encrypt_snapshot(snapshot, self.recipient, self.context)
             self.engine.new_bytes(self.seal_path, envelope)
             self.sealed = True
             receipt = {
-                "schema": "motionwright.manim.camera.sealed-custody/1",
+                "schema": SCHEMA,
                 "status": ("PASS" if complete and not self.secondary_errors else "INCOMPLETE"),
-                "context": self.context,
+                "context": self.context, "scenario": self.scenario, "phase": self.phase,
                 "ciphertext_sha256": sha(envelope), "ciphertext_bytes": len(envelope),
                 "recipient_sha256": self.recipient["sha256"],
-                "selected_originals_complete": complete,
+                "selected_manifest_sha256": sha(manifest_bytes),
+                "selected_manifest_bytes": len(manifest_bytes),
+                "selected_tar_sha256": sha(snapshot), "selected_tar_bytes": len(snapshot),
+                "required_layers_complete": manifest["required_layers_complete"],
+                "native_terminal_complete": native_terminal_complete,
                 "native_result_retained": self.native_result is not None,
                 "secondary_error_count": len(self.secondary_errors),
                 "original_owner_tree_removed": False,

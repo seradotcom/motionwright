@@ -6,6 +6,7 @@ The real 120-frame decoder is a separate immutable oracle and workflow gate.
 from __future__ import annotations
 
 import copy
+import base64
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import native_manim_camera_evidence as camera
+import native_manim_evidence_selection as selection
+import native_evidence_projection as selected
 import native_manim_e2e as wrapper
 import native_scene_public_artifact as publisher
 from tooling.tests.test_native_manim_camera_pixels import source as pixel_source
@@ -124,16 +127,26 @@ class FakeCustody:
     def new_json(self, path, value):
         self.new_bytes(path, encoded(value))
 
-    def gather_snapshot(self, roots, *, preserve_partial):
-        assert preserve_partial
-        self.snapshots.append({k: list(p.rglob("*")) for k, p in roots.items()})
-        return b"synthetic capture control only", self.complete
 
     def encrypt_snapshot(self, data, recipient, context):
         self.seal_calls += 1
         if self.seal_error:
             raise self.seal_error
-        return b"MWCISEAL1\nsynthetic encrypted-envelope control only"
+        header = {"schema": "motionwright.ci.private-evidence-seal/1",
+            "algorithm": "RSA-OAEP-SHA256+AES-256-GCM", "recipient_spki_sha256": recipient["sha256"],
+            "context": context, "nonce": base64.b64encode(b"n" * 12).decode(),
+            "wrapped_key": base64.b64encode(b"w" * 384).decode(),
+            "plaintext_sha256": camera.sha(data), "plaintext_bytes": len(data)}
+        encoded_header = selected.canonical(header)
+        return (b"MWCISEAL1\n" + len(encoded_header).to_bytes(4, "big") + encoded_header
+                + b"synthetic-not-encrypted-unit-payload")
+
+
+class FakeSelection:
+    """Boundary double; actual /2 policies have their own complete pure test file."""
+    def __init__(self, engine): self.engine = engine
+    def capture(self):
+        return b"synthetic-selected-unit-bytes", {"required_layers_complete": self.engine.complete}
 
 
 class CameraOriginalCustodyTests(unittest.TestCase):
@@ -150,15 +163,37 @@ class CameraOriginalCustodyTests(unittest.TestCase):
         self.engine = FakeCustody()
         self.module = mock.patch.object(camera, "custody_module", return_value=self.engine)
         self.module.start()
+        environment = mock.patch.dict(os.environ, {
+            "GITHUB_RUN_ID": CONTEXT["run_id"], "GITHUB_RUN_ATTEMPT": "1",
+            "MANIM_NATIVE_SCENARIO": "camera120",
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
+        projection = mock.patch.object(selection, "verify_publication_selection",
+                                        side_effect=self.fixture_selection_publication)
+        projection.start()
+        self.addCleanup(projection.stop)
+
+    def fixture_selection_publication(self, root, receipt, *, source_root, current, scenario, fixture):
+        # This is a synthetic boundary fixture, not a collector or filesystem test.
+        selected.require(receipt["schema"] == selection.SCHEMA and receipt["status"] == "PASS"
+            and receipt["required_layers_complete"] is True and receipt["native_terminal_complete"] is True
+            and receipt["context"] == current and receipt["scenario"] == scenario
+            and receipt["phase"] == ("original" if fixture == "original" else "edited"),
+            "fixture-selected-custody-incomplete")
+        raw = (root / selection.MANIFEST_NAME).read_bytes()
+        selected.require(camera.sha(raw) == receipt["selected_manifest_sha256"], "fixture-manifest-changed")
+        return json.loads(raw)
 
     def tearDown(self):
         self.module.stop()
         self.tmp.cleanup()
 
-    def session(self, context=None):
+    def session(self, context=None, *, fixture="original"):
         return camera.CameraCustody(
             self.owner, self.evidence, self.sealed / "originals.mwci",
-            RECIPIENT, context or CONTEXT, engine=self.engine,
+            RECIPIENT, context or CONTEXT, engine=self.engine, selection=FakeSelection(self.engine),
+            scenario="camera120-source-cycle" if fixture == "edited1040" else "camera120", fixture=fixture,
         )
 
     def fixture_render(self, *, seed=None, fixture="original"):
@@ -216,7 +251,10 @@ class CameraOriginalCustodyTests(unittest.TestCase):
     def complete_fixture(self, *, seed=None, fixture="original"):
         native, prepared, decoded = self.fixture_render(seed=seed, fixture=fixture)
         with mock.patch.object(camera, "verify_pixels", return_value=decoded) as decoder:
-            with self.session() as current:
+            os.environ["MANIM_NATIVE_SCENARIO"] = "camera120-source-cycle" if fixture == "edited1040" else "camera120"
+            with self.session(fixture=fixture) as current:
+                current.native_process = {"pid": 123, "process_returncode": 0,
+                                          "native_outcome": "NOT_INTERPRETED", "automatic_retry": False}
                 observed = current.once(lambda: native)
                 self.finish(observed, prepared, fixture=fixture)
             decoder.assert_called_once_with(
@@ -323,7 +361,7 @@ class CameraOriginalCustodyTests(unittest.TestCase):
         self.assertIs(current.native_result, original)
         receipt = json.loads((self.evidence / "camera-custody.json").read_bytes())
         self.assertEqual(receipt["status"], "INCOMPLETE")
-        self.assertFalse(receipt["selected_originals_complete"])
+        self.assertFalse(receipt["required_layers_complete"])
 
     def test_late_receipt_write_failure_keeps_result_and_ciphertext(self):
         self.engine.write_failure = "camera-custody.json"

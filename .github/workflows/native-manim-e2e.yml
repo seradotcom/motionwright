@@ -28,6 +28,10 @@ on:
       - 'crates/manim-profile/**'
       - 'crates/driver-manim-community/**'
       - 'tooling/native_manim_e2e.py'
+      - 'tooling/native_evidence_projection.py'
+      - 'tooling/native_manim_evidence_selection.py'
+      - 'tooling/tests/test_native_evidence_projection.py'
+      - 'tooling/tests/test_native_manim_evidence_selection.py'
       - 'tooling/native_manim_camera_evidence.py'
       - 'tooling/native_manim_camera_cycle.py'
       - 'tooling/native_manim_camera_pixels.py'
@@ -95,6 +99,38 @@ jobs:
           "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
             --disable-pip-version-check --require-hashes \
             -r tooling/requirements/mlt-g2-custody.txt
+
+      - name: Require 44 selected evidence and Linux filesystem contracts
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_evidence_projection.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-selection-v2-g0/report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-selection-v2-g0/report.json").read_bytes())
+          assert value["status"] == "PASS" and value["exit_code"] == 0 and len(value["steps"]) == 1
+          counts = value["steps"][0]["counts"]
+          assert counts["tests_run"] == counts["passed"] == 44
+          assert counts["skipped"] == counts["expected_failures"] == counts["unexpected_successes"] == 0
+          PY
+
+      - name: Require 38 closed Manim selected evidence contracts
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_manim_evidence_selection.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-selection-adapter-g0/report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-selection-adapter-g0/report.json").read_bytes())
+          assert value["status"] == "PASS" and value["exit_code"] == 0 and len(value["steps"]) == 1
+          counts = value["steps"][0]["counts"]
+          assert counts["tests_run"] == counts["passed"] == 38
+          assert counts["skipped"] == counts["expected_failures"] == counts["unexpected_successes"] == 0
+          PY
 
       - name: Require 24 complete source-bound camera pixel regressions
         run: |
@@ -179,16 +215,53 @@ jobs:
           ))
           PY
 
+      - name: Require 13 complete public scene artifact contracts
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_scene_public_artifact.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-public-artifact-g0/report.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          value = json.loads(
+              (Path(os.environ["RUNNER_TEMP"])
+               / "manim-public-artifact-g0/report.json").read_bytes()
+          )
+          assert value["status"] == "PASS" and value["exit_code"] == 0
+          assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert value["require_complete"] is True
+          assert "source_postcheck_error" not in value
+          assert len(value["steps"]) == 1
+          step = value["steps"][0]
+          assert step["entry_point"] == (
+              "discovery:test_native_scene_public_artifact.py"
+          )
+          assert step["status"] == "PASS" and step["exit_code"] == 0
+          counts = step["counts"]
+          assert counts["terminal_status"] == "OK"
+          assert counts["tests_run"] == counts["passed"] == 13
+          assert all(counts[key] == 0 for key in (
+              "errors", "failures", "skipped",
+              "expected_failures", "unexpected_successes",
+          ))
+          PY
+
       - name: Retain original source-contract reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: manim-camera-source-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ${{ runner.temp }}/manim-selection-v2-g0/
+            ${{ runner.temp }}/manim-selection-adapter-g0/
             ${{ runner.temp }}/manim-camera-pixel-g0/
             ${{ runner.temp }}/manim-camera-custody-g0/
             ${{ runner.temp }}/manim-camera-cycle-g0/
             ${{ runner.temp }}/manim-camera-cycle-publication-g0/
+            ${{ runner.temp }}/manim-public-artifact-g0/
           if-no-files-found: error
           retention-days: 14
 
@@ -382,8 +455,17 @@ jobs:
           assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
           assert result["native_effect_invocations"] == 1
           assert result["mp4"]["frame_count"] == 120
-          assert sealed["status"] == "PASS" and sealed["selected_originals_complete"] is True
+          assert sealed["schema"] == "motionwright.manim.camera.sealed-custody/2"
+          assert sealed["status"] == "PASS" and sealed["required_layers_complete"] is True
+          assert sealed["native_terminal_complete"] is True
           assert sealed["secondary_error_count"] == 0 and sealed["native_result_retained"] is True
+          import sys
+          sys.path.insert(0, "tooling")
+          from native_manim_camera_evidence import verified_publication
+          pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+          verified_publication(root, os.environ["GITHUB_SHA"], pin,
+              Path(os.environ["RUNNER_TEMP"]) / "manim-camera-sealed" / "originals.mwci",
+              fixture="original", scenario="camera120")
           PY
 
       - name: Verify Manim review evidence
@@ -436,11 +518,11 @@ jobs:
               require(len({original, edited, sealed_original, sealed_edited}) == 4,
                       "cycle_public_distinct_paths")
               first_media, first = verified_publication(
-                  original, source, pin, sealed_original, fixture="original")
+                  original, source, pin, sealed_original, fixture="original", scenario="camera120-source-cycle")
               first_media_sha = sha(first_media)
               del first_media
               second_media, second = verified_publication(
-                  edited, source, pin, sealed_edited, fixture="edited1040")
+                  edited, source, pin, sealed_edited, fixture="edited1040", scenario="camera120-source-cycle")
               second_media_sha = sha(second_media)
               del second_media
               require(first["sealed_originals_recipient_sha256"]

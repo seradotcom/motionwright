@@ -17,7 +17,8 @@ class SourceCycleCoordinatorTests(unittest.TestCase):
             edited_evidence_root=Path("/private/edited"),
             sealed_edited=Path("/sealed/edited.mwci"),
         )
-        self.context = {"source_sha": "a" * 40, "semwright_sha": "b" * 40}
+        self.context = {"source_sha": "a" * 40, "semwright_sha": "b" * 40,
+                        "run_id": "12345", "run_attempt": "1"}
         self.validate = mock.Mock(return_value=({"sha256": "c" * 64}, self.context))
         self.original = {
             "evidence": self.args.evidence_root,
@@ -51,7 +52,11 @@ class SourceCycleCoordinatorTests(unittest.TestCase):
         self.assertEqual(second.args[0].evidence_root, self.args.edited_evidence_root)
         self.assertIs(second.kwargs["source_cycle"], self.original)
         self.assertNotEqual(first.args[0].sealed_originals, second.args[0].sealed_originals)
-        self.assertEqual(self.publish.call_args_list[1].kwargs, {"fixture": "edited1040"})
+        self.assertEqual(self.publish.call_args_list[0].kwargs,
+                         {"scenario": "camera120-source-cycle", "current": self.context})
+        self.assertEqual(self.publish.call_args_list[1].kwargs,
+                         {"fixture": "edited1040", "scenario": "camera120-source-cycle",
+                          "current": self.context})
         self.assertIs(value, self.edited["cycle_observation"])
 
     def test_unknown_original_stops_without_second_invocation(self):

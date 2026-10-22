@@ -41,11 +41,12 @@ def run_source_cycle(args, *, run_phase, validate_phase, publish_phase):
              "camera_cycle_context_changed_before_dispatch")
     original = run_phase(original_args)
     publish_phase(original["evidence"], first_context["source_sha"],
-                  first_context["semwright_sha"], original["sealed_originals"])
+                  first_context["semwright_sha"], original["sealed_originals"],
+                  scenario="camera120-source-cycle", current=first_context)
     edited = run_phase(edited_args, source_cycle=original)
     publish_phase(edited["evidence"], first_context["source_sha"],
                   first_context["semwright_sha"], edited["sealed_originals"],
-                  fixture="edited1040")
+                  fixture="edited1040", scenario="camera120-source-cycle", current=first_context)
     from native_manim_camera_evidence import read_object
     _require(read_object(edited["evidence"] / "source-cycle-observation.json")
              == edited["cycle_observation"], "camera_cycle_durable_observation_changed")

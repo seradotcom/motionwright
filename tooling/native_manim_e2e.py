@@ -366,7 +366,11 @@ def _run_single(args, *, source_cycle=None):
     with workspace as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
-        scope = (CameraCustody(root, evidence, args.sealed_originals, recipient, current)
+        scope = (CameraCustody(root, evidence, args.sealed_originals, recipient, current,
+                    source_root=ROOT,
+                    scenario=("camera120-source-cycle" if getattr(args, "source_cycle_enabled", False)
+                              else "camera120"),
+                    fixture="edited1040" if source_cycle is not None else "original")
                  if camera else contextlib.nullcontext(None))
         with scope as camera_custody:
             phase_root = root

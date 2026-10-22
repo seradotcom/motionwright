@@ -399,9 +399,10 @@ class CameraCyclePublicationTests(unittest.TestCase):
         ):
             verifier.reset_mock()
 
-    def verified_publication(self, root, source, pin, seal, *, fixture):
+    def verified_publication(self, root, source, pin, seal, *, fixture, scenario):
         self.assertEqual(source, self.source)
         self.assertEqual(pin, self.pin)
+        self.assertEqual(scenario, "camera120-source-cycle")
         if fixture == "original":
             self.assertEqual(root, self.original)
             self.assertEqual(seal, self.sealed_original)
@@ -490,11 +491,11 @@ class CameraCyclePublicationTests(unittest.TestCase):
             [
                 mock.call(
                     self.original, self.source, self.pin,
-                    self.sealed_original, fixture="original",
+                    self.sealed_original, fixture="original", scenario="camera120-source-cycle",
                 ),
                 mock.call(
                     self.edited, self.source, self.pin,
-                    self.sealed_edited, fixture="edited1040",
+                    self.sealed_edited, fixture="edited1040", scenario="camera120-source-cycle",
                 ),
             ],
         )
@@ -555,7 +556,7 @@ class CameraCyclePublicationTests(unittest.TestCase):
         self.assertIs(caught.exception, failure)
         self.publication.assert_called_once_with(
             self.original, self.source, self.pin,
-            self.sealed_original, fixture="original",
+            self.sealed_original, fixture="original", scenario="camera120-source-cycle",
         )
         self.edit_contract.assert_not_called()
         self.native_link.assert_not_called()
@@ -565,7 +566,7 @@ class CameraCyclePublicationTests(unittest.TestCase):
             "edited_custody_fixture_rejected"
         )
 
-        def reject_second(root, source, pin, seal, *, fixture):
+        def reject_second(root, source, pin, seal, *, fixture, scenario):
             if fixture == "edited1040":
                 self.assertEqual(root, self.edited)
                 self.assertEqual(source, self.source)
@@ -573,7 +574,7 @@ class CameraCyclePublicationTests(unittest.TestCase):
                 self.assertEqual(seal, self.sealed_edited)
                 raise failure
             return self.verified_publication(
-                root, source, pin, seal, fixture=fixture
+                root, source, pin, seal, fixture=fixture, scenario=scenario
             )
 
         self.publication.side_effect = reject_second
@@ -585,11 +586,11 @@ class CameraCyclePublicationTests(unittest.TestCase):
             [
                 mock.call(
                     self.original, self.source, self.pin,
-                    self.sealed_original, fixture="original",
+                    self.sealed_original, fixture="original", scenario="camera120-source-cycle",
                 ),
                 mock.call(
                     self.edited, self.source, self.pin,
-                    self.sealed_edited, fixture="edited1040",
+                    self.sealed_edited, fixture="edited1040", scenario="camera120-source-cycle",
                 ),
             ],
         )
