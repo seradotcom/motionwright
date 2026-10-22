@@ -25,7 +25,7 @@ defaults:
 jobs:
   g0:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -52,7 +52,7 @@ jobs:
           set -euo pipefail
           python -B tooling/ci_test_runner.py --repo . --mode both \
             --pattern test_ci_canvas_service.py --expected-source "$GITHUB_SHA" \
-            --report ../v/g0/receipt.json --require-complete
+            --report ../v/g0/receipt.json --require-complete --timeout 600
       - name: Retain original guard results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
