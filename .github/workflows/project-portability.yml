@@ -57,6 +57,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Source policy
         run: python3 tooling/source_policy.py
+      - name: Closed portability roster regression checks
+        run: |
+          python3 -m unittest discover -s tooling/tests -p test_project_portability_contracts.py -v
+          python3 -m unittest tooling.tests.test_project_portability_contracts -v
       - name: Format
         run: cargo fmt --all -- --check
       - name: Storage and service tests
@@ -164,6 +168,41 @@ jobs:
                       captured[source_path]["product_sha256"] = hashlib.sha256(product_bytes).hexdigest()
               return captured
 
+          def storage_import_cases(runner_os):
+              if runner_os not in {"Linux", "macOS", "Windows"}:
+                  raise ValueError("unsupported-file-import-platform")
+              cases = {
+                  'file_import::source_budget_tests::bounded_replay_hash_accepts_exact_budget_and_rejects_initial_excess',
+                  'file_import::source_budget_tests::bounded_replay_hash_includes_growth_to_exact_budget',
+                  'file_import::source_budget_tests::bounded_replay_hash_rejects_growth_after_first_read',
+                  'file_import::source_budget_tests::staging_captures_growth_to_exact_budget_then_removes_its_private_file',
+                  'file_import::source_budget_tests::staging_rejects_growth_without_touching_sql_cas_or_another_capture',
+                  'file_import::source_open_tests::oversized_opened_source_is_rejected_before_staging',
+                  'file_import::source_open_tests::regular_source_capture_preserves_exact_bytes_and_sql',
+                  'file_import::source_open_tests::replaced_directory_source_is_rejected_before_staging',
+                  'file_import::source_open_tests::replaced_fifo_source_is_rejected_without_waiting_for_a_writer',
+                  'file_import::source_open_tests::replaced_symlink_source_is_rejected_before_staging',
+                  'file_import::source_open_tests::replay_source_hash_preserves_bytes_without_staging_or_database',
+                  'file_import::source_open_tests::replay_source_hash_rejects_replaced_symlink_without_creating_outputs',
+                  'file_import::staging_tests::dropping_duplicate_stages_and_rejecting_stale_import_preserve_blob',
+                  'file_import::staging_tests::staged_import_rejects_changed_capture_without_publishing_or_leaking_stage',
+                  'file_import::tests::absent_receipt_requires_current_revision_only_when_requested',
+                  'file_import::tests::changed_purpose_or_metadata_rejects_request_reuse_without_effects',
+                  'file_import::tests::corrupt_receipt_hash_event_or_result_is_never_treated_as_absent',
+                  'file_import::tests::original_import_remains_readable_without_sources_after_edit_and_reopen',
+              }
+              if runner_os == "Windows":
+                  cases.remove("file_import::source_open_tests::replaced_fifo_source_is_rejected_without_waiting_for_a_writer")
+              return cases
+
+          def portability_test_options(selection, suite, runner_os):
+              options = ["--nocapture"] if selection == "otio_export" else ["--test-threads=1"]
+              # Hosted Windows must actually execute both privileged symlink
+              # cases; an ignored result never satisfies the closed roster.
+              if suite == "storage" and runner_os == "Windows":
+                  options.append("--include-ignored")
+              return options
+
           def verify_test_output(returncode, output, expected):
               observed = re.findall(r"^test (\S+) \.\.\. (\w+)\s*$", output, re.MULTILINE)
               summary = re.findall(
@@ -248,14 +287,8 @@ jobs:
                   "concurrent_connections_import_identical_bytes_with_one_event_and_one_outcome",
                   "rejected_active_svg_and_undecodable_voice_leave_no_published_blob_or_staging",
               }),
-              ("storage", ["-p", "motionwright-storage", "--lib", "file_import::"], {
-                  "file_import::tests::original_import_remains_readable_without_sources_after_edit_and_reopen",
-                  "file_import::tests::absent_receipt_requires_current_revision_only_when_requested",
-                  "file_import::tests::corrupt_receipt_hash_event_or_result_is_never_treated_as_absent",
-                  "file_import::tests::changed_purpose_or_metadata_rejects_request_reuse_without_effects",
-                  "file_import::staging_tests::staged_import_rejects_changed_capture_without_publishing_or_leaking_stage",
-                  "file_import::staging_tests::dropping_duplicate_stages_and_rejecting_stale_import_preserve_blob",
-              }),
+              ("storage", ["-p", "motionwright-storage", "--lib", "file_import::"],
+               storage_import_cases(os.environ["RUNNER_OS"])),
           ]
           cases.extend([
               ('service-file-secrets', ['-p', 'motionwright-service', '--test', 'file_import_secret_boundaries'], {
@@ -400,9 +433,7 @@ jobs:
           receipt["selected_suites"] = [case[0] for case in cases]
           receipt["expected_invocations"] = sum(len(case[2]) for case in cases)
           for suite, selector, expected in cases:
-              test_options = ["--nocapture"] if selection == "otio_export" else ["--test-threads=1"]
-              if projection:
-                  test_options = ["--test-threads=1"]
+              test_options = portability_test_options(selection, suite, os.environ["RUNNER_OS"])
               receipt["results"].append({
                   "suite": suite, "command": ["cargo", "test", "--locked", *selector, "--", *test_options],
                   "returncode": None, "status": "NOT_RUN", "expected_tests": sorted(expected),
@@ -458,6 +489,8 @@ jobs:
               WORKFLOW_PATH, "Cargo.lock", "SOURCE_LOCK.json",
               "crates/storage/src/derived_cache.rs", "crates/service/tests/derived_cache_publication.rs",
               "crates/storage/tests/schema_migration_atomicity.rs",
+              "crates/storage/src/file_import.rs",
+              "tooling/tests/test_project_portability_contracts.py",
           )
           if selection == "otio_export":
               source_paths = (
