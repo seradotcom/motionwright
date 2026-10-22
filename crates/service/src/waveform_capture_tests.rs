@@ -504,3 +504,79 @@ fn warm_proxy_does_not_hide_missing_original_or_foreign_track() {
     assert_eq!(tree(&fixture.blob_root), before_cas);
     assert_eq!(tree(&cache_root(&fixture.blob_root)), before_cache);
 }
+
+#[test]
+fn reduced_proxy_byte_policy_rejects_cached_oversize_without_regeneration() {
+    let fixture = Fixture::new();
+    assert!(original_page(&fixture.page().unwrap()));
+    let limits = ImportLimits::default().with_decoded_samples(4096).unwrap();
+    let service = StudioService::open_with_import_limits(&fixture.database, limits).unwrap();
+    let before_rows = sql_snapshot(&fixture.database);
+    let before_cas = tree(&fixture.blob_root);
+    let before_cache = tree(&cache_root(&fixture.blob_root));
+    assert!(matches!(
+        service.waveform_page(fixture.project.id, fixture.track.id, 0, 2),
+        Err(StorageError::BlobTooLarge {
+            size: 78,
+            limit: 76
+        })
+    ));
+    assert_eq!(sql_snapshot(&fixture.database), before_rows);
+    assert_eq!(tree(&fixture.blob_root), before_cas);
+    assert_eq!(tree(&cache_root(&fixture.blob_root)), before_cache);
+}
+
+#[test]
+fn reduced_source_policy_rejects_warm_hit_and_exact_budget_remains_valid() {
+    let fixture = Fixture::new();
+    assert!(original_page(&fixture.page().unwrap()));
+    let size = fixture.source_bytes.len() as u64;
+    let before_rows = sql_snapshot(&fixture.database);
+    let before_cas = tree(&fixture.blob_root);
+    let before_cache = tree(&cache_root(&fixture.blob_root));
+    let exact = StudioService::open_with_import_limits(
+        &fixture.database,
+        ImportLimits::default().with_source_bytes(size).unwrap(),
+    )
+    .unwrap();
+    assert!(original_page(
+        &exact
+            .waveform_page(fixture.project.id, fixture.track.id, 0, 2)
+            .unwrap()
+    ));
+    let reduced = StudioService::open_with_import_limits(
+        &fixture.database,
+        ImportLimits::default().with_source_bytes(size - 1).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        reduced.waveform_page(fixture.project.id, fixture.track.id, 0, 2),
+        Err(StorageError::BlobTooLarge { size: observed, limit })
+            if observed == size && limit == size - 1
+    ));
+    assert_eq!(sql_snapshot(&fixture.database), before_rows);
+    assert_eq!(tree(&fixture.blob_root), before_cas);
+    assert_eq!(tree(&cache_root(&fixture.blob_root)), before_cache);
+}
+
+#[test]
+fn uncached_waveform_cannot_bypass_the_host_decoder_read_budget() {
+    let fixture = Fixture::new();
+    let service = StudioService::open_with_import_limits(
+        &fixture.database,
+        ImportLimits::default().with_audio_read_bytes(1).unwrap(),
+    )
+    .unwrap();
+    let before_rows = sql_snapshot(&fixture.database);
+    let before_cas = tree(&fixture.blob_root);
+    let before_cache = tree(&cache_root(&fixture.blob_root));
+    assert!(before_cache.is_empty());
+    assert!(matches!(
+        service.waveform_page(fixture.project.id, fixture.track.id, 0, 2),
+        Err(StorageError::Domain(DomainError::Invalid(message)))
+            if message == "audio measurement limit exceeded: audio_read_bytes"
+    ));
+    assert_eq!(sql_snapshot(&fixture.database), before_rows);
+    assert_eq!(tree(&fixture.blob_root), before_cas);
+    assert_eq!(tree(&cache_root(&fixture.blob_root)), before_cache);
+}

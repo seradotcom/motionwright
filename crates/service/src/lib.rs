@@ -64,6 +64,40 @@ use std::{
 };
 use uuid::Uuid;
 
+fn check_waveform_base(
+    store: &Store,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    track: &motionwright_domain::VoiceTrack,
+) -> StorageResult<()> {
+    let current = store.load_project(project_id)?;
+    if current.resource_key() != expected.resource || current.generation != expected.generation {
+        return Err(StorageError::GenerationConflict);
+    }
+    if current.revision != expected.revision {
+        return Err(StorageError::Conflict {
+            expected: expected.revision,
+            actual: current.revision,
+        });
+    }
+    if !current.audio.voice_tracks.iter().any(|item| {
+        item.id == track.id
+            && item.asset_id == track.asset_id
+            && item.source_sha256 == track.source_sha256
+            && item.sample_rate_hz == track.sample_rate_hz
+            && item.channels == track.channels
+            && item.measured_duration == track.measured_duration
+    }) || !current.assets.iter().any(|asset| {
+        asset.id == track.asset_id
+            && asset.content_sha256.as_deref() == Some(track.source_sha256.as_str())
+    }) {
+        return Err(StorageError::InvalidDerivedCache(
+            "waveform source is no longer attached to the captured project".into(),
+        ));
+    }
+    Ok(())
+}
+
 const MAX_SVG_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
 const SVG_SNIFF_BYTES: usize = 16 * 1024;
 
@@ -761,7 +795,7 @@ impl StudioService {
             return Err(invalid_import("waveform page size is out of bounds"));
         }
 
-        let (track, immutable_path) = {
+        let (initial_stamp, track, source_bytes) = {
             let store = self.store.lock();
             let project = store.load_project(project_id)?;
             let track = project
@@ -781,12 +815,16 @@ impl StudioService {
                     "voice track and immutable asset digests do not match".into(),
                 ));
             }
-            let immutable_path = store.verified_blob_path(&track.source_sha256)?;
-            (track, immutable_path)
+            // Preserve source verification on cache hits, but never reopen a
+            // verified pathname for decode. The host's existing import ceiling
+            // bounds this single-asset capture; no decoder runs under the mutex.
+            let source_bytes =
+                store.read_blob(&track.source_sha256, self.import_limits.source_bytes())?;
+            (RevisionStamp::from(&project), track, source_bytes)
         };
-
         #[cfg(test)]
         waveform_capture_tests::run_hook(waveform_capture_tests::Phase::Source);
+
         let fingerprint =
             audio::waveform_fingerprint(&track.source_sha256, audio::WAVEFORM_FRAMES_PER_PEAK)?;
         let scope = format!(
@@ -794,17 +832,26 @@ impl StudioService {
             track.source_sha256
         );
         let kind = "waveform-proxy";
-
-        let hit = match self.lookup_derived_cache(&scope, kind, &fingerprint)? {
-            Some(hit) => hit,
+        let proxy_limit = audio::waveform_proxy_byte_limit(&self.import_limits)?;
+        let captured = {
+            let store = self.store.lock();
+            check_waveform_base(&store, project_id, &initial_stamp, &track)?;
+            store.lookup_derived_cache_bytes(&scope, kind, &fingerprint, proxy_limit)?
+        };
+        let proxy_bytes = match captured {
+            Some((_record, bytes)) => {
+                drop(source_bytes);
+                bytes
+            }
             None => {
                 let temporary = std::env::temp_dir()
                     .join(format!("motionwright-waveform-{}.mwpeak", Uuid::now_v7()));
-                let generated = audio::generate_waveform_proxy(
-                    &immutable_path,
+                let generated = audio::generate_waveform_proxy_captured(
+                    source_bytes,
                     &track.source_sha256,
                     &temporary,
                     audio::WAVEFORM_FRAMES_PER_PEAK,
+                    &self.import_limits,
                 );
                 let summary = match generated {
                     Ok(summary) => summary,
@@ -826,41 +873,62 @@ impl StudioService {
                         "waveform decode does not match measured voice-track evidence".into(),
                     ));
                 }
-
                 #[cfg(test)]
                 waveform_capture_tests::run_hook(waveform_capture_tests::Phase::Publish);
-                let admitted = self.put_derived_cache_file(
-                    &scope,
-                    kind,
-                    &fingerprint,
-                    &temporary,
-                    summary.peak_count,
-                );
+                // Revalidation and cache admission share the service mutex.
+                // This serializes service callers, not arbitrary peer processes.
+                let admitted = (|| {
+                    let store = self.store.lock();
+                    check_waveform_base(&store, project_id, &initial_stamp, &track)?;
+                    store.put_derived_cache_file(
+                        &scope,
+                        kind,
+                        &fingerprint,
+                        &temporary,
+                        summary.peak_count,
+                    )
+                })();
                 let _ = fs::remove_file(&temporary);
                 admitted?;
-                self.lookup_derived_cache(&scope, kind, &fingerprint)?
+                let store = self.store.lock();
+                check_waveform_base(&store, project_id, &initial_stamp, &track)?;
+                store
+                    .lookup_derived_cache_bytes(&scope, kind, &fingerprint, proxy_limit)?
                     .ok_or_else(|| {
                         StorageError::InvalidDerivedCache(
                             "waveform proxy disappeared after cache admission".into(),
                         )
                     })?
+                    .1
             }
         };
-
         #[cfg(test)]
         waveform_capture_tests::run_hook(waveform_capture_tests::Phase::Cache);
-        audio::read_waveform_page(
-            hit.blob_path,
+        let page = audio::read_waveform_page_captured(
+            &proxy_bytes,
             &track.source_sha256,
             track.sample_rate_hz,
             track.channels,
             page_index,
             page_size,
-        )
-        .inspect(|_| {
-            #[cfg(test)]
-            waveform_capture_tests::run_hook(waveform_capture_tests::Phase::Return);
-        })
+        )?;
+        if i128::from(page.total_frames) * i128::from(track.measured_duration.den)
+            != i128::from(track.measured_duration.num) * i128::from(track.sample_rate_hz)
+        {
+            return Err(StorageError::InvalidDerivedCache(
+                "cached waveform duration differs from the measured voice track".into(),
+            ));
+        }
+        #[cfg(test)]
+        waveform_capture_tests::run_hook(waveform_capture_tests::Phase::Return);
+        {
+            let store = self.store.lock();
+            check_waveform_base(&store, project_id, &initial_stamp, &track)?;
+            // A lasting CAS corruption is an error even when a valid cached
+            // page was captured. This is verification, never a second decode.
+            store.read_blob(&track.source_sha256, self.import_limits.source_bytes())?;
+        }
+        Ok(page)
     }
 
     /// Return an existing immutable, SHA-256-verified WAV source bound to a

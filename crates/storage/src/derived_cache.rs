@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -278,9 +278,24 @@ impl Store {
                 limit: MAX_DERIVED_CACHE_MANIFEST_BYTES,
             });
         }
+        let input = crate::file_import::open_regular_import_source(
+            &manifest,
+            MAX_DERIVED_CACHE_MANIFEST_BYTES,
+        )?;
         #[cfg(test)]
         run_cache_manifest_read_hook(&manifest);
-        let record: DerivedCacheRecord = serde_json::from_slice(&fs::read(&manifest)?)?;
+        let mut encoded = Vec::new();
+        input
+            .take(MAX_DERIVED_CACHE_MANIFEST_BYTES + 1)
+            .read_to_end(&mut encoded)?;
+        let captured_size = encoded.len() as u64;
+        if captured_size > MAX_DERIVED_CACHE_MANIFEST_BYTES {
+            return Err(StorageError::BlobTooLarge {
+                size: captured_size,
+                limit: MAX_DERIVED_CACHE_MANIFEST_BYTES,
+            });
+        }
+        let record: DerivedCacheRecord = serde_json::from_slice(&encoded)?;
         if record.format_version != DERIVED_CACHE_FORMAT_VERSION
             || record.scope_sha256 != scope_sha256
             || record.kind != kind
@@ -292,6 +307,44 @@ impl Store {
         }
         validate_digest(&record.blob_sha256)?;
         Ok(Some(record))
+    }
+
+    /// Capture the exact verified cache bytes under the consumer's byte budget.
+    /// A path returned by another lookup is not a substitute for this capture.
+    /// Scope admission remains the caller's responsibility.
+    pub fn lookup_derived_cache_bytes(
+        &self,
+        scope: &str,
+        kind: &str,
+        fingerprint_sha256: &str,
+        limit: u64,
+    ) -> Result<Option<(DerivedCacheRecord, Vec<u8>)>> {
+        validate_scope(scope)?;
+        validate_kind(kind)?;
+        validate_digest(fingerprint_sha256)?;
+        let scope_sha256 = digest_text(scope);
+        let Some(record) =
+            self.read_derived_cache_record(&scope_sha256, kind, fingerprint_sha256)?
+        else {
+            return Ok(None);
+        };
+        if record.size_bytes > limit {
+            return Err(StorageError::BlobTooLarge {
+                size: record.size_bytes,
+                limit,
+            });
+        }
+        let bytes = match self.read_blob(&record.blob_sha256, limit) {
+            Ok(bytes) => bytes,
+            Err(StorageError::BlobMissing { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if bytes.len() as u64 != record.size_bytes {
+            return Err(invalid(
+                "cache manifest byte length differs from captured blob length",
+            ));
+        }
+        Ok(Some((record, bytes)))
     }
 
     pub fn lookup_derived_cache(
@@ -750,5 +803,107 @@ mod captured_manifest_boundary_tests {
             }
             other => panic!("unexpected result before causal size oracle: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod captured_cache_budget_tests {
+    use super::*;
+
+    #[test]
+    fn captured_lookup_accepts_empty_and_exact_bytes_and_rejects_one_excess_byte() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("state.sqlite3")).unwrap();
+        for (suffix, bytes) in [("empty", &b""[..]), ("exact", &b"ABCD"[..])] {
+            let source = directory.path().join(format!("{suffix}.bin"));
+            fs::write(&source, bytes).unwrap();
+            let fingerprint = digest_text(suffix);
+            let record = store
+                .put_derived_cache_file(
+                    "project:budget",
+                    "waveform-proxy",
+                    &fingerprint,
+                    &source,
+                    1,
+                )
+                .unwrap();
+            let (captured_record, captured) = store
+                .lookup_derived_cache_bytes(
+                    "project:budget",
+                    "waveform-proxy",
+                    &fingerprint,
+                    bytes.len() as u64,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(captured_record, record);
+            assert_eq!(captured, bytes);
+            if !bytes.is_empty() {
+                assert!(matches!(
+                    store.lookup_derived_cache_bytes(
+                        "project:budget",
+                        "waveform-proxy",
+                        &fingerprint,
+                        bytes.len() as u64 - 1
+                    ),
+                    Err(StorageError::BlobTooLarge { size: 4, limit: 3 })
+                ));
+            }
+            assert_eq!(
+                store
+                    .read_blob(&record.blob_sha256, bytes.len() as u64)
+                    .unwrap(),
+                bytes
+            );
+            assert_eq!(
+                store
+                    .lookup_derived_cache_bytes(
+                        "project:other",
+                        "waveform-proxy",
+                        &fingerprint,
+                        100
+                    )
+                    .unwrap(),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn captured_lookup_retains_its_bytes_after_the_cas_path_is_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("state.sqlite3")).unwrap();
+        let source = directory.path().join("proxy.bin");
+        fs::write(&source, b"AAAA").unwrap();
+        let fingerprint = digest_text("capture-replacement");
+        let record = store
+            .put_derived_cache_file(
+                "project:captured",
+                "waveform-proxy",
+                &fingerprint,
+                &source,
+                1,
+            )
+            .unwrap();
+        let path = store.verified_blob_path(&record.blob_sha256).unwrap();
+        let (captured_record, captured) = store
+            .lookup_derived_cache_bytes("project:captured", "waveform-proxy", &fingerprint, 4)
+            .unwrap()
+            .unwrap();
+        fs::write(&path, b"BBBB").unwrap();
+        assert_eq!(captured_record, record);
+        assert_eq!(captured, b"AAAA");
+        assert!(matches!(
+            store.lookup_derived_cache_bytes("project:captured", "waveform-proxy", &fingerprint, 4),
+            Err(StorageError::InvalidBackup(_))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), b"BBBB");
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            store
+                .lookup_derived_cache_bytes("project:captured", "waveform-proxy", &fingerprint, 4)
+                .unwrap(),
+            None
+        );
     }
 }

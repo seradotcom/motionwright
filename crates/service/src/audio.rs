@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Cursor, Read, Seek, SeekFrom, Write},
     path::Path,
     sync::{
         Arc,
@@ -75,36 +75,6 @@ fn invalid(message: impl Into<String>) -> StorageError {
 
 fn invalid_proxy(message: impl Into<String>) -> StorageError {
     StorageError::InvalidDerivedCache(message.into())
-}
-
-fn open_audio(path: &Path) -> Result<OpenAudio> {
-    let source = File::open(path)?;
-    let stream = MediaSourceStream::new(Box::new(source), Default::default());
-    let mut hint = Hint::new();
-    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
-        hint.with_extension(extension);
-    }
-    let format = get_probe()
-        .probe(
-            &hint,
-            stream,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )
-        .map_err(|error| invalid(format!("audio probe failed: {error}")))?;
-    let track = format
-        .default_track(TrackType::Audio)
-        .ok_or_else(|| invalid("audio source contains no decodable audio track"))?;
-    let track_id = track.id;
-    let params = track
-        .codec_params
-        .as_ref()
-        .and_then(|params| params.audio())
-        .ok_or_else(|| invalid("audio codec parameters are unavailable"))?;
-    let decoder = get_codecs()
-        .make_audio_decoder(params, &AudioDecoderOptions::default())
-        .map_err(|error| invalid(format!("audio decoder unavailable: {error}")))?;
-    Ok((format, decoder, track_id))
 }
 
 fn validate_decoded_format(
@@ -266,7 +236,7 @@ fn validate_measurement_track(
     Ok(())
 }
 
-/// Import-only opening preserves existing waveform and original-mix contracts.
+/// Measurement and waveform share the same closed, Host-owned resource policy.
 fn open_measurement_audio(
     path: &Path,
     limits: &ImportLimits,
@@ -276,22 +246,39 @@ fn open_measurement_audio(
     if !metadata.is_file() {
         return Err(invalid("audio measurement source must be a regular file"));
     }
-    if metadata.len() > limits.source_bytes() {
+    open_measurement_audio_from_source(
+        source,
+        metadata.len(),
+        path.extension().and_then(|value| value.to_str()),
+        limits,
+    )
+}
+
+fn open_measurement_audio_from_source<T>(
+    source: T,
+    byte_len: u64,
+    extension: Option<&str>,
+    limits: &ImportLimits,
+) -> Result<(OpenAudio, Arc<AtomicBool>)>
+where
+    T: Read + Seek + Send + Sync + 'static,
+{
+    if byte_len > limits.source_bytes() {
         return Err(StorageError::BlobTooLarge {
-            size: metadata.len(),
+            size: byte_len,
             limit: limits.source_bytes(),
         });
     }
     let exhausted = Arc::new(AtomicBool::new(false));
     let source = BoundedMeasurementFile {
         file: source,
-        byte_len: metadata.len(),
+        byte_len,
         remaining: limits.audio_read_bytes(),
         exhausted: Arc::clone(&exhausted),
     };
     let stream = MediaSourceStream::new(Box::new(source), Default::default());
     let mut hint = Hint::new();
-    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+    if let Some(extension) = extension {
         hint.with_extension(extension);
     }
     let probed = get_probe().probe(
@@ -319,17 +306,107 @@ fn open_measurement_audio(
     Ok(((format, decoder, track_id), exhausted))
 }
 
+/// Charge observable decoder work before Motionwright reserves a sample block.
+struct MeasurementDecodeBudget {
+    limits: ImportLimits,
+    demux_packets: u64,
+    decoded_frames: u64,
+    decoded_samples: u64,
+    observed_rate: Option<u32>,
+    observed_channels: Option<u16>,
+}
+
+impl MeasurementDecodeBudget {
+    fn new(limits: &ImportLimits) -> Self {
+        Self {
+            limits: *limits,
+            demux_packets: 0,
+            decoded_frames: 0,
+            decoded_samples: 0,
+            observed_rate: None,
+            observed_channels: None,
+        }
+    }
+
+    fn charge_packet(&mut self, encoded_bytes: usize) -> Result<()> {
+        self.demux_packets = self
+            .demux_packets
+            .checked_add(1)
+            .ok_or_else(|| audio_measurement_limit("demux_packets"))?;
+        if self.demux_packets > self.limits.demux_packets() {
+            return Err(audio_measurement_limit("demux_packets"));
+        }
+        let packet_bytes =
+            u64::try_from(encoded_bytes).map_err(|_| audio_measurement_limit("packet_bytes"))?;
+        if packet_bytes > self.limits.packet_bytes() {
+            return Err(audio_measurement_limit("packet_bytes"));
+        }
+        Ok(())
+    }
+
+    fn charge_decoded(&mut self, rate: u32, channels: u16, frames: usize) -> Result<usize> {
+        validate_decoded_format(
+            &mut self.observed_rate,
+            &mut self.observed_channels,
+            rate,
+            channels,
+        )?;
+        let frames = u64::try_from(frames).map_err(|_| invalid("decoded frame count overflow"))?;
+        let block_samples = frames
+            .checked_mul(u64::from(channels))
+            .ok_or_else(|| audio_measurement_limit("packet_samples"))?;
+        if block_samples > self.limits.packet_samples() {
+            return Err(audio_measurement_limit("packet_samples"));
+        }
+        let next_samples = self
+            .decoded_samples
+            .checked_add(block_samples)
+            .ok_or_else(|| audio_measurement_limit("decoded_samples"))?;
+        if next_samples > self.limits.decoded_samples() {
+            return Err(audio_measurement_limit("decoded_samples"));
+        }
+        let next_frames = self
+            .decoded_frames
+            .checked_add(frames)
+            .ok_or_else(|| invalid("decoded frame count overflow"))?;
+        if u128::from(next_frames) > u128::from(self.limits.audio_seconds()) * u128::from(rate) {
+            return Err(audio_measurement_limit("audio_seconds"));
+        }
+        self.decoded_samples = next_samples;
+        self.decoded_frames = next_frames;
+        usize::try_from(block_samples).map_err(|_| audio_measurement_limit("packet_samples"))
+    }
+
+    fn measurement(&self) -> Result<AudioMeasurement> {
+        let sample_rate_hz = self
+            .observed_rate
+            .ok_or_else(|| invalid("audio decoded no frames"))?;
+        let channels = self
+            .observed_channels
+            .ok_or_else(|| invalid("audio decoded no frames"))?;
+        if self.decoded_frames == 0 {
+            return Err(invalid("audio decoded no frames"));
+        }
+        let frames = i64::try_from(self.decoded_frames)
+            .map_err(|_| invalid("audio duration exceeds rational-time bounds"))?;
+        let duration = RationalTime::new(frames, i64::from(sample_rate_hz))
+            .map_err(|error| invalid(format!("audio duration is invalid: {error}")))?;
+        Ok(AudioMeasurement {
+            sample_rate_hz,
+            channels,
+            decoded_frames: self.decoded_frames,
+            duration,
+        })
+    }
+}
+
 pub fn measure_audio_file(
     path: impl AsRef<Path>,
     limits: &ImportLimits,
 ) -> Result<AudioMeasurement> {
     let ((mut format, mut decoder, track_id), exhausted) =
         open_measurement_audio(path.as_ref(), limits)?;
-    let mut demux_packets = 0_u64;
-    let mut decoded_frames = 0_u64;
-    let mut decoded_samples = 0_u64;
-    let mut observed_rate = None;
-    let mut observed_channels = None;
+    let mut budget = MeasurementDecodeBudget::new(limits);
     loop {
         let next = format.next_packet();
         // Check on success, error and EOF: exhaustion cannot become truncation.
@@ -344,17 +421,7 @@ pub fn measure_audio_file(
             }
             Err(error) => return Err(invalid(format!("audio demux failed: {error}"))),
         };
-        demux_packets = demux_packets
-            .checked_add(1)
-            .ok_or_else(|| audio_measurement_limit("demux_packets"))?;
-        if demux_packets > limits.demux_packets() {
-            return Err(audio_measurement_limit("demux_packets"));
-        }
-        let packet_bytes = u64::try_from(packet.data.len())
-            .map_err(|_| audio_measurement_limit("packet_bytes"))?;
-        if packet_bytes > limits.packet_bytes() {
-            return Err(audio_measurement_limit("packet_bytes"));
-        }
+        budget.charge_packet(packet.data.len())?;
         // Discarding a track does not erase its demux work or encoded bytes.
         if packet.track_id != track_id {
             continue;
@@ -367,47 +434,10 @@ pub fn measure_audio_file(
         let rate = spec.rate();
         let channels = u16::try_from(spec.channels().count())
             .map_err(|_| invalid("audio channel count exceeds supported bounds"))?;
-        validate_decoded_format(&mut observed_rate, &mut observed_channels, rate, channels)?;
-
-        let frames =
-            u64::try_from(decoded.frames()).map_err(|_| invalid("decoded frame count overflow"))?;
-        let block_samples = frames
-            .checked_mul(u64::from(channels))
-            .ok_or_else(|| audio_measurement_limit("packet_samples"))?;
-        if block_samples > limits.packet_samples() {
-            return Err(audio_measurement_limit("packet_samples"));
-        }
-        let next_samples = decoded_samples
-            .checked_add(block_samples)
-            .ok_or_else(|| audio_measurement_limit("decoded_samples"))?;
-        if next_samples > limits.decoded_samples() {
-            return Err(audio_measurement_limit("decoded_samples"));
-        }
-        let next_frames = decoded_frames
-            .checked_add(frames)
-            .ok_or_else(|| invalid("decoded frame count overflow"))?;
-        if u128::from(next_frames) > u128::from(limits.audio_seconds()) * u128::from(rate) {
-            return Err(audio_measurement_limit("audio_seconds"));
-        }
-        decoded_samples = next_samples;
-        decoded_frames = next_frames;
+        budget.charge_decoded(rate, channels, decoded.frames())?;
     }
 
-    let sample_rate_hz = observed_rate.ok_or_else(|| invalid("audio decoded no frames"))?;
-    let channels = observed_channels.ok_or_else(|| invalid("audio decoded no frames"))?;
-    if decoded_frames == 0 {
-        return Err(invalid("audio decoded no frames"));
-    }
-    let frames = i64::try_from(decoded_frames)
-        .map_err(|_| invalid("audio duration exceeds rational-time bounds"))?;
-    let duration = RationalTime::new(frames, i64::from(sample_rate_hz))
-        .map_err(|error| invalid(format!("audio duration is invalid: {error}")))?;
-    Ok(AudioMeasurement {
-        sample_rate_hz,
-        channels,
-        decoded_frames,
-        duration,
-    })
+    budget.measurement()
 }
 
 pub fn waveform_fingerprint(source_sha256: &str, frames_per_peak: u32) -> Result<String> {
@@ -449,25 +479,25 @@ fn write_waveform_header(file: &mut File, summary: &WaveformProxySummary) -> Res
     Ok(())
 }
 
-fn read_u16(input: &mut File) -> Result<u16> {
+fn read_u16<R: Read>(input: &mut R) -> Result<u16> {
     let mut bytes = [0_u8; 2];
     input.read_exact(&mut bytes)?;
     Ok(u16::from_le_bytes(bytes))
 }
 
-fn read_u32(input: &mut File) -> Result<u32> {
+fn read_u32<R: Read>(input: &mut R) -> Result<u32> {
     let mut bytes = [0_u8; 4];
     input.read_exact(&mut bytes)?;
     Ok(u32::from_le_bytes(bytes))
 }
 
-fn read_u64(input: &mut File) -> Result<u64> {
+fn read_u64<R: Read>(input: &mut R) -> Result<u64> {
     let mut bytes = [0_u8; 8];
     input.read_exact(&mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
 }
 
-fn read_waveform_header(input: &mut File) -> Result<WaveformProxySummary> {
+fn read_waveform_header<R: Read + Seek>(input: &mut R) -> Result<WaveformProxySummary> {
     input.seek(SeekFrom::Start(0))?;
     let mut magic = [0_u8; 8];
     input.read_exact(&mut magic)?;
@@ -514,11 +544,39 @@ fn read_waveform_header(input: &mut File) -> Result<WaveformProxySummary> {
     })
 }
 
+// Legacy file fixtures use the same production decoder after a test-only capture.
+#[cfg(test)]
 pub fn generate_waveform_proxy(
     source_path: impl AsRef<Path>,
     source_sha256: &str,
     destination: impl AsRef<Path>,
     frames_per_peak: u32,
+) -> Result<WaveformProxySummary> {
+    generate_waveform_proxy_captured(
+        std::fs::read(source_path)?,
+        source_sha256,
+        destination,
+        frames_per_peak,
+        &ImportLimits::default(),
+    )
+}
+
+/// A frame has at least one sample; the bound never trusts the cache manifest.
+pub(super) fn waveform_proxy_byte_limit(limits: &ImportLimits) -> Result<u64> {
+    limits
+        .decoded_samples()
+        .div_ceil(u64::from(WAVEFORM_FRAMES_PER_PEAK))
+        .checked_mul(2)
+        .and_then(|size| size.checked_add(WAVEFORM_HEADER_BYTES))
+        .ok_or_else(|| invalid_proxy("waveform proxy byte budget overflow"))
+}
+
+pub(super) fn generate_waveform_proxy_captured(
+    source_bytes: Vec<u8>,
+    source_sha256: &str,
+    destination: impl AsRef<Path>,
+    frames_per_peak: u32,
+    limits: &ImportLimits,
 ) -> Result<WaveformProxySummary> {
     if frames_per_peak == 0 {
         return Err(invalid("waveform frames-per-peak must be positive"));
@@ -529,8 +587,21 @@ pub fn generate_waveform_proxy(
         return Err(invalid("waveform source digest length is invalid"));
     }
 
-    let source_path = source_path.as_ref();
-    let (mut format, mut decoder, track_id) = open_audio(source_path)?;
+    let byte_len = u64::try_from(source_bytes.len())
+        .map_err(|_| invalid("captured waveform source byte length overflow"))?;
+    if byte_len > limits.source_bytes() {
+        return Err(StorageError::BlobTooLarge {
+            size: byte_len,
+            limit: limits.source_bytes(),
+        });
+    }
+    if hex::encode(Sha256::digest(&source_bytes)) != source_sha256.to_ascii_lowercase() {
+        return Err(invalid(
+            "captured waveform source failed digest verification",
+        ));
+    }
+    let ((mut format, mut decoder, track_id), exhausted) =
+        open_measurement_audio_from_source(Cursor::new(source_bytes), byte_len, None, limits)?;
     let mut output = OpenOptions::new()
         .write(true)
         .read(true)
@@ -538,16 +609,16 @@ pub fn generate_waveform_proxy(
         .open(destination)?;
     output.write_all(&[0_u8; WAVEFORM_HEADER_BYTES as usize])?;
 
-    let mut total_frames = 0_u64;
     let mut peak_count = 0_u64;
     let mut window_frames = 0_u32;
     let mut window_peak = 0.0_f32;
-    let mut observed_rate = None;
-    let mut observed_channels = None;
+    let mut budget = MeasurementDecodeBudget::new(limits);
     let mut samples = Vec::<f32>::new();
 
     loop {
-        let packet = match format.next_packet() {
+        let next = format.next_packet();
+        check_audio_read_limit(&exhausted)?;
+        let packet = match next {
             Ok(Some(packet)) => packet,
             Ok(None) => break,
             Err(SymphoniaError::ResetRequired) => {
@@ -557,20 +628,30 @@ pub fn generate_waveform_proxy(
             }
             Err(error) => return Err(invalid(format!("audio demux failed: {error}"))),
         };
+        budget.charge_packet(packet.data.len())?;
         if packet.track_id != track_id {
             continue;
         }
-        let decoded = decoder
-            .decode(&packet)
-            .map_err(|error| invalid(format!("audio decode failed: {error}")))?;
+        let decoded_result = decoder.decode(&packet);
+        check_audio_read_limit(&exhausted)?;
+        let decoded =
+            decoded_result.map_err(|error| invalid(format!("audio decode failed: {error}")))?;
         let spec = decoded.spec();
         let rate = spec.rate();
         let channels = u16::try_from(spec.channels().count())
             .map_err(|_| invalid("audio channel count exceeds supported bounds"))?;
-        validate_decoded_format(&mut observed_rate, &mut observed_channels, rate, channels)?;
-
+        let sample_count = budget.charge_decoded(rate, channels, decoded.frames())?;
+        if decoded.samples_interleaved() != sample_count {
+            return Err(invalid(
+                "decoded sample count differs from admitted frame layout",
+            ));
+        }
         let channel_count = usize::from(channels);
-        let sample_count = decoded.samples_interleaved();
+        if sample_count > samples.len() {
+            samples
+                .try_reserve_exact(sample_count - samples.len())
+                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        }
         samples.resize(sample_count, 0.0);
         decoded.copy_to_slice_interleaved(&mut samples);
         if sample_count % channel_count != 0 {
@@ -587,9 +668,6 @@ pub fn generate_waveform_proxy(
             }
             window_peak = window_peak.max(frame_peak);
             window_frames += 1;
-            total_frames = total_frames
-                .checked_add(1)
-                .ok_or_else(|| invalid("decoded frame count overflow"))?;
             if window_frames == frames_per_peak {
                 output.write_all(&quantize_peak(window_peak).to_le_bytes())?;
                 peak_count = peak_count
@@ -608,17 +686,16 @@ pub fn generate_waveform_proxy(
             .ok_or_else(|| invalid("waveform peak count overflow"))?;
     }
 
-    let sample_rate_hz = observed_rate.ok_or_else(|| invalid("audio decoded no frames"))?;
-    let channels = observed_channels.ok_or_else(|| invalid("audio decoded no frames"))?;
-    if total_frames == 0 || peak_count == 0 {
+    let measured = budget.measurement()?;
+    if peak_count == 0 {
         return Err(invalid("audio decoded no frames"));
     }
     let summary = WaveformProxySummary {
         source_sha256: source_sha256.to_ascii_lowercase(),
-        sample_rate_hz,
-        channels,
+        sample_rate_hz: measured.sample_rate_hz,
+        channels: measured.channels,
         frames_per_peak,
-        total_frames,
+        total_frames: measured.decoded_frames,
         peak_count,
     };
     write_waveform_header(&mut output, &summary)?;
@@ -627,8 +704,27 @@ pub fn generate_waveform_proxy(
     Ok(summary)
 }
 
+#[cfg(test)]
 pub fn read_waveform_page(
     proxy_path: impl AsRef<Path>,
+    expected_source_sha256: &str,
+    expected_sample_rate_hz: u32,
+    expected_channels: u16,
+    page_index: u64,
+    page_size: usize,
+) -> Result<WaveformPage> {
+    read_waveform_page_captured(
+        &std::fs::read(proxy_path)?,
+        expected_source_sha256,
+        expected_sample_rate_hz,
+        expected_channels,
+        page_index,
+        page_size,
+    )
+}
+
+pub(super) fn read_waveform_page_captured(
+    proxy_bytes: &[u8],
     expected_source_sha256: &str,
     expected_sample_rate_hz: u32,
     expected_channels: u16,
@@ -638,7 +734,7 @@ pub fn read_waveform_page(
     if page_size == 0 || page_size > MAX_WAVEFORM_PAGE_SIZE {
         return Err(invalid("waveform page size is out of bounds"));
     }
-    let mut input = File::open(proxy_path)?;
+    let mut input = Cursor::new(proxy_bytes);
     let summary = read_waveform_header(&mut input)?;
     if !summary
         .source_sha256
@@ -660,7 +756,7 @@ pub fn read_waveform_page(
                 .ok_or_else(|| invalid_proxy("waveform proxy byte length overflow"))?,
         )
         .ok_or_else(|| invalid_proxy("waveform proxy byte length overflow"))?;
-    if input.metadata()?.len() != expected_len {
+    if proxy_bytes.len() as u64 != expected_len {
         return Err(invalid_proxy(
             "waveform proxy byte length does not match its header",
         ));
