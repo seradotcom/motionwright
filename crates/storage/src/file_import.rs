@@ -1021,13 +1021,44 @@ mod source_open_tests {
         fs::write(&source, b"ordinary leaf").unwrap();
         let before = rows(&store);
         let _guard = before_open(|leaf| {
+            use std::os::unix::fs::FileTypeExt;
+
             fs::remove_file(leaf).unwrap();
+            #[cfg(target_os = "linux")]
             rustix::fs::mkfifoat(
                 rustix::fs::CWD,
                 leaf,
                 rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
             )
             .unwrap();
+            #[cfg(target_os = "macos")]
+            {
+                use std::{
+                    ffi::{CString, c_char, c_int},
+                    os::unix::ffi::OsStrExt,
+                };
+
+                // rustix 1.1.5 does not expose mkfifoat on Apple targets.
+                unsafe extern "C" {
+                    fn mkfifo(path: *const c_char, mode: rustix::fs::RawMode) -> c_int;
+                }
+
+                let path = CString::new(leaf.as_os_str().as_bytes()).unwrap();
+                let mode =
+                    rustix::fs::RawMode::from(rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR);
+                // SAFETY: CString supplies a live, NUL-terminated path for this
+                // call. RawMode is Apple's mode_t, matching the POSIX ABI.
+                // The path is a unique leaf in this test's live TempDir;
+                // mkfifo retains no pointer and opens no reader or writer.
+                let result = unsafe { mkfifo(path.as_ptr(), mode) };
+                assert_eq!(
+                    result,
+                    0,
+                    "FIFO fixture creation failed: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+            assert!(fs::symlink_metadata(leaf).unwrap().file_type().is_fifo());
         });
         assert!(store.stage_file_import(&source).is_err());
         assert!(!store.blob_root.join(".staging").exists());

@@ -26,7 +26,7 @@ struct ExpectedAudio {
 fn pcm_frame(index: u32, frames: u32) -> [u8; 4] {
     let (left, right): (i16, i16) = if index + 1 == frames {
         (22_222, -12_345)
-    } else if index % 2 == 0 {
+    } else if index.is_multiple_of(2) {
         (8_192, -16_384)
     } else {
         (-8_192, 16_384)
@@ -58,7 +58,7 @@ fn write_wav(path: &Path, frames: u32, total_bytes: Option<u64>) -> ExpectedAudi
     let natural = 44_u64 + u64::from(data_bytes);
     let total = total_bytes.unwrap_or(natural);
     let junk_bytes = if total_bytes.is_some() {
-        assert!(total >= natural + 8 && total % 2 == 0);
+        assert!(total >= natural + 8 && total.is_multiple_of(2));
         Some(u32::try_from(total - natural - 8).unwrap())
     } else {
         None
