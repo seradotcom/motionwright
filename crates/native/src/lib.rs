@@ -110,7 +110,8 @@ fn storage_error(error: StorageError) -> Error {
             ErrorCode::BackendFailed,
             "Motionwright storage schema is newer than this application",
         ),
-        StorageError::InvalidFileImportReceipt(_)
+        StorageError::InvalidApplyReceipt(_)
+        | StorageError::InvalidFileImportReceipt(_)
         | StorageError::InvalidProjectCreationReceipt(_) => Error::new(
             ErrorCode::BackendFailed,
             "Motionwright operation receipt validation failed",
@@ -720,6 +721,31 @@ impl ObservationProvider for MotionwrightObserver {
     }
 }
 
+fn apply_completion(
+    result: std::result::Result<motionwright_storage::ApplyOutcome, StorageError>,
+) -> Completion {
+    match result {
+        Ok(outcome) => Completion::Applied(json!({
+            "resource": outcome.project.resource_key(),
+            "generation": outcome.project.generation.to_string(),
+            "revision": outcome.project.revision.to_string(),
+            "previous_revision": outcome.previous_revision.to_string(),
+            "request_id": outcome.request_id,
+            "replayed": outcome.replayed,
+            "project": outcome.project
+        })),
+        // The stored result may describe an already committed original call.
+        // Failing to authenticate it is not evidence that the call did not apply.
+        Err(error @ StorageError::InvalidApplyReceipt(_)) => {
+            Completion::Uncertain(storage_error(error))
+        }
+        Err(error) => Completion::NotApplied(storage_error(error)),
+    }
+}
+
+#[cfg(test)]
+mod apply_receipt_completion_tests;
+
 #[derive(Clone)]
 struct ApplyHandler {
     service: StudioService,
@@ -846,21 +872,10 @@ impl OperationHandler for ApplyHandler {
             Err(error) => return Completion::NotApplied(error),
         };
 
-        match self
-            .service
-            .apply(project_id, &expected, context.request_id(), &change)
-        {
-            Ok(outcome) => Completion::Applied(json!({
-                "resource": outcome.project.resource_key(),
-                "generation": outcome.project.generation.to_string(),
-                "revision": outcome.project.revision.to_string(),
-                "previous_revision": outcome.previous_revision.to_string(),
-                "request_id": outcome.request_id,
-                "replayed": outcome.replayed,
-                "project": outcome.project
-            })),
-            Err(error) => Completion::NotApplied(storage_error(error)),
-        }
+        apply_completion(
+            self.service
+                .apply(project_id, &expected, context.request_id(), &change),
+        )
     }
 }
 
