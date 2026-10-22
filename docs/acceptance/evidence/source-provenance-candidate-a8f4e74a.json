@@ -1,0 +1,77 @@
+{
+  "dependency_revision": "54d3459a051adbce4cae9f60c0dea8f60c824be6",
+  "evidence_record": {
+    "path": "third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/evidence.json",
+    "sha256": "f4bed3857b572c01850a3ff0c5b4d3211208a015ff4acc306d9bfae2560ba4fd"
+  },
+  "human_review_performed": false,
+  "limitations": [
+    "Three retained metadata and license files are observed. This is not a complete SDK build or runtime execution.",
+    "Matching the retained source capture does not independently establish remote ancestry, authorship, permission for a particular distribution, or transitive dependency rights.",
+    "No C1 unit, platform, installed, native-renderer or CI result is admitted by this observation.",
+    "Static source admission and test definitions do not demonstrate that their negative cases executed.",
+    "The source is a branch candidate. Integration into main and product release are not granted."
+  ],
+  "observations": [
+    {
+      "bytes": 6128,
+      "capture_member": "Cargo.toml",
+      "capture_sha256": "212feed2cc0e1dd2e3b9c36ba37751df19529eb33bda60b427b000f790899a80",
+      "exact_bytes_match": true,
+      "git_blob_sha1": "5e4bd45dfc539448642dd4a9e59ea376f1ab45bc",
+      "observed_git_blob_sha1": "5e4bd45dfc539448642dd4a9e59ea376f1ab45bc",
+      "path": "third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/Cargo.toml",
+      "raw_sha256": "fc799dce769d470d4153c5f8196c7062bda36c423dce456305db21bb38348130",
+      "sha256": "fc799dce769d470d4153c5f8196c7062bda36c423dce456305db21bb38348130",
+      "upstream_path": "Cargo.toml"
+    },
+    {
+      "bytes": 1079,
+      "capture_member": "LICENSE-MIT",
+      "capture_sha256": "212feed2cc0e1dd2e3b9c36ba37751df19529eb33bda60b427b000f790899a80",
+      "exact_bytes_match": true,
+      "git_blob_sha1": "0f7bced0f3b3e3176ed81072c7bf13388d459f60",
+      "observed_git_blob_sha1": "0f7bced0f3b3e3176ed81072c7bf13388d459f60",
+      "path": "third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/LICENSE-MIT",
+      "raw_sha256": "ad56b5c3e274c6d82e1424447211bfb4e5b2c22c86e6cf8aa8120458aa7347ef",
+      "sha256": "ad56b5c3e274c6d82e1424447211bfb4e5b2c22c86e6cf8aa8120458aa7347ef",
+      "upstream_path": "LICENSE-MIT"
+    },
+    {
+      "bytes": 11358,
+      "capture_member": "LICENSE-APACHE",
+      "capture_sha256": "212feed2cc0e1dd2e3b9c36ba37751df19529eb33bda60b427b000f790899a80",
+      "exact_bytes_match": true,
+      "git_blob_sha1": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "observed_git_blob_sha1": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "path": "third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/LICENSE-APACHE",
+      "raw_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "upstream_path": "LICENSE-APACHE"
+    }
+  ],
+  "observed_at_utc": "2026-10-22T01:23:39.715109+00:00",
+  "oracle": [
+    "For each declared upstream metadata file, read the C1 Git blob and identically named retained capture member.",
+    "Compare raw bytes, byte count, SHA-256 and Git blob identity with the C1 source-evidence record.",
+    "Require exactly Cargo.toml, LICENSE-MIT and LICENSE-APACHE; the three files each count as one source observation."
+  ],
+  "parent_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+  "product_accepted": false,
+  "product_tests_executed": 0,
+  "release_authorized": false,
+  "repository": "https://github.com/seradotcom/semwright",
+  "retained_capture_bytes": 8617419,
+  "retained_capture_sha256": "212feed2cc0e1dd2e3b9c36ba37751df19529eb33bda60b427b000f790899a80",
+  "schema": "motionwright.source-provenance-observation/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "a8f4e74aba524f59e53f8ee8b4b3e9e84af87873",
+    "source_lock_sha256": "2d830383f3df0731effb531cf713020be1ce4ced69ec66465fae86f94c2d740d"
+  },
+  "source_lock_after_sha256": "2d830383f3df0731effb531cf713020be1ce4ced69ec66465fae86f94c2d740d",
+  "source_lock_before_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1",
+  "source_observations_passed": 3,
+  "source_relation": "observed_branch_candidate",
+  "source_tree_sha": "6fa77b810f2bec4b26a4e681006cf659579b92ca"
+}

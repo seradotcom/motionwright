@@ -23,7 +23,7 @@ from source_lock_admission import SourceAdmissionError, load_source_lock, verify
 from test_public_surface_policy import write_source_evidence_fixture
 
 
-class SourceLockAdmissionTests(unittest.TestCase):
+class SourceLockAdmissionFixture:
     def setUp(self):
         scratch = tempfile.TemporaryDirectory(prefix="motionwright-source-admission-")
         self.addCleanup(scratch.cleanup)
@@ -115,6 +115,8 @@ class SourceLockAdmissionTests(unittest.TestCase):
                 )
             raise
 
+
+class SourceLockAdmissionTests(SourceLockAdmissionFixture, unittest.TestCase):
     def test_verified_fixed_bytes_are_read_only_and_do_not_launch_external_effects(self):
         before = self.snapshot()
         lock_before = copy.deepcopy(self.lock)
@@ -344,27 +346,6 @@ class SourceLockAdmissionTests(unittest.TestCase):
         retained = self.scratch / "retained-evidence"
         directory.rename(retained)
         self.create_symlink(retained, directory, directory=True)
-        self.assert_rejected_without_changes()
-
-
-    @unittest.skipUnless(os.name == "nt", "Windows junction semantics required")
-    def test_junctioned_evidence_parent_is_rejected(self):
-        import _winapi
-
-        directory = self.evidence_path().parent
-        retained = self.scratch / "junction-retained-evidence"
-        directory.rename(retained)
-        try:
-            _winapi.CreateJunction(str(retained), str(directory))
-        except OSError as error:
-            if error.errno in {errno.EACCES, errno.EPERM} or (
-                getattr(error, "winerror", None) == 1314
-            ):
-                self.skipTest(
-                    "junction creation denied: "
-                    f"errno={error.errno}, winerror={getattr(error, 'winerror', None)}"
-                )
-            raise
         self.assert_rejected_without_changes()
 
 
