@@ -243,10 +243,11 @@ export function separateReviewedIntent(draft: ReviewDraft, project: Project, out
   if (!reviewOutcomeMatches(draft, project, outcome)) throw new Error("Read the current saved review and its complete history before starting a separate intent.");
   assertTarget(draft, project);
   const target = targetOf(draft), pending = draft.pending!;
-  const relevant: (keyof ReviewRaw)[] = target.kind === "comment"
-    ? ["kind", "timeMode", "rangeStart", "rangeEnd", "body"]
-    : target.kind === "alternative" ? ["direction", "rationale"] : ["resolution"];
-  const later = relevant.some(field => draft.raw[field] !== pending.raw[field]);
+  // An author may deliberately return to the submitted value after another
+  // edit. Equality cannot erase that later intent (A -> B -> A), including
+  // after reload. The persisted sequence is the same causal guard as the
+  // original-callback acknowledgement above; it is never request authority.
+  const later = draft.sequence !== pending.sequence;
   const raw = clone(draft.raw);
   if (!later) raw[target.kind === "comment" ? "body" : target.kind === "alternative" ? "rationale" : "resolution"] = "";
   return { ...draft, baseRevision: project.revision, raw, sequence: draft.sequence + 1, intent: true, pending: null };

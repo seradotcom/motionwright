@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       selection:
-        description: Run a closed service or synthetic browser selection; all remains the complete service roster
+        description: Run a closed selection; all requires both same-source service groups (136 plus 17)
         type: choice
         required: true
         default: authoring-drafts
-        options: [complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts]
+        options: [creative-production, creative-production-browser, project-authoring, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts]
 permissions:
   contents: read
 concurrency:
@@ -25,7 +25,7 @@ defaults:
 jobs:
   g0:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -52,7 +52,7 @@ jobs:
           set -euo pipefail
           python -B tooling/ci_test_runner.py --repo . --mode both \
             --pattern test_ci_canvas_service.py --expected-source "$GITHUB_SHA" \
-            --report ../v/g0/receipt.json --require-complete
+            --report ../v/g0/receipt.json --require-complete --timeout 600
       - name: Retain original guard results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -61,13 +61,66 @@ jobs:
           path: v/g0
           if-no-files-found: warn
           retention-days: 14
+  creative-unit-build:
+    name: ${{ inputs.selection == 'review' && 'Review units (72) and production build' || 'Creative Production and Workbench units (67) and production build' }}
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","creative-production","creative-production-browser","production-design","creative-workbench","review"]'), inputs.selection)
+    needs: g0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NPM_CONFIG_CACHE: ${{ github.workspace }}/v/npm
+      TMP: ${{ github.workspace }}/v/x
+      TEMP: ${{ github.workspace }}/v/x
+      TMPDIR: ${{ github.workspace }}/v/x
+    steps:
+      - name: Prepare isolated unit and build evidence
+        working-directory: .
+        run: |
+          set -euo pipefail
+          test ! -e v
+          mkdir -p v/x v/npm
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: g
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install locked unit and build dependencies
+        working-directory: g/apps/studio
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+      - name: Verify security probe, selected exact Vitest assertions and build
+        env:
+          REQUESTED_UNIT_SELECTION: ${{ inputs.selection == 'review' && 'review' || 'creative-production' }}
+        run: |
+          set -euo pipefail
+          python -B -I tooling/ci_canvas_service.py unit-build --repo . --output ../v/unit-build --selection "$REQUESTED_UNIT_SELECTION"
+      - name: Retain original unit report, command receipts and actual build output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: studio-${{ inputs.selection == 'review' && 'review' || 'creative' }}-unit-build-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: v/unit-build
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
   real-service:
-    name: ${{ inputs.selection == 'browser-contracts' && 'Synthetic browser contracts' || 'Real SQLite and Studio' }} / ${{ inputs.selection }}
+    name: ${{ contains(fromJSON('["browser-contracts","creative-production-browser","review-browser"]'), matrix.selection) && 'Synthetic browser contracts' || 'Real SQLite and Studio' }} / ${{ matrix.selection }}
     if: github.event_name == 'workflow_dispatch'
     needs: g0
     runs-on: ubuntu-24.04
-    # Include source build, all declared case bounds and setup/retention time.
-    timeout-minutes: ${{ inputs.selection == 'browser-contracts' && 210 || inputs.selection == 'all' && 360 || inputs.selection == 'complete-authoring' && 180 || inputs.selection == 'authoring-drafts' && 120 || 60 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        selection: ${{ fromJSON(inputs.selection == 'all' && '["project-authoring","creative-production"]' || inputs.selection == 'review' && '["review-browser","review"]' || format('["{0}"]', inputs.selection)) }}
+    # Each child keeps every original per-case bound; all requires both children.
+    timeout-minutes: ${{ matrix.selection == 'browser-contracts' && 240 || matrix.selection == 'creative-production-browser' && 75 || matrix.selection == 'project-authoring' && 360 || contains(fromJSON('["creative-production","production-design","creative-workbench"]'), matrix.selection) && 90 || matrix.selection == 'complete-authoring' && 180 || matrix.selection == 'authoring-drafts' && 120 || 60 }}
     env:
       CARGO_HOME: ${{ github.workspace }}/v/c
       CARGO_TARGET_DIR: ${{ github.workspace }}/v/t
@@ -95,11 +148,11 @@ jobs:
         with:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
-        if: inputs.selection != 'browser-contracts'
+        if: ${{ !contains(fromJSON('["browser-contracts","creative-production-browser","review-browser"]'), matrix.selection) }}
         with:
           toolchain: '1.98.1'
       - name: Retain real-service Rust identities
-        if: inputs.selection != 'browser-contracts'
+        if: ${{ !contains(fromJSON('["browser-contracts","creative-production-browser","review-browser"]'), matrix.selection) }}
         run: |
           set -euo pipefail
           rustc -Vv > ../v/tools/rustc.txt
@@ -118,14 +171,14 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Execute the closed selection through the canonical observer
         env:
-          REQUESTED_SELECTION: ${{ inputs.selection }}
+          REQUESTED_SELECTION: ${{ matrix.selection }}
         run: |
           set -euo pipefail
           python -B -I tooling/ci_canvas_service.py --repo . \
             --target ../v/t --output ../v/e --selection "$REQUESTED_SELECTION"
       - name: Close complete original evidence into a verified TAR
         id: archive
-        if: always()
+        if: success()
         run: |
           set -euo pipefail
           python -B -I tooling/ci_canvas_service.py archive --repo . --evidence ../v
@@ -133,7 +186,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: studio-service-${{ inputs.selection }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: studio-service-${{ matrix.selection }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: v/retained
           include-hidden-files: true
           if-no-files-found: warn
@@ -142,7 +195,7 @@ jobs:
         if: always() && steps.archive.outcome != 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: studio-service-unsealed-${{ inputs.selection }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: studio-service-unsealed-${{ matrix.selection }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             v/e
             v/tools

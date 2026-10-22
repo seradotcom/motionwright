@@ -214,6 +214,46 @@ test("a committed but lost review reply remains UNKNOWN through explicit saved-h
     observations.originalUnknownCopy = prior; await restart(saved);
   });
 });
+test("ABA author input survives lost review reply, inspection, separate save and SQLite restart", async ({ page }, info) => {
+  await withReview(page, info, async ({ service, baseline, sceneId, sceneName, applyCount, observations, cleanup, observe, restart }) => {
+    const original = service.invoke.bind(service); let armed = true;
+    cleanup.push(async () => { service.invoke = original; });
+    service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const request = args.request as ApplyArgs["request"] | undefined;
+      if (!armed || command !== "apply_change" || request?.change.type !== "add_review") return original<T>(command, args);
+      armed = false;
+      observations.originalReturnedProject = await original<Project>(command, args);
+      throw new Error("Original review reply delivery was lost after the actual service committed");
+    };
+    await comment(page).fill("Original uncertain comment A"); await button(page, "Add anchored review").click();
+    await expect(page.getByRole("status").filter({ hasText: "Original review outcome UNKNOWN" })).toHaveCount(1);
+    await comment(page).fill("  Separate author comment B  ");
+    await comment(page).fill("Original uncertain comment A");
+    await page.reload(); await openReview(page, sceneName);
+    await expect(comment(page)).toHaveValue("Original uncertain comment A");
+    await expect(button(page, "Add anchored review")).toBeDisabled();
+    const prior = await ownCopy(page, baseline, "scene:" + sceneId);
+    expect(prior.value.draft.pending.outcome).toBe("UNKNOWN");
+    const before = await observe("committed original remains unacknowledged in editor");
+    expect(before.revision).toBe(baseline.revision + 1); expect(applies(service)).toHaveLength(applyCount + 1);
+    await button(page, "Read saved review and history").click();
+    await expect(page.getByRole("region", { name: "Saved review outcome", exact: true }))
+      .toContainText("do not identify or acknowledge the original request");
+    await button(page, "Keep original attempt and start a separate review").click();
+    await expect(comment(page)).toHaveValue("Original uncertain comment A");
+    expect(await page.evaluate(key => localStorage.getItem(key), prior.key)).toBe(prior.raw);
+    expect(await service.project(baseline.id)).toEqual(before); expect(applies(service)).toHaveLength(applyCount + 1);
+    await button(page, "Add anchored review").click(); await revision(page, before.revision + 1);
+    const saved = await observe("new explicitly authored review"), actions = applies(service).slice(applyCount);
+    expect(actions).toHaveLength(2); expect(actions[1].request.request_id).not.toBe(actions[0].request.request_id);
+    expect(actions[1].request.effect_grant).not.toBe(actions[0].request.effect_grant);
+    expect(saved.reviews.filter(item => item.body === "Original uncertain comment A")).toHaveLength(2);
+    const history = await service.history(baseline.id, baseline.revision);
+    expect(history.map(event => event.change.type)).toEqual(["add_review", "add_review"]);
+    expect(await page.evaluate(key => localStorage.getItem(key), prior.key)).toBe(prior.raw);
+    observations.originalUnknownCopy = prior; await restart(saved);
+  });
+});
 test("denied review custody prevents any SQLite mutation until a confirmed copy and explicit save", async ({ page }, info) => {
   await withReview(page, info, async ({ service, baseline, sceneName, applyCount, cleanup, observe, restart }) => {
     await page.evaluate(() => {

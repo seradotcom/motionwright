@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, RefreshCw, Save } from "lucide-react";
+import { ArrowUpRight, Save } from "lucide-react";
 import type { CanvasNode, Change, Project, Scene } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { sameValue } from "./creativeProduction";
+import { productStageCreationIssue, stageConfig, workbenchScope } from "./creativeWorkbenchDraft";
+import type { StageRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
+import { useCreativeWorkbenchDraft, WorkbenchDraftFeedback } from "./useCreativeWorkbenchDraft";
 import {
-  defaultProductStageConfig, realizeProductStage, validateProductStageConfig,
+  realizeProductStage,
   PRODUCT_STAGE_DISCLOSURE
 } from "./productStage";
 import type { ProductStageConfig } from "./productStage";
@@ -17,32 +20,31 @@ const aspects=[
 ] as const;
 const previewId="00000000-0000-4000-8000-000000000005";
 type Props={
-  project:Project;scene:Scene|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<void>;
+  project:Project;scene:Scene|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<Project>;
   busy:boolean;playhead:number;onSeek:(n:number)=>void;onOpenCanvas:()=>void;
 };
-export default function ProductStageWorkbench({project,scene,commit,busy,playhead,onSeek,onOpenCanvas,displayProfile}:Props){
+export default function ProductStageWorkbench(props: Props) {
+  return <ProductStageEditor key={workbenchScope(props.project,{kind:"stage",sceneId:props.scene?.id??null})} {...props}/>;
+}
+function ProductStageEditor({project,scene,commit,busy,playhead,onSeek,onOpenCanvas,displayProfile}:Props){
   const stored=project.production_design?.stages?.find(stage=>stage.scene_id===scene?.id);
   const linked=project.production_design?.stage_capture_cards?.find(card=>card.stage_id===stored?.id);
   const sources=(project.production_design?.captures??[])
     .filter(c=>c.source_project_id===project.id && c.declared_scope==="first-party-synthetic-fixture-only" &&
       project.assets.some(a=>a.id===c.screenshot_asset_id &&
         a.media_type==="image/png" && a.content_sha256===c.screenshot_sha256));
-  const [selectedCapture,setSelectedCapture]=useState(linked?.capture_id??"");
-  const [draft,setDraft]=useState<ProductStageConfig>(()=>
-    structuredClone(stored?.config??defaultProductStageConfig())
-  );
-  const [base,setBase]=useState(project.revision);
+  const editor=useCreativeWorkbenchDraft(project,{kind:"stage",sceneId:scene?.id??null},commit,busy);
+  const input=editor.draft.input as Extract<WorkbenchInput,{kind:"stage"}>, draft=input.config;
+  const selectedCapture=input.captureId, setSelectedCapture=(captureId:string)=>editor.edit({...input,captureId});
   const [aspect,setAspect]=useState<(typeof aspects)[number]>(aspects[0]);
   const [preview,setPreview]=useState<CanvasNode[]>([]);
   const [previewError,setPreviewError]=useState<string|null>(null);
   const [loading,setLoading]=useState(false);
-  const [commitError,setCommitError]=useState<string|null>(null);
-  const changed=base!==project.revision;
   const locked=project.locks.some(lock=>
     ["project:"+project.id,"scene:"+scene?.id].includes(lock.resource) &&
     ["content","position","style","timing","renderer"].includes(lock.kind));
   const valid=(()=>{
-    try{validateProductStageConfig(draft);return true;}catch{return false;}
+    try{stageConfig(draft);return true;}catch{return false;}
   })();
   const brandConflict=(()=>{
     const policy=project.production_design?.brand_profile;
@@ -63,27 +65,13 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
     }
     return null;
   })();
+  const creationIssue=productStageCreationIssue(project,scene?.id??null);
   const canSave=!!scene && scene.renderer==="motion-canvas" && seconds(scene.duration)>=2 &&
-    valid && !brandConflict && !!preview.length && !previewError && !loading && !changed && !locked && !busy;
-  function reload(){
-    setDraft(structuredClone(stored?.config??defaultProductStageConfig()));
-    setSelectedCapture(linked?.capture_id??"");
-    setBase(project.revision);setCommitError(null);
-  }
-  useEffect(()=>{
-    setDraft(structuredClone(stored?.config??defaultProductStageConfig()));
-    setSelectedCapture(linked?.capture_id??"");
-    setBase(project.revision);setCommitError(null);
-    // Deliberately not reset on same-scene remote revision: retain human draft.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[project.generation,scene?.id]);
-  useEffect(()=>{
-    if(stored && sameValue(stored.config,draft))setBase(project.revision);
-  },[stored,project.revision,draft]);
+    valid && !brandConflict && !creationIssue && !!preview.length && !previewError && !loading && !editor.blocked && !locked;
   useEffect(()=>{
     let active=true;
     setLoading(true);setPreviewError(null);
-    realizeProductStage(stored?.id??previewId,draft,aspect.width,aspect.height).then(
+    Promise.resolve().then(()=>realizeProductStage(stored?.id??previewId,stageConfig(draft),aspect.width,aspect.height)).then(
       nodes=>{if(active){setPreview(nodes);setLoading(false);}},
       error=>{if(active){setPreview([]);setPreviewError(String(error instanceof Error?error.message:error));setLoading(false);}}
     );
@@ -92,43 +80,11 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
   const localTime=scene?Math.max(0,Math.min(seconds(scene.duration),playhead-seconds(scene.start))):0;
   const background=project.visual_language.palette.find(token=>
     ["surface","background"].includes(token.name.toLowerCase()))?.value??"#0F1216";
-  async function save(){
-    if(!canSave || !scene)return;
-    setCommitError(null);
-    try{
-      await commit({type:"upsert_product_stage",instance_id:stored?.id??crypto.randomUUID(),
-        scene_id:scene.id,config:draft});
-      setBase(project.revision+1);
-    }catch(e){setCommitError(String(e instanceof Error?e.message:e));}
-  }
-  async function detach(){
-    if(!stored||busy||changed||locked)return;
-    setCommitError(null);
-    try{
-      await commit({type:"detach_product_stage",instance_id:stored.id});
-      setBase(project.revision+1);
-    }catch(e){setCommitError(String(e instanceof Error?e.message:e));}
-  }
-  async function bindSource(){
-    if(!stored || !selectedCapture || busy || changed || locked ||
-      !sources.some(source=>source.id===selectedCapture))return;
-    setCommitError(null);
-    try{
-      await commit({type:"bind_stage_capture",stage_id:stored.id,capture_id:selectedCapture});
-      setBase(project.revision+1);
-    }catch(e){setCommitError(String(e instanceof Error?e.message:e));}
-  }
-  async function detachSource(){
-    if(!stored || !linked || busy || changed || locked)return;
-    setCommitError(null);
-    try{
-      await commit({type:"detach_stage_capture",stage_id:stored.id});
-      setSelectedCapture("");
-      setBase(project.revision+1);
-    }catch(e){setCommitError(String(e instanceof Error?e.message:e));}
-  }
-  const patch=<K extends keyof ProductStageConfig>(key:K,value:ProductStageConfig[K])=>
-    setDraft(old=>({...old,[key]:value}));
+  async function save(){ if(canSave) await editor.send("save"); }
+  async function detach(){ if(stored&&!editor.blocked&&!locked&&!linked) await editor.send("detach"); }
+  async function bindSource(){ if(stored&&selectedCapture&&!editor.blocked&&!locked&&sources.some(source=>source.id===selectedCapture)) await editor.send("bind-source"); }
+  async function detachSource(){ if(stored&&linked&&!editor.blocked&&!locked) await editor.send("detach-source"); }
+  const patch=<K extends keyof StageRaw>(key:K,value:StageRaw[K])=>editor.edit({...input,config:{...draft,[key]:value}});
   return <div className="production-split">
     <section className="production-inspector" aria-label="ProductStage controls">
       <div className="production-section-title">
@@ -138,11 +94,7 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
       <p className="production-help">Three unbranded silhouettes. No commercial model,
         third-party logo, actual browser session, opaque source execution or
         screenshot is inserted. This is a graphic study, not proof of real software behavior.</p>
-      {changed && <div className="production-notice" role="status">
-        <strong>Stage draft was based on revision {base}; current project revision is {project.revision}.</strong>
-        <span>Unsaved human text is preserved until explicit reload.</span>
-        <button className="secondary-button" onClick={reload}><RefreshCw size={14}/> Reload stage draft</button>
-      </div>}
+      <WorkbenchDraftFeedback editor={editor} project={project}/>
       <label className="production-field"><span>Neutral stage silhouette</span>
         <select aria-label="ProductStage frame" value={draft.frame} onChange={e=>
           patch("frame",e.target.value as ProductStageConfig["frame"])}>
@@ -167,11 +119,11 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
       </div>
       <div className="production-plan-grid">
         <label className="production-field"><span>Focus X / 1000</span>
-          <input aria-label="ProductStage focus X" type="number" min={150} max={850} step={10}
-            value={draft.focus_x_permille} onChange={e=>patch("focus_x_permille",Number(e.target.value))}/></label>
+          <input aria-label="ProductStage focus X" type="text" inputMode="numeric"
+            value={draft.focus_x_permille} onChange={e=>patch("focus_x_permille",e.target.value)}/></label>
         <label className="production-field"><span>Focus Y / 1000</span>
-          <input aria-label="ProductStage focus Y" type="number" min={200} max={800} step={10}
-            value={draft.focus_y_permille} onChange={e=>patch("focus_y_permille",Number(e.target.value))}/></label>
+          <input aria-label="ProductStage focus Y" type="text" inputMode="numeric"
+            value={draft.focus_y_permille} onChange={e=>patch("focus_y_permille",e.target.value)}/></label>
       </div>
       <label className="production-check"><input aria-label="Animate ProductStage focus" type="checkbox"
         checked={draft.animate_focus} onChange={e=>patch("animate_focus",e.target.checked)}/>
@@ -187,15 +139,15 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
       <p className="production-help">{PRODUCT_STAGE_DISCLOSURE}. This disclosure is mandatory
         in native output while the stage is bound. Replacing content preserves stable screen
         and focus anchors, compatible human overrides and the existing scene camera.</p>
+      {creationIssue && <p role="status" aria-label="ProductStage eligibility" className="production-error">{creationIssue}</p>}
       {brandConflict && <p role="status" className="production-error">{brandConflict}</p>}
       {previewError && draft.author_attestation.trim() && <p role="alert" className="production-error">{previewError}</p>}
-      {commitError && <p role="alert" className="production-error">{commitError}</p>}
       <button className="primary-button" disabled={!canSave} onClick={()=>void save()}>
         <Save size={14}/>{stored?"Update ProductStage":"Add ProductStage to scene"}
       </button>
       {stored && <div className="production-button-row">
         <button className="secondary-button" onClick={onOpenCanvas}><ArrowUpRight size={14}/> Edit stage objects</button>
-        <button className="text-button" disabled={busy||changed||locked||!!linked} onClick={()=>void detach()}>
+        <button className="text-button" disabled={editor.blocked||locked||!!linked} onClick={()=>void detach()}>
           Detach, retain objects</button>
       </div>}
       <div className="production-section-title"><h3>First-party source tile</h3></div>
@@ -209,7 +161,7 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
       {stored && <>
         <label className="production-field"><span>Previously registered synthetic first-party capture</span>
           <select aria-label="ProductStage first-party capture" value={selectedCapture}
-            disabled={busy||changed||locked} onChange={e=>setSelectedCapture(e.target.value)}>
+            onChange={e=>setSelectedCapture(e.target.value)}>
             <option value="">Choose an immutable capture-source receipt</option>
             {sources.map(c=><option key={c.id} value={c.id}>
               Studio v{c.app_version} ? {c.screenshot_sha256.slice(0,12)}? ? source revision {c.source_revision}
@@ -219,11 +171,11 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
         {!sources.length && <p role="status">No registered first-party source capture is available. Use Production ? Capture sources.</p>}
         <div className="production-button-row">
           <button className="secondary-button" onClick={()=>void bindSource()}
-            disabled={busy||changed||locked||!selectedCapture||linked?.capture_id===selectedCapture}>
+            disabled={editor.blocked||locked||!selectedCapture||linked?.capture_id===selectedCapture}>
             Bind source tile
           </button>
           <button className="text-button" onClick={()=>void detachSource()}
-            disabled={busy||changed||locked||!linked}>
+            disabled={editor.blocked||locked||!linked}>
             Detach source tile
           </button>
         </div>
@@ -239,7 +191,7 @@ export default function ProductStageWorkbench({project,scene,commit,busy,playhea
     <section className="production-viewer" aria-label="ProductStage editable study viewer">
       <div className="production-viewer-toolbar">
         <div><strong>Original stage preview</strong><span>
-          {sameValue(draft,stored?.config)?"Stored parameters":"Uncommitted parameters"} · editorial only
+          {valid&&sameValue(stageConfig(draft),stored?.config)?"Parameters match saved values":"Uncommitted parameters"} · editorial only
         </span></div>
         <div className="production-segmented" aria-label="ProductStage preview aspect">
           {aspects.map(item=><button key={item.label} aria-pressed={item===aspect} onClick={()=>setAspect(item)}>
