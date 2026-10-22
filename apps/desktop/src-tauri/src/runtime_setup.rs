@@ -15,6 +15,12 @@ use uuid::Uuid;
 const REGISTRY_SCHEMA: u32 = 1;
 const MAX_CONFIG_BYTES: u64 = 8 * 1024;
 
+fn read_reference_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    #[cfg(test)]
+    tests::reference_budget_tests::after_admission(path);
+    fs::read(path)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeConnectionRegistry {
     root: PathBuf,
@@ -178,7 +184,7 @@ impl RuntimeConnectionRegistry {
                         );
                     }
                 }
-                fs::read(&destination)
+                read_reference_bytes(&destination)
                     .map_err(|_| "Saved Semwright connection reference is unreadable")?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -236,7 +242,7 @@ impl RuntimeConnectionRegistry {
                 if metadata.len() > MAX_CONFIG_BYTES {
                     return Err("Previous Semwright connection reference is oversized".into());
                 }
-                let existing = fs::read(&destination)
+                let existing = read_reference_bytes(&destination)
                     .map_err(|_| "Previous Semwright connection reference cannot be inspected")?;
                 if existing.len() as u64 > MAX_CONFIG_BYTES {
                     return Err("Previous Semwright connection reference is oversized".into());
@@ -314,7 +320,7 @@ impl RuntimeConnectionRegistry {
                         );
                     }
                 }
-                let bytes = fs::read(&destination)
+                let bytes = read_reference_bytes(&destination)
                     .map_err(|_| "Saved Semwright reference cannot be inspected")?;
                 if bytes.is_empty() || bytes.len() as u64 > MAX_CONFIG_BYTES {
                     return Err("Saved Semwright reference is invalid".into());
@@ -1395,6 +1401,111 @@ mod tests {
             assert_eq!(registry.resolve(project_b, generation), Ok(Some(other)));
             assert!(cloned.clear_saved(project_b).unwrap());
             assert!(snapshot(&registry.root).0.is_empty());
+        }
+    }
+    #[cfg(test)]
+    pub(super) mod reference_budget_tests {
+        use super::super::*;
+        use std::cell::RefCell;
+        use tempfile::TempDir;
+
+        type Growth = Box<dyn FnOnce(&Path)>;
+        thread_local! {
+            static AFTER_ADMISSION: RefCell<Option<Growth>> = RefCell::new(None);
+        }
+        pub(crate) fn after_admission(path: &Path) {
+            let callback = AFTER_ADMISSION.with(|slot| slot.borrow_mut().take());
+            if let Some(callback) = callback {
+                callback(path);
+            }
+        }
+        fn fixture() -> (TempDir, RuntimeConnectionRegistry, Uuid, Uuid, PathBuf) {
+            let tmp = TempDir::new().unwrap();
+            let registry = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+            let project = Uuid::now_v7();
+            let generation = Uuid::now_v7();
+            let selected = tmp.path().join("owner-runtime.json");
+            registry
+                .remember_verified(project, generation, &selected)
+                .unwrap();
+            (tmp, registry, project, generation, selected)
+        }
+        fn grow_after_admission(path: &Path) -> Vec<u8> {
+            let mut grown = fs::read(path).unwrap();
+            assert!((grown.len() as u64) < MAX_CONFIG_BYTES);
+            grown.resize(MAX_CONFIG_BYTES as usize + 1, b' ');
+            let _: SavedConnectionReference = serde_json::from_slice(&grown).unwrap();
+            let expected = path.to_owned();
+            let bytes = grown.clone();
+            AFTER_ADMISSION.with(|slot| {
+                assert!(slot.borrow().is_none());
+                *slot.borrow_mut() = Some(Box::new(move |actual| {
+                    assert_eq!(actual, expected);
+                    fs::write(actual, bytes).unwrap();
+                }));
+            });
+            grown
+        }
+        fn assert_growth_preserved(path: &Path, grown: &[u8]) {
+            assert!(AFTER_ADMISSION.with(|slot| slot.borrow().is_none()));
+            assert_eq!(fs::read(path).unwrap(), grown);
+        }
+
+        #[test]
+        fn reference_growth_after_admission_rejects_valid_oversized_json() {
+            let (_tmp, registry, project, generation, _selected) = fixture();
+            let path = registry.destination(project);
+            let grown = grow_after_admission(&path);
+            let observed = registry.resolve(project, generation);
+            assert_growth_preserved(&path, &grown);
+            assert!(
+                observed.is_err(),
+                "RUNTIME_REFERENCE_ADMISSION_GROWTH: valid oversized JSON was accepted"
+            );
+        }
+
+        #[test]
+        fn exact_limit_reference_remains_readable_and_reopenable() {
+            let (tmp, registry, project, generation, selected) = fixture();
+            let path = registry.destination(project);
+            let mut bytes = fs::read(&path).unwrap();
+            bytes.resize(MAX_CONFIG_BYTES as usize, b' ');
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                registry.resolve(project, generation).unwrap(),
+                Some(selected.clone())
+            );
+            let reopened = RuntimeConnectionRegistry::new(tmp.path()).unwrap();
+            assert_eq!(
+                reopened.resolve(project, generation).unwrap(),
+                Some(selected)
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(reopened.clear_saved(project).unwrap());
+        }
+
+        #[test]
+        fn growing_existing_reference_is_preserved_before_replacement() {
+            let (tmp, registry, project, generation, _selected) = fixture();
+            let path = registry.destination(project);
+            let grown = grow_after_admission(&path);
+            assert!(
+                registry
+                    .remember_verified(project, generation, &tmp.path().join("new.json"))
+                    .is_err()
+            );
+            assert_growth_preserved(&path, &grown);
+            assert_eq!(fs::read_dir(&registry.root).unwrap().count(), 1);
+        }
+
+        #[test]
+        fn growing_reference_is_preserved_before_clear() {
+            let (_tmp, registry, project, _generation, _selected) = fixture();
+            let path = registry.destination(project);
+            let grown = grow_after_admission(&path);
+            assert!(registry.clear_saved(project).is_err());
+            assert_growth_preserved(&path, &grown);
+            assert_eq!(fs::read_dir(&registry.root).unwrap().count(), 1);
         }
     }
 }
