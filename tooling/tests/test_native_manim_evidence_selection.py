@@ -10,10 +10,13 @@ import io
 import json
 from pathlib import Path
 import re
+import sys
 import tarfile
 import unittest
 from unittest import mock
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import native_evidence_projection as n
 import native_manim_evidence_selection as s
