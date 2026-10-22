@@ -13,6 +13,7 @@ import warnings
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -389,63 +390,29 @@ class G2CustodyTests(unittest.TestCase):
                 self.assertFalse(manifest["selected_originals_complete"])
 
 
-    def test_film_source_report_is_sealed_exactly_and_absence_is_recorded(self):
-        original = b'{"fixture":"original Film source report"}\r\n'
-        for present in (True, False):
-            with self.subTest(present=present), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary).resolve()
-                control = root / "control"
-                control.mkdir()
-                for name in ("records", "intake", "handoff", "logs", "public"):
-                    (control / name).mkdir()
-                request = self.dispatch()
-                request["schema"] = custody.FILM_DISPATCH_SCHEMA
-                request["compiler"]["source_mode"] = custody.SOURCE_MODE
-                request["compiler"]["members"] = {
-                    key: key for key in ("compiled_module", "compiler_receipt_path")}
-                custody.new_json(control / "records/dispatch.json", request)
-                source = {"fixture": "unchanged source"}
-                custody.new_json(control / "records/source-before.json", source)
-                common = root / "mw-mlt-g2-contracts-123-1"
-                common.mkdir()
-                (common / "contracts.json").write_bytes(b'{"fixture":"common source"}\n')
-                film = root / "mw-film180-contracts-123-1"
-                if present:
-                    film.mkdir()
-                    (film / "contracts.json").write_bytes(original)
-                env = {
-                    "GITHUB_ACTIONS": "true", "CI": "true", "RUNNER_OS": "Linux",
-                    "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1",
-                    "GITHUB_SHA": CURRENT["source_sha"], "GITHUB_RUN_ID": CURRENT["run_id"],
-                    "GITHUB_WORKSPACE": str(root), "MW_MLT_SCOPE": custody.FILM_SCOPE,
-                }
-                with mock.patch.object(custody.sys, "platform", "linux"), \
-                     mock.patch.object(custody.os, "geteuid", return_value=1001, create=True), \
-                     mock.patch.object(custody, "names", return_value=(
-                         control, root / "installation", root / "absent-native-session")), \
-                     mock.patch.object(custody, "runner_root", return_value=root), \
-                     mock.patch.object(custody, "source_guard", return_value=source):
-                    result = custody.seal(env, "failure")
-                ciphertext = (control / "public/sealed-originals.bin").read_bytes()
-                raw, context = custody.decrypt_snapshot(ciphertext, self.private)
-                self.assertEqual(context, CURRENT)
-                with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
-                    manifest = json.load(archive.extractfile("snapshot-manifest.json"))
-                    record = manifest["roots"]["film-contracts"]
-                    if present:
-                        self.assertEqual(record["status"], "CAPTURED")
-                        self.assertEqual(archive.extractfile("film-contracts/contracts.json").read(), original)
-                    else:
-                        self.assertEqual(record["status"], "ABSENT")
-                        self.assertNotIn("film-contracts/contracts.json", archive.getnames())
-                        self.assertFalse(manifest["selected_originals_complete"])
-                        self.assertFalse(result["selected_originals_complete"])
-                self.assertEqual(result["native_terminal"], "NOT_STARTED")
-                self.assertFalse(result["source_content_and_live_module_verified"])
-                self.assertFalse(result["physical_AV_master_acceptance"])
-                self.assertEqual({p.name for p in (control / "public").iterdir()},
-                                 {"sealed-originals.bin", "public-evidence.json"})
-
+    def test_v2_seal_never_enumerates_a_contract_directory_or_calls_recursive_snapshot(self):
+        from native_selection_test_fixtures import World, CURRENT as SELECTED_CONTEXT
+        import native_evidence_projection as selection_core
+        import native_film180_evidence_selection as film_selected
+        world = World("film180-g2")
+        secret = b"RECURSIVE-CONTRACT-DIRECTORY-CANARY"
+        world.files[("control", "logs/private-native.stderr")] = secret
+        world.files[("observation", "arbitrary-contracts/contracts.json")] = secret
+        with world.patched():
+            collector = film_selected.FilmSelection(roots=world.roots, current=SELECTED_CONTEXT,
+                                                    source_bindings=world.bindings)
+            with mock.patch.object(custody, "gather_snapshot", side_effect=AssertionError("recursive capture forbidden")):
+                raw, manifest = collector.capture()
+            public = custody.selected_projection(SELECTED_CONTEXT,
+                world.document("observation", "final-custody.json"), 0, "success", b"ciphertext", self.recipient,
+                manifest, producer_started=True, source_unchanged=True, intake_verified=False, scenario=custody.FILM_SCOPE)
+        self.assertNotIn(secret, raw)
+        self.assertNotIn(("observation", "arbitrary-contracts/contracts.json"), world.reads)
+        self.assertFalse(public["source_content_and_live_module_verified"])
+        self.assertTrue(public["selected_layers_complete"])
+        self.assertFalse(public["selected_intake_verified"])
+        self.assertNotIn("selected_originals_complete", public)
+        self.assertEqual(public["schema"], "motionwright.native.film180-g2-public/2")
 
 
 if __name__ == "__main__":

@@ -34,6 +34,13 @@ on:
       - 'tooling/tests/test_native_film180_original_g2.py'
       - 'tooling/tests/test_native_film180_media_readback.py'
       - 'tooling/ci_private_evidence.py'
+      - 'tooling/native_evidence_projection.py'
+      - 'tooling/native_mlt_evidence_selection.py'
+      - 'tooling/native_film180_evidence_selection.py'
+      - 'tooling/tests/test_native_evidence_projection.py'
+      - 'tooling/tests/test_native_mlt_evidence_selection.py'
+      - 'tooling/tests/test_native_film180_evidence_selection.py'
+      - 'tooling/tests/native_selection_test_fixtures.py'
       - 'tooling/native_mlt_g2_custody.py'
       - 'tooling/mlt-audio-diagnostic/repair_planar_source.py'
       - 'tooling/tests/test_native_mlt_compiler_intake.py'
@@ -135,7 +142,9 @@ jobs:
           --pattern test_native_mlt_host_tool_observation.py \
           --pattern test_native_mlt_loaded_module.py \
           --pattern test_native_mlt_executable_alias.py \
-          --pattern test_native_mlt_compiler_intake.py
+          --pattern test_native_mlt_compiler_intake.py \
+          --pattern test_native_evidence_projection.py \
+          --pattern test_native_mlt_evidence_selection.py
         "$CUSTODY_PYTHON" -B -E -s - "$report" <<'PY'
         import json, os, sys
         from pathlib import Path
@@ -152,6 +161,8 @@ jobs:
             "dotted:tooling.tests.test_native_mlt_loaded_module": 18,
             "dotted:tooling.tests.test_native_mlt_executable_alias": 24,
             "dotted:tooling.tests.test_native_mlt_compiler_intake": 24,
+            "dotted:tooling.tests.test_native_evidence_projection": 44,
+            "dotted:tooling.tests.test_native_mlt_evidence_selection": 30,
         }
         assert {step["entry_point"] for step in result["steps"]} == set(expected)
         assert len(result["steps"]) == len(expected)
@@ -173,7 +184,8 @@ jobs:
           --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete \
           --expected-source "$GITHUB_SHA" --report "$report" \
           --pattern test_native_film180_original_g2.py \
-          --pattern test_native_film180_media_readback.py
+          --pattern test_native_film180_media_readback.py \
+          --pattern test_native_film180_evidence_selection.py
         "$CUSTODY_PYTHON" -B -E -s - "$report" <<'PY'
         import json, os, sys
         from pathlib import Path
@@ -184,6 +196,7 @@ jobs:
         expected = {
             "dotted:tooling.tests.test_native_film180_original_g2": 78,
             "dotted:tooling.tests.test_native_film180_media_readback": 24,
+            "dotted:tooling.tests.test_native_film180_evidence_selection": 29,
         }
         assert {step["entry_point"] for step in result["steps"]} == set(expected)
         assert len(result["steps"]) == len(expected)
@@ -350,7 +363,9 @@ jobs:
             --pattern test_native_mlt_host_tool_observation.py \
             --pattern test_native_mlt_loaded_module.py \
             --pattern test_native_mlt_executable_alias.py \
-            --pattern test_native_mlt_compiler_intake.py
+            --pattern test_native_mlt_compiler_intake.py \
+            --pattern test_native_evidence_projection.py \
+            --pattern test_native_mlt_evidence_selection.py
           "$CUSTODY_PYTHON" -B -E -s - "$report" <<'PY'
           import json, os, sys
           from pathlib import Path
@@ -367,6 +382,8 @@ jobs:
               "dotted:tooling.tests.test_native_mlt_loaded_module": 18,
               "dotted:tooling.tests.test_native_mlt_executable_alias": 24,
               "dotted:tooling.tests.test_native_mlt_compiler_intake": 24,
+              "dotted:tooling.tests.test_native_evidence_projection": 44,
+              "dotted:tooling.tests.test_native_mlt_evidence_selection": 30,
           }
           assert {step["entry_point"] for step in result["steps"]} == set(expected)
           assert len(result["steps"]) == len(expected)
@@ -390,7 +407,8 @@ jobs:
             --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete \
             --expected-source "$GITHUB_SHA" --report "$report" \
             --pattern test_native_film180_original_g2.py \
-            --pattern test_native_film180_media_readback.py
+            --pattern test_native_film180_media_readback.py \
+            --pattern test_native_film180_evidence_selection.py
           "$CUSTODY_PYTHON" -B -E -s - "$report" <<'PY'
           import json, os, sys
           from pathlib import Path
@@ -401,6 +419,7 @@ jobs:
           expected = {
               "dotted:tooling.tests.test_native_film180_original_g2": 78,
               "dotted:tooling.tests.test_native_film180_media_readback": 24,
+              "dotted:tooling.tests.test_native_film180_evidence_selection": 29,
           }
           assert {step["entry_point"] for step in result["steps"]} == set(expected)
           assert len(result["steps"]) == len(expected)

@@ -301,12 +301,18 @@ def native_owner_workspace(g2=None):
 
 
 def main(g2=None):
+    global EVIDENCE
     exact_inputs()
     if g2 is not None:
         observed = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
         if observed != GITHUB_SHA:
             raise AssertionError("G2 checkout must equal the exact executing source")
-    EVIDENCE.mkdir(parents=True, exist_ok=False)
+    if g2 is not None:
+        # Private /2 roots must not overlap the executing source checkout.
+        # The existing producer writes its originals once in the retained G2
+        # session; ordinary workflow output keeps its established location.
+        EVIDENCE = g2.evidence_dir / "producer"
+    EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=False)
 
     with native_owner_workspace(g2) as raw:
         root = Path(raw).resolve()
@@ -953,7 +959,7 @@ def main(g2=None):
         "native_mlt_multisegment_e2e": "PASS",
         "motionwright_sha": GITHUB_SHA,
         "semwright_sha": PIN,
-        "evidence": str(EVIDENCE.relative_to(ROOT)),
+        "evidence": str(EVIDENCE.relative_to(ROOT)) if g2 is None else "private-g2-producer",
     }
     if g2 is None:
         print(json.dumps(summary, sort_keys=True))

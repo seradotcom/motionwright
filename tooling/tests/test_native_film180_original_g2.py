@@ -1127,13 +1127,15 @@ class FilmStageOrderingTests(unittest.TestCase):
 
     def test_exact_live_descriptor_and_native_ack_allow_one_original_decode(self):
         callback = self.completed_master_callback()
-        with mock.patch("native_film180_media_readback.verified_source_readback",
+        with mock.patch.object(runner,"retain_original_audio_packets") as packets, \
+             mock.patch("native_film180_media_readback.verified_source_readback",
                         return_value={"test_double":True}) as decode, \
              mock.patch.object(runner,"actual_all180_original_RGB_digests",
                                return_value={"source_frame_count":180}), \
              mock.patch.object(runner,"native_png_vs_h264_observations",
                                return_value={"test_double":True}):
             result = self.run_stage(callback)
+        packets.assert_called_once_with(self.attempt,"original",self.original_master,self.original_digest)
         decode.assert_called_once()
         self.assertEqual(decode.call_args.args[9],self.original_digest)
         self.witness.require_one.assert_called_once_with(self.original_master)
