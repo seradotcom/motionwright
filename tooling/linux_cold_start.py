@@ -27,6 +27,7 @@ from urllib.parse import quote
 import uuid
 
 from linux_gui_probe import run_probe
+import storage_schema_contract as storage
 
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 MAX_DB_BYTES = 128 * 1024 * 1024
@@ -82,8 +83,9 @@ def _safe_database(data_root: Path) -> Path:
     return candidate
 
 
-def read_snapshot(data_root: Path) -> ProjectSnapshot:
+def read_snapshot(data_root: Path, *, storage_cohort=None) -> ProjectSnapshot:
     """Independently inspect committed SQLite after a terminated GUI process."""
+    expected_schema = storage.expected_schema(storage_cohort, historical_default=EXPECTED_SCHEMA)
     database = _safe_database(data_root)
     uri = "file:" + quote(str(database.resolve(strict=True)), safe="/") + "?mode=ro"
     try:
@@ -92,8 +94,11 @@ def read_snapshot(data_root: Path) -> ProjectSnapshot:
             if conn.execute("PRAGMA quick_check(1)").fetchone() != ("ok",):
                 raise ColdStartError("Installed project database failed SQLite integrity check")
             schema = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            if schema != EXPECTED_SCHEMA:
+            if schema != expected_schema:
                 raise ColdStartError("Installed database schema is not the supported native schema")
+            if storage_cohort is not None:
+                storage.validate_receipt_columns(
+                    conn.execute("PRAGMA main.table_xinfo(\'receipts\')").fetchall(), storage_cohort)
             rows = conn.execute(
                 "SELECT id,generation,revision,title,document_json "
                 "FROM projects ORDER BY id LIMIT 2"
@@ -113,6 +118,8 @@ def read_snapshot(data_root: Path) -> ProjectSnapshot:
             if not isinstance(document, str) or not 0 < len(document.encode()) <= MAX_DOCUMENT_BYTES:
                 raise ColdStartError("Persisted creative project document is invalid or too large")
             decoded = json.loads(document)
+            if storage_cohort is not None:
+                storage.validate_document(decoded, storage_cohort)
             if (
                 not isinstance(decoded, dict)
                 or decoded.get("id") != project_id
@@ -138,6 +145,8 @@ def read_snapshot(data_root: Path) -> ProjectSnapshot:
                 schema_version=schema,
                 event_count=event_count,
             )
+    except storage.StorageContractError as error:
+        raise ColdStartError(str(error)) from error
     except sqlite3.DatabaseError as error:
         raise ColdStartError("Installed project database could not be inspected read-only") from error
 
@@ -167,7 +176,7 @@ def attest_persistence(first: ProjectSnapshot, second: ProjectSnapshot) -> dict:
     }
 
 
-def _bootstrap_committed(scratch: Path) -> bool:
+def _bootstrap_committed(scratch: Path, *, storage_cohort=None) -> bool:
     """Read-only readiness check while the observed native window is alive.
 
     Window creation can precede Tauri setup and its SQLite transaction.
@@ -176,26 +185,30 @@ def _bootstrap_committed(scratch: Path) -> bool:
     The final closed-process snapshot is still independently rechecked.
     """
     try:
-        read_snapshot(scratch / "data")
+        read_snapshot(scratch / "data", **({"storage_cohort": storage_cohort} if storage_cohort is not None else {}))
     except ColdStartError:
         return False
     return True
 
 
-def _empty_library_ready(scratch: Path) -> bool:
+def _empty_library_ready(scratch: Path, *, storage_cohort=None) -> bool:
     """Observe schema and zero projects before the one real UI mutation."""
+    expected_schema = storage.expected_schema(storage_cohort, historical_default=EXPECTED_SCHEMA)
     try:
         database = _safe_database(scratch / "data")
         uri = "file:" + quote(str(database.resolve(strict=True)), safe="/") + "?mode=ro"
         with closing(sqlite3.connect(uri, uri=True, timeout=3)) as connection:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("PRAGMA trusted_schema=OFF")
+            if storage_cohort is not None:
+                storage.validate_receipt_columns(
+                    connection.execute("PRAGMA main.table_xinfo(\'receipts\')").fetchall(), storage_cohort)
             return (
                 connection.execute("PRAGMA quick_check(1)").fetchone() == ("ok",)
-                and connection.execute("PRAGMA user_version").fetchone() == (EXPECTED_SCHEMA,)
+                and connection.execute("PRAGMA user_version").fetchone() == (expected_schema,)
                 and connection.execute("SELECT COUNT(*) FROM projects").fetchone() == (0,)
             )
-    except (ColdStartError, sqlite3.Error, OSError):
+    except (ColdStartError, storage.StorageContractError, sqlite3.Error, OSError):
         return False
 
 
@@ -276,8 +289,9 @@ def _send_native_x11_create() -> None:
         x11.XCloseDisplay(display)
 
 
-def _first_project_window_interaction(scratch: Path) -> bool:
-    if not _empty_library_ready(scratch):
+def _first_project_window_interaction(scratch: Path, *, storage_cohort=None) -> bool:
+    options = {"storage_cohort": storage_cohort} if storage_cohort is not None else {}
+    if not _empty_library_ready(scratch, **options):
         return False
     # No retry follows this point even if acknowledgement is lost. The
     # installed application and SQLite journal remain authoritative.
@@ -287,7 +301,7 @@ def _first_project_window_interaction(scratch: Path) -> bool:
 
 def probe_cold_relaunch(
     *, app_run: Path, scratch: Path, source_sha: str,
-    semwright_sha: str, seconds: int = 24,
+    semwright_sha: str, seconds: int = 24, storage_cohort=None,
 ) -> dict:
     """Run the *same* extracted AppImage twice, never repoint its XDG data."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
@@ -298,28 +312,38 @@ def probe_cold_relaunch(
         raise ColdStartError("Installed GUI probe requires a bounded launch deadline")
     if scratch.exists() and any(scratch.iterdir()):
         raise ColdStartError("Cold-start scratch must be empty before the first launch")
+    options = {}
+    ready, interaction = _bootstrap_committed, _first_project_window_interaction
+    if storage_cohort is not None:
+        from functools import partial
+        storage_cohort = storage.validate_cohort(storage_cohort, source_sha=source_sha)
+        options = {"storage_cohort": storage_cohort}
+        ready = partial(_bootstrap_committed, **options)
+        interaction = partial(_first_project_window_interaction, **options)
     first_gui = run_probe(
-        app_run, scratch, seconds=seconds, ready_check=_bootstrap_committed,
-        window_interaction=_first_project_window_interaction,
+        app_run, scratch, seconds=seconds, ready_check=ready,
+        window_interaction=interaction,
     )
     if first_gui.get("status") != "WINDOW_OBSERVED":
         raise ColdStartError("First installed run created no observed desktop window")
     first_log = scratch / "app-run.log"
     if first_log.is_file() and not first_log.is_symlink():
         shutil.copyfile(first_log, scratch / "app-run-first.log")
-    initial = read_snapshot(scratch / "data")
+    initial = read_snapshot(scratch / "data", **options)
 
     second_gui = run_probe(
-        app_run, scratch, seconds=seconds, ready_check=_bootstrap_committed,
+        app_run, scratch, seconds=seconds, ready_check=ready,
     )
     if second_gui.get("status") != "WINDOW_OBSERVED":
         raise ColdStartError("Reopened installed run created no observed desktop window")
     if first_log.is_file() and not first_log.is_symlink():
         shutil.copyfile(first_log, scratch / "app-run-second.log")
-    reopened = read_snapshot(scratch / "data")
+    reopened = read_snapshot(scratch / "data", **options)
 
     return {
-        "schema": "motionwright.ci.installed-cold-relaunch/1",
+        "schema": ("motionwright.ci.installed-cold-relaunch/1" if storage_cohort is None
+                   else "motionwright.ci.installed-cold-relaunch/2"),
+        **({"storage_cohort": storage_cohort} if storage_cohort is not None else {}),
         "status": "WINDOW_OBSERVED",
         "window_title": "Motionwright",
         "motionwright_sha": source_sha,
@@ -348,13 +372,18 @@ def main() -> None:
     parser.add_argument("--source-lock", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--seconds", type=int, default=24)
+    parser.add_argument("--storage-source-repo", type=Path)
     args = parser.parse_args()
     source = json.loads(args.source_lock.read_text(encoding="utf-8"))
     pin = source["dependencies"]["semwright"]["revision"]
+    cohort = (storage.admit_checkout(args.storage_source_repo, args.source_sha)
+              if args.storage_source_repo is not None else None)
     report = probe_cold_relaunch(
         app_run=args.app_run, scratch=args.scratch, source_sha=args.source_sha,
-        semwright_sha=pin, seconds=args.seconds,
+        semwright_sha=pin, seconds=args.seconds, storage_cohort=cohort,
     )
+    if cohort is not None and storage.admit_checkout(args.storage_source_repo, args.source_sha) != cohort:
+        raise ColdStartError("Storage source changed during installed cold relaunch")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as out:
         json.dump(report, out, indent=2, sort_keys=True)

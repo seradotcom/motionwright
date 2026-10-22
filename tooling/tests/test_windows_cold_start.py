@@ -13,12 +13,16 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tooling"))
+sys.path.insert(0, str(ROOT / "tooling/tests"))
+from test_storage_schema_contract import cohort as storage_cohort_fixture
 MODULE = ROOT / "tooling" / "windows_cold_start.py"
 spec = importlib.util.spec_from_file_location("windows_cold_start", MODULE)
 assert spec and spec.loader
@@ -27,6 +31,18 @@ spec.loader.exec_module(windows)
 
 TITLE = "motionwright ci first use"
 
+
+
+def schema_four_project(target):
+    source = project_db(target, schema_version=4)
+    source["schema_version"] = 2
+    with closing(sqlite3.connect(target)) as db, db:
+        db.execute("UPDATE projects SET document_json=?", (json.dumps(source),))
+        db.execute("""CREATE TABLE receipts(project_id TEXT,request_id TEXT,request_sha256 TEXT,
+          result_json TEXT,created_at TEXT,
+          apply_binding_version INTEGER NOT NULL DEFAULT 0 CHECK(apply_binding_version IN (0,1)),
+          apply_binding_json TEXT)""")
+    return source
 
 def project_db(target: Path, *, title: str = TITLE, duplicate: bool = False,
                forged_generation: bool = False, schema_version: int = 3) -> dict:
@@ -635,6 +651,116 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         self.assertFalse(result["raw_application_logs_uploaded"])
         self.assertNotIn(str(self.root), diagnostic.read_text())
         self.assertEqual(result["human_install_acceptance"], "NOT_RUN")
+
+
+    def test_explicit_four_reads_real_sqlite_without_changing_the_document(self):
+        database = self.root / "motionwright.sqlite3"
+        source = schema_four_project(database)
+        original = database.read_bytes()
+        observed = windows.read_project_snapshot(database, storage_cohort=storage_cohort_fixture(4))
+        self.assertEqual(observed["project_id"], source["id"])
+        self.assertEqual(database.read_bytes(), original)
+        self.assertEqual(source["schema_version"], 2)
+
+    def test_four_is_not_selected_by_current_library_ux_or_database_version(self):
+        database = self.root / "motionwright.sqlite3"
+        schema_four_project(database)
+        with self.assertRaises(windows.ColdStartError):
+            windows.read_project_snapshot(database)
+        with self.assertRaises(windows.ColdStartError):
+            windows.read_project_snapshot(database, storage_cohort=storage_cohort_fixture(3))
+        self.assertEqual(windows.expected_storage_schema(None, windows.CURRENT_FIRST_USE_CONTRACT), 3)
+
+    def test_four_empty_store_requires_matching_columns_before_one_create(self):
+        database = self.root / "motionwright.sqlite3"
+        schema_four_project(database)
+        with closing(sqlite3.connect(database)) as db, db:
+            db.execute("DELETE FROM projects")
+        selected = storage_cohort_fixture(4)
+        self.assertTrue(windows._empty_library_ready(database, storage_cohort=selected))
+        self.assertFalse(windows._empty_library_ready(database))
+        with closing(sqlite3.connect(database)) as db, db:
+            db.execute("ALTER TABLE receipts DROP COLUMN apply_binding_json")
+        self.assertFalse(windows._empty_library_ready(database, storage_cohort=selected))
+
+    def test_four_document_or_layout_mismatch_does_not_become_a_snapshot(self):
+        database = self.root / "motionwright.sqlite3"
+        source = schema_four_project(database)
+        source["schema_version"] = 4
+        with closing(sqlite3.connect(database)) as db, db:
+            db.execute("UPDATE projects SET document_json=?", (json.dumps(source),))
+        with self.assertRaises(windows.ColdStartError):
+            windows.read_project_snapshot(database, storage_cohort=storage_cohort_fixture(4))
+
+    def test_four_cannot_be_relabelled_as_the_automatic_predecessor(self):
+        with self.assertRaises(windows.ColdStartError):
+            windows.expected_storage_schema(storage_cohort_fixture(4), windows.LEGACY_FIRST_USE_CONTRACT)
+        with self.assertRaises(windows.ColdStartError):
+            windows.expected_storage_schema(storage_cohort_fixture(2), windows.CURRENT_FIRST_USE_CONTRACT)
+        self.assertEqual(windows.expected_storage_schema(None, windows.LEGACY_FIRST_USE_CONTRACT), 2)
+
+    def test_foreign_four_source_fails_before_process_creation(self):
+        executable, receipt, source = candidate_fixture(self.root)
+        with patch.object(windows.os, "name", "nt"), patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch.object(windows, "validate_evidence_paths"), patch.object(windows.subprocess, "Popen") as launch:
+            with self.assertRaises(windows.storage.StorageContractError):
+                windows.run_installed_relaunch(
+                    executable=executable, smoke_receipt=receipt, expected_sha=source,
+                    scratch=self.root / "scratch", output=self.root / "output.json",
+                    storage_cohort=storage_cohort_fixture(4, source="b" * 40))
+            launch.assert_not_called()
+
+    def test_four_boot_threads_the_cohort_to_the_actual_snapshot_reader(self):
+        database = self.root / "motionwright.sqlite3"
+        source = schema_four_project(database)
+        with mocked_boot() as (process, launch, create), \
+             patch.object(windows, "known_databases", return_value=[database]):
+            observed, repeated, elapsed = windows.boot_once(
+                self.root / "unused.exe", {}, [self.root], self.root / "boot-four.log",
+                storage_cohort=storage_cohort_fixture(4))
+        self.assertEqual(observed["project_id"], source["id"])
+        self.assertEqual(repeated, database)
+        create.assert_not_called()
+        self.assertEqual(launch.call_count, 1)
+
+    def test_uncertain_create_under_four_preserves_the_original_and_never_replays(self):
+        database = self.root / "motionwright.sqlite3"
+        schema_four_project(database)
+        with closing(sqlite3.connect(database)) as db, db:
+            db.execute("DELETE FROM projects")
+        error = windows.ColdStartError("synthetic original create UNKNOWN")
+        with mocked_boot(create_effect=error) as (process, launch, create), \
+             patch.object(windows, "known_databases", return_value=[database]):
+            with self.assertRaises(windows.ColdStartError) as caught:
+                windows.boot_once(self.root / "unused.exe", {}, [self.root], self.root / "unknown-four.log",
+                                  storage_cohort=storage_cohort_fixture(4))
+            self.assertIs(caught.exception, error)
+            self.assertEqual(create.call_count, 1)
+            self.assertEqual(launch.call_count, 1)
+
+
+
+    def test_postlaunch_source_change_blocks_positive_publication(self):
+        executable, receipt, source = candidate_fixture(self.root)
+        selected = storage_cohort_fixture(4, source=source)
+        database = self.root / "profile/motionwright.sqlite3"
+        output = self.root / "result.json"
+        observation = ({"project_id": "synthetic"}, database, 0.25)
+        with patch.object(windows.os, "name", "nt"), \
+             patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "APPDATA": str(self.root),
+                                    "LOCALAPPDATA": str(self.root)}), \
+             patch.object(windows, "validate_evidence_paths"), \
+             patch.object(windows, "known_databases", return_value=[]), \
+             patch.object(windows, "boot_once", return_value=observation) as boot, \
+             patch.object(windows.storage, "admit_checkout",
+                          side_effect=[selected, storage_cohort_fixture(3, source=source)]):
+            with self.assertRaisesRegex(windows.ColdStartError, "Storage source changed"):
+                windows.run_installed_relaunch(
+                    executable=executable, smoke_receipt=receipt, expected_sha=source,
+                    scratch=self.root / "scratch", output=output, storage_cohort=selected,
+                    storage_source_repo=self.root)
+        self.assertEqual(boot.call_count, 2)
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ use motionwright_domain::{
     CanvasNode, DomainError, LEGACY_PROJECT_SCHEMA_VERSION, PROJECT_SCHEMA_VERSION, RationalTime,
     RendererKind, RevisionStamp, SceneStatus,
 };
-use rusqlite::{OptionalExtension, Row, Transaction, TransactionBehavior, params, types::ValueRef};
+use rusqlite::{Row, Transaction, TransactionBehavior, params, types::ValueRef};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use thiserror::Error;
@@ -173,8 +173,11 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let head = read_head(&tx, project_id)?;
-        enforce_response_budget(&head)?;
+        let head = with_projection_jsonb(&tx, project_id, |document| {
+            let head = read_head(&tx, project_id, document)?;
+            enforce_response_budget(&head)?;
+            Ok(head)
+        })?;
         tx.commit()?;
         Ok(head)
     }
@@ -195,23 +198,26 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let head = read_head(&tx, identity.project_id)?;
-        require_identity(identity, &head.identity)?;
-        let end = checked_end(start, limit, head.scene_count)?;
-        let items = read_scene_summaries(&tx, identity.project_id, start, end)?;
-        require_contiguous_count(items.len(), start, end)?;
-        let next_cursor = (end < head.scene_count).then(|| ScenePageCursor {
-            identity: head.identity.clone(),
-            next_ordinal: end,
-        });
-        let page = ScenePage {
-            identity: head.identity,
-            total_scenes: head.scene_count,
-            start_ordinal: start,
-            items,
-            next_cursor,
-        };
-        enforce_response_budget(&page)?;
+        let page = with_projection_jsonb(&tx, identity.project_id, |document| {
+            let head = read_head(&tx, identity.project_id, document)?;
+            require_identity(identity, &head.identity)?;
+            let end = checked_end(start, limit, head.scene_count)?;
+            let items = read_scene_summaries(&tx, document, start, end)?;
+            require_contiguous_count(items.len(), start, end)?;
+            let next_cursor = (end < head.scene_count).then(|| ScenePageCursor {
+                identity: head.identity.clone(),
+                next_ordinal: end,
+            });
+            let page = ScenePage {
+                identity: head.identity,
+                total_scenes: head.scene_count,
+                start_ordinal: start,
+                items,
+                next_cursor,
+            };
+            enforce_response_budget(&page)?;
+            Ok(page)
+        })?;
         tx.commit()?;
         Ok(page)
     }
@@ -235,45 +241,40 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let head = read_head(&tx, identity.project_id)?;
-        require_identity(identity, &head.identity)?;
-        if scene.ordinal >= head.scene_count {
-            return Err(invalid("scene ordinal is out of range"));
-        }
-        let scene_end = scene
-            .ordinal
-            .checked_add(1)
-            .ok_or_else(|| invalid("scene ordinal overflow"))?;
-        let mut summaries =
-            read_scene_summaries(&tx, identity.project_id, scene.ordinal, scene_end)?;
-        let summary = summaries.pop().ok_or_else(|| invalid("scene is missing"))?;
-        if summary.id != scene.id {
-            return Err(invalid("scene identity differs at the requested ordinal"));
-        }
-        let end = checked_end(start, limit, summary.node_count)?;
-        let items = read_nodes(
-            &tx,
-            identity.project_id,
-            scene.ordinal,
-            start,
-            end,
-            summary.duration,
-        )?;
-        require_contiguous_count(items.len(), start, end)?;
-        let next_cursor = (end < summary.node_count).then(|| NodePageCursor {
-            identity: head.identity.clone(),
-            scene: scene.clone(),
-            next_ordinal: end,
-        });
-        let page = NodePage {
-            identity: head.identity,
-            scene: scene.clone(),
-            total_nodes: summary.node_count,
-            start_ordinal: start,
-            items,
-            next_cursor,
-        };
-        enforce_response_budget(&page)?;
+        let page = with_projection_jsonb(&tx, identity.project_id, |document| {
+            let head = read_head(&tx, identity.project_id, document)?;
+            require_identity(identity, &head.identity)?;
+            if scene.ordinal >= head.scene_count {
+                return Err(invalid("scene ordinal is out of range"));
+            }
+            let scene_end = scene
+                .ordinal
+                .checked_add(1)
+                .ok_or_else(|| invalid("scene ordinal overflow"))?;
+            let mut summaries = read_scene_summaries(&tx, document, scene.ordinal, scene_end)?;
+            let summary = summaries.pop().ok_or_else(|| invalid("scene is missing"))?;
+            if summary.id != scene.id {
+                return Err(invalid("scene identity differs at the requested ordinal"));
+            }
+            let end = checked_end(start, limit, summary.node_count)?;
+            let items = read_nodes(&tx, document, scene.ordinal, start, end, summary.duration)?;
+            require_contiguous_count(items.len(), start, end)?;
+            let next_cursor = (end < summary.node_count).then(|| NodePageCursor {
+                identity: head.identity.clone(),
+                scene: scene.clone(),
+                next_ordinal: end,
+            });
+            let page = NodePage {
+                identity: head.identity,
+                scene: scene.clone(),
+                total_nodes: summary.node_count,
+                start_ordinal: start,
+                items,
+                next_cursor,
+            };
+            enforce_response_budget(&page)?;
+            Ok(page)
+        })?;
         tx.commit()?;
         Ok(page)
     }
@@ -373,59 +374,85 @@ fn enforce_response_budget(value: &impl Serialize) -> ProjectionResult<()> {
     Ok(())
 }
 
+const PROJECTION_DOCUMENT_SQL: &str = r#"
+SELECT CASE
+    WHEN typeof(document_json) <> 'text' THEN 'document is not text'
+    WHEN json_valid(document_json) <> 1 THEN 'malformed project JSON'
+    ELSE jsonb(document_json)
+END
+FROM projects WHERE id = ?1
+"#;
+
+// The statement owns this opaque JSONB only for one projection call.
+// Validate the original text before conversion; persisted BLOBs are not admitted.
+fn with_projection_jsonb<T>(
+    tx: &Transaction<'_>,
+    project_id: Uuid,
+    inspect: impl FnOnce(&[u8]) -> ProjectionResult<T>,
+) -> ProjectionResult<T> {
+    let mut statement = tx.prepare(PROJECTION_DOCUMENT_SQL)?;
+    let mut rows = statement.query([project_id.to_string()])?;
+    let row = rows.next()?.ok_or(StorageError::NotFound)?;
+
+    match row.get_ref(0)? {
+        ValueRef::Blob(document) => inspect(document),
+        ValueRef::Text(_) => Err(invalid(text(row, 0, 96)?)),
+        _ => Err(invalid("invalid projection document representation")),
+    }
+}
+
 // SQLite PATH labels can compare only the prefix before NUL. Some versions
 // also truncate KEY; FULLKEY retains the escaped label for consulted fields.
 // This guard does not ban NUL inside a legitimate text value.
 const ROOT_STATUS_SQL: &str = r#"
 SELECT CASE
-    WHEN typeof(document_json) <> 'text' THEN 'document is not text'
-    WHEN json_valid(document_json) <> 1 THEN 'malformed project JSON'
-    WHEN json_type(document_json) <> 'object' THEN 'project is not an object'
+    WHEN json_type(?1) <> 'object' THEN 'project is not an object'
     WHEN EXISTS (
-        SELECT 1 FROM json_each(document_json)
+        SELECT 1 FROM json_each(?1)
         WHERE instr(key, char(0)) > 0
            OR (key IN ('id','generation','revision','schema_version','title','scenes')
                AND instr(fullkey, '\u0000') > 0)
     ) THEN 'ambiguous project key'
     WHEN EXISTS (
-        SELECT 1 FROM json_each(document_json)
+        SELECT 1 FROM json_each(?1)
         WHERE key IN ('id','generation','revision','schema_version','title','scenes')
         GROUP BY key COLLATE BINARY HAVING count(*) > 1
     ) THEN 'duplicate projection authority key'
     ELSE 'ok'
-END FROM projects WHERE id = ?1
+END
 "#;
 
 const HEAD_SQL: &str = r#"
 SELECT id, generation, revision, title,
-    json_type(document_json,'$.schema_version'),
-    typeof(json_extract(document_json,'$.schema_version')),
-    json_extract(document_json,'$.schema_version'),
-    json_extract(document_json,'$.id'),
-    json_extract(document_json,'$.generation'),
-    json_type(document_json,'$.revision'),
-    typeof(json_extract(document_json,'$.revision')),
-    json_extract(document_json,'$.revision'),
-    json_extract(document_json,'$.title'),
-    json_type(document_json,'$.scenes'),
-    json_array_length(document_json,'$.scenes'),
-    json_type(document_json,'$.id'),
-    json_type(document_json,'$.generation'),
-    json_type(document_json,'$.title')
+    json_type(?2,'$.schema_version'),
+    typeof(json_extract(?2,'$.schema_version')),
+    json_extract(?2,'$.schema_version'),
+    json_extract(?2,'$.id'),
+    json_extract(?2,'$.generation'),
+    json_type(?2,'$.revision'),
+    typeof(json_extract(?2,'$.revision')),
+    json_extract(?2,'$.revision'),
+    json_extract(?2,'$.title'),
+    json_type(?2,'$.scenes'),
+    json_array_length(?2,'$.scenes'),
+    json_type(?2,'$.id'),
+    json_type(?2,'$.generation'),
+    json_type(?2,'$.title')
 FROM projects WHERE id = ?1
 "#;
 
-fn read_head(tx: &Transaction<'_>, project_id: Uuid) -> ProjectionResult<ProjectionHead> {
+fn read_head(
+    tx: &Transaction<'_>,
+    project_id: Uuid,
+    document: &[u8],
+) -> ProjectionResult<ProjectionHead> {
     let key = project_id.to_string();
-    let status: Option<String> = tx
-        .query_row(ROOT_STATUS_SQL, [&key], |row| row.get(0))
-        .optional()?;
-    let status = status.ok_or(StorageError::NotFound)?;
+    let status: String = tx.query_row(ROOT_STATUS_SQL, [document], |row| row.get(0))?;
     if status != "ok" {
         return Err(invalid(status));
     }
     let mut statement = tx.prepare(HEAD_SQL)?;
-    let mut rows = statement.query([&key])?;
+    let mut rows = statement.query(params![key, document])?;
     let row = rows.next()?.ok_or(StorageError::NotFound)?;
     for (index, expected) in [
         (4, "integer"),
@@ -488,8 +515,8 @@ const SCENE_PAGE_SQL: &str = r#"
 WITH selected AS (
     SELECT item.key AS ordinal, item.type AS item_type,
         CASE WHEN item.type = 'object' THEN item.value ELSE '{}' END AS scene
-    FROM projects AS project, json_each(project.document_json,'$.scenes') AS item
-    WHERE project.id = ?1 AND item.key >= ?2 AND item.key < ?3
+    FROM json_each(?1,'$.scenes') AS item
+    WHERE item.key >= ?2 AND item.key < ?3
 ),
 checked AS (
     SELECT *, CASE
@@ -538,13 +565,13 @@ FROM encoded ORDER BY ordinal
 
 fn read_scene_summaries(
     tx: &Transaction<'_>,
-    project_id: Uuid,
+    document: &[u8],
     start: u32,
     end: u32,
 ) -> ProjectionResult<Vec<SceneSummary>> {
     let mut statement = tx.prepare(SCENE_PAGE_SQL)?;
     let mut rows = statement.query(params![
-        project_id.to_string(),
+        document,
         i64::from(start),
         i64::from(end),
         i64::try_from(MAX_SQL_FRAGMENT_BYTES).map_err(|_| too_large())?,
@@ -583,14 +610,14 @@ const NODE_PAGE_SQL: &str = r#"
 SELECT item.key, item.type, length(CAST(item.value AS BLOB)),
     CASE WHEN item.type = 'object' AND length(CAST(item.value AS BLOB)) <= ?5
          THEN item.value END
-FROM projects AS project, json_each(project.document_json, ?2) AS item
-WHERE project.id = ?1 AND item.key >= ?3 AND item.key < ?4
+FROM json_each(?1, ?2) AS item
+WHERE item.key >= ?3 AND item.key < ?4
 ORDER BY item.key
 "#;
 
 fn read_nodes(
     tx: &Transaction<'_>,
-    project_id: Uuid,
+    document: &[u8],
     scene_ordinal: u32,
     start: u32,
     end: u32,
@@ -599,7 +626,7 @@ fn read_nodes(
     let path = format!("$.scenes[{scene_ordinal}].nodes");
     let mut statement = tx.prepare(NODE_PAGE_SQL)?;
     let mut rows = statement.query(params![
-        project_id.to_string(),
+        document,
         path,
         i64::from(start),
         i64::from(end),
@@ -696,6 +723,109 @@ mod tests {
                 params![project_id.to_string(), raw],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn projection_admission_rejects_json5_and_stored_blobs_before_jsonb() {
+        let (_directory, mut store, project) = persisted();
+        let original = serde_json::to_string(&project).unwrap();
+        let json5 = format!("{},}}", original.strip_suffix('}').unwrap());
+
+        for raw in ["{", json5.as_str()] {
+            replace_document(&store, project.id, raw);
+            assert!(matches!(
+                store.project_projection_head(project.id),
+                Err(ProjectionError::Invalid(reason)) if reason == "malformed project JSON"
+            ));
+        }
+
+        store
+            .conn
+            .execute(
+                "UPDATE projects SET document_json=CAST(?2 AS BLOB) WHERE id=?1",
+                params![project.id.to_string(), original.as_bytes()],
+            )
+            .unwrap();
+        let stored_type: String = store
+            .conn
+            .query_row(
+                "SELECT typeof(document_json) FROM projects WHERE id=?1",
+                [project.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_type, "blob");
+        assert!(matches!(
+            store.project_projection_head(project.id),
+            Err(ProjectionError::Invalid(reason)) if reason == "document is not text"
+        ));
+
+        replace_document(&store, project.id, &original);
+        let head = store.project_projection_head(project.id).unwrap();
+        assert_eq!(head.identity.checked_stamp().unwrap(), project.stamp());
+        assert_eq!(head.title, project.title);
+        let scenes = store.project_scene_page(&head.identity, None, 1).unwrap();
+        let nodes = store
+            .project_scene_nodes(&head.identity, &scenes.items[0].scene_ref(), None, 2)
+            .unwrap();
+        assert_eq!(nodes.items, project.scenes[0].nodes);
+        assert_eq!(store.load_project(project.id).unwrap(), project);
+    }
+
+    #[test]
+    fn projection_revalidates_changed_document_between_calls_at_the_same_stamp() {
+        let (_directory, mut store, project) = persisted();
+        let head = store.project_projection_head(project.id).unwrap();
+        let scene = SceneRef {
+            ordinal: 0,
+            id: project.scenes[0].id,
+        };
+        let first = store
+            .project_scene_nodes(&head.identity, &scene, None, 1)
+            .unwrap();
+        assert_eq!(first.items, vec![project.scenes[0].nodes[0].clone()]);
+
+        // Direct SQL models a modification outside the typed write path.
+        // The unchanged stamp must not authorize reusing earlier parsed bytes.
+        let mut changed = project.clone();
+        changed.scenes[0].nodes[0].text = Some("Fresh content at the same stamp".into());
+        changed.validate().unwrap();
+        assert_eq!(changed.stamp(), project.stamp());
+        replace_document(
+            &store,
+            project.id,
+            &serde_json::to_string(&changed).unwrap(),
+        );
+        let refreshed = store
+            .project_scene_nodes(&head.identity, &scene, None, 1)
+            .unwrap();
+        assert_eq!(refreshed.identity, head.identity);
+        assert_eq!(refreshed.items, vec![changed.scenes[0].nodes[0].clone()]);
+
+        changed.scenes[0].nodes[0].name.clear();
+        assert!(changed.validate().is_err());
+        replace_document(
+            &store,
+            project.id,
+            &serde_json::to_string(&changed).unwrap(),
+        );
+        assert!(
+            store
+                .project_scene_nodes(&head.identity, &scene, None, 1)
+                .is_err()
+        );
+
+        replace_document(
+            &store,
+            project.id,
+            &serde_json::to_string(&project).unwrap(),
+        );
+        let restored = store
+            .project_scene_nodes(&head.identity, &scene, None, 1)
+            .unwrap();
+        assert_eq!(restored.identity, head.identity);
+        assert_eq!(restored.items, first.items);
+        assert_eq!(store.load_project(project.id).unwrap(), project);
     }
 
     #[test]
@@ -900,24 +1030,31 @@ mod tests {
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Deferred)
                 .unwrap();
-            let head = read_head(&tx, project.id).unwrap();
-            old_identity = head.identity;
-            assert_eq!(head.scene_count, 1);
-            peer.apply(
-                project.id,
-                &RevisionStamp::from(&project),
-                "projection-snapshot-peer",
-                &Change::AddScene {
-                    name: "Peer addition".into(),
-                    objective: "New revision".into(),
-                    duration_seconds: 2,
-                },
-            )
+            old_identity = with_projection_jsonb(&tx, project.id, |document| {
+                let head = read_head(&tx, project.id, document).unwrap();
+                let identity = head.identity;
+                assert_eq!(head.scene_count, 1);
+                peer.apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    "projection-snapshot-peer",
+                    &Change::AddScene {
+                        name: "Peer addition".into(),
+                        objective: "New revision".into(),
+                        duration_seconds: 2,
+                    },
+                )
+                .unwrap();
+                let selected = read_scene_summaries(&tx, document, 0, 2).unwrap();
+                assert_eq!(selected.len(), 1);
+                assert_eq!(selected[0].id, project.scenes[0].id);
+                assert_eq!(
+                    read_head(&tx, project.id, document).unwrap().identity,
+                    identity
+                );
+                Ok(identity)
+            })
             .unwrap();
-            let selected = read_scene_summaries(&tx, project.id, 0, 2).unwrap();
-            assert_eq!(selected.len(), 1);
-            assert_eq!(selected[0].id, project.scenes[0].id);
-            assert_eq!(read_head(&tx, project.id).unwrap().identity, old_identity);
             tx.commit().unwrap();
         }
         assert!(matches!(

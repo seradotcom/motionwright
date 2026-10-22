@@ -15,6 +15,9 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import windows_installer_lifecycle as lifecycle
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_storage_schema_contract import cohort as storage_cohort_fixture
+from windows_cold_start import ColdStartError
 from release_manifest import ManifestError
 
 
@@ -848,6 +851,135 @@ class WindowsLifecycleTests(unittest.TestCase):
             )
         self.assertEqual(database.read_bytes(), original)
         self.assertFalse((self.root / "wrong-contract/snapshot.json").exists())
+
+
+class StorageCohortLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-storage-cohort-")
+        self.addCleanup(self.temp.cleanup)
+        self.parent = Path(self.temp.name)
+        self.root = self.parent / "evidence"
+        self.root.mkdir()
+        self.fx = Fixture(self.root)
+        self.installed = self.parent / "installed"
+        self.installed.mkdir()
+        (self.installed / "motionwright-desktop.exe").write_bytes(b"synthetic installed bytes")
+        self.profile = self.parent / "profile"
+        self.profile.mkdir()
+        self.database = self.profile / "motionwright.sqlite3"
+        self.selected = storage_cohort_fixture(4)
+        self.operation = str(uuid.uuid4())
+
+    def seed_four(self):
+        db = sqlite3.connect(self.database)
+        self.addCleanup(db.close)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA user_version=4")
+        db.execute("CREATE TABLE projects(id TEXT,generation TEXT,revision INTEGER,title TEXT,document_json TEXT)")
+        project = {"id": str(uuid.uuid4()), "generation": str(uuid.uuid4()),
+                   "revision": 0, "title": "motionwright ci first use", "schema_version": 2}
+        db.execute("INSERT INTO projects VALUES (?,?,?,?,?)",
+                   (project["id"], project["generation"], 0, project["title"], json.dumps(project)))
+        db.execute("""CREATE TABLE receipts(project_id TEXT,request_id TEXT,request_sha256 TEXT,
+                   result_json TEXT,created_at TEXT,
+                   apply_binding_version INTEGER NOT NULL DEFAULT 0 CHECK(apply_binding_version IN (0,1)),
+                   apply_binding_json TEXT)""")
+        db.commit()
+        return db, project
+
+    def capture(self, label, *, selected=True):
+        return lifecycle.capture_snapshot(self.root, snapshot_name=label, operation=self.operation,
+            position="before", install_root=self.installed, database=self.database,
+            registry_keys=self.fx.context["registry_keys"], registry_reader=lambda _: self.fx.registry("0.1.0"),
+            **({"storage_cohort": self.selected} if selected else {}))
+
+    def bind_inputs(self, value):
+        self.fx.inputs_doc["storage_cohort"] = value
+        self.fx.source_record["files"][lifecycle.storage.SOURCE_PATH] = self.selected["source_input"]["checkout"]
+        self.fx.inputs_ref = self.fx.js("cohort-inputs", self.fx.inputs_doc)
+        self.fx.admission["refs"]["inputs"] = self.fx.inputs_ref
+        self.fx.compiled_doc["inputs_receipt"] = self.fx.ident(self.fx.inputs_ref)
+        self.fx.admission["refs"]["compiled"] = self.fx.js("cohort-compiled", self.fx.compiled_doc)
+
+    def test_four_capture_retains_original_family_and_separate_inspection(self):
+        _, project = self.seed_four()
+        original = {p.name: p.read_bytes() for p in self.profile.iterdir()}
+        reference = self.capture("four-capture")
+        value = lifecycle.snapshot_value(self.root, reference, self.operation, "before",
+            self.fx.context["registry_keys"], storage_cohort=self.selected)
+        self.assertEqual(value["schema"], "motionwright.windows-lifecycle-snapshot/2")
+        self.assertEqual(value["storage_cohort"], self.selected)
+        self.assertEqual(value["project"]["project_id"], project["id"])
+        self.assertEqual({p.name: p.read_bytes() for p in self.profile.iterdir()}, original)
+        self.assertTrue(all(value["sqlite_family"].values()))
+        for name, ref in value["sqlite_family"].items():
+            self.assertEqual(lifecycle.bound_file(self.root, ref).read_bytes(), original[name])
+
+    def test_historical_default_does_not_publish_a_four_snapshot(self):
+        self.seed_four()
+        original = {p.name: p.read_bytes() for p in self.profile.iterdir()}
+        with self.assertRaises(ColdStartError):
+            self.capture("default-on-four", selected=False)
+        self.assertFalse((self.root / "default-on-four/snapshot.json").exists())
+        self.assertEqual({p.name: p.read_bytes() for p in self.profile.iterdir()}, original)
+
+    def test_v2_snapshot_needs_explicit_matching_source_and_does_not_downgrade_v1(self):
+        self.seed_four()
+        reference = self.capture("bound-four")
+        keys = self.fx.context["registry_keys"]
+        with self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.snapshot_value(self.root, reference, self.operation, "before", keys)
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "snapshot_storage_cohort_mismatch"):
+            lifecycle.snapshot_value(self.root, reference, self.operation, "before", keys,
+                storage_cohort=storage_cohort_fixture(4, source="c" * 40))
+        legacy = self.fx.snapshot(self.operation, "before", {}, self.fx.registry(None))
+        old = self.fx.js("legacy", legacy)
+        self.assertEqual(lifecycle.snapshot_value(self.root, old, self.operation, "before", keys), legacy)
+        with self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.snapshot_value(self.root, old, self.operation, "before", keys, storage_cohort=self.selected)
+
+    def test_explicit_input_cohort_binds_source_tree_and_retained_source_bytes(self):
+        self.bind_inputs(self.selected)
+        observed = self.fx.validate_inputs()
+        self.assertEqual(observed["storage_cohort"], self.selected)
+        self.assertEqual(observed["source_sha"], self.selected["source_sha"])
+        self.assertEqual(observed["source_tree"], self.selected["source_tree"])
+
+    def test_foreign_input_cohort_or_original_bytes_fail_before_pe_observation(self):
+        for field, replacement in (("source_sha", "c" * 40), ("source_tree", "c" * 40),
+                                    ("source_input", storage_cohort_fixture(3)["source_input"])):
+            value = copy.deepcopy(self.selected)
+            value[field] = replacement
+            self.bind_inputs(value)
+            with self.subTest(field=field), mock.patch.object(lifecycle, "read_pe_versions") as pe:
+                with self.assertRaises((lifecycle.LifecycleError, lifecycle.storage.StorageContractError)):
+                    self.fx.validate_inputs(pe_reader=pe)
+                pe.assert_not_called()
+
+    def test_document_version_four_is_not_storage_four_acceptance(self):
+        db, project = self.seed_four()
+        project["schema_version"] = 4
+        db.execute("UPDATE projects SET document_json=?", (json.dumps(project),))
+        db.commit()
+        original = {p.name: p.read_bytes() for p in self.profile.iterdir()}
+        with self.assertRaises(ColdStartError):
+            self.capture("wrong-document")
+        self.assertFalse((self.root / "wrong-document/snapshot.json").exists())
+        self.assertEqual({p.name: p.read_bytes() for p in self.profile.iterdir()}, original)
+
+    def test_invalid_cohort_is_rejected_before_creating_snapshot_output(self):
+        self.selected = {"storage_schema": 4}
+        with self.assertRaises(lifecycle.storage.StorageContractError):
+            self.capture("invalid-admission")
+        self.assertFalse((self.root / "invalid-admission").exists())
+
+    def test_missing_binding_columns_never_publish_a_four_snapshot(self):
+        db, _ = self.seed_four()
+        db.execute("ALTER TABLE receipts DROP COLUMN apply_binding_json")
+        db.commit()
+        with self.assertRaises(ColdStartError):
+            self.capture("missing-binding-column")
+        self.assertFalse((self.root / "missing-binding-column/snapshot.json").exists())
 
 
 if __name__ == "__main__":

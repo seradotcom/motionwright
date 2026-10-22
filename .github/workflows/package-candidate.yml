@@ -46,6 +46,10 @@ on:
       - "tooling/tests/test_windows_cold_start.py"
       - "tooling/linux_cold_start.py"
       - "tooling/tests/test_linux_cold_start.py"
+      - "tooling/storage_schema_contract.py"
+      - "tooling/tests/test_storage_schema_contract.py"
+      - "tooling/source_checkout_observation.py"
+      - "tooling/tests/test_source_checkout_observation.py"
       - "tooling/tests/test_linux_gui_readiness.py"
       - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
@@ -83,6 +87,10 @@ on:
       - "tooling/tests/test_windows_cold_start.py"
       - "tooling/linux_cold_start.py"
       - "tooling/tests/test_linux_cold_start.py"
+      - "tooling/storage_schema_contract.py"
+      - "tooling/tests/test_storage_schema_contract.py"
+      - "tooling/source_checkout_observation.py"
+      - "tooling/tests/test_source_checkout_observation.py"
       - "tooling/tests/test_linux_gui_readiness.py"
       - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
@@ -114,7 +122,7 @@ jobs:
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
-          python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py
+          python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py tooling/tests/test_storage_schema_contract.py tooling/tests/test_source_checkout_observation.py
 
       - name: Require all seventeen NSIS helper tests on Linux without skips
         shell: bash
@@ -222,14 +230,19 @@ jobs:
           test_path = "tooling/tests/test_windows_installer_lifecycle.py"
           tree = ast.parse((ROOT / test_path).read_bytes())
           classes = [item for item in tree.body if isinstance(item, ast.ClassDef)
-                     and item.name == "WindowsLifecycleTests"]
-          require(len(classes) == 1, "lifecycle_contract_class_count")
-          methods = [item.name for item in classes[0].body
-                     if isinstance(item, ast.FunctionDef) and item.name.startswith("test_")]
+                     and any(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
+                             for method in item.body)]
+          expected_classes = {"WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 8}
+          require({item.name for item in classes} == set(expected_classes)
+                  and len(classes) == len(expected_classes), "lifecycle_contract_class_count")
+          methods = [f"{item.name}.{method.name}" for item in classes for method in item.body
+                     if isinstance(method, ast.FunctionDef) and method.name.startswith("test_")]
           all_methods = [item.name for item in ast.walk(tree)
                          if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                          and item.name.startswith("test_")]
-          require(len(methods) == len(set(methods)) == len(all_methods) == 52
+          require(all(sum(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
+                          for method in item.body) == expected_classes[item.name] for item in classes)
+                  and len(methods) == len(set(methods)) == len(all_methods) == 60
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
@@ -253,8 +266,8 @@ jobs:
               counts = step.get("counts", {})
               require(step.get("status") == "PASS" and step.get("exit_code") == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 52
-                      and type(counts.get("passed")) is int and counts["passed"] == 52
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 60
+                      and type(counts.get("passed")) is int and counts["passed"] == 60
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -265,8 +278,8 @@ jobs:
               raw = report.with_name(f"{report.stem}-{index:02d}-stderr.log").read_text(encoding="utf-8")
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
-              expected = {f"{module}.WindowsLifecycleTests.{method}" for method in methods}
-              require(len(observed) == 52 and set(observed) == expected,
+              expected = {f"{module}.{method}" for method in methods}
+              require(len(observed) == 60 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -275,7 +288,7 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 52, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 60, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
@@ -416,14 +429,19 @@ jobs:
           test_path = "tooling/tests/test_windows_installer_lifecycle.py"
           tree = ast.parse((ROOT / test_path).read_bytes())
           classes = [item for item in tree.body if isinstance(item, ast.ClassDef)
-                     and item.name == "WindowsLifecycleTests"]
-          require(len(classes) == 1, "lifecycle_contract_class_count")
-          methods = [item.name for item in classes[0].body
-                     if isinstance(item, ast.FunctionDef) and item.name.startswith("test_")]
+                     and any(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
+                             for method in item.body)]
+          expected_classes = {"WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 8}
+          require({item.name for item in classes} == set(expected_classes)
+                  and len(classes) == len(expected_classes), "lifecycle_contract_class_count")
+          methods = [f"{item.name}.{method.name}" for item in classes for method in item.body
+                     if isinstance(method, ast.FunctionDef) and method.name.startswith("test_")]
           all_methods = [item.name for item in ast.walk(tree)
                          if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                          and item.name.startswith("test_")]
-          require(len(methods) == len(set(methods)) == len(all_methods) == 52
+          require(all(sum(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
+                          for method in item.body) == expected_classes[item.name] for item in classes)
+                  and len(methods) == len(set(methods)) == len(all_methods) == 60
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
@@ -447,8 +465,8 @@ jobs:
               counts = step.get("counts", {})
               require(step.get("status") == "PASS" and step.get("exit_code") == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 52
-                      and type(counts.get("passed")) is int and counts["passed"] == 52
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 60
+                      and type(counts.get("passed")) is int and counts["passed"] == 60
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -459,8 +477,8 @@ jobs:
               raw = report.with_name(f"{report.stem}-{index:02d}-stderr.log").read_text(encoding="utf-8")
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
-              expected = {f"{module}.WindowsLifecycleTests.{method}" for method in methods}
-              require(len(observed) == 52 and set(observed) == expected,
+              expected = {f"{module}.{method}" for method in methods}
+              require(len(observed) == 60 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -469,7 +487,7 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 52, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 60, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
@@ -596,14 +614,17 @@ jobs:
             dbus-run-session -- python3 tooling/linux_cold_start.py \
               --app-run "$extracted/AppRun" \
               --scratch "$work/isolated-gui" \
-              --source-sha "$GITHUB_SHA" \
+              --source-sha "$GITHUB_SHA" --storage-source-repo . \
               --source-lock SOURCE_LOCK.json \
               --output ci-evidence/linux-appimage-window.json
           python3 - <<'PY'
           import json, os
           from pathlib import Path
+          from tooling.storage_schema_contract import admit_checkout
+          cohort = admit_checkout(Path("."), os.environ["GITHUB_SHA"])
           evidence = json.loads(Path("ci-evidence/linux-appimage-window.json").read_text())
-          assert evidence["schema"] == "motionwright.ci.installed-cold-relaunch/1"
+          assert evidence["schema"] == "motionwright.ci.installed-cold-relaunch/2"
+          assert evidence["storage_cohort"] == cohort
           assert evidence["motionwright_sha"] == os.environ["GITHUB_SHA"]
           assert evidence["semwright_sha"] == json.loads(Path("SOURCE_LOCK.json").read_text())["dependencies"]["semwright"]["revision"]
           assert evidence["status"] == "WINDOW_OBSERVED"
@@ -619,7 +640,7 @@ jobs:
           assert persistence["same_revision"] is True
           assert persistence["same_domain_document_sha256"] is True
           assert persistence["sqlite_integrity_checked_twice"] is True
-          assert persistence["schema_version"] == 3
+          assert persistence["schema_version"] == cohort["storage_schema"]
           assert persistence["native_receipts"] == 0
           assert all(len(persistence[key]) == 64 for key in ("project_identity_sha256", "generation_sha256", "document_sha256"))
           assert evidence["claims"]["human_install_acceptance"] == "NOT_RUN"
@@ -731,9 +752,9 @@ jobs:
           dynamic_loaders = [node for node in ast.walk(source_tree)
                              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and node.name == "load_tests"]
-          if (len(source_methods) != 34 or len(methods) != 34
-                  or len(all_methods) != 34 or dynamic_loaders):
-              raise SystemExit("The reviewed Windows contract requires exactly 34 unique static source methods")
+          if (len(source_methods) != 43 or len(methods) != 43
+                  or len(all_methods) != 43 or dynamic_loaders):
+              raise SystemExit("The reviewed Windows contract requires exactly 43 unique static source methods")
           expected_entries = ["discovery:test_windows_cold_start.py", "dotted:tooling.tests.test_windows_cold_start"]
           if (receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
                   or receipt.get("require_complete") is not True
@@ -754,11 +775,11 @@ jobs:
               counts = step.get("counts", {})
               if (step.get("status") != "PASS" or type(step.get("exit_code")) is not int or step["exit_code"] != 0
                       or counts.get("terminal_status") != "OK"
-                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 34
-                      or type(counts.get("passed")) is not int or counts["passed"] != 34
+                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 43
+                      or type(counts.get("passed")) is not int or counts["passed"] != 43
                       or any(type(counts.get(key)) is not int or counts[key] != 0 for key in
                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                  raise SystemExit("Windows unit entry point did not complete 34 controls without omissions")
+                  raise SystemExit("Windows unit entry point did not complete 43 controls without omissions")
               for stream in ("stdout", "stderr"):
                   path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
                   if step.get(stream) != {"file": path.name, "sha256": digest(path)}:
@@ -768,25 +789,27 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
               module = "test_windows_cold_start" if index == 0 else "tooling.tests.test_windows_cold_start"
               expected = {f"{module}.{class_name}.{method}" for method in methods}
-              if len(observed) != 34 or set(observed) != expected:
-                  raise SystemExit("Original verbose output does not contain each of the 34 source controls exactly once")
+              if len(observed) != 43 or set(observed) != expected:
+                  raise SystemExit("Original verbose output does not contain each of the 43 source controls exactly once")
               method_inventory[step["entry_point"]] = sorted(observed)
           source_inputs = {name: digest(root / name) for name in (
               test_path, "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
+              "tooling/storage_schema_contract.py", "tooling/tests/test_storage_schema_contract.py",
+              "tooling/source_checkout_observation.py",
               "tooling/ci_test_runner.py", ".github/workflows/package-candidate.yml")}
           result = {"schema": "motionwright.windows-unit-contract-readback/1",
                     "status": "PASS_WINDOWS_UNIT_CONTRACTS", "source_sha": head, "tree_sha": tree,
                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                     "receipt_sha256": digest(report), "github": receipt["github"],
                     "source_inputs_sha256": source_inputs, "entrypoint_methods": method_inventory,
-                    "unique_source_controls": 34, "entrypoints": 2, "skipped": 0,
+                    "unique_source_controls": 43, "entrypoints": 2, "skipped": 0,
                     "scope": "Synthetic G1: temporary SQLite/receipt fixtures and mocked native transport",
                     "installed_application_execution": False, "native_ui_execution": False,
                     "formal_acceptance": False, "release_verdict": False}
           with report.with_name("contract-readback.json").open("x", encoding="utf-8", newline="\n") as handle:
               json.dump(result, handle, indent=2, sort_keys=True)
               handle.write("\n")
-          print("windows-unit-contracts=PASS unique=34 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
+          print("windows-unit-contracts=PASS unique=43 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
           '@
           $readbackPath = Join-Path "$proofDir" 'verify-contract-readback.py'
           [System.IO.File]::WriteAllText($readbackPath, $readback, [System.Text.UTF8Encoding]::new($false))
@@ -892,14 +915,16 @@ jobs:
           python tooling/windows_cold_start.py `
             --installed-binary "$($binaries[0].FullName)" `
             --candidate-smoke ci-evidence/windows-nsis-smoke.json `
-            --expected-source-sha "$env:GITHUB_SHA" `
+            --expected-source-sha "$env:GITHUB_SHA" --storage-source-repo "$env:GITHUB_WORKSPACE" `
             --scratch "$scratch" `
             --output "$proofPath"
           if ($LASTEXITCODE -ne 0) {
             throw 'Installed NSIS cold boot or persisted-project relaunch did not pass'
           }
           $proof = Get-Content "$proofPath" -Raw | ConvertFrom-Json
-          if ($proof.source_sha -ne $env:GITHUB_SHA -or
+          if ($proof.schema -ne 'motionwright-windows-nsis-cold-relaunch/2' -or
+              $proof.storage_cohort.source_sha -ne $env:GITHUB_SHA -or
+              $proof.source_sha -ne $env:GITHUB_SHA -or
               $proof.first_launch_real_visible_hwnd -ne $true -or
               $proof.second_launch_real_visible_hwnd -ne $true -or
               $proof.same_project_generation_revision_document -ne $true -or
@@ -1200,7 +1225,10 @@ jobs:
                   return json.loads(limited(response, 1024 * 1024))
 
 
-          from windows_installer_lifecycle import SOURCE_PATHS, read_pe_versions, require_pe_version
+          from windows_installer_lifecycle import (
+              SOURCE_PATHS, read_pe_versions, require_pe_version,
+              source_observation as observe_source_checkout,
+          )
 
           def source_bytes(relative):
               require(relative in SOURCE_PATHS, "source_path_outside_the_explicit_gate_set")
@@ -1216,17 +1244,7 @@ jobs:
               return body
 
           def source_observation():
-              _checkout(ROOT, SOURCE)
-              subprocess.run(["git", "ls-files", "--error-unmatch", "--", *SOURCE_PATHS],
-                             cwd=ROOT, check=True, capture_output=True, timeout=10)
-              tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT,
-                                    check=True, capture_output=True, text=True).stdout.strip()
-              require(re.fullmatch(r"[0-9a-f]{40}", tree) is not None, "source_tree_invalid")
-              files = {}
-              for relative in SOURCE_PATHS:
-                  files[relative] = identity(ROOT / relative)
-              _checkout(ROOT, SOURCE)
-              return {"checkout": SOURCE, "tree": tree, "files": files}
+              return observe_source_checkout(ROOT, SOURCE)
 
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, request, fp, code, message, headers, new_url):
@@ -1507,6 +1525,9 @@ jobs:
               "upstream_bundler_bundle_sha256": "91c8387ccb2e52388cdcfeccfd23f69dac5439aba397d464b1d5446153fdc82e",
               "guard_profile_preflight": admitted,
               "native_installer_execution": "NOT_RUN", "human_install_acceptance": "NOT_RUN",
+              "project_observation_scope": "HISTORICAL_PREDECESSOR_PRESERVATION",
+              "current_application_storage_open": "NOT_RUN",
+              "current_application_storage_migration": "NOT_RUN",
               "release_published": False,
           }
           write_new(PROOF, (json.dumps(proof, indent=2, sort_keys=True) + "\n").encode("utf-8"))
