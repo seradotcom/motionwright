@@ -949,9 +949,10 @@ PROJECTION_DIAGNOSTIC = {
 }
 
 # A separately frozen composition keeps historical source identities intact.
-COMPOSED_SOURCE_PINS = {'sha': '679a58d2cd901494f9439351d09dab2a07753fe6',
- 'tree': '56ae1d95145d6038b91d3fe2f67ea25fa1332def',
- 'fixture_sha256': {'crates/service/src/audio.rs': '9450675ac6bd50c2a0a37e6cbc8243f89607349e9a14d2b822495ebf24cffcef',
+COMPOSED_SOURCE_PINS = {'sha': '2789c76c703f48bc2789f1a30a71fe1911e3600e',
+ 'tree': '97e828db37353d026e28bee2f09b2d083e2cc98a',
+ 'fixture_sha256': {'crates/storage/src/project_projection.rs': '3396f3cd426ad8dce28197de83999b32996a5316348f0ab0759caf0a3c8d8aee',
+                    'crates/service/src/audio.rs': '9450675ac6bd50c2a0a37e6cbc8243f89607349e9a14d2b822495ebf24cffcef',
                     'crates/service/src/import_limits.rs': '21a58b974f1c440350581a2c7ca5d54b4907401fd9a33a8a4cc48389e2310d1e',
                     'crates/service/src/lib.rs': '4350753e44bc20c7a996f4e10e675a52fa3bb54a66107b20da90dc5ddf98b3c3',
                     'crates/service/tests/file_import_idempotency.rs': '253e5d359f823d2f375dd8acf21c0e7a4f027524302ea98befa8756e2615fc29',
@@ -980,9 +981,47 @@ COMPOSED_TARGET_ORDER = ('jobs',
  'binding4-migration',
  'original-mix-source',
  'project-media-independence')
+# The composed projection roster is separate from historical selections.
+COMPOSED_PROJECTION_CASES = (
+    "project_projection::tests::projection_admission_rejects_json5_and_stored_blobs_before_jsonb",
+    "project_projection::tests::projection_authority_rejects_json_coercions_and_row_mismatches",
+    "project_projection::tests::projection_keyframes_keep_rational_half_open_scene_bounds",
+    "project_projection::tests::projection_keys_reject_duplicates_and_nul_aliases_without_truncating_values",
+    "project_projection::tests::projection_oversized_fragment_and_malformed_schema_errors_are_bounded",
+    "project_projection::tests::projection_preserves_accepted_uuid_forms_and_escaped_valid_field_names",
+    "project_projection::tests::projection_read_transaction_keeps_one_snapshot_during_real_peer_apply",
+    "project_projection::tests::projection_revalidates_changed_document_between_calls_at_the_same_stamp",
+    "project_projection::tests::projection_revision_wire_is_exact_and_rejects_noncanonical_decimals",
+    "project_projection::tests::projection_validates_selected_content_without_inventing_a_complete_scene",
+)
+COMPOSED_TARGET_SPECS = {
+    "current-storage-unit": {
+        **TARGETS["current-storage-unit"],
+        "repair_prefixes": (
+            *TARGETS["current-storage-unit"]["repair_prefixes"],
+            "project_projection::tests::",
+        ),
+    },
+}
+COMPOSED_REQUIRED_FIXTURES = {
+    **CURRENT_REQUIRED_FIXTURES,
+    "repair": (
+        *CURRENT_REQUIRED_FIXTURES["repair"],
+        "crates/storage/src/project_projection.rs",
+    ),
+}
+COMPOSED_TARGET_COUNTS = copy.deepcopy(CURRENT_TARGET_COUNTS)
+COMPOSED_TARGET_COUNTS["repair"]["current-storage-unit"] = 42
+COMPOSED_INVENTORY_DIGESTS = {
+    "baseline": "72854a4100177a57ce59e841bf2148c171ccc62d14aa81d25b707cbcf2a505cd",
+    "repair": "e16874307aa56998c0ad026f1f0b01455cb89b8ef544af2ae76732c5e4678f0e",
+}
+
 COMPOSED_COMPOSITION_PAIR = copy.deepcopy(CURRENT_COMPOSITION_PAIR)
 COMPOSED_COMPOSITION_PAIR["id"] = "foundation-composed-current"
 COMPOSED_COMPOSITION_PAIR["repair"].update(copy.deepcopy(COMPOSED_SOURCE_PINS))
+COMPOSED_COMPOSITION_PAIR["repair"]["targets"]["current-storage-unit"].extend(
+    COMPOSED_PROJECTION_CASES)
 COMPOSED_COMPOSITION_PAIR["repair"]["targets"] = {
     name: COMPOSED_COMPOSITION_PAIR["repair"]["targets"][name]
     for name in COMPOSED_TARGET_ORDER
@@ -990,8 +1029,8 @@ COMPOSED_COMPOSITION_PAIR["repair"]["targets"] = {
 CURRENT_PHASE_SELECTIONS = ("foundation-current", "foundation-composed-current")
 
 # Gate dependencies are independent of the frozen product source.
-COMPOSED_DEPENDENCY_HASHES = {'tooling/ci_storage_apply_recovery.py': '31d8f5cd49ce5cbb0b6b627b6c6157a2538b9be5f9dbf661bbddc510ec1201d7',
- 'tooling/tests/test_ci_storage_apply_recovery.py': '1a29aed04b0c965e5163b0f2d21d820582dc55f663f8886655c686d3286c9667',
+COMPOSED_DEPENDENCY_HASHES = {'tooling/ci_storage_apply_recovery.py': '9aea9a41d365a36fd1abae86ec5a0974236d62d9781a372eace0578ef2da1520',
+ 'tooling/tests/test_ci_storage_apply_recovery.py': '3118871b6c90bfec81061707d9f1f4da81d1919283908be4e4895d1696d4ddc8',
  '.github/workflows/storage-apply-process-recovery.yml': 'd14bc13fe1119275c25f617f7b5091728996110d269170780d8771e88817c15c',
  'docs/reliability/storage-apply-process-recovery.md': 'c1e4ec2eac4f25eb26698d0ef6501a197da3e86f03aaf769b02c145b9b09fa0c'}
 
@@ -1106,20 +1145,20 @@ def current_inventory_digest(targets):
     return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
 
 
-def validate_current_composition(pair=None):
-    pair = CURRENT_COMPOSITION_PAIR if pair is None else pair
+def validate_current_profile(pair, identity, required_fixtures, target_counts,
+                             inventory_digests, repair_count):
     for role in ROLES:
         source = pair[role]
         require(all(isinstance(source.get(key), str) and SHA.fullmatch(source[key])
                     for key in ("sha", "tree")),
                 "current composition source/tree pins are pending or invalid")
-        require(set(source["fixture_sha256"]) == set(CURRENT_REQUIRED_FIXTURES[role])
+        require(set(source["fixture_sha256"]) == set(required_fixtures[role])
                 and all(isinstance(value, str) and DIGEST.fullmatch(value)
                         for value in source["fixture_sha256"].values()),
                 "current composition fixture hashes are pending or invalid")
         require({key: len(names) for key, names in source["targets"].items()}
-                == CURRENT_TARGET_COUNTS[role], "current target selection changed")
-        require(current_inventory_digest(source["targets"]) == CURRENT_INVENTORY_DIGESTS[role],
+                == target_counts[role], "current target selection changed")
+        require(current_inventory_digest(source["targets"]) == inventory_digests[role],
                 "current contract roster changed or moved to another target")
     require(pair["baseline"]["sha"] != pair["repair"]["sha"],
             "causal variants require different frozen sources")
@@ -1130,7 +1169,14 @@ def validate_current_composition(pair=None):
         require(type(failure.get("line")) is int and failure["line"] > 0
                 and failure.get("source") == source and failure.get("markers") == [marker],
                 "current causal source site is pending or differs")
-    return validate_pairs([pair], ["foundation-current"], ((5, 130),), (3,))
+    return validate_pairs([pair], [identity], ((5, repair_count),), (3,))
+
+
+def validate_current_composition(pair=None):
+    pair = CURRENT_COMPOSITION_PAIR if pair is None else pair
+    return validate_current_profile(
+        pair, "foundation-current", CURRENT_REQUIRED_FIXTURES,
+        CURRENT_TARGET_COUNTS, CURRENT_INVENTORY_DIGESTS, 130)
 
 
 
@@ -1152,8 +1198,10 @@ def validate_composed_current(pair=None):
     require(isinstance(source["targets"], dict)
             and tuple(source["targets"]) == COMPOSED_TARGET_ORDER,
             "composed target order differs")
-    # The canonical roster and causal checks apply to both frozen compositions.
-    validate_current_composition({**pair, "id": "foundation-current"})
+    # Both closed profiles use the same roster and causal admission rules.
+    validate_current_profile(
+        pair, "foundation-composed-current", COMPOSED_REQUIRED_FIXTURES,
+        COMPOSED_TARGET_COUNTS, COMPOSED_INVENTORY_DIGESTS, 140)
     return [pair]
 
 def selected_gate_files(selection):
@@ -1454,6 +1502,13 @@ def select_binary(raw, code, repo, target, spec):
     return {"absolute_path": str(path), **observed}
 
 
+def selected_target_spec(pair, target_name):
+    """Keep additional namespaces local to the frozen composed selection."""
+    if pair["id"] == "foundation-composed-current":
+        return COMPOSED_TARGET_SPECS.get(target_name, TARGETS[target_name])
+    return TARGETS[target_name]
+
+
 def selected_roster(raw, code, spec, expected, role):
     require(code == 0, "enumeration failed")
     text = raw.decode("utf-8").replace("\r\n", "\n")
@@ -1603,7 +1658,7 @@ def run_role(pair, role, gate, workspace, output, target, temporary, environment
             phase_root.mkdir(exist_ok=False)
             result["phase_root"] = phase_root.relative_to(output).as_posix()
         for target_name, names in source["targets"].items():
-            spec = TARGETS[target_name]
+            spec = selected_target_spec(pair, target_name)
             result["phase"] = "compile:" + target_name
             build = command(compile_argv(toolchain["cargo"]["absolute_path"], spec),
                             repo, environment, folder, target_name + "-build", BUILD_TIMEOUT, frame, observations)
@@ -1793,6 +1848,10 @@ def run(workspace, output, selection="foundation-causal"):
             "deduplicated_repair": 130, "causal_baseline": 5,
         }
     if selection == "foundation-composed-current":
+        receipt["impact_contracts"].update(projection_unit=10, deduplicated_repair=140)
+        receipt["limitations"][0] = (
+            "Only the composed 140 repair contracts and five OriginalMix causal baseline invocations are selected."
+        )
         receipt.update(
             mode="FROZEN_COMPOSED_CURRENT_CAUSAL_PAIR",
             composed_product_source=COMPOSED_SOURCE_PINS["sha"],
@@ -1805,6 +1864,7 @@ def run(workspace, output, selection="foundation-causal"):
             ["foundation-current", "foundation-projection-diagnostic"])
         receipt["limitations"].extend([
             "Historical current-composition and diagnostic results do not supply PASS for this source.",
+            "Projection regressions do not turn a prior timeout into a causal assertion failure.",
             "The complete OriginalMix integration target runs before the complete Project08 target.",
             "Linux consumer contracts retain a separate exact-source receipt and original streams.",
         ])

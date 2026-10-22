@@ -766,8 +766,8 @@ BINDING4_CORE_GROUPS = ("integrity12", "binding13", "migration7", "binding-unit7
                        *(f"phase:{name}" for name in BINDING4_PHASE_CASES), "ddl")
 BINDING4_PROCESS_GROUPS = (*BINDING4_CORE_GROUPS[4:],)
 # The current product is a separate reviewed source, not a relabelled historical run.
-CURRENT_SOURCE_SHA = "679a58d2cd901494f9439351d09dab2a07753fe6"
-CURRENT_SOURCE_TREE = "56ae1d95145d6038b91d3fe2f67ea25fa1332def"
+CURRENT_SOURCE_SHA = "2789c76c703f48bc2789f1a30a71fe1911e3600e"
+CURRENT_SOURCE_TREE = "97e828db37353d026e28bee2f09b2d083e2cc98a"
 CURRENT_REVIEWED = MappingProxyType({'Cargo.lock': 'cf5d0fe15f6a1ca3aa63681f9a1d9b5d646efda9bee214243f1b2efa77119f1b',
  'Cargo.toml': '455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0',
  'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1',

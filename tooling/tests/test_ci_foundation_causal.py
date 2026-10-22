@@ -1368,12 +1368,16 @@ class ComposedCurrentCausalTests(unittest.TestCase):
 
     def test_composed_source_is_exact_and_historical_catalogues_are_unchanged(self):
         self.assertEqual(gate.selected_pairs("foundation-composed-current"), [self.pair])
-        self.assertEqual(self.pair["repair"]["sha"], "679a58d2cd901494f9439351d09dab2a07753fe6")
-        self.assertEqual(self.pair["repair"]["tree"], "56ae1d95145d6038b91d3fe2f67ea25fa1332def")
+        self.assertEqual(self.pair["repair"]["sha"], "2789c76c703f48bc2789f1a30a71fe1911e3600e")
+        self.assertEqual(self.pair["repair"]["tree"], "97e828db37353d026e28bee2f09b2d083e2cc98a")
         self.assertEqual(self.pair["baseline"], gate.CURRENT_COMPOSITION_PAIR["baseline"])
         self.assertEqual(self.pair["repair"]["fixture_sha256"][
             "crates/service/tests/project_projection_media_independence.rs"],
             "c1d9b2ca22a7770390bff776b6bf6aca8f2c154341fe039fb51882569a496b50")
+        self.assertEqual(self.pair["repair"]["fixture_sha256"][
+            "crates/storage/src/project_projection.rs"],
+            "3396f3cd426ad8dce28197de83999b32996a5316348f0ab0759caf0a3c8d8aee")
+        self.assertEqual(len(self.pair["repair"]["fixture_sha256"]), 18)
         historical = {name: getattr(gate, name) for name in (
             "PAIRS", "IMPORT_BUDGET_PAIR", "CURRENT_COMPOSITION_PAIR",
             "PROJECTION_DIAGNOSTIC_SOURCE")}
@@ -1420,7 +1424,7 @@ class ComposedCurrentCausalTests(unittest.TestCase):
         identities = [(gate.TARGETS[key]["package"], gate.TARGETS[key]["kind"],
                        gate.TARGETS[key]["name"], name)
                       for key, names in targets.items() for name in names]
-        self.assertEqual((len(identities), len(set(identities))), (130, 130))
+        self.assertEqual((len(identities), len(set(identities))), (140, 140))
         self.assertEqual(len(self.case_names("baseline")), 5)
         self.assertEqual(len(self.pair["failures"]), 3)
         self.assertEqual(tuple(targets), gate.COMPOSED_TARGET_ORDER)
@@ -1428,7 +1432,7 @@ class ComposedCurrentCausalTests(unittest.TestCase):
                          ("original-mix-source", "project-media-independence"))
         self.assertEqual(len(targets["original-mix-source"]), 8)
         self.assertEqual(gate.current_inventory_digest(targets),
-                         gate.CURRENT_INVENTORY_DIGESTS["repair"])
+                         gate.COMPOSED_INVENTORY_DIGESTS["repair"])
         for mutation in ("missing", "duplicate", "moved", "order"):
             pair = copy.deepcopy(self.pair)
             changed = pair["repair"]["targets"]
@@ -1441,6 +1445,64 @@ class ComposedCurrentCausalTests(unittest.TestCase):
                     changed["jobs"][0], changed["original-mix-source"][0])
             else:
                 changed["original-mix-source"] = changed.pop("original-mix-source")
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.validate_composed_current(pair)
+
+    def test_composed_projection_namespace_selects_ten_without_expanding_history(self):
+        projection = (
+            "project_projection::tests::projection_admission_rejects_json5_and_stored_blobs_before_jsonb",
+            "project_projection::tests::projection_authority_rejects_json_coercions_and_row_mismatches",
+            "project_projection::tests::projection_keyframes_keep_rational_half_open_scene_bounds",
+            "project_projection::tests::projection_keys_reject_duplicates_and_nul_aliases_without_truncating_values",
+            "project_projection::tests::projection_oversized_fragment_and_malformed_schema_errors_are_bounded",
+            "project_projection::tests::projection_preserves_accepted_uuid_forms_and_escaped_valid_field_names",
+            "project_projection::tests::projection_read_transaction_keeps_one_snapshot_during_real_peer_apply",
+            "project_projection::tests::projection_revalidates_changed_document_between_calls_at_the_same_stamp",
+            "project_projection::tests::projection_revision_wire_is_exact_and_rejects_noncanonical_decimals",
+            "project_projection::tests::projection_validates_selected_content_without_inventing_a_complete_scene",
+        )
+        self.assertEqual(gate.COMPOSED_PROJECTION_CASES, projection)
+        target = "current-storage-unit"
+        names = self.pair["repair"]["targets"][target]
+        historical = gate.CURRENT_COMPOSITION_PAIR["repair"]["targets"][target]
+        self.assertEqual(names, [*historical, *projection])
+        self.assertEqual((len(historical), len(names)), (32, 42))
+        spec = gate.selected_target_spec(self.pair, target)
+        raw = "".join(name + ": test\n" for name in [*names, "unrelated::control"]).encode()
+        roster = gate.selected_roster(raw, 0, spec, names, "repair")
+        self.assertEqual(roster["selected"], tuple(names))
+        self.assertEqual(roster["not_selected"], ("unrelated::control",))
+        for changed in (
+                raw.replace((projection[0] + ": test\n").encode(), b""),
+                raw + b"project_projection::tests::unreviewed: test\n"):
+            with self.assertRaises(ValueError):
+                gate.selected_roster(changed, 0, spec, names, "repair")
+        historical_spec = gate.selected_target_spec(gate.CURRENT_COMPOSITION_PAIR, target)
+        historical_roster = gate.selected_roster(raw, 0, historical_spec, historical, "repair")
+        self.assertEqual(historical_roster["selected"], tuple(historical))
+        self.assertEqual(historical_roster["not_selected"], (*projection, "unrelated::control"))
+        baseline = self.pair["baseline"]["targets"][target]
+        baseline_roster = gate.selected_roster(raw, 0, spec, baseline, "baseline")
+        self.assertEqual(baseline_roster["selected"], tuple(baseline))
+        self.assertEqual(len(baseline_roster["selected"]), 2)
+        self.assertEqual(baseline_roster["not_selected_credit"], "NONE")
+        self.assertNotIn("project_projection::tests::",
+                         gate.TARGETS[target]["repair_prefixes"])
+
+    def test_composed_projection_roster_rejects_missing_duplicate_relabelled_or_moved_cases(self):
+        for mutation in ("missing", "duplicate", "relabelled", "moved"):
+            pair = copy.deepcopy(self.pair)
+            cases = pair["repair"]["targets"]["current-storage-unit"]
+            index = cases.index(gate.COMPOSED_PROJECTION_CASES[0])
+            if mutation == "missing":
+                cases.pop(index)
+            elif mutation == "duplicate":
+                cases[index] = gate.COMPOSED_PROJECTION_CASES[1]
+            elif mutation == "relabelled":
+                cases[index] = "project_projection::tests::unreviewed"
+            else:
+                other = pair["repair"]["targets"]["current-service-unit"]
+                cases[index], other[0] = other[0], cases[index]
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 gate.validate_composed_current(pair)
 
@@ -1506,7 +1568,7 @@ class ComposedCurrentCausalTests(unittest.TestCase):
     def test_composed_parent_pass_requires_current_phases_source_custody_and_clippy(self):
         result = self.phase_result()
         result["pair"] = "foundation-composed-current"
-        self.assertEqual(gate.role_complete(self.pair, "repair", result)["cases"], 130)
+        self.assertEqual(gate.role_complete(self.pair, "repair", result)["cases"], 140)
         for mutation in ("phase", "clippy", "source", "missing-case"):
             changed = copy.deepcopy(result)
             if mutation == "phase":
@@ -1582,12 +1644,12 @@ class ComposedCurrentCausalTests(unittest.TestCase):
         return (code, json.loads((output / "receipt.json").read_text(encoding="utf-8")),
                 seen, snapshots.call_count, terminal.call_count, dependency.call_count)
 
-    def test_composed_terminal_counts_135_without_historical_or_acceptance_credit(self):
+    def test_composed_terminal_counts_145_without_historical_or_acceptance_credit(self):
         code, receipt, seen, snapshots, terminal, dependency = self.synthetic_scope()
         self.assertEqual(code, 0)
         self.assertEqual(seen, [("foundation-composed-current", "baseline"),
                                 ("foundation-composed-current", "repair")])
-        self.assertEqual((receipt["expected_invocations"], receipt["actual_case_results"]), (135, 135))
+        self.assertEqual((receipt["expected_invocations"], receipt["actual_case_results"]), (145, 145))
         self.assertEqual(receipt["status"],
                          "PASS_FROZEN_COMPOSED_CURRENT_AND_ORIGINAL_MIX_CAUSAL_PAIR")
         self.assertEqual(receipt["composed_product_source"], self.pair["repair"]["sha"])
@@ -1595,6 +1657,9 @@ class ComposedCurrentCausalTests(unittest.TestCase):
         self.assertEqual(receipt["historical_result_credit"], "NONE")
         self.assertEqual(receipt["not_selected_credit"], "NONE")
         self.assertEqual(receipt["case_timeout_seconds"], 120)
+        self.assertEqual(receipt["impact_contracts"]["projection_unit"], 10)
+        self.assertEqual(receipt["impact_contracts"]["deduplicated_repair"], 140)
+        self.assertEqual(receipt["impact_contracts"]["causal_baseline"], 5)
         self.assertTrue({"foundation-current", "foundation-projection-diagnostic"}
                         <= set(receipt["not_selected_pairs"]))
         self.assertFalse(receipt["formal_acceptance"])
@@ -1624,7 +1689,7 @@ class ComposedCurrentCausalTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(receipt["status"], "FAIL")
         self.assertEqual(len(seen), 2)
-        self.assertEqual(receipt["actual_case_results"], 135)
+        self.assertEqual(receipt["actual_case_results"], 145)
         self.assertEqual((snapshots, terminal, dependency), (2, 1, 1))
 
     def test_composed_role_error_survives_secondary_terminal_failure(self):
@@ -1696,9 +1761,9 @@ class ComposedCurrentCausalTests(unittest.TestCase):
         consumer = selected.split("- name: Verify frozen Linux consumer contracts", 1)[1]
         consumer = consumer.split("- uses: dtolnay/rust-toolchain@", 1)[0]
         self.assertIn('test "$GITHUB_RUN_ATTEMPT" = 1', consumer)
-        self.assertIn("679a58d2cd901494f9439351d09dab2a07753fe6", consumer)
+        self.assertIn("2789c76c703f48bc2789f1a30a71fe1911e3600e", consumer)
         self.assertIn("--pattern test_linux_cold_start.py --mode both --require-complete", consumer)
-        self.assertIn("--expected-source 679a58d2cd901494f9439351d09dab2a07753fe6", consumer)
+        self.assertIn("--expected-source 2789c76c703f48bc2789f1a30a71fe1911e3600e", consumer)
         self.assertIn("composed-consumer-source/tooling/ci_test_runner.py", consumer)
         self.assertIn("verification/foundation-composed-linux-consumer/receipt.json", consumer)
         self.assertNotIn("inputs.product", consumer)
@@ -1718,7 +1783,7 @@ class ComposedCurrentCausalTests(unittest.TestCase):
             root, snapshot, "foundation-composed-current")
         self.assertEqual(observed["files"], gate.COMPOSED_DEPENDENCY_HASHES)
         self.assertEqual(hashlib.sha256(loaded.read_bytes()).hexdigest(),
-                         "31d8f5cd49ce5cbb0b6b627b6c6157a2538b9be5f9dbf661bbddc510ec1201d7")
+                         "9aea9a41d365a36fd1abae86ec5a0974236d62d9781a372eace0578ef2da1520")
         self.assertEqual((observed["product_source"], observed["product_tree"]),
                          (self.pair["repair"]["sha"], self.pair["repair"]["tree"]))
         source, tree, _ = gate.custody.binding4_product_profile("current-process")
