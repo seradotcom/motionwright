@@ -12,6 +12,7 @@ mod project_export;
 mod project_library;
 mod project_projection;
 mod runtime_setup;
+mod workflow_native;
 
 use av_delivery::{
     MasterExportReceipt, MasterExportRequest, MasterReviewRequest, NativeMasterDeliveryRegistry,
@@ -44,6 +45,7 @@ use motionwright_native::{
     production::{
         MltAvMasterEvidence, MltAvMasterRequest, MltMultisegmentAvMasterRequest,
         MotionCanvasRenderEvidence, ProductionClient, ProductionConnection, ProductionCoordinator,
+        ProductionReceiptCustody,
     },
 };
 use motionwright_service::{
@@ -65,6 +67,7 @@ use std::path::PathBuf;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
+use workflow_native::{WorkflowActionFailure, WorkflowActionRequest, WorkflowActionResponse};
 
 const SEMWRIGHT_REVISION: &str = "54d3459a051adbce4cae9f60c0dea8f60c824be6";
 const SEMWRIGHT_VERSION: &str = "1.0.0";
@@ -76,6 +79,7 @@ struct AppState {
     /// Creation grants bind the actual invoking window label in this session.
     workspace_session: Uuid,
     effect_grants: EffectGrantRegistry,
+    production_receipt_custody: ProductionReceiptCustody,
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
     runtime_connections: RuntimeConnectionRegistry,
@@ -362,58 +366,6 @@ struct ProductionRuntimeStatusResponse {
     pinned_revision: &'static str,
     connection_identity: Option<String>,
     executable_sha256: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum WorkflowAction {
-    RecordStart,
-    RecordStop,
-    Compile,
-    SuggestionCompile,
-    ProposalPlan,
-    ProposalAccept,
-    Verify,
-    Replay,
-    Promote,
-}
-
-impl WorkflowAction {
-    fn command(&self) -> &'static str {
-        match self {
-            Self::RecordStart => "workflow.record.start",
-            Self::RecordStop => "workflow.record.stop",
-            Self::Compile => "workflow.compile",
-            Self::SuggestionCompile => "workflow.suggestion.compile",
-            Self::ProposalPlan => "workflow.proposal.plan",
-            Self::ProposalAccept => "workflow.proposal.accept",
-            Self::Verify => "workflow.verify",
-            Self::Replay => "workflow.replay",
-            Self::Promote => "workflow.promote",
-        }
-    }
-
-    fn mutation(&self) -> bool {
-        !matches!(self, Self::ProposalPlan)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkflowActionRequest {
-    project_id: Uuid,
-    generation: Uuid,
-    revision: u64,
-    action: WorkflowAction,
-    effect_grant: Option<Uuid>,
-    args: Value,
-}
-
-#[derive(Debug, Serialize)]
-struct WorkflowActionResponse {
-    command: &'static str,
-    request_id: String,
-    authority: Option<Value>,
-    result: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -1039,53 +991,16 @@ async fn workflow_overview(
 async fn workflow_action(
     state: State<'_, AppState>,
     request: WorkflowActionRequest,
-) -> Result<WorkflowActionResponse, String> {
-    let connection_path = selected_connection_path(&state, request.project_id)?
-        .ok_or_else(|| "Canonical Semwright workflow actions are not configured.".to_string())?;
-    let project = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    let command = request.action.command();
-    if request.action.mutation() {
-        if project.generation != request.generation || project.revision != request.revision {
-            return Err("Workflow mutation grant scope is stale; refresh before retrying.".into());
-        }
-        let token = request
-            .effect_grant
-            .ok_or_else(|| "Workflow mutation requires a one-time effect grant.".to_string())?;
-        state.effect_grants.consume(
-            token,
-            EffectKind::WorkflowMutation,
-            EffectScope::project(request.project_id, request.generation, request.revision),
-            command,
-        )?;
-    } else if request.effect_grant.is_some() {
-        return Err("Read-only workflow actions do not consume mutation grants.".into());
-    }
-    let connection = ProductionConnection::load(connection_path)
-        .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
-    if connection.resource != project.resource_key() {
-        return Err(
-            "The canonical Semwright connection is bound to another Motionwright resource.".into(),
-        );
-    }
-    let client = ProductionClient::new(connection)
-        .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
-    let response = client
-        .execute(command, request.args, request.action.mutation())
-        .await
-        .map_err(|_| {
-            "Semwright rejected the workflow action. Refresh the evidence and review current policy, consent, replay, or descriptor gates.".to_string()
-        })?;
-    let authority = response.value.pointer("/execution/provenance").cloned();
-    let result = response.value.get("data").cloned().unwrap_or(Value::Null);
-    Ok(WorkflowActionResponse {
-        command,
-        request_id: response.request_id,
-        authority,
-        result,
-    })
+) -> Result<WorkflowActionResponse, WorkflowActionFailure> {
+    let selected = selected_connection_path(&state, request.project_id);
+    workflow_native::execute_workflow_action(
+        &state.service,
+        &state.effect_grants,
+        &state.production_receipt_custody,
+        selected,
+        request,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1252,7 +1167,7 @@ async fn production_jobs_history(
     request: ProductionJobsHistoryRequest,
 ) -> Result<ProductionJobsHistoryPage, String> {
     if request.limit == 0 || request.limit > 64 {
-        return Err("Production history page size must be 1–64 jobs.".into());
+        return Err("Production history page size must be 1-64 jobs.".into());
     }
     let project = state
         .service
@@ -1433,8 +1348,12 @@ async fn render_motion_canvas(
         .map_err(|_| "Canonical Semwright connection could not be loaded".to_string())?;
     let output_root = connection.output_root.clone();
     let owner_resource = connection.resource.clone();
-    let coordinator = ProductionCoordinator::new(state.service.clone(), connection)
-        .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
+    let coordinator = ProductionCoordinator::with_receipt_custody(
+        state.service.clone(),
+        connection,
+        &state.production_receipt_custody,
+    )
+    .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
     let evidence = coordinator
         .render_motion_canvas_segments(
             request.project_id,
@@ -1628,8 +1547,12 @@ async fn assemble_av_master(
     })
     .await
     .map_err(|_| "Verified WAV preparation task failed.".to_string())??;
-    let coordinator = ProductionCoordinator::new(state.service.clone(), connection)
-        .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
+    let coordinator = ProductionCoordinator::with_receipt_custody(
+        state.service.clone(),
+        connection,
+        &state.production_receipt_custody,
+    )
+    .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
     let evidence = coordinator
         .assemble_mlt_av_master(
             request.project_id,
@@ -1798,8 +1721,12 @@ async fn assemble_multisegment_av_master(
     .map_err(|_| "Native multisegment source WAV staging failed.".to_string())??;
 
     let output_root = connection.output_root.clone();
-    let coordinator = ProductionCoordinator::new(state.service.clone(), connection)
-        .map_err(|_| "Canonical Semwright Native SDK connection was rejected.".to_string())?;
+    let coordinator = ProductionCoordinator::with_receipt_custody(
+        state.service.clone(),
+        connection,
+        &state.production_receipt_custody,
+    )
+    .map_err(|_| "Canonical Semwright Native SDK connection was rejected.".to_string())?;
     let visual = coordinator
         .assemble_native_mlt_video_only_timeline(
             project.id,
@@ -2234,6 +2161,7 @@ fn main() {
                 service,
                 workspace_session: Uuid::now_v7(),
                 effect_grants: EffectGrantRegistry::default(),
+                production_receipt_custody: ProductionReceiptCustody::default(),
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
                 runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
