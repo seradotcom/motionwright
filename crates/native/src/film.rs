@@ -2978,17 +2978,27 @@ mod tests {
             })
             .unwrap();
         assert_eq!(total_frames, 33);
-        assert_eq!(total_duration, rate.at(total_frames).unwrap());
+        assert_eq!(
+            total_duration,
+            rate.at(i64::try_from(total_frames).unwrap()).unwrap()
+        );
         assert_eq!(
             total_duration
-                .checked_sub(rate.at(total_frames).unwrap())
+                .checked_sub(rate.at(i64::try_from(total_frames).unwrap()).unwrap())
                 .unwrap(),
             Rational::ZERO,
         );
         for (segment, first_scene) in [(&segments[0], 0usize), (&segments[1], 32)] {
             assert_eq!(segment.film.output.frame_rate, rate);
-            assert_eq!(segment.global_start, rate.at(first_scene as u64).unwrap());
-            assert_eq!(segment.duration, rate.at(segment.frame_count).unwrap());
+            assert_eq!(
+                segment.global_start,
+                rate.at(i64::try_from(first_scene).unwrap()).unwrap()
+            );
+            assert_eq!(
+                segment.duration,
+                rate.at(i64::try_from(segment.frame_count).unwrap())
+                    .unwrap()
+            );
             let realized = realize(&segment.film).unwrap();
             assert_eq!(
                 realized.schedule.frame_count(&segment.film.output).unwrap(),
@@ -2997,8 +3007,14 @@ mod tests {
             for (offset, beat) in segment.film.sequences[0].beats.iter().enumerate() {
                 let interval = realized.schedule.interval(&beat.shots[0].span_id).unwrap();
                 let source = &project.scenes[first_scene + offset];
-                assert_eq!(interval.start, rate.at(offset as u64).unwrap());
-                assert_eq!(interval.end, rate.at(offset as u64 + 1).unwrap());
+                assert_eq!(
+                    interval.start,
+                    rate.at(i64::try_from(offset).unwrap()).unwrap()
+                );
+                assert_eq!(
+                    interval.end,
+                    rate.at(i64::try_from(offset + 1).unwrap()).unwrap()
+                );
                 assert_eq!(
                     segment.global_start.checked_add(interval.start).unwrap(),
                     source.start,
