@@ -2201,7 +2201,7 @@ class CreativeProductionScopeTests(unittest.TestCase):
         self.assertEqual(workflow.count('ci_canvas_service.py unit-build --repo . --output ../v/unit-build'), 1)
         self.assertIn("github.event_name == 'workflow_dispatch'", unit)
         self.assertIn("needs: g0", unit)
-        self.assertIn("studio-${{ inputs.selection == 'review' && 'review' || 'creative' }}-unit-build-${{ github.sha }}-", unit)
+        self.assertIn("studio-${{ inputs.selection == 'workflow-preview-browser' && 'workflow-preview' || inputs.selection == 'review' && 'review' || 'creative' }}-unit-build-${{ github.sha }}-", unit)
         self.assertNotIn('npm test', unit)
         self.assertGreater(360 * 60, 1200 + sum(gate.SELECTION_TIMEOUTS[row[0]] for row in gate.PROJECT_AUTHORING_SELECTIONS) + 1200)
         self.assertGreater(90 * 60, 1200 + 1140 + 1260 + 1200)
