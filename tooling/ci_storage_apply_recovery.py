@@ -766,15 +766,15 @@ BINDING4_CORE_GROUPS = ("integrity12", "binding13", "migration7", "binding-unit7
                        *(f"phase:{name}" for name in BINDING4_PHASE_CASES), "ddl")
 BINDING4_PROCESS_GROUPS = (*BINDING4_CORE_GROUPS[4:],)
 # The current product is a separate reviewed source, not a relabelled historical run.
-CURRENT_SOURCE_SHA = "be7d0377425f9eec201852450b5a7c53e4a1f403"
-CURRENT_SOURCE_TREE = "5f9e92f6640a39c7adddb249501399cc97e958f8"
+CURRENT_SOURCE_SHA = "679a58d2cd901494f9439351d09dab2a07753fe6"
+CURRENT_SOURCE_TREE = "56ae1d95145d6038b91d3fe2f67ea25fa1332def"
 CURRENT_REVIEWED = MappingProxyType({'Cargo.lock': 'cf5d0fe15f6a1ca3aa63681f9a1d9b5d646efda9bee214243f1b2efa77119f1b',
  'Cargo.toml': '455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0',
  'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1',
  'crates/storage/Cargo.toml': '02d305e94bf37f92d643ec9b7bae0eeab104dffcea08be44029d86f4bd76b8cb',
  'crates/storage/src/apply_crash_tests.rs': '9febb826879b1180ddd8afc84256a7fd6d7b76c3c5769c726ad612c2adc3e974',
  'crates/storage/src/apply_receipt_binding.rs': '9922802f0deaa32c9e2b2dee7d3d0d7fbcfdfa58b2047b506f0432fd9db4d4af',
- 'crates/storage/src/file_import.rs': '037564e6894a59075f295739ae93967825c6a96429b3f113b53ed87b6d4c9039',
+ 'crates/storage/src/file_import.rs': '991f41c2cf5241f2dedf8ac83eefbdf44ae04422978d409c34e556abea4fb70b',
  'crates/storage/src/lib.rs': 'db8976efd0cccbb2a3c36f0a4b21dd78738e76166297cd21cfd33f7f21bcd8a4',
  'crates/storage/src/production.rs': '3d106e93c8c4a5fe163f9bcb8443b8d364d88db009f856de6001971461dcafa9',
  'crates/storage/src/project_creation.rs': '8b025a21443ba73ef9f712264e010d3fda605ebf37df71d10c7d79d2063b0dc9',

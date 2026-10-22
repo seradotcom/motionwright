@@ -292,12 +292,12 @@ jobs:
           test "$GITHUB_RUN_ATTEMPT" = 1
           test ! -e "$GITHUB_WORKSPACE/composed-consumer-source"
           git --no-replace-objects -c core.autocrlf=false -c core.fsmonitor=false -C gate \
-            worktree add --detach "$GITHUB_WORKSPACE/composed-consumer-source" be7d0377425f9eec201852450b5a7c53e4a1f403
+            worktree add --detach "$GITHUB_WORKSPACE/composed-consumer-source" 679a58d2cd901494f9439351d09dab2a07753fe6
           mkdir -p "$GITHUB_WORKSPACE/verification/foundation-composed-linux-consumer"
           python3 "$GITHUB_WORKSPACE/composed-consumer-source/tooling/ci_test_runner.py" \
             --repo "$GITHUB_WORKSPACE/composed-consumer-source" \
             --pattern test_linux_cold_start.py --mode both --require-complete \
-            --expected-source be7d0377425f9eec201852450b5a7c53e4a1f403 \
+            --expected-source 679a58d2cd901494f9439351d09dab2a07753fe6 \
             --report "$GITHUB_WORKSPACE/verification/foundation-composed-linux-consumer/receipt.json"
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:

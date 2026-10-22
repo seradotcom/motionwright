@@ -247,6 +247,92 @@ jobs:
           set -euo pipefail
           python -B -I -S tooling/ci_storage_apply_recovery.py \
             --repo ../s --output ../v/e --mode "$REQUESTED_MODE" --source-sha "$REQUESTED_SOURCE"
+      - name: Verify the exact macOS FIFO import fixture
+        if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'current-process' && matrix.platform == 'macos'
+        timeout-minutes: 3
+        run: |
+          python -B - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          from tooling import ci_storage_apply_recovery as custody
+
+          repo = Path("../s").resolve(strict=True)
+          original = Path("../v/e").resolve(strict=True)
+          output = original / "source-open-fifo"
+          output.mkdir(exist_ok=False)
+          name = "file_import::source_open_tests::replaced_fifo_source_is_rejected_without_waiting_for_a_writer"
+          receipt = {"schema": "motionwright.source-open-fixture/1", "status": "FAIL",
+                     "name": name, "operations_retried": False,
+                     "formal_acceptance": False, "human_acceptance": False}
+          command = None
+          try:
+              custody.require(os.environ["RUNNER_OS"] == "macOS"
+                              and os.environ["GITHUB_RUN_ATTEMPT"] == "1",
+                              "only the first selected macOS attempt is admitted")
+              previous, identity = custody.original_json(original / "receipt.json", original)
+              receipt["process_receipt"] = identity
+              custody.require(previous["status"] == "PASS_EXACT_SOURCE_BINDING4_PROCESS5"
+                              and previous["product_source_sha"] == custody.CURRENT_SOURCE_SHA,
+                              "the exact current process verification must complete first")
+              context = custody.binding4_context(dict(os.environ), custody.CURRENT_SOURCE_SHA, "current-process")
+              custody.require(previous["context"] == context, "process and fixture contexts differ")
+              gate = Path(".").resolve(strict=True)
+              def snapshot():
+                  return {"product": custody.binding4_source_snapshot(repo, "product", mode="current-process"),
+                          "gate": custody.source_snapshot(gate, context["GITHUB_SHA"], custody.GATE_FILES)}
+              before = snapshot()
+              custody.require(before == previous["source_before"] == previous["source_after"],
+                              "the fixture must use the observed process sources")
+              receipt["source_before"] = before
+              binary = previous["binaries"]["motionwright_storage"]
+              target = Path(os.environ["CARGO_TARGET_DIR"]).resolve(strict=True)
+              def binary_identity():
+                  return {"absolute_path": binary["absolute_path"],
+                          **custody.fingerprint(Path(binary["absolute_path"]), target)}
+              custody.require(binary_identity() == binary, "the compiled test binary changed")
+              roster = previous["enumerated_cases"]["motionwright_storage"]
+              custody.require(roster.count(name) == 1, "the exact FIFO fixture is absent or duplicated")
+              receipt["binary"] = binary
+              temporary = Path(os.environ["TMPDIR"]) / "source-open-fifo"
+              temporary.mkdir(exist_ok=False)
+              env = dict(custody.isolated_build_environment(os.environ),
+                         TMP=str(temporary), TEMP=str(temporary), TMPDIR=str(temporary))
+              argv = [binary["absolute_path"], "--exact", name, "--nocapture", "--test-threads=1"]
+              command = custody.execute(argv, repo, env, output, "case", 60,
+                                        custody.binding4_command_context(context, "product"))
+              receipt["command"] = command
+              if custody.execution_unknown(command):
+                  raise custody.UnknownObservation("FIFO process observation is unknown; no retry", command)
+              custody.require(command["observation"] == "DIRECT_PROCESS_EXIT_OBSERVED"
+                              and command["owned_group_after_wait"] == "ABSENT"
+                              and command["exit_code"] == 0, "the selected FIFO case failed")
+              try:
+                  raw = custody.read_original(output, command, "stdout") + b"\n" + custody.read_original(output, command, "stderr")
+              except (OSError, custody.VerificationError) as error:
+                  raise custody.UnknownObservation("FIFO original streams cannot be admitted; no retry", command) from error
+              text = custody.ANSI.sub("", raw.decode().replace("\r\n", "\n"))
+              results = re.findall(r"(?m)^test (.+) \.\.\. (ok|FAILED|ignored)$", text)
+              summaries = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; "
+                                     r"(\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+              custody.require(results == [(name, "ok")] and len(summaries) == 1
+                              and summaries[0][0] == "ok" and tuple(map(int, summaries[0][1:])) ==
+                              (1, 0, 0, 0, len(roster) - 1), "the exact one-case result is incomplete")
+              after = snapshot()
+              custody.require(after == before and binary_identity() == binary, "source or binary changed")
+              custody.require(custody.original_json(original / "receipt.json", original) == (previous, identity),
+                              "the preceding process receipt changed")
+              receipt.update(status="PASS_EXACT_MACOS_FIFO_FIXTURE", source_after=after,
+                             passed=1, failed=0, ignored=0)
+          except custody.UnknownObservation as error:
+              receipt.update(status="UNKNOWN", error=str(error), unsealed_command=error.command,
+                             terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
+          except Exception as error:
+              receipt["error"] = type(error).__name__ + ": " + str(error)
+          receipt["finished_utc"] = custody.now()
+          custody.write_new(output / "receipt.json", receipt)
+          print(json.dumps({key: receipt.get(key) for key in ("status", "name", "passed", "error")}))
+          raise SystemExit(0 if receipt["status"] == "PASS_EXACT_MACOS_FIFO_FIXTURE" else 1)
+          PY
       - name: Retain original partial or complete selected evidence
         if: always() && github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

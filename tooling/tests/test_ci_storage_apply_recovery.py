@@ -952,8 +952,8 @@ class CurrentProductContracts(unittest.TestCase):
     def test_current_identity_is_additive_and_historical_profiles_are_unchanged(self):
         self.assertEqual(gate.SOURCE_SHA, "5faedc090aa45b33833b229050c09bf424de938f")
         self.assertEqual(gate.BINDING4_SOURCE_SHA, "449de7a315a513468610d517e78f9ab87f76ae9d")
-        self.assertEqual(gate.CURRENT_SOURCE_SHA, "be7d0377425f9eec201852450b5a7c53e4a1f403")
-        self.assertEqual(gate.CURRENT_SOURCE_TREE, "5f9e92f6640a39c7adddb249501399cc97e958f8")
+        self.assertEqual(gate.CURRENT_SOURCE_SHA, "679a58d2cd901494f9439351d09dab2a07753fe6")
+        self.assertEqual(gate.CURRENT_SOURCE_TREE, "56ae1d95145d6038b91d3fe2f67ea25fa1332def")
         self.assertEqual(gate.binding4_product_profile("binding4-process"),
                          (gate.BINDING4_SOURCE_SHA, gate.BINDING4_SOURCE_TREE, gate.BINDING4_REVIEWED))
         self.assertEqual(gate.binding4_product_profile("binding4-core44"),

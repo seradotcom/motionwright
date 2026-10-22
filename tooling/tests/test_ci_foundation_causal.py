@@ -1149,6 +1149,13 @@ class CurrentCompositionCausalTests(unittest.TestCase):
         with patch.object(gate.custody, "admit_phase_custody", side_effect=admit) as invoked:
             originals = gate.verify_current_phase_originals(output, result)
         self.assertEqual((invoked.call_count, len(originals)), (4, 64))
+        incomplete = copy.deepcopy(result)
+        incomplete.pop("phase_scope")
+        with (patch.object(gate.custody, "admit_phase_custody", side_effect=admit) as invoked,
+              self.assertRaisesRegex(ValueError, "current phase scope changed")):
+            gate.verify_current_phase_originals(output, incomplete)
+        self.assertEqual(invoked.call_count, 4)
+        self.assertNotIn("phase_scope", incomplete)
         with (patch.object(gate.custody, "admit_phase_custody", return_value={}),
               self.assertRaisesRegex(ValueError, "originals changed")):
             gate.verify_current_phase_originals(output, result)
@@ -1361,8 +1368,8 @@ class ComposedCurrentCausalTests(unittest.TestCase):
 
     def test_composed_source_is_exact_and_historical_catalogues_are_unchanged(self):
         self.assertEqual(gate.selected_pairs("foundation-composed-current"), [self.pair])
-        self.assertEqual(self.pair["repair"]["sha"], "be7d0377425f9eec201852450b5a7c53e4a1f403")
-        self.assertEqual(self.pair["repair"]["tree"], "5f9e92f6640a39c7adddb249501399cc97e958f8")
+        self.assertEqual(self.pair["repair"]["sha"], "679a58d2cd901494f9439351d09dab2a07753fe6")
+        self.assertEqual(self.pair["repair"]["tree"], "56ae1d95145d6038b91d3fe2f67ea25fa1332def")
         self.assertEqual(self.pair["baseline"], gate.CURRENT_COMPOSITION_PAIR["baseline"])
         self.assertEqual(self.pair["repair"]["fixture_sha256"][
             "crates/service/tests/project_projection_media_independence.rs"],
@@ -1530,7 +1537,8 @@ class ComposedCurrentCausalTests(unittest.TestCase):
         invoked.assert_called_once()
         self.assertEqual(invoked.call_args.args[5], 120)
 
-    def synthetic_scope(self, unknown_role=None, fail_repair=False):
+    def synthetic_scope(self, unknown_role=None, fail_repair=False, *,
+                        role_error=None, terminal_error=None):
         source = self.root / "gate" / "tooling" / "ci_foundation_causal.py"
         source.parent.mkdir(parents=True)
         source.write_bytes(b"synthetic gate path; not executable product")
@@ -1548,9 +1556,12 @@ class ComposedCurrentCausalTests(unittest.TestCase):
                 {"name": name, "status": "EXPECTED_CAUSAL_RED"
                  if role == "baseline" and name in pair["failures"] else "PASS"}
                 for names in pair[role]["targets"].values() for name in names]
-            if status == "FAIL":
+            if status == "FAIL" and role_error is None:
                 rows[0]["status"] = "FAIL"
-            return {"status": status, "results": rows}
+            observed = {"status": status, "results": rows, "role": role}
+            if role == "repair" and role_error is not None:
+                observed.update(error=role_error, phase="clippy:original-mix-source")
+            return observed
 
         output = self.root / "output"
         with (patch.object(gate, "__file__", str(source)),
@@ -1564,7 +1575,7 @@ class ComposedCurrentCausalTests(unittest.TestCase):
               patch.object(gate, "retain_source", return_value={}),
               patch.object(gate, "tools_identity", return_value={"rustc": fingerprint}),
               patch.object(gate, "run_role", side_effect=observe),
-              patch.object(gate, "verify_originals",
+              patch.object(gate, "verify_originals", side_effect=terminal_error,
                            return_value={"status": "SYNTHETIC_TERMINAL_CHECK"}) as terminal,
               patch("builtins.print")):
             code = gate.run(self.root, output, "foundation-composed-current")
@@ -1616,6 +1627,61 @@ class ComposedCurrentCausalTests(unittest.TestCase):
         self.assertEqual(receipt["actual_case_results"], 135)
         self.assertEqual((snapshots, terminal, dependency), (2, 1, 1))
 
+    def test_composed_role_error_survives_secondary_terminal_failure(self):
+        primary = "VerificationError: selected strict Clippy failed"
+        secondary = gate.custody.VerificationError("current phase scope changed")
+        code, receipt, seen, snapshots, terminal, dependency = self.synthetic_scope(
+            fail_repair=True, role_error=primary, terminal_error=secondary)
+        self.assertEqual((code, receipt["status"]), (1, "FAIL"))
+        self.assertEqual(receipt.get("error"), primary)
+        self.assertEqual(receipt["role_errors"], [{
+            "pair": "foundation-composed-current", "role": "repair",
+            "phase": "clippy:original-mix-source", "error": primary,
+        }])
+        self.assertEqual(receipt["secondary_errors"],
+                         ["VerificationError: current phase scope changed"])
+        self.assertEqual(receipt["pairs"][0]["roles"][1]["error"], primary)
+        self.assertNotIn("originals_final", receipt)
+        self.assertEqual(seen, [("foundation-composed-current", "baseline"),
+                                ("foundation-composed-current", "repair")])
+        self.assertEqual((snapshots, terminal, dependency), (2, 1, 1))
+        self.assertFalse(receipt["operations_retried"])
+        self.assertFalse(receipt["formal_acceptance"])
+
+    def test_composed_role_error_remains_failure_after_terminal_custody_pass(self):
+        primary = "VerificationError: selected strict Clippy failed"
+        code, receipt, seen, snapshots, terminal, dependency = self.synthetic_scope(
+            fail_repair=True, role_error=primary)
+        self.assertEqual((code, receipt["status"]), (1, "FAIL"))
+        self.assertEqual(receipt.get("error"), primary)
+        self.assertEqual(receipt["role_errors"][0]["error"], primary)
+        self.assertNotIn("secondary_errors", receipt)
+        self.assertEqual(receipt["originals_final"]["status"], "SYNTHETIC_TERMINAL_CHECK")
+        self.assertEqual(receipt["pairs"][0]["status"], "FAIL")
+        self.assertTrue(all(row["status"] == "PASS"
+                            for row in receipt["pairs"][0]["roles"][1]["results"]))
+        self.assertEqual(len(seen), 2)
+        self.assertEqual((snapshots, terminal, dependency), (2, 1, 1))
+        self.assertFalse(receipt["operations_retried"])
+        self.assertFalse(receipt["formal_acceptance"])
+
+    def test_composed_terminal_failure_without_role_error_becomes_primary(self):
+        failure = gate.custody.VerificationError("original command output changed after observation")
+        code, receipt, seen, snapshots, terminal, dependency = self.synthetic_scope(
+            terminal_error=failure)
+        self.assertEqual((code, receipt["status"]), (1, "FAIL"))
+        self.assertEqual(receipt.get("error"),
+                         "VerificationError: original command output changed after observation")
+        self.assertNotIn("role_errors", receipt)
+        self.assertNotIn("secondary_errors", receipt)
+        self.assertNotIn("originals_final", receipt)
+        self.assertTrue(all(role["status"] == "PASS_EXACT_CAUSAL_ROLE"
+                            for role in receipt["pairs"][0]["roles"]))
+        self.assertEqual(len(seen), 2)
+        self.assertEqual((snapshots, terminal, dependency), (2, 1, 1))
+        self.assertFalse(receipt["operations_retried"])
+        self.assertFalse(receipt["formal_acceptance"])
+
     def test_composed_workflow_keeps_one_executor_and_exact_linux_consumer_check(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(encoding="utf-8")
         g0 = text.split("\n  foundation-causal-g0:\n", 1)[1].split("\n  foundation-causal:\n", 1)[0]
@@ -1630,9 +1696,9 @@ class ComposedCurrentCausalTests(unittest.TestCase):
         consumer = selected.split("- name: Verify frozen Linux consumer contracts", 1)[1]
         consumer = consumer.split("- uses: dtolnay/rust-toolchain@", 1)[0]
         self.assertIn('test "$GITHUB_RUN_ATTEMPT" = 1', consumer)
-        self.assertIn("be7d0377425f9eec201852450b5a7c53e4a1f403", consumer)
+        self.assertIn("679a58d2cd901494f9439351d09dab2a07753fe6", consumer)
         self.assertIn("--pattern test_linux_cold_start.py --mode both --require-complete", consumer)
-        self.assertIn("--expected-source be7d0377425f9eec201852450b5a7c53e4a1f403", consumer)
+        self.assertIn("--expected-source 679a58d2cd901494f9439351d09dab2a07753fe6", consumer)
         self.assertIn("composed-consumer-source/tooling/ci_test_runner.py", consumer)
         self.assertIn("verification/foundation-composed-linux-consumer/receipt.json", consumer)
         self.assertNotIn("inputs.product", consumer)
@@ -1652,7 +1718,7 @@ class ComposedCurrentCausalTests(unittest.TestCase):
             root, snapshot, "foundation-composed-current")
         self.assertEqual(observed["files"], gate.COMPOSED_DEPENDENCY_HASHES)
         self.assertEqual(hashlib.sha256(loaded.read_bytes()).hexdigest(),
-                         "f89f31122b6f02d0032037706f3feb175bf0b18c2157ac808f040a7eb626c767")
+                         "31d8f5cd49ce5cbb0b6b627b6c6157a2538b9be5f9dbf661bbddc510ec1201d7")
         self.assertEqual((observed["product_source"], observed["product_tree"]),
                          (self.pair["repair"]["sha"], self.pair["repair"]["tree"]))
         source, tree, _ = gate.custody.binding4_product_profile("current-process")

@@ -949,8 +949,8 @@ PROJECTION_DIAGNOSTIC = {
 }
 
 # A separately frozen composition keeps historical source identities intact.
-COMPOSED_SOURCE_PINS = {'sha': 'be7d0377425f9eec201852450b5a7c53e4a1f403',
- 'tree': '5f9e92f6640a39c7adddb249501399cc97e958f8',
+COMPOSED_SOURCE_PINS = {'sha': '679a58d2cd901494f9439351d09dab2a07753fe6',
+ 'tree': '56ae1d95145d6038b91d3fe2f67ea25fa1332def',
  'fixture_sha256': {'crates/service/src/audio.rs': '9450675ac6bd50c2a0a37e6cbc8243f89607349e9a14d2b822495ebf24cffcef',
                     'crates/service/src/import_limits.rs': '21a58b974f1c440350581a2c7ca5d54b4907401fd9a33a8a4cc48389e2310d1e',
                     'crates/service/src/lib.rs': '4350753e44bc20c7a996f4e10e675a52fa3bb54a66107b20da90dc5ddf98b3c3',
@@ -958,12 +958,12 @@ COMPOSED_SOURCE_PINS = {'sha': 'be7d0377425f9eec201852450b5a7c53e4a1f403',
                     'crates/service/tests/file_import_limits.rs': '61d6221c8f9149d2d33e2671fc2bfa1d65eeb2975f16fe3e7f37884a5ba27b40',
                     'crates/service/tests/file_import_svg_budget.rs': '1b58e2becff6866e9586f6da334439a4f40506bcba2c9f80c3025c3443db569b',
                     'crates/service/tests/file_import_svg_references.rs': '3cac623ba4cadb3900b74c5416c56ac30140cb07170ae08d3e59368575bca0fd',
-                    'crates/service/tests/original_mix_source_budget.rs': '682435fdd9795d46a69c70cc5706415b8af34aaab836c3cc02e4b58bea78836f',
+                    'crates/service/tests/original_mix_source_budget.rs': 'e8c9a510c004e2d86d1a23caa0d8dddf69aefc92456083ccb2f8e92b7e59880a',
                     'crates/service/tests/production_jobs_cancellation_recovery.rs': 'e040e61152bf60a66ce6c6210b1fc9679256f006d38fd9860488784095ac8dfa',
                     'crates/service/tests/project_projection_media_independence.rs': 'c1d9b2ca22a7770390bff776b6bf6aca8f2c154341fe039fb51882569a496b50',
                     'crates/storage/src/apply_crash_tests.rs': '9febb826879b1180ddd8afc84256a7fd6d7b76c3c5769c726ad612c2adc3e974',
                     'crates/storage/src/apply_receipt_binding.rs': '9922802f0deaa32c9e2b2dee7d3d0d7fbcfdfa58b2047b506f0432fd9db4d4af',
-                    'crates/storage/src/file_import.rs': '037564e6894a59075f295739ae93967825c6a96429b3f113b53ed87b6d4c9039',
+                    'crates/storage/src/file_import.rs': '991f41c2cf5241f2dedf8ac83eefbdf44ae04422978d409c34e556abea4fb70b',
                     'crates/storage/src/lib.rs': 'db8976efd0cccbb2a3c36f0a4b21dd78738e76166297cd21cfd33f7f21bcd8a4',
                     'crates/storage/tests/apply_binding_migration.rs': '25500c33cbb4ad19079ad8e5bfa396bcf21afb7fd9595818493c082d11313ace',
                     'crates/storage/tests/apply_receipt_binding.rs': 'b74d2e616e880da1b9be515d3dcb5d92332af557f291b88bc9b34245b6c45274',
@@ -990,9 +990,9 @@ COMPOSED_COMPOSITION_PAIR["repair"]["targets"] = {
 CURRENT_PHASE_SELECTIONS = ("foundation-current", "foundation-composed-current")
 
 # Gate dependencies are independent of the frozen product source.
-COMPOSED_DEPENDENCY_HASHES = {'tooling/ci_storage_apply_recovery.py': 'f89f31122b6f02d0032037706f3feb175bf0b18c2157ac808f040a7eb626c767',
- 'tooling/tests/test_ci_storage_apply_recovery.py': 'c9a73ece260c9f92fc3bfd7eedaceb2c626a70bfe197780fd637dfb775ffbc61',
- '.github/workflows/storage-apply-process-recovery.yml': 'fab7d4e12b1d56e732b03d90ce840ee9f436968b986c335a350a86ab3734e5ce',
+COMPOSED_DEPENDENCY_HASHES = {'tooling/ci_storage_apply_recovery.py': '31d8f5cd49ce5cbb0b6b627b6c6157a2538b9be5f9dbf661bbddc510ec1201d7',
+ 'tooling/tests/test_ci_storage_apply_recovery.py': 'd50b6724dd347a0d2ab762bf0a04543256699ea71e048d4ed3a2887ff9f5b3ef',
+ '.github/workflows/storage-apply-process-recovery.yml': 'd14bc13fe1119275c25f617f7b5091728996110d269170780d8771e88817c15c',
  'docs/reliability/storage-apply-process-recovery.md': 'c1e4ec2eac4f25eb26698d0ef6501a197da3e86f03aaf769b02c145b9b09fa0c'}
 
 SELECTIONS = (
@@ -1652,8 +1652,11 @@ def run_role(pair, role, gate, workspace, output, target, temporary, environment
                 result["results"].append(row)
                 custody.write_new(folder / (label + ".receipt.json"), row)
             if role == "repair":
+                result["phase"] = "clippy:" + target_name
                 strict = command(clippy_argv(toolchain["cargo"]["absolute_path"], spec),
                     repo, environment, folder, target_name + "-clippy", BUILD_TIMEOUT, frame, observations)
+                if type(strict.get("exit_code")) is int and strict["exit_code"] != 0:
+                    result["clippy"] = "FAIL"
                 require(strict["exit_code"] == 0, "selected strict Clippy failed")
         result["clippy"] = "PASS" if role == "repair" else "NOT_SELECTED"
         result["phase"] = "postcheck"
@@ -1846,6 +1849,14 @@ def run(workspace, output, selection="foundation-causal"):
         receipt["pairs"] = selected_runner(lambda pair, role: run_role(
             pair, role, gate, workspace, output, target, temporary,
             environment, context, toolchain, observations), pairs)
+        role_errors = [
+            {"pair": pair["id"], "role": role.get("role"), "phase": role.get("phase"),
+             "error": role["error"]}
+            for pair in receipt["pairs"] for role in pair["roles"] if role.get("error")
+        ]
+        if role_errors:
+            receipt["role_errors"] = role_errors
+            receipt["error"] = role_errors[0]["error"]
         if any(p["status"] == "UNKNOWN" for p in receipt["pairs"]):
             receipt.update(status="UNKNOWN", terminal_custody="UNSEALED_DESCENDANTS_NOT_OBSERVED")
         if receipt["status"] != "UNKNOWN":
@@ -1868,7 +1879,11 @@ def run(workspace, output, selection="foundation-causal"):
                        unsealed_command=error.command,
                        terminal_custody="UNSEALED_DESCENDANTS_NOT_OBSERVED")
     except Exception as error:
-        receipt.update(error=type(error).__name__ + ": " + str(error))
+        message = type(error).__name__ + ": " + str(error)
+        if "error" in receipt:
+            receipt.setdefault("secondary_errors", []).append(message)
+        else:
+            receipt["error"] = message
     receipt["finished_utc"] = custody.now()
     receipt["not_run_pairs"] = [p["id"] for p in pairs
                                if p["id"] not in {row["id"] for row in receipt["pairs"]}]
