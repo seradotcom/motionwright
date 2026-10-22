@@ -1835,8 +1835,10 @@ mod audio_import_tests {
             assert!(
                 decoded
                     .interleaved_s16le
-                    .chunks_exact(2)
-                    .all(|sample| sample == literal_b),
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .all(|sample| *sample == literal_b),
                 "unexpected PCM must be distinguished from the intended B witness",
             );
             panic!(
