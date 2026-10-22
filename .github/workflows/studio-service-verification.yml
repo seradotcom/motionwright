@@ -62,7 +62,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   creative-unit-build:
-    name: Creative Production and Workbench units (65) and production build
+    name: Creative Production and Workbench units (67) and production build
     if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","creative-production","creative-production-browser","production-design","creative-workbench"]'), inputs.selection)
     needs: g0
     runs-on: ubuntu-24.04
@@ -95,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --no-audit --no-fund
-      - name: Verify security probe, exact 29 plus 36 Vitest assertions and build
+      - name: Verify security probe, exact 29 plus 38 Vitest assertions and build
         run: |
           set -euo pipefail
           python -B -I tooling/ci_canvas_service.py unit-build --repo . --output ../v/unit-build

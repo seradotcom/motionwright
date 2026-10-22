@@ -856,7 +856,9 @@ CREATIVE_PRODUCTION_BROWSER_SELECTIONS = (('browser-production-design',
    'Measured pending file cannot resurrect a buffer after an explicit saved-value choice',
    'Measured pending file cannot replace an explicitly restored copy with the same edit sequence',
    'Measured new-copy action cannot bypass a repaired UNKNOWN after missing reload',
-   'Measured new-copy action cannot bypass a repaired UNKNOWN after corrupt reload')))
+   'Measured new-copy action cannot bypass a repaired UNKNOWN after corrupt reload',
+   'ProductStage existing Hero eligibility blocks dispatch while separate scene drafts and valid '
+   'authoring remain intact')))
 BROWSER_SELECTIONS = (*HISTORICAL_BROWSER_SELECTIONS, *CREATIVE_PRODUCTION_BROWSER_SELECTIONS)
 BROWSER_SCOPES = {
     "browser-contracts": tuple(row[0] for row in BROWSER_SELECTIONS),
@@ -910,6 +912,8 @@ CREATIVE_PRODUCTION_SOURCE_PATHS = ('apps/studio/src/App.tsx',
  'apps/studio/tests/support/scopedChangeService.ts')
 
 BROWSER_SELECTION_TIMEOUTS = {label: 180 + 30 * len(titles) for label, _, titles in BROWSER_SELECTIONS}
+# Retain the Workbench budget, including startup and every per-case bound.
+BROWSER_SELECTION_TIMEOUTS["browser-creative-workbench"] = 1260
 
 
 CREATIVE_PRODUCTION_UNITS = (('src/productionDesignDraft.test.ts',
@@ -1047,7 +1051,11 @@ CREATIVE_PRODUCTION_UNITS = (('src/productionDesignDraft.test.ts',
    ('creative workbench verified custody and uncertain outcome review',
     'rejects incomplete history and a project changed during outcome inspection'),
    ('creative workbench verified custody and uncertain outcome review',
-    'a separate reviewed intent verifies both records and preserves the exact earlier UNKNOWN'))))
+    'a separate reviewed intent verifies both records and preserves the exact earlier UNKNOWN'),
+   ('ProductStage existing project eligibility before mutation dispatch',
+    'rejects an existing Hero collision before arming an attempt and retains the exact author input'),
+   ('ProductStage existing project eligibility before mutation dispatch',
+    'rejects creation at the existing sixteen-Stage limit while a bound Stage can still update'))))
 
 
 def require(condition, reason):
@@ -2080,7 +2088,7 @@ def browser_selections(scope="browser-contracts"):
         labels.add(label)
         files.add(filename)
         count += len(titles)
-    require(count == 205, "browser case count differs")
+    require(count == 206, "browser case count differs")
     require(is_browser_scope(scope), "unknown named browser scope")
     selected_labels = BROWSER_SCOPES[scope]
     expected_labels = (tuple(row[0] for row in BROWSER_SELECTIONS) if scope == "browser-contracts"
@@ -2088,7 +2096,7 @@ def browser_selections(scope="browser-contracts"):
     require(selected_labels == expected_labels, "browser scope inventory differs")
     chosen = tuple(row for row in BROWSER_SELECTIONS if row[0] in selected_labels)
     require(len(chosen) == len(selected_labels), "browser scope has unknown or duplicate files")
-    require(sum(len(row[2]) for row in chosen) == (205 if scope == "browser-contracts" else 57),
+    require(sum(len(row[2]) for row in chosen) == (206 if scope == "browser-contracts" else 58),
             "browser scope case count differs")
     return chosen
 
@@ -2296,10 +2304,10 @@ def run_browser_selection(repo, output, target, scope="browser-contracts"):
 
 
 def validate_creative_production_units(document, studio):
-    """Admit only the exact 29 + 36 original assertions from the locked CLI."""
+    """Admit only the exact 29 + 38 original assertions from the locked CLI."""
     require(isinstance(document, dict) and document.get("success") is True,
             "unit report is missing or unsuccessful")
-    require(document.get("numTotalTests") == document.get("numPassedTests") == 65,
+    require(document.get("numTotalTests") == document.get("numPassedTests") == 67,
             "unit test census differs")
     for key in ("numFailedTests", "numPendingTests", "numTodoTests", "numFailedTestSuites",
                 "numPendingTestSuites"):
@@ -2336,7 +2344,7 @@ def validate_creative_production_units(document, studio):
             found.append({"file": str(Path(name).relative_to(studio)), "suite": pair[0], "title": pair[1]})
         require(observed == wanted, "unit exact assertion inventory differs")
     require(files == set(expected), "unit file omitted")
-    return {"status": "PASS", "passed": 65, "files": 2, "skipped": 0, "retries": 0,
+    return {"status": "PASS", "passed": 67, "files": 2, "skipped": 0, "retries": 0,
             "assertions": found, "evidence_scope": "UNIT_ASSERTIONS_ONLY", "formal_acceptance": False}
 
 

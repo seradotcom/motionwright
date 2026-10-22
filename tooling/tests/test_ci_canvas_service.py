@@ -1445,7 +1445,7 @@ class BrowserContractSelectionTests(unittest.TestCase):
     def test_browser_scope_is_closed_and_historical_service_groups_are_unchanged(self):
         rows = gate.selected_selections("browser-contracts")
         self.assertEqual(len(rows), 33)
-        self.assertEqual(sum(len(row[2]) for row in rows), 205)
+        self.assertEqual(sum(len(row[2]) for row in rows), 206)
         self.assertEqual(sum(len(row[2]) for row in gate.selected_selections("all")), 152)
         self.assertEqual(gate.selection_plan("complete-authoring")["required_tests"], 64)
         self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 38)
@@ -1465,7 +1465,7 @@ class BrowserContractSelectionTests(unittest.TestCase):
     def test_browser_full_title_filter_excludes_four_real_service_cases(self):
         document = self.discovery_document()
         self.assertEqual(gate.validate_browser_discovery(document),
-                         {"status": "LISTED_NOT_EXECUTED", "listed": 209, "selected": 205,
+                         {"status": "LISTED_NOT_EXECUTED", "listed": 210, "selected": 206,
                           "excluded_service": 4, "execution_results": 0})
         selected, excluded = gate.browser_discovery_inventory()
         for row in gate.BROWSER_SELECTIONS:
@@ -1655,12 +1655,12 @@ class BrowserContractSelectionTests(unittest.TestCase):
         self.assertIn('steps.archive.outcome != \'success\'', job)
         self.assertEqual(sum(gate.BROWSER_SELECTION_TIMEOUTS.values()), 12090)
         self.assertGreater(240 * 60, sum(gate.BROWSER_SELECTION_TIMEOUTS.values()) + 180 + 1200)
-        for _, filename, titles in gate.BROWSER_SELECTIONS:
+        for label, filename, titles in gate.BROWSER_SELECTIONS:
             source = (PATH.parents[1] / "apps/studio/tests" / filename).read_text(encoding="utf-8")
             if filename == "project-mutation.spec.ts":
                 source = source.split('test.describe("real service imports and portable restore"', 1)[0]
             self.assertNotRegex(source, r"test(?:Info)?\.setTimeout|test\.slow|describe\.configure")
-            self.assertGreater(180 + 30 * len(titles), 120 + 30 * len(titles))
+            self.assertGreater(gate.BROWSER_SELECTION_TIMEOUTS[label], 120 + 30 * len(titles))
 
 
 # Independent expected strings copied from the reviewed source-bound inventories.
@@ -1768,7 +1768,9 @@ EXPECTED_CREATIVE_BROWSER = (('browser-production-design',
    'Measured pending file cannot resurrect a buffer after an explicit saved-value choice',
    'Measured pending file cannot replace an explicitly restored copy with the same edit sequence',
    'Measured new-copy action cannot bypass a repaired UNKNOWN after missing reload',
-   'Measured new-copy action cannot bypass a repaired UNKNOWN after corrupt reload')))
+   'Measured new-copy action cannot bypass a repaired UNKNOWN after corrupt reload',
+   'ProductStage existing Hero eligibility blocks dispatch while separate scene drafts and valid '
+   'authoring remain intact')))
 EXPECTED_CREATIVE_UNITS = (('src/productionDesignDraft.test.ts',
   (('Production author input and original response authority',
     'scopes component and plan input by project, generation, branch and component scene'),
@@ -1909,7 +1911,11 @@ EXPECTED_CREATIVE_UNITS = (('src/productionDesignDraft.test.ts',
    ('creative workbench verified custody and uncertain outcome review',
     'rejects incomplete history and a project changed during outcome inspection'),
    ('creative workbench verified custody and uncertain outcome review',
-    'a separate reviewed intent verifies both records and preserves the exact earlier UNKNOWN'))))
+    'a separate reviewed intent verifies both records and preserves the exact earlier UNKNOWN'),
+   ('ProductStage existing project eligibility before mutation dispatch',
+    'rejects an existing Hero collision before arming an attempt and retains the exact author input'),
+   ('ProductStage existing project eligibility before mutation dispatch',
+    'rejects creation at the existing sixteen-Stage limit while a bound Stage can still update'))))
 EXPECTED_CREATIVE_SOURCES = ('apps/studio/src/App.tsx',
  'apps/studio/src/CompositionStudy.tsx',
  'apps/studio/src/MeasuredDataWorkbench.tsx',
@@ -1968,8 +1974,8 @@ class CreativeProductionScopeTests(unittest.TestCase):
         self.assertEqual(gate.CREATIVE_PRODUCTION_BROWSER_SELECTIONS, EXPECTED_CREATIVE_BROWSER)
         self.assertEqual(gate.CREATIVE_PRODUCTION_UNITS, EXPECTED_CREATIVE_UNITS)
         self.assertEqual([len(row[2]) for row in EXPECTED_CREATIVE_SERVICE], [8, 9])
-        self.assertEqual([len(row[2]) for row in EXPECTED_CREATIVE_BROWSER], [21, 36])
-        self.assertEqual([len(row[1]) for row in EXPECTED_CREATIVE_UNITS], [29, 36])
+        self.assertEqual([len(row[2]) for row in EXPECTED_CREATIVE_BROWSER], [21, 37])
+        self.assertEqual([len(row[1]) for row in EXPECTED_CREATIVE_UNITS], [29, 38])
 
     def test_historical_titles_and_manual_all_disjoint_partition_are_preserved(self):
         digest = lambda rows: gate.hashlib.sha256(gate.json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
@@ -1988,13 +1994,13 @@ class CreativeProductionScopeTests(unittest.TestCase):
             self.assertFalse(plan["formal_acceptance"])
         self.assertEqual(sum(len(row[2]) for row in gate.HISTORICAL_BROWSER_SELECTIONS), 148)
         self.assertEqual(len(gate.browser_selections()), 33)
-        self.assertEqual(sum(len(row[2]) for row in gate.browser_selections()), 205)
+        self.assertEqual(sum(len(row[2]) for row in gate.browser_selections()), 206)
 
-    def test_new_browser_scope_has_exact_57_and_declares_all_unselected_scopes_without_credit(self):
+    def test_new_browser_scope_has_exact_58_and_declares_all_unselected_scopes_without_credit(self):
         self.assertEqual(gate.browser_selections("creative-production-browser"), EXPECTED_CREATIVE_BROWSER)
         plan = gate.selection_plan("creative-production-browser")
-        self.assertEqual(plan["required_tests"], 57)
-        self.assertEqual(plan["discovery_tests"], 57)
+        self.assertEqual(plan["required_tests"], 58)
+        self.assertEqual(plan["discovery_tests"], 58)
         self.assertEqual(plan["excluded_service_cases"], [])
         self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 152 + 148)
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
@@ -2050,7 +2056,7 @@ class CreativeProductionScopeTests(unittest.TestCase):
         scope = "creative-production-browser"
         value = helper.discovery_document(scope)
         self.assertEqual(gate.validate_browser_discovery(value, scope),
-                         {"status": "LISTED_NOT_EXECUTED", "listed": 57, "selected": 57,
+                         {"status": "LISTED_NOT_EXECUTED", "listed": 58, "selected": 58,
                           "excluded_service": 0, "execution_results": 0})
         for mutation in ("missing", "duplicate", "old-file", "tag", "browser", "executed", "skip", "global-error"):
             changed = copy.deepcopy(value)
@@ -2103,7 +2109,7 @@ class CreativeProductionScopeTests(unittest.TestCase):
             self.assertEqual(code, 0, receipt)
             self.assertEqual([call[0] for call in calls], ["browser-discovery", "browser-production-design", "browser-creative-workbench"])
             self.assertEqual(receipt["selection_plan"]["requested"], "creative-production-browser")
-            self.assertEqual(receipt["discovery"]["verified"]["listed"], 57)
+            self.assertEqual(receipt["discovery"]["verified"]["listed"], 58)
             self.assertFalse((root / "t").exists())
             retained = helper.retain(repo, root, source)
             self.assertEqual(retained["status"], "PASS", retained)
@@ -2176,8 +2182,10 @@ class CreativeProductionScopeTests(unittest.TestCase):
                          {"production-design": 1140, "creative-workbench": 1260})
         for label, _, titles in EXPECTED_CREATIVE_SERVICE:
             self.assertEqual(gate.SELECTION_TIMEOUTS[label], len(titles) * 120 + 180)
+        self.assertEqual({label: gate.BROWSER_SELECTION_TIMEOUTS[label] for label, _, _ in EXPECTED_CREATIVE_BROWSER},
+                         {"browser-production-design": 810, "browser-creative-workbench": 1260})
         for label, _, titles in EXPECTED_CREATIVE_BROWSER:
-            self.assertEqual(gate.BROWSER_SELECTION_TIMEOUTS[label], len(titles) * 30 + 180)
+            self.assertGreater(gate.BROWSER_SELECTION_TIMEOUTS[label], len(titles) * 30 + 120)
         workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text()
         service = workflow.split("  real-service:\n", 1)[1]
         self.assertIn("fail-fast: false", service)
@@ -2374,7 +2382,7 @@ class CreativeProductionUnitTests(unittest.TestCase):
     """Original reporter and process-invocation contracts, using synthetic files only."""
 
     def document(self, studio):
-        return {"success": True, "numTotalTests": 65, "numPassedTests": 65,
+        return {"success": True, "numTotalTests": 67, "numPassedTests": 67,
                 "numFailedTests": 0, "numPendingTests": 0, "numTodoTests": 0,
                 "numFailedTestSuites": 0, "numPendingTestSuites": 0,
                 "testResults": [
@@ -2383,10 +2391,10 @@ class CreativeProductionUnitTests(unittest.TestCase):
                                            "status": "passed", "failureMessages": []} for parent, title in titles]}
                     for filename, titles in EXPECTED_CREATIVE_UNITS]}
 
-    def test_selected_unit_report_requires_both_files_and_exact_65_original_assertions(self):
+    def test_selected_unit_report_requires_both_files_and_exact_67_original_assertions(self):
         studio = Path("synthetic/studio")
         result = gate.validate_creative_production_units(self.document(studio), studio)
-        self.assertEqual((result["passed"], result["files"], result["skipped"], result["retries"]), (65, 2, 0, 0))
+        self.assertEqual((result["passed"], result["files"], result["skipped"], result["retries"]), (67, 2, 0, 0))
         self.assertFalse(result["formal_acceptance"])
         self.assertEqual(result["evidence_scope"], "UNIT_ASSERTIONS_ONLY")
 
@@ -2480,7 +2488,7 @@ class CreativeProductionUnitTests(unittest.TestCase):
             self.assertEqual([row[0] for row in calls], ["security-probe", "vitest", "build"])
             self.assertEqual(receipt["source_before"], receipt["source_after"])
             self.assertEqual(receipt["vitest_original"], gate.digest(output / "vitest.json"))
-            self.assertEqual(receipt["vitest"]["passed"], 65)
+            self.assertEqual(receipt["vitest"]["passed"], 67)
             self.assertEqual(receipt["production_build"]["files"]["main.js"], gate.digest(output / "production-build/main.js"))
             self.assertEqual(receipt["service_runtime"], "NOT_RUN")
             self.assertEqual(receipt["browser_runtime"], "NOT_RUN")
