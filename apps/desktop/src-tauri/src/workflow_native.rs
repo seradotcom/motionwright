@@ -87,7 +87,7 @@ pub enum WorkflowReceiptObservation {
     /// Storage errors must not be represented as an absent receipt.
     Unavailable,
     Recorded {
-        identity: WorkflowReceiptIdentity,
+        identity: Box<WorkflowReceiptIdentity>,
     },
 }
 
@@ -148,7 +148,7 @@ fn observe_receipt(
 ) -> WorkflowReceiptObservation {
     match service.latest_production_receipt(request.project_id, &request.request_id) {
         Ok(Some(receipt)) => WorkflowReceiptObservation::Recorded {
-            identity: WorkflowReceiptIdentity {
+            identity: Box::new(WorkflowReceiptIdentity {
                 id: receipt.id,
                 project_id: receipt.project_id,
                 generation: receipt.generation,
@@ -157,7 +157,7 @@ fn observe_receipt(
                 request_sha256: receipt.request_sha256,
                 command: receipt.command,
                 stage: receipt.stage,
-            },
+            }),
         },
         Ok(None) => WorkflowReceiptObservation::NotObserved,
         Err(_) => WorkflowReceiptObservation::Unavailable,
@@ -351,6 +351,8 @@ pub async fn execute_workflow_action(
         replayed,
         authority: reply.pointer("/result/execution/provenance").cloned(),
         result,
-        receipt: WorkflowReceiptObservation::Recorded { identity },
+        receipt: WorkflowReceiptObservation::Recorded {
+            identity: Box::new(identity),
+        },
     })
 }
