@@ -352,22 +352,35 @@ class Execution:
         require(not self.unknown, "prior UNKNOWN forbids further commands")
         remaining = self.deadline - time.monotonic()
         require(remaining > 0, "selected job execution budget exhausted")
-        command = custody.execute(argv, self.repo, self.env, self.output, label,
-                                  min(timeout, remaining), self.context)
+        try:
+            command = custody.execute(argv, self.repo, self.env, self.output, label,
+                                      min(timeout, remaining), self.context)
+        except custody.UnknownObservation as error:
+            self.unknown = True
+            self.commands.append(error.command)
+            raise VerificationError("command observation was not retained; no retry") from error
         self.commands.append(command)
-        if command.get("observation") == "UNKNOWN_TIMEOUT_NO_RETRY":
+        if custody.execution_unknown(command):
             self.unknown = True
-        original = custody.fingerprint(self.output / (label + ".command.json"), self.output, MAX_LOG)
-        require(strict_json(original_stream(
-            {"log_custody": "VERIFIED_SNAPSHOT", "metadata": original}, "metadata", self.output)) == command,
-            "command metadata differs from original process observation")
-        self.originals.append(original)
-        if command.get("observation") == "UNKNOWN_TIMEOUT_NO_RETRY":
-            self.unknown = True
+            raise VerificationError("uncertain command; no further commands: " + label)
         require(command.get("observation") == "DIRECT_PROCESS_EXIT_OBSERVED"
                 and command.get("exit_code") == 0, "command failed or became UNKNOWN: " + label)
-        stdout = original_stream(command, "stdout", self.output)
-        original_stream(command, "stderr", self.output)
+        try:
+            original = custody.fingerprint(self.output / (label + ".command.json"), self.output, MAX_LOG)
+            require(strict_json(original_stream(
+                {"log_custody": "VERIFIED_SNAPSHOT", "metadata": original}, "metadata", self.output)) == command,
+                "command metadata differs from original process observation")
+            self.originals.append(original)
+            stdout = original_stream(command, "stdout", self.output)
+            original_stream(command, "stderr", self.output)
+        except BaseException as error:
+            self.unknown = True
+            self.commands[-1] = {**command, "original_command": command,
+                "observation": "UNKNOWN_CUSTODY_NO_RETRY",
+                "uncertainty_reason": "COMMAND_OR_STREAM_READBACK_FAILED",
+                "diagnostic_custody": "UNSEALED_COMMAND_OR_STREAM_READBACK",
+                "secondary_observation_errors": [type(error).__name__ + ": " + str(error)]}
+            raise VerificationError("command custody readback failed; no further commands: " + label) from error
         return command, stdout
 
 
@@ -510,7 +523,9 @@ def run(repo, expected_source, output, target, selection):
         if execution is not None:
             receipt["commands"] = execution.commands
             receipt["command_originals"] = execution.originals
-        if source_before is not None:
+        if execution is not None and execution.unknown:
+            receipt["postcheck"] = "NOT_RUN_UNKNOWN_PROCESS_OR_CUSTODY"
+        if source_before is not None and not (execution is not None and execution.unknown):
             try:
                 receipt["source_after"] = source_after(repo, expected_source, source_before)
                 generated = generated_schemas(repo)
