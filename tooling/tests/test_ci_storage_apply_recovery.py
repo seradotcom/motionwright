@@ -1144,7 +1144,10 @@ class CurrentProductContracts(unittest.TestCase):
         self.assertIn("ref: " + "$" + "{{ needs.g0.outputs.source_sha }}", text)
         current_lines = [line.strip() for line in text.splitlines()
                          if line.strip().startswith("if:") and "current-process" in line]
-        self.assertEqual(len(current_lines), 8)
+        fifo_condition = ("if: github.event_name == 'workflow_dispatch' && "
+                          "needs.g0.outputs.mode == 'current-process' && matrix.platform == 'macos'")
+        self.assertEqual(current_lines.count(fifo_condition), 1)
+        self.assertEqual(len([line for line in current_lines if line != fifo_condition]), 8)
         self.assertTrue(all("github.event_name == 'workflow_dispatch'" in line for line in current_lines))
         self.assertIn("and selected['mode'] not in {'source', 'current-source'}", text)
         self.assertNotIn("current-core44", text)
