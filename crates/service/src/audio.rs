@@ -1,17 +1,22 @@
+use crate::ImportLimits;
 use motionwright_domain::{DomainError, RationalTime};
 use motionwright_storage::{Result, StorageError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use symphonia::{
     core::{
-        codecs::audio::AudioDecoderOptions,
+        codecs::audio::{AudioCodecParameters, AudioDecoderOptions},
         errors::Error as SymphoniaError,
-        formats::{FormatOptions, TrackType, probe::Hint},
+        formats::{FormatOptions, Track, TrackType, probe::Hint},
         io::MediaSourceStream,
         meta::MetadataOptions,
     },
@@ -123,15 +128,213 @@ fn validate_decoded_format(
     Ok(())
 }
 
-pub fn measure_audio_file(path: impl AsRef<Path>) -> Result<AudioMeasurement> {
-    let path = path.as_ref();
-    let (mut format, mut decoder, track_id) = open_audio(path)?;
+const AUDIO_READ_LIMIT_MESSAGE: &str = "audio measurement limit exceeded: audio_read_bytes";
 
+fn audio_measurement_limit(name: &'static str) -> StorageError {
+    invalid(format!("audio measurement limit exceeded: {name}"))
+}
+
+fn audio_read_limit_error() -> io::Error {
+    io::Error::other(AUDIO_READ_LIMIT_MESSAGE)
+}
+
+fn check_audio_read_limit(exhausted: &AtomicBool) -> Result<()> {
+    if exhausted.load(Ordering::Relaxed) {
+        return Err(audio_measurement_limit("audio_read_bytes"));
+    }
+    Ok(())
+}
+
+/// Counts source reads across seeks; one extra byte distinguishes EOF from excess.
+struct BoundedMeasurementFile<T = File> {
+    file: T,
+    byte_len: u64,
+    remaining: u64,
+    exhausted: Arc<AtomicBool>,
+}
+
+impl<T: Read> Read for BoundedMeasurementFile<T> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if self.exhausted.load(Ordering::Relaxed) {
+            return Err(audio_read_limit_error());
+        }
+        let allowed = usize::try_from(self.remaining.saturating_add(1))
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = self.file.read(&mut buffer[..allowed])?;
+        let charged = u64::try_from(read).map_err(|_| {
+            self.exhausted.store(true, Ordering::Relaxed);
+            audio_read_limit_error()
+        })?;
+        if charged > self.remaining {
+            self.remaining = 0;
+            self.exhausted.store(true, Ordering::Relaxed);
+            return Err(audio_read_limit_error());
+        }
+        self.remaining -= charged;
+        Ok(read)
+    }
+}
+
+impl<T: Seek> Seek for BoundedMeasurementFile<T> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        if self.exhausted.load(Ordering::Relaxed) {
+            return Err(audio_read_limit_error());
+        }
+        self.file.seek(position)
+    }
+}
+
+impl<T: Read + Seek + Send + Sync> symphonia::core::io::MediaSource for BoundedMeasurementFile<T> {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.byte_len)
+    }
+}
+
+fn validate_measurement_track(
+    track: &Track,
+    params: &AudioCodecParameters,
+    limits: &ImportLimits,
+) -> Result<()> {
+    if params
+        .sample_rate
+        .is_some_and(|rate| !(8_000..=384_000).contains(&rate))
+    {
+        return Err(invalid(
+            "declared audio sample rate is outside supported bounds",
+        ));
+    }
+    let declared_channels = match params.channels.as_ref() {
+        Some(channels) => {
+            let count = u64::try_from(channels.count())
+                .map_err(|_| invalid("declared audio channel count overflow"))?;
+            if !(1..=32).contains(&count) {
+                return Err(invalid(
+                    "declared audio channel count is outside supported bounds",
+                ));
+            }
+            Some(count)
+        }
+        None => None,
+    };
+    if let Some(extra_data) = params.extra_data.as_ref() {
+        let bytes =
+            u64::try_from(extra_data.len()).map_err(|_| audio_measurement_limit("packet_bytes"))?;
+        if bytes > limits.packet_bytes() {
+            return Err(audio_measurement_limit("packet_bytes"));
+        }
+    }
+
+    // One channel is only a lower bound when the declared layout is unknown.
+    let channels = declared_channels.unwrap_or(1);
+    if let Some(frames) = params.max_frames_per_packet {
+        let samples = frames
+            .checked_mul(channels)
+            .ok_or_else(|| audio_measurement_limit("packet_samples"))?;
+        if samples > limits.packet_samples() {
+            return Err(audio_measurement_limit("packet_samples"));
+        }
+    }
+    if let Some(frames) = track.num_frames {
+        let samples = frames
+            .checked_mul(channels)
+            .ok_or_else(|| audio_measurement_limit("decoded_samples"))?;
+        if samples > limits.decoded_samples() {
+            return Err(audio_measurement_limit("decoded_samples"));
+        }
+        if let Some(rate) = params.sample_rate
+            && u128::from(frames) > u128::from(limits.audio_seconds()) * u128::from(rate)
+        {
+            return Err(audio_measurement_limit("audio_seconds"));
+        }
+    }
+    // Stream duration uses its own rational time base, not sample frames.
+    if let (Some(duration), Some(time_base)) = (track.duration, track.time_base) {
+        let declared = u128::from(duration.get()) * u128::from(time_base.numer.get());
+        let maximum = u128::from(limits.audio_seconds()) * u128::from(time_base.denom.get());
+        if declared > maximum {
+            return Err(audio_measurement_limit("audio_seconds"));
+        }
+    }
+    Ok(())
+}
+
+/// Import-only opening preserves existing waveform and original-mix contracts.
+fn open_measurement_audio(
+    path: &Path,
+    limits: &ImportLimits,
+) -> Result<(OpenAudio, Arc<AtomicBool>)> {
+    let source = File::open(path)?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() {
+        return Err(invalid("audio measurement source must be a regular file"));
+    }
+    if metadata.len() > limits.source_bytes() {
+        return Err(StorageError::BlobTooLarge {
+            size: metadata.len(),
+            limit: limits.source_bytes(),
+        });
+    }
+    let exhausted = Arc::new(AtomicBool::new(false));
+    let source = BoundedMeasurementFile {
+        file: source,
+        byte_len: metadata.len(),
+        remaining: limits.audio_read_bytes(),
+        exhausted: Arc::clone(&exhausted),
+    };
+    let stream = MediaSourceStream::new(Box::new(source), Default::default());
+    let mut hint = Hint::new();
+    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        hint.with_extension(extension);
+    }
+    let probed = get_probe().probe(
+        &hint,
+        stream,
+        FormatOptions::default(),
+        MetadataOptions::default(),
+    );
+    // A probe may transform an IO error while trying other format candidates.
+    check_audio_read_limit(&exhausted)?;
+    let format = probed.map_err(|error| invalid(format!("audio probe failed: {error}")))?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| invalid("audio source contains no decodable audio track"))?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .ok_or_else(|| invalid("audio codec parameters are unavailable"))?;
+    validate_measurement_track(track, params, limits)?;
+    let decoder = get_codecs()
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
+        .map_err(|error| invalid(format!("audio decoder unavailable: {error}")))?;
+    Ok(((format, decoder, track_id), exhausted))
+}
+
+pub fn measure_audio_file(
+    path: impl AsRef<Path>,
+    limits: &ImportLimits,
+) -> Result<AudioMeasurement> {
+    let ((mut format, mut decoder, track_id), exhausted) =
+        open_measurement_audio(path.as_ref(), limits)?;
+    let mut demux_packets = 0_u64;
     let mut decoded_frames = 0_u64;
+    let mut decoded_samples = 0_u64;
     let mut observed_rate = None;
     let mut observed_channels = None;
     loop {
-        let packet = match format.next_packet() {
+        let next = format.next_packet();
+        // Check on success, error and EOF: exhaustion cannot become truncation.
+        check_audio_read_limit(&exhausted)?;
+        let packet = match next {
             Ok(Some(packet)) => packet,
             Ok(None) => break,
             Err(SymphoniaError::ResetRequired) => {
@@ -141,23 +344,53 @@ pub fn measure_audio_file(path: impl AsRef<Path>) -> Result<AudioMeasurement> {
             }
             Err(error) => return Err(invalid(format!("audio demux failed: {error}"))),
         };
+        demux_packets = demux_packets
+            .checked_add(1)
+            .ok_or_else(|| audio_measurement_limit("demux_packets"))?;
+        if demux_packets > limits.demux_packets() {
+            return Err(audio_measurement_limit("demux_packets"));
+        }
+        let packet_bytes = u64::try_from(packet.data.len())
+            .map_err(|_| audio_measurement_limit("packet_bytes"))?;
+        if packet_bytes > limits.packet_bytes() {
+            return Err(audio_measurement_limit("packet_bytes"));
+        }
+        // Discarding a track does not erase its demux work or encoded bytes.
         if packet.track_id != track_id {
             continue;
         }
-        let decoded = decoder
-            .decode(&packet)
-            .map_err(|error| invalid(format!("audio decode failed: {error}")))?;
+        let decoded_result = decoder.decode(&packet);
+        check_audio_read_limit(&exhausted)?;
+        let decoded =
+            decoded_result.map_err(|error| invalid(format!("audio decode failed: {error}")))?;
         let spec = decoded.spec();
         let rate = spec.rate();
         let channels = u16::try_from(spec.channels().count())
             .map_err(|_| invalid("audio channel count exceeds supported bounds"))?;
         validate_decoded_format(&mut observed_rate, &mut observed_channels, rate, channels)?;
-        decoded_frames = decoded_frames
-            .checked_add(
-                u64::try_from(decoded.frames())
-                    .map_err(|_| invalid("decoded frame count overflow"))?,
-            )
+
+        let frames =
+            u64::try_from(decoded.frames()).map_err(|_| invalid("decoded frame count overflow"))?;
+        let block_samples = frames
+            .checked_mul(u64::from(channels))
+            .ok_or_else(|| audio_measurement_limit("packet_samples"))?;
+        if block_samples > limits.packet_samples() {
+            return Err(audio_measurement_limit("packet_samples"));
+        }
+        let next_samples = decoded_samples
+            .checked_add(block_samples)
+            .ok_or_else(|| audio_measurement_limit("decoded_samples"))?;
+        if next_samples > limits.decoded_samples() {
+            return Err(audio_measurement_limit("decoded_samples"));
+        }
+        let next_frames = decoded_frames
+            .checked_add(frames)
             .ok_or_else(|| invalid("decoded frame count overflow"))?;
+        if u128::from(next_frames) > u128::from(limits.audio_seconds()) * u128::from(rate) {
+            return Err(audio_measurement_limit("audio_seconds"));
+        }
+        decoded_samples = next_samples;
+        decoded_frames = next_frames;
     }
 
     let sample_rate_hz = observed_rate.ok_or_else(|| invalid("audio decoded no frames"))?;
@@ -509,7 +742,7 @@ mod tests {
         let path = temp.path().join("voice.wav");
         let samples = vec![0_i16; 72_000];
         write_pcm16_wav(&path, 48_000, 1, &samples);
-        let measured = measure_audio_file(&path).unwrap();
+        let measured = measure_audio_file(&path, &ImportLimits::default()).unwrap();
         assert_eq!(measured.sample_rate_hz, 48_000);
         assert_eq!(measured.channels, 1);
         assert_eq!(measured.decoded_frames, 72_000);
@@ -568,7 +801,31 @@ mod tests {
     }
 }
 
-/// Exact short-form PCM source bytes for first-party original MixPlan.
+#[cfg(test)]
+pub(super) type OriginalMixPhaseHook = Box<dyn FnOnce()>;
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static BEFORE_ORIGINAL_MIX_DECODE: std::cell::RefCell<Option<OriginalMixPhaseHook>> =
+        const { std::cell::RefCell::new(None) };
+    pub(super) static BEFORE_ORIGINAL_MIX_RECHECK: std::cell::RefCell<Option<OriginalMixPhaseHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn run_original_mix_decode_hook() {
+    let hook = BEFORE_ORIGINAL_MIX_DECODE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+#[cfg(test)]
+pub(super) fn run_original_mix_recheck_hook() {
+    let hook = BEFORE_ORIGINAL_MIX_RECHECK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// Exact PCM source bytes for first-party original MixPlan.
 /// Read only after Storage verified a project-owned, content-addressed blob.
 /// Does not resample, infer speech, normalize, or publish a rendered file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -578,24 +835,165 @@ pub struct OriginalMixDecodedPcm {
     pub sample_frames: u64,
     pub interleaved_s16le: Vec<u8>,
 }
-pub fn decode_original_mix_pcm(
-    owner_path: &Path,
-    original_asset_sha256: &str,
-) -> Result<OriginalMixDecodedPcm> {
-    let file = std::fs::symlink_metadata(owner_path)?;
-    if !file.is_file()
-        || file.file_type().is_symlink()
-        || !(44..=8 * 1024 * 1024).contains(&file.len())
+/// Closed native decode policies. The existing audition API always selects
+/// Audition15Seconds; a full-cut caller must provide the complete RevisionStamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginalMixDecodeBudget {
+    Audition15Seconds,
+    FullCut180Seconds,
+}
+
+impl OriginalMixDecodeBudget {
+    pub(crate) const fn source_bytes(self) -> u64 {
+        match self {
+            Self::Audition15Seconds => 8 * 1024 * 1024,
+            Self::FullCut180Seconds => 64 * 1024 * 1024,
+        }
+    }
+
+    const fn seconds(self) -> u64 {
+        match self {
+            Self::Audition15Seconds => 15,
+            Self::FullCut180Seconds => 180,
+        }
+    }
+
+    const fn sample_frames(self) -> u64 {
+        48_000 * self.seconds()
+    }
+
+    const fn channel_samples(self) -> u64 {
+        2 * self.sample_frames()
+    }
+}
+
+const ORIGINAL_MIX_PACKET_BYTES: u64 = 16 * 1024 * 1024;
+const ORIGINAL_MIX_BLOCK_SAMPLES: u64 = 1_048_576;
+const ORIGINAL_MIX_DEMUX_PACKETS: u64 = 1_000_000;
+const ORIGINAL_MIX_READ_BYTES: u64 = 256 * 1024 * 1024;
+
+fn original_mix_limit(name: &'static str) -> StorageError {
+    invalid(format!("Original mix decode limit exceeded: {name}"))
+}
+
+fn check_original_mix_read_limit(exhausted: &AtomicBool) -> Result<()> {
+    if exhausted.load(Ordering::Relaxed) {
+        return Err(original_mix_limit("audio_read_bytes"));
+    }
+    Ok(())
+}
+
+fn validate_original_mix_track(
+    track: &Track,
+    params: &AudioCodecParameters,
+    budget: OriginalMixDecodeBudget,
+) -> Result<()> {
+    if params.sample_rate.is_some_and(|rate| rate != 48_000)
+        || params
+            .channels
+            .as_ref()
+            .is_some_and(|channels| channels.count() != 2)
     {
         return Err(invalid(
-            "Original mix source must be a bounded immutable audio file",
+            "Original mix accepts only measured 48-kHz stereo audio: explicit resampling is a separate owner decision",
         ));
     }
-    let (mut format, mut decoder, track_id) = open_audio(owner_path)?;
+    if let Some(extra_data) = params.extra_data.as_ref() {
+        let bytes =
+            u64::try_from(extra_data.len()).map_err(|_| original_mix_limit("packet_bytes"))?;
+        if bytes > ORIGINAL_MIX_PACKET_BYTES {
+            return Err(original_mix_limit("packet_bytes"));
+        }
+    }
+    if let Some(frames) = params.max_frames_per_packet {
+        let samples = frames
+            .checked_mul(2)
+            .ok_or_else(|| original_mix_limit("block_samples"))?;
+        if samples > ORIGINAL_MIX_BLOCK_SAMPLES {
+            return Err(original_mix_limit("block_samples"));
+        }
+    }
+    if track
+        .num_frames
+        .is_some_and(|frames| frames > budget.sample_frames())
+    {
+        return Err(original_mix_limit("sample_frames"));
+    }
+    if let (Some(duration), Some(time_base)) = (track.duration, track.time_base) {
+        let declared = u128::from(duration.get()) * u128::from(time_base.numer.get());
+        let maximum = u128::from(budget.seconds()) * u128::from(time_base.denom.get());
+        if declared > maximum {
+            return Err(original_mix_limit("sample_frames"));
+        }
+    }
+    Ok(())
+}
+
+/// Decode the same verified container bytes captured by Storage. No source
+/// pathname is reopened by the decoder, and no full container clone is made.
+/// Individual codec calls are not a wall-clock or decoder-internal RAM bound.
+pub(crate) fn decode_original_mix_pcm_bytes(
+    bytes: Vec<u8>,
+    original_asset_sha256: &str,
+    budget: OriginalMixDecodeBudget,
+) -> Result<OriginalMixDecodedPcm> {
+    let byte_len = u64::try_from(bytes.len()).map_err(|_| original_mix_limit("source_bytes"))?;
+    if !(44..=budget.source_bytes()).contains(&byte_len) {
+        return Err(original_mix_limit("source_bytes"));
+    }
+    if hex::encode(Sha256::digest(&bytes)) != original_asset_sha256 {
+        return Err(invalid(
+            "Original source asset fingerprint differs from captured decode bytes",
+        ));
+    }
+
+    let exhausted = Arc::new(AtomicBool::new(false));
+    let source = BoundedMeasurementFile {
+        file: std::io::Cursor::new(bytes),
+        byte_len,
+        remaining: ORIGINAL_MIX_READ_BYTES,
+        exhausted: Arc::clone(&exhausted),
+    };
+    let stream = MediaSourceStream::new(Box::new(source), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("wav");
+    let probed = get_probe().probe(
+        &hint,
+        stream,
+        FormatOptions::default(),
+        MetadataOptions::default(),
+    );
+    check_original_mix_read_limit(&exhausted)?;
+    let mut format =
+        probed.map_err(|error| invalid(format!("Original mix audio probe failed: {error}")))?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| invalid("Original mix source contains no decodable audio track"))?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .ok_or_else(|| invalid("Original mix audio codec parameters are unavailable"))?;
+    validate_original_mix_track(track, params, budget)?;
+    let mut decoder = get_codecs()
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
+        .map_err(|error| invalid(format!("Original mix audio decoder unavailable: {error}")))?;
+
+    let maximum_output_bytes = budget
+        .sample_frames()
+        .checked_mul(4)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(|| original_mix_limit("output_bytes"))?;
     let mut raw = Vec::new();
-    let mut count = 0_u64;
+    let mut frames = 0_u64;
+    let mut samples = 0_u64;
+    let mut demux_packets = 0_u64;
     loop {
-        let packet = match format.next_packet() {
+        let next = format.next_packet();
+        // A swallowed read-limit error must not turn into a successful EOF.
+        check_original_mix_read_limit(&exhausted)?;
+        let packet = match next {
             Ok(Some(packet)) => packet,
             Ok(None) => break,
             Err(SymphoniaError::ResetRequired) => {
@@ -603,36 +1001,85 @@ pub fn decode_original_mix_pcm(
                     "Mixed audio track cannot change source format mid-decode",
                 ));
             }
-            Err(err) => {
+            Err(error) => {
                 return Err(invalid(format!(
-                    "Original mix decode packet invalid: {err}"
+                    "Original mix decode packet invalid: {error}"
                 )));
             }
         };
+        demux_packets = demux_packets
+            .checked_add(1)
+            .ok_or_else(|| original_mix_limit("demux_packets"))?;
+        if demux_packets > ORIGINAL_MIX_DEMUX_PACKETS {
+            return Err(original_mix_limit("demux_packets"));
+        }
+        let packet_bytes =
+            u64::try_from(packet.data.len()).map_err(|_| original_mix_limit("packet_bytes"))?;
+        if packet_bytes > ORIGINAL_MIX_PACKET_BYTES {
+            return Err(original_mix_limit("packet_bytes"));
+        }
+        // Every track consumes the finite demux and packet budgets.
         if packet.track_id != track_id {
             continue;
         }
-        let decoded = decoder
-            .decode(&packet)
-            .map_err(|err| invalid(format!("Original mix audio decode failed: {err}")))?;
-        if decoded.spec().rate() != 48000 || decoded.spec().channels().count() != 2 {
+        let decoded_result = decoder.decode(&packet);
+        check_original_mix_read_limit(&exhausted)?;
+        let decoded = decoded_result
+            .map_err(|error| invalid(format!("Original mix audio decode failed: {error}")))?;
+        if decoded.spec().rate() != 48_000 || decoded.spec().channels().count() != 2 {
             return Err(invalid(
                 "Original mix accepts only measured 48-kHz stereo audio: explicit resampling is a separate owner decision",
             ));
         }
-        let mut values = vec![0_f32; decoded.samples_interleaved()];
-        decoded.copy_to_slice_interleaved(&mut values);
-        if values.len() % 2 != 0 {
+        let block_frames =
+            u64::try_from(decoded.frames()).map_err(|_| original_mix_limit("sample_frames"))?;
+        let block_samples = block_frames
+            .checked_mul(2)
+            .ok_or_else(|| original_mix_limit("block_samples"))?;
+        if block_samples > ORIGINAL_MIX_BLOCK_SAMPLES {
+            return Err(original_mix_limit("block_samples"));
+        }
+        let block_len =
+            usize::try_from(block_samples).map_err(|_| original_mix_limit("block_samples"))?;
+        if decoded.samples_interleaved() != block_len {
             return Err(invalid("Original mix decoded an incomplete stereo frame"));
         }
-        count = count
-            .checked_add((values.len() / 2) as u64)
-            .ok_or_else(|| invalid("Original mix sample count overflow"))?;
-        if count > 48_000 * 15 {
-            return Err(invalid(
-                "Original mixed source exceeds the 15-second bounded audition budget",
-            ));
+        let next_frames = frames
+            .checked_add(block_frames)
+            .ok_or_else(|| original_mix_limit("sample_frames"))?;
+        if next_frames > budget.sample_frames() {
+            return Err(original_mix_limit("sample_frames"));
         }
+        let next_samples = samples
+            .checked_add(block_samples)
+            .ok_or_else(|| original_mix_limit("channel_samples"))?;
+        if next_samples > budget.channel_samples() {
+            return Err(original_mix_limit("channel_samples"));
+        }
+        let extra_bytes = block_len
+            .checked_mul(2)
+            .ok_or_else(|| original_mix_limit("output_bytes"))?;
+        let expected_bytes = next_frames
+            .checked_mul(4)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| original_mix_limit("output_bytes"))?;
+        if raw.len().checked_add(extra_bytes) != Some(expected_bytes) {
+            return Err(invalid("Original mix PCM byte count is inconsistent"));
+        }
+        // All block and cumulative bounds precede Motionwright output buffers.
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(block_len)
+            .map_err(|_| original_mix_limit("block_allocation"))?;
+        if expected_bytes > raw.capacity() {
+            let capacity = expected_bytes
+                .max(raw.capacity().saturating_mul(2))
+                .min(maximum_output_bytes);
+            raw.try_reserve_exact(capacity - raw.len())
+                .map_err(|_| original_mix_limit("output_allocation"))?;
+        }
+        values.resize(block_len, 0_f32);
+        decoded.copy_to_slice_interleaved(&mut values);
         for value in values {
             if !value.is_finite() || !(-1.0..=1.0).contains(&value) {
                 return Err(invalid(
@@ -642,38 +1089,21 @@ pub fn decode_original_mix_pcm(
             let quantized = (value * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
             raw.extend_from_slice(&quantized.to_le_bytes());
         }
+        frames = next_frames;
+        samples = next_samples;
     }
-    if count < 48_000 || raw.len() != count as usize * 4 {
+    if frames < 48_000
+        || u64::try_from(raw.len()).ok() != frames.checked_mul(4)
+        || samples != frames * 2
+    {
         return Err(invalid(
-            "Original mix requires one to fifteen seconds of complete stereo samples",
-        ));
-    }
-    // Verify bytes again after decode. A file that changed between the
-    // initial Storage digest grant and the final decode is never admitted.
-    let mut reader = File::open(owner_path)?;
-    let mut hasher = Sha256::new();
-    let mut total = 0_u64;
-    let mut block = [0_u8; 64 * 1024];
-    loop {
-        let read = reader.read(&mut block)?;
-        if read == 0 {
-            break;
-        }
-        total += read as u64;
-        if total > 8 * 1024 * 1024 {
-            return Err(invalid("Original source mutated beyond decode budget"));
-        }
-        hasher.update(&block[..read]);
-    }
-    if total != file.len() || hex::encode(hasher.finalize()) != original_asset_sha256 {
-        return Err(invalid(
-            "Original source asset fingerprint changed during PCM decode",
+            "Original mix requires at least one second of complete stereo samples within the selected budget",
         ));
     }
     Ok(OriginalMixDecodedPcm {
         original_asset_sha256: original_asset_sha256.into(),
         decoded_pcm_sha256: hex::encode(Sha256::digest(&raw)),
-        sample_frames: count,
+        sample_frames: frames,
         interleaved_s16le: raw,
     })
 }
@@ -681,6 +1111,22 @@ pub fn decode_original_mix_pcm(
 #[cfg(test)]
 mod original_mix_source_tests {
     use super::*;
+
+    // Preserve the original assertions through actual Storage capture and the
+    // canonical buffer decoder. The symlink case exercises the retained import
+    // opener; the Service integration cases cover a replaced CAS leaf.
+    fn decode_original_mix_pcm(
+        owner_path: &Path,
+        original_asset_sha256: &str,
+    ) -> Result<OriginalMixDecodedPcm> {
+        let temp = tempfile::tempdir()?;
+        let store = motionwright_storage::Store::open(temp.path().join("audio-fixture.sqlite3"))?;
+        let budget = OriginalMixDecodeBudget::Audition15Seconds;
+        let staged = store.stage_file_import_with_limit(owner_path, budget.source_bytes())?;
+        let descriptor = store.publish_file_import(&staged)?;
+        let bytes = store.read_blob(&descriptor.sha256, budget.source_bytes())?;
+        decode_original_mix_pcm_bytes(bytes, original_asset_sha256, budget)
+    }
     fn wav(rate: u32, channels: u16, frames: usize) -> (Vec<u8>, Vec<u8>) {
         let mut source = Vec::new();
         for sample in 0..frames {
@@ -747,5 +1193,78 @@ mod original_mix_source_tests {
         std::fs::write(&original, &wav).unwrap();
         std::os::unix::fs::symlink(&original, &linked).unwrap();
         assert!(decode_original_mix_pcm(&linked, &hex::encode(Sha256::digest(&wav))).is_err());
+    }
+}
+
+#[cfg(test)]
+mod measurement_budget_tests {
+    use super::*;
+
+    fn reader(path: &Path, limit: u64) -> BoundedMeasurementFile {
+        let file = File::open(path).unwrap();
+        BoundedMeasurementFile {
+            byte_len: file.metadata().unwrap().len(),
+            file,
+            remaining: limit,
+            exhausted: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn bounded_file_accepts_exact_budget_and_true_eof() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("exact.bin");
+        std::fs::write(&path, b"abcd").unwrap();
+        let mut source = reader(&path, 4);
+        let mut captured = Vec::new();
+        source.read_to_end(&mut captured).unwrap();
+        assert_eq!(captured, b"abcd");
+        let mut byte = [0_u8];
+        assert_eq!(source.read(&mut byte).unwrap(), 0);
+        assert_eq!(source.read(&mut byte).unwrap(), 0);
+        assert_eq!(source.remaining, 0);
+        assert!(!source.exhausted.load(Ordering::Relaxed));
+        assert_eq!(source.file.stream_position().unwrap(), 4);
+    }
+
+    #[test]
+    fn bounded_file_seek_charges_rereads_and_keeps_exhaustion() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("seek.bin");
+        std::fs::write(&path, b"abcdef").unwrap();
+        let mut source = reader(&path, 4);
+        let mut pair = [0_u8; 2];
+        source.read_exact(&mut pair).unwrap();
+        assert_eq!(&pair, b"ab");
+        source.seek(SeekFrom::Start(0)).unwrap();
+        source.read_exact(&mut pair).unwrap();
+        assert_eq!(&pair, b"ab");
+        assert_eq!(source.remaining, 0);
+        assert!(source.read(&mut pair).is_err());
+        assert_eq!(source.file.stream_position().unwrap(), 3);
+        assert!(source.exhausted.load(Ordering::Relaxed));
+        assert!(source.seek(SeekFrom::Start(0)).is_err());
+        assert!(source.read(&mut pair).is_err());
+        assert_eq!(source.file.stream_position().unwrap(), 3);
+        assert_eq!(source.remaining, 0);
+    }
+
+    #[test]
+    fn bounded_file_consumes_only_one_excess_probe_byte() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("excess.bin");
+        std::fs::write(&path, [7_u8; 32]).unwrap();
+        let mut source = reader(&path, 4);
+        assert!(source.read_to_end(&mut Vec::new()).is_err());
+        assert_eq!(source.file.stream_position().unwrap(), 5);
+        assert_eq!(source.remaining, 0);
+        assert!(source.exhausted.load(Ordering::Relaxed));
+        for _ in 0..3 {
+            assert!(source.read(&mut [0_u8; 8]).is_err());
+            assert_eq!(source.file.stream_position().unwrap(), 5);
+        }
+        assert_eq!(source.read(&mut []).unwrap(), 0);
+        assert!(source.exhausted.load(Ordering::Relaxed));
+        assert_eq!(source.file.stream_position().unwrap(), 5);
     }
 }

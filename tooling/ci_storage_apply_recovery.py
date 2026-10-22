@@ -14,9 +14,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+from types import MappingProxyType
 
 SOURCE_SHA = "5faedc090aa45b33833b229050c09bf424de938f"
 SOURCE_TREE = "b3936a746abf33d3b066b517d8b1493bda2bf372"
@@ -232,14 +234,16 @@ def original_json(path, root):
     return value, original
 
 
-def phase_snapshot_shape(value):
+def phase_snapshot_shape(value, cohort="historical5fa"):
     """Check retained representation; the unchanged Rust assertions own semantics."""
+    require(cohort in {"historical5fa", "binding4"}, "unknown phase cohort")
+    receipt_width = 6 if cohort == "binding4" else 4
     fields = {"project", "events", "receipts", "registrations", "evictions",
               "manifest", "immutable_blob"}
     require(set(value) == fields, "phase snapshot fields differ")
     require(isinstance(value["project"], list) and len(value["project"]) == 4
             and all(isinstance(x, str) for x in value["project"]), "phase project representation differs")
-    for field, width in (("events", 4), ("receipts", 4), ("registrations", 6), ("evictions", 6)):
+    for field, width in (("events", 4), ("receipts", receipt_width), ("registrations", 6), ("evictions", 6)):
         require(isinstance(value[field], list) and all(isinstance(row, list)
                 and len(row) == width and all(isinstance(x, str) for x in row) for row in value[field]),
                 "phase SQL representation differs")
@@ -252,7 +256,7 @@ def phase_snapshot_shape(value):
     require(bool(value["immutable_blob"]), "phase immutable blob is empty")
 
 
-def admit_phase_custody(container, name):
+def admit_phase_custody(container, name, cohort="historical5fa"):
     """Admit the actual five phase files and three child originals, without replay."""
     require(name in CHECKPOINTS, "unselected phase case")
     checkpoint = CHECKPOINTS[name]
@@ -302,7 +306,7 @@ def admit_phase_custody(container, name):
     for phase in PHASES:
         value, identity = original_json(directory / (phase + ".json"), container)
         require(identity == files[phase + ".json"], "phase changed during admission")
-        phase_snapshot_shape(value)
+        phase_snapshot_shape(value, cohort)
     process_files = sorted(x for x in files if x.endswith(".process.json"))
     require(len(process_files) == 3, "expected one writer and two observers")
     processes, consumed = [], set(fixed)
@@ -392,27 +396,146 @@ def finish(before, after, binary, rows, enumerated, context):
             "human_acceptance": False, "release_authorized": False}
 
 
-def execute(argv, cwd, env, output, label, timeout, context):
-    row = {"argv": argv, "cwd": str(cwd), "started_utc": now(), "context": context}
-    with (output / (label + ".stdout.log")).open("xb") as out, (output / (label + ".stderr.log")).open("xb") as err:
+class UnknownObservation(VerificationError):
+    """A launched or uncertain command whose complete receipt was not retained."""
+
+    def __init__(self, message, command):
+        super().__init__(message)
+        self.command = command
+
+
+def execution_unknown(command):
+    # Future unknown observations must also stop a caller, never become FAIL
+    # followed by another operation. This predicate grants no success credit.
+    return str(command.get("observation", "")).startswith("UNKNOWN")
+
+
+def supports_owned_process_group():
+    return os.name == "posix"
+
+
+def owned_process_group_state(pid):
+    """Observe only the POSIX session group created for this direct child."""
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return "ABSENT"
+    return "PRESENT"
+
+
+def stop_observed_process(process, owned_group):
+    """Bounded cleanup; uncertainty stays UNKNOWN even after successful cleanup."""
+    errors = []
+    for force in (False, True):
         try:
-            result = subprocess.run(argv, cwd=cwd, env=env, stdout=out, stderr=err, timeout=timeout)
-            row.update(exit_code=result.returncode, observation="DIRECT_PROCESS_EXIT_OBSERVED")
-        except subprocess.TimeoutExpired:
-            row.update(exit_code=None, observation="UNKNOWN_TIMEOUT_NO_RETRY",
-                       diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
-        except OSError as error:
-            row.update(exit_code=None, observation="NOT_STARTED_LAUNCH_ERROR", error=str(error))
+            if owned_group:
+                os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            elif process.poll() is None:
+                process.kill() if force else process.terminate()
+        except ProcessLookupError:
+            pass
+        except BaseException as error:
+            errors.append(type(error).__name__ + ": " + str(error))
+        try:
+            process.wait(timeout=2)
+        except BaseException as error:
+            errors.append(type(error).__name__ + ": " + str(error))
+        try:
+            root_done = process.poll() is not None
+            group_done = not owned_group or owned_process_group_state(process.pid) == "ABSENT"
+            if root_done and group_done:
+                break
+        except BaseException as error:
+            errors.append(type(error).__name__ + ": " + str(error))
+    return errors
+
+
+def execute(argv, cwd, env, output, label, timeout, context):
+    owned_group = supports_owned_process_group()
+    row = {"argv": argv, "cwd": str(cwd), "started_utc": now(), "context": context,
+           "process_observation_schema": "motionwright.command-process-observation/2",
+           "process_boundary": "OWNED_POSIX_SESSION_GROUP" if owned_group else "DIRECT_PROCESS_ONLY",
+           "escaped_descendants": "NOT_OBSERVED", "pid": None,
+           "owned_group_after_wait": "NOT_OBSERVED", "cleanup_errors": []}
+    process = None
+    try:
+        with (output / (label + ".stdout.log")).open("xb") as out, (output / (label + ".stderr.log")).open("xb") as err:
+            try:
+                process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
+                                           start_new_session=owned_group)
+            except (FileNotFoundError, PermissionError) as error:
+                row.update(exit_code=None, observation="NOT_STARTED_LAUNCH_ERROR", error=str(error))
+            except OSError as error:
+                row.update(exit_code=None, observation="UNKNOWN_PROCESS_NO_RETRY",
+                           uncertainty_reason="SPAWN_HANDLE_NOT_OBSERVED",
+                           error=type(error).__name__ + ": " + str(error),
+                           diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+            else:
+                row["pid"] = process.pid
+                try:
+                    row["exit_code"] = process.wait(timeout=timeout)
+                    if owned_group:
+                        row["owned_group_after_wait"] = owned_process_group_state(process.pid)
+                        if row["owned_group_after_wait"] != "ABSENT":
+                            row.update(observation="UNKNOWN_PROCESS_NO_RETRY",
+                                       uncertainty_reason="OWNED_GROUP_PRESENT_AFTER_DIRECT_EXIT")
+                    if not execution_unknown(row):
+                        row["observation"] = "DIRECT_PROCESS_EXIT_OBSERVED"
+                except subprocess.TimeoutExpired as error:
+                    row.update(exit_code=None, observation="UNKNOWN_TIMEOUT_NO_RETRY",
+                               uncertainty_reason="DIRECT_WAIT_TIMEOUT", error=str(error))
+                except BaseException as error:
+                    row.update(exit_code=None, observation="UNKNOWN_PROCESS_NO_RETRY",
+                               uncertainty_reason="POST_LAUNCH_OBSERVATION_ERROR",
+                               error=type(error).__name__ + ": " + str(error))
+                if execution_unknown(row):
+                    row["diagnostic_custody"] = "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"
+                    try:
+                        row["cleanup_errors"] = stop_observed_process(process, owned_group)
+                    except BaseException as error:
+                        row["cleanup_errors"].append(type(error).__name__ + ": " + str(error))
+    except BaseException as error:
+        if process is None and isinstance(error, OSError) and not execution_unknown(row):
+            # Log setup failed, or launch was known not to start. A missing
+            # handle does not erase an already observed uncertain launch.
+            raise
+        if execution_unknown(row):
+            row.setdefault("secondary_observation_errors", []).append(
+                type(error).__name__ + ": " + str(error))
+        else:
+            row.update(exit_code=None, observation="UNKNOWN_PROCESS_NO_RETRY",
+                       uncertainty_reason="OBSERVATION_OR_STREAM_FINALIZATION_ERROR",
+                       error=type(error).__name__ + ": " + str(error))
+        row["diagnostic_custody"] = "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"
+        if process is not None:
+            try:
+                row["cleanup_errors"].extend(stop_observed_process(process, owned_group))
+            except BaseException as cleanup_error:
+                row["cleanup_errors"].append(type(cleanup_error).__name__ + ": " + str(cleanup_error))
     row["finished_utc"] = now()
     row["log_custody"] = "VERIFIED_SNAPSHOT"
     for stream in ("stdout", "stderr"):
         path = output / (label + "." + stream + ".log")
         try:
             row[stream] = fingerprint(path, output)
-        except (OSError, VerificationError) as error:
+        except BaseException as error:
             row["log_custody"] = "INCOMPLETE"
-            row[stream] = {"path": path.name, "custody_error": str(error)}
-    write_new(output / (label + ".command.json"), row)
+            row[stream] = {"path": path.name, "custody_error": type(error).__name__ + ": " + str(error)}
+            if row.get("observation") == "DIRECT_PROCESS_EXIT_OBSERVED":
+                row.update(observation="UNKNOWN_CUSTODY_NO_RETRY",
+                           uncertainty_reason="STREAM_LOG_CUSTODY_FAILED")
+            elif not execution_unknown(row) and not isinstance(error, (OSError, VerificationError)):
+                row.update(observation="UNKNOWN_PROCESS_NO_RETRY",
+                           uncertainty_reason="STREAM_OBSERVATION_INTERRUPTED")
+    try:
+        write_new(output / (label + ".command.json"), row)
+    except BaseException as error:
+        row.update(observation="UNKNOWN_CUSTODY_NO_RETRY",
+                   uncertainty_reason="COMMAND_RECEIPT_PERSISTENCE_FAILED",
+                   receipt_error=type(error).__name__ + ": " + str(error))
+        # Do not rewrite a potentially partial receipt or lose the observation
+        # in a generic FAIL. The caller retains this row in its own successor.
+        raise UnknownObservation("command receipt could not be retained; no retry", row) from error
     return row
 
 
@@ -477,12 +600,15 @@ def run(repo, output, source_sha):
              "CARGO_PROFILE_TEST_DEBUG", "CARGO_PROFILE_DEV_DEBUG")}
         receipt["phase"] = "compile"
         for label, argv in (("rustc-version", ["rustc", "-Vv"]), ("cargo-version", ["cargo", "-V"])):
-            require(execute(argv, repo, env, output, label, 45, context)["exit_code"] == 0, "tool identity failed")
+            observed = execute(argv, repo, env, output, label, 45, context)
+            if execution_unknown(observed):
+                raise UnknownObservation("tool observation is UNKNOWN", observed)
+            require(observed["exit_code"] == 0, "tool identity failed")
         build = execute(["cargo", "test", "--locked", "-p", "motionwright-storage", "--lib", "--no-run",
                          "--message-format=json"], repo, env, output, "compile", 1500, context)
         receipt["build"] = build
-        if build["observation"] == "UNKNOWN_TIMEOUT_NO_RETRY":
-            receipt["status"] = "UNKNOWN"
+        if execution_unknown(build):
+            raise UnknownObservation("build observation is UNKNOWN", build)
         binary = select_binary(read_original(output, build, "stdout"), build["exit_code"], repo, target)
         receipt["binary"] = binary
         copy = output / ("executed-test-binary.exe" if context["RUNNER_OS"] == "Windows" else "executed-test-binary")
@@ -492,8 +618,8 @@ def run(repo, output, source_sha):
         receipt["retained_binary"] = retained
         receipt["phase"] = "roster"
         listing = execute([binary["absolute_path"], "--list", "--format", "terse"], repo, env, output, "roster", 45, context)
-        if listing["observation"] == "UNKNOWN_TIMEOUT_NO_RETRY":
-            receipt["status"] = "UNKNOWN"
+        if execution_unknown(listing):
+            raise UnknownObservation("roster observation is UNKNOWN", listing)
         enumerated = selected_roster(read_original(output, listing, "stdout"), listing["exit_code"], context["RUNNER_OS"])
         receipt["enumerated_cases"] = list(enumerated)
         require(snapshot() == before, "source changed during compilation")
@@ -517,9 +643,9 @@ def run(repo, output, source_sha):
                               repo, case_env, output, label, 120, context)
             if command["observation"] != "NOT_STARTED_LAUNCH_ERROR":
                 receipt["case_processes_started"] += 1
-            unknown = command["observation"] == "UNKNOWN_TIMEOUT_NO_RETRY"
+            unknown = execution_unknown(command)
             if unknown:
-                receipt["status"] = "UNKNOWN"
+                raise UnknownObservation("case observation is UNKNOWN", command)
             after_binary = {"absolute_path": binary["absolute_path"], **fingerprint(Path(binary["absolute_path"]), target)}
             assertion = None
             try:
@@ -550,6 +676,9 @@ def run(repo, output, source_sha):
                     "phase checkpoint inventory incomplete or unexpected")
         receipt.update(finish(before, after, binary, receipt["results"], enumerated, context))
         receipt["phase"] = "complete"
+    except UnknownObservation as error:
+        receipt.update(status="UNKNOWN", unsealed_command=error.command,
+                       error=str(error), terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
     except Exception as error:
         receipt["error"] = type(error).__name__ + ": " + str(error)
     receipt["finished_utc"] = now()
@@ -561,13 +690,591 @@ def run(repo, output, source_sha):
     return 0 if receipt["status"] == "PASS_EXACT_SOURCE_SELECTED_G2" else 1
 
 
+
+# Historical product constants and receipt schemas remain frozen.
+# Future executions use the versioned shared process observation above.
+BINDING4_SOURCE_SHA = "449de7a315a513468610d517e78f9ab87f76ae9d"
+BINDING4_SOURCE_TREE = "6193f0f2721914e84bac571986cacd5492f8a7c9"
+BINDING4_REVIEWED = MappingProxyType({'Cargo.lock': '5a70f296cd65e9fa9c5f9f5265a7f13735d72b74496b05b2d9e4501cbd604cdd',
+ 'Cargo.toml': '455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0',
+ 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1',
+ 'crates/storage/Cargo.toml': '02d305e94bf37f92d643ec9b7bae0eeab104dffcea08be44029d86f4bd76b8cb',
+ 'crates/storage/src/apply_crash_tests.rs': '9febb826879b1180ddd8afc84256a7fd6d7b76c3c5769c726ad612c2adc3e974',
+ 'crates/storage/src/apply_receipt_binding.rs': '9922802f0deaa32c9e2b2dee7d3d0d7fbcfdfa58b2047b506f0432fd9db4d4af',
+ 'crates/storage/src/file_import.rs': '5304deb69723dda86036ae88d5de5b60479af17262631a5fc234ae62e01dec0b',
+ 'crates/storage/src/lib.rs': '058b6340a8ffb046e49330997b8c7b5319c5e98998820fd02920efa4363ec903',
+ 'crates/storage/src/production.rs': '3d106e93c8c4a5fe163f9bcb8443b8d364d88db009f856de6001971461dcafa9',
+ 'crates/storage/src/project_creation.rs': '8b025a21443ba73ef9f712264e010d3fda605ebf37df71d10c7d79d2063b0dc9',
+ 'crates/storage/tests/apply_binding_migration.rs': '25500c33cbb4ad19079ad8e5bfa396bcf21afb7fd9595818493c082d11313ace',
+ 'crates/storage/tests/apply_receipt_binding.rs': 'b74d2e616e880da1b9be515d3dcb5d92332af557f291b88bc9b34245b6c45274',
+ 'crates/storage/tests/apply_receipt_integrity.rs': 'cc995895ccfae9c8f584e15555e38aeccdca684f3afcc5b64d72b69619428883',
+ 'crates/storage/tests/schema_migration_atomicity.rs': '0df1d3e87dbd2b1b14687ed58cd1a51fc60e58aa56d3c1467cb5951a8f3b870b',
+ 'docs/reliability/apply-receipt-binding.md': '7fe6cecacb86b0965ebcb4ab0dd71c581d3be417c8295c3c45bc839d1c74c92c'})
+BASELINE_SOURCE_SHA = "c9929498f49bcd03101390c44b5a12f31e43f052"
+BASELINE_SOURCE_TREE = "02f2829de924af92e7d146b4e3b87da0da0b12d8"
+BASELINE_REVIEWED = MappingProxyType({'crates/storage/src/lib.rs': '11c0a97ca6c20a47b7e61217146a831b2bba8c53581373317c20e714b1a07bf2',
+ 'crates/storage/src/apply_crash_tests.rs': '3198697fd965b471d1187559d82bf487fe71b15a76aeb7af3333cf945e29bbc5',
+ 'crates/storage/tests/apply_receipt_binding.rs': 'c7b92ab20966ee08d709da15020978658e3982af9b2d2eb4f62d46ddb81d022a',
+ 'crates/storage/Cargo.toml': '02d305e94bf37f92d643ec9b7bae0eeab104dffcea08be44029d86f4bd76b8cb',
+ 'Cargo.toml': '455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0',
+ 'Cargo.lock': '5a70f296cd65e9fa9c5f9f5265a7f13735d72b74496b05b2d9e4501cbd604cdd',
+ 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1',
+ 'docs/reliability/storage-apply-process-recovery.md': '063323aa4c3fd58ae84b70d6f356cff6983973ee0399d549757c4d84d5d25cd7'})
+BINDING4_INTEGRATIONS = MappingProxyType({'apply_receipt_integrity': ('known_request_rejects_a_valid_result_from_another_project',
+                             'known_request_rejects_a_different_embedded_request_id',
+                             'known_request_rejects_a_different_result_generation',
+                             'known_request_rejects_a_persisted_replay_flag',
+                             'known_request_rejects_an_inconsistent_revision_transition',
+                             'known_request_rejects_a_valid_result_ahead_of_current_authority',
+                             'known_request_rejects_a_result_that_breaks_domain_invariants',
+                             'known_request_rejects_a_result_bound_to_another_valid_event',
+                             'known_request_rejects_a_missing_commit_event',
+                             'known_request_rejects_a_changed_commit_event_payload',
+                             'known_request_rejects_a_changed_commit_event_kind',
+                             'known_request_replays_its_original_snapshot_after_later_edit_and_reopen'),
+ 'apply_receipt_binding': ('versioned_binding_rejects_same_change_from_a_later_execution',
+                           'lost_ack_after_later_replay_observes_the_original_commit_after_reopen',
+                           'legacy_representation_remains_unverified_without_backfill_or_reapplication',
+                           'observer_distinguishes_mismatch_absence_and_authority_without_writes',
+                           'unsupported_contract_is_explicit_and_never_becomes_absence_or_legacy',
+                           'malformed_or_oversized_binding_never_downgrades_or_repairs',
+                           'invalid_sqlite_receipt_types_and_utf8_are_content_failures',
+                           'historical_branch_switch_is_not_reconstructed_from_the_current_head',
+                           'exact_revisions_survive_above_javascript_integer_range_and_reject_sqlite_overflow',
+                           'complete_observation_wire_fits_budget_for_maximum_request_keys',
+                           'imported_v1_result_and_event_kind_share_the_canonical_verifier',
+                           'imported_v1_observation_and_recovery_need_no_source_or_cas_after_reopen',
+                           'typed_creation_rejects_generic_apply_binding_markers_without_repair'),
+ 'apply_binding_migration': ('schema3_upgrade_preserves_both_legacy_families_and_extensions',
+                             'reserved_legacy_columns_are_rejected_before_wal_or_schema_changes',
+                             'incomplete_or_misdeclared_schema4_columns_fail_before_wal',
+                             'noncanonical_marker_constraints_are_rejected_without_probing_writes',
+                             'real_quoted_constraint_and_harmless_extensions_remain_admissible',
+                             'future_binding_schema_is_never_adopted_or_downgraded',
+                             'schema3_import_recovery_remains_source_free_and_unverified_after_migration')})
+BINDING4_UNIT_CASES = ('apply_receipt_binding::tests::observation_succeeds_on_query_only_connection_without_sql_changes',
+ 'apply_receipt_binding::tests::observation_keeps_one_snapshot_during_real_peer_commit',
+ 'apply_receipt_binding::tests::resealed_noncanonical_decimal_is_still_invalid',
+ 'apply_receipt_binding::tests::sqlite_statement_failure_is_not_content_failure_or_absence',
+ 'apply_receipt_binding::tests::schema_constraint_tokens_cannot_be_supplied_by_literals_or_comments',
+ 'apply_receipt_binding::tests::schema_inspection_bounds_ddl_tokens_and_nesting',
+ 'apply_receipt_binding::tests::every_legacy_version_rejects_reserved_hidden_and_case_variant_columns')
+BINDING4_PHASE_CASES = tuple(CHECKPOINTS)
+BINDING4_DDL_CASE = "apply_crash_tests::binding_migration_ddl_rolls_back_after_abrupt_exit"
+BINDING4_BASELINE_CASE = "versioned_binding_rejects_same_change_from_a_later_execution"
+BINDING4_CORE_GROUPS = ("integrity12", "binding13", "migration7", "binding-unit7",
+                       *(f"phase:{name}" for name in BINDING4_PHASE_CASES), "ddl")
+BINDING4_PROCESS_GROUPS = (*BINDING4_CORE_GROUPS[4:],)
+# The current product is a separate reviewed source, not a relabelled historical run.
+CURRENT_SOURCE_SHA = "2789c76c703f48bc2789f1a30a71fe1911e3600e"
+CURRENT_SOURCE_TREE = "97e828db37353d026e28bee2f09b2d083e2cc98a"
+CURRENT_REVIEWED = MappingProxyType({'Cargo.lock': 'cf5d0fe15f6a1ca3aa63681f9a1d9b5d646efda9bee214243f1b2efa77119f1b',
+ 'Cargo.toml': '455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0',
+ 'SOURCE_LOCK.json': 'f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1',
+ 'crates/storage/Cargo.toml': '02d305e94bf37f92d643ec9b7bae0eeab104dffcea08be44029d86f4bd76b8cb',
+ 'crates/storage/src/apply_crash_tests.rs': '9febb826879b1180ddd8afc84256a7fd6d7b76c3c5769c726ad612c2adc3e974',
+ 'crates/storage/src/apply_receipt_binding.rs': '9922802f0deaa32c9e2b2dee7d3d0d7fbcfdfa58b2047b506f0432fd9db4d4af',
+ 'crates/storage/src/file_import.rs': '991f41c2cf5241f2dedf8ac83eefbdf44ae04422978d409c34e556abea4fb70b',
+ 'crates/storage/src/lib.rs': 'db8976efd0cccbb2a3c36f0a4b21dd78738e76166297cd21cfd33f7f21bcd8a4',
+ 'crates/storage/src/production.rs': '3d106e93c8c4a5fe163f9bcb8443b8d364d88db009f856de6001971461dcafa9',
+ 'crates/storage/src/project_creation.rs': '8b025a21443ba73ef9f712264e010d3fda605ebf37df71d10c7d79d2063b0dc9',
+ 'crates/storage/tests/apply_binding_migration.rs': '25500c33cbb4ad19079ad8e5bfa396bcf21afb7fd9595818493c082d11313ace',
+ 'crates/storage/tests/apply_receipt_binding.rs': 'b74d2e616e880da1b9be515d3dcb5d92332af557f291b88bc9b34245b6c45274',
+ 'crates/storage/tests/apply_receipt_integrity.rs': 'cc995895ccfae9c8f584e15555e38aeccdca684f3afcc5b64d72b69619428883',
+ 'crates/storage/tests/schema_migration_atomicity.rs': '0df1d3e87dbd2b1b14687ed58cd1a51fc60e58aa56d3c1467cb5951a8f3b870b',
+ 'docs/reliability/apply-receipt-binding.md': '7fe6cecacb86b0965ebcb4ab0dd71c581d3be417c8295c3c45bc839d1c74c92c'})
+BINDING4_EXECUTION_MODES = ("binding4-core44", "binding4-process", "current-process")
+MODES = ("source", "historical5fa", "binding4-core44", "binding4-process",
+         "current-source", "current-process")
+
+
+
+def binding4_product_profile(mode):
+    """Select an exact reviewed product without changing historical identities."""
+    require(mode in BINDING4_EXECUTION_MODES, "unknown binding4 product mode")
+    if mode == "current-process":
+        return CURRENT_SOURCE_SHA, CURRENT_SOURCE_TREE, CURRENT_REVIEWED
+    return BINDING4_SOURCE_SHA, BINDING4_SOURCE_TREE, BINDING4_REVIEWED
+
+
+
+def select_mode(mode, source_sha, platforms):
+    require(mode in MODES, "unknown mode")
+    if mode == "source":
+        require(source_sha == SOURCE_SHA and platforms == "both",
+                "source mode requires its explicit default selection")
+    elif mode == "historical5fa":
+        require(source_sha == SOURCE_SHA and platforms in {"both", "windows", "macos"},
+                "historical product or platform differs")
+    elif mode == "binding4-core44":
+        require(source_sha == BINDING4_SOURCE_SHA and platforms == "linux",
+                "core44 requires reviewed binding4 source and Linux")
+    elif mode == "binding4-process":
+        require(source_sha == BINDING4_SOURCE_SHA and platforms in {"both", "windows", "macos"},
+                "binding4 process source or platform differs")
+    elif mode == "current-source":
+        require(source_sha == CURRENT_SOURCE_SHA and platforms == "both",
+                "current source controls require the exact reviewed product and both selection")
+    else:
+        require(source_sha == CURRENT_SOURCE_SHA and platforms in {"both", "windows", "macos"},
+                "current process source or platform differs")
+    rows = [{"platform": "windows", "runner": "windows-2025"},
+            {"platform": "macos", "runner": "macos-15"}]
+    matrix = {"include": [row for row in rows if platforms in {"both", row["platform"]}]} \
+        if mode in {"historical5fa", "binding4-process", "current-process"} else {"include": []}
+    return {"mode": mode, "source_sha": source_sha, "platforms": platforms, "matrix": matrix,
+            "tests_executed": 0, "formal_acceptance": False}
+
+
+def binding4_context(env, source_sha, mode, runtime_platform=None):
+    runtime_platform = sys.platform if runtime_platform is None else runtime_platform
+    platform = {"linux": ("Linux", "linux"), "win32": ("Windows", "windows"),
+                "darwin": ("macOS", "macos")}.get(runtime_platform)
+    require(platform is not None, "unsupported binding4 runtime platform")
+    select_mode(mode, source_sha, platform[1])
+    require(mode in BINDING4_EXECUTION_MODES, "not a binding4 execution mode")
+    require(env.get("RUNNER_OS") == platform[0], "binding4 runner OS differs")
+    require(env.get("GITHUB_ACTIONS") == "true" and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
+            "binding4 execution requires explicit dispatch")
+    for key in ("GITHUB_SHA", "GITHUB_WORKFLOW_SHA"):
+        require(SHA.fullmatch(env.get(key, "")), "missing full workflow SHA")
+    require(env["GITHUB_SHA"] == env["GITHUB_WORKFLOW_SHA"], "workflow checkout identity differs")
+    for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+        require(re.fullmatch(r"[1-9][0-9]*", env.get(key, "")), "missing run or attempt")
+    job = "storage-apply-binding-core" if mode == "binding4-core44" else "storage-apply-recovery"
+    require(env.get("GITHUB_JOB") == job, "wrong logical binding4 job")
+    require(bool(env.get("GITHUB_REPOSITORY")) and env.get("GITHUB_WORKFLOW_REF", "").startswith(
+        env["GITHUB_REPOSITORY"] + "/" + WORKFLOW + "@"), "wrong workflow identity")
+    keys = ("GITHUB_SHA", "GITHUB_WORKFLOW_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_REPOSITORY",
+            "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "RUNNER_OS", "RUNNER_ARCH",
+            "RUNNER_NAME", "ImageOS", "ImageVersion")
+    return {"product_source_sha": source_sha, "mode": mode, "cohort": "binding4",
+            "baseline_source_sha": BASELINE_SOURCE_SHA if mode == "binding4-core44" else None,
+            **{key: env.get(key, "") for key in keys}}
+
+
+
+def binding4_command_context(context, role):
+    require(role in {"product", "baseline"}, "unknown command source role")
+    source_sha, _tree, _reviewed = binding4_product_profile(context["mode"])
+    require(context.get("product_source_sha") == source_sha
+            and context.get("cohort") == "binding4", "command product source differs")
+    require(role != "baseline" or context["mode"] == "binding4-core44", "unselected baseline")
+    return {**context, "command_source_role": role,
+            "command_source_sha": BASELINE_SOURCE_SHA if role == "baseline" else source_sha}
+
+
+
+def binding4_source_snapshot(repo, role, *, mode="binding4-process"):
+    require(role in {"product", "baseline"}, "unknown snapshot source role")
+    if role == "product":
+        sha, tree, reviewed = binding4_product_profile(mode)
+    else:
+        require(mode in {"binding4-core44", "binding4-process"}, "unselected current baseline")
+        sha, tree, reviewed = BASELINE_SOURCE_SHA, BASELINE_SOURCE_TREE, BASELINE_REVIEWED
+    observed = source_snapshot(repo, sha, tuple(reviewed), tree)
+    require(observed["sha"] == sha and observed["tree"] == tree
+            and set(observed["files"]) == set(reviewed), "binding4 source inventory differs")
+    require(all(observed["files"][name]["sha256"] == value for name, value in reviewed.items()),
+            "binding4 reviewed source bytes differ")
+    return observed
+
+
+def select_binding4_binaries(raw, code, repo, target, mode, baseline=False):
+    require(mode in BINDING4_EXECUTION_MODES, "unknown binary selection mode")
+    require(not baseline or mode == "binding4-core44", "unselected baseline build")
+    require(code == 0, "compilation did not succeed")
+    messages = [strict_json(line) for line in raw.decode().splitlines() if line.strip()]
+    finished = [x for x in messages if x.get("reason") == "build-finished"]
+    require(len(finished) == 1 and finished[0].get("success") is True, "missing compile completion")
+    targets = ("apply_receipt_binding",) if baseline else (
+        ("motionwright_storage", *BINDING4_INTEGRATIONS) if mode == "binding4-core44"
+        else ("motionwright_storage",))
+    result = {}
+    if "motionwright_storage" in targets:
+        result["motionwright_storage"] = select_binary(raw, code, repo, target)
+    relevant = [x for x in messages if x.get("reason") == "compiler-artifact"
+                and x.get("executable") and isinstance(x.get("manifest_path"), str)
+                and Path(x["manifest_path"]).absolute() == repo / "crates/storage/Cargo.toml"]
+    require({x.get("target", {}).get("name") for x in relevant} == set(targets)
+            and len(relevant) == len(targets), "unexpected or duplicate selected test target")
+    for name in targets:
+        if name == "motionwright_storage":
+            continue
+        candidates = [x for x in messages if x.get("reason") == "compiler-artifact"
+                      and x.get("executable") and x.get("target", {}).get("name") == name]
+        require(len(candidates) == 1, "integration binary is missing or ambiguous")
+        item = candidates[0]
+        require(item["target"].get("kind") == ["test"] and item.get("profile", {}).get("test") is True,
+                "not an integration test binary")
+        require(Path(item["manifest_path"]).absolute() == repo / "crates/storage/Cargo.toml"
+                and Path(item["target"]["src_path"]).absolute() == repo / "crates/storage/tests" / (name + ".rs"),
+                "integration binary belongs to another source checkout")
+        path = Path(item["executable"]).absolute()
+        observed = fingerprint(path, target)
+        require(observed["bytes"] > 0, "empty integration binary")
+        result[name] = {"absolute_path": str(path), **observed}
+    require(len({x["absolute_path"] for x in result.values()}) == len(targets), "test binary path reused")
+    return result
+
+
+def binding4_roster(raw, code, target, baseline=False):
+    require(code == 0, "test enumeration did not succeed")
+    names = tuple(re.findall(r"(?m)^([^\s]+): test$", raw.decode().replace("\r\n", "\n")))
+    require(names and len(names) == len(set(names)), "duplicate or absent enumerated tests")
+    if baseline:
+        require(target == "apply_receipt_binding" and names == (BINDING4_BASELINE_CASE,),
+                "baseline roster is not the original one-case control")
+    elif target == "motionwright_storage":
+        require({x for x in names if x.startswith("apply_receipt_binding::tests::")}
+                == set(BINDING4_UNIT_CASES), "binding unit roster changed")
+        require({x for x in names if x.startswith("apply_crash_tests::")}
+                == set((*BINDING4_PHASE_CASES, BINDING4_DDL_CASE)), "binding process roster changed")
+    else:
+        require(target in BINDING4_INTEGRATIONS and set(names) == set(BINDING4_INTEGRATIONS[target]),
+                "integration roster changed")
+    return names
+
+
+def binding4_group(group, binary):
+    groups = {"integrity12": ("apply_receipt_integrity", 120),
+              "binding13": ("apply_receipt_binding", 180),
+              "migration7": ("apply_binding_migration", 180)}
+    if group in groups:
+        target, timeout = groups[group]
+        return target, BINDING4_INTEGRATIONS[target], [binary["absolute_path"], "--test-threads=1"], timeout
+    if group == "binding-unit7":
+        return "motionwright_storage", BINDING4_UNIT_CASES, [
+            binary["absolute_path"], "apply_receipt_binding::tests::", "--test-threads=1"], 180
+    if group == "baseline":
+        return "apply_receipt_binding", (BINDING4_BASELINE_CASE,), [
+            binary["absolute_path"], "--exact", BINDING4_BASELINE_CASE, "--nocapture", "--test-threads=1"], 120
+    if group == "ddl":
+        return "motionwright_storage", (BINDING4_DDL_CASE,), [
+            binary["absolute_path"], "--exact", BINDING4_DDL_CASE, "--test-threads=1"], 120
+    require(group.startswith("phase:") and group[6:] in BINDING4_PHASE_CASES, "unknown selected test group")
+    name = group[6:]
+    return "motionwright_storage", (name,), [
+        binary["absolute_path"], "--exact", name, "--nocapture", "--test-threads=1"], 120
+
+
+def admit_binding4_group(group, raw, command, binary, after, enumerated, context):
+    target, wanted, argv, _timeout = binding4_group(group, binary)
+    baseline = group == "baseline"
+    role = "baseline" if baseline else "product"
+    source_sha, _tree, _reviewed = binding4_product_profile(context.get("mode"))
+    require(context.get("product_source_sha") == source_sha
+            and context.get("cohort") == "binding4"
+            and context.get("command_source_role") == role
+            and context.get("command_source_sha") == (BASELINE_SOURCE_SHA if baseline else source_sha),
+            "test source context differs")
+    allowed = BINDING4_CORE_GROUPS if context["mode"] == "binding4-core44" else BINDING4_PROCESS_GROUPS
+    require(group in allowed or (baseline and context["mode"] == "binding4-core44"), "unselected group")
+    binding4_roster("".join(x + ": test\n" for x in enumerated).encode(), 0, target, baseline)
+    require(type(command.get("exit_code")) is int and command["exit_code"] == (101 if baseline else 0)
+            and command.get("observation") == "DIRECT_PROCESS_EXIT_OBSERVED", "test failed or UNKNOWN; no retry")
+    require(command.get("log_custody") == "VERIFIED_SNAPSHOT", "original log custody incomplete")
+    require(command.get("context") == context and binary == after and command.get("argv") == argv,
+            "test command, context or executed binary changed")
+    text = ANSI.sub("", raw.decode().replace("\r\n", "\n"))
+    results = re.findall(r"(?m)^test (.+) \.\.\. (ok|FAILED|ignored)$", text)
+    summaries = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; "
+                           r"(\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+    state = "FAILED" if baseline else "ok"
+    require(len(results) == len(wanted) and len({x[0] for x in results}) == len(wanted)
+            and set(results) == {(name, state) for name in wanted} and len(summaries) == 1,
+            "selected results missing, repeated or unsuccessful")
+    counts = (0, 1, 0, 0, 0) if baseline else (len(wanted), 0, 0, 0, len(enumerated) - len(wanted))
+    require(summaries[0][0] == state and tuple(map(int, summaries[0][1:])) == counts,
+            "selected summary differs from actual enumeration")
+    if baseline:
+        require("accepted corrupt known result: Ok(" in text
+                and re.search(r"apply_receipt_binding\.rs:90(?::\d+)?", text),
+                "baseline failed for a different cause")
+    result = {"group": group, "target": target, "cases": list(wanted), "context": context,
+              "status": "EXPECTED_CAUSAL_FAILURE_OBSERVED" if baseline else "PASS",
+              "binary_sha256": binary["sha256"], "command": command}
+    if group == "ddl":
+        result["evidence_kind"] = "source-bound parent assertions for two migration child exits86"
+        result["retained_child_originals"] = 0
+        result["retained_phase_jsons"] = 0
+    return result
+
+
+def finish_binding4(before, after, binaries, results, rosters, context, baseline_result, baseline_binary=None):
+    require(before == after, "source inputs changed during execution")
+    mode = context["mode"]
+    source_sha, tree, reviewed = binding4_product_profile(mode)
+    require(before["product"]["sha"] == context["product_source_sha"] == source_sha
+            and before["product"]["tree"] == tree
+            and before["gate"]["sha"] == context["GITHUB_SHA"], "current source binding missing")
+    require(set(before["product"]["files"]) == set(reviewed)
+            and all(before["product"]["files"][p]["sha256"] == h for p, h in reviewed.items()),
+            "reviewed product evidence differs")
+    groups = BINDING4_CORE_GROUPS if mode == "binding4-core44" else BINDING4_PROCESS_GROUPS
+    expected_binaries = {"motionwright_storage", *BINDING4_INTEGRATIONS} if mode == "binding4-core44" else {"motionwright_storage"}
+    require(set(binaries) == expected_binaries and set(rosters) == expected_binaries, "selected binary set differs")
+    require(all(value.get("bytes", 0) > 0 and re.fullmatch(r"[0-9a-f]{64}", value.get("sha256", ""))
+                for value in binaries.values()), "selected binary custody missing")
+    require(tuple(x.get("group") for x in results) == groups, "missing, duplicate or foreign selected group")
+    command_context = binding4_command_context(context, "product")
+    for row in results:
+        target, wanted, argv, _timeout = binding4_group(row["group"], binaries[row["target"]])
+        binding4_roster("".join(x + ": test\n" for x in rosters[target]).encode(), 0, target)
+        require(row.get("status") == "PASS" and row.get("target") == target
+                and row.get("cases") == list(wanted) and row.get("context") == command_context
+                and row.get("binary_sha256") == binaries[target]["sha256"]
+                and row["command"].get("context") == command_context
+                and type(row["command"].get("exit_code")) is int and row["command"]["exit_code"] == 0
+                and row["command"].get("observation") == "DIRECT_PROCESS_EXIT_OBSERVED"
+                and row["command"].get("log_custody") == "VERIFIED_SNAPSHOT"
+                and row["command"].get("argv") == argv
+                and row["command"].get("cwd") == before["product"]["checkout"],
+                "selected result is not bound to the current attempt and binary")
+    phase_rows = [x for x in results if x["group"].startswith("phase:")]
+    require(len(phase_rows) == 4 and len({x.get("phase_custody", {}).get("request_id") for x in phase_rows}) == 4,
+            "phase request reused or missing")
+    for row in phase_rows:
+        name = row["group"][6:]
+        require(row.get("phase_custody", {}).get("status") == "COMPLETE_OBSERVED_PHASE_CUSTODY"
+                and row["phase_custody"].get("test_name") == name
+                and row["phase_custody"].get("checkpoint") == CHECKPOINTS[name],
+                "current phase originals are incomplete")
+    ddl = results[-1]
+    require(ddl["group"] == "ddl" and ddl.get("retained_child_originals") == 0
+            and ddl.get("retained_phase_jsons") == 0 and "phase_custody" not in ddl,
+            "DDL parent must not claim independently retained child originals")
+    if mode == "binding4-core44":
+        require(before["baseline"]["sha"] == BASELINE_SOURCE_SHA
+                and before["baseline"]["tree"] == BASELINE_SOURCE_TREE
+                and all(before["baseline"]["files"][p]["sha256"] == h for p, h in BASELINE_REVIEWED.items()),
+                "baseline source binding missing")
+        require(baseline_result and baseline_result.get("status") == "EXPECTED_CAUSAL_FAILURE_OBSERVED"
+                and baseline_result.get("group") == "baseline"
+                and baseline_result.get("cases") == [BINDING4_BASELINE_CASE]
+                and baseline_result.get("context") == binding4_command_context(context, "baseline")
+                and baseline_binary and baseline_binary.get("bytes", 0) > 0
+                and baseline_result.get("binary_sha256") == baseline_binary.get("sha256")
+                and baseline_result.get("command", {}).get("cwd") == before["baseline"]["checkout"]
+                and baseline_result["command"].get("context") == binding4_command_context(context, "baseline")
+                and baseline_result["command"].get("argv") == binding4_group("baseline", baseline_binary)[2]
+                and baseline_result["command"].get("exit_code") == 101
+                and baseline_result["command"].get("observation") == "DIRECT_PROCESS_EXIT_OBSERVED"
+                and baseline_result["command"].get("log_custody") == "VERIFIED_SNAPSHOT",
+                "causal baseline was not admitted")
+    else:
+        require(baseline_result is None and baseline_binary is None and "baseline" not in before, "unselected baseline result")
+    wanted = 44 if mode == "binding4-core44" else 5
+    require(sum(len(x["cases"]) for x in results) == wanted, "selected case count differs")
+    return {"status": "PASS_EXACT_SOURCE_BINDING4_CORE44" if mode == "binding4-core44"
+            else "PASS_EXACT_SOURCE_BINDING4_PROCESS5",
+            "required": wanted, "executed": wanted, "passed": wanted, "failed": 0, "ignored": 0,
+            "baseline_expected_failure_observed": mode == "binding4-core44",
+            "phase_cases": 4, "phase_jsons_retained": 20, "child_process_originals_retained": 12,
+            "ddl_parent_cases": 1, "ddl_retained_child_originals": 0, "ddl_retained_phase_jsons": 0,
+            "receipt_snapshot_fields": 6, "sql_null_distinction_proven_by_phase_strings": False,
+            "raw_sqlite_snapshots_retained": False, "full_cas_archive_retained": False,
+            "power_loss_atomicity": "NOT_RUN", "installed_application": "NOT_RUN",
+            "other_source_or_platform_claims": False, "formal_acceptance": False,
+            "human_acceptance": False, "release_authorized": False}
+
+
+def run_binding4(repo, output, source_sha, mode, baseline_repo=None):
+    context = binding4_context(dict(os.environ), source_sha, mode)
+    require((baseline_repo is not None) == (mode == "binding4-core44"), "baseline checkout selection differs")
+    gate = Path(__file__).resolve().parents[1]
+    repo, output = repo.resolve(strict=True), output.resolve()
+    workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+    roots = {"product": repo, "gate": gate}
+    if baseline_repo is not None:
+        roots["baseline"] = baseline_repo.resolve(strict=True)
+    require(len(set(roots.values())) == len(roots) and all(p.is_relative_to(workspace) for p in roots.values())
+            and output.is_relative_to(workspace)
+            and all(not output.is_relative_to(p) and not p.is_relative_to(output) for p in roots.values()),
+            "product, baseline, gate and evidence must be separate owned paths")
+    require(all(not left.is_relative_to(right) for key, left in roots.items()
+                for other, right in roots.items() if key != other), "source checkouts cannot nest")
+    output.mkdir(parents=True, exist_ok=False)
+    receipt = {"schema": "motionwright.storage-apply-source-authority/2", "status": "FAIL",
+               "product_source_sha": source_sha, "context": context, "phase": "source-preflight",
+               "case_processes_started": 0, "results": [], "commands": [], "baseline": None,
+               "formal_acceptance": False, "human_acceptance": False, "release_authorized": False}
+    write_new(output / "started.json", {**receipt, "started_utc": now()})
+    def snapshot():
+        product = binding4_source_snapshot(repo, "product", mode=mode) \
+            if mode == "current-process" else binding4_source_snapshot(repo, "product")
+        result = {"product": product,
+                  "gate": source_snapshot(gate, context["GITHUB_SHA"], GATE_FILES)}
+        if "baseline" in roots:
+            result["baseline"] = binding4_source_snapshot(roots["baseline"], "baseline")
+        return result
+    def invoke(argv, root, env, label, timeout, role, is_case=False):
+        try:
+            cmd = execute(argv, root, env, output, label, timeout, binding4_command_context(context, role))
+        except UnknownObservation as error:
+            receipt["commands"].append(error.command)
+            if is_case and error.command.get("pid") is not None:
+                receipt["case_processes_started"] += 1
+            raise
+        receipt["commands"].append(cmd)
+        if is_case and cmd["observation"] != "NOT_STARTED_LAUNCH_ERROR":
+            receipt["case_processes_started"] += 1
+        if execution_unknown(cmd):
+            receipt["status"] = "UNKNOWN"
+        require(cmd["observation"] == "DIRECT_PROCESS_EXIT_OBSERVED", "command failed or UNKNOWN; no retry")
+        return cmd
+    def retained_binary(binary, target, label):
+        path = Path(binary["absolute_path"])
+        require({"absolute_path": str(path), **fingerprint(path, target)} == binary, "binary changed before copy")
+        destination = output / (label + (".exe" if context["RUNNER_OS"] == "Windows" else ""))
+        shutil.copyfile(path, destination)
+        observed = fingerprint(destination, output)
+        require((observed["bytes"], observed["sha256"]) == (binary["bytes"], binary["sha256"]),
+                "retained binary copy differs")
+        return observed
+    def execute_group(group, binary, enumerated, root, target, env, label, role):
+        require({"absolute_path": binary["absolute_path"],
+                 **fingerprint(Path(binary["absolute_path"]), target)} == binary, "binary changed before execution")
+        _target, _wanted, argv, timeout = binding4_group(group, binary)
+        cmd = invoke(argv, root, env, label, timeout, role, True)
+        after_binary = {"absolute_path": binary["absolute_path"],
+                        **fingerprint(Path(binary["absolute_path"]), target)}
+        row = admit_binding4_group(group, read_original(output, cmd, "stdout") + b"\n"
+                                   + read_original(output, cmd, "stderr"), cmd, binary, after_binary,
+                                   enumerated, binding4_command_context(context, role))
+        return row
+    try:
+        before = snapshot()
+        receipt["source_before"] = before
+        write_new(output / "source-before.json", before)
+        for label, root in roots.items():
+            for name, expected in before[label]["files"].items():
+                destination = output / "sources" / label / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(root / name, destination)
+                observed = fingerprint(destination, output)
+                require((observed["bytes"], observed["sha256"]) == (expected["bytes"], expected["sha256"]),
+                        "retained source copy differs")
+        target = output.parent / "t"
+        require(Path(os.environ["CARGO_TARGET_DIR"]).resolve() == target.resolve(), "foreign build target")
+        target.mkdir(exist_ok=False)
+        env = isolated_build_environment(os.environ)
+        receipt["build_environment"] = {k: env.get(k, "") for k in
+            ("CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_TOOLCHAIN", "CARGO_INCREMENTAL",
+             "CARGO_PROFILE_TEST_DEBUG", "CARGO_PROFILE_DEV_DEBUG")}
+        for label, argv in (("rustc-version", ["rustc", "-Vv"]), ("cargo-version", ["cargo", "-V"])):
+            require(invoke(argv, repo, env, label, 45, "product")["exit_code"] == 0, "tool identity failed")
+        if "baseline" in roots:
+            receipt["phase"] = "baseline"
+            base_target = output.parent / "bt"
+            base_target.mkdir(exist_ok=False)
+            base_env = dict(env, CARGO_TARGET_DIR=str(base_target))
+            base = roots["baseline"]
+            command = invoke(["cargo", "test", "--locked", "-p", "motionwright-storage", "--test",
+                              "apply_receipt_binding", "--no-run", "--message-format=json"],
+                             base, base_env, "baseline-compile", 1500, "baseline")
+            selected = select_binding4_binaries(read_original(output, command, "stdout"),
+                                                command["exit_code"], base, base_target, mode, True)
+            base_binary = selected["apply_receipt_binding"]
+            receipt["baseline_binary"] = base_binary
+            receipt["retained_baseline_binary"] = retained_binary(base_binary, base_target, "baseline-test-binary")
+            command = invoke([base_binary["absolute_path"], "--list", "--format", "terse"],
+                             base, base_env, "baseline-roster", 45, "baseline")
+            base_roster = binding4_roster(read_original(output, command, "stdout"), command["exit_code"],
+                                         "apply_receipt_binding", True)
+            require(snapshot() == before, "source changed during baseline compilation")
+            receipt["baseline"] = execute_group("baseline", base_binary, base_roster, base, base_target,
+                                               base_env, "baseline-causal", "baseline")
+            write_new(output / "baseline.receipt.json", receipt["baseline"])
+        receipt["phase"] = "compile"
+        argv = ["cargo", "test", "--locked", "-p", "motionwright-storage", "--lib"]
+        if mode == "binding4-core44":
+            for name in BINDING4_INTEGRATIONS:
+                argv += ["--test", name]
+        command = invoke([*argv, "--no-run", "--message-format=json"], repo, env, "compile", 1500, "product")
+        binaries = select_binding4_binaries(read_original(output, command, "stdout"),
+                                            command["exit_code"], repo, target, mode)
+        receipt["binaries"], receipt["retained_binaries"], rosters = binaries, {}, {}
+        for name, binary in binaries.items():
+            receipt["retained_binaries"][name] = retained_binary(binary, target, "executed-" + name)
+            command = invoke([binary["absolute_path"], "--list", "--format", "terse"], repo, env,
+                             "roster-" + name, 45, "product")
+            rosters[name] = binding4_roster(read_original(output, command, "stdout"), command["exit_code"], name)
+        receipt["enumerated_cases"] = rosters
+        require(snapshot() == before, "source changed during compilation")
+        receipt["phase"] = "cases"
+        phase_root = output / "phases"
+        phase_root.mkdir(exist_ok=False)
+        require(phase_root.resolve(strict=True) == phase_root, "phase root must be canonical")
+        groups = BINDING4_CORE_GROUPS if mode == "binding4-core44" else BINDING4_PROCESS_GROUPS
+        for number, group in enumerate(groups, 1):
+            target_name, _wanted, _argv, _timeout = binding4_group(group, {"absolute_path": "not executed"})
+            binary = binaries[target_name]
+            temporary = output.parent / "x" / ("binding4-" + str(number))
+            temporary.mkdir(parents=True, exist_ok=False)
+            case_env = dict(env, TMP=str(temporary), TEMP=str(temporary), TMPDIR=str(temporary))
+            if group.startswith("phase:"):
+                name = group[6:]
+                require(not (phase_root / CHECKPOINTS[name]).exists(), "phase checkpoint already exists; no reuse")
+                case_env[EVIDENCE_ROOT] = str(phase_root)
+            row = execute_group(group, binary, rosters[target_name], repo, target, case_env,
+                                f"case-{number:02d}", "product")
+            if group.startswith("phase:"):
+                row["phase_custody"] = admit_phase_custody(phase_root, group[6:], "binding4")
+            receipt["results"].append(row)
+            write_new(output / f"case-{number:02d}.receipt.json", row)
+        receipt["phase"] = "postcheck"
+        after = snapshot()
+        receipt["source_after"] = after
+        write_new(output / "source-after.json", after)
+        for name, binary in binaries.items():
+            require({"absolute_path": binary["absolute_path"],
+                     **fingerprint(Path(binary["absolute_path"]), target)} == binary, "binary changed after execution")
+        if "baseline" in roots:
+            require({"absolute_path": base_binary["absolute_path"],
+                     **fingerprint(Path(base_binary["absolute_path"]), base_target)} == base_binary,
+                    "baseline binary changed after execution")
+        for original_command in receipt["commands"]:
+            for stream in ("stdout", "stderr"):
+                read_original(output, original_command, stream)
+        for row in receipt["results"]:
+            if row["group"].startswith("phase:"):
+                require(admit_phase_custody(phase_root, row["group"][6:], "binding4") == row["phase_custody"],
+                        "phase originals changed after their case")
+        require({p.name for p in phase_root.iterdir()} == set(CHECKPOINTS.values()),
+                "phase checkpoint inventory incomplete or unexpected")
+        receipt.update(finish_binding4(before, after, binaries, receipt["results"], rosters, context,
+                                       receipt["baseline"], base_binary if "baseline" in roots else None))
+        receipt["phase"] = "complete"
+    except UnknownObservation as error:
+        receipt.update(status="UNKNOWN", unsealed_command=error.command,
+                       error=str(error), terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
+    except Exception as error:
+        receipt["error"] = type(error).__name__ + ": " + str(error)
+    receipt["finished_utc"] = now()
+    receipt["operations_retried"] = False
+    write_new(output / "receipt.json", receipt)
+    print(json.dumps({k: receipt.get(k) for k in
+                      ("status", "product_source_sha", "case_processes_started", "passed", "error")}))
+    return 0 if receipt["status"] in {"PASS_EXACT_SOURCE_BINDING4_CORE44",
+                                     "PASS_EXACT_SOURCE_BINDING4_PROCESS5"} else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--mode", choices=MODES, default="historical5fa")
+    parser.add_argument("--baseline-repo", type=Path)
     args = parser.parse_args()
-    return run(args.repo, args.output, args.source_sha)
+    if args.mode in {"source", "current-source"}:
+        parser.error("source modes run complete workflow G0 controls; they are not product executions")
+    if args.mode == "historical5fa":
+        if args.baseline_repo is not None:
+            parser.error("historical mode does not select a baseline checkout")
+        return run(args.repo, args.output, args.source_sha)
+    return run_binding4(args.repo, args.output, args.source_sha, args.mode, args.baseline_repo)
 
 
 if __name__ == "__main__":

@@ -131,7 +131,7 @@ fn decode_receipt(fields: StoredReceiptFields) -> Result<ProductionReceipt> {
             ))
         })
     };
-    Ok(ProductionReceipt {
+    let receipt = ProductionReceipt {
         id: parse_id(&id)?,
         project_id: parse_id(&project_id)?,
         generation: parse_id(&generation)?,
@@ -146,7 +146,11 @@ fn decode_receipt(fields: StoredReceiptFields) -> Result<ProductionReceipt> {
         stage,
         payload: serde_json::from_str(&payload)?,
         created_at,
-    })
+    };
+    // Legacy rows may predate the admission policy. Refuse exposure without
+    // rewriting history or treating an unreadable observation as absence.
+    super::ensure_secret_free_bytes(&serde_json::to_vec(&receipt)?, "stored production receipt")?;
+    Ok(receipt)
 }
 
 fn query_receipts(
@@ -297,6 +301,9 @@ fn append_record(
     input: ProductionReceiptInput,
     current_project: &Project,
 ) -> Result<ProductionReceipt> {
+    // Initial claims and post-effect observations share one policy. A rejected
+    // terminal leaves the already durable claim unresolved; it grants no replay.
+    super::ensure_secret_free_bytes(&serde_json::to_vec(&input)?, "production receipt")?;
     let before = receipt_history_fingerprint(conn, input.project_id, None)?;
     let receipt = ProductionReceipt {
         id: Uuid::now_v7(),
@@ -1381,6 +1388,8 @@ mod tests {
             db.execute_batch(
                 "DROP TRIGGER production_receipt_order_append;
                  DROP TABLE production_receipt_order;
+                 ALTER TABLE receipts DROP COLUMN apply_binding_json;
+                 ALTER TABLE receipts DROP COLUMN apply_binding_version;
                  PRAGMA user_version=2;",
             )
             .unwrap();

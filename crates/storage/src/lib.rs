@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 #[cfg(test)]
 mod apply_crash_tests;
+mod apply_receipt_binding;
 mod capture_evidence;
 mod derived_cache;
 mod file_import;
@@ -24,6 +25,10 @@ mod production;
 mod project_creation;
 mod project_projection;
 mod render_window_cache;
+pub use apply_receipt_binding::{
+    APPLY_REQUEST_ENCODING_V1, ApplyReceiptInvalid, ApplyReceiptObservation,
+    MAX_APPLY_BINDING_BYTES, VerifiedApplyReceiptV1,
+};
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
 pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
 pub use integrity::{
@@ -57,6 +62,8 @@ pub enum StorageError {
     Conflict { expected: u64, actual: u64 },
     #[error("request id was reused with a different payload")]
     RequestReuse,
+    #[error("invalid apply receipt: {0}")]
+    InvalidApplyReceipt(String),
     #[error("invalid file import receipt: {0}")]
     InvalidFileImportReceipt(String),
     #[error("invalid project creation receipt: {0}")]
@@ -87,7 +94,7 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 3;
+pub const STORAGE_SCHEMA_VERSION: u32 = 4;
 pub const PROJECT_BACKUP_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
@@ -640,7 +647,8 @@ fn validate_existing_project_store_layout(conn: &Connection, version: u32) -> Re
             ));
         }
     }
-    validate_production_receipt_order_layout(conn, version)
+    validate_production_receipt_order_layout(conn, version)?;
+    apply_receipt_binding::validate_schema(conn, version)
 }
 
 /// A SQLite schema is not proof that the caller owns the path to it.
@@ -889,6 +897,7 @@ impl Store {
             "#,
         )?;
         migrate_production_receipt_order(&schema_tx, locked_schema)?;
+        apply_receipt_binding::migrate_schema(&schema_tx, locked_schema)?;
         if locked_schema < STORAGE_SCHEMA_VERSION {
             schema_tx.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }
@@ -1319,19 +1328,16 @@ impl Store {
         {
             return Err(StorageError::GenerationConflict);
         }
-        if let Some((stored_sha, stored_result)) = tx
-            .query_row(
-                "SELECT request_sha256,result_json FROM receipts
-                 WHERE project_id=?1 AND request_id=?2",
-                params![id.to_string(), request_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?
+        if let Some(receipt) = apply_receipt_binding::read_receipt(&tx, id, request_id)
+            .map_err(apply_receipt_binding::ReceiptCheckError::into_storage_error)?
         {
-            if stored_sha != request_sha {
+            if receipt.request_sha256 != request_sha {
                 return Err(StorageError::RequestReuse);
             }
-            let mut outcome: ApplyOutcome = serde_json::from_str(&stored_result)?;
+            let mut outcome =
+                apply_receipt_binding::check_receipt(&tx, &project, request_id, &receipt)
+                    .map_err(apply_receipt_binding::ReceiptCheckError::into_storage_error)?
+                    .outcome;
             outcome.replayed = true;
             tx.commit()?;
             return Ok(outcome);
@@ -1401,8 +1407,21 @@ impl Store {
         }
 
         let previous_revision = project.revision;
+        let base = apply_receipt_binding::ApplyBase::capture(&project);
+        let result_revision = previous_revision
+            .checked_add(1)
+            .filter(|revision| i64::try_from(*revision).is_ok())
+            .ok_or_else(|| {
+                DomainError::Invalid("project revision exceeds SQLite integer range".into())
+            })?;
+        let previous_sql_revision = i64::try_from(previous_revision).map_err(|_| {
+            DomainError::Invalid("project revision exceeds SQLite integer range".into())
+        })?;
+        let result_sql_revision = i64::try_from(result_revision).map_err(|_| {
+            DomainError::Invalid("project revision exceeds SQLite integer range".into())
+        })?;
         project.apply_change(change)?;
-        project.commit_revision(previous_revision.saturating_add(1), change)?;
+        project.commit_revision(result_revision, change)?;
         let project_json = serde_json::to_string(&project)?;
         let changed = tx.execute(
             "UPDATE projects
@@ -1411,17 +1430,17 @@ impl Store {
             params![
                 project.id.to_string(),
                 project.generation.to_string(),
-                project.revision as i64,
+                result_sql_revision,
                 project.title,
                 project_json,
                 project.updated_at.to_rfc3339(),
-                previous_revision as i64,
+                previous_sql_revision,
             ],
         )?;
         if changed != 1 {
             return Err(StorageError::Conflict {
                 expected: previous_revision,
-                actual: previous_revision.saturating_add(1),
+                actual: result_revision,
             });
         }
 
@@ -1434,7 +1453,7 @@ impl Store {
              VALUES(?1,?2,'change',?3,?4)",
             params![
                 project.id.to_string(),
-                project.revision as i64,
+                result_sql_revision,
                 payload,
                 project.updated_at.to_rfc3339(),
             ],
@@ -1450,15 +1469,24 @@ impl Store {
             replayed: false,
         };
         let result_json = serde_json::to_string(&outcome)?;
+        let binding_json = apply_receipt_binding::create_binding(
+            &base,
+            request_id,
+            &request_sha,
+            &outcome,
+            &result_json,
+        )?;
         tx.execute(
-            "INSERT INTO receipts(project_id,request_id,request_sha256,result_json,created_at)
-             VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO receipts(project_id,request_id,request_sha256,result_json,created_at,
+                                  apply_binding_version,apply_binding_json)
+             VALUES(?1,?2,?3,?4,?5,1,?6)",
             params![
                 id.to_string(),
                 request_id,
                 request_sha,
                 result_json,
                 chrono::Utc::now().to_rfc3339(),
+                binding_json,
             ],
         )?;
 
@@ -1560,6 +1588,56 @@ impl Store {
             .map(|event| (event.revision, event.change))
             .collect())
     }
+}
+
+// A receipt is a historical result, not authority to return another project.
+// Revalidate its original identity and event on the same transaction snapshot;
+// later legitimate edits do not change the stored result's revision.
+fn validate_apply_receipt(
+    conn: &Connection,
+    current: &Project,
+    request_id: &str,
+    request_sha: &str,
+    outcome: &ApplyOutcome,
+) -> Result<Change> {
+    let invalid = |reason: &str| StorageError::InvalidApplyReceipt(reason.to_owned());
+    outcome
+        .project
+        .validate()
+        .map_err(|_| invalid("invalid stored result project"))?;
+    if outcome.project.id != current.id
+        || outcome.project.generation != current.generation
+        || outcome.project.resource_key() != current.resource_key()
+        || outcome.request_id != request_id
+        || outcome.replayed
+        || outcome.previous_revision.checked_add(1) != Some(outcome.project.revision)
+        || outcome.project.revision > current.revision
+    {
+        return Err(invalid(
+            "inconsistent result identity, generation, revision or replay state",
+        ));
+    }
+    let revision = i64::try_from(outcome.project.revision)
+        .map_err(|_| invalid("result revision exceeds SQLite integer range"))?;
+    let (count, kind, payload): (i64, Option<String>, Option<String>) = conn.query_row(
+        "SELECT COUNT(*),MIN(kind),MIN(payload_json)
+         FROM events WHERE project_id=?1 AND revision=?2",
+        params![current.id.to_string(), revision],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if count != 1 || kind.as_deref() != Some("change") {
+        return Err(invalid("result must reference exactly one change event"));
+    }
+    let payload = payload.ok_or_else(|| invalid("recorded event has no payload"))?;
+    let change: Change =
+        serde_json::from_str(&payload).map_err(|_| invalid("invalid recorded event payload"))?;
+    if request_digest(current.id, &change)
+        .map_err(|_| invalid("recorded event cannot be hashed"))?
+        != request_sha
+    {
+        return Err(invalid("recorded event differs from the requested intent"));
+    }
+    Ok(change)
 }
 
 fn request_digest(id: Uuid, change: &Change) -> Result<String> {
@@ -1665,13 +1743,76 @@ fn checked_existing_blob_path_from_root(blob_root: &Path, digest: &str) -> Resul
         Err(error) => Err(error.into()),
     }
 }
+#[cfg(test)]
+type VerifiedBlobCaptureHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_VERIFIED_BLOB_CAPTURE:
+        std::cell::RefCell<Option<VerifiedBlobCaptureHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_verified_blob_capture_hook(path: &Path) {
+    let hook = BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(path);
+    }
+}
+
 fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> Result<Vec<u8>> {
     let path = checked_existing_blob_path_from_root(blob_root, digest)?;
-    let size = ensure_regular_file(&path, "content-addressed blob")?.len();
-    if size > limit {
-        return Err(StorageError::BlobTooLarge { size, limit });
+    let input = file_import::open_regular_import_source(&path, limit)?;
+
+    #[cfg(test)]
+    run_verified_blob_capture_hook(&path);
+
+    // Retain the admitted handle and observe at most one excess byte. Concurrent
+    // regular-file writes cannot turn the metadata check into an unbounded read.
+    let mut input = input.take(limit.saturating_add(1));
+    let mut bytes = Vec::new();
+    let mut size = 0_u64;
+    let mut chunk = [0_u8; 128 * 1024];
+    loop {
+        let count = match input.read(&mut chunk) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            break;
+        }
+        let charged = u64::try_from(count).map_err(|_| StorageError::BlobTooLarge {
+            size: u64::MAX,
+            limit,
+        })?;
+        let next_size = size
+            .checked_add(charged)
+            .ok_or(StorageError::BlobTooLarge {
+                size: u64::MAX,
+                limit,
+            })?;
+        if next_size > limit {
+            return Err(StorageError::BlobTooLarge {
+                size: next_size,
+                limit,
+            });
+        }
+        let required = bytes
+            .len()
+            .checked_add(count)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+        if required > bytes.capacity() {
+            let capacity = required
+                .max(bytes.capacity().saturating_mul(2))
+                .min(usize::try_from(limit).unwrap_or(usize::MAX));
+            bytes
+                .try_reserve_exact(capacity - bytes.len())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        size = next_size;
     }
-    let bytes = fs::read(path)?;
     if hex::encode(Sha256::digest(&bytes)) != digest {
         return Err(StorageError::InvalidBackup(
             "content-addressed blob failed digest verification".into(),
@@ -1679,7 +1820,6 @@ fn read_verified_blob_from_root(blob_root: &Path, digest: &str, limit: u64) -> R
     }
     Ok(bytes)
 }
-
 fn blob_relative_path(digest: &str) -> Result<String> {
     validate_digest(digest)?;
     Ok(format!("blobs/sha256/{}/{}", &digest[..2], digest))
@@ -2676,5 +2816,137 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
+mod verified_blob_capture_budget_tests {
+    use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    struct CaptureHookGuard;
+    impl Drop for CaptureHookGuard {
+        fn drop(&mut self) {
+            let unused = BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| slot.borrow_mut().take());
+            drop(unused);
+        }
+    }
+
+    fn before_capture(hook: impl FnOnce(&Path) + 'static) -> CaptureHookGuard {
+        BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(
+                slot.is_none(),
+                "a verified-blob capture hook is already installed"
+            );
+            *slot = Some(Box::new(hook));
+        });
+        CaptureHookGuard
+    }
+
+    #[test]
+    fn verified_blob_capture_keeps_empty_exact_and_oversize_controls() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("store.sqlite3")).unwrap();
+        for source_bytes in [b"".as_slice(), b"abcd".as_slice()] {
+            let source = temp
+                .path()
+                .join(format!("source-{}.bin", source_bytes.len()));
+            fs::write(&source, source_bytes).unwrap();
+            let descriptor = store.ingest_blob_file(&source).unwrap();
+            let limit = source_bytes.len() as u64;
+            assert_eq!(
+                store.read_blob(&descriptor.sha256, limit).unwrap(),
+                source_bytes
+            );
+            if limit != 0 {
+                assert!(matches!(
+                    store.read_blob(&descriptor.sha256, limit - 1),
+                    Err(StorageError::BlobTooLarge { size: 4, limit: 3 })
+                ));
+            }
+            assert_eq!(fs::read(&source).unwrap(), source_bytes);
+        }
+    }
+
+    #[test]
+    fn verified_blob_capture_rejects_growth_after_metadata_at_limit_plus_one() {
+        const LIMIT: u64 = 4;
+        const GROWN: &[u8] = b"abcdefgh";
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("store.sqlite3")).unwrap();
+        let source = temp.path().join("source.bin");
+        fs::write(&source, GROWN).unwrap();
+        let descriptor = store.ingest_blob_file(&source).unwrap();
+        let cas_path = store.verified_blob_path(&descriptor.sha256).unwrap();
+
+        assert_eq!(descriptor.sha256, hex::encode(Sha256::digest(GROWN)));
+        assert_eq!(
+            store
+                .read_blob(&descriptor.sha256, GROWN.len() as u64)
+                .unwrap(),
+            GROWN
+        );
+
+        // Preserve the same regular file; only shorten its bytes before admission.
+        OpenOptions::new()
+            .write(true)
+            .open(&cas_path)
+            .unwrap()
+            .set_len(LIMIT)
+            .unwrap();
+        assert_eq!(fs::metadata(&cas_path).unwrap().len(), LIMIT);
+        assert_eq!(fs::read(&cas_path).unwrap(), &GROWN[..LIMIT as usize]);
+
+        let calls = Rc::new(Cell::new(0_usize));
+        let hook_calls = Rc::clone(&calls);
+        let expected_path = cas_path.clone();
+        let _hook = before_capture(move |path| {
+            assert_eq!(path, expected_path.as_path());
+            assert_eq!(fs::metadata(path).unwrap().len(), LIMIT);
+            hook_calls.set(hook_calls.get() + 1);
+            let mut append = OpenOptions::new().append(true).open(path).unwrap();
+            append.write_all(&GROWN[LIMIT as usize..]).unwrap();
+            append.flush().unwrap();
+            assert_eq!(append.metadata().unwrap().len(), GROWN.len() as u64);
+        });
+
+        let result = store.read_blob(&descriptor.sha256, LIMIT);
+        assert_eq!(
+            calls.get(),
+            1,
+            "growth must occur exactly at the capture boundary"
+        );
+        BEFORE_VERIFIED_BLOB_CAPTURE.with(|slot| {
+            assert!(
+                slot.borrow().is_none(),
+                "the one-shot hook must be consumed"
+            );
+        });
+        assert_eq!(fs::read(&cas_path).unwrap(), GROWN);
+        assert_eq!(fs::read(&source).unwrap(), GROWN);
+
+        match result {
+            Err(StorageError::BlobTooLarge {
+                size,
+                limit: reported_limit,
+            }) => {
+                assert_eq!(
+                    (size, reported_limit),
+                    (LIMIT + 1, LIMIT),
+                    "report bytes actually observed by the bounded capture"
+                );
+            }
+            Ok(bytes) => {
+                assert_eq!(bytes, GROWN, "baseline witness must be the grown object");
+                assert_eq!(hex::encode(Sha256::digest(&bytes)), descriptor.sha256);
+                panic!(
+                    "verified blob capture accepted eight bytes after admitting a four-byte source with limit four"
+                );
+            }
+            Err(error) => {
+                panic!("expected streaming BlobTooLarge {{ size: 5, limit: 4 }}, got {error:?}");
+            }
+        }
     }
 }

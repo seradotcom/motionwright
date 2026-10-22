@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import stat
@@ -142,13 +143,19 @@ RECIPE_AUTHORITY_TITLES = (
     'silent recipe pointer recovery failure prevents a real grant or SQLite write; verified retry saves once',
 )
 
-REVIEW_TITLES = (
+HISTORICAL_REVIEW_TITLES = (
     'review raw range survives actual App navigation and reload before one exact SQLite commit and restart',
     'a held original review reply preserves later input before a distinct granted save',
     'a committed but lost review reply remains UNKNOWN through explicit saved-history inspection and a separate intent',
     'denied review custody prevents any SQLite mutation until a confirmed copy and explicit save',
     'an original resolution keeps a later raw reason through actual reopen and new SQLite acknowledgement',
     'an actual saved alternative retains raw rationale and records only an open manual review',
+)
+
+REVIEW_ABA_TITLE = 'ABA author input survives lost review reply, inspection, separate save and SQLite restart'
+REVIEW_TITLES = (
+    *HISTORICAL_REVIEW_TITLES[:3], REVIEW_ABA_TITLE,
+    *HISTORICAL_REVIEW_TITLES[3:],
 )
 
 INSPECTOR_TITLES = (
@@ -216,21 +223,71 @@ SELECTIONS = (
     ('profile-authority', 'delivery-profile-authority-service.spec.ts', PROFILE_AUTHORITY_TITLES),
     ('projection-navigation', 'project-projection-service.spec.ts', PROJECTION_NAVIGATION_TITLES),
 )
-# Preserve the original per-file process limits. Each authoring bound includes
-# every declared test timeout and the configured 120s server startup. These are
-# execution bounds; only an original run establishes the actual timing.
+PROJECT_AUTHORING_SELECTIONS = SELECTIONS
+HISTORICAL_PROJECT_AUTHORING_SELECTIONS = tuple(
+    (label, filename, HISTORICAL_REVIEW_TITLES if label == "review" else titles)
+    for label, filename, titles in PROJECT_AUTHORING_SELECTIONS
+)
+CREATIVE_PRODUCTION_SELECTIONS = (('production-design',
+  'production-design-service.spec.ts',
+  ('Production plan raw drafts, claim references and content-bound approval survive actual App navigation '
+   'and SQLite restart',
+   'Production Hero updates retain editable node identities and a human override; detach preserves objects '
+   'across SQLite restart',
+   'a held original Production component receipt preserves later typing across actual App remount and a '
+   'separate save',
+   'a held original Production plan receipt preserves later typing across actual App remount and a '
+   'separate save',
+   'an unknown Production plan committed result survives reload without replay and needs a fresh history '
+   'review',
+   'an unknown Production plan matching-peer result survives reload without replay and needs a fresh '
+   'history review',
+   'Production data recovery failure sends no real service grant or change; explicit healthy retry '
+   'persists the retained draft',
+   'Production pointer recovery failure sends no real service grant or change; explicit healthy retry '
+   'persists the retained draft')),
+ ('creative-workbench',
+  'creative-workbench-service.spec.ts',
+  ('stage actual App updates preserve stable editable objects and a human override; detach survives SQLite '
+   'restart',
+   'procedural actual App updates preserve stable editable objects and a human override; detach survives '
+   'SQLite restart',
+   'Measured actual source bytes, versioned table and Canvas binding persist through App editing and '
+   'SQLite restart',
+   'Measured original binding receipt preserves later raw selection and precision across actual App '
+   'remount',
+   'stage an actual committed response lost in transport remains UNKNOWN through reload and requires fresh '
+   'history review',
+   'procedural an actual committed response lost in transport remains UNKNOWN through reload and requires '
+   'fresh history review',
+   'measured an actual committed response lost in transport remains UNKNOWN through reload and requires '
+   'fresh history review',
+   'creative workbench data backup failure sends no real grant or change; explicit healthy retry saves '
+   'retained input',
+   'creative workbench pointer backup failure sends no real grant or change; explicit healthy retry saves '
+   'retained input')))
+SELECTIONS = (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS)
+
+# Each per-file process limit includes every declared test timeout and the
+# configured 120s server startup. Only an original run establishes actual timing.
 SELECTION_GROUPS = {
+    "project-authoring": {"labels": tuple(row[0] for row in PROJECT_AUTHORING_SELECTIONS),
+                          "required_tests": 136},
+    "creative-production": {"labels": ("production-design", "creative-workbench"),
+                            "required_tests": 17},
     "complete-authoring": {
         "labels": ("beat-draft", "beat-time", "delivery-recipe", "recipe-authority", "review",
                    "inspector", "profile-metadata", "profile-authority"),
-        "required_tests": 64,
+        "required_tests": 65,
     },
     "authoring-drafts": {
         "labels": ("beat-draft", "beat-time", "delivery-recipe", "recipe-authority", "review"),
-        "required_tests": 38,
+        "required_tests": 39,
     },
 }
 SELECTION_TIMEOUTS = {
+    "production-design": 1140,
+    "creative-workbench": 1260,
     "canvas": 1800,
     "ink": 180,
     "program": 600,
@@ -245,7 +302,7 @@ SELECTION_TIMEOUTS = {
     'beat-time': 660,
     'delivery-recipe': 1260,
     'recipe-authority': 780,
-    'review': 900,
+    'review': 1020,
     'inspector': 900,
     'profile-metadata': 1500,
     'profile-authority': 900,
@@ -742,7 +799,469 @@ BROWSER_SOURCE_PATHS = ('apps/studio/src/App.tsx',
  'apps/studio/tests/v01-original-native-status.spec.ts',
  'apps/studio/tests/v01-owner-first-render.spec.ts',
  'apps/studio/unit/synthetic-project-reads.test.mjs')
+HISTORICAL_BROWSER_SELECTIONS = BROWSER_SELECTIONS
+CREATIVE_PRODUCTION_BROWSER_SELECTIONS = (('browser-production-design',
+  'production-design-preservation.spec.ts',
+  ('Production component raw input survives tool navigation, scene changes, remount and reload without a '
+   'save',
+   'Production plan preserves exact lists, reviewer, note, shot choices and clock through navigation and '
+   'reload',
+   'Production component drafts cannot cross id and restore the separate author on return',
+   'Production component drafts cannot cross generation and restore the separate author on return',
+   'Production component drafts cannot cross active_branch and restore the separate author on return',
+   'Production plan drafts cannot cross id and restore the separate author on return',
+   'Production plan drafts cannot cross generation and restore the separate author on return',
+   'Production plan drafts cannot cross active_branch and restore the separate author on return',
+   'a deferred Production concept digest cannot overwrite or send later author input',
+   'a Production digest completing after owner does not dispatch an obsolete approval',
+   'a Production digest completing after revision does not dispatch an obsolete approval',
+   'a Production digest completing after unmount does not dispatch an obsolete approval',
+   'an original Production component ACK retains later input and permits its separate second save',
+   'an original Production plan ACK retains later input and permits its separate second save',
+   'observed matching Production component values do not acknowledge an unknown original result',
+   'observed matching Production plan values do not acknowledge an unknown original result',
+   'silent Production data recovery failure blocks actual Project dispatch and preserves raw input',
+   'silent Production pointer recovery failure blocks actual Project dispatch and preserves raw input',
+   'a silent Production copy removal reports unconfirmed discard and keeps the original author bytes '
+   'visible',
+   'an unreadable own Production copy stays warned while typing; an explicit new copy preserves both '
+   'buffers',
+   'retrying a readable Production recovery retains its UNKNOWN alongside newer author input')),
+ ('browser-creative-workbench',
+  'creative-workbench-preservation.spec.ts',
+  ('stage raw author input survives navigation, scene return, remount and reload without Project writes',
+   'stage author input is isolated by id and restores on return',
+   'stage author input is isolated by generation and restores on return',
+   'stage author input is isolated by active_branch and restores on return',
+   'stage incomplete numeric input remains exact and cannot dispatch a Project mutation',
+   'stage a reply without the submitted operation cannot clear UNKNOWN',
+   'stage silent recovery data loss blocks dispatch and preserves author input',
+   'stage matching observed props and a lost original reply remain UNKNOWN after reload',
+   'procedural raw author input survives navigation, scene return, remount and reload without Project '
+   'writes',
+   'procedural author input is isolated by id and restores on return',
+   'procedural author input is isolated by generation and restores on return',
+   'procedural author input is isolated by active_branch and restores on return',
+   'procedural incomplete numeric input remains exact and cannot dispatch a Project mutation',
+   'procedural a reply without the submitted operation cannot clear UNKNOWN',
+   'procedural silent recovery data loss blocks dispatch and preserves author input',
+   'procedural matching observed props and a lost original reply remain UNKNOWN after reload',
+   'measured raw author input survives navigation, scene return, remount and reload without Project writes',
+   'measured author input is isolated by id and restores on return',
+   'measured author input is isolated by generation and restores on return',
+   'measured author input is isolated by active_branch and restores on return',
+   'measured incomplete numeric input remains exact and cannot dispatch a Project mutation',
+   'measured a reply without the submitted operation cannot clear UNKNOWN',
+   'measured silent recovery data loss blocks dispatch and preserves author input',
+   'measured matching observed props and a lost original reply remain UNKNOWN after reload',
+   'Measured table selection preserves each dataset and binding buffer without writes',
+   'Measured binding original ACK preserves later Canvas selection and raw precision',
+   'Measured pending file typing cannot publish rows, proof or an obsolete error',
+   'Measured pending file asset cannot publish rows, proof or an obsolete error',
+   'Measured pending file owner cannot publish rows, proof or an obsolete error',
+   'Measured pending file unmount cannot publish rows, proof or an obsolete error',
+   'Measured pending file late-error cannot publish rows, proof or an obsolete error',
+   'Measured completed byte proof tolerates label edits but is never recovered as submit authority',
+   'Measured pending file cannot resurrect a buffer after an explicit saved-value choice',
+   'Measured pending file cannot replace an explicitly restored copy with the same edit sequence',
+   'Measured new-copy action cannot bypass a repaired UNKNOWN after missing reload',
+   'Measured new-copy action cannot bypass a repaired UNKNOWN after corrupt reload',
+   'ProductStage existing Hero eligibility blocks dispatch while separate scene drafts and valid '
+   'authoring remain intact')))
+BROWSER_SELECTIONS = (*HISTORICAL_BROWSER_SELECTIONS, *CREATIVE_PRODUCTION_BROWSER_SELECTIONS)
+REVIEW_BROWSER_TITLES = ('causal: raw comment and incomplete range survive remount and reload',
+ 'causal: raw comment belongs to its exact id across A-B-A',
+ 'causal: raw comment belongs to its exact generation across A-B-A',
+ 'causal: raw comment belongs to its exact active_branch across A-B-A',
+ "causal: scene targets do not adopt each other's raw review",
+ 'causal: original add acknowledgement preserves a later author edit',
+ 'causal: r+1 without the submitted review cannot acknowledge or erase the draft',
+ 'causal: resolution raw text survives workspace remount and reload',
+ 'causal: alternative rationale and direction survive workspace remount and reload',
+ 'causal: uncertain rejection preserves input and blocks automatic or manual replay',
+ 'causal: denied recovery storage blocks submission and retains current raw input',
+ 'control: a valid original add response clears only the submitted comment',
+ 'control: a matching observed Project alone leaves the original author input intact',
+ 'transition causal: inspected UNKNOWN retains its original copy before a separate later intent',
+ 'transition causal: inspected UNKNOWN retains its original copy before a separate blank review',
+ 'an exact resolution reply retains later raw reason through reopen and a distinct save',
+ 'an original alternative receipt retains a later raw editorial rationale',
+ 'resolution and alternative reasons remain isolated by generation across A-B-A',
+ 'scene and whole-project review buffers stay separate when the author changes scope',
+ 'silent bytes write loss blocks mutation until a verified retry keeps the raw input',
+ 'silent pointer write loss blocks mutation until a verified retry keeps the raw input',
+ 'a full recovery catalogue retains prior copies and permits faithful export of blocked raw input',
+ 'a late original response cannot erase another project or silently clear its original UNKNOWN',
+ 'a later saved revision requires explicit comparison while retaining its earlier raw copy',
+ 'native UTF-8 comment limits reject an unsaveable request without truncation or transport',
+ 'range toggle causal: fraction and incomplete bound survives resource and return',
+ 'range toggle causal: intentionally empty bounds survives resource and return',
+ 'range toggle causal: fraction and incomplete bound survives playhead and return',
+ 'range toggle causal: intentionally empty bounds survives playhead and return')
+REVIEW_BROWSER_SELECTIONS = (
+    ("browser-review", "review-preservation.spec.ts", REVIEW_BROWSER_TITLES),
+)
+BROWSER_SCOPES = {
+    "browser-contracts": tuple(row[0] for row in BROWSER_SELECTIONS),
+    "creative-production-browser": ("browser-production-design", "browser-creative-workbench"),
+    "review-browser": ("browser-review",),
+}
+CREATIVE_PRODUCTION_SOURCE_PATHS = ('apps/studio/src/App.tsx',
+ 'apps/studio/src/CompositionStudy.tsx',
+ 'apps/studio/src/MeasuredDataWorkbench.tsx',
+ 'apps/studio/src/ProceduralFieldWorkbench.tsx',
+ 'apps/studio/src/ProductStageWorkbench.tsx',
+ 'apps/studio/src/ProductionDesignWorkspace.tsx',
+ 'apps/studio/src/api.ts',
+ 'apps/studio/src/brandGovernance.ts',
+ 'apps/studio/src/cameraReframe.ts',
+ 'apps/studio/src/canvasInheritedInk.ts',
+ 'apps/studio/src/captureSource.ts',
+ 'apps/studio/src/componentDistillation.ts',
+ 'apps/studio/src/creativeDoctor.ts',
+ 'apps/studio/src/creativeEvaluator.ts',
+ 'apps/studio/src/creativeProduction.ts',
+ 'apps/studio/src/creativeUndo.ts',
+ 'apps/studio/src/creativeWorkbenchDraft.test.ts',
+ 'apps/studio/src/creativeWorkbenchDraft.ts',
+ 'apps/studio/src/deliveryRecipe.ts',
+ 'apps/studio/src/deliveryRecipeDraft.ts',
+ 'apps/studio/src/fileImport.ts',
+ 'apps/studio/src/fixture.ts',
+ 'apps/studio/src/generationJournalApi.ts',
+ 'apps/studio/src/identityOrigin.ts',
+ 'apps/studio/src/measuredData.ts',
+ 'apps/studio/src/musicClock.ts',
+ 'apps/studio/src/narrationReviewApi.ts',
+ 'apps/studio/src/proceduralField.ts',
+ 'apps/studio/src/productStage.ts',
+ 'apps/studio/src/productionDesignDraft.test.ts',
+ 'apps/studio/src/productionDesignDraft.ts',
+ 'apps/studio/src/projectLibrary.ts',
+ 'apps/studio/src/projectMutation.ts',
+ 'apps/studio/src/semanticSfx.ts',
+ 'apps/studio/src/stageCapture.ts',
+ 'apps/studio/src/types.ts',
+ 'apps/studio/src/useCreativeWorkbenchDraft.tsx',
+ 'apps/studio/tests/creative-workbench-preservation.spec.ts',
+ 'apps/studio/tests/creative-workbench-service.spec.ts',
+ 'apps/studio/tests/fixtures/creative-workbench-authority.html',
+ 'apps/studio/tests/fixtures/creative-workbench-authority.tsx',
+ 'apps/studio/tests/fixtures/production-design-authority.html',
+ 'apps/studio/tests/fixtures/production-design-authority.tsx',
+ 'apps/studio/tests/production-design-preservation.spec.ts',
+ 'apps/studio/tests/production-design-service.spec.ts',
+ 'apps/studio/tests/support/scopedChangeService.ts')
+
 BROWSER_SELECTION_TIMEOUTS = {label: 180 + 30 * len(titles) for label, _, titles in BROWSER_SELECTIONS}
+# Retain the Workbench budget, including startup and every per-case bound.
+BROWSER_SELECTION_TIMEOUTS["browser-creative-workbench"] = 1260
+BROWSER_SELECTION_TIMEOUTS["browser-review"] = 1050
+
+
+CREATIVE_PRODUCTION_UNITS = (('src/productionDesignDraft.test.ts',
+  (('Production author input and original response authority',
+    'scopes component and plan input by project, generation, branch and component scene'),
+   ('Production author input and original response authority',
+    'retains exact plan text, empty lines, reviewer, source references and clock without cleaning author '
+    'input'),
+   ('Production author input and original response authority',
+    'an observed identical hero value at r+1 never consumes its pending request'),
+   ('Production author input and original response authority',
+    'an observed identical plan value at r+1 never consumes its pending request'),
+   ('Production author input and original response authority',
+    'the original hero reply preserves later raw input including a return to the old value'),
+   ('Production author input and original response authority',
+    'the original plan reply preserves later raw input including a return to the old value'),
+   ('Production author input and original response authority',
+    'rejects an original response with the wrong id without consuming raw input'),
+   ('Production author input and original response authority',
+    'rejects an original response with the wrong generation without consuming raw input'),
+   ('Production author input and original response authority',
+    'rejects an original response with the wrong active_branch without consuming raw input'),
+   ('Production author input and original response authority',
+    'rejects an original response with the wrong revision without consuming raw input'),
+   ('Production author input and original response authority',
+    'rejects an original response with the wrong value without consuming raw input'),
+   ('Production author input and original response authority',
+    'treats an unrelated observed revision as a reviewable conflict rather than silently rebasing authored '
+    'intent'),
+   ('Production author input and original response authority',
+    'invalidates a prepared digest when input, owner, revision, pending attempt, or source target changes'),
+   ('Production author input and original response authority',
+    'cleans only a plan submission and binds approval to that exact content while retaining author bytes'),
+   ('Production author input and original response authority',
+    'keeps editable scene objects on detach and rejects a receipt that changes them'),
+   ('Production author input and original response authority',
+    'will not dispatch plan or component submissions through content locks'),
+   ('Production durable custody',
+    'recovers NOT_SENT conservatively as UNKNOWN and exports complete raw input without write authority'),
+   ('Production durable custody',
+    'rejects foreign scope, writer and authority fields without altering any stored bytes'),
+   ('Production durable custody',
+    'requires confirmed data storage before treating a Production backup as durable'),
+   ('Production durable custody',
+    'requires confirmed pointer storage before treating a Production backup as durable'),
+   ('Production durable custody',
+    'rechecks data custody after budget enumeration before replacing any author bytes'),
+   ('Production durable custody',
+    'rechecks pointer custody after budget enumeration before replacing any author bytes'),
+   ('Production durable custody',
+    'rereads the data after pointer publication and never adopts the interleaved replacement'),
+   ('Production durable custody', 'retains corrupt copies and refuses to mutate a clean checkpoint'),
+   ('Production durable custody',
+    "refuses a full recovery budget without deleting older copies or the live author's input"),
+   ('Production UNKNOWN review without inferred acknowledgement or replay',
+    'reads two current snapshots and complete history; matching values remain UNKNOWN until explicit '
+    'separate intent'),
+   ('Production UNKNOWN review without inferred acknowledgement or replay',
+    'rejects truncated history and a project that changes during inspection'),
+   ('Production UNKNOWN review without inferred acknowledgement or replay',
+    'retains the old UNKNOWN through a verified two-phase new writer before releasing a separate intent'),
+   ('Production UNKNOWN review without inferred acknowledgement or replay',
+    'a failed second fork phase leaves a recoverable UNKNOWN and the earlier author bytes intact'))),
+ ('src/creativeWorkbenchDraft.test.ts',
+  (('creative workbench raw input and original response authority',
+    'keeps raw integer grammar distinct from numeric coercion'),
+   ('creative workbench raw input and original response authority',
+    'scopes all workbenches by project, generation, branch, scene and editor kind'),
+   ('creative workbench raw input and original response authority',
+    'stage observed matching values never acknowledge an original pending attempt'),
+   ('creative workbench raw input and original response authority',
+    'procedural observed matching values never acknowledge an original pending attempt'),
+   ('creative workbench raw input and original response authority',
+    'measured observed matching values never acknowledge an original pending attempt'),
+   ('creative workbench raw input and original response authority',
+    'stage the original ACK preserves later raw input and independent table buffers'),
+   ('creative workbench raw input and original response authority',
+    'procedural the original ACK preserves later raw input and independent table buffers'),
+   ('creative workbench raw input and original response authority',
+    'measured the original ACK preserves later raw input and independent table buffers'),
+   ('creative workbench raw input and original response authority',
+    'stage raw copy roundtrip does not carry execution grants or byte verification'),
+   ('creative workbench raw input and original response authority',
+    'procedural raw copy roundtrip does not carry execution grants or byte verification'),
+   ('creative workbench raw input and original response authority',
+    'measured raw copy roundtrip does not carry execution grants or byte verification'),
+   ('creative workbench raw input and original response authority',
+    'rejects the original ACK with wrong id without consuming UNKNOWN'),
+   ('creative workbench raw input and original response authority',
+    'rejects the original ACK with wrong generation without consuming UNKNOWN'),
+   ('creative workbench raw input and original response authority',
+    'rejects the original ACK with wrong active_branch without consuming UNKNOWN'),
+   ('creative workbench raw input and original response authority',
+    'rejects the original ACK with wrong revision without consuming UNKNOWN'),
+   ('creative workbench raw input and original response authority',
+    'rejects the original ACK with wrong value without consuming UNKNOWN'),
+   ('creative workbench raw input and original response authority',
+    'stage detach requires the original receipt to preserve every editable node'),
+   ('creative workbench raw input and original response authority',
+    'procedural detach requires the original receipt to preserve every editable node'),
+   ('creative workbench raw input and original response authority',
+    'an external revision needs an explicit base choice and never clears pending intent'),
+   ('creative workbench raw input and original response authority',
+    'invalidates asynchronous preparation when owner, revision, input or attempt changes'),
+   ('creative workbench raw input and original response authority',
+    'Measured keeps exact independent table, node, precision and axis buffers when selecting another '
+    'table'),
+   ('creative workbench raw input and original response authority',
+    'Measured ACK for one table cannot mark a different hidden author buffer as saved'),
+   ('creative workbench raw input and original response authority',
+    'Measured reviewed new alias cannot overwrite a separately authored buffer at its saved table ID'),
+   ('creative workbench raw input and original response authority',
+    'Measured exact byte proof is ephemeral, tolerates label changes and rejects another source or '
+    'recovered authority'),
+   ('creative workbench raw input and original response authority',
+    'Measured binding ACK checks the original table, datum, view and projected Canvas value'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'requires verified data readback before a recovery write succeeds'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'requires verified pointer readback before a recovery write succeeds'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'rechecks data custody after the recovery budget scan'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'rechecks pointer custody after the recovery budget scan'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'rereads data after pointer publication and rejects an interleaved replacement'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'preserves corrupt bytes, rejects foreign scope and refuses clean checkpoint replacement'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'a full recovery budget blocks saving without deleting any previous author bytes'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'recovering a NOT_SENT checkpoint conservatively retains UNKNOWN and rejects extra authority fields'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'requires fresh read-history-read and retains matching values as comparison rather than ACK'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'rejects incomplete history and a project changed during outcome inspection'),
+   ('creative workbench verified custody and uncertain outcome review',
+    'a separate reviewed intent verifies both records and preserves the exact earlier UNKNOWN'),
+   ('ProductStage existing project eligibility before mutation dispatch',
+    'rejects an existing Hero collision before arming an attempt and retains the exact author input'),
+   ('ProductStage existing project eligibility before mutation dispatch',
+    'rejects creation at the existing sixteen-Stage limit while a bound Stage can still update'))))
+
+
+REVIEW_UNITS = (('src/reviewDraft.test.ts',
+  (('exact review owner and raw author input', 'separates equal raw drafts under a different id'),
+   ('exact review owner and raw author input',
+    'separates equal raw drafts under a different generation'),
+   ('exact review owner and raw author input',
+    'separates equal raw drafts under a different active_branch'),
+   ('exact review owner and raw author input',
+    'separates comment, resolution and alternative targets'),
+   ('exact review owner and raw author input',
+    'preserves whitespace and incomplete input without numeric coercion'),
+   ('exact review owner and raw author input', 'uses exact fractions for an authored time range'),
+   ('exact review owner and raw author input',
+    'incomplete or invalid time "1e" remains unsaveable and unchanged'),
+   ('exact review owner and raw author input',
+    'incomplete or invalid time "1001/" remains unsaveable and unchanged'),
+   ('exact review owner and raw author input',
+    'incomplete or invalid time "" remains unsaveable and unchanged'),
+   ('exact review owner and raw author input',
+    'incomplete or invalid time "0x1" remains unsaveable and unchanged'),
+   ('exact review owner and raw author input',
+    'incomplete or invalid time "Infinity" remains unsaveable and unchanged'),
+   ('exact review owner and raw author input', 'range -1 to 1 cannot leave its selected scene'),
+   ('exact review owner and raw author input', 'range 2 to 1 cannot leave its selected scene'),
+   ('exact review owner and raw author input', 'range 0 to 8 cannot leave its selected scene'),
+   ('exact review owner and raw author input',
+    'clean observations update only the base while active raw intent retains its source'),
+   ('original callback acknowledgement and uncertainty',
+    'a valid original add receipt clears only its unchanged submitted comment'),
+   ('original callback acknowledgement and uncertainty',
+    'an equal observed Project cannot acknowledge or clear the original pending input'),
+   ('original callback acknowledgement and uncertainty',
+    'an unrelated callback identity cannot acknowledge this original request'),
+   ('original callback acknowledgement and uncertainty',
+    'a later body edit survives the exact original acknowledgement'),
+   ('original callback acknowledgement and uncertainty',
+    'a later rangeStart edit survives the exact original acknowledgement'),
+   ('original callback acknowledgement and uncertainty',
+    'an original reply for another id retains UNKNOWN'),
+   ('original callback acknowledgement and uncertainty',
+    'an original reply for another generation retains UNKNOWN'),
+   ('original callback acknowledgement and uncertainty',
+    'an original reply for another active_branch retains UNKNOWN'),
+   ('original callback acknowledgement and uncertainty',
+    'revision offset 0 cannot replace the exact original receipt'),
+   ('original callback acknowledgement and uncertainty',
+    'revision offset 2 cannot replace the exact original receipt'),
+   ('original callback acknowledgement and uncertainty',
+    'a missing review mismatch cannot authorize clearing'),
+   ('original callback acknowledgement and uncertainty',
+    'a body review mismatch cannot authorize clearing'),
+   ('original callback acknowledgement and uncertainty',
+    'a anchor review mismatch cannot authorize clearing'),
+   ('original callback acknowledgement and uncertainty',
+    'a duplicate review mismatch cannot authorize clearing'),
+   ('original callback acknowledgement and uncertainty',
+    'uncertain failure and reload preserve the original attempt and prohibit replay'),
+   ('original callback acknowledgement and uncertainty',
+    'a proven unsent storage failure can be submitted only through a new explicit attempt'),
+   ('original callback acknowledgement and uncertainty',
+    'resolution acknowledgement checks the exact item, anchor and authored reason'),
+   ('original callback acknowledgement and uncertainty',
+    'a later resolution survives both resolution and explicit reopen receipts'),
+   ('original callback acknowledgement and uncertainty',
+    'an authored draft cannot silently move to a later source or missing scene'),
+   ('original callback acknowledgement and uncertainty',
+    'the request must preserve the exact raw range and resource binding'),
+   ('verified recovery custody and bounded storage',
+    'a write is accepted only with exact bytes and a matching tab pointer readback'),
+   ('verified recovery custody and bounded storage',
+    'a cloned tab forks its writer and never rewrites the earlier copy'),
+   ('verified recovery custody and bounded storage',
+    'a peer byte change is preserved and blocks an overwrite'),
+   ('verified recovery custody and bounded storage',
+    'a peer pointer change is preserved and blocks an overwrite'),
+   ('verified recovery custody and bounded storage',
+    'silent write loss cannot count as confirmed custody'),
+   ('verified recovery custody and bounded storage',
+    'silent pointer loss keeps the written copy but cannot acknowledge custody'),
+   ('verified recovery custody and bounded storage',
+    'the copy-count budget blocks a new write without eviction or author loss'),
+   ('verified recovery custody and bounded storage',
+    'the byte budget blocks a new write without rewriting earlier recovery'),
+   ('verified recovery custody and bounded storage',
+    'oversized raw input remains in memory when a recovery record cannot be encoded'),
+   ('verified recovery custody and bounded storage',
+    'a clean acknowledged checkpoint cannot be rewritten by a later intent'),
+   ('verified recovery custody and bounded storage',
+    'a corrupt or foreign schema recovery is rejected without normalization'),
+   ('verified recovery custody and bounded storage',
+    'a corrupt or foreign scope recovery is rejected without normalization'),
+   ('verified recovery custody and bounded storage',
+    'a corrupt or foreign writer recovery is rejected without normalization'),
+   ('verified recovery custody and bounded storage',
+    'a corrupt or foreign shape recovery is rejected without normalization'),
+   ('verified recovery custody and bounded storage',
+    'a corrupt or foreign attempt recovery is rejected without normalization'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'two exact source reads and contiguous history are observations, never original '
+    'acknowledgement'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'unchanged submitted text starts blank after explicit inspection rather than replaying '
+    'add_review'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a later raw intent uses a new attempt identity without consuming or changing the original '
+    'UNKNOWN'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'later ABA body input survives explicit UNKNOWN separation'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'later ABA kind input survives explicit UNKNOWN separation'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'later ABA timeMode input survives explicit UNKNOWN separation'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'later ABA rangeStart input survives explicit UNKNOWN separation'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'later ABA rangeEnd input survives explicit UNKNOWN separation'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a later ABA resolution reason survives separate intent after actual-source inspection'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a gap journal cannot release UNKNOWN'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a empty journal cannot release UNKNOWN'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a duplicate journal cannot release UNKNOWN'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a beyond journal cannot release UNKNOWN'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a changed second source read invalidates the inspection'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a foreign identity or a different pending attempt cannot reuse the inspection'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a zero-event inspection of unchanged saved state still retains UNKNOWN'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a separate writer retains the original exact UNKNOWN bytes and verifies the new pointer'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'failure after staging the new writer leaves an UNKNOWN checkpoint and preserves every '
+    'original byte'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'verifying identical retained input never rewrites its original timestamp or bytes'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a known unsent draft can be explicitly reviewed against a newer source without weakening '
+    'UNKNOWN'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'native UTF-8 text budgets are checked before invoking a request without truncating raw input'),
+   ('explicit UNKNOWN inspection and separate author intent',
+    'a dismissed review cannot become a submitted resolution attempt'))),)
+
+
+def selected_unit_inventory(selection):
+    require(selection in ("creative-production", "review"), "unknown selected unit scope")
+    rows = CREATIVE_PRODUCTION_UNITS if selection == "creative-production" else REVIEW_UNITS
+    expected_files, expected_tests = (2, 67) if selection == "creative-production" else (1, 72)
+    require(isinstance(rows, tuple) and len(rows) == expected_files
+            and len({name for name, _ in rows}) == expected_files
+            and sum(len(titles) for _, titles in rows) == expected_tests,
+            "selected unit inventory differs")
+    require(all(isinstance(titles, tuple) and titles and len(titles) == len(set(titles))
+                and all(isinstance(pair, tuple) and len(pair) == 2
+                        and all(isinstance(part, str) and part for part in pair)
+                        for pair in titles)
+                for _, titles in rows), "selected unit identities differ")
+    return rows
 
 
 def require(condition, reason):
@@ -750,11 +1269,23 @@ def require(condition, reason):
         raise ValueError(reason)
 
 
+def is_browser_scope(selection):
+    return isinstance(selection, str) and selection in BROWSER_SCOPES
+
+
 def selected_selections(selection):
     """Return a closed scope; an explicit subset never claims the full roster."""
     require(isinstance(selection, str), "selection must be a single named scope")
-    if selection == "browser-contracts":
-        return browser_selections()
+    if is_browser_scope(selection):
+        return browser_selections(selection)
+    require(SELECTIONS == (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS)
+            and len(PROJECT_AUTHORING_SELECTIONS) == 19
+            and sum(len(row[2]) for row in PROJECT_AUTHORING_SELECTIONS) == 136
+            and len(HISTORICAL_PROJECT_AUTHORING_SELECTIONS) == 19
+            and sum(len(row[2]) for row in HISTORICAL_PROJECT_AUTHORING_SELECTIONS) == 135
+            and len(CREATIVE_PRODUCTION_SELECTIONS) == 2
+            and sum(len(row[2]) for row in CREATIVE_PRODUCTION_SELECTIONS) == 17,
+            "service catalogue differs from its closed historical and composed scopes")
     if selection == "all":
         return SELECTIONS
     if selection in SELECTION_GROUPS:
@@ -776,21 +1307,25 @@ def selected_selections(selection):
 
 def selection_plan(selection):
     chosen = selected_selections(selection)
-    if selection == "browser-contracts":
+    labels = {row[0] for row in chosen}
+    if is_browser_scope(selection):
+        selected, excluded = browser_discovery_inventory(selection)
         return {
             "requested": selection, "scope": "EXPLICIT_SYNTHETIC_BROWSER_CONTRACTS",
             "required": [{"label": label, "file": filename, "titles": list(titles)}
                          for label, filename, titles in chosen],
             "not_selected": [{"label": label, "file": filename, "titles": list(titles),
                              "status": "NOT_SELECTED", "technical_credit": "NONE"}
-                             for label, filename, titles in SELECTIONS],
+                             for label, filename, titles in (*SELECTIONS, *BROWSER_SELECTIONS, *REVIEW_BROWSER_SELECTIONS)
+                             if label not in labels],
             "excluded_service_cases": [{"file": filename, "title": title,
                                        "status": "NOT_SELECTED", "technical_credit": "NONE"}
-                                      for filename, title in BROWSER_OMITTED_SERVICE_CASES],
-            "required_tests": 148, "discovery_tests": 152, "full_default_tests": 135,
+                                      for filename, title in BROWSER_OMITTED_SERVICE_CASES
+                                      if (filename, title) in excluded],
+            "required_tests": len(selected), "discovery_tests": len(selected | excluded),
+            "full_default_tests": sum(len(titles) for _, _, titles in SELECTIONS),
             "formal_acceptance": False,
         }
-    labels = {row[0] for row in chosen}
     return {
         "requested": selection,
         "scope": "ALL_DEFINED_SERVICE_CASES" if selection == "all" else "EXPLICIT_SELECTED_SERVICE_CASES",
@@ -861,7 +1396,7 @@ def write_new(path, value):
 
 
 def source_observation(repo, selection=None):
-    require(selection in (None, "browser-contracts"), "unknown source observation scope")
+    require(selection is None or is_browser_scope(selection), "unknown source observation scope")
     def git(*arguments):
         return subprocess.check_output(["git", *arguments], cwd=repo, timeout=30).decode().strip()
 
@@ -996,11 +1531,15 @@ def source_observation(repo, selection=None):
         "tooling/ci_canvas_service.py",
         "tooling/tests/test_ci_canvas_service.py",
     )
-    if selection == "browser-contracts":
+    paths = tuple(dict.fromkeys((*paths, *CREATIVE_PRODUCTION_SOURCE_PATHS,
+                                 "tooling/vite_editor_security_probe.mjs")))
+    if is_browser_scope(selection):
         paths = tuple(dict.fromkeys((*paths, *BROWSER_SOURCE_PATHS)))
     files = {}
     for name in paths:
         original = subprocess.check_output(["git", "show", head + ":" + name], cwd=repo, timeout=30)
+        # Reject an aliased parent even when its current bytes happen to match.
+        archive_ancestors(repo / name)
         observed = digest(repo / name)
         require(observed == {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()},
                 "source differs from Git: " + name)
@@ -1008,28 +1547,144 @@ def source_observation(repo, selection=None):
     return {"checkout": head, "tree": git("rev-parse", "HEAD^{tree}"), "files": files}
 
 
-def execute(argv, cwd, env, output, label, timeout):
-    stdout = output / (label + ".stdout.log")
-    stderr = output / (label + ".stderr.log")
-    command = {"argv": argv, "cwd": str(cwd), "started_utc": datetime.now(timezone.utc).isoformat()}
-    with stdout.open("xb") as out, stderr.open("xb") as err:
+PROCESS_ENVIRONMENT_KEYS = ("CARGO_TARGET_DIR", "PLAYWRIGHT_JSON_OUTPUT_FILE",
+                            "MOTIONWRIGHT_SERVICE_TEST_BIN", "MOTIONWRIGHT_SERVICE_TEST_TMPDIR")
+PROCESS_OBSERVATION_SCHEMA = "motionwright.studio-command-process-observation/2"
+
+
+class UnknownObservation(ValueError):
+    def __init__(self, message, command):
+        super().__init__(message)
+        self.command = command
+
+
+def execution_unknown(command):
+    value = str(command.get("observation", ""))
+    return value.startswith("UNKNOWN") or value == "TIMED_OUT_NO_RETRY"
+
+
+def owned_process_group_state(pid):
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return "ABSENT"
+    return "PRESENT"
+
+
+def stop_observed_process(process, owned_group):
+    errors = []
+    for force in (False, True):
         try:
-            result = subprocess.run(argv, cwd=cwd, env=env, stdout=out, stderr=err,
-                                    timeout=timeout, check=False)
-            command["exit_code"] = result.returncode
-            command["diagnostic_custody"] = "DIRECT_PROCESS_EXIT_OBSERVED"
-        except subprocess.TimeoutExpired:
-            command["exit_code"] = None
-            command["observation"] = "TIMED_OUT_NO_RETRY"
-            # subprocess.run observes and kills its direct process only. The
-            # original descendants may still hold these streams. Retain this
-            # bounded snapshot without claiming sealed diagnostic custody.
-            command["diagnostic_custody"] = "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"
-            command["timeout_seconds"] = timeout
+            if owned_group:
+                os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            elif process.poll() is None:
+                process.kill() if force else process.terminate()
+        except ProcessLookupError:
+            pass
+        except BaseException as error:
+            errors.append(type(error).__name__ + ": " + str(error))
+        try:
+            process.wait(timeout=2)
+        except BaseException as error:
+            errors.append(type(error).__name__ + ": " + str(error))
+        try:
+            if process.poll() is not None and (not owned_group or owned_process_group_state(process.pid) == "ABSENT"):
+                break
+        except BaseException as error:
+            errors.append(type(error).__name__ + ": " + str(error))
+    return errors
+
+
+def require_observed_command(command):
+    if execution_unknown(command):
+        raise UnknownObservation("uncertain command; no further commands or readback", command)
+    require(command.get("process_observation_schema") == PROCESS_OBSERVATION_SCHEMA
+            and command.get("process_boundary") == "OWNED_POSIX_SESSION_GROUP"
+            and type(command.get("pid")) is int and command["pid"] > 0
+            and command.get("owned_group_after_wait") == "ABSENT"
+            and command.get("escaped_descendants") == "NOT_OBSERVED"
+            and command.get("diagnostic_custody") == "DIRECT_PROCESS_EXIT_OBSERVED"
+            and type(command.get("exit_code")) is int and not command.get("observation"),
+            "owned process group exit was not observed; no closed execution credit")
+
+
+def execute(argv, cwd, env, output, label, timeout):
+    owned_group = os.name == "posix"
+    command = {"argv": argv, "cwd": str(cwd), "started_utc": datetime.now(timezone.utc).isoformat(),
+               "process_observation_schema": PROCESS_OBSERVATION_SCHEMA,
+               "process_boundary": "OWNED_POSIX_SESSION_GROUP" if owned_group else "DIRECT_PROCESS_ONLY",
+               "pid": None, "owned_group_after_wait": "NOT_OBSERVED", "escaped_descendants": "NOT_OBSERVED",
+               "selected_environment": {key: env.get(key) for key in PROCESS_ENVIRONMENT_KEYS},
+               "cleanup_errors": []}
+    process = None
+    try:
+        with (output / (label + ".stdout.log")).open("xb") as out, (output / (label + ".stderr.log")).open("xb") as err:
+            try:
+                process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
+                                           start_new_session=owned_group)
+            except (FileNotFoundError, PermissionError) as error:
+                command.update(exit_code=None, observation="NOT_STARTED_LAUNCH_ERROR", error=str(error))
+            except OSError as error:
+                command.update(exit_code=None, observation="UNKNOWN_PROCESS_NO_RETRY",
+                               uncertainty_reason="SPAWN_HANDLE_NOT_OBSERVED", error=type(error).__name__ + ": " + str(error))
+            else:
+                command["pid"] = process.pid
+                try:
+                    command["exit_code"] = process.wait(timeout=timeout)
+                    if owned_group:
+                        command["owned_group_after_wait"] = owned_process_group_state(process.pid)
+                        if command["owned_group_after_wait"] != "ABSENT":
+                            command.update(observation="UNKNOWN_PROCESS_NO_RETRY",
+                                           uncertainty_reason="OWNED_GROUP_PRESENT_AFTER_DIRECT_EXIT")
+                    if not execution_unknown(command):
+                        command["diagnostic_custody"] = "DIRECT_PROCESS_EXIT_OBSERVED"
+                except subprocess.TimeoutExpired:
+                    command.update(exit_code=None, observation="UNKNOWN_TIMEOUT_NO_RETRY",
+                                   uncertainty_reason="DIRECT_WAIT_TIMEOUT", timeout_seconds=timeout)
+                except BaseException as error:
+                    command.setdefault("exit_code", None)
+                    command.update(observation="UNKNOWN_PROCESS_NO_RETRY",
+                                   uncertainty_reason="POST_LAUNCH_OBSERVATION_ERROR",
+                                   error=type(error).__name__ + ": " + str(error))
+                if execution_unknown(command):
+                    try:
+                        command["cleanup_errors"] = stop_observed_process(process, owned_group)
+                    except BaseException as error:
+                        command["cleanup_errors"].append(type(error).__name__ + ": " + str(error))
+    except BaseException as error:
+        if process is None and isinstance(error, OSError) and not execution_unknown(command):
+            raise
+        if execution_unknown(command):
+            command.setdefault("secondary_observation_errors", []).append(type(error).__name__ + ": " + str(error))
+        else:
+            command.setdefault("exit_code", None)
+            command.update(observation="UNKNOWN_PROCESS_NO_RETRY",
+                           uncertainty_reason="OBSERVATION_OR_STREAM_FINALIZATION_ERROR",
+                           error=type(error).__name__ + ": " + str(error))
+        if process is not None:
+            try:
+                command["cleanup_errors"].extend(stop_observed_process(process, owned_group))
+            except BaseException as cleanup_error:
+                command["cleanup_errors"].append(type(cleanup_error).__name__ + ": " + str(cleanup_error))
     command["finished_utc"] = datetime.now(timezone.utc).isoformat()
-    command["stdout"] = digest(stdout)
-    command["stderr"] = digest(stderr)
-    write_new(output / (label + ".command.json"), command)
+    for stream in ("stdout", "stderr"):
+        path = output / (label + "." + stream + ".log")
+        try:
+            command[stream] = archive_file_digest(path, ARCHIVE_LIMITS["file_bytes"])
+        except BaseException as error:
+            command[stream] = {"custody_error": type(error).__name__ + ": " + str(error)}
+            if not execution_unknown(command):
+                command.update(observation="UNKNOWN_CUSTODY_NO_RETRY", uncertainty_reason="STREAM_FINGERPRINT_FAILED")
+    if execution_unknown(command):
+        command["diagnostic_custody"] = "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"
+    try:
+        write_new(output / (label + ".command.json"), command)
+    except BaseException as error:
+        if not execution_unknown(command):
+            command.update(observation="UNKNOWN_CUSTODY_NO_RETRY", uncertainty_reason="COMMAND_RECEIPT_PERSISTENCE_FAILED")
+        command.update(diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED",
+                       receipt_error=type(error).__name__ + ": " + str(error))
+        raise UnknownObservation("command receipt could not be retained; no retry", command) from error
     return command
 
 
@@ -1153,9 +1808,132 @@ def archive_json(root, inventory, name):
     return json.loads(raw)
 
 
+
+def selected_service_store_bindings(root, inventory, selections, captures, binary_path, required_labels):
+    """Bind every new service case to its original closed store and final oracle."""
+    known = {row["manifest"] for row in captures}
+    require(isinstance(required_labels, set) and required_labels
+            and required_labels <= ({row[0] for row in CREATIVE_PRODUCTION_SELECTIONS} | {"review"}),
+            "unknown case/store binding scope")
+    bound, used = [], set()
+    for selection in selections:
+        label = selection["label"]
+        if label not in required_labels:
+            continue
+        document = archive_json(root, inventory, "e/" + label + ".json")
+        cases = []
+
+        def collect(suites):
+            for suite in suites:
+                cases.extend(suite.get("specs", []))
+                collect(suite.get("suites", []))
+
+        collect(document["suites"])
+        for case in cases:
+            attachments = case["tests"][0]["results"][0].get("attachments", [])
+            evidence_name = label + "-service-evidence"
+            originals = {}
+            for name in ("closed-store-outcomes", evidence_name):
+                found = [item for item in attachments if item.get("name") == name]
+                require(len(found) == 1 and found[0].get("contentType") == "application/json",
+                        "service case original attachment missing or duplicate")
+                path = Path(found[0].get("path", ""))
+                relative = archive_member_name(path.relative_to(root).as_posix())
+                parts = relative.split("/")
+                require(parts[:2] == ["e", label + "-test-results"],
+                        "service case attachment outside its output")
+                if len(parts) == 5 and parts[3] == "attachments":
+                    require(re.fullmatch(re.escape(name) + r"-[0-9a-f]{40}\.json", parts[4]) is not None,
+                            "service case reporter attachment name differs")
+                    original_name = "/".join((*parts[:3], name + ".json"))
+                else:
+                    require(len(parts) == 4 and parts[3] == name + ".json",
+                            "service case attachment outside its output")
+                    original_name = relative
+                value = archive_json(root, inventory, relative)
+                if original_name != relative:
+                    original = archive_json(root, inventory, original_name)
+                    require(all(inventory["entries"][relative][key] == inventory["entries"][original_name][key]
+                                for key in ("bytes", "sha256")) and value == original,
+                            "service case reporter copy differs from original")
+                    value = original
+                originals[name] = (original_name, value)
+            outcome_name, outcome = originals["closed-store-outcomes"]
+            case_root = outcome_name.rsplit("/", 1)[0]
+            manifest_name = case_root + "/closed-store/manifest.json"
+            require(manifest_name in known and manifest_name not in used,
+                    "service case closed store missing or shared by different cases")
+            used.add(manifest_name)
+            manifest = archive_json(root, inventory, manifest_name)
+            oracle = archive_json(root, inventory, case_root + "/closed-store/oracle.json")
+            require(outcome.get("schemaVersion") == 1 and outcome.get("errors") == []
+                    and outcome.get("capture") == manifest and outcome.get("oracle") == oracle,
+                    "service case finalization differs from original closed store")
+            preparation, closures = outcome.get("preparation"), outcome.get("closures")
+            require(isinstance(preparation, list) and preparation
+                    and all(item.get("status") == "fulfilled" and not item.get("error")
+                            for item in preparation), "service case preparation incomplete")
+            require(isinstance(closures, list) and closures
+                    and all(item.get("status") == "fulfilled" and not item.get("error")
+                            and item.get("taints") == [] for item in closures)
+                    and [{key: item.get(key) for key in ("databasePath", "exits", "taints")}
+                         for item in closures] == manifest.get("lifecycle"),
+                    "service case closures differ from captured helper lifecycle")
+            require(oracle.get("schemaVersion") == 1 and oracle.get("journalComplete") is True
+                    and oracle.get("journalAfterRevisionExclusive") == 0
+                    and isinstance(oracle.get("journal"), list) and isinstance(oracle.get("project"), dict),
+                    "service case complete stored oracle missing")
+            evidence_path, evidence = originals[evidence_name]
+            require(evidence_path.rsplit("/", 1)[0] == case_root
+                    and evidence.get("primaryFailure") is None and evidence.get("failures") == []
+                    and evidence.get("canonicalOracle") == oracle and evidence.get("final") == oracle["project"],
+                    "service case final Project or original failure differs")
+            # These specs explicitly choose info.outputPath('service', 'studio.sqlite3').
+            # Their configured TMPDIR is retained in the invocation, but is not the DB location.
+            source_directory = root / case_root / "service"
+            database_path = str(source_directory / "studio.sqlite3")
+            require(manifest.get("sourceDirectory") == str(source_directory)
+                    and manifest.get("databaseRelativePath") == "studio.sqlite3",
+                    "service case captured source directory or database differs")
+            peer_titles = {
+                "an unknown Production plan committed result survives reload without replay and needs a fresh history review",
+                "an unknown Production plan matching-peer result survives reload without replay and needs a fresh history review",
+            }
+            participants = 2 if label == "production-design" and case["title"] in peer_titles else 1
+            if label == "review":
+                require(isinstance(evidence.get("service"), dict) and "services" not in evidence,
+                        "Review original singular service authority differs")
+                services = [evidence["service"]]
+            else:
+                services = evidence.get("services")
+            require(isinstance(services, list) and len(services) == participants
+                    and all(isinstance(item, dict) and item.get("binaryPath") == str(binary_path)
+                            and item.get("databasePath") == database_path for item in services),
+                    "service case participant inventory or binary/database authority differs")
+            declared_lifecycle = [{"databasePath": item["databasePath"], "exits": item.get("processExits"),
+                                   "taints": item.get("lifecycleTaints")} for item in services]
+            require(declared_lifecycle == manifest.get("lifecycle"),
+                    "service case original process exits or taints differ from captured lifecycle")
+            bound.append({"label": label, "file": case["file"], "title": case["title"],
+                          "manifest": manifest_name, "outcomes": outcome_name,
+                          "original_evidence": evidence_path, "services": participants,
+                          "source_directory": str(source_directory), "database_path": database_path,
+                          "binary_path": str(binary_path),
+                          "technical_scope": "ORIGINAL_CLOSED_STORE_AND_DECLARED_ORACLE; NO_ARCHIVE_REOPEN"})
+    require(len(bound) == sum(item["expected_tests"] for item in selections if item["label"] in required_labels),
+            "service closed store case inventory differs")
+    return bound
+
+
+def creative_production_store_bindings(root, inventory, selections, captures, binary_path):
+    return selected_service_store_bindings(
+        root, inventory, selections, captures, binary_path,
+        {row[0] for row in CREATIVE_PRODUCTION_SELECTIONS})
+
+
 def archive_closed_bindings(root, inventory, source):
     receipt = archive_json(root, inventory, "e/receipt.json")
-    browser_mode = receipt.get("selection_plan", {}).get("requested") == "browser-contracts"
+    browser_mode = is_browser_scope(receipt.get("selection_plan", {}).get("requested"))
     tools = ("node", "npm", "python") if browser_mode else ("rustc", "cargo", "node", "npm", "python")
     for tool in tools:
         identity = inventory["entries"].get("tools/" + tool + ".txt", {})
@@ -1178,6 +1956,7 @@ def archive_closed_bindings(root, inventory, source):
                     "archive run identity differs")
 
     def command_closed(command, label):
+        require_observed_command(command)
         require(type(command.get("exit_code")) is int and command["exit_code"] == 0
                 and command.get("diagnostic_custody") == "DIRECT_PROCESS_EXIT_OBSERVED"
                 and not command.get("observation"),
@@ -1215,22 +1994,55 @@ def archive_closed_bindings(root, inventory, source):
         discovery = receipt.get("discovery", {})
         command_closed(discovery.get("command", {}), "browser-discovery")
         require(discovery.get("status") == "LISTED_NOT_EXECUTED"
-                and discovery["command"].get("argv") == browser_command(node, cli, root / "e")
-                and discovery["command"].get("cwd") == cwd, "browser discovery command differs")
+                and discovery["command"].get("argv") == browser_command(node, cli, root / "e", scope=plan["requested"])
+                and discovery["command"].get("cwd") == cwd
+                and discovery["command"].get("selected_environment") == {
+                    **dict.fromkeys(PROCESS_ENVIRONMENT_KEYS),
+                    "PLAYWRIGHT_JSON_OUTPUT_FILE": str(root / "e/browser-discovery.json")},
+                "browser discovery command differs")
         original = inventory["entries"].get("e/browser-discovery.json", {})
         require(discovery.get("original_report") == {key: original.get(key) for key in ("bytes", "sha256")}
                 and discovery.get("verified") == validate_browser_discovery(
-                    archive_json(root, inventory, "e/browser-discovery.json")),
+                    archive_json(root, inventory, "e/browser-discovery.json"), plan["requested"]),
                 "browser discovery original differs")
     else:
-        command_closed(receipt.get("build", {}), "build")
+        repo, target = root.parent / "g", root / "t"
+        cwd = str(repo / "apps/studio")
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        cargo, node = receipt.get("cargo", {}).get("path"), receipt.get("node", {}).get("path")
+        require(receipt.get("target_directory") == str(target), "service target directory differs")
+        for name in ("cargo", "node"):
+            identity = receipt.get(name, {})
+            require(isinstance(identity.get("path"), str) and Path(identity["path"]).is_absolute(),
+                    "service tool path missing: " + name)
+            require(observed_tool(Path(identity["path"])) == identity, "service tool identity differs: " + name)
+        require(receipt.get("playwright_cli") == digest(cli), "service Playwright CLI identity differs")
+        binary_path = target / "debug/examples/studio_review_session"
+        require(receipt.get("service_binary", {}).get("path") == str(binary_path), "service binary path differs")
+        build = receipt.get("build", {})
+        command_closed(build, "build")
+        require(build.get("argv") == [cargo, "build", "--locked", "-p", "motionwright-service",
+                                       "--example", "studio_review_session"]
+                and build.get("cwd") == str(repo)
+                and build.get("selected_environment") == service_environment_binding(target),
+                "service build invocation differs")
     for selection, (_, filename, titles) in zip(selections, required):
         label = selection["label"]
         command_closed(selection.get("command", {}), label)
         if browser_mode:
             require(selection["command"].get("argv") == browser_command(
+                node, cli, root / "e", (label, filename, titles), scope=plan["requested"])
+                and selection["command"].get("cwd") == cwd
+                and selection["command"].get("selected_environment") == {
+                    **dict.fromkeys(PROCESS_ENVIRONMENT_KEYS),
+                    "PLAYWRIGHT_JSON_OUTPUT_FILE": str(root / "e" / (label + ".json"))},
+                "browser selected command differs")
+        else:
+            require(selection["command"].get("argv") == service_command(
                 node, cli, root / "e", (label, filename, titles))
-                and selection["command"].get("cwd") == cwd, "browser selected command differs")
+                and selection["command"].get("cwd") == cwd
+                and selection["command"].get("selected_environment") == service_environment_binding(
+                    target, root / "e", label, binary_path), "service selected invocation differs")
         original = inventory["entries"].get("e/" + label + ".json", {})
         require(selection.get("status") == "PASS" and selection.get("expected_tests") == len(titles)
                 and selection.get("original_report") == {k: original.get(k) for k in ("bytes", "sha256")},
@@ -1305,8 +2117,15 @@ def archive_closed_bindings(root, inventory, source):
         captures.append({"manifest": name, "sha256": inventory["entries"][name]["sha256"],
                          "snapshot_sha256": aggregate, "entries": len(entries),
                          "evidence_scope": manifest.get("evidenceScope")})
-    return {"receipt": {k: inventory["entries"]["e/receipt.json"][k] for k in ("bytes", "sha256")},
-            "selection_plan": plan, "captures": captures}
+    result = {"receipt": {k: inventory["entries"]["e/receipt.json"][k] for k in ("bytes", "sha256")},
+              "selection_plan": plan, "captures": captures}
+    if any(row["label"] in {item[0] for item in CREATIVE_PRODUCTION_SELECTIONS} for row in selections):
+        result["creative_production_cases"] = creative_production_store_bindings(
+            root, inventory, selections, captures, binary_path)
+    if any(row["label"] == "review" for row in selections):
+        result["review_cases"] = selected_service_store_bindings(
+            root, inventory, selections, captures, binary_path, {"review"})
+    return result
 
 
 def write_closed_tar(root, target, inventory):
@@ -1427,9 +2246,30 @@ def retain_closed_archive(repo, root):
               "human_acceptance": False, "formal_acceptance": False,
               "scope": "Original e/tools tree, direct command exits and declared helper closures; no additional app reopen"}
     try:
+        # Observe the bounded receipt before traversing streams that an uncertain
+        # descendant may still be changing. No source command or copy is safe yet.
+        receipt_name = "e/receipt.json"
+        receipt_path = root / receipt_name
+        receipt_identity = archive_identity(archive_stat(receipt_path))
+        receipt_digest = archive_file_digest(receipt_path, 64 * 1024 * 1024)
+        receipt_inventory = {"entries": {receipt_name: {"kind": "file", **receipt_digest}},
+                             "identities": {receipt_name: receipt_identity}}
+        original_receipt = archive_json(root, receipt_inventory, receipt_name)
+        if original_receipt.get("status") == "UNKNOWN":
+            raise UnknownObservation("original execution is UNKNOWN; no source commands or archive copy",
+                                     original_receipt.get("unsealed_command", {}))
+        commands = [original_receipt.get("build", {}), original_receipt.get("discovery", {}).get("command", {}),
+                    *(row.get("command", {}) for row in original_receipt.get("selections", []))]
+        for command in commands:
+            if execution_unknown(command):
+                raise UnknownObservation("original command is UNKNOWN; no source commands or archive copy", command)
+        require(original_receipt.get("status") == "PASS", "original execution is not complete")
         before = archive_inventory(root)
-        selected = archive_json(root, before, "e/receipt.json").get("selection_plan", {}).get("requested")
-        source_mode = "browser-contracts" if selected == "browser-contracts" else None
+        require(before["identities"].get(receipt_name) == receipt_identity
+                and archive_json(root, before, receipt_name) == original_receipt,
+                "original receipt changed before archive admission")
+        selected = original_receipt.get("selection_plan", {}).get("requested")
+        source_mode = selected if is_browser_scope(selected) else None
         source = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source"] = source
         report["bindings"] = archive_closed_bindings(root, before, source)
@@ -1446,6 +2286,8 @@ def retain_closed_archive(repo, root):
         report["input_inventory"] = digest(output / "input-inventory.json")
         report["originals_equal_before_after"] = True
         report["status"], report["custody"] = "PASS", "VERIFIED_ORIGINAL_TREE_COPY"
+    except UnknownObservation as error:
+        report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command)
     except Exception as error:
         report["error_type"], report["error"] = type(error).__name__, str(error)
     write_new(output / "archive-receipt.json", report)
@@ -1468,8 +2310,13 @@ def archive_main(arguments):
     return 0 if report["status"] == "PASS" else 1
 
 
-def browser_selections():
-    require(len(BROWSER_SELECTIONS) == 31, "browser file count differs")
+def browser_selections(scope="browser-contracts"):
+    require(BROWSER_SELECTIONS == (*HISTORICAL_BROWSER_SELECTIONS,
+                                   *CREATIVE_PRODUCTION_BROWSER_SELECTIONS)
+            and len(HISTORICAL_BROWSER_SELECTIONS) == 31
+            and sum(len(row[2]) for row in HISTORICAL_BROWSER_SELECTIONS) == 148,
+            "historical browser inventory differs")
+    require(len(BROWSER_SELECTIONS) == 33, "browser file count differs")
     labels, files = set(), set()
     count = 0
     for label, filename, titles in BROWSER_SELECTIONS:
@@ -1481,15 +2328,40 @@ def browser_selections():
         labels.add(label)
         files.add(filename)
         count += len(titles)
-    require(count == 148, "browser case count differs")
-    return BROWSER_SELECTIONS
+    require(count == 206, "browser case count differs")
+    require(is_browser_scope(scope), "unknown named browser scope")
+    selected_labels = BROWSER_SCOPES[scope]
+    require(REVIEW_BROWSER_SELECTIONS == (
+                ("browser-review", "review-preservation.spec.ts", REVIEW_BROWSER_TITLES),)
+            and isinstance(REVIEW_BROWSER_TITLES, tuple)
+            and len(REVIEW_BROWSER_TITLES) == len(set(REVIEW_BROWSER_TITLES)) == 29
+            and all(isinstance(title, str) and title for title in REVIEW_BROWSER_TITLES)
+            and "browser-review" not in labels
+            and "review-preservation.spec.ts" not in files,
+            "Review browser inventory differs")
+    expected_labels, expected_count = {
+        "browser-contracts": (tuple(row[0] for row in BROWSER_SELECTIONS), 206),
+        "creative-production-browser": (("browser-production-design", "browser-creative-workbench"), 58),
+        "review-browser": (("browser-review",), 29),
+    }[scope]
+    require(selected_labels == expected_labels, "browser scope inventory differs")
+    chosen = tuple(row for row in (*BROWSER_SELECTIONS, *REVIEW_BROWSER_SELECTIONS)
+                   if row[0] in selected_labels)
+    require(len(chosen) == len(selected_labels), "browser scope has unknown or duplicate files")
+    require(sum(len(row[2]) for row in chosen) == expected_count,
+            "browser scope case count differs")
+    return chosen
 
 
-def browser_discovery_inventory():
-    selected = {(filename, title) for _, filename, titles in browser_selections() for title in titles}
-    excluded = set(BROWSER_OMITTED_SERVICE_CASES)
-    require(len(excluded) == 4 and all(filename == "project-mutation.spec.ts" for filename, _ in excluded)
-            and not selected.intersection(excluded), "invalid excluded service inventory")
+def browser_discovery_inventory(scope="browser-contracts"):
+    chosen = browser_selections(scope)
+    selected = {(filename, title) for _, filename, titles in chosen for title in titles}
+    exclusions = set(BROWSER_OMITTED_SERVICE_CASES)
+    require(len(exclusions) == 4
+            and all(filename == "project-mutation.spec.ts" for filename, _ in exclusions)
+            and not selected.intersection(exclusions), "invalid excluded service inventory")
+    files = {filename for _, filename, _ in chosen}
+    excluded = {(filename, title) for filename, title in exclusions if filename in files}
     return selected, excluded
 
 
@@ -1524,11 +2396,11 @@ def browser_result_identities(document):
     return found
 
 
-def validate_browser_discovery(document):
+def validate_browser_discovery(document, scope="browser-contracts"):
     """Validate names without interpreting list-only results as executed passes."""
     require(isinstance(document, dict) and document.get("errors") == [],
             "discovery has missing or nonempty global errors")
-    selected, excluded = browser_discovery_inventory()
+    selected, excluded = browser_discovery_inventory(scope)
     expected = selected | excluded
     stats = document.get("stats", {})
     require(stats.get("expected") == 0 and stats.get("skipped") == len(expected)
@@ -1542,8 +2414,8 @@ def validate_browser_discovery(document):
                 "discovery skip or expected failure differs from the closed scope")
         found.add(pair)
     require(found == expected, "discovered browser inventory differs")
-    return {"status": "LISTED_NOT_EXECUTED", "listed": 152, "selected": 148,
-            "excluded_service": 4, "execution_results": 0}
+    return {"status": "LISTED_NOT_EXECUTED", "listed": len(expected), "selected": len(selected),
+            "excluded_service": len(excluded), "execution_results": 0}
 
 
 def validate_browser_execution(document, filename, titles):
@@ -1554,13 +2426,36 @@ def validate_browser_execution(document, filename, titles):
     return verified
 
 
-def browser_command(node, cli, output, selection=None):
+def observed_tool(path):
+    path = Path(os.path.abspath(path))
+    resolved = path.resolve(strict=True)
+    return {"path": str(path), "resolved_path": str(resolved), **digest(resolved)}
+
+
+def service_environment_binding(target, output=None, label=None, binary=None):
+    return {"CARGO_TARGET_DIR": str(target),
+            "PLAYWRIGHT_JSON_OUTPUT_FILE": str(output / (label + ".json")) if label is not None else None,
+            "MOTIONWRIGHT_SERVICE_TEST_BIN": str(binary) if label is not None else None,
+            "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": str(output / (label + "-stores")) if label is not None else None}
+
+
+def service_command(node, cli, output, selection):
+    label, filename, _titles = selection
+    argv = [node, str(cli), "test", "tests/" + filename, "--project=chromium",
+            "--workers=1", "--retries=0", "--reporter=json",
+            "--output=" + str(output / (label + "-test-results"))]
+    if label == "ink":
+        argv += ["--grep", re.escape(INK_TITLE) + "$"]
+    return argv
+
+
+def browser_command(node, cli, output, selection=None, *, scope="browser-contracts"):
     if selection is None:
         return [node, str(cli), "test",
-                *("tests/" + filename for _, filename, _ in browser_selections()),
+                *("tests/" + filename for _, filename, _ in browser_selections(scope)),
                 "--project=chromium", "--list", "--reporter=json"]
     label, filename, titles = selection
-    require(selection in browser_selections(), "unknown browser file selection")
+    require(selection in browser_selections(scope), "unknown browser file selection")
     pattern = "^(?:" + "|".join(re.escape(" ".join(browser_full_title_path(filename, title)))
                                for title in titles) + ")$"
     return [node, str(cli), "test", "tests/" + filename, "--project=chromium",
@@ -1577,8 +2472,9 @@ def browser_report_original(path):
     return observed, json.loads(raw)
 
 
-def run_browser_selection(repo, output, target):
+def run_browser_selection(repo, output, target, scope="browser-contracts"):
     """Run synthetic browser contracts through the canonical process observer."""
+    chosen = browser_selections(scope)
     repo, output, target = (path.resolve() for path in (repo, output, target))
     require(repo.is_dir(), "repository missing")
     require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
@@ -1586,12 +2482,12 @@ def run_browser_selection(repo, output, target):
     report = {"schema": "motionwright.canvas-service-ci/1", "status": "FAIL",
               "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
               "job": os.environ.get("GITHUB_JOB"), "selections": [],
-              "selection_plan": selection_plan("browser-contracts"),
+              "selection_plan": selection_plan(scope),
               "execution_scope": "SYNTHETIC_BROWSER_CONTRACTS",
               "service_runtime": "NOT_RUN", "service_build": "NOT_RUN",
               "installed_tauri": "NOT_RUN", "native_render": "NOT_RUN", "human_acceptance": "NOT_RUN"}
     try:
-        before = source_observation(repo, "browser-contracts")
+        before = source_observation(repo, scope)
         report["source_before"] = before
         write_new(output / "source-before.json", before)
         node = shutil.which("node")
@@ -1600,28 +2496,30 @@ def run_browser_selection(repo, output, target):
         report["playwright_cli"] = {"path": str(cli), **digest(cli)}
         report["node"] = {"path": node, **digest(Path(node))}
         env = dict(os.environ)
-        for variable in ("MOTIONWRIGHT_SERVICE_TEST_BIN", "MOTIONWRIGHT_SERVICE_TEST_TMPDIR"):
+        for variable in PROCESS_ENVIRONMENT_KEYS:
             env.pop(variable, None)
         report["service_environment"] = {"MOTIONWRIGHT_SERVICE_TEST_BIN": "ABSENT",
                                          "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": "ABSENT"}
         discovery_env = dict(env)
         discovery_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / "browser-discovery.json")
-        command = execute(browser_command(node, cli, output), repo / "apps/studio",
+        command = execute(browser_command(node, cli, output, scope=scope), repo / "apps/studio",
                           discovery_env, output, "browser-discovery", 180)
         report["discovery"] = {"command": command, "status": "UNADMITTED"}
+        require_observed_command(command)
         require(command["exit_code"] == 0, "browser discovery process did not exit zero")
         original, document = browser_report_original(output / "browser-discovery.json")
-        report["discovery"].update(original_report=original, verified=validate_browser_discovery(document),
+        report["discovery"].update(original_report=original, verified=validate_browser_discovery(document, scope),
                                    status="LISTED_NOT_EXECUTED")
-        for selection in browser_selections():
+        for selection in chosen:
             label, filename, titles = selection
             case_env = dict(env)
             case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
-            command = execute(browser_command(node, cli, output, selection),
+            command = execute(browser_command(node, cli, output, selection, scope=scope),
                               repo / "apps/studio", case_env, output, label,
                               BROWSER_SELECTION_TIMEOUTS[label])
             observed = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
             report["selections"].append(observed)
+            require_observed_command(command)
             try:
                 original, document = browser_report_original(output / (label + ".json"))
                 observed["original_report"] = original
@@ -1632,7 +2530,7 @@ def run_browser_selection(repo, output, target):
                 observed["error"] = str(error)
             if command["exit_code"] is None:
                 break
-        report["source_after"] = source_observation(repo, "browser-contracts")
+        report["source_after"] = source_observation(repo, scope)
         require(report["source_after"] == before, "source changed during browser execution")
         require(digest(cli) == {key: report["playwright_cli"][key] for key in ("bytes", "sha256")},
                 "Playwright CLI changed")
@@ -1640,10 +2538,13 @@ def run_browser_selection(repo, output, target):
                 "Node executable changed")
         require(not target.exists(), "browser contracts created a service build target")
         report["service_target_absent"] = True
-        require(len(report["selections"]) == 31
+        require(len(report["selections"]) == len(chosen)
                 and all(item["status"] == "PASS" for item in report["selections"]),
                 "required browser selection failed")
         report["status"] = "PASS"
+    except UnknownObservation as error:
+        report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command,
+                      terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
     except Exception as error:
         report["error"] = str(error)
     write_new(output / "receipt.json", report)
@@ -1653,15 +2554,152 @@ def run_browser_selection(repo, output, target):
     return 0 if report["status"] == "PASS" else 1
 
 
+
+def validate_creative_production_units(document, studio, selection="creative-production"):
+    """Admit only the exact selected original assertions from the locked CLI."""
+    rows = selected_unit_inventory(selection)
+    expected_count = sum(len(titles) for _, titles in rows)
+    require(isinstance(document, dict) and document.get("success") is True,
+            "unit report is missing or unsuccessful")
+    require(document.get("numTotalTests") == document.get("numPassedTests") == expected_count,
+            "unit test census differs")
+    for key in ("numFailedTests", "numPendingTests", "numTodoTests", "numFailedTestSuites",
+                "numPendingTestSuites"):
+        require(document.get(key) == 0, "unit omitted or failing results: " + key)
+    require(document.get("wasInterrupted", False) is False
+            and not document.get("unhandledErrors") and not document.get("errors")
+            and not document.get("testExecError"), "unit global execution error")
+    expected = {str(studio / name): titles for name, titles in rows}
+    suites = document.get("testResults")
+    require(isinstance(suites, list) and len(suites) == len(rows), "unit file inventory differs")
+    found, files = [], set()
+    for suite in suites:
+        name = suite.get("name")
+        require(name in expected and name not in files and suite.get("status") == "passed"
+                and not suite.get("message") and not suite.get("testExecError"),
+                "unit suite identity or result differs")
+        files.add(name)
+        wanted, observed = set(expected[name]), set()
+        assertions = suite.get("assertionResults")
+        require(isinstance(assertions, list) and len(assertions) == len(wanted),
+                "unit assertion count differs")
+        for assertion in assertions:
+            ancestors = assertion.get("ancestorTitles")
+            require(isinstance(ancestors, list) and len(ancestors) == 1,
+                    "unit suite hierarchy differs")
+            pair = (ancestors[0], assertion.get("title"))
+            require(pair in wanted and pair not in observed
+                    and assertion.get("fullName") == " ".join(pair), "unit exact title differs")
+            require(assertion.get("status") == "passed" and assertion.get("failureMessages") == []
+                    and not assertion.get("failureDetails") and not assertion.get("retryReasons")
+                    and assertion.get("retryCount", 0) == 0,
+                    "unit assertion is not an original ordinary pass")
+            observed.add(pair)
+            found.append({"file": str(Path(name).relative_to(studio)), "suite": pair[0], "title": pair[1]})
+        require(observed == wanted, "unit exact assertion inventory differs")
+    require(files == set(expected), "unit file omitted")
+    return {"status": "PASS", "passed": expected_count, "files": len(rows), "skipped": 0, "retries": 0,
+            "assertions": found, "evidence_scope": "UNIT_ASSERTIONS_ONLY", "formal_acceptance": False}
+
+
+def run_creative_production_units(repo, output, selection="creative-production"):
+    """Run the selected Vitest files and production build once for a composed SHA."""
+    units = selected_unit_inventory(selection)
+    source_scope = "review-browser" if selection == "review" else "creative-production-browser"
+    repo, output = repo.resolve(), output.resolve()
+    require(repo.is_dir() and not output.exists(), "fresh unit evidence and existing source required")
+    output.mkdir(parents=True, exist_ok=False)
+    studio = repo / "apps/studio"
+    report = {"schema": "motionwright.studio-unit-build-ci/1", "status": "FAIL",
+              "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "job": os.environ.get("GITHUB_JOB"), "commands": [], "requested_selection": selection,
+              "selection": [{"file": name, "titles": [list(pair) for pair in titles]}
+                            for name, titles in units],
+              "service_runtime": "NOT_RUN", "browser_runtime": "NOT_RUN", "native_render": "NOT_RUN",
+              "installed_tauri": "NOT_RUN", "human_acceptance": False, "formal_acceptance": False}
+    try:
+        before = source_observation(repo, source_scope)
+        report["source_before"] = before
+        write_new(output / "source-before.json", before)
+        node, npm = shutil.which("node"), shutil.which("npm")
+        require(node is not None and npm is not None, "Node and npm required for selected unit/build verification")
+        node, npm = str(Path(node).resolve(strict=True)), str(Path(npm).resolve(strict=True))
+        cli = studio / "node_modules/vitest/vitest.mjs"
+        probe = repo / "tooling/vite_editor_security_probe.mjs"
+        report["tools"] = {name: {"path": str(path), **digest(Path(path))}
+                           for name, path in (("node", node), ("npm", npm), ("vitest_cli", cli), ("security_probe", probe))}
+        env = dict(os.environ)
+        for variable in PROCESS_ENVIRONMENT_KEYS:
+            env.pop(variable, None)
+        # An existing output cannot be mistaken for a build of this source.
+        dist = studio / "dist"
+        require(not dist.exists(), "fresh production build output required")
+        commands = (
+            ("security-probe", [node, str(probe)], 60),
+            ("vitest", [node, str(cli), "run", *(name for name, _ in units),
+                        "--retry=0", "--reporter=json", "--outputFile=" + str(output / "vitest.json")], 300),
+            ("build", [npm, "run", "build"], 600),
+        )
+        for label, argv, timeout in commands:
+            command = execute(argv, studio, env, output, label, timeout)
+            report["commands"].append({"label": label, **command})
+            require_observed_command(command)
+            require(command["exit_code"] == 0 and command.get("diagnostic_custody") == "DIRECT_PROCESS_EXIT_OBSERVED"
+                    and not command.get("observation"), "selected unit/build command incomplete: " + label)
+            if label == "vitest":
+                original, document = browser_report_original(output / "vitest.json")
+                report["vitest_original"] = original
+                report["vitest"] = validate_creative_production_units(document, studio, selection)
+        report["source_after"] = source_observation(repo, source_scope)
+        require(report["source_after"] == before, "source changed during selected unit/build execution")
+        for identity in report["tools"].values():
+            require(digest(Path(identity["path"])) == {key: identity[key] for key in ("bytes", "sha256")},
+                    "selected unit/build executable or probe changed")
+        require((dist / "index.html").is_file(), "production build index missing")
+        files = {}
+        for path in sorted(dist.rglob("*")):
+            archive_ancestors(path)
+            if path.is_file():
+                require(len(files) < 2000 and path.stat().st_size <= 64 * 1024 * 1024,
+                        "production build artifact bound exceeded")
+                files[path.relative_to(dist).as_posix()] = digest(path)
+        require(any(name.endswith(".js") for name in files), "production build JavaScript missing")
+        report["production_build"] = {"status": "PASS", "files": files,
+                                       "scope": "BUILD_OUTPUT_ONLY; NO_BROWSER_OR_SERVICE_EXECUTION"}
+        retained = output / "production-build"
+        shutil.copytree(dist, retained)
+        require({path.relative_to(retained).as_posix(): digest(path) for path in sorted(retained.rglob("*"))
+                 if path.is_file()} == files, "retained production build differs")
+        report["status"] = "PASS"
+    except UnknownObservation as error:
+        report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command,
+                      terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
+    except Exception as error:
+        report["error_type"], report["error"] = type(error).__name__, str(error)
+    write_new(output / "receipt.json", report)
+    print(json.dumps({"status": report["status"], "receipt": str(output / "receipt.json")}))
+    return 0 if report["status"] == "PASS" else 1
+
+
+def unit_build_main(arguments):
+    parser = argparse.ArgumentParser(description="Verify an exact selected unit inventory and production build.")
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--selection", choices=("creative-production", "review"),
+                        default="creative-production")
+    args = parser.parse_args(arguments)
+    return run_creative_production_units(args.repo, args.output, args.selection)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--selection", default="all", choices=["all", *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), "browser-contracts"])
+    parser.add_argument("--selection", default="all", choices=["all", *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
     args = parser.parse_args()
-    if args.selection == "browser-contracts":
-        return run_browser_selection(args.repo, args.output, args.target)
+    if is_browser_scope(args.selection):
+        return run_browser_selection(args.repo, args.output, args.target, args.selection)
     selections = selected_selections(args.selection)
     repo, output, target = (p.resolve() for p in (args.repo, args.output, args.target))
     require(repo.is_dir(), "repository missing")
@@ -1678,11 +2716,17 @@ def main():
         write_new(output / "source-before.json", before)
         cargo, node = shutil.which("cargo"), shutil.which("node")
         require(cargo is not None and node is not None, "cargo and node are required")
+        report["cargo"], report["node"] = observed_tool(Path(cargo)), observed_tool(Path(node))
+        cargo, node = report["cargo"]["path"], report["node"]["path"]
+        report["target_directory"] = str(target)
         env = dict(os.environ)
+        for variable in PROCESS_ENVIRONMENT_KEYS:
+            env.pop(variable, None)
         env["CARGO_TARGET_DIR"] = str(target)
         build = execute([cargo, "build", "--locked", "-p", "motionwright-service",
                          "--example", "studio_review_session"], repo, env, output, "build", 1200)
         report["build"] = build
+        require_observed_command(build)
         require(build["exit_code"] == 0, "real service build failed")
         binary = target / "debug/examples/studio_review_session"
         if os.name == "nt":
@@ -1695,7 +2739,6 @@ def main():
         require(source_observation(repo) == before, "source changed during service compilation")
         cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
         report["playwright_cli"] = digest(cli)
-        report["node"] = {"path": node, **digest(Path(node))}
         for label, filename, titles in selections:
             case_env = dict(env)
             stores = output / (label + "-stores")
@@ -1703,15 +2746,12 @@ def main():
             case_env["MOTIONWRIGHT_SERVICE_TEST_BIN"] = str(binary)
             case_env["MOTIONWRIGHT_SERVICE_TEST_TMPDIR"] = str(stores)
             case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
-            argv = [node, str(cli), "test", "tests/" + filename, "--project=chromium",
-                    "--workers=1", "--retries=0", "--reporter=json",
-                    "--output=" + str(output / (label + "-test-results"))]
-            if label == "ink":
-                argv += ["--grep", re.escape(INK_TITLE) + "$"]
+            argv = service_command(node, cli, output, (label, filename, titles))
             command = execute(argv, repo / "apps/studio", case_env, output, label,
                               SELECTION_TIMEOUTS[label])
             selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
             report["selections"].append(selection)
+            require_observed_command(command)
             try:
                 result_path = output / (label + ".json")
                 selection["original_report"] = digest(result_path)
@@ -1729,10 +2769,15 @@ def main():
         require(digest(binary) == {k: report["service_binary"][k] for k in ("bytes", "sha256")},
                 "service executable changed")
         require(digest(cli) == report["playwright_cli"], "Playwright CLI changed")
+        for name in ("cargo", "node"):
+            require(observed_tool(Path(report[name]["path"])) == report[name], "service tool changed: " + name)
         require(digest(retained_binary) == digest(binary), "retained service binary changed")
         require(len(report["selections"]) == len(selections)
                 and all(x["status"] == "PASS" for x in report["selections"]), "required selection failed")
         report["status"] = "PASS"
+    except UnknownObservation as error:
+        report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command,
+                      terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
     except Exception as error:
         report["error"] = str(error)
     write_new(output / "receipt.json", report)
@@ -1743,4 +2788,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(archive_main(sys.argv[2:]) if sys.argv[1:2] == ["archive"] else main())
+    sys.exit(archive_main(sys.argv[2:]) if sys.argv[1:2] == ["archive"]
+             else unit_build_main(sys.argv[2:]) if sys.argv[1:2] == ["unit-build"] else main())

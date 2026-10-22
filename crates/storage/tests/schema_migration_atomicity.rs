@@ -148,6 +148,8 @@ fn retained_v2_store(
         .execute_batch(
             "DROP TRIGGER production_receipt_order_append;
          DROP TABLE production_receipt_order;
+         ALTER TABLE receipts DROP COLUMN apply_binding_json;
+         ALTER TABLE receipts DROP COLUMN apply_binding_version;
          PRAGMA user_version=2;",
         )
         .unwrap();
@@ -227,7 +229,36 @@ fn production_order_migration_preserves_receipts_extension_foreign_keys_and_audi
         [receipts[0].id.to_string()],
     )
     .unwrap();
-    let original_objects = schema_objects(&db);
+    // The open migrates schema2 through both receipt-order v3 and binding v4.
+    // Independently derive the only permitted original DDL change with SQLite;
+    // every other object and the original receipt bytes remain exact or fail.
+    // Do not call the product migrator to construct this contractual oracle.
+    let original_objects: Vec<_> = schema_objects(&db)
+        .into_iter()
+        .map(|(kind, name, sql)| {
+            if kind == "table" && name == "receipts" {
+                let expected = Connection::open_in_memory().unwrap();
+                expected.execute_batch(sql.as_deref().unwrap()).unwrap();
+                expected
+                    .execute_batch(
+                        "ALTER TABLE receipts ADD COLUMN apply_binding_version INTEGER NOT NULL DEFAULT 0
+         CHECK (apply_binding_version IN (0, 1));
+                         ALTER TABLE receipts ADD COLUMN apply_binding_json TEXT;",
+                    )
+                    .unwrap();
+                let expected_sql: String = expected
+                    .query_row(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name='receipts'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                (kind, name, Some(expected_sql))
+            } else {
+                (kind, name, sql)
+            }
+        })
+        .collect();
     let original_rows = raw_receipts(&db);
     drop(db);
 
@@ -399,7 +430,7 @@ fn production_order_concurrent_migrations_publish_one_mapping_per_receipt() {
         after
             .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        3
+        STORAGE_SCHEMA_VERSION
     );
     assert_eq!(
         after
