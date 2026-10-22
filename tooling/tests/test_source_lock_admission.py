@@ -13,6 +13,7 @@ import stat
 import sys
 import tempfile
 import tomllib
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -20,7 +21,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from source_lock_admission import SourceAdmissionError, load_source_lock, verify_source_lock
+import source_lock_admission as admission
 from test_public_surface_policy import write_source_evidence_fixture
+
+
+def stat_view(info, **changes):
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+              "st_mtime_ns", "st_ctime_ns", "st_file_attributes")
+    values = {name: getattr(info, name, 0) for name in fields}
+    values.update(changes)
+    return SimpleNamespace(**values)
 
 
 class SourceLockAdmissionFixture:
@@ -117,6 +127,91 @@ class SourceLockAdmissionFixture:
 
 
 class SourceLockAdmissionTests(SourceLockAdmissionFixture, unittest.TestCase):
+    def test_windows_path_and_descriptor_clock_difference_preserves_stable_admission(self):
+        before = self.snapshot()
+        original_fstat = os.fstat
+
+        def descriptor_clock(fd):
+            info = original_fstat(fd)
+            return stat_view(info, st_ctime_ns=info.st_ctime_ns + 100)
+
+        with (patch.object(admission, "_WINDOWS_STAT", True, create=True),
+              patch.object(admission.os, "fstat", side_effect=descriptor_clock)):
+            self.assertIsNone(verify_source_lock(self.root, self.lock))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_windows_descriptor_change_time_still_detects_mutation_during_read(self):
+        original_fstat = os.fstat
+        calls = 0
+
+        def descriptor_clock(fd):
+            nonlocal calls
+            calls += 1
+            info = original_fstat(fd)
+            return stat_view(info, st_ctime_ns=info.st_ctime_ns + 100 + calls)
+
+        with (patch.object(admission, "_WINDOWS_STAT", True, create=True),
+              patch.object(admission.os, "fstat", side_effect=descriptor_clock)):
+            with self.assertRaisesRegex(SourceAdmissionError, "evidence_changed"):
+                admission._read(self.root, self.entry["verification"]["evidence"]["path"],
+                                admission.MAX_EVIDENCE_BYTES)
+        self.assertEqual(calls, 2)
+
+    def test_windows_path_change_time_still_detects_mutation_during_read(self):
+        target = self.evidence_path()
+        original_lstat, original_fstat = Path.lstat, os.fstat
+        path_calls = 0
+
+        def path_clock(path):
+            nonlocal path_calls
+            info = original_lstat(path)
+            if path == target:
+                path_calls += 1
+                return stat_view(info, st_ctime_ns=info.st_ctime_ns + path_calls)
+            return info
+
+        def descriptor_clock(fd):
+            info = original_fstat(fd)
+            return stat_view(info, st_ctime_ns=info.st_ctime_ns + 100)
+
+        with (patch.object(admission, "_WINDOWS_STAT", True, create=True),
+              patch.object(Path, "lstat", path_clock),
+              patch.object(admission.os, "fstat", side_effect=descriptor_clock)):
+            with self.assertRaisesRegex(SourceAdmissionError, "evidence_changed"):
+                admission._read(self.root, self.entry["verification"]["evidence"]["path"],
+                                admission.MAX_EVIDENCE_BYTES)
+        self.assertEqual(path_calls, 2)
+
+    def test_windows_other_path_descriptor_identity_fields_must_still_match(self):
+        original_fstat = os.fstat
+        for field in ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+                      "st_mtime_ns", "st_file_attributes"):
+            with self.subTest(field=field):
+                def changed(fd):
+                    info = original_fstat(fd)
+                    delta = stat.S_IXUSR if field == "st_mode" else 1
+                    return stat_view(info, **{field: getattr(info, field, 0) + delta})
+
+                with (patch.object(admission, "_WINDOWS_STAT", True, create=True),
+                      patch.object(admission.os, "fstat", side_effect=changed)):
+                    with self.assertRaises(SourceAdmissionError):
+                        admission._read(self.root,
+                            self.entry["verification"]["evidence"]["path"],
+                            admission.MAX_EVIDENCE_BYTES)
+
+    def test_posix_path_descriptor_change_time_mismatch_is_still_rejected(self):
+        original_fstat = os.fstat
+
+        def descriptor_clock(fd):
+            info = original_fstat(fd)
+            return stat_view(info, st_ctime_ns=info.st_ctime_ns + 100)
+
+        with (patch.object(admission, "_WINDOWS_STAT", False, create=True),
+              patch.object(admission.os, "fstat", side_effect=descriptor_clock)):
+            with self.assertRaisesRegex(SourceAdmissionError, "evidence_changed"):
+                admission._read(self.root, self.entry["verification"]["evidence"]["path"],
+                                admission.MAX_EVIDENCE_BYTES)
+
     def test_verified_fixed_bytes_are_read_only_and_do_not_launch_external_effects(self):
         before = self.snapshot()
         lock_before = copy.deepcopy(self.lock)

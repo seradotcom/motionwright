@@ -21,6 +21,7 @@ SHA1 = re.compile(r"[0-9a-f]{40}")
 PATH_PART = re.compile(r"[A-Za-z0-9_.-]+")
 LICENSE_EXPRESSION = "MIT OR Apache-2.0"
 REQUIRED_FILES = {"Cargo.toml", "LICENSE-MIT", "LICENSE-APACHE"}
+_WINDOWS_STAT = os.name == "nt"
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
     prefix + str(index)
     for prefix in ("COM", "LPT") for index in range(1, 10)
@@ -76,6 +77,16 @@ def _identity(info: os.stat_result) -> tuple:
     )
 
 
+def _opened_identity_matches(observed: tuple, opened: os.stat_result) -> bool:
+    actual = _identity(opened)
+    if _WINDOWS_STAT:
+        # CPython can report creation time through lstat and change time through
+        # fstat. Bind the path to its descriptor using all other identity fields;
+        # retain ctime in both complete same-API before/after comparisons below.
+        return observed[:6] + observed[7:] == actual[:6] + actual[7:]
+    return observed == actual
+
+
 def _inspect(root: Path, parts: tuple[str, ...]) -> tuple[Path, list[tuple]]:
     path = root
     observations = []
@@ -104,7 +115,7 @@ def _read(root: Path, relative: object, maximum: int) -> bytes:
             first = os.fstat(reader.fileno())
             _need(not _redirect(first) and stat.S_ISREG(first.st_mode),
                   "evidence_not_regular")
-            _need(_identity(first) == before[-1], "evidence_changed")
+            _need(_opened_identity_matches(before[-1], first), "evidence_changed")
             data = reader.read(maximum + 1)
             last = os.fstat(reader.fileno())
         _, after = _inspect(root, parts)

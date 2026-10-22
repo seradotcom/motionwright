@@ -235,7 +235,7 @@ jobs:
         run: python -m unittest discover -s tooling/tests -p "test_acceptance*.py" -v
 
   source-admission-linux:
-    name: Source admission contracts (Linux 59)
+    name: Source admission contracts (Linux 64)
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source-admission-contracts'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -288,6 +288,7 @@ jobs:
                   "test_source_lock_admission.SourceLockAdmissionTests.test_other_repository_is_refused_even_when_all_record_bindings_match",
                   "test_source_lock_admission.SourceLockAdmissionTests.test_oversized_evidence_record_is_rejected_with_correct_hash",
                   "test_source_lock_admission.SourceLockAdmissionTests.test_oversized_source_is_rejected_even_with_updated_proof",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_posix_path_descriptor_change_time_mismatch_is_still_rejected",
                   "test_source_lock_admission.SourceLockAdmissionTests.test_rehashed_cargo_bytes_must_keep_declared_version_and_license",
                   "test_source_lock_admission.SourceLockAdmissionTests.test_rehashed_deep_cargo_metadata_returns_a_static_admission_refusal",
                   "test_source_lock_admission.SourceLockAdmissionTests.test_rehashed_evidence_cannot_change_source_identity_or_license",
@@ -301,6 +302,10 @@ jobs:
                   "test_source_lock_admission.SourceLockAdmissionTests.test_unverified_or_unavailable_states_fail_closed",
                   "test_source_lock_admission.SourceLockAdmissionTests.test_verification_cannot_move_to_another_revision_or_repository",
                   "test_source_lock_admission.SourceLockAdmissionTests.test_verified_fixed_bytes_are_read_only_and_do_not_launch_external_effects",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_windows_descriptor_change_time_still_detects_mutation_during_read",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_windows_other_path_descriptor_identity_fields_must_still_match",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_windows_path_and_descriptor_clock_difference_preserves_stable_admission",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_windows_path_change_time_still_detects_mutation_during_read",
                   "test_source_lock_admission.SourceLockAdmissionTests.test_wrong_git_blob_hash_or_declared_size_is_rejected"
               ],
               "test_public_surface_policy": [
@@ -534,7 +539,7 @@ jobs:
           if-no-files-found: error
 
   source-admission-ntfs:
-    name: Source admission contracts (NTFS 1)
+    name: Source admission contracts (NTFS 2)
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source-admission-contracts'
     runs-on: windows-latest
     timeout-minutes: 10
@@ -573,7 +578,8 @@ jobs:
           expected_source = os.environ["GITHUB_SHA"]
           rosters = {
               "test_source_lock_admission_ntfs": [
-                  "test_source_lock_admission_ntfs.SourceLockAdmissionNtfsTests.test_junctioned_evidence_parent_is_rejected"
+                  "test_source_lock_admission_ntfs.SourceLockAdmissionNtfsTests.test_junctioned_evidence_parent_is_rejected",
+                  "test_source_lock_admission_ntfs.SourceLockAdmissionNtfsTests.test_rewritten_source_lock_is_admitted_without_changing_its_bytes"
               ]
           }
           policy_names = []
