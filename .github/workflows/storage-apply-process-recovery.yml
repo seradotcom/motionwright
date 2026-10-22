@@ -1,5 +1,5 @@
-name: Store.apply process recovery (selected Windows and macOS G2)
-run-name: Store.apply ${{ github.event_name == 'workflow_dispatch' && 'G2' || 'G0 only' }} / product 5faedc0 / gate ${{ github.sha }}
+name: Store.apply source and process recovery
+run-name: Store.apply ${{ inputs.mode || 'source' }} / product ${{ inputs.source_sha || '5faedc090aa45b33833b229050c09bf424de938f' }} / gate ${{ github.sha }}
 on:
   push:
     branches: ['verify/storage-apply-g2-*']
@@ -9,17 +9,23 @@ on:
       - 'tooling/tests/test_ci_storage_apply_recovery.py'
   workflow_dispatch:
     inputs:
+      mode:
+        description: Source controls, historical recovery, or exact current Windows/macOS process recovery
+        required: true
+        default: source
+        type: choice
+        options: [source, historical5fa, binding4-core44, binding4-process, current-source, current-process]
       source_sha:
         description: Exact reviewed product source; independently checked out
         required: true
         default: '5faedc090aa45b33833b229050c09bf424de938f'
         type: string
       platforms:
-        description: Select only the missing OS evidence
+        description: Linux only for core44; Windows/macOS for process modes
         required: true
         default: both
         type: choice
-        options: [both, windows, macos]
+        options: [both, windows, macos, linux]
 permissions:
   contents: read
 concurrency:
@@ -37,6 +43,8 @@ jobs:
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.selection.outputs.matrix }}
+      mode: ${{ steps.selection.outputs.mode }}
+      source_sha: ${{ steps.selection.outputs.source_sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -63,9 +71,10 @@ jobs:
           python -B tooling/ci_test_runner.py --repo . --mode both \
             --pattern test_ci_storage_apply_recovery.py \
             --report ../v/g0/unittest.json --expected-source "$GITHUB_SHA" --require-complete
-      - name: Bind the requested product and select missing platforms
+      - name: Bind the exact mode, product and platforms
         id: selection
         env:
+          REQUESTED_MODE: ${{ inputs.mode || 'source' }}
           REQUESTED_SOURCE: ${{ inputs.source_sha || '5faedc090aa45b33833b229050c09bf424de938f' }}
           REQUESTED_PLATFORMS: ${{ inputs.platforms || 'both' }}
         run: |
@@ -73,20 +82,16 @@ jobs:
           python -B - <<'PY'
           import json, os
           from pathlib import Path
-          from tooling.ci_storage_apply_recovery import SOURCE_SHA
-          if os.environ['REQUESTED_SOURCE'] != SOURCE_SHA:
-              raise SystemExit('Unreviewed product source: obtain a new source review')
-          chosen = os.environ['REQUESTED_PLATFORMS']
-          if chosen not in {'both', 'windows', 'macos'}:
-              raise SystemExit('Invalid platform selection')
-          rows = [{'platform': 'windows', 'runner': 'windows-2025'},
-                  {'platform': 'macos', 'runner': 'macos-15'}]
-          matrix = {'include': [row for row in rows if chosen in {'both', row['platform']}]}
+          from tooling.ci_storage_apply_recovery import select_mode
+          selected = select_mode(os.environ['REQUESTED_MODE'], os.environ['REQUESTED_SOURCE'],
+                                 os.environ['REQUESTED_PLATFORMS'])
           with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as stream:
-              stream.write('matrix=' + json.dumps(matrix, separators=(',', ':')) + '\n')
-          print(json.dumps({'product_source': SOURCE_SHA, 'workflow_source': os.environ['GITHUB_SHA'],
-                            'G2_selected': os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch',
-                            'platforms': chosen, 'tests_executed': 0, 'formal_acceptance': False}))
+              stream.write('matrix=' + json.dumps(selected['matrix'], separators=(',', ':')) + '\n')
+              stream.write('mode=' + selected['mode'] + '\n')
+              stream.write('source_sha=' + selected['source_sha'] + '\n')
+          print(json.dumps({**selected, 'workflow_source': os.environ['GITHUB_SHA'],
+                            'execution_selected': os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
+                            and selected['mode'] not in {'source', 'current-source'}}))
           PY
       - name: Retain original G0 controls and source receipt
         if: always()
@@ -96,15 +101,12 @@ jobs:
           path: v/g0
           if-no-files-found: warn
           retention-days: 14
-  storage-apply-recovery:
-    name: ${{ matrix.platform }} Store.apply process recovery
-    if: github.event_name == 'workflow_dispatch'
+  storage-apply-binding-core:
+    name: Linux binding4 core44 and original causal control
+    if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'binding4-core44'
     needs: g0
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.g0.outputs.matrix) }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     env:
       CARGO_HOME: ${{ github.workspace }}/v/c
       CARGO_TARGET_DIR: ${{ github.workspace }}/v/t
@@ -112,13 +114,15 @@ jobs:
       TEMP: ${{ github.workspace }}/v/x
       TMPDIR: ${{ github.workspace }}/v/x
     steps:
-      - name: Prepare short isolated build and temporary paths
+      - name: Prepare isolated baseline, current and evidence paths
+        if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'binding4-core44'
         working-directory: .
         run: |
           set -euo pipefail
           test ! -e v
           mkdir -p v/x v/c
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'binding4-core44'
         env:
           GIT_CONFIG_COUNT: '2'
           GIT_CONFIG_KEY_0: core.autocrlf
@@ -127,8 +131,10 @@ jobs:
           GIT_CONFIG_VALUE_1: lf
         with:
           path: g
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'binding4-core44'
         env:
           GIT_CONFIG_COUNT: '2'
           GIT_CONFIG_KEY_0: core.autocrlf
@@ -137,25 +143,201 @@ jobs:
           GIT_CONFIG_VALUE_1: lf
         with:
           path: s
-          ref: '5faedc090aa45b33833b229050c09bf424de938f'
+          ref: '449de7a315a513468610d517e78f9ab87f76ae9d'
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'binding4-core44'
+        env:
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
+        with:
+          path: b
+          ref: 'c9929498f49bcd03101390c44b5a12f31e43f052'
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'binding4-core44'
         with:
           python-version: '3.13'
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'binding4-core44'
         with:
           toolchain: stable
-      - name: Execute exactly the four real Store.apply process-termination cases
+      - name: Observe original failure and execute exactly44 current cases
+        if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'binding4-core44'
         env:
-          REQUESTED_SOURCE: ${{ inputs.source_sha }}
+          REQUESTED_SOURCE: ${{ needs.g0.outputs.source_sha }}
         run: |
           set -euo pipefail
-          python -B -I -S tooling/ci_storage_apply_recovery.py --repo ../s --output ../v/e --source-sha "$REQUESTED_SOURCE"
-      - name: Retain original partial or complete evidence
-        if: always()
+          python -B -I -S tooling/ci_storage_apply_recovery.py \
+            --repo ../s --baseline-repo ../b --output ../v/e \
+            --mode binding4-core44 --source-sha "$REQUESTED_SOURCE"
+      - name: Retain original baseline and current evidence
+        if: always() && github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'binding4-core44'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: storage-apply-${{ matrix.platform }}-product-5faedc090aa45b33833b229050c09bf424de938f-gate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: storage-apply-binding4-core44-product-449de7a315a513468610d517e78f9ab87f76ae9d-gate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: v/e
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+  storage-apply-recovery:
+    name: ${{ matrix.platform }} Store.apply ${{ needs.g0.outputs.mode }}
+    if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
+    needs: g0
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.g0.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      CARGO_HOME: ${{ github.workspace }}/v/c
+      CARGO_TARGET_DIR: ${{ github.workspace }}/v/t
+      TMP: ${{ github.workspace }}/v/x
+      TEMP: ${{ github.workspace }}/v/x
+      TMPDIR: ${{ github.workspace }}/v/x
+    steps:
+      - name: Prepare short isolated build and temporary paths
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
+        working-directory: .
+        run: |
+          set -euo pipefail
+          test ! -e v
+          mkdir -p v/x v/c
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
+        env:
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
+        with:
+          path: g
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
+        env:
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
+        with:
+          path: s
+          ref: ${{ needs.g0.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
+        with:
+          toolchain: stable
+      - name: Execute the selected four or five real process cases
+        if: github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
+        env:
+          REQUESTED_SOURCE: ${{ needs.g0.outputs.source_sha }}
+          REQUESTED_MODE: ${{ needs.g0.outputs.mode }}
+        run: |
+          set -euo pipefail
+          python -B -I -S tooling/ci_storage_apply_recovery.py \
+            --repo ../s --output ../v/e --mode "$REQUESTED_MODE" --source-sha "$REQUESTED_SOURCE"
+      - name: Verify the exact macOS FIFO import fixture
+        if: github.event_name == 'workflow_dispatch' && needs.g0.outputs.mode == 'current-process' && matrix.platform == 'macos'
+        timeout-minutes: 3
+        run: |
+          python -B - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          from tooling import ci_storage_apply_recovery as custody
+
+          repo = Path("../s").resolve(strict=True)
+          original = Path("../v/e").resolve(strict=True)
+          output = original / "source-open-fifo"
+          output.mkdir(exist_ok=False)
+          name = "file_import::source_open_tests::replaced_fifo_source_is_rejected_without_waiting_for_a_writer"
+          receipt = {"schema": "motionwright.source-open-fixture/1", "status": "FAIL",
+                     "name": name, "operations_retried": False,
+                     "formal_acceptance": False, "human_acceptance": False}
+          command = None
+          try:
+              custody.require(os.environ["RUNNER_OS"] == "macOS"
+                              and os.environ["GITHUB_RUN_ATTEMPT"] == "1",
+                              "only the first selected macOS attempt is admitted")
+              previous, identity = custody.original_json(original / "receipt.json", original)
+              receipt["process_receipt"] = identity
+              custody.require(previous["status"] == "PASS_EXACT_SOURCE_BINDING4_PROCESS5"
+                              and previous["product_source_sha"] == custody.CURRENT_SOURCE_SHA,
+                              "the exact current process verification must complete first")
+              context = custody.binding4_context(dict(os.environ), custody.CURRENT_SOURCE_SHA, "current-process")
+              custody.require(previous["context"] == context, "process and fixture contexts differ")
+              gate = Path(".").resolve(strict=True)
+              def snapshot():
+                  return {"product": custody.binding4_source_snapshot(repo, "product", mode="current-process"),
+                          "gate": custody.source_snapshot(gate, context["GITHUB_SHA"], custody.GATE_FILES)}
+              before = snapshot()
+              custody.require(before == previous["source_before"] == previous["source_after"],
+                              "the fixture must use the observed process sources")
+              receipt["source_before"] = before
+              binary = previous["binaries"]["motionwright_storage"]
+              target = Path(os.environ["CARGO_TARGET_DIR"]).resolve(strict=True)
+              def binary_identity():
+                  return {"absolute_path": binary["absolute_path"],
+                          **custody.fingerprint(Path(binary["absolute_path"]), target)}
+              custody.require(binary_identity() == binary, "the compiled test binary changed")
+              roster = previous["enumerated_cases"]["motionwright_storage"]
+              custody.require(roster.count(name) == 1, "the exact FIFO fixture is absent or duplicated")
+              receipt["binary"] = binary
+              temporary = Path(os.environ["TMPDIR"]) / "source-open-fifo"
+              temporary.mkdir(exist_ok=False)
+              env = dict(custody.isolated_build_environment(os.environ),
+                         TMP=str(temporary), TEMP=str(temporary), TMPDIR=str(temporary))
+              argv = [binary["absolute_path"], "--exact", name, "--nocapture", "--test-threads=1"]
+              command = custody.execute(argv, repo, env, output, "case", 60,
+                                        custody.binding4_command_context(context, "product"))
+              receipt["command"] = command
+              if custody.execution_unknown(command):
+                  raise custody.UnknownObservation("FIFO process observation is unknown; no retry", command)
+              custody.require(command["observation"] == "DIRECT_PROCESS_EXIT_OBSERVED"
+                              and command["owned_group_after_wait"] == "ABSENT"
+                              and command["exit_code"] == 0, "the selected FIFO case failed")
+              try:
+                  raw = custody.read_original(output, command, "stdout") + b"\n" + custody.read_original(output, command, "stderr")
+              except (OSError, custody.VerificationError) as error:
+                  raise custody.UnknownObservation("FIFO original streams cannot be admitted; no retry", command) from error
+              text = custody.ANSI.sub("", raw.decode().replace("\r\n", "\n"))
+              results = re.findall(r"(?m)^test (.+) \.\.\. (ok|FAILED|ignored)$", text)
+              summaries = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; "
+                                     r"(\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+              custody.require(results == [(name, "ok")] and len(summaries) == 1
+                              and summaries[0][0] == "ok" and tuple(map(int, summaries[0][1:])) ==
+                              (1, 0, 0, 0, len(roster) - 1), "the exact one-case result is incomplete")
+              after = snapshot()
+              custody.require(after == before and binary_identity() == binary, "source or binary changed")
+              custody.require(custody.original_json(original / "receipt.json", original) == (previous, identity),
+                              "the preceding process receipt changed")
+              receipt.update(status="PASS_EXACT_MACOS_FIFO_FIXTURE", source_after=after,
+                             passed=1, failed=0, ignored=0)
+          except custody.UnknownObservation as error:
+              receipt.update(status="UNKNOWN", error=str(error), unsealed_command=error.command,
+                             terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
+          except Exception as error:
+              receipt["error"] = type(error).__name__ + ": " + str(error)
+          receipt["finished_utc"] = custody.now()
+          custody.write_new(output / "receipt.json", receipt)
+          print(json.dumps({key: receipt.get(key) for key in ("status", "name", "passed", "error")}))
+          raise SystemExit(0 if receipt["status"] == "PASS_EXACT_MACOS_FIFO_FIXTURE" else 1)
+          PY
+      - name: Retain original partial or complete selected evidence
+        if: always() && github.event_name == 'workflow_dispatch' && (needs.g0.outputs.mode == 'historical5fa' || needs.g0.outputs.mode == 'binding4-process' || needs.g0.outputs.mode == 'current-process')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: storage-apply-${{ needs.g0.outputs.mode }}-${{ matrix.platform }}-product-${{ needs.g0.outputs.source_sha }}-gate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: v/e
           include-hidden-files: true
           if-no-files-found: warn
