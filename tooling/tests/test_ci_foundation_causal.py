@@ -1791,5 +1791,75 @@ class SharedObservationStopContracts(unittest.TestCase):
         stop.assert_not_called()
 
 
+
+    def assert_original_readback_stops_role_scheduler(self, phase):
+        workspace, output = self.root / ("workspace-" + phase), self.root / ("evidence-" + phase)
+        target, temporary = self.root / ("target-" + phase), self.root / ("temp-" + phase)
+        for folder in (workspace, output, target, temporary):
+            folder.mkdir()
+        target_name = next(iter(gate.TARGETS))
+        pair = {"id": "synthetic-original-readback-" + phase, "baseline": {
+            "sha": "1" * 40, "tree": "2" * 40, "targets": {target_name: ["synthetic-case"]}},
+            "repair": {"sha": "3" * 40, "tree": "4" * 40,
+                       "targets": {target_name: ["synthetic-case"]}}}
+        executable = target / "synthetic-binary"
+        executable.write_bytes(b"retained synthetic test binary")
+        binary = {"absolute_path": str(executable),
+                  **gate.custody.fingerprint(executable, target)}
+        visits = []
+        original_read = gate.custody.read_original
+        trigger = target_name + ("-build.stdout.log" if phase == "build" else "-case-01.stdout.log")
+
+        class ObservedExit:
+            pid = 123456789
+
+            def wait(self, timeout=None):
+                return 0
+
+        def replace_before_read(folder, command, stream):
+            path = folder / command[stream]["path"]
+            if path.name == trigger:
+                path.write_bytes(b"controlled replacement after original seal")
+            return original_read(folder, command, stream)
+
+        def callback(spec, role):
+            visits.append(role)
+            return gate.run_role(spec, role, self.root, workspace, output, target, temporary,
+                                 {}, {}, {"cargo": {"absolute_path": "synthetic-cargo"}})
+
+        with patch.object(gate.custody.subprocess, "Popen", return_value=ObservedExit()) as spawn, \
+                patch.object(gate.custody, "supports_owned_process_group", return_value=False), \
+                patch.object(gate.custody, "read_original", side_effect=replace_before_read), \
+                patch.object(gate.custody, "stop_observed_process") as stop, \
+                patch.object(gate, "product_snapshot", return_value={"synthetic": True}) as snapshot, \
+                patch.object(gate, "retain_source", return_value={}), \
+                patch.object(gate, "select_binary", return_value=binary), \
+                patch.object(gate, "retain_file", return_value={}), \
+                patch.object(gate, "selected_roster", return_value=["synthetic-case"]):
+            results = gate.run_pairs(callback, [pair])
+        self.assertEqual(visits, ["baseline"])
+        self.assertEqual(results[0]["status"], "UNKNOWN")
+        role = results[0]["roles"][0]
+        command = role["unsealed_command"]
+        self.assertEqual(command["observation"], "UNKNOWN_CUSTODY_NO_RETRY")
+        self.assertEqual(command["uncertainty_reason"], "ORIGINAL_STREAM_READBACK_FAILED")
+        self.assertEqual((command["pid"], command["exit_code"]), (123456789, 0))
+        self.assertEqual(command["original_command"]["observation"], "DIRECT_PROCESS_EXIT_OBSERVED")
+        original_path = output / pair["id"] / "baseline" / (trigger[:-len(".stdout.log")] + ".command.json")
+        self.assertEqual(json.loads(original_path.read_bytes()), command["original_command"])
+        self.assertEqual(role["results"], [])
+        self.assertNotIn("source_after", role)
+        self.assertFalse((output / pair["id"] / "repair").exists())
+        self.assertEqual(spawn.call_count, 2 if phase == "build" else 4)
+        snapshot.assert_called_once()
+        stop.assert_not_called()
+
+    def test_build_original_changed_after_seal_stops_before_repair(self):
+        self.assert_original_readback_stops_role_scheduler("build")
+
+    def test_case_original_changed_after_seal_escapes_semantic_failure_catch(self):
+        self.assert_original_readback_stops_role_scheduler("case")
+
+
 if __name__ == "__main__":
     unittest.main()

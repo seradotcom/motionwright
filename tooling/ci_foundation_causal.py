@@ -1401,6 +1401,24 @@ def command(argv, cwd, environment, output, label, timeout, context, observation
     return row
 
 
+def original_stream(output, command, stream):
+    """Retain uncertainty if a sealed original can no longer be read."""
+    if custody.execution_unknown(command):
+        raise UnknownExecution("prior unknown command forbids original readback", command)
+    try:
+        return custody.read_original(output, command, stream)
+    except BaseException as error:
+        errors = list(command.get("secondary_observation_errors", []))
+        errors.append(type(error).__name__ + ": " + str(error))
+        unsealed = {**command, "original_command": command,
+                    "observation": "UNKNOWN_CUSTODY_NO_RETRY",
+                    "uncertainty_reason": "ORIGINAL_STREAM_READBACK_FAILED",
+                    "diagnostic_custody": "UNSEALED_COMMAND_OR_STREAM_READBACK",
+                    "secondary_observation_errors": errors}
+        raise UnknownExecution("original stream readback failed; stop without replay: " + stream,
+                               unsealed) from error
+
+
 def compile_argv(cargo, spec):
     selection = ["--lib"] if spec["kind"] == "lib" else ["--test", spec["name"]]
     return [cargo, "test", "--locked", "-p", spec["package"],
@@ -1532,14 +1550,14 @@ def tools_identity(gate, output, environment, context, observations=None):
         found = command(["rustup", "which", "--toolchain", "1.98.1", name],
                         gate, environment, output, name + "-path", 45, context, observations)
         require(found["exit_code"] == 0, "selected toolchain executable unavailable")
-        path = Path(custody.read_original(output, found, "stdout").decode().strip())
+        path = Path(original_stream(output, found, "stdout").decode().strip())
         require(path.is_absolute(), "tool executable path is not absolute")
         path = path.resolve(strict=True)
         identity = custody.fingerprint(path, path.parent)
         version = command([str(path), "-Vv" if name == "rustc" else "-V"],
                           gate, environment, output, name + "-version", 45, context, observations)
         require(version["exit_code"] == 0, "tool version query failed")
-        raw = custody.read_original(output, version, "stdout").decode()
+        raw = original_stream(output, version, "stdout").decode()
         if name == "rustc":
             require("release: 1.98.1\n" in raw and "host: x86_64-unknown-linux-gnu\n" in raw,
                     "unexpected compiler release or host")
@@ -1589,14 +1607,14 @@ def run_role(pair, role, gate, workspace, output, target, temporary, environment
             result["phase"] = "compile:" + target_name
             build = command(compile_argv(toolchain["cargo"]["absolute_path"], spec),
                             repo, environment, folder, target_name + "-build", BUILD_TIMEOUT, frame, observations)
-            binary = select_binary(custody.read_original(folder, build, "stdout"),
+            binary = select_binary(original_stream(folder, build, "stdout"),
                                    build["exit_code"], repo, target, spec)
             retained = retain_file(Path(binary["absolute_path"]), target, output, "binaries")
             result.setdefault("binaries", {})[target_name] = {**binary, "retained": retained,
                                                            "build": build}
             listing = command([binary["absolute_path"], "--list", "--format", "terse"],
                               repo, environment, folder, target_name + "-list", 45, frame, observations)
-            roster = selected_roster(custody.read_original(folder, listing, "stdout"),
+            roster = selected_roster(original_stream(folder, listing, "stdout"),
                                      listing["exit_code"], spec, names, role)
             result.setdefault("rosters", {})[target_name] = roster
             result["phase"] = "cases:" + target_name
@@ -1617,8 +1635,8 @@ def run_role(pair, role, gate, workspace, output, target, temporary, environment
                          **custody.fingerprint(Path(binary["absolute_path"]), target)}
                 try:
                     row = admit_case(pair, role, name,
-                        custody.read_original(folder, executed, "stdout") + b"\n"
-                        + custody.read_original(folder, executed, "stderr"),
+                        original_stream(folder, executed, "stdout") + b"\n"
+                        + original_stream(folder, executed, "stderr"),
                         executed, binary, after, roster, frame)
                     if pair["id"] in CURRENT_PHASE_SELECTIONS and role == "repair":
                         if name in CURRENT_PHASE_CASES:
@@ -1626,6 +1644,8 @@ def run_role(pair, role, gate, workspace, output, target, temporary, environment
                                 phase_root, name, "binding4")
                         elif name == CURRENT_DDL_CASE:
                             row.update(retained_child_originals=0, retained_phase_jsons=0)
+                except UnknownExecution:
+                    raise
                 except (ValueError, OSError, UnicodeError) as error:
                     row = {"name": name, "status": "FAIL", "error": str(error),
                            "command": executed, "binary_before": binary, "binary_after": after}
