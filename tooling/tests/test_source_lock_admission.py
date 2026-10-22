@@ -385,11 +385,10 @@ class SourceLockAdmissionTests(SourceLockAdmissionFixture, unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
     def test_small_deep_json_returns_a_static_source_admission_refusal(self):
-        depth = sys.getrecursionlimit() + 100
+        # Decoder depth limits vary by runtime; keep the real input bounded.
+        depth = 1100
         encoded = b'{"nested":' + b"[" * depth + b"0" + b"]" * depth + b"}"
         self.assertLess(len(encoded), 64 * 1024)
-        with self.assertRaises(RecursionError):
-            json.loads(encoded)
         for target in ("lock", "evidence"):
             with self.subTest(target=target):
                 if target == "lock":
@@ -398,13 +397,36 @@ class SourceLockAdmissionTests(SourceLockAdmissionFixture, unittest.TestCase):
                     self.replace_evidence_bytes(encoded)
                 before = self.snapshot()
                 lock_before = copy.deepcopy(self.lock)
+
+                # Exercise actual admission whether decoding succeeds or raises.
                 with self.assertRaises(SourceAdmissionError) as refusal:
                     if target == "lock":
-                        load_source_lock(self.root)
+                        verify_source_lock(self.root, load_source_lock(self.root))
                     else:
                         verify_source_lock(self.root, self.lock)
-                self.assertIsInstance(refusal.exception.__cause__, RecursionError)
                 self.assertRegex(str(refusal.exception), r"^source_admission_[a-z_]+$")
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(self.lock, lock_before)
+
+                # Independently require translation of decoder exhaustion.
+                decoder_error = RecursionError("synthetic decoder exhaustion")
+                with patch(
+                    "source_lock_admission.json.loads",
+                    side_effect=decoder_error,
+                ) as decoder:
+                    with self.assertRaises(SourceAdmissionError) as translated:
+                        if target == "lock":
+                            load_source_lock(self.root)
+                        else:
+                            verify_source_lock(self.root, self.lock)
+                decoder.assert_called_once()
+                self.assertIs(translated.exception.__cause__, decoder_error)
+                self.assertEqual(
+                    str(translated.exception),
+                    "source_admission_lock_json_invalid"
+                    if target == "lock"
+                    else "source_admission_evidence_json_invalid",
+                )
                 self.assertEqual(self.snapshot(), before)
                 self.assertEqual(self.lock, lock_before)
 
