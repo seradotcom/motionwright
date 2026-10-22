@@ -734,6 +734,11 @@ fn apply_completion(
             "replayed": outcome.replayed,
             "project": outcome.project
         })),
+        // The stored result may describe an already committed original call.
+        // Failing to authenticate it is not evidence that the call did not apply.
+        Err(error @ StorageError::InvalidApplyReceipt(_)) => {
+            Completion::Uncertain(storage_error(error))
+        }
         Err(error) => Completion::NotApplied(storage_error(error)),
     }
 }
