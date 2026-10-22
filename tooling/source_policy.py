@@ -116,7 +116,7 @@ for path in iter_source_files(ROOT):
         errors.append(f"AWS access-key-like token found: {rel}")
     if re.search(r"xox[baprs]-[A-Za-z0-9-]{20,}", text):
         errors.append(f"Slack credential-like token found: {rel}")
-    if re.search(r"sk-(?:proj-)?[A-Za-z0-9_-]{24,}", text):
+    if re.search(r"(?<![A-Za-z0-9_])sk-(?:proj-)?[A-Za-z0-9_-]{24,}", text):
         errors.append(f"API credential-like token found: {rel}")
     private_key_marker = "-----BEGIN " + "PRIVATE KEY-----"
     if private_key_marker in text:
