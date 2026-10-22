@@ -1,3 +1,9 @@
 # Preserve checked upstream crate bytes and the exact glib FFI patch across OS checkouts.
 vendor/glib-0.18.5/** -text whitespace=-blank-at-eof
 crates/storage/tests/fixtures/pre_delivery_recipe_backup.json -text
+
+# Keep captured source metadata, licenses, and their digest record byte-exact.
+third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/Cargo.toml -text
+third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/LICENSE-MIT -text
+third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/LICENSE-APACHE -text
+third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/evidence.json -text

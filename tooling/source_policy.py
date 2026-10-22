@@ -8,8 +8,21 @@ from public_surface_policy import (
     PublicSurfaceError, iter_source_files, verify_public_surface,
 )
 
+from source_lock_admission import (
+    SourceAdmissionError, load_source_lock, verify_source_lock,
+)
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text())
+try:
+    LOCK = load_source_lock(ROOT)
+    verify_source_lock(ROOT, LOCK)
+except SourceAdmissionError as exc:
+    print(f"ERROR: Semwright source admission refused: {exc}", file=sys.stderr)
+    raise SystemExit(1) from None
+except (OSError, ValueError):
+    print("ERROR: Semwright source admission refused: source_lock_unavailable",
+          file=sys.stderr)
+    raise SystemExit(1) from None
 REV = LOCK["dependencies"]["semwright"]["revision"]
 VERSION = LOCK["dependencies"]["semwright"]["version"]
 
