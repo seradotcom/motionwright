@@ -102,11 +102,11 @@ impl Composition {
         if self.fps != 30
             || !(16..=1920).contains(&self.width)
             || !(16..=1080).contains(&self.height)
-            || self.width % 2 != 0
-            || self.height % 2 != 0
+            || !self.width.is_multiple_of(2)
+            || !self.height.is_multiple_of(2)
             || self.frame_count == 0
             || self.frame_count > 300
-            || self.frame_count % self.fps != 0
+            || !self.frame_count.is_multiple_of(self.fps)
             || !color(&self.background)
         {
             return Err(unsupported(
@@ -135,8 +135,8 @@ impl Composition {
                     .is_none_or(|n| n > self.height)
                 || clip.start_frame >= clip.end_frame_exclusive
                 || clip.end_frame_exclusive > self.frame_count
-                || clip.start_frame % self.fps != 0
-                || clip.end_frame_exclusive % self.fps != 0
+                || !clip.start_frame.is_multiple_of(self.fps)
+                || !clip.end_frame_exclusive.is_multiple_of(self.fps)
                 || clip.opacity_milli > 1000
                 || !(-1024..=1024).contains(&clip.z_index)
             {
@@ -195,13 +195,13 @@ pub fn compile(composition: &Composition) -> Result<CompiledSource> {
     let mut html = String::new();
     // Every inserted value is a bounded integer or a validated identifier/color.
     // No source string is executable code, CSS syntax, markup, path or URL.
-    write!(&mut html,"<!doctype html>\n<html lang=\"en\"><head><meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width={}, height={}\">\n<style>\n*{{margin:0;padding:0;box-sizing:border-box}}\nhtml,body,#main{{width:{}px;height:{}px;overflow:hidden;background:{}}}\n#main{{position:relative;isolation:isolate}}\n.clip{{position:absolute}}\n</style></head><body>\n<div id=\"main\" data-composition-id=\"main\" data-no-timeline data-start=\"0\" data-duration=\"{}\" data-width=\"{}\" data-height=\"{}\" data-fps=\"30\">\n",
+    writeln!(&mut html,"<!doctype html>\n<html lang=\"en\"><head><meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width={}, height={}\">\n<style>\n*{{margin:0;padding:0;box-sizing:border-box}}\nhtml,body,#main{{width:{}px;height:{}px;overflow:hidden;background:{}}}\n#main{{position:relative;isolation:isolate}}\n.clip{{position:absolute}}\n</style></head><body>\n<div id=\"main\" data-composition-id=\"main\" data-no-timeline data-start=\"0\" data-duration=\"{}\" data-width=\"{}\" data-height=\"{}\" data-fps=\"30\">",
         composition.width,composition.height,composition.width,composition.height,composition.background,
         composition.frame_count/composition.fps,composition.width,composition.height).expect("String write");
     let mut clips = composition.clips.iter().enumerate().collect::<Vec<_>>();
     clips.sort_by_key(|(index, clip)| (clip.z_index, *index));
     for (track, (_, clip)) in clips.into_iter().enumerate() {
-        write!(&mut html,"<div id=\"{}\" class=\"clip\" data-start=\"{}\" data-duration=\"{}\" data-track-index=\"{}\" style=\"left:{}px;top:{}px;width:{}px;height:{}px;background:{};opacity:{}.{:03};z-index:{}\"></div>\n",
+        writeln!(&mut html,"<div id=\"{}\" class=\"clip\" data-start=\"{}\" data-duration=\"{}\" data-track-index=\"{}\" style=\"left:{}px;top:{}px;width:{}px;height:{}px;background:{};opacity:{}.{:03};z-index:{}\"></div>",
             clip.id,clip.start_frame/composition.fps,(clip.end_frame_exclusive-clip.start_frame)/composition.fps,
             track,clip.x,clip.y,clip.width,clip.height,clip.fill,clip.opacity_milli/1000,clip.opacity_milli%1000,clip.z_index).expect("String write");
     }
