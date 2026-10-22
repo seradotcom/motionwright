@@ -509,21 +509,25 @@ class FoundationCausalTests(unittest.TestCase):
     def test_existing_automatic_workflow_and_default_jobs_are_preserved(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(encoding="utf-8")
         original = text.split("\n  foundation-causal-g0:\n", 1)[0]
-        start = original.index("  workflow_dispatch:\n") + len("  workflow_dispatch:\n")
-        end = original.index("\npermissions:\n", start)
-        original = original[:start] + original[end:]
-        original = original.replace(
-            "    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current')\n", "", 1)
+        # Reverse only this gate's additions; all current jobs, source-admission
+        # scopes and triggers must recover the exact integrated workflow bytes.
+        for scope in gate.SELECTIONS:
+            choice = "          - " + scope + "\n"
+            self.assertEqual(original.count(choice), 1)
+            original = original.replace(choice, "", 1)
+        guard = "    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current')\n"
+        self.assertEqual(original.count(guard), 1)
+        original = original.replace(guard, "    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'source-admission-contracts'\n", 1)
         self.assertEqual(hashlib.sha256(original.encode()).hexdigest(),
-                         "a2acf46f418b035186c9a7b9dce068b3f266e99703f4c773da183a579eb45725")
+                         "e83812ca63551875270d485b437b5ec04163a65f0c472f90532fb1f0e7f71eb2")
         self.assertIn("default: full", text)
-        self.assertIn("options: [full, foundation-causal, foundation-import-budget, foundation-current, foundation-projection-diagnostic, foundation-composed-current]", text)
+        self.assertIn('options:\n          - full\n          - source-admission-contracts\n          - foundation-causal\n          - foundation-import-budget\n          - foundation-current\n          - foundation-projection-diagnostic\n          - foundation-composed-current\n          - foundation-coherent-current\n', text)
 
     def test_selected_workflow_requires_g0_and_pins_one_sequential_linux_execution(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(encoding="utf-8")
         selected = text.split("\n  foundation-causal:\n", 1)[1]
         self.assertIn("needs: foundation-causal-g0", selected)
-        self.assertIn("github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'foundation-causal' || inputs.verification_scope == 'foundation-import-budget' || inputs.verification_scope == 'foundation-current' || inputs.verification_scope == 'foundation-projection-diagnostic' || inputs.verification_scope == 'foundation-composed-current')", selected)
+        self.assertIn("github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'foundation-causal' || inputs.verification_scope == 'foundation-import-budget' || inputs.verification_scope == 'foundation-current' || inputs.verification_scope == 'foundation-projection-diagnostic' || inputs.verification_scope == 'foundation-composed-current' || inputs.verification_scope == 'foundation-coherent-current')", selected)
         self.assertIn("runs-on: ubuntu-24.04", selected)
         self.assertIn("toolchain: 1.98.1", selected)
         self.assertIn("components: clippy", selected)
@@ -815,13 +819,13 @@ class ImportBudgetCausalTests(unittest.TestCase):
     def test_both_choices_share_one_guarded_workflow_observer(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(
             encoding="utf-8")
-        self.assertIn("options: [full, foundation-causal, foundation-import-budget, foundation-current, foundation-projection-diagnostic, foundation-composed-current]", text)
+        self.assertIn('options:\n          - full\n          - source-admission-contracts\n          - foundation-causal\n          - foundation-import-budget\n          - foundation-current\n          - foundation-projection-diagnostic\n          - foundation-composed-current\n          - foundation-coherent-current\n', text)
         self.assertIn("default: full", text)
         self.assertEqual(text.count(
             "github.event_name == 'workflow_dispatch' && "
             "(inputs.verification_scope == 'foundation-causal' || "
             "inputs.verification_scope == 'foundation-import-budget' || "
-            "inputs.verification_scope == 'foundation-current' || inputs.verification_scope == 'foundation-projection-diagnostic' || inputs.verification_scope == 'foundation-composed-current')"), 2)
+            "inputs.verification_scope == 'foundation-current' || inputs.verification_scope == 'foundation-projection-diagnostic' || inputs.verification_scope == 'foundation-composed-current' || inputs.verification_scope == 'foundation-coherent-current')"), 2)
         self.assertIn(
             "FOUNDATION_CAUSAL_SELECTION: $" + "{{ inputs.verification_scope }}", text)
         self.assertIn('--selection "$FOUNDATION_CAUSAL_SELECTION"', text)
@@ -1175,10 +1179,10 @@ class CurrentCompositionCausalTests(unittest.TestCase):
 
     def test_current_scope_has_one_manual_g0_guarded_workflow_and_no_new_executor(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(encoding="utf-8")
-        self.assertIn("options: [full, foundation-causal, foundation-import-budget, foundation-current, foundation-projection-diagnostic, foundation-composed-current]", text)
+        self.assertIn('options:\n          - full\n          - source-admission-contracts\n          - foundation-causal\n          - foundation-import-budget\n          - foundation-current\n          - foundation-projection-diagnostic\n          - foundation-composed-current\n          - foundation-coherent-current\n', text)
         self.assertEqual(text.count("gate/tooling/ci_foundation_causal.py"), 1)
         self.assertEqual(text.count("needs: foundation-causal-g0"), 1)
-        self.assertEqual(text.count("|| inputs.verification_scope == 'foundation-current' || inputs.verification_scope == 'foundation-projection-diagnostic' || inputs.verification_scope == 'foundation-composed-current')"), 2)
+        self.assertEqual(text.count("|| inputs.verification_scope == 'foundation-current' || inputs.verification_scope == 'foundation-projection-diagnostic' || inputs.verification_scope == 'foundation-composed-current' || inputs.verification_scope == 'foundation-coherent-current')"), 2)
         self.assertNotIn("\n  foundation-current:", text)
         self.assertIn("default: full", text)
 
