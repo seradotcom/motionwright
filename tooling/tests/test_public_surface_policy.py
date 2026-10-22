@@ -5,6 +5,7 @@ policy and traversal and make no claim about dependency or product acceptance.
 """
 from pathlib import Path
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -23,6 +24,64 @@ PRIVATE_ROOTS = (
     ".agents", ".codex", "knowledge", "worktrees", ".worktrees", "verification",
 )
 IGNORE_TEXT = "\n".join("/" + name + "/" for name in PRIVATE_ROOTS) + "\n"
+
+
+
+def write_source_evidence_fixture(root, revision="a" * 40):
+    """Write synthetic fixed bytes; these fixtures grant no source-use rights."""
+    repository = "https://github.com/seradotcom/semwright"
+    version = "1.0.0"
+    license_expression = "MIT OR Apache-2.0"
+    directory = root / "third_party/semwright-source-evidence"
+    directory.mkdir(parents=True, exist_ok=True)
+    sources = {
+        "Cargo.toml": (
+            '[workspace.package]\nversion = "1.0.0"\n'
+            'license = "MIT OR Apache-2.0"\n'
+        ).encode("utf-8"),
+        "LICENSE-MIT": b"Synthetic MIT source-license fixture; not permission evidence.\n",
+        "LICENSE-APACHE": b"Synthetic Apache-2.0 source-license fixture; not permission evidence.\n",
+    }
+    files = []
+    for name, data in sources.items():
+        path = directory / name
+        path.write_bytes(data)
+        files.append({
+            "upstream_path": name,
+            "path": path.relative_to(root).as_posix(),
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "git_blob_sha1": hashlib.sha1(
+                b"blob " + str(len(data)).encode("ascii") + b"\0" + data
+            ).hexdigest(),
+        })
+    evidence = {
+        "schema": "motionwright.source-evidence/1",
+        "repository": repository,
+        "revision": revision,
+        "version": version,
+        "license_expression": license_expression,
+        "files": files,
+    }
+    record_path = directory / "source-evidence.json"
+    data = (json.dumps(evidence, indent=2) + "\n").encode("utf-8")
+    record_path.write_bytes(data)
+    return {
+        "repository": repository,
+        "revision": revision,
+        "version": version,
+        "license_observed": license_expression,
+        "verification": {
+            "schema": "motionwright.source-verification/1",
+            "status": "verified",
+            "repository": repository,
+            "revision": revision,
+            "evidence": {
+                "path": record_path.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            },
+        },
+    }
 
 
 class PublicSurfacePolicyTests(unittest.TestCase):
@@ -257,9 +316,11 @@ class SourcePolicyConsumerTests(GitFixtureTests):
     def policy_repo(self, relative="checkout"):
         root = self.repo(relative)
         revision = "a" * 40
+        entry = write_source_evidence_fixture(root, revision)
         fixtures = {
             "SOURCE_LOCK.json": json.dumps({
-                "dependencies": {"semwright": {"revision": revision, "version": "1.0.0"}},
+                "schema_version": 1,
+                "dependencies": {"semwright": entry},
             }),
             "Cargo.toml": (
                 '[dependencies]\nsemwright = { git = "https://github.com/'
@@ -286,9 +347,12 @@ class SourcePolicyConsumerTests(GitFixtureTests):
         }
         for name in ("tooling/source_policy.py", "tooling/public_surface_policy.py"):
             fixtures[name] = (SOURCE_ROOT / name).read_text(encoding="utf-8")
+        helper = SOURCE_ROOT / "tooling/source_lock_admission.py"
+        if helper.is_file():
+            fixtures["tooling/source_lock_admission.py"] = helper.read_text(encoding="utf-8")
         for name, content in fixtures.items():
             self.write(root, name, content)
-        self.git(root, "add", "--", *fixtures)
+        self.git(root, "add", "--", *fixtures, "third_party/semwright-source-evidence")
         return root
 
     def run_policy(self, root):
@@ -339,6 +403,61 @@ class SourcePolicyConsumerTests(GitFixtureTests):
         self.assertIn(
             "GitHub credential-like token found: " + name, result.stderr,
         )
+
+
+    def assert_source_refusal_preserves_fixture(self, root):
+        def files():
+            return {
+                p.relative_to(root).as_posix(): p.read_bytes()
+                for p in root.rglob("*")
+                if p.is_file() and ".git" not in p.relative_to(root).parts
+            }
+        before = files()
+        index_before = (root / ".git/index").read_bytes()
+        result = self.run_policy(root)
+        self.assertEqual(files(), before)
+        self.assertEqual((root / ".git/index").read_bytes(), index_before)
+        self.assertNotEqual(
+            result.returncode, 0,
+            "SOURCE_ADMISSION_UNVERIFIED_ENTRY_ACCEPTED\n" + result.stdout + result.stderr,
+        )
+        self.assertIn("ERROR: Semwright source admission refused:", result.stderr)
+        self.assertNotIn("source-policy=ok", result.stdout)
+        # Independent source hygiene remains usable; no policy state is rewritten.
+        self.assertEqual(verify_public_surface(root), [])
+
+    def test_source_policy_refuses_duplicate_verification_status(self):
+        root = self.policy_repo()
+        path = root / "SOURCE_LOCK.json"
+        encoded = path.read_text(encoding="utf-8")
+        original = '"status": "verified"'
+        self.assertEqual(encoded.count(original), 1)
+        encoded = encoded.replace(
+            original, '"status": "unverified", "status": "verified"',
+        )
+        path.write_text(encoded, encoding="utf-8")
+        self.assert_source_refusal_preserves_fixture(root)
+
+    def test_source_policy_refuses_explicitly_unverified_entry(self):
+        root = self.policy_repo()
+        path = root / "SOURCE_LOCK.json"
+        lock = json.loads(path.read_text(encoding="utf-8"))
+        lock["dependencies"]["semwright"]["verification"]["status"] = "unverified"
+        path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+        self.assert_source_refusal_preserves_fixture(root)
+
+    def test_source_policy_refuses_unavailable_evidence_bytes(self):
+        root = self.policy_repo()
+        (root / "third_party/semwright-source-evidence/Cargo.toml").unlink()
+        self.assert_source_refusal_preserves_fixture(root)
+
+    def test_source_policy_refuses_unresolved_source_license(self):
+        root = self.policy_repo()
+        path = root / "SOURCE_LOCK.json"
+        lock = json.loads(path.read_text(encoding="utf-8"))
+        lock["dependencies"]["semwright"]["license_observed"] = "unresolved"
+        path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+        self.assert_source_refusal_preserves_fixture(root)
 
 
 if __name__ == "__main__":
