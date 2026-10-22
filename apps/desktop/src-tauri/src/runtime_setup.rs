@@ -18,7 +18,20 @@ const MAX_CONFIG_BYTES: u64 = 8 * 1024;
 fn read_reference_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
     #[cfg(test)]
     tests::reference_budget_tests::after_admission(path);
-    fs::read(path)
+    read_reference_reader(fs::File::open(path)?)
+}
+
+fn read_reference_reader(reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader.take(MAX_CONFIG_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Saved Semwright reference exceeds the local storage budget",
+        ));
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug, Clone)]
@@ -1506,6 +1519,50 @@ mod tests {
             assert!(registry.clear_saved(project).is_err());
             assert_growth_preserved(&path, &grown);
             assert_eq!(fs::read_dir(&registry.root).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(test)]
+    mod reference_reader_budget_tests {
+        use super::super::*;
+        use std::{
+            cell::Cell,
+            io::{self, Read},
+        };
+
+        struct Metered<'a> {
+            consumed: &'a Cell<usize>,
+            remaining: usize,
+        }
+        impl Read for Metered<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let count = self.remaining.min(buffer.len());
+                buffer[..count].fill(b' ');
+                self.remaining -= count;
+                self.consumed.set(self.consumed.get() + count);
+                Ok(count)
+            }
+        }
+        #[test]
+        fn reader_accepts_empty_and_exact_but_consumes_only_one_excess_byte() {
+            for length in [0, MAX_CONFIG_BYTES as usize] {
+                let consumed = Cell::new(0);
+                let bytes = read_reference_reader(Metered {
+                    consumed: &consumed,
+                    remaining: length,
+                })
+                .unwrap();
+                assert_eq!(bytes.len(), length);
+                assert_eq!(consumed.get(), length);
+            }
+            let consumed = Cell::new(0);
+            let error = read_reference_reader(Metered {
+                consumed: &consumed,
+                remaining: MAX_CONFIG_BYTES as usize + 1024,
+            })
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(consumed.get(), MAX_CONFIG_BYTES as usize + 1);
         }
     }
 }
