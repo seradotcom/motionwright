@@ -1,0 +1,120 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/*",
+    "adapters/example-plugin",
+    "integrations/kicad-driver/driver",
+    "integrations/kicad-driver/kicad-ipc",
+]
+exclude = ["fuzz", "fixtures/windows-uia"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+authors = ["Semwright contributors"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1", features = ["derive"] }
+thiserror = "2"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "process", "signal", "fs"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+async-trait = "0.1"
+sha2 = "0.11"
+libc = "0.2"
+rustix = { version = "1", features = ["event"] }
+jsonschema = { version = "0.58", default-features = false }
+serde_yaml_ng = "0.10"
+toml = "1.1"
+zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
+futures-util = { version = "0.3", features = ["sink"] }
+reis = { version = "=0.7.1", features = ["tokio", "calloop"] }
+xkbcommon-dl = "=0.4.2"
+xkeysym = "=0.2.1"
+pipewire = { version = "=0.10.1", features = ["v0_3_65"] }
+png = "0.18"
+calloop = "0.14"
+x11rb = { version = "0.14", features = ["xtest"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+url = "2"
+base64 = "0.23"
+anyhow = "1"
+hex = "0.4"
+hmac = "0.13"
+rand = "0.10"
+landlock = "=0.4.7"
+clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
+clap_mangen = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+rmcp = { version = "=3.5.0", features = ["server", "client", "macros", "schemars", "transport-io", "transport-child-process", "transport-async-rw"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+ratatui = "0.30.2"
+crossterm = "0.29"
+proptest = "1"
+tempfile = "3"
+semver = "1"
+unicode-normalization = "0.1"
+semwright-types = { path = "crates/types", version = "=1.0.0" }
+semwright-project-graph = { path = "crates/project-graph", version = "=1.0.0" }
+semwright-effect-conformance = { path = "crates/effect-conformance", version = "=1.0.0" }
+semwright-semantic-composition = { path = "crates/semantic-composition", version = "=1.0.0" }
+semwright-av-composition = { path = "crates/av-composition", version = "=1.0.0" }
+semwright-motion-authoring = { path = "crates/motion-authoring", version = "=1.0.0" }
+semwright-media-time = { path = "crates/media-time", version = "=1.0.0" }
+semwright-audio-authoring = { path = "crates/audio-authoring", version = "=1.0.0" }
+semwright-audio-domain = { path = "crates/audio-domain", version = "=1.0.0" }
+semwright-video-domain = { path = "crates/video-domain", version = "=1.0.0" }
+semwright-protocol = { path = "crates/protocol", version = "=1.0.0" }
+semwright-registry = { path = "crates/registry", version = "=1.0.0" }
+semwright-skills = { path = "crates/skills", version = "=1.0.0" }
+semwright-policy = { path = "crates/policy", version = "=1.0.0" }
+semwright-recipes = { path = "crates/recipes", version = "=1.0.0" }
+semwright-workflow = { path = "crates/workflow", version = "=1.0.0" }
+semwright-plugin-sdk = { path = "crates/plugin-sdk", version = "=1.0.0" }
+semwright-plugin-host = { path = "crates/plugin-host", version = "=1.0.0" }
+semwright-driver-sdk = { path = "crates/driver-sdk", version = "=1.0.0" }
+semwright-driver-host = { path = "crates/driver-host", version = "=1.0.0" }
+semwright-driver-registry = { path = "crates/driver-registry", version = "=1.0.0" }
+semwright-backend-api = { path = "crates/backend-api", version = "=1.0.0" }
+semwright-backends = { path = "crates/backends", version = "=1.0.0" }
+semwright-adapters = { path = "crates/adapters", version = "=1.0.0" }
+semwright-core = { path = "crates/core", version = "=1.0.0" }
+semwright-daemon = { path = "crates/daemon", version = "=1.0.0" }
+semwright-cli = { path = "crates/cli", version = "=1.0.0" }
+semwright-mcp = { path = "crates/mcp", version = "=1.0.0" }
+semwright-federation = { path = "crates/federation", version = "=1.0.0" }
+semwright-tui = { path = "crates/tui", version = "=1.0.0" }
+semwright-platform-api = { path = "crates/platform-api", version = "=1.0.0" }
+semwright-platform-common = { path = "crates/platform-common", version = "=1.0.0" }
+semwright-platform-host = { path = "crates/platform-host", version = "=1.0.0" }
+semwright-platform-linux = { path = "crates/platform-linux", version = "=1.0.0" }
+semwright-platform-linux-sys = { path = "crates/platform-linux-sys", version = "=1.0.0" }
+semwright-platform-macos = { path = "crates/platform-macos", version = "=1.0.0" }
+semwright-platform-macos-sys = { path = "crates/platform-macos-sys", version = "=1.0.0" }
+semwright-platform-windows = { path = "crates/platform-windows", version = "=1.0.0" }
+semwright-platform-windows-sys = { path = "crates/platform-windows-sys", version = "=1.0.0" }
+semwright-platform-services = { path = "crates/platform-services", version = "=1.0.0" }
+uiautomation = { version = "=0.25.1", default-features = false, features = ["control", "pattern", "event", "input"] }
+windows-sys = { version = ">=0.59, <=0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Diagnostics_Debug", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_StationsAndDesktops", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+debug = 1

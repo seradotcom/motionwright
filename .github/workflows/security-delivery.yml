@@ -61,6 +61,15 @@ on:
       - ".github/workflows/package-candidate.yml"
       - ".github/workflows/heavy-verification.yml"
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Verification scope for this dispatch
+        required: true
+        type: choice
+        default: full
+        options:
+          - full
+          - source-admission-contracts
 
 permissions:
   contents: read
@@ -71,6 +80,7 @@ env:
 
 jobs:
   source-boundary:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'source-admission-contracts'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -223,3 +233,545 @@ jobs:
           python-version: "3.11"
       - name: v0.1 private manifest and real NTFS junction guardrails
         run: python -m unittest discover -s tooling/tests -p "test_acceptance*.py" -v
+
+  source-admission-linux:
+    name: Source admission contracts (Linux 64)
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source-admission-contracts'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+      SOURCE_ADMISSION_EVIDENCE: ${{ github.workspace }}/verification/source-admission-linux
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Execute exact source contracts and verify closed test rosters
+        shell: python -B -E -s {0}
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          from datetime import datetime, timezone
+
+          repo = (Path(os.environ["GITHUB_WORKSPACE"]) / "source").resolve(strict=True)
+          output = Path(os.environ["SOURCE_ADMISSION_EVIDENCE"]).resolve()
+          output.mkdir(parents=True, exist_ok=False)
+          expected_source = os.environ["GITHUB_SHA"]
+          rosters = {
+              "test_source_lock_admission": [
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_boolean_length_is_not_an_evidence_byte_count",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_captured_source_cannot_escape_the_evidence_root",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_device_names_and_alternate_streams_are_refused_before_open",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_distinct_sources_cannot_share_one_local_evidence_path",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_duplicate_json_keys_are_rejected_even_with_a_matching_record_hash",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_evidence_reference_cannot_escape_or_use_an_absolute_path",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_evidence_requires_each_distinct_upstream_file",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_hardlinked_source_is_rejected_without_modifying_either_name",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_missing_or_changed_captured_source_bytes_are_rejected",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_missing_or_changed_evidence_record_is_rejected",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_missing_or_legacy_verification_is_not_admission",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_other_repository_is_refused_even_when_all_record_bindings_match",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_oversized_evidence_record_is_rejected_with_correct_hash",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_oversized_source_is_rejected_even_with_updated_proof",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_posix_path_descriptor_change_time_mismatch_is_still_rejected",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_rehashed_cargo_bytes_must_keep_declared_version_and_license",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_rehashed_deep_cargo_metadata_returns_a_static_admission_refusal",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_rehashed_evidence_cannot_change_source_identity_or_license",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_small_deep_json_returns_a_static_source_admission_refusal",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_source_lock_loader_is_bounded_read_only_and_has_no_external_effects",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_source_lock_loader_rejects_bytes_above_its_bound",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_source_lock_loader_rejects_duplicate_status_before_last_value_wins",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_symlinked_evidence_parent_is_rejected",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_symlinked_source_is_rejected_without_modifying_target",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_unknown_or_boolean_outer_schema_is_not_admitted",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_unverified_or_unavailable_states_fail_closed",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_verification_cannot_move_to_another_revision_or_repository",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_verified_fixed_bytes_are_read_only_and_do_not_launch_external_effects",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_windows_descriptor_change_time_still_detects_mutation_during_read",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_windows_other_path_descriptor_identity_fields_must_still_match",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_windows_path_and_descriptor_clock_difference_preserves_stable_admission",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_windows_path_change_time_still_detects_mutation_during_read",
+                  "test_source_lock_admission.SourceLockAdmissionTests.test_wrong_git_blob_hash_or_declared_size_is_rejected"
+              ],
+              "test_public_surface_policy": [
+                  "test_public_surface_policy.PublicSurfaceGitTests.test_effective_ignored_untracked_material_is_not_public",
+                  "test_public_surface_policy.PublicSurfaceGitTests.test_git_tracked_nested_instruction_is_rejected",
+                  "test_public_surface_policy.PublicSurfaceGitTests.test_git_tracked_private_entries_and_descendants_are_rejected",
+                  "test_public_surface_policy.PublicSurfaceGitTests.test_invalid_utf8_and_oversized_public_text_are_rejected",
+                  "test_public_surface_policy.PublicSurfaceGitTests.test_later_negations_cannot_satisfy_effective_ignore",
+                  "test_public_surface_policy.PublicSurfaceGitTests.test_tracked_public_symlink_is_rejected",
+                  "test_public_surface_policy.PublicSurfaceGitTests.test_unavailable_git_cannot_report_success",
+                  "test_public_surface_policy.PublicSurfacePolicyTests.test_current_tracked_repository_is_clean",
+                  "test_public_surface_policy.PublicSurfacePolicyTests.test_development_speech_is_rejected_without_copying_its_body",
+                  "test_public_surface_policy.PublicSurfacePolicyTests.test_instruction_names_are_rejected_at_any_depth",
+                  "test_public_surface_policy.PublicSurfacePolicyTests.test_multiline_instructions_report_their_start_line",
+                  "test_public_surface_policy.PublicSurfacePolicyTests.test_nested_product_paths_are_not_private_roots",
+                  "test_public_surface_policy.PublicSurfacePolicyTests.test_private_roots_include_exact_entries_and_descendants",
+                  "test_public_surface_policy.PublicSurfacePolicyTests.test_private_text_is_not_reported_as_public_text",
+                  "test_public_surface_policy.PublicSurfacePolicyTests.test_real_product_agents_are_not_forbidden",
+                  "test_public_surface_policy.PublicSurfacePolicyTests.test_root_markdown_and_uppercase_extensions_are_checked",
+                  "test_public_surface_policy.SourcePolicyConsumerTests.test_nested_local_names_cannot_hide_credential_findings",
+                  "test_public_surface_policy.SourcePolicyConsumerTests.test_parent_worktrees_directory_cannot_hide_credential_findings",
+                  "test_public_surface_policy.SourcePolicyConsumerTests.test_source_policy_refuses_duplicate_verification_status",
+                  "test_public_surface_policy.SourcePolicyConsumerTests.test_source_policy_refuses_explicitly_unverified_entry",
+                  "test_public_surface_policy.SourcePolicyConsumerTests.test_source_policy_refuses_unavailable_evidence_bytes",
+                  "test_public_surface_policy.SourcePolicyConsumerTests.test_source_policy_refuses_unresolved_source_license",
+                  "test_public_surface_policy.SourcePolicyConsumerTests.test_valid_minimal_consumer_fixture_passes",
+                  "test_public_surface_policy.SourceTraversalTests.test_repository_parent_named_worktrees_does_not_hide_source",
+                  "test_public_surface_policy.SourceTraversalTests.test_walk_prunes_local_roots_but_keeps_nested_source"
+              ],
+              "test_source_policy_credentials": [
+                  "test_source_policy_credentials.ApiCredentialBoundaryTests.test_api_keys_after_header_whitespace_are_rejected",
+                  "test_source_policy_credentials.ApiCredentialBoundaryTests.test_api_keys_after_punctuation_are_rejected",
+                  "test_source_policy_credentials.ApiCredentialBoundaryTests.test_api_keys_at_file_start_and_end_are_rejected",
+                  "test_source_policy_credentials.ApiCredentialBoundaryTests.test_api_keys_in_json_strings_are_rejected",
+                  "test_source_policy_credentials.ApiCredentialBoundaryTests.test_immutable_assessment_ids_in_json_are_not_credentials",
+                  "test_source_policy_credentials.ApiCredentialBoundaryTests.test_immutable_assessment_ids_in_text_are_not_credentials"
+              ]
+          }
+          policy_names = ["source_policy","public_surface_policy","acceptance_policy","creative_status_policy"]
+          patterns = [module + ".py" for module in rosters]
+          report = output / "unittest.json"
+
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          def write_json(name, value):
+              with (output / name).open("x", encoding="utf-8", newline="\n") as handle:
+                  json.dump(value, handle, indent=2, sort_keys=True)
+                  handle.write("\n")
+
+          def require(condition, message):
+              if not condition:
+                  raise ValueError(message)
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], cwd=repo, text=True,
+                                             encoding="utf-8").strip()
+
+          def run_retained(command, label):
+              streams = {}
+              started = datetime.now(timezone.utc).isoformat()
+              with (output / (label + "-stdout.log")).open("xb") as stdout:
+                  with (output / (label + "-stderr.log")).open("xb") as stderr:
+                      process = subprocess.run(command, cwd=repo, stdout=stdout, stderr=stderr)
+              for stream in ("stdout", "stderr"):
+                  path = output / (label + "-" + stream + ".log")
+                  streams[stream] = {"file": path.name, "sha256": digest(path)}
+              return {"command": command, "exit_code": process.returncode, **streams,
+                      "started_at_utc": started,
+                      "completed_at_utc": datetime.now(timezone.utc).isoformat()}
+
+          runner_command = [sys.executable, "-B", "-E", "-s", str(repo / "tooling/ci_test_runner.py"),
+                            "--repo", str(repo), "--mode", "both", "--expected-source",
+                            expected_source, "--require-complete", "--report", str(report)]
+          for pattern in patterns:
+              runner_command.extend(["--pattern", pattern])
+          driver = run_retained(runner_command, "driver")
+          write_json("driver.json", {"executed_source_sha": expected_source, **driver})
+          classification = None
+          classification_error = None
+          try:
+              classification = json.loads(report.read_text(encoding="utf-8"))
+          except (OSError, ValueError, RecursionError) as error:
+              classification_error = type(error).__name__ + ": " + str(error)
+
+          runner_status = (
+              classification.get("status")
+              if isinstance(classification, dict)
+              else None
+          )
+          if driver["exit_code"] == 124 or runner_status == "UNKNOWN":
+              verification = {
+                  "schema": "motionwright.source-admission-roster/1",
+                  "status": "UNKNOWN",
+                  "requested_source_sha": expected_source,
+                  "driver_exit_code": driver["exit_code"],
+                  "runner_reported_status": runner_status,
+                  "expected_rosters": rosters,
+                  "expected_unique_tests": sum(len(ids) for ids in rosters.values()),
+                  "expected_test_invocations": 2 * sum(len(ids) for ids in rosters.values()),
+                  "public_policies": [
+                      {
+                          "name": name,
+                          "status": "NOT_RUN",
+                          "reason": "prior canonical execution is UNKNOWN",
+                      }
+                      for name in policy_names
+                  ],
+                  "postchecks": "NOT_RUN",
+                  "operations_retried": False,
+                  "scope": "Incomplete canonical execution; no source, release or human acceptance",
+              }
+              if classification_error is not None:
+                  verification["classification_error"] = classification_error
+              write_json("roster-verification.json", verification)
+              print(json.dumps(verification, sort_keys=True))
+              raise SystemExit(124)
+          policy_results = []
+          for name in policy_names:
+              path = repo / "tooling" / (name + ".py")
+              result = run_retained([sys.executable, "-B", "-E", "-s", str(path)], name)
+              result.update(name=name, source_sha256=digest(path))
+              policy_results.append(result)
+          if policy_names:
+              write_json("policies.json", {
+                  "schema": "motionwright.source-admission-policies/1",
+                  "executed_source_sha": expected_source, "steps": policy_results,
+                  "status": "PASS" if all(item["exit_code"] == 0 for item in policy_results) else "FAIL",
+              })
+
+          verification = {
+              "schema": "motionwright.source-admission-roster/1", "status": "FAIL",
+              "executed_source_sha": expected_source, "expected_rosters": rosters,
+              "expected_unique_tests": sum(len(ids) for ids in rosters.values()),
+              "expected_test_invocations": 2 * sum(len(ids) for ids in rosters.values()),
+              "scope": "Selected source contracts and stated policies; no release or human acceptance",
+          }
+          try:
+              require(driver["exit_code"] == 0, "canonical unittest runner did not succeed")
+              require(re.fullmatch(r"[0-9a-f]{40}", expected_source) is not None,
+                      "expected source is not an exact commit")
+              require(git("rev-parse", "HEAD") == expected_source, "checkout source changed")
+              tree = git("rev-parse", "HEAD^{tree}")
+              require(not git("status", "--porcelain", "--untracked-files=no"),
+                      "tracked checkout changed")
+              for options in (("--others", "--exclude-standard"),
+                              ("--others", "--ignored", "--exclude-standard")):
+                  require(not git("ls-files", *options), "unbound checkout input exists")
+              receipt = json.loads(report.read_text(encoding="utf-8"))
+              require(receipt["schema"] == "motionwright.unittest-execution/1", "unexpected receipt schema")
+              require(receipt["executed_source_sha"] == expected_source and receipt["tree_sha"] == tree,
+                      "receipt source binding differs")
+              require(receipt["status"] == "PASS" and receipt["exit_code"] == 0
+                      and receipt["require_complete"] is True, "receipt is not complete PASS")
+              require(receipt["runner_sha256"] == digest(repo / "tooling/ci_test_runner.py"),
+                      "runner identity differs")
+              definitions = {"tooling/tests/" + pattern: digest(repo / "tooling/tests" / pattern)
+                             for pattern in patterns}
+              require(receipt["test_definition_sha256"] == definitions, "test definition closure differs")
+              require(receipt["source_locks"] == {name: digest(repo / name) for name in
+                      ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json")},
+                      "source-lock bindings differ")
+              require(receipt["github"] == {name: os.environ.get(name, "") for name in
+                      ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID",
+                       "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}, "workflow binding differs")
+              labels = {}
+              for module in rosters:
+                  labels["discovery:" + module + ".py"] = (
+                      module, [sys.executable, "-B", "-E", "-s", "-m", "unittest", "discover",
+                               "-s", "tooling/tests", "-p", module + ".py", "-v"])
+                  labels["dotted:tooling.tests." + module] = (
+                      module, [sys.executable, "-B", "-E", "-s", "-m", "unittest",
+                               "tooling.tests." + module, "-v"])
+              steps = receipt["steps"]
+              require(len(steps) == len(labels)
+                      and {step["entry_point"] for step in steps} == set(labels),
+                      "entry-point labels are missing, duplicated or unexpected")
+              observed = {}
+              for index, step in enumerate(steps):
+                  label = step["entry_point"]
+                  module, command = labels[label]
+                  expected_ids = sorted(rosters[module])
+                  require(step["command"] == command, "entry-point command differs: " + label)
+                  require(step["status"] == "PASS" and step["exit_code"] == 0,
+                          "entry point did not pass: " + label)
+                  require(step["counts"] == {
+                      "terminal_status": "OK", "tests_run": len(expected_ids), "passed": len(expected_ids),
+                      "failures": 0, "errors": 0, "skipped": 0,
+                      "expected_failures": 0, "unexpected_successes": 0,
+                  }, "entry-point counts differ: " + label)
+                  for stream in ("stdout", "stderr"):
+                      path = output / ("unittest-" + str(index).zfill(2) + "-" + stream + ".log")
+                      require(step[stream] == {"file": path.name, "sha256": digest(path)},
+                              "original log binding differs: " + label + "/" + stream)
+                  raw = (output / step["stderr"]["file"]).read_bytes().decode("utf-8", "strict")
+                  ids = []
+                  for line in raw.splitlines():
+                      if not line.startswith("test_"):
+                          continue
+                      match = re.fullmatch(r"(test_\w+) \(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\) \.\.\. ok", line)
+                      require(match is not None, "unexpected verbose test record: " + label)
+                      method, qualified = match.groups()
+                      qualified = qualified.removeprefix("tooling.tests.")
+                      if not qualified.endswith("." + method):
+                          qualified += "." + method
+                      ids.append(qualified)
+                  require(len(ids) == len(set(ids)) and sorted(ids) == expected_ids,
+                          "executed test identities differ: " + label)
+                  observed[label] = sorted(ids)
+              require(len(policy_results) == len(policy_names)
+                      and all(item["exit_code"] == 0 for item in policy_results),
+                      "a required public policy did not pass")
+              verification.update(
+                  status="PASS", tree_sha=tree, observed_rosters=observed,
+                  receipt_sha256=digest(report), test_definition_sha256=definitions,
+                  support_definition_sha256={name: digest(repo / name) for name in
+                      ("tooling/tests/test_source_lock_admission.py",
+                       "tooling/tests/test_public_surface_policy.py")},
+                  public_policies=policy_results,
+              )
+          except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:
+              verification["error"] = str(error)
+          write_json("roster-verification.json", verification)
+          print(json.dumps(verification, sort_keys=True))
+          raise SystemExit(0 if verification["status"] == "PASS" else 1)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: motionwright-source-admission-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.SOURCE_ADMISSION_EVIDENCE }}
+          if-no-files-found: error
+
+  source-admission-ntfs:
+    name: Source admission contracts (NTFS 2)
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'source-admission-contracts'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+      SOURCE_ADMISSION_EVIDENCE: ${{ github.workspace }}/verification/source-admission-ntfs
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Execute exact source contracts and verify closed test rosters
+        shell: python -B -E -s {0}
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          from datetime import datetime, timezone
+
+          repo = (Path(os.environ["GITHUB_WORKSPACE"]) / "source").resolve(strict=True)
+          output = Path(os.environ["SOURCE_ADMISSION_EVIDENCE"]).resolve()
+          output.mkdir(parents=True, exist_ok=False)
+          expected_source = os.environ["GITHUB_SHA"]
+          rosters = {
+              "test_source_lock_admission_ntfs": [
+                  "test_source_lock_admission_ntfs.SourceLockAdmissionNtfsTests.test_junctioned_evidence_parent_is_rejected",
+                  "test_source_lock_admission_ntfs.SourceLockAdmissionNtfsTests.test_rewritten_source_lock_is_admitted_without_changing_its_bytes"
+              ]
+          }
+          policy_names = []
+          patterns = [module + ".py" for module in rosters]
+          report = output / "unittest.json"
+
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          def write_json(name, value):
+              with (output / name).open("x", encoding="utf-8", newline="\n") as handle:
+                  json.dump(value, handle, indent=2, sort_keys=True)
+                  handle.write("\n")
+
+          def require(condition, message):
+              if not condition:
+                  raise ValueError(message)
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], cwd=repo, text=True,
+                                             encoding="utf-8").strip()
+
+          def run_retained(command, label):
+              streams = {}
+              started = datetime.now(timezone.utc).isoformat()
+              with (output / (label + "-stdout.log")).open("xb") as stdout:
+                  with (output / (label + "-stderr.log")).open("xb") as stderr:
+                      process = subprocess.run(command, cwd=repo, stdout=stdout, stderr=stderr)
+              for stream in ("stdout", "stderr"):
+                  path = output / (label + "-" + stream + ".log")
+                  streams[stream] = {"file": path.name, "sha256": digest(path)}
+              return {"command": command, "exit_code": process.returncode, **streams,
+                      "started_at_utc": started,
+                      "completed_at_utc": datetime.now(timezone.utc).isoformat()}
+
+          runner_command = [sys.executable, "-B", "-E", "-s", str(repo / "tooling/ci_test_runner.py"),
+                            "--repo", str(repo), "--mode", "both", "--expected-source",
+                            expected_source, "--require-complete", "--report", str(report)]
+          for pattern in patterns:
+              runner_command.extend(["--pattern", pattern])
+          driver = run_retained(runner_command, "driver")
+          write_json("driver.json", {"executed_source_sha": expected_source, **driver})
+          classification = None
+          classification_error = None
+          try:
+              classification = json.loads(report.read_text(encoding="utf-8"))
+          except (OSError, ValueError, RecursionError) as error:
+              classification_error = type(error).__name__ + ": " + str(error)
+
+          runner_status = (
+              classification.get("status")
+              if isinstance(classification, dict)
+              else None
+          )
+          if driver["exit_code"] == 124 or runner_status == "UNKNOWN":
+              verification = {
+                  "schema": "motionwright.source-admission-roster/1",
+                  "status": "UNKNOWN",
+                  "requested_source_sha": expected_source,
+                  "driver_exit_code": driver["exit_code"],
+                  "runner_reported_status": runner_status,
+                  "expected_rosters": rosters,
+                  "expected_unique_tests": sum(len(ids) for ids in rosters.values()),
+                  "expected_test_invocations": 2 * sum(len(ids) for ids in rosters.values()),
+                  "public_policies": [
+                      {
+                          "name": name,
+                          "status": "NOT_RUN",
+                          "reason": "prior canonical execution is UNKNOWN",
+                      }
+                      for name in policy_names
+                  ],
+                  "postchecks": "NOT_RUN",
+                  "operations_retried": False,
+                  "scope": "Incomplete canonical execution; no source, release or human acceptance",
+              }
+              if classification_error is not None:
+                  verification["classification_error"] = classification_error
+              write_json("roster-verification.json", verification)
+              print(json.dumps(verification, sort_keys=True))
+              raise SystemExit(124)
+          policy_results = []
+          for name in policy_names:
+              path = repo / "tooling" / (name + ".py")
+              result = run_retained([sys.executable, "-B", "-E", "-s", str(path)], name)
+              result.update(name=name, source_sha256=digest(path))
+              policy_results.append(result)
+          if policy_names:
+              write_json("policies.json", {
+                  "schema": "motionwright.source-admission-policies/1",
+                  "executed_source_sha": expected_source, "steps": policy_results,
+                  "status": "PASS" if all(item["exit_code"] == 0 for item in policy_results) else "FAIL",
+              })
+
+          verification = {
+              "schema": "motionwright.source-admission-roster/1", "status": "FAIL",
+              "executed_source_sha": expected_source, "expected_rosters": rosters,
+              "expected_unique_tests": sum(len(ids) for ids in rosters.values()),
+              "expected_test_invocations": 2 * sum(len(ids) for ids in rosters.values()),
+              "scope": "Selected source contracts and stated policies; no release or human acceptance",
+          }
+          try:
+              require(driver["exit_code"] == 0, "canonical unittest runner did not succeed")
+              require(re.fullmatch(r"[0-9a-f]{40}", expected_source) is not None,
+                      "expected source is not an exact commit")
+              require(git("rev-parse", "HEAD") == expected_source, "checkout source changed")
+              tree = git("rev-parse", "HEAD^{tree}")
+              require(not git("status", "--porcelain", "--untracked-files=no"),
+                      "tracked checkout changed")
+              for options in (("--others", "--exclude-standard"),
+                              ("--others", "--ignored", "--exclude-standard")):
+                  require(not git("ls-files", *options), "unbound checkout input exists")
+              receipt = json.loads(report.read_text(encoding="utf-8"))
+              require(receipt["schema"] == "motionwright.unittest-execution/1", "unexpected receipt schema")
+              require(receipt["executed_source_sha"] == expected_source and receipt["tree_sha"] == tree,
+                      "receipt source binding differs")
+              require(receipt["status"] == "PASS" and receipt["exit_code"] == 0
+                      and receipt["require_complete"] is True, "receipt is not complete PASS")
+              require(receipt["runner_sha256"] == digest(repo / "tooling/ci_test_runner.py"),
+                      "runner identity differs")
+              definitions = {"tooling/tests/" + pattern: digest(repo / "tooling/tests" / pattern)
+                             for pattern in patterns}
+              require(receipt["test_definition_sha256"] == definitions, "test definition closure differs")
+              require(receipt["source_locks"] == {name: digest(repo / name) for name in
+                      ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json")},
+                      "source-lock bindings differ")
+              require(receipt["github"] == {name: os.environ.get(name, "") for name in
+                      ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID",
+                       "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}, "workflow binding differs")
+              labels = {}
+              for module in rosters:
+                  labels["discovery:" + module + ".py"] = (
+                      module, [sys.executable, "-B", "-E", "-s", "-m", "unittest", "discover",
+                               "-s", "tooling/tests", "-p", module + ".py", "-v"])
+                  labels["dotted:tooling.tests." + module] = (
+                      module, [sys.executable, "-B", "-E", "-s", "-m", "unittest",
+                               "tooling.tests." + module, "-v"])
+              steps = receipt["steps"]
+              require(len(steps) == len(labels)
+                      and {step["entry_point"] for step in steps} == set(labels),
+                      "entry-point labels are missing, duplicated or unexpected")
+              observed = {}
+              for index, step in enumerate(steps):
+                  label = step["entry_point"]
+                  module, command = labels[label]
+                  expected_ids = sorted(rosters[module])
+                  require(step["command"] == command, "entry-point command differs: " + label)
+                  require(step["status"] == "PASS" and step["exit_code"] == 0,
+                          "entry point did not pass: " + label)
+                  require(step["counts"] == {
+                      "terminal_status": "OK", "tests_run": len(expected_ids), "passed": len(expected_ids),
+                      "failures": 0, "errors": 0, "skipped": 0,
+                      "expected_failures": 0, "unexpected_successes": 0,
+                  }, "entry-point counts differ: " + label)
+                  for stream in ("stdout", "stderr"):
+                      path = output / ("unittest-" + str(index).zfill(2) + "-" + stream + ".log")
+                      require(step[stream] == {"file": path.name, "sha256": digest(path)},
+                              "original log binding differs: " + label + "/" + stream)
+                  raw = (output / step["stderr"]["file"]).read_bytes().decode("utf-8", "strict")
+                  ids = []
+                  for line in raw.splitlines():
+                      if not line.startswith("test_"):
+                          continue
+                      match = re.fullmatch(r"(test_\w+) \(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\) \.\.\. ok", line)
+                      require(match is not None, "unexpected verbose test record: " + label)
+                      method, qualified = match.groups()
+                      qualified = qualified.removeprefix("tooling.tests.")
+                      if not qualified.endswith("." + method):
+                          qualified += "." + method
+                      ids.append(qualified)
+                  require(len(ids) == len(set(ids)) and sorted(ids) == expected_ids,
+                          "executed test identities differ: " + label)
+                  observed[label] = sorted(ids)
+              require(len(policy_results) == len(policy_names)
+                      and all(item["exit_code"] == 0 for item in policy_results),
+                      "a required public policy did not pass")
+              verification.update(
+                  status="PASS", tree_sha=tree, observed_rosters=observed,
+                  receipt_sha256=digest(report), test_definition_sha256=definitions,
+                  support_definition_sha256={name: digest(repo / name) for name in
+                      ("tooling/tests/test_source_lock_admission.py",
+                       "tooling/tests/test_public_surface_policy.py")},
+                  public_policies=policy_results,
+              )
+          except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:
+              verification["error"] = str(error)
+          write_json("roster-verification.json", verification)
+          print(json.dumps(verification, sort_keys=True))
+          raise SystemExit(0 if verification["status"] == "PASS" else 1)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: motionwright-source-admission-ntfs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.SOURCE_ADMISSION_EVIDENCE }}
+          if-no-files-found: error
