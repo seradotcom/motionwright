@@ -16,6 +16,8 @@ from unittest.mock import patch
 
 TOOLING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLING))
+sys.path.insert(0, str(TOOLING / "tests"))
+from test_storage_schema_contract import cohort as storage_cohort_fixture
 SPEC = importlib.util.spec_from_file_location(
     "linux_cold_start", TOOLING / "linux_cold_start.py"
 )
@@ -24,6 +26,22 @@ probe = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = probe
 SPEC.loader.exec_module(probe)
 
+
+
+def schema_four_store(root):
+    database = seeded_store(root)
+    with closing(sqlite3.connect(database)) as db, db:
+        document = json.loads(db.execute("SELECT document_json FROM projects").fetchone()[0])
+        document["schema_version"] = 2
+        db.execute("UPDATE projects SET document_json=?", (json.dumps(document),))
+        db.executescript("""
+          PRAGMA user_version=4;
+          CREATE TABLE receipts(project_id TEXT,request_id TEXT,request_sha256 TEXT,
+            result_json TEXT,created_at TEXT,
+            apply_binding_version INTEGER NOT NULL DEFAULT 0 CHECK(apply_binding_version IN (0,1)),
+            apply_binding_json TEXT);
+        """)
+    return database
 
 def seeded_store(root: Path, *, name: str = "motionwright ci first use") -> Path:
     data = root / "data" / "com.seradotcom.motionwright"
@@ -241,6 +259,82 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
             snapshot.document_sha256,
             hashlib.sha256(value.encode()).hexdigest(),
         )
+
+
+    def test_explicit_source_four_reads_the_exact_document_without_rewriting_sqlite(self):
+        database = schema_four_store(self.scratch)
+        original = database.read_bytes()
+        selected = storage_cohort_fixture(4)
+        snapshot = probe.read_snapshot(self.scratch / "data", storage_cohort=selected)
+        self.assertEqual(snapshot.schema_version, 4)
+        self.assertEqual(database.read_bytes(), original)
+        self.assertEqual(probe.attest_persistence(snapshot, snapshot)["schema_version"], 4)
+
+    def test_source_four_never_replaces_the_historical_default_three(self):
+        schema_four_store(self.scratch)
+        with self.assertRaises(probe.ColdStartError):
+            probe.read_snapshot(self.scratch / "data")
+        with self.assertRaises(probe.ColdStartError):
+            probe.read_snapshot(self.scratch / "data", storage_cohort=storage_cohort_fixture(3))
+
+    def test_empty_four_requires_its_source_and_does_not_create_on_a_mismatch(self):
+        database = schema_four_store(self.scratch)
+        with closing(sqlite3.connect(database)) as db, db:
+            db.execute("DELETE FROM projects")
+        selected = storage_cohort_fixture(4)
+        self.assertTrue(probe._empty_library_ready(self.scratch, storage_cohort=selected))
+        self.assertFalse(probe._empty_library_ready(self.scratch))
+        with patch.object(probe, "_send_native_x11_create") as create:
+            self.assertFalse(probe._first_project_window_interaction(
+                self.scratch, storage_cohort=storage_cohort_fixture(3)))
+            create.assert_not_called()
+            self.assertTrue(probe._first_project_window_interaction(
+                self.scratch, storage_cohort=selected))
+            self.assertEqual(create.call_count, 1)
+
+    def test_four_rejects_document_four_and_missing_binding_columns(self):
+        database = schema_four_store(self.scratch)
+        selected = storage_cohort_fixture(4)
+        with closing(sqlite3.connect(database)) as db, db:
+            row = json.loads(db.execute("SELECT document_json FROM projects").fetchone()[0])
+            row["schema_version"] = 4
+            db.execute("UPDATE projects SET document_json=?", (json.dumps(row),))
+        with self.assertRaises(probe.ColdStartError):
+            probe.read_snapshot(self.scratch / "data", storage_cohort=selected)
+        with closing(sqlite3.connect(database)) as db, db:
+            row["schema_version"] = 2
+            db.execute("UPDATE projects SET document_json=?", (json.dumps(row),))
+            db.execute("ALTER TABLE receipts DROP COLUMN apply_binding_json")
+        with self.assertRaises(probe.ColdStartError):
+            probe.read_snapshot(self.scratch / "data", storage_cohort=selected)
+
+    def test_foreign_source_cohort_is_rejected_before_a_gui_probe(self):
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), patch.object(probe, "run_probe") as gui:
+            with self.assertRaises(probe.storage.StorageContractError):
+                probe.probe_cold_relaunch(
+                    app_run=self.work / "AppRun", scratch=self.scratch,
+                    source_sha="b" * 40, semwright_sha="c" * 40,
+                    storage_cohort=storage_cohort_fixture(4))
+            gui.assert_not_called()
+
+    def test_two_lifetimes_receive_the_same_source_cohort_and_new_receipt_version(self):
+        selected = storage_cohort_fixture(4)
+        calls = []
+        def gui(app_run, scratch, **kwargs):
+            if not calls:
+                schema_four_store(scratch)
+            calls.append(kwargs)
+            self.assertTrue(kwargs["ready_check"](scratch))
+            return {"status": "WINDOW_OBSERVED"}
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), patch.object(probe, "run_probe", side_effect=gui):
+            result = probe.probe_cold_relaunch(
+                app_run=self.work / "AppRun", scratch=self.scratch,
+                source_sha="a" * 40, semwright_sha="c" * 40, storage_cohort=selected)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["schema"], "motionwright.ci.installed-cold-relaunch/2")
+        self.assertEqual(result["storage_cohort"], selected)
+        self.assertEqual(result["persistence"]["schema_version"], 4)
+        self.assertNotIn("window_interaction", calls[1])
 
 
 if __name__ == "__main__":

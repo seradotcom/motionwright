@@ -22,6 +22,8 @@ import sys
 import time
 import uuid
 
+import storage_schema_contract as storage
+
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA64 = re.compile(r"[0-9a-f]{64}\Z")
 MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
@@ -201,12 +203,23 @@ class _BootObservations:
             pass
 
 
+def expected_storage_schema(storage_cohort, first_use_contract):
+    """Keep historical defaults while requiring separate admission for schema4."""
+    _first_use_title(first_use_contract)
+    historical = (LEGACY_EXPECTED_SCHEMA if first_use_contract == LEGACY_FIRST_USE_CONTRACT
+                  else EXPECTED_SCHEMA)
+    version = storage.expected_schema(storage_cohort, historical_default=historical)
+    require((first_use_contract == LEGACY_FIRST_USE_CONTRACT and version == 2)
+            or (first_use_contract == CURRENT_FIRST_USE_CONTRACT and version in (3, 4)),
+            "SQLite cohort conflicts with the admitted first-use contract")
+    return version
+
+
 def read_project_snapshot(
-    database: Path, *, first_use_contract: str = CURRENT_FIRST_USE_CONTRACT,
+    database: Path, *, first_use_contract: str = CURRENT_FIRST_USE_CONTRACT, storage_cohort=None,
 ) -> dict:
     expected_title = _first_use_title(first_use_contract)
-    expected_schema = (LEGACY_EXPECTED_SCHEMA
-                       if first_use_contract == LEGACY_FIRST_USE_CONTRACT else EXPECTED_SCHEMA)
+    expected_schema = expected_storage_schema(storage_cohort, first_use_contract)
     require(database.is_file() and not database.is_symlink(),
             "Installed application did not persist a regular SQLite database")
     require(0 < database.stat().st_size < 64 * 1024 * 1024,
@@ -217,9 +230,14 @@ def read_project_snapshot(
                     "Installed SQLite project integrity check failed")
             require(db.execute("PRAGMA user_version").fetchone() == (expected_schema,),
                     "Installed SQLite project schema does not match its source contract")
+            if storage_cohort is not None:
+                storage.validate_receipt_columns(
+                    db.execute("PRAGMA main.table_xinfo(\'receipts\')").fetchall(), storage_cohort)
             rows = db.execute(
                 "SELECT id, generation, revision, title, document_json FROM projects ORDER BY id"
             ).fetchall()
+    except storage.StorageContractError as error:
+        raise ColdStartError(str(error)) from error
     except sqlite3.Error as error:
         raise ColdStartError("Installed desktop did not produce a valid project store") from error
     require(len(rows) == 1, "Installed fresh-run project count is not exactly one")
@@ -231,6 +249,8 @@ def read_project_snapshot(
         require(len(encoded) <= MAX_DOCUMENT_BYTES,
                 "Installed first-use project JSON is too large")
         doc = json.loads(document_json)
+        if storage_cohort is not None:
+            storage.validate_document(doc, storage_cohort)
     except (ValueError, AttributeError, TypeError) as error:
         raise ColdStartError("Installed first-use project identity is malformed") from error
     require(isinstance(doc, dict)
@@ -265,8 +285,9 @@ def known_databases(appdata_roots: list[Path]) -> list[Path]:
     return sorted(candidates)
 
 
-def _empty_library_ready(database: Path) -> bool:
+def _empty_library_ready(database: Path, *, storage_cohort=None) -> bool:
     """Only a fresh, empty real SQLite store permits one native GUI Create."""
+    expected_schema = expected_storage_schema(storage_cohort, CURRENT_FIRST_USE_CONTRACT)
     if not database.is_file() or database.is_symlink():
         return False
     try:
@@ -275,12 +296,15 @@ def _empty_library_ready(database: Path) -> bool:
         )) as connection:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("PRAGMA trusted_schema=OFF")
+            if storage_cohort is not None:
+                storage.validate_receipt_columns(
+                    connection.execute("PRAGMA main.table_xinfo(\'receipts\')").fetchall(), storage_cohort)
             return (
                 connection.execute("PRAGMA quick_check(1)").fetchone() == ("ok",)
-                and connection.execute("PRAGMA user_version").fetchone() == (EXPECTED_SCHEMA,)
+                and connection.execute("PRAGMA user_version").fetchone() == (expected_schema,)
                 and connection.execute("SELECT COUNT(*) FROM projects").fetchone() == (0,)
             )
-    except sqlite3.Error:
+    except (sqlite3.Error, storage.StorageContractError):
         return False
 
 
@@ -381,8 +405,10 @@ def graceful_close(hwnd: int, process: subprocess.Popen[bytes]) -> None:
 def boot_once(
     binary: Path, env: dict[str, str], database_roots: list[Path],
     log_path: Path, expected_db: Path | None = None, seconds: int = 55,
-    first_use_contract: str = CURRENT_FIRST_USE_CONTRACT,
+    first_use_contract: str = CURRENT_FIRST_USE_CONTRACT, storage_cohort=None,
 ) -> tuple[dict, Path, int]:
+    expected_storage_schema(storage_cohort, first_use_contract)
+    cohort_options = {"storage_cohort": storage_cohort} if storage_cohort is not None else {}
     observations = _BootObservations(first_use_contract)
     creation_sent = False
     with log_path.open("xb") as log:
@@ -416,7 +442,7 @@ def boot_once(
                     database = observed[0]
                     if (first_use_contract == CURRENT_FIRST_USE_CONTRACT
                             and expected_db is None and not creation_sent
-                            and _empty_library_ready(database)):
+                            and _empty_library_ready(database, **cohort_options)):
                         # This reservation precedes the sole native action.
                         # An uncertain reply never permits another Create.
                         creation_sent = True
@@ -426,7 +452,7 @@ def boot_once(
                         raise ColdStartError("Relaunched desktop switched to another project database")
                     try:
                         snapshot = read_project_snapshot(
-                            database, first_use_contract=first_use_contract,
+                            database, first_use_contract=first_use_contract, **cohort_options,
                         )
                     except ColdStartError as error:
                         # Retain the exact reader failure while allowing a
@@ -480,7 +506,8 @@ def native_windows_launch_environment(source: dict[str, str]) -> dict[str, str]:
 def run_installed_relaunch(
     *, executable: Path, smoke_receipt: Path, expected_sha: str,
     scratch: Path, output: Path,
-    first_use_contract: str = CURRENT_FIRST_USE_CONTRACT,
+    first_use_contract: str = CURRENT_FIRST_USE_CONTRACT, storage_cohort=None,
+    storage_source_repo: Path | None = None,
 ) -> dict:
     require(os.name == "nt" and os.getenv("GITHUB_ACTIONS") == "true",
             "Installed Windows GUI bootstrap is restricted to a disposable GitHub Windows runner")
@@ -491,6 +518,14 @@ def run_installed_relaunch(
     require(first_use_contract == select_first_use_contract(
         source["source_sha"], source["installed_binary_sha256"],
     ), "First-use contract conflicts with the installed source and binary")
+    if storage_cohort is not None:
+        storage_cohort = storage.validate_cohort(storage_cohort, source_sha=source["source_sha"])
+    expected_storage_schema(storage_cohort, first_use_contract)
+    if storage_source_repo is not None:
+        require(storage_cohort is not None and
+                storage.admit_checkout(storage_source_repo, expected_sha) == storage_cohort,
+                "Storage source differs before installed cold relaunch")
+    cohort_options = {"storage_cohort": storage_cohort} if storage_cohort is not None else {}
     scratch.mkdir(parents=True, exist_ok=False)
     # Keep the real, disposable hosted-runner Windows account. WebView2's
     # Known Folders, COM activation and user-data storage are not modeled by
@@ -503,11 +538,11 @@ def run_installed_relaunch(
             "GitHub runner already contains an application project store before cold launch")
     first, db_path, first_seconds = boot_once(
         executable, environment, roots, scratch / "first-launch.log",
-        first_use_contract=first_use_contract,
+        first_use_contract=first_use_contract, **cohort_options,
     )
     second, repeated_path, second_seconds = boot_once(
         executable, environment, roots, scratch / "relaunch.log", expected_db=db_path,
-        first_use_contract=first_use_contract,
+        first_use_contract=first_use_contract, **cohort_options,
     )
     require(db_path == repeated_path and first == second,
             "Installed Windows relaunch replaced or mutated the first saved project")
@@ -515,7 +550,9 @@ def run_installed_relaunch(
             "Installed Windows executable bytes changed during cold boot")
     location_scope = "isolated_runner_appdata" if db_path.is_relative_to(scratch) else "disposable_runner_profile_appdata"
     result = {
-        "schema": "motionwright-windows-nsis-cold-relaunch/1",
+        "schema": ("motionwright-windows-nsis-cold-relaunch/1" if storage_cohort is None
+                   else "motionwright-windows-nsis-cold-relaunch/2"),
+        **({"storage_cohort": storage_cohort} if storage_cohort is not None else {}),
         "source_sha": source["source_sha"],
         "installed_binary_sha256": source["installed_binary_sha256"],
         "first_use_contract": first_use_contract,
@@ -534,6 +571,9 @@ def run_installed_relaunch(
         "human_install_acceptance": "NOT_RUN",
         "release_published": False,
     }
+    if storage_source_repo is not None:
+        require(storage.admit_checkout(storage_source_repo, expected_sha) == storage_cohort,
+                "Storage source changed during installed cold relaunch")
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x", encoding="utf-8") as handle:
         json.dump(result, handle, sort_keys=True, indent=2)
@@ -603,12 +643,15 @@ def main() -> None:
     parser.add_argument("--expected-source-sha", required=True)
     parser.add_argument("--scratch", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--storage-source-repo", type=Path)
     args = parser.parse_args()
     try:
+        cohort = (storage.admit_checkout(args.storage_source_repo, args.expected_source_sha)
+                  if args.storage_source_repo is not None else None)
         result = run_installed_relaunch(
             executable=args.installed_binary, smoke_receipt=args.candidate_smoke,
             expected_sha=args.expected_source_sha, scratch=args.scratch,
-            output=args.output,
+            output=args.output, storage_cohort=cohort, storage_source_repo=args.storage_source_repo,
         )
     except (ColdStartError, OSError, ValueError, sqlite3.Error) as error:
         try:

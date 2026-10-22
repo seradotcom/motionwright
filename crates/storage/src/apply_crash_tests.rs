@@ -274,7 +274,8 @@ fn snapshot(case: &CrashCase) -> Snapshot {
         ),
         receipts: rows(
             &conn,
-            "SELECT request_id,request_sha256,result_json,created_at
+            "SELECT request_id,request_sha256,result_json,created_at,
+                    CAST(apply_binding_version AS TEXT),COALESCE(apply_binding_json,'')
              FROM receipts WHERE project_id=?1 ORDER BY request_id",
             id,
         ),
@@ -455,6 +456,32 @@ fn committed_outcome(case: &CrashCase, before: &Snapshot, after: &Snapshot) -> A
     assert_eq!(outcome.previous_revision, case.original.revision);
     assert_eq!(outcome.request_id, case.request_id);
     assert!(!outcome.replayed);
+    assert_eq!(receipt.len(), 6);
+    assert_eq!(
+        receipt[4], "1",
+        "committed result must publish its V1 marker"
+    );
+    let binding: VerifiedApplyReceiptV1 = serde_json::from_str(&receipt[5]).unwrap();
+    assert_eq!(binding.format, "motionwright.apply-binding/1");
+    assert_eq!(binding.project_id, case.original.id.to_string());
+    assert_eq!(binding.generation, case.original.generation.to_string());
+    assert_eq!(binding.resource, case.original.resource_key());
+    assert_eq!(binding.request_id, case.request_id);
+    assert_eq!(binding.request_sha256, receipt[1]);
+    assert_eq!(binding.base_revision, case.original.revision.to_string());
+    assert_eq!(binding.base_branch, case.original.active_branch.to_string());
+    assert_eq!(
+        binding.result_revision,
+        outcome.project.revision.to_string()
+    );
+    assert_eq!(
+        binding.result_branch,
+        outcome.project.active_branch.to_string()
+    );
+    assert_eq!(
+        binding.result_sha256,
+        hex::encode(Sha256::digest(receipt[2].as_bytes()))
+    );
     outcome
 }
 
@@ -658,4 +685,180 @@ fn real_apply_exit_after_commit_recovers_outbox_and_replays_original_result() {
         "real_apply_exit_after_commit_recovers_outbox_and_replays_original_result",
         "after_commit",
     );
+}
+
+#[derive(Debug, PartialEq)]
+struct MigrationSnapshot {
+    version: u32,
+    schema_version: u32,
+    schema: Vec<(String, String, Option<String>)>,
+    columns: Vec<String>,
+    rows: Vec<Vec<Vec<rusqlite::types::Value>>>,
+}
+
+fn migration_snapshot(path: &std::path::Path) -> MigrationSnapshot {
+    let conn =
+        Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let schema = {
+        let mut statement = conn
+            .prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    };
+    let columns = {
+        let mut statement = conn.prepare("PRAGMA main.table_xinfo('receipts')").unwrap();
+        statement
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    };
+    let rows = [
+        "SELECT * FROM projects ORDER BY id",
+        "SELECT * FROM events ORDER BY project_id,revision",
+        "SELECT * FROM receipts ORDER BY project_id,request_id",
+    ]
+    .into_iter()
+    .map(|sql| {
+        let mut statement = conn.prepare(sql).unwrap();
+        let count = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..count)
+                    .map(|index| row.get(index))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    })
+    .collect();
+    MigrationSnapshot {
+        version: conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap(),
+        schema_version: conn
+            .pragma_query_value(None, "schema_version", |row| row.get(0))
+            .unwrap(),
+        schema,
+        columns,
+        rows,
+    }
+}
+
+struct MigrationChild(Option<std::process::Child>);
+
+impl Drop for MigrationChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn wait_migration_child(child: std::process::Child) -> std::process::ExitStatus {
+    let mut child = MigrationChild(Some(child));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
+            child.0.take();
+            return status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "migration child timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn binding_migration_ddl_rolls_back_after_abrupt_exit() {
+    const CHILD: &str = "MOTIONWRIGHT_TEST_BINDING_MIGRATION_CHILD";
+    const DATABASE: &str = "MOTIONWRIGHT_TEST_BINDING_MIGRATION_DB";
+    const PHASE: &str = "MOTIONWRIGHT_TEST_BINDING_MIGRATION_PHASE";
+    if std::env::var(CHILD).as_deref() == Ok("1") {
+        let path = std::path::PathBuf::from(std::env::var_os(DATABASE).unwrap());
+        let _store = Store::open(path).unwrap();
+        panic!("selected migration checkpoint was not reached");
+    }
+    for phase in ["after_version_column", "after_json_column"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("migration.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let project = store
+            .create_named_project("Legacy migration history")
+            .unwrap();
+        let change = Change::RenameProject {
+            title: "Legacy committed title".into(),
+        };
+        store
+            .apply(project.id, &project.stamp(), "legacy", &change)
+            .unwrap();
+        // Source-equivalent schema3 representation; not an old binary.
+        store
+            .conn
+            .execute_batch(
+                "ALTER TABLE receipts DROP COLUMN apply_binding_json;
+             ALTER TABLE receipts DROP COLUMN apply_binding_version;
+             PRAGMA user_version=3;",
+            )
+            .unwrap();
+        drop(store);
+        let before = migration_snapshot(&path);
+        assert_eq!(before.version, 3);
+        assert!(
+            !before
+                .columns
+                .iter()
+                .any(|name| name.starts_with("apply_binding_"))
+        );
+        let output_path = dir.path().join("child.log");
+        let output = std::fs::File::create_new(&output_path).unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "apply_crash_tests::binding_migration_ddl_rolls_back_after_abrupt_exit",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .env(DATABASE, &path)
+            .env(PHASE, phase)
+            .stdin(std::process::Stdio::null())
+            .stdout(output.try_clone().unwrap())
+            .stderr(output)
+            .spawn()
+            .unwrap();
+        let status = wait_migration_child(child);
+        let output = std::fs::read_to_string(output_path).unwrap();
+        println!("{output}");
+        assert_eq!(status.code(), Some(86), "wrong child exit for {phase}");
+        assert!(output.contains(&format!("BINDING_MIGRATION_CHECKPOINT:{phase}")));
+        // No Store::open, WAL removal or product recovery precedes this read.
+        assert_eq!(
+            migration_snapshot(&path),
+            before,
+            "partial migration at {phase}"
+        );
+        // Independent successful reopen control after rollback was observed.
+        let mut reopened = Store::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .observe_apply_receipt_v1(
+                    project.id,
+                    &project.stamp(),
+                    "legacy",
+                    &change,
+                    APPLY_REQUEST_ENCODING_V1,
+                )
+                .unwrap(),
+            ApplyReceiptObservation::LegacyUnverified
+        );
+    }
 }
