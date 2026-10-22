@@ -75,6 +75,20 @@ fn cache_key(scope_sha256: &str, kind: &str, fingerprint_sha256: &str) -> String
     hex::encode(hasher.finalize())
 }
 
+#[cfg(test)]
+thread_local! {
+    static BEFORE_CACHE_MANIFEST_READ: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_cache_manifest_read_hook(path: &Path) {
+    let hook = BEFORE_CACHE_MANIFEST_READ.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(path);
+    }
+}
+
 impl Store {
     fn derived_cache_root(&self) -> PathBuf {
         self.blob_root
@@ -264,6 +278,8 @@ impl Store {
                 limit: MAX_DERIVED_CACHE_MANIFEST_BYTES,
             });
         }
+        #[cfg(test)]
+        run_cache_manifest_read_hook(&manifest);
         let record: DerivedCacheRecord = serde_json::from_slice(&fs::read(&manifest)?)?;
         if record.format_version != DERIVED_CACHE_FORMAT_VERSION
             || record.scope_sha256 != scope_sha256
@@ -657,5 +673,82 @@ mod publication_interleaving_tests {
         assert_eq!(fs::read(&destination).unwrap(), foreign);
         assert!(result.is_err());
         assert!(!staging.exists());
+    }
+}
+
+#[cfg(test)]
+mod captured_manifest_boundary_tests {
+    use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    struct ClearManifestHook;
+    impl Drop for ClearManifestHook {
+        fn drop(&mut self) {
+            BEFORE_CACHE_MANIFEST_READ.with(|slot| {
+                let _ = slot.borrow_mut().take();
+            });
+        }
+    }
+
+    #[test]
+    fn cache_manifest_growth_after_admission_is_rejected_at_limit_plus_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("state.sqlite3")).unwrap();
+        let source = directory.path().join("proxy.bin");
+        fs::write(&source, b"immutable derivative").unwrap();
+        let fingerprint = digest_text("manifest-growth-fingerprint");
+        let expected = store
+            .put_derived_cache_file(
+                "project:manifest-growth",
+                "waveform-proxy",
+                &fingerprint,
+                &source,
+                1,
+            )
+            .unwrap();
+        let manifest = store
+            .derived_cache_manifest_path(&expected.scope_sha256, &expected.kind, &fingerprint)
+            .unwrap();
+        let original = fs::read(&manifest).unwrap();
+        let expected_blob = store.read_blob(&expected.blob_sha256, 100).unwrap();
+        let mut grown = original.clone();
+        grown.resize(MAX_DERIVED_CACHE_MANIFEST_BYTES as usize + 1, b' ');
+        assert_eq!(
+            serde_json::from_slice::<DerivedCacheRecord>(&grown).unwrap(),
+            expected
+        );
+        let calls = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&calls);
+        let payload = grown.clone();
+        let path = manifest.clone();
+        let _clear = ClearManifestHook;
+        BEFORE_CACHE_MANIFEST_READ.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move |actual| {
+                assert_eq!(actual, path);
+                fs::write(actual, payload).unwrap();
+                observed.set(observed.get() + 1);
+            }));
+        });
+        let result =
+            store.lookup_derived_cache("project:manifest-growth", "waveform-proxy", &fingerprint);
+        assert_eq!(calls.get(), 1, "must enlarge after size admission");
+        assert_eq!(fs::read(&manifest).unwrap(), grown);
+        assert_eq!(
+            store.read_blob(&expected.blob_sha256, 100).unwrap(),
+            expected_blob
+        );
+        assert_eq!(fs::read(&source).unwrap(), expected_blob);
+        match result {
+            Err(StorageError::BlobTooLarge { size, limit }) => {
+                assert_eq!(size, MAX_DERIVED_CACHE_MANIFEST_BYTES + 1);
+                assert_eq!(limit, MAX_DERIVED_CACHE_MANIFEST_BYTES);
+            }
+            Ok(Some(hit)) => {
+                assert_eq!(hit.record, expected);
+                panic!("CACHE_MANIFEST_ADMISSION_GROWTH: oversized valid JSON was accepted");
+            }
+            other => panic!("unexpected result before causal size oracle: {other:?}"),
+        }
     }
 }

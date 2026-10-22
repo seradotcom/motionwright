@@ -8,6 +8,8 @@ mod portability;
 mod project_creation;
 mod project_projection;
 mod svg_admission;
+#[cfg(test)]
+mod waveform_capture_tests;
 pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodeBudget, OriginalMixDecodedPcm,
     WAVEFORM_FRAMES_PER_PEAK, WaveformPage,
@@ -783,6 +785,8 @@ impl StudioService {
             (track, immutable_path)
         };
 
+        #[cfg(test)]
+        waveform_capture_tests::run_hook(waveform_capture_tests::Phase::Source);
         let fingerprint =
             audio::waveform_fingerprint(&track.source_sha256, audio::WAVEFORM_FRAMES_PER_PEAK)?;
         let scope = format!(
@@ -823,6 +827,8 @@ impl StudioService {
                     ));
                 }
 
+                #[cfg(test)]
+                waveform_capture_tests::run_hook(waveform_capture_tests::Phase::Publish);
                 let admitted = self.put_derived_cache_file(
                     &scope,
                     kind,
@@ -841,6 +847,8 @@ impl StudioService {
             }
         };
 
+        #[cfg(test)]
+        waveform_capture_tests::run_hook(waveform_capture_tests::Phase::Cache);
         audio::read_waveform_page(
             hit.blob_path,
             &track.source_sha256,
@@ -849,6 +857,10 @@ impl StudioService {
             page_index,
             page_size,
         )
+        .inspect(|_| {
+            #[cfg(test)]
+            waveform_capture_tests::run_hook(waveform_capture_tests::Phase::Return);
+        })
     }
 
     /// Return an existing immutable, SHA-256-verified WAV source bound to a
