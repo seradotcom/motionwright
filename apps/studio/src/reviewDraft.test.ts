@@ -308,6 +308,38 @@ describe("explicit UNKNOWN inspection and separate author intent", () => {
     expect(pending.pending?.id).toBe(other); expect(pending.pending?.revision).toBe(saved.revision);
     expect(draft).toEqual(original); expect(reviewUnknown(draft)).toBe(true);
   });
+  test.each(["body", "kind", "timeMode", "rangeStart", "rangeEnd"] as const)("later ABA %s input survives explicit UNKNOWN separation", async field => {
+    const { draft, saved, outcome } = await inspect();
+    const temporary = { body: "A distinct later thought", kind: "technical", timeMode: "range", rangeStart: "1e", rangeEnd: "1001/" } as const;
+    const later = editReviewDraft(editReviewDraft(draft, field, temporary[field]), field, draft.raw[field]);
+    expect(later.raw).toEqual(draft.raw);
+    expect(later.sequence).toBe(draft.sequence + 2);
+    const store = new MemoryStorage(), tab = new MemoryStorage(), original = custody();
+    writeReviewCopy(store, tab, later, original);
+    const raw = store.getItem(reviewCopyKey(later.scope, attempt));
+    const recovered = decodeReviewCopy(raw!, later.scope, attempt).draft;
+    const next = separateReviewedIntent(recovered, saved, outcome);
+    expect(next.raw).toEqual(later.raw);
+    expect(next.pending).toBeNull();
+    const separate = retainSeparateReviewIntent(store, tab, recovered, next, original, other);
+    expect(store.getItem(reviewCopyKey(later.scope, attempt))).toBe(raw);
+    expect(decodeReviewCopy(separate.expectedRaw!, later.scope, other).draft.raw).toEqual(later.raw);
+    expect(reviewUnknown(recovered)).toBe(true);
+  });
+  test("a later ABA resolution reason survives separate intent after actual-source inspection", async () => {
+    const project = source(), target = project.reviews[0];
+    let draft = editReviewDraft(createReviewDraft(project, { kind: "resolution", id: target.id }), "resolution", "  Authored resolution A  ");
+    const change: ReviewChange = { type: "resolve_review", review_id: target.id, resolution: draft.raw.resolution.trim() };
+    draft = prepareReviewSubmission(draft, project, change, attempt);
+    const saved = receipt(project, change);
+    const outcome = await inspectReviewOutcome(draft, saved, {
+      readProject: async () => structuredClone(saved),
+      readHistory: async () => [{ revision: saved.revision, change, created_at: "2026-01-01T00:00:00Z" }],
+    });
+    const later = editReviewDraft(editReviewDraft(draft, "resolution", "Different resolution B"), "resolution", draft.raw.resolution);
+    expect(separateReviewedIntent(later, saved, outcome).raw.resolution).toBe("  Authored resolution A  ");
+    expect(later.pending?.id).toBe(attempt); expect(reviewUnknown(later)).toBe(true);
+  });
   test.each(["gap", "empty", "duplicate", "beyond"] as const)("a %s journal cannot release UNKNOWN", async mode => {
     const { project, draft, change } = pendingComment(), saved = receipt(project, change);
     const event = { revision: saved.revision, change, created_at: "2026-01-01T00:00:00Z" };
