@@ -7,3 +7,6 @@ third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/C
 third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/LICENSE-MIT -text
 third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/LICENSE-APACHE -text
 third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/evidence.json -text
+
+# Preserve the exact bytes of the source provenance observation.
+docs/acceptance/evidence/source-provenance-candidate-a8f4e74a.json -text
