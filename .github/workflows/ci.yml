@@ -100,6 +100,7 @@ jobs:
           --repo "$GITHUB_WORKSPACE"
           --test-directory tooling/tests
           --pattern test_ci_job_plan.py
+          --pattern test_source_policy_credentials.py
           --mode both
           --expected-source "$GITHUB_SHA"
           --report "$RUNNER_TEMP/motionwright-ci/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/job-plan-contracts/receipt.json"
