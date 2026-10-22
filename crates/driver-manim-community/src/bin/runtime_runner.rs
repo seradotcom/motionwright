@@ -25,6 +25,9 @@ const MAX_CAPTURE_BYTES: usize = 64 * 1024;
 struct RuntimeReceipt {
     schema: u32,
     manim_version: String,
+    pyav_version: String,
+    source_color_policy: String,
+    color_recipe: String,
 }
 
 #[derive(Debug)]
@@ -205,7 +208,12 @@ fn runtime_site_packages(runtime_root: &Path) -> Result<PathBuf, String> {
     }
     let receipt: RuntimeReceipt = serde_json::from_slice(&bytes)
         .map_err(|_| "Manim runtime receipt is malformed".to_string())?;
-    if receipt.schema != 1 || receipt.manim_version != MANIM_VERSION {
+    if receipt.schema != 2
+        || receipt.manim_version != MANIM_VERSION
+        || receipt.pyav_version != "15.0.0"
+        || receipt.source_color_policy != "srgb-rgba8-opaque-v1"
+        || receipt.color_recipe != "srgb-to-rec709-full12-v2"
+    {
         return Err("Manim runtime receipt version does not match the certified profile".into());
     }
     let packages = runtime_root.join("site-packages");
@@ -351,6 +359,46 @@ fn validate_artifact(args: &RenderArgs, output_root: &Path) -> Result<PathBuf, S
     Ok(canonical)
 }
 
+fn observe_artifact(
+    python: &Path,
+    site_packages: &Path,
+    ffmpeg: &Path,
+    fontconfig_root: &Path,
+    work_root: &Path,
+    source: &Path,
+    artifact: &Path,
+) -> Result<(), String> {
+    let report = artifact.with_extension("mp4.decoded-video.json");
+    let mut command = Command::new(python);
+    command.args(["-c", include_str!("../native_video_observer.py")]);
+    command
+        .arg(artifact)
+        .arg(source)
+        .arg(&report)
+        .current_dir(work_root);
+    command_environment(
+        &mut command,
+        site_packages,
+        ffmpeg,
+        fontconfig_root,
+        work_root,
+    )?;
+    let captured = checked_output(command, "Original native video observation")?;
+    let value: serde_json::Value = serde_json::from_slice(&captured)
+        .map_err(|_| "Native video observer returned malformed completion".to_string())?;
+    if value.get("schema").and_then(serde_json::Value::as_str)
+        != Some("motionwright.native-video-observation/1")
+        || value.get("status").is_some()
+        || !value
+            .get("bytes")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|n| n > 0 && n <= 8 * 1024 * 1024)
+    {
+        return Err("Native video observer did not retain a complete report".into());
+    }
+    Ok(())
+}
+
 fn render(args: RenderArgs) -> Result<(), String> {
     let runtime_root = real_directory(&args.runtime_root, "Manim runtime root")?;
     let work_root = real_directory(&args.work_root, "Manim work root")?;
@@ -372,31 +420,18 @@ fn render(args: RenderArgs) -> Result<(), String> {
     )?;
 
     let mut command = Command::new(&python);
+    // Fixed public Manim writer hook; original generated scene remains unchanged.
+    // Runtime schema 2 is an owner-selected color policy, never a caller argv option.
     command.args([
-        OsString::from("-m"),
-        OsString::from("manim"),
-        OsString::from("render"),
-        OsString::from("--disable_caching"),
-        OsString::from("--seed"),
-        OsString::from("0"),
-        OsString::from("--verbosity"),
-        OsString::from("warning"),
-        OsString::from("--progress_bar"),
-        OsString::from("none"),
-        OsString::from("--renderer"),
-        OsString::from("cairo"),
-        OsString::from("--format"),
-        OsString::from("mp4"),
-        OsString::from("--media_dir"),
+        OsString::from("-c"),
+        OsString::from(include_str!("../native_color_writer.py")),
+        source.clone().into_os_string(),
         output_root.clone().into_os_string(),
-        OsString::from("--resolution"),
-        OsString::from(format!("{},{}", args.width, args.height)),
-        OsString::from("--fps"),
-        OsString::from(args.fps.to_string()),
-        OsString::from("--output_file"),
         OsString::from(args.output_name.clone()),
-        source.into_os_string(),
-        OsString::from(args.scene.clone()),
+        OsString::from(args.width.to_string()),
+        OsString::from(args.height.to_string()),
+        OsString::from(args.fps.to_string()),
+        OsString::from("srgb-rgba8-opaque-v1"),
     ]);
     command.current_dir(&work_root);
     command_environment(
@@ -414,6 +449,18 @@ fn render(args: RenderArgs) -> Result<(), String> {
         return Err(format!("Manim Community render failed with {status}"));
     }
     let artifact = validate_artifact(&args, &output_root)?;
+    // A decoder failure does not erase an already completed native render.
+    // Its output remains unavailable for hybrid admission; no rerender occurs.
+    let decoded_video_observed = observe_artifact(
+        &python,
+        &site_packages,
+        &ffmpeg,
+        &fontconfig_root,
+        &work_root,
+        &source,
+        &artifact,
+    )
+    .is_ok();
     println!(
         "{}",
         json!({
@@ -422,7 +469,8 @@ fn render(args: RenderArgs) -> Result<(), String> {
             "artifact": artifact,
             "width": args.width,
             "height": args.height,
-            "fps": args.fps
+            "fps": args.fps,
+            "decoded_video_observed": decoded_video_observed
         })
     );
     Ok(())

@@ -781,9 +781,10 @@ fn output_profile(
     if i64::from(frame_rate.num) != profile.frame_rate.num
         || i64::from(frame_rate.den) != profile.frame_rate.den
     {
-        return Err(invalid(
-            "Film frame rate must match the versioned deliverable profile",
-        ));
+        return Err(unsupported(format!(
+            "Film frame-rate conversion is unsupported: saved_deliverable_rate={}/{}; requested_output_rate={}/{}; policy=preserve-saved-frame-rate-v1; no rounding or retiming was applied",
+            profile.frame_rate.num, profile.frame_rate.den, frame_rate.num, frame_rate.den,
+        )));
     }
     let projection = layout_projection(profile);
     let safe_margin = scenes
@@ -2928,6 +2929,95 @@ mod tests {
     }
 
     #[test]
+    fn rational_frame_identity_preserves_partitioned_master_without_accumulated_error() {
+        let rate = Rate::new(30_000, 1_001).unwrap();
+        let mut project = Project::new("Exact rational master clock").unwrap();
+        let mut profile = project.deliverables[0].clone();
+        let deliverable_id = profile.id;
+        profile.frame_rate = RationalTime::new(30_000, 1_001).unwrap();
+        project
+            .apply_change(&Change::UpsertDeliverable { profile })
+            .unwrap();
+        for index in 0..33 {
+            project
+                .apply_change(&Change::AddScene {
+                    name: format!("Rational frame {index:02}"),
+                    objective: "Keep the exact authored clock".into(),
+                    duration_seconds: 1,
+                })
+                .unwrap();
+            let scene_id = project.scenes.last().unwrap().id;
+            project
+                .apply_change(&Change::SetSceneDuration {
+                    scene_id,
+                    duration: rate.at(1).unwrap(),
+                })
+                .unwrap();
+            project
+                .apply_change(&Change::AddCanvasNode {
+                    scene_id,
+                    node: node("shape", None),
+                })
+                .unwrap();
+        }
+        let original = project.clone();
+        let mut options = fixture_options(&project);
+        options.frame_rate = rate;
+        let segments = build_motion_canvas_segments(&project, deliverable_id, &options).unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].frame_count, 32);
+        assert_eq!(segments[1].frame_count, 1);
+        let total_frames = segments
+            .iter()
+            .map(|segment| segment.frame_count)
+            .sum::<u64>();
+        let total_duration = segments
+            .iter()
+            .try_fold(Rational::ZERO, |sum, segment| {
+                sum.checked_add(segment.duration)
+            })
+            .unwrap();
+        assert_eq!(total_frames, 33);
+        assert_eq!(total_duration, rate.at(total_frames).unwrap());
+        assert_eq!(
+            total_duration
+                .checked_sub(rate.at(total_frames).unwrap())
+                .unwrap(),
+            Rational::ZERO,
+        );
+        for (segment, first_scene) in [(&segments[0], 0usize), (&segments[1], 32)] {
+            assert_eq!(segment.film.output.frame_rate, rate);
+            assert_eq!(segment.global_start, rate.at(first_scene as u64).unwrap());
+            assert_eq!(segment.duration, rate.at(segment.frame_count).unwrap());
+            let realized = realize(&segment.film).unwrap();
+            assert_eq!(
+                realized.schedule.frame_count(&segment.film.output).unwrap(),
+                segment.frame_count
+            );
+            for (offset, beat) in segment.film.sequences[0].beats.iter().enumerate() {
+                let interval = realized.schedule.interval(&beat.shots[0].span_id).unwrap();
+                let source = &project.scenes[first_scene + offset];
+                assert_eq!(interval.start, rate.at(offset as u64).unwrap());
+                assert_eq!(interval.end, rate.at(offset as u64 + 1).unwrap());
+                assert_eq!(
+                    segment.global_start.checked_add(interval.start).unwrap(),
+                    source.start,
+                );
+                assert_eq!(interval.duration().unwrap(), source.duration);
+            }
+        }
+        let last = segments.last().unwrap();
+        assert_eq!(
+            last.global_start.checked_add(last.duration).unwrap(),
+            rate.at(33).unwrap(),
+        );
+        assert_eq!(
+            project, original,
+            "clock admission must not retime the source"
+        );
+    }
+
+    #[test]
     fn native_render_rejects_frame_rate_drift_from_profile() {
         let project = fixture_project();
         let options = FilmBuildOptions {
@@ -2946,7 +3036,9 @@ mod tests {
         };
         let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
             .unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidArgument);
-        assert!(error.message.contains("versioned deliverable profile"));
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("saved_deliverable_rate=30/1"));
+        assert!(error.message.contains("requested_output_rate=24/1"));
+        assert!(error.message.contains("preserve-saved-frame-rate-v1"));
     }
 }

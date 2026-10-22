@@ -29,6 +29,9 @@ use tokio::{
 use uuid::Uuid;
 
 mod blender_original;
+mod blender_render;
+mod hyperframes;
+pub use hyperframes::HyperframesSourceEvidence;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
@@ -39,6 +42,11 @@ mod recovery;
 pub use blender_original::{
     BlenderOriginalEdit, BlenderOriginalFile, BlenderOriginalJournal, BlenderOriginalPhase,
     BlenderOriginalRequest,
+};
+pub use blender_render::{
+    BLENDER_LIT_REQUIRED_ADDITIONS, BlenderLitArtifact, BlenderLitProjectProjection,
+    BlenderLitSource, BlenderLitStillJournal, BlenderLitStillPhase, BlenderLitStillPlan,
+    BlenderLitStillRequest, build_blender_lit_still_plan,
 };
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
@@ -65,6 +73,20 @@ const MANIM_RENDER_POLL_DEADLINE_SECS: u64 = 330;
 const MANIM_RENDER_POLL_INTERVAL_MS: u64 = 1_000;
 const MLT_SYNC_MIN_WINDOW_US: u64 = 10_000;
 const MLT_SYNC_MAX_WINDOW_US: u64 = 500_000;
+
+const HYPERFRAMES_COMMANDS: &[&str] = &[
+    "driver.hyperframes.doctor",
+    "driver.hyperframes.project.inspect",
+    "driver.hyperframes.project.plan",
+    "driver.hyperframes.project.apply",
+    "driver.hyperframes.render.start",
+    "driver.hyperframes.render.status",
+    "driver.hyperframes.render.result",
+];
+const HYPERFRAMES_MUTATING_COMMANDS: &[&str] = &[
+    "driver.hyperframes.project.apply",
+    "driver.hyperframes.render.start",
+];
 
 const MOTION_CANVAS_COMMANDS: &[&str] = &[
     "driver.motion-canvas.composition.inspect",
@@ -121,10 +143,18 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.semantic.property.set",
     "driver.blender.file.save",
     "driver.blender.file.open",
+    "driver.blender.composition.inspect",
+    "driver.blender.composition.plan",
+    "driver.blender.composition.apply",
+    "driver.blender.composition.verify",
+    "driver.blender.render.settings",
+    "driver.blender.render",
 ];
 
 const MANIM_COMMANDS: &[&str] = &[
     "driver.manim-community.render.start",
+    "driver.manim-community.static.render.start",
+    "driver.manim-community.editable.render.start",
     "driver.manim-community.camera.render.start",
     "driver.manim-community.render.status",
     "driver.manim-community.render.cancel",
@@ -513,7 +543,13 @@ struct ExpectedAuthority {
 }
 
 fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
-    if MOTION_CANVAS_COMMANDS.contains(&command) {
+    if HYPERFRAMES_COMMANDS.contains(&command) {
+        Some(ExpectedAuthority {
+            provider: "driver:hyperframes",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
+    } else if MOTION_CANVAS_COMMANDS.contains(&command) {
         Some(ExpectedAuthority {
             provider: "driver:motion-canvas",
             source: SourceKind::Driver,
@@ -802,7 +838,9 @@ impl ProductionClient {
         let expected = expected_authority(command).ok_or_else(|| {
             Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
         })?;
-        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
+        let mutation = mutation
+            || WORKFLOW_MUTATING_COMMANDS.contains(&command)
+            || HYPERFRAMES_MUTATING_COMMANDS.contains(&command);
         self.connection.validate()?;
         let encoded = serde_json::to_vec(&args)
             .map_err(|_| invalid("Production command arguments are malformed"))?;
@@ -832,7 +870,8 @@ impl ProductionClient {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
-        let budget_secs = if command.starts_with("driver.mlt-video.")
+        let budget_secs = if command.starts_with("driver.hyperframes.")
+            || command.starts_with("driver.mlt-video.")
             || command.starts_with("driver.blender.")
             || command.starts_with("driver.manim-community.")
         {
@@ -1200,6 +1239,7 @@ struct PreparedManimRender {
     plan_sha256: String,
     profile: ManimRenderProfile,
     requires_camera_getters: bool,
+    source_bundle: Option<crate::manim_editable_projection::OriginalEditableBundleInput>,
 }
 
 fn validate_manim_request_id(request_id: &str) -> NativeResult<()> {
@@ -2089,6 +2129,61 @@ impl ProductionCoordinator {
         profile
             .validate()
             .map_err(|error| invalid(format!("Manim render profile is invalid: {error}")))?;
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        let deliverable_id =
+            crate::manim_static_projection::select_saved_manim_deliverable_for_profile(
+                &project, expected, scene_id, &profile,
+            )?;
+        if project
+            .production_design
+            .camera_reframes
+            .iter()
+            .any(|row| row.scene_id == scene_id)
+        {
+            return self
+                .realize_manim_camera_scene(
+                    project_id,
+                    expected,
+                    request_id,
+                    scene_id,
+                    deliverable_id,
+                )
+                .await;
+        }
+        if crate::manim_editable_projection::requires_editable_profile(
+            &project,
+            scene_id,
+            deliverable_id,
+        ) {
+            return self
+                .realize_manim_editable_scene(
+                    project_id,
+                    expected,
+                    request_id,
+                    scene_id,
+                    deliverable_id,
+                )
+                .await;
+        }
+        self.realize_manim_static_scene(project_id, expected, request_id, scene_id, deliverable_id)
+            .await
+    }
+
+    /// Explicit compatibility projection for the V1 wire contract. This route
+    /// has no canonical clock or editable-source proof and is not the default
+    /// Project realization entrypoint. Callers must select it by name.
+    pub async fn realize_legacy_manim_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        profile: ManimRenderProfile,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        profile
+            .validate()
+            .map_err(|error| invalid(format!("Manim render profile is invalid: {error}")))?;
 
         let project = self.service.project(project_id).map_err(storage_error)?;
         if expected.resource != project.resource_key()
@@ -2124,6 +2219,124 @@ impl ProductionCoordinator {
                 plan_sha256,
                 profile,
                 requires_camera_getters: false,
+                source_bundle: None,
+            },
+        )
+        .await
+    }
+
+    /// Explicit static V2 production from the current canonical snapshot.
+    /// The legacy command remains a separate compatibility route; a duration,
+    /// source package or native getter proof is never invented for a V1 request.
+    pub async fn realize_manim_static_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        deliverable_id: Uuid,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        let source = crate::manim_static_projection::prepare_saved_manim_static_source(
+            &self.service,
+            project_id,
+            expected,
+            scene_id,
+            deliverable_id,
+        )?;
+        self.realize_prepared_manim_scene(
+            project_id,
+            expected,
+            request_id,
+            scene_id,
+            PreparedManimRender {
+                start_command: "driver.manim-community.static.render.start",
+                plan_value: serde_json::to_value(&source.plan)
+                    .map_err(|_| invalid("Static Manim source cannot be encoded"))?,
+                plan_sha256: source.closure.plan_sha256,
+                profile: source.plan.render_profile,
+                requires_camera_getters: false,
+                source_bundle: None,
+            },
+        )
+        .await
+    }
+
+    /// Plain native text/font/style source with the original canonical identity,
+    /// private Asset/CAS bytes and the same sealed Driver SDK job lifecycle.
+    pub async fn realize_manim_editable_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        deliverable_id: Uuid,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        let source = crate::manim_editable_projection::prepare_saved_manim_editable_source(
+            &self.service,
+            project_id,
+            expected,
+            scene_id,
+            deliverable_id,
+        )?;
+        crate::manim_editable_projection::stage_font_inputs(
+            &self.client.connection().output_root,
+            &source,
+        )?;
+        self.realize_prepared_manim_scene(
+            project_id,
+            expected,
+            request_id,
+            scene_id,
+            PreparedManimRender {
+                start_command: "driver.manim-community.editable.render.start",
+                plan_value: serde_json::to_value(&source.plan)
+                    .map_err(|_| invalid("Editable source cannot be encoded"))?,
+                plan_sha256: source.closure.plan_sha256,
+                profile: source.plan.render_profile,
+                requires_camera_getters: false,
+                source_bundle: None,
+            },
+        )
+        .await
+    }
+
+    /// Open an exported closed source through the same admitted Driver Host.
+    /// Inspection cannot grant execution; execute() retains the normal current
+    /// project stamp, request ledger, provider generation and unknown outcome.
+    pub async fn reopen_manim_editable_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        deliverable_id: Uuid,
+        input: crate::manim_editable_projection::OriginalEditableBundleInput,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        let source = crate::manim_editable_projection::prepare_saved_manim_editable_bundle_input(
+            &self.service,
+            project_id,
+            expected,
+            scene_id,
+            deliverable_id,
+            &self.client.connection().output_root,
+            &input,
+        )?;
+        self.realize_prepared_manim_scene(
+            project_id,
+            expected,
+            request_id,
+            scene_id,
+            PreparedManimRender {
+                start_command: "driver.manim-community.editable.render.start",
+                plan_value: serde_json::to_value(&source.plan)
+                    .map_err(|_| invalid("Original editable plan cannot be encoded"))?,
+                plan_sha256: source.closure.plan_sha256,
+                profile: source.plan.render_profile,
+                requires_camera_getters: false,
+                source_bundle: Some(input),
             },
         )
         .await
@@ -2162,6 +2375,7 @@ impl ProductionCoordinator {
                 plan_sha256: compiled.trusted_compiler.plan_sha256,
                 profile: compiled.prepared.source.render_profile,
                 requires_camera_getters: true,
+                source_bundle: None,
             },
         )
         .await
@@ -2181,15 +2395,21 @@ impl ProductionCoordinator {
             plan_sha256,
             profile,
             requires_camera_getters,
+            source_bundle,
         } = prepared;
 
+        let mut start_args = json!({"plan": plan_value, "profile": profile});
+        if let Some(input) = &source_bundle {
+            start_args["source_bundle"] = serde_json::to_value(input)
+                .map_err(|_| invalid("Original editable input cannot be encoded"))?;
+        }
         let started = self
             .execute(
                 project_id,
                 expected,
                 &format!("{request_id}:start"),
                 start_command,
-                json!({"plan": plan_value, "profile": profile}),
+                start_args,
                 true,
             )
             .await?;
@@ -2374,6 +2594,65 @@ impl ProductionCoordinator {
                 }
             }
         }
+        if start_command == "driver.manim-community.static.render.start" {
+            let source_check = serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Original static Manim plan cannot be reopened"))
+                .and_then(|plan: motionwright_manim_profile::ManimScenePlanV2| {
+                    crate::manim_static_projection::verify_rendered_manim_static_source(
+                        &self.client.connection().output_root,
+                        &relative_path,
+                        &plan,
+                        &artifact,
+                    )
+                });
+            match source_check {
+                Ok(source) => verified_artifact["static_source"] = source,
+                Err(error) => {
+                    verified_artifact["static_source_custody_error"] =
+                        json!({"message": error.to_string()})
+                }
+            }
+        }
+        if start_command == "driver.manim-community.editable.render.start" {
+            let check = serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Original editable plan cannot be reopened"))
+                .and_then(|plan: motionwright_manim_profile::editable_scene::Plan| {
+                    crate::manim_editable_projection::verify_rendered_manim_editable_source(
+                        &self.client.connection().output_root,
+                        &relative_path,
+                        &plan,
+                        &artifact,
+                    )
+                });
+            match check {
+                Ok(source) => verified_artifact["editable_source"] = source,
+                Err(error) => {
+                    verified_artifact["editable_source_custody_error"] =
+                        json!({"message":error.to_string()})
+                }
+            }
+        }
+
+        if let Some(input) = &source_bundle {
+            let check = serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Original editable input plan cannot be reopened"))
+                .and_then(|plan: motionwright_manim_profile::editable_scene::Plan| {
+                    crate::manim_editable_projection::verify_rendered_manim_editable_bundle_input(
+                        &self.client.connection().output_root,
+                        &plan,
+                        input,
+                        &artifact,
+                    )
+                });
+            match check {
+                Ok(observed) => verified_artifact["editable_input_source"] = observed,
+                Err(error) => {
+                    verified_artifact["editable_input_source_custody_error"] =
+                        json!({"message":error.to_string()});
+                }
+            }
+        }
+
         Ok(json!({
             "renderer": "manim-community",
             "native_driver": "driver:manim-community",
@@ -2397,7 +2676,9 @@ impl ProductionCoordinator {
         args: Value,
         mutation: bool,
     ) -> NativeResult<Value> {
-        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
+        let mutation = mutation
+            || WORKFLOW_MUTATING_COMMANDS.contains(&command)
+            || HYPERFRAMES_MUTATING_COMMANDS.contains(&command);
         let project = self.service.project(project_id).map_err(storage_error)?;
         if expected.resource != project.resource_key()
             || expected.generation != project.generation
@@ -3293,6 +3574,129 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn fractional_rate_conversion_is_refused_before_dispatch_and_exact_rate_runs() {
+        use std::sync::atomic::Ordering;
+
+        let rate = Rate::new(30_000, 1_001).unwrap();
+        let (service, initial, temp) = fixture_service();
+        let project = motion_canvas_fixture(&service, initial);
+        let scene_id = project.scenes[0].id;
+        let mut profile = project.deliverables[0].clone();
+        let deliverable_id = profile.id;
+        profile.frame_rate = motionwright_domain::RationalTime::new(30_000, 1_001).unwrap();
+        let project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "rate-fixture-profile",
+                &Change::UpsertDeliverable { profile },
+            )
+            .unwrap()
+            .project;
+        let project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "rate-fixture-duration",
+                &Change::SetSceneDuration {
+                    scene_id,
+                    duration: rate.at(60).unwrap(),
+                },
+            )
+            .unwrap()
+            .project;
+        let original = project.clone();
+        let expected = RevisionStamp::from(&project);
+        let connection = fake_render_connection(&temp, project.resource_key());
+        let output_root = connection.output_root.clone();
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let mut options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
+            scene_intents: vec![crate::film::SceneFilmIntent {
+                scene_id,
+                role: NarrativeRole::Mechanism,
+                archetype: Archetype::Statement,
+            }],
+        };
+
+        // This exercises the actual application caller and Store with a
+        // fractional saved rate and a different, valid integral output rate.
+        let error = coordinator
+            .render_motion_canvas_segments(
+                project.id,
+                &expected,
+                "rate-conversion-refused",
+                deliverable_id,
+                &options,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.outcome_known);
+        assert!(error.message.contains("saved_deliverable_rate=30000/1001"));
+        assert!(error.message.contains("requested_output_rate=30/1"));
+        assert!(
+            error
+                .message
+                .contains("policy=preserve-saved-frame-rate-v1")
+        );
+        assert!(
+            error
+                .message
+                .contains("no rounding or retiming was applied")
+        );
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+        assert!(coordinator.receipts(project.id, 100).unwrap().is_empty());
+        assert!(fs::read_dir(&output_root).unwrap().next().is_none());
+        assert_eq!(service.project(project.id).unwrap(), original);
+
+        // The positive uses the same caller and transport fixture, with an
+        // exactly representable duration. It is coordinator G1, not a render.
+        options.frame_rate = rate;
+        let segments = build_motion_canvas_segments(&project, deliverable_id, &options).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].frame_count, 60);
+        assert_eq!(
+            segments[0].global_start,
+            motionwright_domain::RationalTime::ZERO
+        );
+        assert_eq!(segments[0].duration, rate.at(60).unwrap());
+        assert_eq!(
+            segments[0]
+                .duration
+                .checked_sub(rate.at(60).unwrap())
+                .unwrap(),
+            motionwright_domain::RationalTime::ZERO,
+        );
+        let rendered = coordinator
+            .render_motion_canvas_segments(
+                project.id,
+                &expected,
+                "rate-identity-exact",
+                deliverable_id,
+                &options,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rendered.frame_rate, rate);
+        assert_eq!(rendered.segments.len(), 1);
+        assert_eq!(rendered.segments[0].frame_count, 60);
+        assert_eq!(rendered.segments[0].artifact["frame_count"], 60);
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 6);
+        let receipts = coordinator.receipts(project.id, 100).unwrap();
+        assert_eq!(receipts.len(), 12);
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| receipt.request_id.starts_with("rate-identity-exact:"))
+        );
+        assert_eq!(service.project(project.id).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn motion_canvas_production_is_revision_bound_rendered_and_natively_verified() {
         let (service, initial, temp) = fixture_service();
         let project = motion_canvas_fixture(&service, initial);
@@ -3708,6 +4112,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                                     frame_rate: 30,
                                 },
                                 requires_camera_getters: start_command.contains(".camera."),
+                                source_bundle: None,
                             },
                         )
                         .await

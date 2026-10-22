@@ -1,0 +1,10 @@
+{
+  "name": "@motionwright/hyperframes-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Owner-installed HyperFrames CLI closure; explicit offline finalization and no installation on project open.",
+  "dependencies": {
+    "hyperframes": "0.8.181"
+  }
+}

@@ -10,6 +10,7 @@ motionwright-domain = { path = "../domain" }
 motionwright-storage = { path = "../storage" }
 motionwright-service = { path = "../service" }
 motionwright-manim-profile = { path = "../manim-profile" }
+motionwright-hyperframes-profile = { path = "../hyperframes-profile" }
 semwright-native-sdk = { workspace = true, features = ["driver", "graph", "effects"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -14,3 +14,4 @@ semwright-media-time.workspace = true
 sha2.workspace = true
 hex.workspace = true
 zip = { version = "=9.0.4", default-features = false }
+ttf-parser = { version = "=0.25.1", default-features = false, features = ["std", "variable-fonts"] }

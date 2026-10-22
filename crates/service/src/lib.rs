@@ -1,4 +1,5 @@
 mod audio;
+mod brand_fonts;
 mod file_import;
 mod import_limits;
 mod jobs;
@@ -11,6 +12,9 @@ mod svg_admission;
 pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodeBudget, OriginalMixDecodedPcm,
     WAVEFORM_FRAMES_PER_PEAK, WaveformPage,
+};
+pub use brand_fonts::{
+    BrandFontSource, MAX_BRAND_FONT_BYTES, VerifiedBrandFont, brand_font_source,
 };
 pub use import_limits::ImportLimits;
 pub use jobs::{
