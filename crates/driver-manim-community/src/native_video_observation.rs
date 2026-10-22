@@ -11,17 +11,22 @@ pub(super) struct NativeVideoArtifact {
     summary: Value,
 }
 
+/// Identity of the encoded media retained by the original render job.
+pub(super) struct OriginalEncodedVideo<'a> {
+    pub(super) relative_path: &'a str,
+    pub(super) sha256: &'a str,
+    pub(super) bytes: u64,
+}
+
 pub(super) fn read_for_original_job(
     work_root: &Path,
     output_root: &Path,
     source_file: &str,
-    video_relative: &str,
-    video_sha256: &str,
-    video_bytes: u64,
+    encoded: OriginalEncodedVideo<'_>,
     profile: ManimRenderProfile,
     expected_frames: Option<u64>,
 ) -> Result<NativeVideoArtifact> {
-    let relative = format!("{video_relative}.decoded-video.json");
+    let relative = format!("{}.decoded-video.json", encoded.relative_path);
     let (_, bytes) = safe_output_file(output_root, &relative)?;
     if bytes > MAX_REPORT_BYTES as u64 {
         return Err(invalid("Native video observation exceeded its byte budget"));
@@ -34,8 +39,8 @@ pub(super) fn read_for_original_job(
     let (source, source_bytes) = safe_output_file(work_root, source_file)?;
     if source_bytes > MAX_SOURCE_BYTES as u64
         || observed.source_sha256() != sha256_file(&source)?
-        || observed.artifact_sha256() != video_sha256
-        || observed.artifact_bytes() != video_bytes
+        || observed.artifact_sha256() != encoded.sha256
+        || observed.artifact_bytes() != encoded.bytes
         || observed.width() != profile.width
         || observed.height() != profile.height
         || observed.frame_rate() != (profile.frame_rate, 1)
@@ -64,8 +69,8 @@ pub(super) fn read_for_original_job(
         }
     }
     // Recheck the encoded video after reading the complete observation family.
-    let (video, actual_bytes) = safe_output_file(output_root, video_relative)?;
-    if actual_bytes != video_bytes || sha256_file(&video)? != video_sha256 {
+    let (video, actual_bytes) = safe_output_file(output_root, encoded.relative_path)?;
+    if actual_bytes != encoded.bytes || sha256_file(&video)? != encoded.sha256 {
         return Err(invalid(
             "Original native video changed after complete frame readback",
         ));

@@ -298,9 +298,8 @@ mod tests {
         ] {
             let mut value = serde_json::to_value(&valid).unwrap();
             *value.pointer_mut(pointer).unwrap() = replacement;
-            match serde_json::from_value::<StaticStartArgs>(value) {
-                Ok(args) => assert!(prepare(&args).is_err(), "{pointer}"),
-                Err(_) => {}
+            if let Ok(args) = serde_json::from_value::<StaticStartArgs>(value) {
+                assert!(prepare(&args).is_err(), "{pointer}");
             }
         }
         for pointer in ["/plan", "/plan/nodes/0", "/plan/binding", "/plan/clock"] {

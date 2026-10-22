@@ -1039,9 +1039,11 @@ impl ManimCommunityDriver {
                         &self.work_root,
                         &self.output_root,
                         &job.source_file,
-                        &job.output_relative,
-                        &sha256,
-                        bytes,
+                        native_video_observation::OriginalEncodedVideo {
+                            relative_path: &job.output_relative,
+                            sha256: &sha256,
+                            bytes,
+                        },
                         job.profile,
                         job.source_plan.frame_count(),
                     );

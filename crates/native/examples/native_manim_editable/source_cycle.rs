@@ -236,12 +236,11 @@ fn apply_pair(
     database: &Path,
     service: StudioService,
     project: Project,
-    original_bytes: Vec<u8>,
-    package: profile::Package,
-    link: serde_json::Value,
+    source: (Vec<u8>, profile::Package, serde_json::Value),
     output: &Path,
     request: &str,
 ) -> SourceResult<serde_json::Value> {
+    let (original_bytes, package, link) = source;
     if request.is_empty() || request.len() > 64 || request.chars().any(char::is_control) {
         return Err("editable source mutation needs a bounded new request identity".into());
     }
@@ -400,10 +399,8 @@ pub(super) fn edit(
     let project_id: Uuid = serde_json::from_value(native["project_id"].clone())?;
     let service = StudioService::open(database)?;
     let project = service.project(project_id)?;
-    let (bytes, package, link) = native_source(&service, &project, native_path, output_root)?;
-    apply_pair(
-        database, service, project, bytes, package, link, output, request,
-    )
+    let source = native_source(&service, &project, native_path, output_root)?;
+    apply_pair(database, service, project, source, output, request)
 }
 pub(super) fn readback(
     database: &Path,
