@@ -1,3 +1,4 @@
+import { claimFields, claimRaw, parseClaimRaw } from "./claimSourceDraft";
 export { nativePaidGenerationJournal, nativePaidGenerationPreflight, nativePaidGenerationReservePreflight } from "./generationJournalApi";
 export {nativeNarrationSourceSnapshot,nativeNarrationReplacementImpact} from "./narrationReviewApi";
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
@@ -1086,6 +1087,19 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       });
       break;
     }
+    case "update_claim": {
+      assertUnlocked(next, projectResource(next), ["content"]);
+      assertUnlocked(next, "claim:" + change.claim_id, ["content"]);
+      const index = next.brief.claims.findIndex(claim => claim.id === change.claim_id);
+      if (index < 0) throw new Error("resource not found: claim:" + change.claim_id);
+      if (!sameValue(claimFields(next.brief.claims[index]), change.expected))
+        throw new Error("Claim source edit preimage differs from the current claim.");
+      if (sameValue(change.expected, change.replacement)) throw new Error("Claim source edit has no changes.");
+      const replacement = parseClaimRaw(claimRaw(change.replacement), next, change.claim_id);
+      if (!sameValue(replacement, change.replacement)) throw new Error("Invalid claim source replacement.");
+      next.brief.claims[index] = { id: change.claim_id, ...structuredClone(replacement) };
+      break;
+    }
     case "register_identity_origin": {
       assertUnlocked(next,projectResource(next),["content"]);
       registerIdentityOrigin(next,change.record);
@@ -2021,6 +2035,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     }
     case "add_review":
+      if (change.resource.startsWith("claim:") && !next.brief.claims.some(claim => "claim:" + claim.id === change.resource))
+        throw new Error("resource not found: " + change.resource);
       next.reviews.push({
         id: crypto.randomUUID(),
         kind: change.kind,

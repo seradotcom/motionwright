@@ -2,6 +2,7 @@ import { Braces, GitBranch, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { projectHistoryRecent } from "./api";
 import { HISTORY_PAGE_SIZE, validateRecentHistoryPage } from "./historyPaging";
+import { BranchRecovery, useBranchDraft } from "./useBranchDraft";
 import type { Change, Project, ProjectEvent } from "./types";
 export { default as ReviewWorkspace } from "./ReviewWorkspace";
 
@@ -24,9 +25,11 @@ function eventTarget(event: ProjectEvent) {
   return "project";
 }
 
-export function ChangesWorkspace({ project, commit }: { project: Project; commit: Commit }) {
+export function ChangesWorkspace({ project, commit, commitBranch, busy }: {
+  project: Project; commit: Commit; commitBranch: (change: Change) => Promise<Project>; busy: boolean;
+}) {
   const [events, setEvents] = useState<ProjectEvent[]>([]);
-  const [branchName, setBranchName] = useState("");
+  const branch = useBranchDraft(project, commitBranch, busy);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [hasEarlier, setHasEarlier] = useState(false);
@@ -114,25 +117,22 @@ export function ChangesWorkspace({ project, commit }: { project: Project; commit
 
         <form
           className="inline-save-field"
-          onSubmit={async (event) => {
+          onSubmit={(event) => {
             event.preventDefault();
-            const name = branchName.trim();
-            if (!name) return;
-            await commit({ type: "create_branch", name });
-            setBranchName("");
+            void branch.save();
           }}
         >
           <input
             aria-label="New branch name"
-            maxLength={120}
             placeholder="new creative branch"
-            value={branchName}
-            onChange={(event) => setBranchName(event.target.value)}
+            value={branch.session.draft.name}
+            onChange={(event) => branch.edit(event.target.value)}
           />
-          <button className="button button-primary" disabled={!branchName.trim()} type="submit">
+          <button className="button button-primary" disabled={!branch.canSave} type="submit">
             <GitBranch size={13} /> Create from r{project.revision}
           </button>
         </form>
+        <BranchRecovery editor={branch} />
 
         <div className="data-table" role="table" aria-label="Creative branches">
           <div className="data-row data-head" role="row">

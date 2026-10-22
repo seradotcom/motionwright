@@ -3,6 +3,7 @@ mod brand_governance;
 mod camera_reframe;
 mod canvas;
 mod capture_source;
+mod claim_source_edit;
 mod component_distillation;
 mod creative;
 mod creative_evaluator;
@@ -32,6 +33,7 @@ pub use brand_governance::*;
 pub use camera_reframe::*;
 pub use canvas::*;
 pub use capture_source::*;
+pub use claim_source_edit::ClaimEditableFields;
 pub use component_distillation::*;
 pub use creative::*;
 pub use creative_evaluator::*;
@@ -1384,6 +1386,13 @@ impl Project {
                     source_revision: source_revision.clone(),
                 });
                 self.brief.validate()?;
+            }
+            Change::UpdateClaim {
+                claim_id,
+                expected,
+                replacement,
+            } => {
+                self.update_claim_source(*claim_id, expected, replacement)?;
             }
             Change::SetNarrativePremise { premise } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
@@ -2822,6 +2831,11 @@ pub enum Change {
         source: Option<SourceReference>,
         context: String,
         source_revision: Option<String>,
+    },
+    UpdateClaim {
+        claim_id: Uuid,
+        expected: ClaimEditableFields,
+        replacement: ClaimEditableFields,
     },
     SetNarrativePremise {
         premise: String,

@@ -1,3 +1,4 @@
+import ClaimSourceEditor from "./ClaimSourceEditor";
 import { CircleDashed } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Change, Project } from "./types";
@@ -15,7 +16,7 @@ import type { BriefDraft, BriefField, BriefGroup, BriefRecoveryEntry, BriefSubmi
 
 // The existing mutation coordinator must reject a failed or uncertain call.
 // A nonthrowing error-display callback cannot establish the original reply.
-type Props = { project: Project; commit: (change: Change) => Promise<void> };
+type Props = { project: Project; commit: (change: Change) => Promise<void>; commitClaim?: (change: Change) => Promise<Project> };
 const SESSION_POINTER_PREFIX = "motionwright.brief-session.v1:";
 // Keeps inputs available across workspace navigation, including a storage outage.
 // These are editor buffers; Project and its service remain the only saved state.
@@ -60,7 +61,7 @@ export default function BriefWorkspace(props: Props) {
   return <BriefEditor key={briefDraftScope(props.project)} {...props}/>;
 }
 
-function BriefEditor({ project, commit }: Props) {
+function BriefEditor({ project, commit, commitClaim }: Props) {
   const scope = briefDraftScope(project);
   const [initial] = useState(() => readRecovery(project));
   const [draft, setDraft] = useState(initial.draft);
@@ -434,5 +435,6 @@ function BriefEditor({ project, commit }: Props) {
       <div className="evidence-callout compact-callout"><CircleDashed size={17}/><div><strong>No invisible approval</strong>
         <span>Missing evidence stays explicit until a source is attached.</span></div></div>
     </aside></div>
+    {commitClaim && <ClaimSourceEditor project={project} commit={commitClaim} />}
   </div>;
 }

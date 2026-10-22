@@ -553,6 +553,15 @@ impl Project {
                 locale,
                 profile_id,
             } => {
+                if let Some(claim_id) = resource.strip_prefix("claim:")
+                    && !self
+                        .brief
+                        .claims
+                        .iter()
+                        .any(|claim| claim.id.to_string() == claim_id)
+                {
+                    return Err(DomainError::NotFound(resource.clone()));
+                }
                 if let Some(profile_id) = profile_id
                     && !self
                         .deliverables
