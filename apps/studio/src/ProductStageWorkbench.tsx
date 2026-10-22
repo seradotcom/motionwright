@@ -5,7 +5,7 @@ import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { sameValue } from "./creativeProduction";
-import { stageConfig, workbenchScope } from "./creativeWorkbenchDraft";
+import { productStageCreationIssue, stageConfig, workbenchScope } from "./creativeWorkbenchDraft";
 import type { StageRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
 import { useCreativeWorkbenchDraft, WorkbenchDraftFeedback } from "./useCreativeWorkbenchDraft";
 import {
@@ -65,8 +65,9 @@ function ProductStageEditor({project,scene,commit,busy,playhead,onSeek,onOpenCan
     }
     return null;
   })();
+  const creationIssue=productStageCreationIssue(project,scene?.id??null);
   const canSave=!!scene && scene.renderer==="motion-canvas" && seconds(scene.duration)>=2 &&
-    valid && !brandConflict && !!preview.length && !previewError && !loading && !editor.blocked && !locked;
+    valid && !brandConflict && !creationIssue && !!preview.length && !previewError && !loading && !editor.blocked && !locked;
   useEffect(()=>{
     let active=true;
     setLoading(true);setPreviewError(null);
@@ -138,6 +139,7 @@ function ProductStageEditor({project,scene,commit,busy,playhead,onSeek,onOpenCan
       <p className="production-help">{PRODUCT_STAGE_DISCLOSURE}. This disclosure is mandatory
         in native output while the stage is bound. Replacing content preserves stable screen
         and focus anchors, compatible human overrides and the existing scene camera.</p>
+      {creationIssue && <p role="status" aria-label="ProductStage eligibility" className="production-error">{creationIssue}</p>}
       {brandConflict && <p role="status" className="production-error">{brandConflict}</p>}
       {previewError && draft.author_attestation.trim() && <p role="alert" className="production-error">{previewError}</p>}
       <button className="primary-button" disabled={!canSave} onClick={()=>void save()}>

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
-import { emptyProductionDesign } from "./creativeProduction";
+import { defaultHeroConfig, emptyProductionDesign } from "./creativeProduction";
+import { defaultProductStageConfig } from "./productStage";
 import type { Change, Project, ProjectEvent } from "./types";
 import {
   acknowledgeWorkbenchDraft, authoredInteger, createWorkbenchDraft, decodeWorkbenchCopy, editWorkbenchDraft,
@@ -203,5 +204,40 @@ describe("creative workbench verified custody and uncertain outcome review",()=>
     const review=await inspectWorkbenchOutcome(prepared.draft,saved,{readProject:async()=>saved,readHistory:async()=>journal(saved,prepared.change)}),next=releaseWorkbenchOutcome(prepared.draft,saved,review);
     const newer=retainReviewedWorkbenchIntent(store,pointers,prepared.draft,next,owner,fork);expect(store.getItem(workbenchCopyKey(prepared.draft.scope,writer))).toBe(original);
     expect(decodeWorkbenchCopy(newer.expectedRaw!,next.scope,fork).draft.pending).toBeNull();expect(pointers.getItem(workbenchPointerKey(next.scope))).toBe(fork);
+  });
+});
+
+describe("ProductStage existing project eligibility before mutation dispatch", () => {
+  it("rejects an existing Hero collision before arming an attempt and retains the exact author input", async () => {
+    let project = source();
+    project = await applyChange(project, { type: "upsert_product_hero", instance_id: "00000000-0000-4000-8000-000000000201",
+      scene_id: project.scenes[0].id, config: defaultHeroConfig() });
+    const draft = edit(create(project, "stage"), "  Retained Stage intent  "), before = structuredClone(project), raw = structuredClone(draft);
+    await expect(prepareWorkbenchSubmission(draft, project, requestId, "save")).rejects.toThrow(/collision/i);
+    expect(project).toEqual(before); expect(draft).toEqual(raw); expect(draft.pending).toBeNull();
+  });
+
+  it("rejects creation at the existing sixteen-Stage limit while a bound Stage can still update", async () => {
+    let project = source();
+    for (let index = 0; index < 16; index++) {
+      project = await applyChange(project, { type: "add_scene", name: "Existing Stage " + index, objective: "Retained original Stage", duration_seconds: 2 });
+      project = await applyChange(project, { type: "upsert_product_stage", instance_id: "00000000-0000-4000-8000-" + (300 + index).toString().padStart(12, "0"),
+        scene_id: project.scenes.at(-1)!.id, config: { ...defaultProductStageConfig(), author_attestation: "Original author-owned fixture UI." } });
+    }
+    project = await applyChange(project, { type: "add_scene", name: "Separate unsaved Stage intent", objective: "Preserve this draft", duration_seconds: 2 });
+    const target = project.scenes.at(-1)!;
+    const draft = edit(createWorkbenchDraft(project, { kind: "stage", sceneId: target.id }), "  New local Stage intent  ");
+    const before = structuredClone(project), raw = structuredClone(draft);
+    await expect(prepareWorkbenchSubmission(draft, project, requestId, "save")).rejects.toThrow(/capacity|collision/i);
+    expect(project).toEqual(before); expect(draft).toEqual(raw); expect(draft.pending).toBeNull();
+    const stored = project.production_design!.stages![0];
+    const update = edit(createWorkbenchDraft(project, { kind: "stage", sceneId: stored.scene_id }), "Updated existing Stage");
+    const prepared = await prepareWorkbenchSubmission(update, project, requestId, "save");
+    expect(prepared.change).toMatchObject({ type: "upsert_product_stage", instance_id: stored.id, scene_id: stored.scene_id });
+    expect(project).toEqual(before); expect(update.pending).toBeNull();
+    const receipt = await applyChange(project, prepared.change);
+    expect(receipt.production_design!.stages).toHaveLength(16);
+    expect(receipt.production_design!.stages![0].config.screen_heading).toBe("Updated existing Stage");
+    expect(receipt.production_design!.stages![0].baseline.map(value => value.id)).toEqual(stored.baseline.map(value => value.id));
   });
 });

@@ -234,3 +234,38 @@ for (const corruption of ["missing", "corrupt"] as const) {
     expect(await requests(page)).toEqual([]);
   });
 }
+
+test("ProductStage existing Hero eligibility blocks dispatch while separate scene drafts and valid authoring remain intact", async ({ page }) => {
+  await page.evaluate(async () => {
+    const source = window.__CREATIVE_AUTHORITY__.project();
+    const modulePath = "/src/creativeProduction.ts", production = await import(/* @vite-ignore */ modulePath);
+    await window.__CREATIVE_AUTHORITY__.externalChange({ type: "upsert_product_hero", instance_id: "00000000-0000-4000-8000-000000000201",
+      scene_id: source.scenes[0].id, config: production.defaultHeroConfig() });
+  });
+  await open(page, "stage");
+  const initial = await page.evaluate(() => window.__CREATIVE_AUTHORITY__.project());
+  const heading = page.getByLabel("ProductStage heading", { exact: true });
+  const focus = page.getByLabel("ProductStage focus X", { exact: true });
+  await heading.fill("  Retained Stage A  "); await focus.fill(" 00510 ");
+  await page.getByLabel("ProductStage rights attestation", { exact: true }).fill("Original interface authored for this controlled fixture.");
+  await expect(page.getByRole("status", { name: "ProductStage eligibility", exact: true })).toContainText("ProductHero");
+  await expect(button(page, saves.stage)).toBeDisabled();
+  expect(await requests(page)).toEqual([]); expect(await page.evaluate(() => window.__CREATIVE_AUTHORITY__.project())).toEqual(initial);
+  await expect(page.getByRole("region", { name: "Unconfirmed ProductStage", exact: true })).toHaveCount(0);
+  await page.evaluate(id => window.__CREATIVE_AUTHORITY__.selectScene(id), initial.scenes[1].id);
+  await expect(heading).not.toHaveValue("  Retained Stage A  ");
+  await valid(page, "stage"); await heading.fill("  Independent Stage B  ");
+  const request = await submit(page, saves.stage);
+  expect(request.change).toMatchObject({ type: "upsert_product_stage", scene_id: initial.scenes[1].id,
+    config: { screen_heading: "  Independent Stage B  " } });
+  await page.evaluate(id => window.__CREATIVE_AUTHORITY__.resolve(id), request.id);
+  const saved = await page.evaluate(() => window.__CREATIVE_AUTHORITY__.project());
+  expect(saved.revision).toBe(initial.revision + 1); expect(saved.production_design!.heroes).toEqual(initial.production_design!.heroes);
+  expect(saved.scenes[0]).toEqual(initial.scenes[0]);
+  expect(saved.production_design!.stages!.find(value => value.scene_id === initial.scenes[1].id)?.config.screen_heading).toBe("  Independent Stage B  ");
+  await page.evaluate(id => window.__CREATIVE_AUTHORITY__.selectScene(id), initial.scenes[0].id);
+  await expect(heading).toHaveValue("  Retained Stage A  "); await expect(focus).toHaveValue(" 00510 ");
+  await expect(page.getByRole("status", { name: "ProductStage eligibility", exact: true })).toContainText("ProductHero");
+  await expect(button(page, saves.stage)).toBeDisabled(); expect(await requests(page)).toHaveLength(1);
+  expect(await page.evaluate(() => window.__CREATIVE_AUTHORITY__.project())).toEqual(saved);
+});

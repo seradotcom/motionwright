@@ -10,7 +10,7 @@ test.skip(!process.env.MOTIONWRIGHT_SERVICE_TEST_BIN,
 test.setTimeout(120_000);
 const button = (page: Page, name: string) => page.getByRole("button", { name, exact: true });
 const headline = (page: Page) => page.getByLabel("Headline", { exact: true });
-const concept = (page: Page) => page.getByLabel("Creative concept", { exact: true });
+const concept = (page: Page) => page.getByRole("textbox", { name: "Creative concept", exact: true });
 async function revision(page: Page, value: number) {
   await expect(page.locator(".revision-chip").first()).toHaveText("r" + value);
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
@@ -90,13 +90,35 @@ async function unlocked(service: ScopedChangeService) {
   for (const lock of [...project.locks]) project = await service.apply(project, { type: "remove_lock", lock_id: lock.id });
   return project;
 }
+function heroCreationScene(project: Project) {
+  const heroes = project.production_design?.heroes ?? [];
+  // fixtureBootstrap deliberately keeps an existing editable Hero. Creation
+  // must use another eligible scene without replacing that earlier work.
+  expect(heroes.length, "The service fixture must retain a pre-existing Hero").toBeGreaterThan(0);
+  const scene = project.scenes.find(value => value.renderer === "motion-canvas"
+    && BigInt(value.duration.den) > 0n && BigInt(value.duration.num) >= 2n * BigInt(value.duration.den)
+    && !heroes.some(hero => hero.scene_id === value.id));
+  if (!scene) throw new Error("The service fixture needs a separate Motion Canvas scene of at least two seconds without a Hero.");
+  return scene;
+}
+function expectEarlierProductionUnchanged(before: Project, after: Project, sceneId: string) {
+  expect(after.production_design!.heroes.filter(hero => hero.scene_id !== sceneId)).toEqual(before.production_design!.heroes);
+  expect(after.scenes.filter(scene => scene.id !== sceneId)).toEqual(before.scenes.filter(scene => scene.id !== sceneId));
+  const original = before.scenes.find(scene => scene.id === sceneId)!, current = after.scenes.find(scene => scene.id === sceneId)!;
+  expect(current).toBeDefined(); expect({ ...current, nodes: original.nodes }).toEqual(original);
+  for (const node of original.nodes) expect(current.nodes.find(value => value.id === node.id)).toEqual(node);
+}
 async function attach(page: Page, service: ScopedChangeService, project: Project, plan = false) {
   await service.attachFixturePage(page, project.id); await page.goto("/"); await openProduction(page, plan);
-  if (!plan) await page.getByLabel("Production working scene").selectOption(project.scenes.find(scene => scene.renderer === "motion-canvas")!.id);
+  if (!plan) {
+    const scene = heroCreationScene(project), selected = page.getByLabel("Production working scene");
+    await selected.selectOption(scene.id); await expect(selected).toHaveValue(scene.id);
+    await expect(button(page, "Add to scene")).toBeVisible();
+  }
 }
 async function fillPlan(page: Page, value: string) {
-  await page.getByLabel("Objective", { exact: true }).fill("Preserve an editable production decision through the real service.");
-  await page.getByLabel("Audience", { exact: true }).fill("Editors reviewing this controlled regression scenario.");
+  await page.getByRole("textbox", { name: "Objective", exact: true }).fill("Preserve an editable production decision through the real service.");
+  await page.getByRole("textbox", { name: "Audience", exact: true }).fill("Editors reviewing this controlled regression scenario.");
   await concept(page).fill(value);
 }
 function unrelated(project: Project) {
@@ -121,7 +143,7 @@ test("Production plan raw drafts, claim references and content-bound approval su
     const claim = initial.brief.claims.at(-1)!;
     await page.locator(".production-shot").first().getByRole("checkbox", { name: claim.text, exact: true }).check();
     const digestAsset = initial.assets.find(asset => asset.content_sha256);
-    if (digestAsset) await page.getByLabel("Source asset", { exact: true }).first().selectOption(digestAsset.id);
+    if (digestAsset) await page.getByRole("combobox", { name: "Source asset", exact: true }).first().selectOption(digestAsset.id);
     await button(page, "Timeline").click(); await openProduction(page, true); await expect(concept(page)).toHaveValue(raw);
     await page.reload(); await openProduction(page, true); await expect(concept(page)).toHaveValue(raw);
     await expect(page.getByLabel(/Reference-derived constraints/)).toHaveValue("  Keep the source reference  \n\n  Preserve the author override  \n");
@@ -151,19 +173,24 @@ test("Production Hero updates retain editable node identities and a human overri
   let final: Project | undefined, primary: Failure | undefined;
   try {
     const initial = await unlocked(service); observations.initial = initial; await attach(page, service, initial);
-    const sceneId = initial.scenes.find(scene => scene.renderer === "motion-canvas")!.id;
+    const sceneId = heroCreationScene(initial).id; observations.workingSceneId = sceneId;
     await headline(page).fill("An editable hero"); await button(page, "Add to scene").click(); await revision(page, initial.revision + 1);
     const added = await service.project(initial.id), hero = added.production_design!.heroes.find(value => value.scene_id === sceneId)!;
+    expect(added.production_design!.heroes).toHaveLength(initial.production_design!.heroes.length + 1);
+    expectEarlierProductionUnchanged(initial, added, sceneId);
     expect(hero.baseline).toHaveLength(6); const node = hero.baseline.find(value => value.name.endsWith(" / body"))!;
     const human = await service.apply(added, { type: "update_canvas_text", scene_id: sceneId, node_id: node.id, text: "A deliberate independent human override." });
+    expectEarlierProductionUnchanged(initial, human, sceneId);
     await page.reload(); await openProduction(page); await page.getByLabel("Production working scene").selectOption(sceneId);
     await page.getByLabel("Hero accent").fill("#d9a46e"); await button(page, "Update component").click(); await revision(page, human.revision + 1);
     const updated = await service.project(initial.id), updatedHero = updated.production_design!.heroes.find(value => value.id === hero.id)!;
+    expectEarlierProductionUnchanged(initial, updated, sceneId);
     expect(updatedHero.baseline.map(value => value.id)).toEqual(hero.baseline.map(value => value.id));
     expect(updated.scenes.find(value => value.id === sceneId)!.nodes.find(value => value.id === node.id)?.text).toBe("A deliberate independent human override.");
     const objects = updated.scenes.find(value => value.id === sceneId)!.nodes;
     await button(page, "Detach, keep objects").click(); await revision(page, updated.revision + 1);
     final = await service.project(initial.id); expect(final.production_design!.heroes.find(value => value.id === hero.id)).toBeUndefined();
+    expectEarlierProductionUnchanged(initial, final, sceneId);
     expect(final.scenes.find(value => value.id === sceneId)!.nodes).toEqual(objects); expect(unrelated(final)).toEqual(unrelated(initial));
     await expect(headline(page)).toHaveValue("An editable hero");
     const events = await service.history(initial.id, initial.revision);
@@ -180,17 +207,25 @@ for (const target of ["component", "plan"] as const) {
     let final: Project | undefined, primary: Failure | undefined, hold: ReturnType<typeof holdReply> | undefined;
     try {
       const initial = await unlocked(service); observations.initial = initial; await attach(page, service, initial, target === "plan");
+      const sceneId = target === "component" ? heroCreationScene(initial).id : null; observations.workingSceneId = sceneId;
       const baseApplies = applies(service).length;
       if (target === "plan") await fillPlan(page, "First plan direction"); else await headline(page).fill("First hero direction");
       hold = holdReply(service, target === "plan" ? "set_production_plan" : "upsert_product_hero");
       await button(page, target === "plan" ? "Save production plan" : "Add to scene").click();
       const observed = await hold.observed; expect(observed.revision).toBe(initial.revision + 1);
+      if (target === "component") expectEarlierProductionUnchanged(initial, observed, sceneId!);
       await button(page, "Timeline").click(); await openProduction(page, target === "plan");
+      if (target === "component") await expect(page.getByLabel("Production working scene")).toHaveValue(sceneId!);
       const input = target === "plan" ? concept(page) : headline(page), later = target === "plan" ? "  Later plan input\nStill editable  " : "Later hero direction";
       await input.fill(later); hold.release(); await hold.dispose(); await revision(page, initial.revision + 1); await expect(input).toHaveValue(later);
       await expect(page.getByRole("region", { name: "Unconfirmed " + (target === "plan" ? "Production plan" : "Component"), exact: true })).toHaveCount(0);
       await button(page, target === "plan" ? "Save production plan" : "Update component").click(); await revision(page, initial.revision + 2);
-      final = await service.project(initial.id); expect(target === "plan" ? final.production_design!.plan!.concept : final.production_design!.heroes[0].config.headline).toBe(later);
+      final = await service.project(initial.id); expect(target === "plan" ? final.production_design!.plan!.concept : final.production_design!.heroes.find(hero => hero.scene_id === sceneId)!.config.headline).toBe(later);
+      if (target === "component") {
+        expectEarlierProductionUnchanged(initial, final, sceneId!);
+        expect(final.production_design!.heroes.find(hero => hero.scene_id === sceneId)!.id)
+          .toBe(observed.production_design!.heroes.find(hero => hero.scene_id === sceneId)!.id);
+      }
       const sent = applies(service).slice(baseApplies); expect(sent).toHaveLength(2); expect(sent[1].request.revision).toBe(initial.revision + 1);
       expect(sent[1].request.request_id).not.toBe(sent[0].request.request_id); expect(sent[1].request.effect_grant).not.toBe(sent[0].request.effect_grant);
       expect(unrelated(final)).toEqual(unrelated(initial)); expect(await service.reopen(initial.id)).toEqual(final); observations.originalReceipt = observed;

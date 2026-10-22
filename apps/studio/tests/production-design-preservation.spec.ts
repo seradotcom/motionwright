@@ -5,7 +5,7 @@ import type { ProductionFixtureRequest } from "./fixtures/production-design-auth
 // scheduling is a component regression fixture, not service/native acceptance.
 const button = (page: Page, name: string) => page.getByRole("button", { name, exact: true });
 const headline = (page: Page) => page.getByLabel("Headline", { exact: true });
-const concept = (page: Page) => page.getByLabel("Creative concept", { exact: true });
+const concept = (page: Page) => page.getByRole("textbox", { name: "Creative concept", exact: true });
 const requests = (page: Page) => page.evaluate(() => window.__PRODUCTION_AUTHORITY__.requests());
 async function plan(page: Page) { await button(page, "Production plan").click(); await expect(page.getByRole("heading", { name: "Production plan", exact: true })).toBeVisible(); }
 async function component(page: Page) { await button(page, "Components").click(); await expect(headline(page)).toBeVisible(); }
@@ -39,16 +39,16 @@ test("Production plan preserves exact lists, reviewer, note, shot choices and cl
   const raw = "  A deliberate concept\nKeep author spacing  ", constraints = "  reference A  \n\n reference B \n";
   await concept(page).fill(raw); await page.getByLabel(/Reference-derived constraints/).fill(constraints);
   await page.getByLabel("Reviewer", { exact: true }).fill("  Editor A  "); await page.getByLabel("Approval note", { exact: true }).fill("Keep the reason intact.");
-  await page.getByLabel("Purpose", { exact: true }).first().fill("  Authored shot purpose  ");
-  await page.getByLabel("Source asset", { exact: true }).first().selectOption(initial.assets[1].id);
+  await page.getByRole("textbox", { name: "Purpose", exact: true }).first().fill("  Authored shot purpose  ");
+  await page.getByRole("combobox", { name: "Source asset", exact: true }).first().selectOption(initial.assets[1].id);
   await page.getByLabel("Production governing clock").selectOption("music");
   await component(page); await plan(page); await expect(concept(page)).toHaveValue(raw);
   await page.reload(); await plan(page);
   await expect(concept(page)).toHaveValue(raw); await expect(page.getByLabel(/Reference-derived constraints/)).toHaveValue(constraints);
   await expect(page.getByLabel("Reviewer", { exact: true })).toHaveValue("  Editor A  ");
   await expect(page.getByLabel("Approval note", { exact: true })).toHaveValue("Keep the reason intact.");
-  await expect(page.getByLabel("Purpose", { exact: true }).first()).toHaveValue("  Authored shot purpose  ");
-  await expect(page.getByLabel("Source asset", { exact: true }).first()).toHaveValue(initial.assets[1].id);
+  await expect(page.getByRole("textbox", { name: "Purpose", exact: true }).first()).toHaveValue("  Authored shot purpose  ");
+  await expect(page.getByRole("combobox", { name: "Source asset", exact: true }).first()).toHaveValue(initial.assets[1].id);
   await expect(page.getByLabel("Production governing clock")).toHaveValue("music");
   expect(await requests(page)).toEqual([]); expect(await page.evaluate(() => window.__PRODUCTION_AUTHORITY__.project())).toEqual(initial);
 });

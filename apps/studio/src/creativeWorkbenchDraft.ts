@@ -3,7 +3,7 @@
 import type { CanvasNode, Change, Project, ProjectEvent } from "./types";
 import { sameProjectRevision } from "./projectMutation";
 import { sameValue } from "./creativeProduction";
-import { defaultProductStageConfig, realizeProductStage, validateProductStageConfig } from "./productStage";
+import { applyProductStageChange, defaultProductStageConfig, validateProductStageConfig } from "./productStage";
 import type { ProductStageConfig } from "./productStage";
 import { defaultProceduralConfig, normalizedProceduralConfig, realizeProceduralField, validateProceduralConfig } from "./proceduralField";
 import type { ProceduralConfig } from "./proceduralField";
@@ -69,6 +69,18 @@ export function authoredInteger(raw: string, label: string, min: number, max: nu
 export function stageConfig(raw: StageRaw): ProductStageConfig {
   const config = { ...raw, focus_x_permille: authoredInteger(raw.focus_x_permille, "ProductStage focus X", 150, 850), focus_y_permille: authoredInteger(raw.focus_y_permille, "ProductStage focus Y", 200, 800) };
   validateProductStageConfig(config); return config;
+}
+/** Presentation only: these are the existing new-Stage constraints. A bound
+ * Stage can still be updated at capacity. Preparation also runs the existing
+ * project-level validator; only the original service response can confirm a save. */
+export function productStageCreationIssue(project: Project, sceneId: string | null): string | null {
+  const stages = project.production_design?.stages ?? [];
+  if (sceneId === null || stages.some(stage => stage.scene_id === sceneId)) return null;
+  if (project.production_design?.heroes.some(hero => hero.scene_id === sceneId))
+    return "This scene already contains a ProductHero. Choose another scene for a new ProductStage. Your input remains with this scene.";
+  if (stages.length >= 16)
+    return "The project already has 16 ProductStages. Update an existing Stage or explicitly detach one before adding another. Your input is retained.";
+  return null;
 }
 export function proceduralConfig(raw: ProceduralRaw): ProceduralConfig {
   const result = { ...raw } as unknown as Required<ProceduralConfig>;
@@ -159,8 +171,11 @@ export async function prepareWorkbenchSubmission(draft: WorkbenchDraft, project:
   if (input.kind === "stage") {
     const stored = project.production_design?.stages?.find(value => value.scene_id === scene!.id);
     if (operation === "save") {
-      const config = stageConfig(input.config), instanceId = stored?.id ?? crypto.randomUUID(); await realizeProductStage(instanceId, config);
+      const config = stageConfig(input.config), instanceId = stored?.id ?? crypto.randomUUID();
       change = { type: "upsert_product_stage", instance_id: instanceId, scene_id: scene!.id, config };
+      // Reuse the existing collision, capacity, lock and merge guards without
+      // publishing this validation copy or acquiring mutation authority.
+      await applyProductStageChange(clone(project), change);
     } else if (operation === "detach") {
       if (!stored || project.production_design?.stage_capture_cards?.some(value => value.stage_id === stored.id)) throw new Error("Detach the source tile before releasing the original ProductStage.");
       change = { type: "detach_product_stage", instance_id: stored.id }; nodesBefore = clone(scene!.nodes);

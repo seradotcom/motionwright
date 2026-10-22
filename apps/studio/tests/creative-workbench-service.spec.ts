@@ -93,9 +93,24 @@ async function unlocked(service: ScopedChangeService) {
   for (const lock of [...project.locks]) project = await service.apply(project, { type: "remove_lock", lock_id: lock.id });
   return project;
 }
+function workbenchScene(project: Project, kind: Kind) {
+  // The real service fixture already binds a Hero to its first scene. Stage
+  // authoring uses a separate eligible scene; retain that Hero and its objects.
+  const scene = project.scenes.find(value => value.renderer === "motion-canvas" && (kind !== "stage" ||
+    (BigInt(value.duration.num) >= 2n * BigInt(value.duration.den) &&
+      !project.production_design?.heroes.some(hero => hero.scene_id === value.id))));
+  if (!scene) throw new Error("No eligible " + kind + " scene exists in the actual service fixture.");
+  return scene;
+}
+function expectOriginalStageWork(actual: Project, initial: Project) {
+  const target = workbenchScene(initial, "stage");
+  expect(actual.production_design?.heroes).toEqual(initial.production_design?.heroes);
+  expect(actual.scenes.filter(scene => scene.id !== target.id)).toEqual(initial.scenes.filter(scene => scene.id !== target.id));
+  expect(actual.scenes.find(scene => scene.id === target.id)?.nodes.filter(node => target.nodes.some(original => original.id === node.id))).toEqual(target.nodes);
+}
 async function attach(page: Page, service: ScopedChangeService, project: Project, kind: Kind) {
   await service.attachFixturePage(page, project.id); await page.goto("/"); await openWorkbench(page, kind);
-  await page.getByLabel("Production working scene").selectOption(project.scenes.find(scene => scene.renderer === "motion-canvas")!.id);
+  await page.getByLabel("Production working scene", { exact: true }).selectOption(workbenchScene(project, kind).id);
 }
 async function sourceAsset(service: ScopedChangeService, info: TestInfo, project: Project, milli = 12500) {
   const directory = info.outputPath("authored-sources"); await mkdir(directory, { recursive: true });
@@ -129,7 +144,7 @@ for (const kind of ["stage", "procedural"] as const) {
     let final: Project | undefined, primary: Failure | undefined;
     try {
       const initial = await unlocked(service); observations.initial = initial; await attach(page, service, initial, kind);
-      const sceneId = initial.scenes.find(scene => scene.renderer === "motion-canvas")!.id;
+      const sceneId = workbenchScene(initial, kind).id;
       await fill(page, kind, initial); await button(page, saves[kind]).click(); await revision(page, initial.revision + 1);
       const added = await service.project(initial.id), component = kind === "stage" ? added.production_design!.stages![0] : added.production_design!.procedural_fields![0];
       const node = component.baseline.find(value => kind === "stage" ? value.name.endsWith(" / screen_detail") : true)!;
@@ -148,6 +163,7 @@ for (const kind of ["stage", "procedural"] as const) {
       final = await service.project(initial.id); expect(final.scenes.find(scene => scene.id === sceneId)!.nodes).toEqual(objects);
       expect(kind === "stage" ? final.production_design!.stages : final.production_design!.procedural_fields).toEqual([]);
       expect(unrelated(final)).toEqual(unrelated(initial)); expect(final.scenes.filter(scene => scene.id !== sceneId)).toEqual(initial.scenes.filter(scene => scene.id !== sceneId));
+      if (kind === "stage") expectOriginalStageWork(final, initial);
       const events = await service.history(initial.id, initial.revision); expect(events.map(value => value.change.type)).toEqual([changeTypes[kind], kind === "stage" ? "update_canvas_text" : "update_canvas_style", changeTypes[kind], kind === "stage" ? "detach_product_stage" : "detach_procedural_field"]);
       await service.close(); await service.start(); expect(await service.project(initial.id)).toEqual(final); expect(await service.history(initial.id, initial.revision)).toEqual(events);
       observations.journal = events; observations.nodeIds = component.baseline.map(value => value.id);
@@ -232,13 +248,16 @@ for (const kind of ["stage", "procedural", "measured"] as const) {
       await button(page, saves[kind]).click(); const unknown = page.getByRole("region", { name: "Unconfirmed " + labels[kind], exact: true });
       await expect(unknown).toBeVisible(); await expect(page.getByRole("alert").filter({ hasText: "lost after actual commit" })).toBeVisible(); service.invoke = original;
       const saved = await service.project(initial.id); expect(saved.revision).toBe(initial.revision + 1);
-      await page.reload(); await openWorkbench(page, kind); await expect(unknown).toBeVisible();
+      await page.reload(); await openWorkbench(page, kind);
+      await page.getByLabel("Production working scene", { exact: true }).selectOption(workbenchScene(initial, kind).id);
+      await expect(unknown).toBeVisible();
       expect(applies(service)).toHaveLength(baseWrites + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(baseGrants + 1);
       await button(page, "Read saved " + labels[kind] + " and history").click();
       await expect(page.getByLabel(labels[kind] + " outcome review", { exact: true })).toContainText("consecutive history records");
       await button(page, "Keep earlier " + labels[kind] + " attempt and continue editing").click(); await expect(unknown).toHaveCount(0);
       expect(applies(service)).toHaveLength(baseWrites + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(baseGrants + 1);
       final = await service.project(initial.id); expect(final).toEqual(saved); expect(await service.reopen(initial.id)).toEqual(final);
+      if (kind === "stage") expectOriginalStageWork(final, initial);
       observations.retainedCopies = await page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith("motionwright.creative-workbench-recovery.v1:")));
       expect((observations.retainedCopies as unknown[]).length).toBeGreaterThanOrEqual(2);
     } catch (reason) { primary = { reason }; }
@@ -268,6 +287,7 @@ for (const fault of ["data", "pointer"] as const) {
       await page.evaluate(() => (window as unknown as { __RESTORE_WORKBENCH_STORAGE__: () => void }).__RESTORE_WORKBENCH_STORAGE__());
       await button(page, "Retry ProductStage backup").click(); await button(page, saves.stage).click(); await revision(page, initial.revision + 1);
       final = await service.project(initial.id); expect(final.production_design!.stages![0].config.screen_heading).toBe("Clear workflow");
+      expectOriginalStageWork(final, initial);
       expect(applies(service)).toHaveLength(baseWrites + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(baseGrants + 1); expect(await service.reopen(initial.id)).toEqual(final);
     } catch (reason) { primary = { reason }; }
     finally { await finish(page, info, service, [], final, observations, [], primary); }
