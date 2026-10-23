@@ -705,6 +705,62 @@ class SourceGateTests(unittest.TestCase):
                                              self.binary, self.binary, listed, context)
 
 
+    def test_empty_terse_helpers_keep_zero_credit_and_verbose_support(self):
+        empty_specs = [selected for selected in gate.MLT_TESTS if selected["allow_empty"]]
+        self.assertTrue(empty_specs)
+        expected = {"all": (), "selected": (), "not_selected": (),
+                    "not_selected_credit": "NONE"}
+        for index, selected in enumerate(empty_specs):
+            for raw in (b"", b"0 tests, 0 benchmarks\n"):
+                with self.subTest(spec=index, raw=raw):
+                    self.assertEqual(gate.roster(raw, 0, selected), expected)
+
+    def test_empty_terse_ordinary_target_is_rejected(self):
+        selected = gate.MLT_TESTS[1]
+        self.assertFalse(selected["allow_empty"])
+        with self.assertRaisesRegex(gate.custody.VerificationError,
+                                    "selected target has no enumerated tests"):
+            gate.roster(b"", 0, selected)
+
+    def test_allow_empty_cannot_bypass_required_cases(self):
+        selected = gate.MLT_TESTS[-1]
+        self.assertTrue(selected["allow_empty"])
+        self.assertTrue(gate.HOST_CASES)
+        for raw in (b"", b"0 tests, 0 benchmarks\n"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(gate.custody.VerificationError,
+                                            "selected target has no enumerated tests"):
+                    gate.roster(raw, 0, selected, gate.HOST_CASES)
+
+    def test_allow_empty_cannot_bypass_nonempty_closed_roster(self):
+        selected = {**gate.MLT_TESTS[-1], "closed_roster": ("required_case",)}
+        self.assertTrue(selected["allow_empty"])
+        for raw in (b"", b"0 tests, 0 benchmarks\n"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(gate.custody.VerificationError,
+                                            "selected target has no enumerated tests"):
+                    gate.roster(raw, 0, selected)
+
+    def test_empty_terse_nonzero_exit_is_rejected(self):
+        selected = gate.MLT_TESTS[-1]
+        self.assertTrue(selected["allow_empty"])
+        for code in (1, 2):
+            with self.subTest(code=code):
+                with self.assertRaises(gate.custody.VerificationError):
+                    gate.roster(b"", code, selected)
+
+    def test_empty_terse_does_not_admit_whitespace_or_malformed_output(self):
+        selected = gate.MLT_TESTS[-1]
+        self.assertTrue(selected["allow_empty"])
+        for raw in (b" ", b"\t", b"\n", b"\r\n", b"\x00",
+                    b"unexpected output\n", b"0 tests, 1 benchmark\n",
+                    b"0 tests, 0 benchmarks\nunexpected output\n"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(gate.custody.VerificationError,
+                                            "selected target has no enumerated tests"):
+                    gate.roster(raw, 0, selected)
+
+
 
 if __name__ == "__main__":
     unittest.main()

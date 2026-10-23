@@ -445,7 +445,10 @@ def roster(raw, code, selected, required=()):
     text = raw.decode().replace("\r\n", "\n")
     names = tuple(re.findall(r"(?m)^([A-Za-z_][A-Za-z_0-9:]*): test$", text))
     if not names:
-        require(selected["allow_empty"] and re.fullmatch(r"\s*0 tests, 0 benchmarks\s*", text),
+        require(selected["allow_empty"]
+                and not required
+                and not selected.get("closed_roster")
+                and (raw == b"" or re.fullmatch(r"\s*0 tests, 0 benchmarks\s*", text)),
                 "selected target has no enumerated tests")
         return {"all": (), "selected": (), "not_selected": (), "not_selected_credit": "NONE"}
     expected = selected.get("closed_roster", names)
