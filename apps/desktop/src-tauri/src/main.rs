@@ -1,6 +1,7 @@
 mod av_delivery;
 mod av_master;
 mod caption_export;
+mod effect_authority;
 mod effect_grants;
 mod file_import;
 mod generation_journal;
@@ -28,6 +29,7 @@ use av_master::{
 };
 use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
+use effect_authority::IssueEffectGrantRequest;
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
 use local_error::sanitized;
 use motionwright_domain::{AlignmentEvidence, Change, CueEvidence, Project, RevisionStamp};
@@ -108,15 +110,6 @@ struct ApplyRequest {
     request_id: String,
     effect_grant: Uuid,
     change: Change,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueEffectGrantRequest {
-    effect: EffectKind,
-    project_id: Option<Uuid>,
-    generation: Option<Uuid>,
-    revision: Option<u64>,
-    subject: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -531,15 +524,7 @@ fn checked_effect_scope(
     generation: Uuid,
     revision: u64,
 ) -> Result<EffectScope, String> {
-    let project = project_library::open_project(
-        &state.service,
-        project_library::OpenProjectRequest { project_id },
-    )
-    .map_err(sanitized)?;
-    if project.generation != generation || project.revision != revision {
-        return Err("Effect grant scope is stale; refresh the project before retrying.".into());
-    }
-    Ok(EffectScope::project(project_id, generation, revision))
+    effect_authority::checked_effect_scope(&state.service, project_id, generation, revision)
 }
 
 #[tauri::command]
@@ -547,21 +532,7 @@ fn issue_effect_grant(
     state: State<'_, AppState>,
     request: IssueEffectGrantRequest,
 ) -> Result<EffectGrantReceipt, String> {
-    if request.effect == EffectKind::ProjectCreate {
-        return Err(
-            "Use the dedicated project creation command with its exact retained intent.".into(),
-        );
-    }
-    let scope = match (request.project_id, request.generation, request.revision) {
-        (Some(project_id), Some(generation), Some(revision)) => {
-            checked_effect_scope(&state, project_id, generation, revision)?
-        }
-        (None, None, None) => EffectScope::unscoped_import(),
-        _ => return Err("Effect grant project scope must be complete or absent.".into()),
-    };
-    state
-        .effect_grants
-        .issue(request.effect, scope, request.subject.trim())
+    effect_authority::issue_effect_grant(&state.service, &state.effect_grants, request)
 }
 
 /// Explicit, read-only asset SHA-256 audit. No path/digest sources or broad
