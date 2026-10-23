@@ -23,12 +23,20 @@ on:
       - "crates/native/**"
       - ".github/workflows/native-production.yml"
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Full production contracts or two frozen causal Claim failures on Linux
+        type: choice
+        required: true
+        default: full
+        options: [full, claim_causal_red]
 
 permissions:
   contents: read
 
 jobs:
   production-contracts:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'claim_causal_red'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -47,3 +55,100 @@ jobs:
         run: cargo test --locked -p motionwright-native --lib production::receipt_custody::tests -- --nocapture
       - name: Native production clippy
         run: cargo clippy --locked -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+
+  claim-causal-red-g0:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'claim_causal_red'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Always verify source policies and formatting before the selected causal gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/source_policy.py
+          python -B tooling/acceptance_policy.py
+          python -B tooling/creative_status_policy.py
+          python -B tooling/public_surface_policy.py
+          cargo fmt --all -- --check
+      - name: Verify Claim observer positive and negative controls through both entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --expected-source "$GITHUB_SHA" --test-directory tooling/tests \
+            --pattern test_ci_claim_source_causal.py --mode both --require-complete \
+            --timeout 180 --report "$RUNNER_TEMP/claim-causal-red-g0/result.json"
+      - name: Preserve exact observer controls
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: claim-causal-red-G0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/claim-causal-red-g0/
+          if-no-files-found: error
+          retention-days: 14
+
+  claim-causal-red:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'claim_causal_red'
+    needs: claim-causal-red-g0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    concurrency:
+      group: claim-causal-red-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_CLAIM_SCOPE: claim_causal_red
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - name: Require the two frozen product commits before any test execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git cat-file -e 8da7b461711efde37449941dd57aa1b0c64ba1d6^{commit}
+          git cat-file -e 7fada8c415f544f2c42b53405b4bac2013a34d6e^{commit}
+      - name: Observe only two causal RED cases on the frozen tests-only product source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/ci_claim_source_causal.py --repo "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/claim-causal-red-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: Retain original commands, selected binaries and source-bound receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: claim-causal-red-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/claim-causal-red-${{ github.run_id }}-${{ github.run_attempt }}/receipt.json
+            ${{ runner.temp }}/claim-causal-red-${{ github.run_id }}-${{ github.run_attempt }}/*.command.json
+            ${{ runner.temp }}/claim-causal-red-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            ${{ runner.temp }}/claim-causal-red-${{ github.run_id }}-${{ github.run_attempt }}/baseline-originals/
+            ${{ runner.temp }}/claim-causal-red-${{ github.run_id }}-${{ github.run_attempt }}/sources/
+            ${{ runner.temp }}/claim-causal-red-${{ github.run_id }}-${{ github.run_attempt }}/binaries/
+          if-no-files-found: error
+          retention-days: 14
