@@ -43,6 +43,9 @@ GATE_FILES = (WORKFLOW, HELPER, TEST, *GATE_PINS,
               "tooling/ci_test_runner.py", "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 require = custody.require
+SOURCE_SCOPE = "sdk_native_source"
+DIAGNOSTIC_SCOPE = "sdk_native_baseline_diagnostic"
+SCOPES = (SOURCE_SCOPE, DIAGNOSTIC_SCOPE)
 
 FROZEN = {'b4be734d84cb1546f30928a69b7d094d37f6db16': {'.gitattributes': '78eb00c800c448e3305c394dffb1a2bcffce39a9a10978e462769537941a3fab',
                                               'Cargo.lock': 'ed67a971ee483aa2fd8eca71e8ff25e565f03fd98b4a4e1a90b97bd7696a30d4',
@@ -290,13 +293,20 @@ def integration_compile_argv(cargo):
             *selected, "--no-run", "--message-format=json"]
 
 
-def execution_context(environment, runtime_platform=None):
+def execution_roles(scope):
+    require(scope in SCOPES, "unknown SDK observation scope")
+    return (("baseline", RED),) if scope == DIAGNOSTIC_SCOPE else (
+        ("baseline", RED), ("repair", GREEN))
+
+
+def execution_context(environment, runtime_platform=None, *, scope=SOURCE_SCOPE):
+    execution_roles(scope)
     runtime_platform = sys.platform if runtime_platform is None else runtime_platform
     require(runtime_platform == "linux" and environment.get("RUNNER_OS") == "Linux"
             and environment.get("RUNNER_ARCH") == "X64", "requires Linux x64")
     require(environment.get("GITHUB_ACTIONS") == "true"
             and environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and environment.get("MW_SDK_SCOPE") == "sdk_native_source",
+            and environment.get("MW_SDK_SCOPE") == scope,
             "explicit source-only dispatch required")
     require(environment.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
             and environment.get("GITHUB_JOB") == "sdk-native-source",
@@ -535,7 +545,102 @@ def verify_commands(evidence, observations):
             observer.original_stream(folder, obs["command"], channel)
 
 
-def run(gate, sdk, output):
+
+def diagnostic_observation(pair, name, raw, row, binary, after, listed, context):
+    """Observe a terminal baseline case; never revise or grant G1 acceptance."""
+    require(context.get("role") == "baseline"
+            and context.get("product_source_sha") == RED, "diagnostic requires the frozen baseline")
+    require(tuple(listed["selected"]) == CAUSAL_CASES
+            and len(listed["all"]) == len(set(listed["all"]))
+            and set(CAUSAL_CASES) <= set(listed["all"]), "diagnostic roster changed")
+    require(row["observation"] == "DIRECT_PROCESS_EXIT_OBSERVED"
+            and row["log_custody"] == "VERIFIED_SNAPSHOT", "diagnostic custody incomplete")
+    require(row["argv"] == observer.case_argv(binary, pair, "baseline", name)
+            and row["context"] == context and binary == after,
+            "diagnostic command, source context or binary changed")
+    require(type(row["exit_code"]) is int, "terminal diagnostic exit is not an integer")
+    text = custody.ANSI.sub("", raw.decode("utf-8").replace("\r\n", "\n"))
+    case_rows = re.findall(r"(?m)^test (.+) \.\.\. (ok|FAILED|ignored)\s*$", text)
+    summaries = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; "
+                           r"(\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+    panics = re.findall(r"(?m)^thread '([^']+)'(?: \(\d+\))? panicked at ([^\n]+):\s*$", text)
+    observed = "NONCONFORMING_TEST_RESULT"
+    for code, state, outcome, counts in (
+        (0, "ok", "OBSERVED_LIBTEST_PASS", (1, 0, 0, 0, len(listed["all"]) - 1)),
+        (101, "FAILED", "OBSERVED_LIBTEST_FAILURE", (0, 1, 0, 0, len(listed["all"]) - 1)),
+    ):
+        named_panic = len(panics) == 1 and panics[0][0] == name
+        if (row["exit_code"] == code and case_rows == [(name, state)]
+                and len(summaries) == 1 and summaries[0][0] == state
+                and tuple(map(int, summaries[0][1:])) == counts
+                and (named_panic if code == 101 else not panics)):
+            observed = outcome
+    expected = pair["failures"].get(name)
+    comparison = {"matched": False, "error": None}
+    try:
+        admitted = observer.admit_case(pair, "baseline", name, raw, row,
+                                       binary, after, listed, context)
+        comparison.update(matched=True, observed_status=admitted["status"])
+    except custody.VerificationError as error:
+        comparison["error"] = str(error)
+    return {
+        "name": name, "status": "DIAGNOSTIC_OBSERVATION_NOT_ACCEPTANCE",
+        "outcome": observed, "context": context, "command": row,
+        "binary_sha256": binary["sha256"], "exit_code": row["exit_code"],
+        "case_rows": case_rows, "summaries": summaries, "panics": panics,
+        "frozen_expected_exit": 101 if expected is not None else 0,
+        "frozen_expected_assertion": expected,
+        "frozen_marker_observations": [
+            {"marker": marker, "present": marker in text}
+            for marker in (expected["markers"] if expected else ())
+        ],
+        "frozen_g1_comparison": comparison, "g1_acceptance": False,
+        "combined_original_stream_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def diagnostic_cases(binary, listed, pair, work, target, env, logs, context,
+                     results, dependencies, command):
+    require(not results and tuple(listed["selected"]) == CAUSAL_CASES,
+            "diagnostic must begin with the exact unobserved eleven-case roster")
+    for number, name in enumerate(CAUSAL_CASES):
+        verify_binaries({"selected": binary, **dependencies}, target)
+        row = command(observer.case_argv(binary, pair, "baseline", name), work,
+                      env, logs, "diagnostic-" + str(number), 180, context)
+        after = {"absolute_path": binary["absolute_path"],
+                 **custody.fingerprint(Path(binary["absolute_path"]), target)}
+        raw = (observer.original_stream(logs, row, "stdout") + b"\n"
+               + observer.original_stream(logs, row, "stderr"))
+        results.append(diagnostic_observation(pair, name, raw, row, binary,
+                                              after, listed, context))
+        verify_binaries(dependencies, target)
+
+
+def diagnostic_complete(result):
+    observed = result.get("results", [])
+    require([row["name"] for row in observed] == list(CAUSAL_CASES),
+            "diagnostic observations are incomplete, repeated or foreign")
+    require(all(row["status"] == "DIAGNOSTIC_OBSERVATION_NOT_ACCEPTANCE"
+                and row["outcome"] in ("OBSERVED_LIBTEST_PASS", "OBSERVED_LIBTEST_FAILURE")
+                and row["g1_acceptance"] is False for row in observed),
+            "a signal, setup failure or incomplete libtest result cannot complete the diagnostic")
+    require(result.get("source_before") == result.get("source_after")
+            and result.get("source_before"), "diagnostic source custody changed")
+    require(result.get("clippy") == "NOT_SELECTED"
+            and result.get("supplemental") == {} and "runtime" not in result,
+            "diagnostic executed an unselected source suite")
+    return {
+        "status": "DIAGNOSTIC_NOT_ACCEPTANCE", "cases": 11,
+        "observed_pass": sum(row["outcome"] == "OBSERVED_LIBTEST_PASS" for row in observed),
+        "observed_failure": sum(row["outcome"] == "OBSERVED_LIBTEST_FAILURE" for row in observed),
+        "frozen_g1_expectation_matches": sum(row["frozen_g1_comparison"]["matched"] for row in observed),
+        "g1_acceptance": False, "green": "NOT_RUN", "supplemental": "NOT_RUN",
+        "physical_render": "NOT_RUN", "ignored_selected_cases": 0,
+    }
+
+
+def run(gate, sdk, output, *, scope=SOURCE_SCOPE):
+    roles = execution_roles(scope)
     gate, sdk, output = gate.absolute(), sdk.absolute(), output.absolute()
     require(not output.exists() and not output.is_relative_to(gate)
             and not output.is_relative_to(sdk), "fresh external run root required")
@@ -543,7 +648,8 @@ def run(gate, sdk, output):
     evidence = output / "evidence"
     evidence.mkdir()
     report = {"schema": "motionwright.sdk-native-source/1", "at_utc": custody.now(),
-              "status": "INCOMPLETE", "roles": {}, "new_native_operations": 0,
+              "status": "INCOMPLETE", "verification_scope": scope,
+              "roles": {}, "new_native_operations": 0,
               "physical_render": "NOT_RUN", "pixel_acceptance": False, "human_acceptance": False}
     observations = []
     def command(argv, cwd, env, logs, label, timeout, ctx):
@@ -579,7 +685,7 @@ def run(gate, sdk, output):
             if dependencies:
                 verify_binaries(dependencies, target)
     try:
-        context = execution_context(os.environ)
+        context = execution_context(os.environ, scope=scope)
         report["context"] = context
         require(Path(observer.__file__).resolve() == gate / "tooling/ci_foundation_causal.py"
                 and Path(custody.__file__).resolve() == gate / "tooling/ci_storage_apply_recovery.py",
@@ -599,7 +705,7 @@ def run(gate, sdk, output):
         tools = observer.tools_identity(gate, evidence, tool_env, context, (evidence, observations))
         report["tools"] = tools
         cargo = tools["cargo"]["absolute_path"]
-        for role, source in (("baseline", RED), ("repair", GREEN)):
+        for role, source in roles:
             work, target, tmp = (output / (role + "-" + suffix) for suffix in ("checkout", "target", "tmp"))
             logs = evidence / (role + "-originals")
             for path in (target, tmp, logs):
@@ -638,8 +744,18 @@ def run(gate, sdk, output):
             selected = observer.selected_roster(observer.original_stream(logs, list_row, "stdout"),
                                                 list_row["exit_code"], selected_spec, CAUSAL_CASES, role)
             result["rosters"]["causal"] = selected
-            cases(lib, CAUSAL_CASES, selected, pair, role, work, target, env, logs,
-                  "causal", ctx, result["results"])
+            if scope == DIAGNOSTIC_SCOPE:
+                result["fixture_binaries"] = built
+                fixture_paths = [p for p, _, _ in MANDATORY_MODULES] + [
+                    "crates/driver-mlt-video/src/bin/fake_melt.rs",
+                    "crates/driver-mlt-video/src/bin/fake_ffprobe.rs"]
+                result["retained_fixture_sources"] = {
+                    p: result["retained_sources"][p] for p in fixture_paths}
+                diagnostic_cases(lib, selected, pair, work, target, env, logs, ctx,
+                                 result["results"], built, command)
+            else:
+                cases(lib, CAUSAL_CASES, selected, pair, role, work, target, env, logs,
+                      "causal", ctx, result["results"])
             verify_binaries(built, target)
             if role == "repair":
                 def green_suite(label, selected_specs, selected_binaries, skip=(), dependencies=None):
@@ -685,7 +801,8 @@ def run(gate, sdk, output):
                 result["runtime"] = run_runtime(work, before, output, evidence, logs, env, ctx,
                                                 target, cargo, command, require_command, compile_target)
             result["source_after"] = custody.source_snapshot(work, source, paths, TREES[source])
-            result["admission"] = observer.role_complete(pair, role, result)
+            result["admission"] = (diagnostic_complete(result) if scope == DIAGNOSTIC_SCOPE
+                                   else observer.role_complete(pair, role, result))
             for collection in result["binaries"].values():
                 verify_binaries(collection, target)
             for suite in result["supplemental"].values():
@@ -697,8 +814,15 @@ def run(gate, sdk, output):
             require(custody.fingerprint(path, path.parent) ==
                     {k: tool[k] for k in ("path", "bytes", "sha256", "identity")}, "toolchain identity changed")
         verify_commands(evidence, observations)
-        report.update(status="PASS_SOURCE_G1", baseline_expected_failures=7, baseline_controls_passed=4,
-                      causal_green_passed=11, ignored_selected_cases=0, omitted_selected_cases=0)
+        if scope == DIAGNOSTIC_SCOPE:
+            require(tuple(report["roles"]) == ("baseline",), "diagnostic executed another role")
+            report.update(status="DIAGNOSTIC_NOT_ACCEPTANCE", g1_acceptance=False,
+                          diagnostic=report["roles"]["baseline"]["admission"],
+                          green="NOT_RUN", supplemental="NOT_RUN",
+                          ignored_selected_cases=0, omitted_selected_cases=0)
+        else:
+            report.update(status="PASS_SOURCE_G1", baseline_expected_failures=7, baseline_controls_passed=4,
+                          causal_green_passed=11, ignored_selected_cases=0, omitted_selected_cases=0)
     except (observer.UnknownExecution, custody.UnknownObservation) as error:
         report.update(status="UNKNOWN_NO_RETRY", error=str(error), uncertain_command=error.command)
     except Exception as error:
@@ -809,10 +933,12 @@ def main(argv=None):
     parser.add_argument("--gate", type=Path, required=True)
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--scope", choices=SCOPES, default=SOURCE_SCOPE)
     args = parser.parse_args(argv)
-    report = run(args.gate, args.sdk, args.output)
+    report = run(args.gate, args.sdk, args.output, scope=args.scope)
     print(json.dumps({"status": report["status"], "receipt": str(args.output / "evidence/receipt.json")}))
-    return 0 if report["status"] == "PASS_SOURCE_G1" else 2
+    expected = "DIAGNOSTIC_NOT_ACCEPTANCE" if args.scope == DIAGNOSTIC_SCOPE else "PASS_SOURCE_G1"
+    return 0 if report["status"] == expected else 2
 
 
 if __name__ == "__main__":

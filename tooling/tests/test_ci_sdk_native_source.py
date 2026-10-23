@@ -3,6 +3,9 @@
 from __future__ import annotations
 import ast
 import json
+import io
+from contextlib import redirect_stdout
+from unittest import mock
 import os
 from pathlib import Path
 import re
@@ -347,6 +350,7 @@ class SourceGateTests(unittest.TestCase):
             ("push", "refs/heads/main", "", (True, False)),
             ("push", "refs/heads/feature", "", (False, False)),
             ("workflow_dispatch", "refs/heads/main", "sdk_native_source", (True, True)),
+            ("workflow_dispatch", "refs/heads/main", "sdk_native_baseline_diagnostic", (True, True)),
             ("workflow_dispatch", "refs/heads/main", "physical", (False, False)),
             ("workflow_dispatch", "refs/heads/main", "", (False, False)),
             ("schedule", "refs/heads/main", "sdk_native_source", (False, False)),
@@ -458,6 +462,187 @@ class SourceGateTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(gate.custody.VerificationError):
                 gate.select_binaries(self.raw([*changed, footer]), 0, self.repo, self.target,
                                      gate.MLT_INTEGRATIONS, testing=True)
+
+    def diagnostic_fixture(self, name, *, passed=None):
+        pair, listed, context, row, raw = self.case(name, "baseline")
+        if passed is not None and passed:
+            _, _, _, pass_row, raw = self.case(name, "repair")
+            row = {**pass_row, "context": context}
+        return pair, listed, context, row, raw
+
+    def diagnostic(self, name, *, passed=None):
+        pair, listed, context, row, raw = self.diagnostic_fixture(name, passed=passed)
+        return gate.diagnostic_observation(pair, name, raw, row, self.binary,
+                                           self.binary, listed, context)
+
+    def diagnostic_result(self):
+        return {
+            "source_before": {"sha": gate.RED}, "source_after": {"sha": gate.RED},
+            "results": [self.diagnostic(name, passed=True) for name in gate.CAUSAL_CASES],
+            "clippy": "NOT_SELECTED", "supplemental": {},
+        }
+
+    def test_diagnostic_scope_is_explicit_baseline_only_and_default_g1_is_unchanged(self):
+        self.assertEqual(gate.execution_roles(gate.DIAGNOSTIC_SCOPE), (("baseline", gate.RED),))
+        self.assertEqual(gate.execution_roles(gate.SOURCE_SCOPE),
+                         (("baseline", gate.RED), ("repair", gate.GREEN)))
+        environment = {**self.env, "MW_SDK_SCOPE": gate.DIAGNOSTIC_SCOPE}
+        gate.execution_context(environment, "linux", scope=gate.DIAGNOSTIC_SCOPE)
+        with self.assertRaises(gate.custody.VerificationError):
+            gate.execution_context(environment, "linux")
+        with self.assertRaises(gate.custody.VerificationError):
+            gate.execution_context(self.env, "linux", scope=gate.DIAGNOSTIC_SCOPE)
+        with self.assertRaises(gate.custody.VerificationError):
+            gate.execution_roles("physical")
+        self.assertEqual(len(gate.causal_pair()["failures"]), 7)
+
+    def test_diagnostic_unexpected_pass_is_observed_without_rewriting_g1(self):
+        name = gate.CAUSAL_CASES[0]
+        result = self.diagnostic(name, passed=True)
+        self.assertEqual(result["outcome"], "OBSERVED_LIBTEST_PASS")
+        self.assertEqual(result["status"], "DIAGNOSTIC_OBSERVATION_NOT_ACCEPTANCE")
+        self.assertEqual(result["frozen_expected_exit"], 101)
+        self.assertFalse(result["frozen_g1_comparison"]["matched"])
+        self.assertFalse(result["g1_acceptance"])
+        pair, listed, context, row, raw = self.diagnostic_fixture(name, passed=True)
+        with self.assertRaises(gate.custody.VerificationError):
+            gate.observer.admit_case(pair, "baseline", name, raw, row,
+                                     self.binary, self.binary, listed, context)
+
+    def test_diagnostic_different_assertion_retains_the_actual_marker_and_frozen_mismatch(self):
+        name = gate.CAUSAL_CASES[8]
+        pair, listed, context, row, raw = self.diagnostic_fixture(name)
+        expected = pair["failures"][name]
+        raw = raw.replace((":" + str(expected["line"]) + ":").encode(), b":2610:")
+        raw = raw.replace(expected["markers"][0].encode(),
+                          b"the media probe completed after the shared deadline")
+        result = gate.diagnostic_observation(pair, name, raw, row, self.binary,
+                                              self.binary, listed, context)
+        self.assertEqual(result["outcome"], "OBSERVED_LIBTEST_FAILURE")
+        self.assertFalse(result["frozen_g1_comparison"]["matched"])
+        self.assertIn(":2610:", result["panics"][0][1])
+        self.assertFalse(result["frozen_marker_observations"][0]["present"])
+        self.assertEqual(result["combined_original_stream_sha256"],
+                         gate.hashlib.sha256(raw).hexdigest())
+
+    def test_diagnostic_does_not_promote_signal_skip_duplicate_or_missing_footer(self):
+        name = gate.CAUSAL_CASES[0]
+        pair, listed, context, row, raw = self.diagnostic_fixture(name)
+        for changed, command in (
+            (raw, {**row, "exit_code": -9}),
+            (raw.replace(b"0 ignored", b"1 ignored"), row),
+            (raw + f"test {name} ... FAILED\n".encode(), row),
+            (raw.split(b"test result:")[0], row),
+        ):
+            with self.subTest(exit=command["exit_code"], raw=changed):
+                observed = gate.diagnostic_observation(pair, name, changed, command,
+                                                       self.binary, self.binary, listed, context)
+                self.assertEqual(observed["outcome"], "NONCONFORMING_TEST_RESULT")
+                result = self.diagnostic_result()
+                result["results"][0] = observed
+                with self.assertRaises(gate.custody.VerificationError):
+                    gate.diagnostic_complete(result)
+
+    def test_diagnostic_rejects_unknown_custody_source_command_binary_or_roster(self):
+        name = gate.CAUSAL_CASES[0]
+        pair, listed, context, row, raw = self.diagnostic_fixture(name)
+        variants = (
+            ({**row, "observation": "UNKNOWN_TIMEOUT_NO_RETRY"}, self.binary, listed, context),
+            ({**row, "log_custody": "UNSEALED"}, self.binary, listed, context),
+            ({**row, "argv": [*row["argv"], "--ignored"]}, self.binary, listed, context),
+            (row, {**self.binary, "sha256": "0" * 64}, listed, context),
+            (row, self.binary, {**listed, "selected": gate.CAUSAL_CASES[:-1]}, context),
+            (row, self.binary, listed, {**context, "product_source_sha": gate.GREEN}),
+        )
+        for command, after, roster, selected_context in variants:
+            with self.subTest(command=command), self.assertRaises(gate.custody.VerificationError):
+                gate.diagnostic_observation(pair, name, raw, command, self.binary,
+                                             after, roster, selected_context)
+
+    def test_diagnostic_driver_observes_all_eleven_once_despite_frozen_g1_mismatches(self):
+        pair, listed, context, _, _ = self.diagnostic_fixture(gate.CAUSAL_CASES[0])
+        results, seen, originals = [], [], {}
+        def command(argv, work, env, logs, label, timeout, ctx):
+            name = argv[2]
+            seen.append((name, label))
+            _, _, _, row, raw = self.diagnostic_fixture(name, passed=True)
+            originals[name] = raw
+            return row
+        def stream(logs, row, channel):
+            return originals[row["argv"][2]] if channel == "stdout" else b""
+        with mock.patch.object(gate.observer, "original_stream", side_effect=stream):
+            gate.diagnostic_cases(self.binary, listed, pair, self.repo, self.target, {},
+                                  self.root, context, results, {"fixture": self.binary}, command)
+        self.assertEqual(seen, [(name, "diagnostic-" + str(i))
+                                for i, name in enumerate(gate.CAUSAL_CASES)])
+        self.assertEqual(len(results), 11)
+        self.assertEqual(sum(not row["frozen_g1_comparison"]["matched"] for row in results), 7)
+        with self.assertRaises(gate.custody.VerificationError):
+            gate.diagnostic_cases(self.binary, listed, pair, self.repo, self.target, {},
+                                  self.root, context, results, {"fixture": self.binary}, command)
+        self.assertEqual(len(seen), 11)
+
+    def test_diagnostic_driver_stops_on_unknown_without_replaying_or_continuing(self):
+        pair, listed, context, _, _ = self.diagnostic_fixture(gate.CAUSAL_CASES[0])
+        results, seen, originals = [], [], {}
+        def command(argv, work, env, logs, label, timeout, ctx):
+            name = argv[2]; seen.append(name)
+            if len(seen) == 3:
+                raise gate.observer.UnknownExecution("synthetic unknown; not a real SDK process")
+            _, _, _, row, raw = self.diagnostic_fixture(name, passed=True)
+            originals[name] = raw
+            return row
+        def stream(logs, row, channel):
+            return originals[row["argv"][2]] if channel == "stdout" else b""
+        with mock.patch.object(gate.observer, "original_stream", side_effect=stream):
+            with self.assertRaises(gate.observer.UnknownExecution):
+                gate.diagnostic_cases(self.binary, listed, pair, self.repo, self.target, {},
+                                      self.root, context, results, {"fixture": self.binary}, command)
+        self.assertEqual(seen, list(gate.CAUSAL_CASES[:3]))
+        self.assertEqual([row["name"] for row in results], list(gate.CAUSAL_CASES[:2]))
+
+    def test_diagnostic_completion_preserves_source_and_forbids_other_suites(self):
+        good = self.diagnostic_result()
+        summary = gate.diagnostic_complete(good)
+        self.assertEqual(summary["status"], "DIAGNOSTIC_NOT_ACCEPTANCE")
+        self.assertEqual(summary["cases"], 11)
+        self.assertEqual(summary["green"], "NOT_RUN")
+        self.assertFalse(summary["g1_acceptance"])
+        for bad in (
+            {**good, "source_after": {"sha": gate.GREEN}},
+            {**good, "results": good["results"][:-1]},
+            {**good, "results": [*good["results"][:-1], good["results"][0]]},
+            {**good, "clippy": "PASS"},
+            {**good, "supplemental": {"mlt-integrations": {}}},
+            {**good, "runtime": {}},
+        ):
+            with self.subTest(result=bad), self.assertRaises(gate.custody.VerificationError):
+                gate.diagnostic_complete(bad)
+
+    def test_diagnostic_workflow_is_manual_and_node_execution_stays_source_only(self):
+        workflow = (TOOLING.parent / gate.WORKFLOW).read_text()
+        self.assertIn("options: [sdk_native_source, sdk_native_baseline_diagnostic]", workflow)
+        self.assertIn("default: sdk_native_source", workflow)
+        self.assertIn("MW_SDK_SCOPE: "+"$"+"{{ inputs.verification_scope }}", workflow)
+        self.assertIn('--scope "$MW_SDK_SCOPE"', workflow)
+        self.assertIn("uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n"
+                      "        if: inputs.verification_scope == 'sdk_native_source'\n", workflow)
+        job = workflow.split("\n  sdk-native-source:\n", 1)[1]
+        condition = re.search(r"(?m)^    if: (.+)$", job).group(1)
+        for event in ("pull_request", "push", "schedule"):
+            context = {"github": {"event_name": event, "ref": "refs/heads/main"},
+                       "inputs": {"verification_scope": gate.DIAGNOSTIC_SCOPE}}
+            self.assertFalse(self.workflow_condition(condition, context))
+
+    def test_diagnostic_cli_success_cannot_be_a_g1_acceptance_status(self):
+        args = ["--gate", str(self.repo), "--sdk", str(self.root / "sdk"),
+                "--output", str(self.root / "output"), "--scope", gate.DIAGNOSTIC_SCOPE]
+        for status, code in (("DIAGNOSTIC_NOT_ACCEPTANCE", 0), ("PASS_SOURCE_G1", 2),
+                             ("UNKNOWN_NO_RETRY", 2), ("FAIL_OR_INCOMPLETE", 2)):
+            with self.subTest(status=status), mock.patch.object(gate, "run", return_value={"status": status}) as run:
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(gate.main(args), code)
+                self.assertEqual(run.call_args.kwargs, {"scope": gate.DIAGNOSTIC_SCOPE})
 
 
 if __name__ == "__main__":
