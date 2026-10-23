@@ -25,13 +25,14 @@ class HistoryGuardTests(unittest.TestCase):
             "assessment_history":[{"source":self.source,"prior_technical_status":"not_run",
                                    "prior_criteria":[copy.deepcopy(self.field)]}],
             "technical_assessment":{
+              "schema_version":1,
               "source":self.source,
               "criteria":[self.field],
               "technical_verification":{"status":"not_run","evidence_ids":[]},
               "evidence_currency":{"historical_record_ids":["record-older"],
                                    "current_record_ids":["record-current"]},
               "contract_acceptance":{"status":"open"}}}
-        self.index={"criteria":{"EXAMPLE-01#/statement":"c"*64},
+        self.index={"schema":"motionwright.technical-evidence/1","criteria":{"EXAMPLE-01#/statement":"c"*64},
                     "contracts":{"EXAMPLE-01":{"source_record_sha256":"d"*64}},
                     "normative_edges":[{"requirement_id":"EXAMPLE-01","case_id":"CASE-01"}],
                     "criterion_aliases":{},"human_reviews":[],
@@ -43,6 +44,8 @@ class HistoryGuardTests(unittest.TestCase):
            guard.LEDGERS[1]:{"cases":[],"expansion_cases":[]},
            guard.LEDGERS[2]:{"requirements":[]},
            guard.INDEX:self.index}
+        for path in guard.LEDGERS:
+            self.old[path].update(schema_version=1,conformance_schema_version=1)
         self.new=copy.deepcopy(self.old)
 
     def assertViolation(self, code):
@@ -368,6 +371,133 @@ class HistoryGuardTests(unittest.TestCase):
         archive["entry_count"]=1
         self.new[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]=[archive]
         self.assertViolation("duplicate_history_archive_json_field")
+
+
+    def test_typed_record_prefix_rejects_boolean_integer_substitution(self):
+        self.old[guard.INDEX]["records"][0]["native_execution_performed"]=False
+        self.new=copy.deepcopy(self.old)
+        self.new[guard.INDEX]["records"][0]["native_execution_performed"]=0
+        self.assertViolation("index_records_rewritten_or_truncated")
+
+    def test_typed_prefix_preserves_numeric_type_and_signed_float_zero(self):
+        for before,after in [(1,1.0),(0.0,-0.0)]:
+            with self.subTest(before=before,after=after):
+                self.old[guard.INDEX]["records"][0]["measured"]=before
+                self.new=copy.deepcopy(self.old)
+                self.new[guard.INDEX]["records"][0]["measured"]=after
+                self.assertViolation("index_records_rewritten_or_truncated")
+
+    def test_typed_catalogue_boolean_cannot_be_replaced_by_integer(self):
+        self.old[guard.INDEX]["contracts"]["EXAMPLE-01"]["human_review_required"]=False
+        self.new=copy.deepcopy(self.old)
+        self.new[guard.INDEX]["contracts"]["EXAMPLE-01"]["human_review_required"]=0
+        self.assertViolation("canonical_source_catalogue_changed")
+
+    def test_typed_assessment_change_requires_prior_snapshot(self):
+        self.old[guard.LEDGERS[0]]["requirements"][0]["technical_assessment"]["observed"]=False
+        self.new=copy.deepcopy(self.old)
+        self.new[guard.LEDGERS[0]]["requirements"][0]["technical_assessment"]["observed"]=0
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    def test_typed_prior_criterion_snapshot_cannot_forge_boolean_as_zero(self):
+        self.old[guard.LEDGERS[0]]["requirements"][0]["technical_assessment"]["criteria"][0]["observed"]=False
+        self.new=copy.deepcopy(self.old)
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        prior=copy.deepcopy(row["technical_assessment"]["criteria"])
+        prior[0]["observed"]=0
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        row["assessment_history"].append({"source":copy.deepcopy(self.source),
+            "prior_technical_status":"not_run","prior_criteria":prior})
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    def test_typed_prior_source_snapshot_cannot_forge_boolean_as_zero(self):
+        row=self.old[guard.LEDGERS[0]]["requirements"][0]
+        row["technical_assessment"]["source"]["extra_observation"]=False
+        self.new=copy.deepcopy(self.old)
+        row=self.new[guard.LEDGERS[0]]["requirements"][0]
+        prior_source=copy.deepcopy(row["technical_assessment"]["source"])
+        prior_source["extra_observation"]=0
+        row["technical_assessment"]["technical_verification"]["status"]="partial"
+        row["assessment_history"].append({"source":prior_source,
+            "prior_technical_status":"not_run","prior_criteria":[copy.deepcopy(self.field)]})
+        self.assertViolation("changed_assessment_has_no_authentic_prior_snapshot")
+
+    def test_typed_H03_prefix_rejects_boolean_integer_substitution(self):
+        history=self.old[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]
+        history[0]["observed"]=False
+        self.new=copy.deepcopy(self.old)
+        forged=copy.deepcopy(history)
+        forged[0]["observed"]=0
+        self.new[guard.LEDGERS[0]]["requirements"][0]["assessment_history"]=[
+            guard.encode_assessment_history(forged)]
+        self.assertViolation("assessment_history_rewritten_or_truncated")
+
+    def test_duplicate_appended_record_or_review_id_is_rejected(self):
+        for collection in ("records","sufficiency_reviews"):
+            with self.subTest(collection=collection):
+                self.new=copy.deepcopy(self.old)
+                self.new[guard.INDEX][collection].append(
+                    copy.deepcopy(self.new[guard.INDEX][collection][0]))
+                self.assertViolation("duplicate_index_"+collection+"_id")
+
+    def test_unknown_index_schema_or_alternate_history_prefix_is_rejected(self):
+        for mutate in ("unknown","prefix"):
+            with self.subTest(mutate=mutate):
+                self.new=copy.deepcopy(self.old)
+                if mutate=="unknown":
+                    self.new[guard.INDEX]["schema"]="motionwright.technical-evidence/2"
+                else:
+                    self.new[guard.INDEX]["history_prefix"]={}
+                self.assertViolation("unknown_source_index_schema")
+
+    def test_ledger_and_assessment_schema_require_integer_one(self):
+        for level in ("ledger","assessment"):
+            with self.subTest(level=level):
+                self.new=copy.deepcopy(self.old)
+                target=self.new[guard.LEDGERS[0]]
+                if level=="assessment":
+                    target=target["requirements"][0]["technical_assessment"]
+                target["schema_version"]=True
+                self.assertViolation("unknown_"+level+"_schema")
+
+    def test_index_only_capacity_accepts_exact_limit_and_rejects_overflow(self):
+        exact=b'{}'+b' '*(32*1024*1024-2)
+        self.assertEqual(guard.parse_unique(exact,guard.INDEX),{})
+        with self.assertRaisesRegex(guard.HistoryViolation,"source_size_out_of_bounds"):
+            guard.parse_unique(exact+b' ',guard.INDEX)
+        with self.assertRaisesRegex(guard.HistoryViolation,"source_size_out_of_bounds"):
+            guard.parse_unique(exact,guard.LEDGERS[0])
+        old_limit=b'{}'+b' '*(16*1024*1024-2)
+        self.assertEqual(guard.parse_unique(old_limit,guard.LEDGERS[0]),{})
+        with self.assertRaisesRegex(guard.HistoryViolation,"source_size_out_of_bounds"):
+            guard.parse_unique(old_limit+b' ',guard.LEDGERS[0])
+
+    def test_git_source_size_is_checked_before_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve()
+            for path,limit in ((guard.INDEX,32*1024*1024),(guard.LEDGERS[0],16*1024*1024)):
+                with self.subTest(path=path):
+                    with mock.patch.object(guard,"_unredirected_git",side_effect=[
+                            str(root).encode(),b"commit",str(limit+1).encode()]) as read:
+                        with self.assertRaisesRegex(guard.HistoryViolation,"source_size_out_of_bounds"):
+                            guard.git_exact(root,"a"*40,path)
+                        self.assertEqual(read.call_count,3)
+                        self.assertFalse(any(call.args[1]=="show" for call in read.call_args_list))
+
+    def test_nonfinite_numbers_fail_closed_in_document_and_history(self):
+        for value in (b'NaN',b'Infinity',b'-Infinity',b'1e999'):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(guard.HistoryViolation,"nonfinite_json_value"):
+                    guard.parse_unique(b'{"value":'+value+b'}',guard.INDEX)
+        with self.assertRaisesRegex(guard.HistoryViolation,"invalid_typed_json_value"):
+            guard.encode_assessment_history([{"value":float("nan")}])
+
+    def test_canonical_object_key_order_does_not_rewrite_history(self):
+        old_record={"id":"record-older","observed":False,"counts":[1,1.0]}
+        self.old[guard.INDEX]["records"]=[old_record]
+        self.new=copy.deepcopy(self.old)
+        self.new[guard.INDEX]["records"]=[dict(reversed(list(old_record.items())))]
+        self.assertEqual(guard.inspect(self.old,self.new)["result"],"history_preserved")
 
 if __name__=="__main__":
     unittest.main()

@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -25,10 +26,40 @@ LEDGERS = (
 )
 INDEX = "docs/acceptance/technical-evidence.json"
 LIMIT = 16 * 1024 * 1024
+INDEX_LIMIT = 32 * 1024 * 1024
 
 
 class HistoryViolation(ValueError):
     pass
+
+
+def source_limit(label: str) -> int:
+    return INDEX_LIMIT if label == INDEX else LIMIT
+
+
+def _reject_nonfinite(value):
+    raise HistoryViolation("nonfinite_json_value")
+
+
+def _finite_float(value):
+    number = float(value)
+    if not math.isfinite(number):
+        raise HistoryViolation("nonfinite_json_value")
+    return number
+
+
+def _typed_canonical(value) -> bytes:
+    # Python equality treats false as 0 and 1 as 1.0. Canonical JSON keeps
+    # these distinct while retaining object-key independence and list order.
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"), allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+        raise HistoryViolation("invalid_typed_json_value") from exc
+
+
+def _same(before, after) -> bool:
+    return _typed_canonical(before) == _typed_canonical(after)
 
 
 def parse_unique(data: bytes, label: str) -> dict:
@@ -40,10 +71,11 @@ def parse_unique(data: bytes, label: str) -> dict:
             value[key] = val
         return value
 
-    if not data or len(data) > LIMIT:
+    if not data or len(data) > source_limit(label):
         raise HistoryViolation("source_size_out_of_bounds")
     try:
-        value = json.loads(data.decode("utf-8"), object_pairs_hook=unique)
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=unique,
+                           parse_constant=_reject_nonfinite, parse_float=_finite_float)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise HistoryViolation("invalid_source_json") from exc
     if not isinstance(value, dict):
@@ -67,7 +99,7 @@ def fixed_identity_map(rows: list, what: str) -> dict:
 def prefix(previous: list, candidate: list, label: str) -> None:
     if not isinstance(previous, list) or not isinstance(candidate, list):
         raise HistoryViolation("invalid_" + label)
-    if candidate[:len(previous)] != previous:
+    if not _same(candidate[:len(previous)], previous):
         raise HistoryViolation(label + "_rewritten_or_truncated")
 
 
@@ -78,8 +110,7 @@ MAX_HISTORY_ENCODED_BYTES = 1_048_576
 
 
 def _history_canonical(value: list) -> bytes:
-    return json.dumps(value, sort_keys=True, ensure_ascii=False,
-                      separators=(",", ":")).encode("utf-8")
+    return _typed_canonical(value)
 
 
 def _history_pairs_unique(pairs):
@@ -146,7 +177,8 @@ def _decode_assessment_history_archive(value: dict) -> list:
             raise HistoryViolation("history_archive_truncated_or_oversized")
         if hashlib.sha256(plain).hexdigest() != digest:
             raise HistoryViolation("history_archive_sha256_mismatch")
-        entries = json.loads(plain.decode("utf-8"), object_pairs_hook=_history_pairs_unique)
+        entries = json.loads(plain.decode("utf-8"), object_pairs_hook=_history_pairs_unique,
+                             parse_constant=_reject_nonfinite, parse_float=_finite_float)
     except (binascii.Error, zlib.error, UnicodeError, json.JSONDecodeError,
             ValueError) as exc:
         if isinstance(exc, HistoryViolation):
@@ -212,37 +244,40 @@ def review_row(before: dict, after: dict) -> bool:
     nextcurrent = set(newcurrency.get("current_record_ids", []))
     if not (prevcurrent - nextcurrent).issubset(newhist):
         raise HistoryViolation("current_evidence_lost_without_history")
-    changed = old != new
+    for assessment in (old, new):
+        if type(assessment.get("schema_version")) is not int or assessment["schema_version"] != 1:
+            raise HistoryViolation("unknown_assessment_schema")
+    changed = not _same(old, new)
     if changed:
         added = newhistory[len(oldhistory):]
         status = old.get("technical_verification", {}).get("status")
         expected_source = old.get("source")
         def captures(value):
-            if not isinstance(value, dict) or value.get("source") != expected_source:
+            if not isinstance(value, dict) or not _same(value.get("source"), expected_source):
                 return False
-            if value.get("prior_technical_status", value.get("prior_status")) != status:
+            if not _same(value.get("prior_technical_status", value.get("prior_status")), status):
                 return False
             prior_contract = old.get("contract_acceptance", {}).get("status")
             if ("prior_contract_status" in value and
-                    value["prior_contract_status"] != prior_contract):
+                    not _same(value["prior_contract_status"], prior_contract)):
                 return False
             if ("prior_current_record_ids" in value and
-                    value["prior_current_record_ids"] !=
-                    old.get("evidence_currency", {}).get("current_record_ids")):
+                    not _same(value["prior_current_record_ids"],
+                              old.get("evidence_currency", {}).get("current_record_ids"))):
                 return False
             # H01: a current evidence-ID list, an empty list or a plausible but
             # invented criterion list cannot prove an actual prior assessment.
             # Prefer the entire original criteria, including IDs, clause hashes,
             # statuses, evidence links and missing assertions.
             if "prior_criteria" in value:
-                return value["prior_criteria"] == old["criteria"]
+                return _same(value["prior_criteria"], old["criteria"])
             # Retain support for older compact status-map snapshots, but only
             # when the map is complete and matches every original criterion.
             statuses = value.get("prior_criterion_statuses")
             expected_statuses = {
                 criterion["id"]: criterion["status"] for criterion in old["criteria"]
             }
-            return isinstance(statuses, dict) and statuses == expected_statuses
+            return isinstance(statuses, dict) and _same(statuses, expected_statuses)
         if not any(captures(entry) for entry in added):
             raise HistoryViolation("changed_assessment_has_no_authentic_prior_snapshot")
     # Changing only a noncanonical visible title with stable original ID and
@@ -255,9 +290,14 @@ def inspect(before: dict, after: dict) -> dict:
     new_index = after.get(INDEX)
     if not isinstance(old_index, dict) or not isinstance(new_index, dict):
         raise HistoryViolation("missing_source_index")
+    for index in (old_index, new_index):
+        if index.get("schema") != "motionwright.technical-evidence/1" or "history_prefix" in index:
+            raise HistoryViolation("unknown_source_index_schema")
+        for listkey in ("records", "sufficiency_reviews"):
+            fixed_identity_map(index.get(listkey), "index_" + listkey)
     for immutable in ("criteria", "contracts", "normative_edges",
                       "criterion_aliases", "human_reviews"):
-        if old_index.get(immutable) != new_index.get(immutable):
+        if not _same(old_index.get(immutable), new_index.get(immutable)):
             raise HistoryViolation("canonical_source_catalogue_changed")
     for listkey in ("records", "sufficiency_reviews", "assessment_history"):
         prefix(old_index.get(listkey), new_index.get(listkey), "index_" + listkey)
@@ -267,6 +307,15 @@ def inspect(before: dict, after: dict) -> dict:
         new = after.get(ledger)
         if not isinstance(old, dict) or not isinstance(new, dict):
             raise HistoryViolation("missing_ledger")
+        for document in (old, new):
+            for version in ("schema_version", "conformance_schema_version"):
+                if type(document.get(version)) is not int or document[version] != 1:
+                    raise HistoryViolation("unknown_ledger_schema")
+        for collection in ("requirements", "cases", "expansion_cases"):
+            old_rows = fixed_identity_map(old.get(collection, []), "ledger")
+            new_rows = fixed_identity_map(new.get(collection, []), "ledger")
+            if set(old_rows) != set(new_rows):
+                raise HistoryViolation("ledger_id_removed_renamed_or_added")
         a = scoped_rows(old)
         b = scoped_rows(new)
         if set(a) != set(b):
@@ -324,7 +373,17 @@ def git_exact(repo: Path, revision: str, filename: str) -> bytes:
         raise HistoryViolation("git_repository_root_mismatch")
     if _unredirected_git(root, "cat-file", "-t", revision).strip() != b"commit":
         raise HistoryViolation("git_exact_revision_not_a_commit")
-    return _unredirected_git(root, "show", revision + ":" + filename)
+    object_name = revision + ":" + filename
+    try:
+        size = int(_unredirected_git(root, "cat-file", "-s", object_name).strip())
+    except ValueError as exc:
+        raise HistoryViolation("invalid_git_source_size") from exc
+    if size <= 0 or size > source_limit(filename):
+        raise HistoryViolation("source_size_out_of_bounds")
+    data = _unredirected_git(root, "show", object_name)
+    if len(data) != size:
+        raise HistoryViolation("git_source_size_changed")
+    return data
 
 
 def main() -> int:
