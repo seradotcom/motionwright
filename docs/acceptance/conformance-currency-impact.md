@@ -37,8 +37,15 @@ silence strict errors by targeting an older checkout.
   source lock match the target. A separate sufficient review is still required.
 - **Historical, same input bytes:** source/test blobs match, but the test
   originally ran at another revision. It remains historical.
-- **Historical, changed or unknown:** any source or test differs, disappears
-  or resolves to a symlink. Current-source evidence is needed.
+- **Historical, changed or unknown:** any source or test differs, disappears,
+  resolves to a symlink or cannot be verified as strict UTF-8 text.
+  Current-source evidence is needed.
+- **Non-text reference:** a blob that fails strict UTF-8 decoding is reported
+  with a "non_text" status and a null target_sha256. Other references and
+  records are still classified. The affected record cannot become a current
+  execution candidate or a historical same-input match. This does not supply
+  a binary digest contract: raw hashing and replacement decoding are never
+  substituted for the recorded git-text-lf identity.
 - **Sufficient current criterion:** the existing PASS has an exact-source
   complete execution and a separate matching sufficiency review.
 - **PASS requiring reassessment:** the existing PASS lacks one or more of

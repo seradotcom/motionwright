@@ -133,10 +133,16 @@ def record_currency(record: dict, target: str, lock: str | None, snapshot: GitSn
             expected = ref["sha256"]
             if not DIGEST.fullmatch(expected):
                 raise ValueError("reference must include one exact SHA-256")
-            actual = snapshot.digest(name)
+            try:
+                actual = snapshot.digest(name)
+            except UnicodeDecodeError:
+                # A git-text-lf binding cannot be renewed with a raw binary hash.
+                # Retain the unverified reference and still inspect the others.
+                actual, status = None, "non_text"
+            else:
+                status = "same" if expected == actual else ("missing_or_link" if actual is None else "changed")
             inputs.append({"path": name, "kind": relation[:-1], "expected_sha256": expected,
-                           "target_sha256": actual,
-                           "status": "same" if expected == actual else ("missing_or_link" if actual is None else "changed")})
+                           "target_sha256": actual, "status": status})
     same = all(x["status"] == "same" for x in inputs)
     declared_source = source["motionwright_sha"]
     declared_lock = source["source_lock_sha256"]

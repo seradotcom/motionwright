@@ -71,6 +71,95 @@ class CurrencyImpactTests(unittest.TestCase):
             {"replay-1": self.record},
             reviews if reviews is not None else [self.review], set())
 
+
+    def _committed_non_text_fixture(self):
+        name = "crates/service/tests/fixtures/traversal-project.zip"
+        data = (ROOT / name).read_bytes()
+        path = self.root / name
+        path.parent.mkdir(parents=True)
+        path.write_bytes(data)
+        self.run_git("add", name)
+        self.run_git("commit", "-q", "-m", "retained non-text fixture")
+        source = self.run_git("rev-parse", "HEAD")
+        snapshot = impact.GitSnapshot(self.root, source)
+        record = copy.deepcopy(self.record)
+        record["source"]["motionwright_sha"] = source
+        return name, data, record, snapshot
+
+    def test_non_text_binding_never_reuses_matching_raw_hash_as_current_execution(self):
+        name, data, base, snapshot = self._committed_non_text_fixture()
+        for relation in ("source_inputs", "definitions"):
+            with self.subTest(relation=relation):
+                record = copy.deepcopy(base)
+                record[relation].append({"path": name, "sha256": digest(data)})
+                retained = copy.deepcopy(record)
+                result = impact.record_currency(record, snapshot.source, self.lock, snapshot)
+                self.assertEqual(result["current_source_relation"], "current_source_invalidated")
+                self.assertFalse(result["exact_source_inputs"])
+                self.assertEqual(result["changed_references"], [{
+                    "path": name, "kind": relation[:-1], "expected_sha256": digest(data),
+                    "target_sha256": None, "status": "non_text",
+                }])
+                self.assertEqual(json.loads(json.dumps(result)), result)
+                self.assertEqual(record, retained)
+                assessment = {"source": copy.deepcopy(record["source"])}
+                review = copy.deepcopy(self.review)
+                review["source"] = copy.deepcopy(record["source"])
+                self.assertEqual(impact.classify_criterion(
+                    self.field, assessment, snapshot.source, self.lock,
+                    {record["id"]: result}, {record["id"]: record}, [review], set()),
+                    ("pass_requires_reassessment", []))
+
+    def test_unchanged_non_text_fixture_preserves_changed_text_dependencies(self):
+        name, data, base, _ = self._committed_non_text_fixture()
+        (self.root / "product.py").write_text("source_value = 2\n", encoding="utf-8")
+        (self.root / "oracle.py").write_text("assert source_value == 2\n", encoding="utf-8")
+        self.run_git("add", "product.py", "oracle.py")
+        self.run_git("commit", "-q", "-m", "changed text dependencies")
+        target = self.run_git("rev-parse", "HEAD")
+        snapshot = impact.GitSnapshot(self.root, target)
+        self.assertEqual(impact.git(self.root, "show", target + ":" + name), data)
+        for relation in ("source_inputs", "definitions"):
+            with self.subTest(relation=relation):
+                record = copy.deepcopy(base)
+                record[relation].append({"path": name, "sha256": digest(data)})
+                result = impact.record_currency(record, target, self.lock, snapshot)
+                self.assertEqual(result["current_source_relation"], "historical_changed_or_unknown")
+                self.assertFalse(result["exact_source_inputs"])
+                self.assertEqual({row["path"]: row["status"] for row in result["changed_references"]},
+                                 {"product.py": "changed", "oracle.py": "changed", name: "non_text"})
+
+    def test_non_text_reference_does_not_abort_other_records(self):
+        name, data, base, snapshot = self._committed_non_text_fixture()
+        records = []
+        for index, relation in enumerate(("source_inputs", None, "definitions")):
+            record = copy.deepcopy(base)
+            record["id"] = "mixed-record-" + str(index)
+            if relation is not None:
+                record[relation].append({"path": name, "sha256": digest(data)})
+            records.append(record)
+        results = [impact.record_currency(record, snapshot.source, self.lock, snapshot)
+                   for record in records]
+        self.assertEqual([row["current_source_relation"] for row in results], [
+            "current_source_invalidated", "current_execution_candidate", "current_source_invalidated"])
+        self.assertEqual(results[1]["changed_references"], [])
+        self.assertTrue(results[1]["exact_source_inputs"])
+
+    def test_non_text_digest_stays_strict_and_unchanged_history_stays_unknown(self):
+        name, data, record, snapshot = self._committed_non_text_fixture()
+        for _ in range(2):
+            with self.assertRaises(UnicodeDecodeError):
+                snapshot.digest(name)
+        record["source_inputs"].append({"path": name, "sha256": digest(data)})
+        (self.root / "unrelated.py").write_text("pass\n", encoding="utf-8")
+        self.run_git("add", "unrelated.py")
+        self.run_git("commit", "-q", "-m", "unrelated source revision")
+        target = self.run_git("rev-parse", "HEAD")
+        result = impact.record_currency(record, target, self.lock,
+                                        impact.GitSnapshot(self.root, target))
+        self.assertEqual(result["current_source_relation"], "historical_changed_or_unknown")
+        self.assertEqual([row["status"] for row in result["changed_references"]], ["non_text"])
+
     def test_exact_git_source_and_sha_digest_match(self):
         self.assertEqual(self.snapshot.digest("product.py"), self.ref)
         self.assertEqual(impact.commit_sha(self.root, "HEAD"), self.first)

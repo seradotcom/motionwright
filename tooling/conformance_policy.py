@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import stat
 import zipfile
@@ -18,6 +19,8 @@ DIGEST = re.compile(r"[0-9a-f]{64}")
 RESULTS = {"pass", "partial", "fail", "not_run", "inconclusive", "stale"}
 KINDS = {"source", "unit", "synthetic", "integration", "native", "installed"}
 IMPLEMENTATIONS = {"implemented", "partial", "absent", "not_assessed"}
+# Only the complete evidence index receives this larger wire-size budget.
+MAX_EVIDENCE_INDEX_BYTES = 32 * 1024 * 1024
 
 
 def _object(value, label):
@@ -242,9 +245,25 @@ def load_evidence_index(root, descriptor):
     expected = _hex(descriptor.get("sha256"), DIGEST, "evidence index digest")
     if descriptor.get("digest_kind") != "git-text-lf":
         raise ValueError("tracked evidence index requires explicit Git text normalization")
-    if source_digest(path) != expected:
+    # Capture the bounded wire representation once so the checked digest and
+    # parsed claims cannot come from different reads of a changing file.
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_EVIDENCE_INDEX_BYTES + 1)
+    if not raw or len(raw) > MAX_EVIDENCE_INDEX_BYTES:
+        raise ValueError("evidence index size is out of bounds")
+    text = raw.decode("utf-8", errors="strict")
+    if hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest() != expected:
         raise ValueError("evidence index bytes do not match their digest")
-    data = _object(load_json(path), "evidence index")
+
+    def finite_number(token):
+        value = float(token)
+        if not math.isfinite(value):
+            raise ValueError("evidence index requires finite JSON numbers")
+        return value
+
+    data = _object(json.loads(text, object_pairs_hook=_pairs,
+                              parse_constant=finite_number,
+                              parse_float=finite_number), "evidence index")
     if data.get("schema") != "motionwright.technical-evidence/1":
         raise ValueError("unknown technical evidence schema")
     source_identity(data.get("source"))
@@ -303,8 +322,14 @@ def load_evidence_index(root, descriptor):
             path = public_file(root, source_input.get("path"), allow_missing=True)
             if path is None:
                 stale_inputs.append("product source input missing; reassess stale evidence")
-            elif source_digest(path) != expected_input:
-                stale_inputs.append("product source input changed; reassess stale evidence")
+            else:
+                try:
+                    observed_input = source_digest(path)
+                except UnicodeDecodeError:
+                    stale_inputs.append("non-text input cannot use Git-text normalization; product source evidence is stale")
+                else:
+                    if observed_input != expected_input:
+                        stale_inputs.append("product source input changed; reassess stale evidence")
         _strings(record.get("assertions"), "observed assertions", nonempty=True)
         execution = _object(record.get("execution"), "execution")
         if execution.get("kind") not in KINDS or execution.get("status") not in RESULTS:
@@ -329,8 +354,14 @@ def load_evidence_index(root, descriptor):
             definition_path = public_file(root, definition.get("path"), allow_missing=True)
             if definition_path is None:
                 stale_inputs.append("execution definition missing; reassess stale evidence")
-            elif source_digest(definition_path) != expected_definition:
-                stale_inputs.append("execution definition changed; reassess stale evidence")
+            else:
+                try:
+                    observed_definition = source_digest(definition_path)
+                except UnicodeDecodeError:
+                    stale_inputs.append("non-text input cannot use Git-text normalization; execution definition evidence is stale")
+                else:
+                    if observed_definition != expected_definition:
+                        stale_inputs.append("execution definition changed; reassess stale evidence")
         artifacts = record.get("artifacts")
         if not isinstance(artifacts, list) or not artifacts:
             raise ValueError("execution needs inspectable output artifacts")

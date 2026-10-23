@@ -636,6 +636,220 @@ class ConformancePolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing repository evidence"):
             policy.load_evidence_index(self.root, descriptor)
 
+    def _index_bytes_descriptor(self, raw):
+        path = self.root / "index.json"
+        path.write_bytes(raw)
+        return path, {"path": path.name,
+                      "sha256": digest(raw.replace(b"\r\n", b"\n")),
+                      "digest_kind": "git-text-lf"}
+
+    def test_evidence_index_accepts_exact_32_mib_wire_boundary(self):
+        limit = 32 * 1024 * 1024
+        self.assertEqual(policy.MAX_EVIDENCE_INDEX_BYTES, limit)
+        raw = json.dumps(self.index).encode("utf-8")
+        raw += b" " * (limit - len(raw))
+        path, descriptor = self._index_bytes_descriptor(raw)
+        self.assertEqual(path.stat().st_size, limit)
+        index, records = policy.load_evidence_index(self.root, descriptor)
+        self.assertEqual(index["source"], self.source)
+        self.assertEqual(records["source-execution"], self.index["records"][0])
+        self.assertEqual(index["human_reviews"], [])
+        self.assertEqual(self.assessment["contract_acceptance"]["status"], "open")
+
+    def test_oversized_index_uses_bounded_read_and_never_parses_claims(self):
+        limit = 32 * 1024 * 1024
+        raw = json.dumps(self.index).encode("utf-8")
+        raw += b" " * (limit + 1 - len(raw))
+        target, descriptor = self._index_bytes_descriptor(raw)
+        original_open = Path.open
+        sizes = []
+        self_test = self
+
+        class TrackedReader:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.stream.close()
+
+            def read(self, size=-1):
+                sizes.append(size)
+                self_test.assertEqual(size, limit + 1)
+                return self.stream.read(size)
+
+        def tracked_open(path, *args, **kwargs):
+            stream = original_open(path, *args, **kwargs)
+            return TrackedReader(stream) if path == target else stream
+
+        with patch.object(Path, "open", tracked_open), \
+             patch.object(policy.json, "loads") as parser:
+            with self.assertRaisesRegex(ValueError, "index size"):
+                policy.load_evidence_index(self.root, descriptor)
+            parser.assert_not_called()
+        self.assertEqual(sizes, [limit + 1])
+
+    def test_index_digest_and_claims_use_one_capture_despite_file_replacement(self):
+        self.index["capture_marker"] = "original"
+        first = json.dumps(self.index).encode("utf-8")
+        changed = copy.deepcopy(self.index)
+        changed["capture_marker"] = "replacement"
+        later = json.dumps(changed).encode("utf-8")
+        target, descriptor = self._index_bytes_descriptor(first)
+        original_open = Path.open
+        index_opens = []
+
+        class ReplaceAfterRead:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self.stream
+
+            def __exit__(self, *args):
+                self.stream.close()
+                with original_open(target, "wb") as replacement:
+                    replacement.write(later)
+
+        def replacing_open(path, *args, **kwargs):
+            stream = original_open(path, *args, **kwargs)
+            if path == target:
+                index_opens.append(args[0] if args else kwargs.get("mode", "r"))
+                if len(index_opens) == 1:
+                    return ReplaceAfterRead(stream)
+            return stream
+
+        with patch.object(Path, "open", replacing_open):
+            index, _ = policy.load_evidence_index(self.root, descriptor)
+        self.assertEqual(index["capture_marker"], "original")
+        self.assertEqual(index_opens, ["rb"])
+        self.assertEqual(target.read_bytes(), later)
+
+    def test_index_wire_crlf_matches_the_git_text_digest(self):
+        raw = (json.dumps(self.index, indent=2) + "\n").encode("utf-8")
+        raw = raw.replace(b"\n", b"\r\n")
+        self.assertNotEqual(digest(raw), digest(raw.replace(b"\r\n", b"\n")))
+        _, descriptor = self._index_bytes_descriptor(raw)
+        index, records = policy.load_evidence_index(self.root, descriptor)
+        self.assertEqual(index["source"], self.source)
+        self.assertEqual(records["source-execution"], self.index["records"][0])
+
+    def test_index_rejects_nonfinite_numbers_in_any_metadata(self):
+        valid = json.dumps(self.index).encode("utf-8")
+        for token in (b"NaN", b"Infinity", b"-Infinity", b"1e999", b"-1e999"):
+            with self.subTest(token=token):
+                raw = valid[:-1] + b',"invalid_number":' + token + b"}"
+                _, descriptor = self._index_bytes_descriptor(raw)
+                with self.assertRaisesRegex(ValueError, "finite JSON numbers"):
+                    policy.load_evidence_index(self.root, descriptor)
+
+    def test_bounded_index_keeps_duplicate_utf8_and_json_rejection(self):
+        valid = json.dumps(self.index).encode("utf-8")
+        cases = [
+            valid[:-1] + b',"schema":"motionwright.technical-evidence/1"}',
+            valid[:-1] + b',"bad_text":"\xff"}',
+            valid[:-1] + b",}",
+        ]
+        for number, raw in enumerate(cases):
+            with self.subTest(case=number):
+                _, descriptor = self._index_bytes_descriptor(raw)
+                with self.assertRaises(ValueError):
+                    policy.load_evidence_index(self.root, descriptor)
+
+
+
+
+    def _nontext_png_binding(self, field):
+        import struct
+        import zlib
+        def chunk(kind, body):
+            return (struct.pack(">I", len(body)) + kind + body +
+                    struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff))
+        # Complete synthetic 1x1 RGBA PNG, with valid chunk lengths and CRCs.
+        payload = (b"\x89PNG\r\n\x1a\n" +
+                   chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)) +
+                   chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00\xff")) +
+                   chunk(b"IEND", b""))
+        path = self.root / "synthetic-nontext.png"
+        path.write_bytes(payload)
+        self.index["records"][0][field] = [
+            {"path": path.name, "sha256": digest(payload)}]
+        self.populate_sufficiency()
+        return path
+
+    def test_source_digest_remains_strict_for_nontext_png(self):
+        path = self._nontext_png_binding("source_inputs")
+        with self.assertRaises(UnicodeDecodeError):
+            policy.source_digest(path)
+
+    def test_nontext_bindings_preserve_historical_records_and_reviews_as_stale(self):
+        starting_index = copy.deepcopy(self.index)
+        for field in ("source_inputs", "definitions"):
+            with self.subTest(field=field):
+                self.index = copy.deepcopy(starting_index)
+                self._nontext_png_binding(field)
+                historical_source = {**self.source, "motionwright_sha": "2" * 40}
+                self.index["records"][0]["source"] = historical_source
+                self.populate_sufficiency()
+                for review in self.index["sufficiency_reviews"]:
+                    review["source"] = copy.deepcopy(historical_source)
+                original_record = copy.deepcopy(self.index["records"][0])
+                original_reviews = copy.deepcopy(self.index["sufficiency_reviews"])
+                index, records = self.load_index()
+                self.assertEqual(policy.canonical_digest(records["source-execution"]),
+                                 policy.canonical_digest(original_record))
+                self.assertEqual(policy.canonical_digest(index["sufficiency_reviews"]),
+                                 policy.canonical_digest(original_reviews))
+                reasons = index["_stale_evidence_records"]["source-execution"]
+                self.assertTrue(any("non-text input cannot use Git-text normalization" in reason
+                                    for reason in reasons))
+                for review in original_reviews:
+                    self.assertTrue(any("non-text input cannot use Git-text normalization" in reason
+                                        for reason in index["_stale_sufficiency_reviews"][review["id"]]))
+                for criterion in self.assessment["criteria"]:
+                    criterion.update(status="stale", missing_assertions=["Non-text binding needs reassessment"])
+                self.assessment["technical_verification"]["status"] = "stale"
+                self.assessment["contract_acceptance"]["pending_criteria"] = list(self.ids)
+                policy.validate_assessment(self.assessment, "CR-FOUND-01", index, records)
+
+    def test_nontext_matching_raw_hash_cannot_complete_current_criterion(self):
+        starting_index = copy.deepcopy(self.index)
+        for field in ("source_inputs", "definitions"):
+            with self.subTest(field=field):
+                self.index = copy.deepcopy(starting_index)
+                path = self._nontext_png_binding(field)
+                self.assertEqual(self.index["records"][0][field][0]["sha256"],
+                                 digest(path.read_bytes()))
+                with self.assertRaisesRegex(ValueError, "non-text input cannot use Git-text normalization"):
+                    self.validate()
+
+    def test_nontext_staleness_does_not_bypass_artifact_digest_check(self):
+        starting_index = copy.deepcopy(self.index)
+        for field in ("source_inputs", "definitions"):
+            with self.subTest(field=field):
+                self.index = copy.deepcopy(starting_index)
+                self._nontext_png_binding(field)
+                (self.root / "result.json").write_bytes(b'{"observed":999}\n')
+                with self.assertRaisesRegex(ValueError, "artifact bytes"):
+                    self.load_index()
+
+    def test_nontext_staleness_does_not_bypass_review_binding_check(self):
+        starting_index = copy.deepcopy(self.index)
+        for field in ("source_inputs", "definitions"):
+            with self.subTest(field=field):
+                self.index = copy.deepcopy(starting_index)
+                self._nontext_png_binding(field)
+                self.index["sufficiency_reviews"][0]["evidence_record_sha256"]["source-execution"] = "0" * 64
+                with self.assertRaisesRegex(ValueError, "evidence record changed after sufficiency review"):
+                    self.load_index()
+
+    def test_nontext_staleness_does_not_bypass_invalid_digest_identity(self):
+        self._nontext_png_binding("source_inputs")
+        self.index["records"][0]["source_inputs"][0]["sha256"] = "invalid"
+        with self.assertRaisesRegex(ValueError, "product source digest has an invalid identity"):
+            self.load_index()
 
 if __name__ == "__main__":
     unittest.main()
