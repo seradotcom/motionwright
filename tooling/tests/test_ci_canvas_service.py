@@ -1,5 +1,6 @@
 """Negative controls for the mandatory real-service browser selection."""
 import copy
+import json
 import io
 import importlib.util
 import re
@@ -1307,7 +1308,7 @@ class ClosedStudioArchiveTests(unittest.TestCase):
     def test_long_unicode_names_retain_exact_streamed_member_bytes(self):
         with tempfile.TemporaryDirectory(prefix="studio-archive-control-") as directory:
             root, source, _ = self.fixture(directory)
-            name = "e/" + "long-" * 24 + "á.json"
+            name = "e/" + "long-" * 24 + "Ã¡.json"
             (root / name).write_bytes(b"synthetic unicode-path payload")
             result = self.retained(root, source)
             self.assertEqual(result["status"], "PASS", result)
@@ -1451,7 +1452,7 @@ class BrowserContractSelectionTests(unittest.TestCase):
         self.assertEqual(gate.selection_plan("authoring-drafts")["required_tests"], 39)
         plan = gate.selection_plan("browser-contracts")
         self.assertEqual(plan["scope"], "EXPLICIT_SYNTHETIC_BROWSER_CONTRACTS")
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 182)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 182 + 60)
         self.assertEqual(len(plan["excluded_service_cases"]), 4)
         self.assertTrue(all(row["technical_credit"] == "NONE"
                             for row in plan["not_selected"] + plan["excluded_service_cases"]))
@@ -1648,7 +1649,7 @@ class BrowserContractSelectionTests(unittest.TestCase):
         job = workflow.split("  real-service:\n", 1)[1]
         self.assertEqual(re.findall(r"^    if: (.+)$", job, re.MULTILINE),
                          ["github.event_name == 'workflow_dispatch'"])
-        self.assertGreaterEqual(job.count("!contains(fromJSON('[\"browser-contracts\",\"creative-production-browser\",\"review-browser\"]'), matrix.selection)"), 2)
+        self.assertGreaterEqual(job.count("!contains(fromJSON('[\"browser-contracts\",\"creative-production-browser\",\"review-browser\",\"workflow-preview-browser\"]'), matrix.selection)"), 2)
         self.assertIn("matrix.selection == 'browser-contracts' && 240", job)
         self.assertIn('tooling/ci_canvas_service.py archive --repo . --evidence ../v', job)
         self.assertIn("id: archive\n        if: success()", job)
@@ -2003,7 +2004,7 @@ class CreativeProductionScopeTests(unittest.TestCase):
         self.assertEqual(plan["required_tests"], 58)
         self.assertEqual(plan["discovery_tests"], 58)
         self.assertEqual(plan["excluded_service_cases"], [])
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 153 + 148 + 29)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 153 + 148 + 29 + 60)
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
                             for row in plan["not_selected"]))
         for selection in ("creative-production-browser ", "browser-creative-production", "creative-production-browser,all"):
@@ -2200,7 +2201,7 @@ class CreativeProductionScopeTests(unittest.TestCase):
         self.assertEqual(workflow.count('ci_canvas_service.py unit-build --repo . --output ../v/unit-build'), 1)
         self.assertIn("github.event_name == 'workflow_dispatch'", unit)
         self.assertIn("needs: g0", unit)
-        self.assertIn("studio-${{ inputs.selection == 'review' && 'review' || 'creative' }}-unit-build-${{ github.sha }}-", unit)
+        self.assertIn("studio-${{ inputs.selection == 'workflow-preview-browser' && 'workflow-preview' || inputs.selection == 'review' && 'review' || 'creative' }}-unit-build-${{ github.sha }}-", unit)
         self.assertNotIn('npm test', unit)
         self.assertGreater(360 * 60, 1200 + sum(gate.SELECTION_TIMEOUTS[row[0]] for row in gate.PROJECT_AUTHORING_SELECTIONS) + 1200)
         self.assertGreater(90 * 60, 1200 + 1140 + 1260 + 1200)
@@ -2211,7 +2212,7 @@ class CreativeProductionStoreTests(unittest.TestCase):
     """Retain synthetic fixtures to check every new case/store binding independently."""
 
     def fixture(self, directory, selection="creative-production"):
-        self.assertIn(selection, ("creative-production", "review"))
+        self.assertIn(selection, ("creative-production", "review", "workflow-preview"))
         rows = EXPECTED_CREATIVE_SERVICE if selection == "creative-production" else (
             ("review", "review-service.spec.ts", gate.REVIEW_TITLES),)
         old = ClosedStudioArchiveTests()
@@ -2535,9 +2536,10 @@ class CreativeProductionUnitTests(unittest.TestCase):
     """Original reporter and process-invocation contracts, using synthetic files only."""
 
     def document(self, studio, selection="creative-production"):
-        self.assertIn(selection, ("creative-production", "review"))
-        rows = EXPECTED_CREATIVE_UNITS if selection == "creative-production" else gate.REVIEW_UNITS
-        count = 67 if selection == "creative-production" else 72
+        self.assertIn(selection, ("creative-production", "review", "workflow-preview"))
+        rows, count = {"creative-production": (EXPECTED_CREATIVE_UNITS, 67),
+                       "review": (gate.REVIEW_UNITS, 72),
+                       "workflow-preview": (gate.WORKFLOW_PREVIEW_UNITS, 79)}[selection]
         return {"success": True, "numTotalTests": count, "numPassedTests": count,
                 "numFailedTests": 0, "numPendingTests": 0, "numTodoTests": 0,
                 "numFailedTestSuites": 0, "numPendingTestSuites": 0,
@@ -2699,7 +2701,7 @@ class ReviewScopeTests(unittest.TestCase):
         self.assertEqual(gate.selection_plan("creative-production")["required_tests"], 17)
         plan = gate.selection_plan("review-browser")
         self.assertEqual(plan["discovery_tests"], 29)
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 359)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 359 + 60)
         self.assertEqual(plan["excluded_service_cases"], [])
         self.assertTrue(all(row["technical_credit"] == "NONE" for row in plan["not_selected"]))
         with self.assertRaises(ValueError):
@@ -2949,6 +2951,154 @@ class ReviewScopeTests(unittest.TestCase):
                             gate.source_observation(repo, "review-browser")
                     finally:
                         path.write_bytes(raw)
+
+
+
+class WorkflowPreviewScopeTests(unittest.TestCase):
+    def test_recovery_rosters_are_closed_and_historical_scopes_unchanged(self):
+        units = gate.selected_unit_inventory("workflow-preview")
+        self.assertEqual([len(titles) for _, titles in units], [60, 15, 4])
+        browser = gate.browser_selections("workflow-preview-browser")
+        self.assertEqual([(name, len(titles)) for _, name, titles in browser], [
+            ("program-av-monitor.spec.ts", 2), ("workflow-action-recovery.spec.ts", 33),
+            ("preview-recovery.spec.ts", 27)])
+        self.assertEqual(browser[0], next(row for row in gate.BROWSER_SELECTIONS
+                                         if row[1] == "program-av-monitor.spec.ts"))
+        self.assertEqual(sum(len(titles) for _, _, titles in gate.browser_selections("browser-contracts")), 206)
+        self.assertEqual(sum(len(titles) for _, titles in gate.selected_unit_inventory("creative-production")), 67)
+        self.assertEqual(sum(len(titles) for _, titles in gate.selected_unit_inventory("review")), 72)
+
+    def test_recovery_unit_report_rejects_omitted_foreign_skipped_duplicate_cases(self):
+        studio = Path("/repo/apps/studio")
+        document = CreativeProductionUnitTests().document(studio, "workflow-preview")
+        self.assertEqual(gate.validate_creative_production_units(document, studio, "workflow-preview")["passed"], 79)
+        for mutation in ("missing", "foreign", "skip", "duplicate", "summary", "file"):
+            changed = copy.deepcopy(document)
+            rows = changed["testResults"][0]["assertionResults"]
+            if mutation == "missing": rows.pop()
+            elif mutation == "foreign": rows[0]["title"] = "foreign"
+            elif mutation == "skip": rows[0]["status"] = "pending"
+            elif mutation == "duplicate": rows[-1] = copy.deepcopy(rows[0])
+            elif mutation == "summary": changed["numPassedTests"] = 78
+            else: changed["testResults"][0]["name"] = str(studio / "foreign.test.ts")
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.validate_creative_production_units(changed, studio, "workflow-preview")
+
+    def test_recovery_browser_discovery_and_originals_require_exact_cases(self):
+        fixture = BrowserContractSelectionTests()
+        scope = "workflow-preview-browser"
+        gate.validate_browser_discovery(fixture.discovery_document(scope), scope)
+        for label, filename, titles in gate.browser_selections(scope):
+            document = fixture.executed_document(filename, titles, scope)
+            self.assertEqual(gate.validate_browser_execution(document, filename, titles)["passed"], len(titles))
+            command = gate.browser_command("node", Path("cli"), Path("out"), (label, filename, titles), scope=scope)
+            self.assertIn("--retries=0", command)
+            self.assertIn("--workers=1", command)
+            grep = re.compile(command[command.index("--grep") + 1])
+            self.assertTrue(all(grep.fullmatch(" ".join(gate.browser_full_title_path(filename, title)))
+                                for title in titles))
+
+    def test_recovery_browser_rejects_retry_skip_failure_and_foreign_identity(self):
+        fixture = BrowserContractSelectionTests()
+        def specs(suites):
+            return [spec for suite in suites for spec in [*suite.get("specs", []), *specs(suite.get("suites", []))]]
+        for _, filename, titles in gate.browser_selections("workflow-preview-browser"):
+            original = fixture.executed_document(filename, titles, "workflow-preview-browser")
+            for mutation in ("retry", "skip", "failure", "foreign", "tag", "duplicate-result", "browser"):
+                changed = copy.deepcopy(original)
+                row = specs(changed["suites"])[0]
+                case = row["tests"][0]
+                if mutation == "retry": case["results"][0]["retry"] = 1
+                elif mutation == "skip": case["expectedStatus"] = "skipped"
+                elif mutation == "failure": case["results"][0]["status"] = "failed"
+                elif mutation == "foreign": row["title"] = "foreign"
+                elif mutation == "tag": row["tags"] = ["@foreign"]
+                elif mutation == "duplicate-result": case["results"].append(copy.deepcopy(case["results"][0]))
+                else: case["projectName"] = "firefox"
+                with self.subTest(file=filename, mutation=mutation), self.assertRaises(ValueError):
+                    gate.validate_browser_execution(changed, filename, titles)
+
+    def test_recovery_source_scope_includes_shared_custody_and_actual_test_sources(self):
+        paths = set(gate.WORKFLOW_PREVIEW_SOURCE_PATHS)
+        self.assertTrue({"apps/desktop/src-tauri/src/workflow_native.rs", "apps/desktop/src-tauri/src/main.rs",
+                         "apps/desktop/src-tauri/src/effect_grants.rs", "crates/native/src/production.rs",
+                         "crates/native/tests/desktop_workflow_route.rs", "apps/studio/src/previewRecovery.ts",
+                         "apps/studio/src/workflowActionDraft.ts", "apps/studio/src/WorkflowWorkspace.tsx",
+                         "apps/studio/src/App.tsx", "apps/studio/tests/preview-recovery.spec.ts",
+                         "apps/studio/tests/workflow-action-recovery.spec.ts"}.issubset(paths))
+        for name in paths:
+            self.assertTrue((PATH.parents[1] / name).is_file(), name)
+
+    @staticmethod
+    def route_log():
+        return "".join(f"test {name} ... ok\n" for name in gate.WORKFLOW_ROUTE_CASES) + (
+            "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.1s\n")
+
+    def test_native_closed_roster_includes_all_nine_routes_and_eleven_grants(self):
+        self.assertEqual(len(gate.WORKFLOW_ROUTE_CASES), 20)
+        self.assertEqual(sum(name.startswith("effect_grants::") for name in gate.WORKFLOW_ROUTE_CASES), 11)
+        self.assertEqual(sum(name.startswith("routed::") for name in gate.WORKFLOW_ROUTE_CASES), 8)
+        result = gate.validate_workflow_route_output(0, self.route_log())
+        self.assertEqual(result["passed"], 20)
+        self.assertFalse(result["formal_acceptance"])
+        self.assertEqual(result["native_application_execution"], "NOT_RUN")
+
+    def test_native_original_rejects_missing_foreign_duplicate_and_ignored_case(self):
+        original = self.route_log()
+        first, second = gate.WORKFLOW_ROUTE_CASES[:2]
+        variants = [original.replace(f"test {first} ... ok\n", ""),
+                    original.replace(f"test {first} ... ok", "test foreign ... ok"),
+                    original.replace(f"test {first} ... ok", f"test {second} ... ok"),
+                    original.replace(f"test {first} ... ok", f"test {first} ... ignored"),
+                    original.replace("0 filtered out", "1 filtered out"),
+                    original.replace("20 passed", "19 passed"),
+                    original.replace("0 failed", "1 failed")]
+        for value in variants:
+            with self.assertRaises(ValueError): gate.validate_workflow_route_output(0, value)
+
+    def test_native_original_rejects_exit_failure_missing_or_multiple_summaries(self):
+        original = self.route_log()
+        for code, value in [(1, original), (False, original), (0, original.split("test result:")[0]),
+                            (0, original + original.splitlines()[-1] + "\n")]:
+            with self.assertRaises(ValueError): gate.validate_workflow_route_output(code, value)
+
+    def test_native_historical_nine_only_is_not_whole_target_execution(self):
+        names = [name for name in gate.WORKFLOW_ROUTE_CASES if not name.startswith("effect_grants::")]
+        value = "".join(f"test {name} ... ok\n" for name in names) + (
+            "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out;\n")
+        with self.assertRaises(ValueError): gate.validate_workflow_route_output(0, value)
+
+    def test_native_unknown_stops_without_further_command_or_source_readback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            repo.mkdir()
+            tool = root / "rustup"
+            tool.write_bytes(b"controlled test executable identity")
+            output = root / "out"
+            command = {"exit_code": None, "observation": "UNKNOWN_TIMEOUT_NO_RETRY",
+                       "process_observation_schema": gate.PROCESS_OBSERVATION_SCHEMA,
+                       "process_boundary": "OWNED_POSIX_SESSION_GROUP", "pid": 111}
+            with mock.patch.object(gate.sys, "platform", "linux"), \
+                 mock.patch.object(gate, "source_observation", return_value={"source": "fixture"}) as source, \
+                 mock.patch.object(gate.shutil, "which", return_value=str(tool)), \
+                 mock.patch.object(gate, "execute", return_value=command) as execute:
+                self.assertEqual(gate.run_workflow_route(repo, output), 1)
+            self.assertEqual(source.call_count, 1)
+            self.assertEqual(execute.call_count, 1)
+            receipt = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "UNKNOWN")
+            self.assertNotIn("source_after", receipt)
+            self.assertNotIn("route_contracts", receipt)
+            self.assertFalse(receipt["formal_acceptance"])
+
+    def test_new_workflow_uses_existing_observer_and_never_claims_tauri_launch(self):
+        workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text(encoding="utf-8")
+        self.assertIn('ci_canvas_service.py workflow-route --repo . --output ../v/native-route', workflow)
+        self.assertIn("inputs.selection == 'workflow-preview-browser'", workflow)
+        self.assertIn("include-hidden-files: true", workflow)
+        self.assertIn("if-no-files-found: warn", workflow)
+        self.assertNotIn("--ignore", workflow)
 
 
 if __name__ == "__main__":

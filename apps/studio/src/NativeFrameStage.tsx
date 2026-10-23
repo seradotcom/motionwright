@@ -7,8 +7,9 @@ import {
   previewTier, requireBoundedNativePng,
 } from "./nativeProgressivePreview";
 import type { Project } from "./types";
+import type { DecodedPreviewFrame } from "./previewRecovery";
 
-interface PresentedFrame { frameIndex: number; url: string; scope: string }
+interface PresentedFrame { frameIndex: number; url: string; scope: string; bytes: Uint8Array }
 interface FrameProblem { frameIndex: number; message: string }
 
 function imageUrl(bytes: Uint8Array): string {
@@ -24,15 +25,20 @@ function imageUrl(bytes: Uint8Array): string {
  * An old verified frame can be held but must never be labeled current.
  */
 export default function NativeFrameStage({
-  project,selection,editorialPlaying,
+  project,selection,editorialPlaying,onDecoded,
 }:{
   project:Project;
   selection:NativeFrameSelection;
   editorialPlaying:boolean;
+  onDecoded?:(frame:DecodedPreviewFrame)=>void;
 }) {
   const scope=[
-    project.id,project.generation,project.revision,selection.token,selection.segmentId,
+    project.id,project.generation,project.active_branch,project.revision,selection.token,selection.segmentId,
   ].join(":");
+  const activeScope=useRef(scope);
+  activeScope.current=scope;
+  const decodedCallback=useRef(onDecoded);
+  decodedCallback.current=onDecoded;
   const [presented,setPresented]=useState<PresentedFrame|null>(null);
   const [failure,setFailure]=useState<FrameProblem|null>(null);
   const [reading,setReading]=useState(false);
@@ -77,7 +83,7 @@ export default function NativeFrameStage({
       const url=imageUrl(bytes);
       const prior=currentUrl;
       currentUrl=url;
-      const ready={frameIndex:index,url,scope};
+      const ready={frameIndex:index,url,scope,bytes:new Uint8Array(bytes)};
       latestFrame.current=ready;
       setPresented(ready);
       setFailure(null);
@@ -139,11 +145,12 @@ export default function NativeFrameStage({
     const timer=window.setInterval(tick,45);
     return ()=>{
       disposed=true;
+      latestFrame.current=null;
       window.clearInterval(timer);
       cache.current.clear();
       if(currentUrl)URL.revokeObjectURL(currentUrl);
     };
-  },[scope,project.id,project.generation,project.revision,selection.token,selection.segmentId]);
+  },[scope,project.id,project.generation,project.active_branch,project.revision,selection.token,selection.segmentId]);
 
   const ready=presented?.scope===scope?presented:null;
   const exact=ready?.frameIndex===selection.frameIndex;
@@ -154,6 +161,13 @@ export default function NativeFrameStage({
     {ready&&<img className="native-frame-image" src={ready.url}
       alt={"Verified native rendered PNG · "+actual}
       draggable={false}
+      onLoad={event=>{
+        if(activeScope.current!==ready.scope||latestFrame.current?.url!==ready.url)return;
+        const image=event.currentTarget;
+        if(image.naturalWidth<1||image.naturalHeight<1)return;
+        decodedCallback.current?.({bytes:new Uint8Array(ready.bytes),frameIndex:ready.frameIndex,
+          frameCount:selection.frameCount,pixelWidth:image.naturalWidth,pixelHeight:image.naturalHeight});
+      }}
       onError={()=>{
         if(latestFrame.current?.url!==ready.url)return;
         failedFrame.current=ready.frameIndex;

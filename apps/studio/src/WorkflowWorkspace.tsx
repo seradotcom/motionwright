@@ -12,8 +12,13 @@ import {
   TriangleAlert,
   Workflow,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { workflowAction, workflowOverview } from "./api";
+import WorkflowActionRecovery from "./WorkflowActionRecovery";
+import { acknowledgeWorkflowSubmission, editWorkflowField, forkWorkflowWriter, guardWorkflowDispatch, openWorkflowSession,
+  persistWorkflowSession, prepareWorkflowSubmission, retainWorkflowFailure, workflowCandidateField, workflowDiagnostic,
+  workflowRaw, workflowScope, workflowStamp, WorkflowNotDispatchedError } from "./workflowActionDraft";
+import type { WorkflowSession, WorkflowStore, WorkflowPointers, WorkflowSubmission } from "./workflowActionDraft";
 import type {
   Project,
   WorkflowAction as WorkflowActionName,
@@ -91,17 +96,26 @@ function slugify(value: string) {
   return /^[a-z][a-z0-9-]{0,38}[a-z0-9]$/.test(slug) ? slug : "";
 }
 
-function recordingStorageKey(projectId: string) {
-  return "motionwright.workflow.recording." + projectId;
+type LiveWorkflow = WorkflowSession & { inFlight: boolean; error: string | null; backupError: string | null;
+  receipt: WorkflowActionResult | null; notify?: () => void };
+const liveWorkflows = new Map<string, LiveWorkflow>();
+const workflowStorage: WorkflowStore = {
+  get length() { return window.localStorage.length; }, key: index => window.localStorage.key(index),
+  getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value),
+};
+const workflowPointers: WorkflowPointers = {
+  getItem: key => window.sessionStorage.getItem(key), setItem: (key, value) => window.sessionStorage.setItem(key, value),
+};
+function workflowSession(project: Project): LiveWorkflow {
+  const scope = workflowScope(project), previous = liveWorkflows.get(scope); if (previous) return previous;
+  const opened = openWorkflowSession(project, workflowStorage, workflowPointers);
+  const session: LiveWorkflow = { ...opened, inFlight: false, error: null, receipt: null,
+    backupError: opened.failedSource ? "The selected workflow recovery copy could not be read. Retry that exact copy before sending." : null };
+  liveWorkflows.set(scope, session); return session;
 }
-
-function storedRecording(projectId: string) {
-  if (typeof sessionStorage === "undefined") return false;
-  try {
-    return sessionStorage.getItem(recordingStorageKey(projectId)) === "active";
-  } catch {
-    return false;
-  }
+function backupWorkflow(session: LiveWorkflow): boolean {
+  try { persistWorkflowSession(session, workflowStorage, workflowPointers); session.backupError = null; return true; }
+  catch (error) { session.backupError = workflowDiagnostic(error); return false; }
 }
 
 function WorkflowList({
@@ -152,37 +166,62 @@ function WorkflowList({
 }
 
 export default function WorkflowWorkspace({ project }: { project: Project }) {
+  const currentProject = useRef(project); currentProject.current = project;
+  return <WorkflowOwner key={workflowScope(project)} project={project} currentProject={currentProject} />;
+}
+function WorkflowOwner({ project, currentProject }: { project: Project; currentProject: { current: Project } }) {
+  const session = workflowSession(project), mounted = useRef(true);
+  const [, repaint] = useState(0);
   const [overview, setOverview] = useState<WorkflowOverview | null>(null);
+  const [overviewSource, setOverviewSource] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<WorkflowActionResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
-  const [busy, setBusy] = useState<WorkflowActionName | null>(null);
   const [writesEnabled, setWritesEnabled] = useState(false);
-  const [recording, setRecording] = useState(() => storedRecording(project.id));
-  const [recordName, setRecordName] = useState("Motionwright routine");
-  const [recordIntent, setRecordIntent] = useState("");
-  const [captureValues, setCaptureValues] = useState(false);
-  const [selectedTraceIds, setSelectedTraceIds] = useState<string[]>([]);
-  const [compileName, setCompileName] = useState("");
-  const [compileDescription, setCompileDescription] = useState("");
-  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
-  const [replayInputs, setReplayInputs] = useState("{}");
-  const [promotionSlug, setPromotionSlug] = useState("");
+  useEffect(() => {
+    mounted.current = true; const notify = () => repaint(value => value + 1); session.notify = notify;
+    return () => { mounted.current = false; if (session.notify === notify) session.notify = undefined; };
+  }, [session]);
+  const actionError = session.error, receipt = session.receipt, busy = session.inFlight;
+  const actionBlocked = busy || !!session.draft.pending || !!session.backupError || !!session.failedSource || !!session.custody.attempt;
+  const recording = workflowRaw(session.draft, "record.hint") === "active";
+  const recordName = workflowRaw(session.draft, "record.name", "Motionwright routine");
+  const recordIntent = workflowRaw(session.draft, "record.intent");
+  const captureValues = workflowRaw(session.draft, "record.capture", "false") === "true";
+  const traces: unknown = JSON.parse(workflowRaw(session.draft, "compile.traces", "[]"));
+  const selectedTraceIds = Array.isArray(traces) ? traces.filter((value): value is string => typeof value === "string") : [];
+  const compileName = workflowRaw(session.draft, "compile.name"), compileDescription = workflowRaw(session.draft, "compile.description");
+  const selectedCandidateId = workflowRaw(session.draft, "candidate.selected") || null;
+  const replayInputs = selectedCandidateId ? workflowRaw(session.draft, workflowCandidateField(selectedCandidateId, "inputs"), "{}") : "{}";
+  const promotionSlug = selectedCandidateId ? workflowRaw(session.draft, workflowCandidateField(selectedCandidateId, "slug")) : "";
+  function authored(key: string, raw: string) {
+    session.error = null;
+    try { editWorkflowField(session, key, raw); backupWorkflow(session); } catch (error) { session.error = workflowDiagnostic(error); }
+    session.notify?.();
+  }
+  const setRecordName = (raw: string) => authored("record.name", raw);
+  const setRecordIntent = (raw: string) => authored("record.intent", raw);
+  const setCaptureValues = (value: boolean) => authored("record.capture", String(value));
+  const setCompileName = (raw: string) => authored("compile.name", raw);
+  const setCompileDescription = (raw: string) => authored("compile.description", raw);
+  const setReplayInputs = (raw: string) => selectedCandidateId && authored(workflowCandidateField(selectedCandidateId, "inputs"), raw);
+  const setPromotionSlug = (raw: string) => selectedCandidateId && authored(workflowCandidateField(selectedCandidateId, "slug"), raw);
+  function setActionError(message: string | null) { session.error = message; session.notify?.(); }
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setError(null);
+    setOverview(null);
+    setOverviewSource(null);
     workflowOverview(project)
       .then((next) => {
-        if (active) setOverview(next);
+        if (active) { setOverview(next); setOverviewSource(workflowStamp(project)); }
       })
       .catch((reason) => {
         if (active) {
           setOverview(null);
-          setError(reason instanceof Error ? reason.message : String(reason));
+          setError(workflowDiagnostic(reason));
         }
       })
       .finally(() => {
@@ -192,15 +231,6 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
       active = false;
     };
   }, [project.id, project.generation, project.revision, refresh]);
-
-  useEffect(() => {
-    setRecording(storedRecording(project.id));
-    setWritesEnabled(false);
-    setSelectedTraceIds([]);
-    setSelectedCandidateId(null);
-    setReceipt(null);
-    setActionError(null);
-  }, [project.id]);
 
   const data = useMemo(() => {
     if (!overview) {
@@ -232,7 +262,7 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
     [data.candidates, selectedCandidateId],
   );
 
-  const available = overview?.status === "available";
+  const available = !loading && overviewSource === workflowStamp(project) && overview?.status === "available";
   const statusLabel =
     overview?.status === "available"
       ? "CANONICAL"
@@ -242,54 +272,72 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
           ? "BROWSER DEMO"
           : "READING";
 
-  async function runAction(
-    action: WorkflowActionName,
-    args: Record<string, unknown>,
-    after?: () => void,
-  ) {
-    if (!available) return;
-    setBusy(action);
-    setActionError(null);
+  async function runAction(action: WorkflowActionName, args: Record<string, unknown>) {
+    const current = currentProject.current;
+    if (!available || overviewSource !== workflowStamp(current) || actionBlocked || session.inFlight
+      || workflowScope(current) !== session.draft.scope || (action !== "proposal_plan" && !writesEnabled)) return;
+    session.inFlight = true; session.error = null; session.notify?.();
+    let submission: WorkflowSubmission | null = null;
     try {
-      const next = await workflowAction(project, action, args);
-      setReceipt(next);
-      after?.();
-      setRefresh((value) => value + 1);
-    } catch (reason) {
-      setActionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  function markRecording(active: boolean) {
-    setRecording(active);
-    if (typeof sessionStorage === "undefined") return;
-    try {
-      if (active) {
-        sessionStorage.setItem(recordingStorageKey(project.id), "active");
-      } else {
-        sessionStorage.removeItem(recordingStorageKey(project.id));
+      // Retain the current raw input before opening a fresh writer for its
+      // immutable original action. No identity is minted inside api.ts.
+      if (!backupWorkflow(session)) return;
+      forkWorkflowWriter(session);
+      const usedFields = action === "compile" ? ["compile.name", "compile.description", "compile.traces"]
+        : action === "record_start" ? ["record.name", "record.intent", "record.capture"]
+        : action === "replay" && selectedCandidateId ? ["candidate.selected", workflowCandidateField(selectedCandidateId, "inputs")]
+        : action === "promote" && selectedCandidateId ? ["candidate.selected", workflowCandidateField(selectedCandidateId, "slug")]
+        : action === "verify" ? ["candidate.selected"] : [];
+      submission = prepareWorkflowSubmission(session, current, action, args, usedFields);
+      if (!backupWorkflow(session)) {
+        retainWorkflowFailure(session, submission, new WorkflowNotDispatchedError(submission.request.request_id,
+          "No workflow action was invoked because its original recovery copy and pointer were not confirmed."));
+        return;
       }
-    } catch {
-      // Session storage is only a UI hint. Semwright remains authoritative.
+      const original = submission;
+      const next = await workflowAction(current, action, submission.request.args, submission.request.request_id, () => {
+        if (!mounted.current) throw new Error("The workflow editor was left before dispatch. Its original input was retained.");
+        guardWorkflowDispatch(session, original, currentProject.current, workflowStorage, workflowPointers);
+      });
+      session.receipt = acknowledgeWorkflowSubmission(session, original, next);
+      backupWorkflow(session);
+      if (mounted.current) setRefresh(value => value + 1);
+    } catch (reason) {
+      if (submission) {
+        retainWorkflowFailure(session, submission, reason);
+        backupWorkflow(session);
+      }
+      session.error = session.draft.pending?.diagnostic ?? workflowDiagnostic(reason);
+    } finally { session.inFlight = false; session.notify?.(); }
+  }
+  function recoveryOperation(operation: () => void) {
+    if (session.inFlight) {
+      session.error = "The original workflow action is still awaiting its reply. The imported or selected input was not applied; keep the file and try restoring after that invocation finishes.";
+      session.notify?.(); return;
     }
+    session.error = null;
+    try { operation(); session.backupError = null; }
+    catch (reason) {
+      session.error = workflowDiagnostic(reason);
+      if (session.custody.attempt || session.failedSource) session.backupError = session.error;
+    }
+    session.notify?.();
   }
-
   function toggleTrace(traceId: string, checked: boolean) {
-    setSelectedTraceIds((current) => {
-      if (!checked) return current.filter((id) => id !== traceId);
-      if (current.includes(traceId) || current.length >= 8) return current;
-      return [...current, traceId];
-    });
+    const current = selectedTraceIds;
+    const next = !checked ? current.filter(id => id !== traceId) : current.includes(traceId) || current.length >= 8 ? current : [...current, traceId];
+    authored("compile.traces", JSON.stringify(next));
   }
-
   function selectCandidate(candidate: Row, index: number) {
-    const id = identityFor(candidate, "candidate-" + index);
-    setSelectedCandidateId(id);
-    setReplayInputs("{}");
-    setPromotionSlug(slugify(titleFor(candidate)));
-    setActionError(null);
+    const id = identityFor(candidate, "candidate-" + index), inputKey = workflowCandidateField(id, "inputs"), slugKey = workflowCandidateField(id, "slug");
+    session.error = null;
+    try {
+      editWorkflowField(session, "candidate.selected", id);
+      if (!session.draft.fields[inputKey]) editWorkflowField(session, inputKey, "{}");
+      if (!session.draft.fields[slugKey]) editWorkflowField(session, slugKey, slugify(titleFor(candidate)));
+      backupWorkflow(session);
+    } catch (reason) { session.error = workflowDiagnostic(reason); }
+    session.notify?.();
   }
 
   function replaySelected() {
@@ -369,15 +417,18 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
         </div>
       ) : null}
 
-      {actionError ? (
+      {actionError && actionError !== session.draft.pending?.diagnostic ? (
         <div className="jobs-inline-error" role="alert">
           <TriangleAlert size={15} aria-hidden="true" />
           <div>
-            <strong>The canonical action did not complete.</strong>
+            <strong>The workflow action needs review.</strong>
             <span>{actionError}</span>
           </div>
         </div>
       ) : null}
+
+      <WorkflowActionRecovery session={session} storage={workflowStorage} pointers={workflowPointers} inFlight={session.inFlight}
+        backupError={session.backupError} onOperation={recoveryOperation} />
 
       <section className="workflow-summary-grid" aria-label="Workflow evidence summary">
         {[
@@ -419,10 +470,11 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
               <header>
                 <div>
                   <span className="section-label">V1 recorder</span>
-                  <strong>{recording ? "Recording active" : "Explicit capture only"}</strong>
+                  <strong>{recording ? "Recording start acknowledged previously" : "Explicit capture only"}</strong>
                 </div>
-                {recording ? <span className="status-pill status-stale">RECORDING</span> : null}
+                {recording ? <span className="status-pill status-stale">LOCAL HINT</span> : null}
               </header>
+              {recording && <p>The retained start response is a local hint. Only the connected workflow session determines whether recording is still active.</p>}
               <div className="workflow-form">
                 <label>
                   <span>Recording name</span>
@@ -462,11 +514,9 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
                       <button
                         className="button compact primary"
                         type="button"
-                        disabled={!writesEnabled || Boolean(busy)}
+                        disabled={!writesEnabled || actionBlocked}
                         onClick={() =>
-                          void runAction("record_stop", { successful: true }, () =>
-                            markRecording(false),
-                          )
+                          void runAction("record_stop", { successful: true })
                         }
                       >
                         <Square size={12} aria-hidden="true" />
@@ -475,11 +525,9 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
                       <button
                         className="button compact"
                         type="button"
-                        disabled={!writesEnabled || Boolean(busy)}
+                        disabled={!writesEnabled || actionBlocked}
                         onClick={() =>
-                          void runAction("record_stop", { successful: false }, () =>
-                            markRecording(false),
-                          )
+                          void runAction("record_stop", { successful: false })
                         }
                       >
                         Stop as failed
@@ -489,7 +537,7 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
                     <button
                       className="button compact primary"
                       type="button"
-                      disabled={!writesEnabled || Boolean(busy) || !recordName.trim()}
+                      disabled={!writesEnabled || actionBlocked || !recordName.trim()}
                       onClick={() =>
                         void runAction(
                           "record_start",
@@ -498,7 +546,6 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
                             intent: recordIntent.trim(),
                             capture_values: captureValues,
                           },
-                          () => markRecording(true),
                         )
                       }
                     >
@@ -567,7 +614,7 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
                   type="button"
                   disabled={
                     !writesEnabled ||
-                    Boolean(busy) ||
+                    actionBlocked ||
                     selectedTraceIds.length === 0 ||
                     !compileName.trim()
                   }
@@ -578,11 +625,6 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
                         trace_ids: selectedTraceIds,
                         name: compileName.trim(),
                         description: compileDescription.trim(),
-                      },
-                      () => {
-                        setSelectedTraceIds([]);
-                        setCompileName("");
-                        setCompileDescription("");
                       },
                     )
                   }
@@ -612,7 +654,7 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
                       <button
                         className="button compact"
                         type="button"
-                        disabled={Boolean(busy)}
+                        disabled={actionBlocked}
                         onClick={() =>
                           void runAction("proposal_plan", {
                             proposal_id: proposalId,
@@ -625,7 +667,7 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
                       <button
                         className="button compact"
                         type="button"
-                        disabled={!writesEnabled || Boolean(busy)}
+                        disabled={!writesEnabled || actionBlocked}
                         onClick={() =>
                           void runAction("proposal_accept", { proposal_id: proposalId })
                         }
@@ -652,7 +694,7 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
                     <button
                       className="button compact"
                       type="button"
-                      disabled={!writesEnabled || Boolean(busy)}
+                      disabled={!writesEnabled || actionBlocked}
                       onClick={() =>
                         void runAction("suggestion_compile", {
                           suggestion_id: suggestionId,
@@ -727,7 +769,7 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
             <button
               className="button compact"
               type="button"
-              disabled={!writesEnabled || Boolean(busy)}
+              disabled={!writesEnabled || actionBlocked}
               onClick={() =>
                 void runAction("verify", {
                   candidate_id: selectedCandidateId,
@@ -748,7 +790,7 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
             <button
               className="button compact primary"
               type="button"
-              disabled={!writesEnabled || Boolean(busy)}
+              disabled={!writesEnabled || actionBlocked}
               onClick={replaySelected}
             >
               <Play size={12} aria-hidden="true" />
@@ -768,7 +810,7 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
               type="button"
               disabled={
                 !writesEnabled ||
-                Boolean(busy) ||
+                actionBlocked ||
                 !/^[a-z][a-z0-9-]{0,38}[a-z0-9]$/.test(promotionSlug)
               }
               onClick={() =>
@@ -791,8 +833,10 @@ export default function WorkflowWorkspace({ project }: { project: Project }) {
               <span className="section-label">Last canonical receipt</span>
               <strong>{receipt.command}</strong>
             </div>
-            <span className="mono">{short(receipt.request_id, 48)}</span>
+            <span className="mono" style={{ overflowWrap: "anywhere" }}>Original request {receipt.request_id}</span>
           </header>
+          <p>Broker request <code>{receipt.broker_request_id}</code>; source r{receipt.receipt.identity.revision}; replayed {String(receipt.replayed)}.</p>
+          <details><summary>Recorded native receipt identity</summary><pre>{JSON.stringify(receipt.receipt, null, 2)}</pre></details>
           <pre>{JSON.stringify(receipt.result, null, 2)}</pre>
         </section>
       ) : null}

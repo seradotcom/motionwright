@@ -600,12 +600,7 @@ export type WorkflowAction =
   | "replay"
   | "promote";
 
-export interface WorkflowActionResult {
-  command: string;
-  request_id: string;
-  authority: Record<string, unknown> | null;
-  result: unknown;
-}
+export type { WorkflowActionResponse as WorkflowActionResult } from "./workflowActionDraft";
 
 export interface WorkflowOverview {
   status: WorkflowOverviewStatus;

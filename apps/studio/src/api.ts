@@ -17,6 +17,7 @@ import { registerIdentityOrigin, revokeIdentityOrigin, validateIdentityRegistry 
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
+import { assertWorkflowResponse, readWorkflowPayload, workflowCommand, workflowDiagnostic, workflowGrantToken, WorkflowNotDispatchedError } from "./workflowActionDraft";
 import { openProjectFromLibrary } from "./projectLibrary";
 import {
   importFileWithRetention, recoverFileImportWithRetention,
@@ -363,18 +364,6 @@ async function issueEffectGrant(
   });
 }
 
-const workflowCommand = (action: WorkflowAction): string => ({
-  record_start: "workflow.record.start",
-  record_stop: "workflow.record.stop",
-  compile: "workflow.compile",
-  suggestion_compile: "workflow.suggestion.compile",
-  proposal_plan: "workflow.proposal.plan",
-  proposal_accept: "workflow.proposal.accept",
-  verify: "workflow.verify",
-  replay: "workflow.replay",
-  promote: "workflow.promote",
-})[action];
-
 const desktopFileImport: FileImportTransport = {
   prepare: request => invoke("prepare_file_import", { request }),
   grant: preparation => issueEffectGrant("import_local", {
@@ -590,24 +579,31 @@ export async function workflowAction(
   project: Project,
   action: WorkflowAction,
   args: Record<string, unknown> = {},
+  requestId?: string,
+  beforeDispatch?: () => void,
 ): Promise<WorkflowActionResult> {
   if (!isTauri()) {
-    throw new Error("Canonical workflow actions require the Motionwright desktop runtime.");
+    throw new WorkflowNotDispatchedError(requestId ?? null, "Canonical workflow actions require the Motionwright desktop runtime.");
   }
-  const mutating = action !== "proposal_plan";
-  const grant = mutating
-    ? await issueEffectGrant("workflow_mutation", project, workflowCommand(action))
-    : null;
-  return invoke<WorkflowActionResult>("workflow_action", {
-    request: {
-      project_id: project.id,
-      generation: project.generation,
-      revision: project.revision,
-      action,
-      effect_grant: grant?.token ?? null,
-      args,
-    },
-  });
+  let payload: ReturnType<typeof readWorkflowPayload>, effectGrant: string | null = null;
+  try {
+    if (!requestId || !beforeDispatch) throw new Error("Retain the original workflow request identity and author copy before asking for permission.");
+    payload = readWorkflowPayload({ project_id: project.id, generation: project.generation, revision: project.revision,
+      request_id: requestId, action, args });
+    if (action !== "proposal_plan") {
+      const grant = await issueEffectGrant("workflow_mutation", project, workflowCommand(action));
+      effectGrant = workflowGrantToken(grant, payload);
+    }
+    // The original local copy, pointer and selected source must still match
+    // after permission resolves. This callback does not grant native authority.
+    beforeDispatch();
+  } catch (reason) {
+    throw new WorkflowNotDispatchedError(requestId ?? null, workflowDiagnostic(reason));
+  }
+  // No request identity is generated here, and no catch rewrites a structured
+  // native failure into a string. The native adapter owns the request digest.
+  const result = await invoke<unknown>("workflow_action", { request: { ...payload, effect_grant: effectGrant } });
+  return assertWorkflowResponse(result, payload);
 }
 
 /** Audit only already-imported project-bound blobs on demand. The WebView

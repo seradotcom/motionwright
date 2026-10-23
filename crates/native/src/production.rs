@@ -1230,6 +1230,22 @@ fn verified_manim_camera_getter_digest(
     Ok(Some(digest))
 }
 
+/// Backend-owned lifetime for the existing bounded receipt custody.
+/// Never serialize this handle or expose its private snapshot to the WebView.
+/// A retained terminal is not durable, a grant, or permission to redispatch.
+#[derive(Clone, Default)]
+pub struct ProductionReceiptCustody {
+    inner: receipt_custody::ReceiptCustody,
+}
+
+impl ProductionReceiptCustody {
+    /// Original unconfirmed terminals and storage diagnostics for backend-only
+    /// custody. The same existing slots/budget apply across handle clones.
+    pub fn private_snapshot(&self) -> Value {
+        self.inner.snapshot()
+    }
+}
+
 #[derive(Clone)]
 pub struct ProductionCoordinator {
     service: StudioService,
@@ -1241,10 +1257,20 @@ pub struct ProductionCoordinator {
 
 impl ProductionCoordinator {
     pub fn new(service: StudioService, connection: ProductionConnection) -> NativeResult<Self> {
+        Self::with_receipt_custody(service, connection, &ProductionReceiptCustody::default())
+    }
+
+    /// Reuse application-owned custody without keeping a stale connection or
+    /// creating another receipt store. Each connection is still validated.
+    pub fn with_receipt_custody(
+        service: StudioService,
+        connection: ProductionConnection,
+        custody: &ProductionReceiptCustody,
+    ) -> NativeResult<Self> {
         Ok(Self {
             service,
             client: ProductionClient::new(connection)?,
-            receipt_custody: receipt_custody::ReceiptCustody::default(),
+            receipt_custody: custody.inner.clone(),
             #[cfg(test)]
             before_dispatch_admission: None,
         })

@@ -901,10 +901,323 @@ REVIEW_BROWSER_TITLES = ('causal: raw comment and incomplete range survive remou
 REVIEW_BROWSER_SELECTIONS = (
     ("browser-review", "review-preservation.spec.ts", REVIEW_BROWSER_TITLES),
 )
+# Explicit recovery checks remain separate from historical browser and service selections.
+WORKFLOW_PREVIEW_UNITS = (('src/workflowActionDraft.test.ts',
+  (('Original workflow caller custody \u2014 synthetic DTOs only',
+    'keeps caller identity exact and rejects whitespace, controls and UTF-8 overflow'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'decodes the closed request without a branch or effect-grant field in its retained source'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'refuses lossy non-JSON arguments while leaving incomplete author input verbatim'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'retains original action, source, args and raw field sequences before dispatch'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'cannot dispatch until the original pending copy, pointer and final readback are confirmed'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'rejects selection changes after permission was requested without changing original identity'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'does not let a saved or reconstructed invocation token acknowledge an original action'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'binds success to caller request, command, project, generation and original revision'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    "accepts the contract's arbitrary JSON authority value without widening the response shape"),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'requires the native success stage completed while keeping failure stages opaque'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'keeps UNKNOWN for malformed or foreign failures, even with a truthy outcome flag'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'decodes only the pinned SDK error codes, with a boolean outcome flag'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'does not turn absent, unavailable or unchecked receipts into permission to send'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'keeps a mismatched recorded failure UNKNOWN instead of borrowing another receipt'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'preserves a known failure of the original live invocation until an explicit local acknowledgment'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'reload cannot upgrade a prior unconfirmed action using a retained known-failure flag'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'only a local pre-invoke Error with this request id can establish NOT_SENT'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'keeps exact diagnostics instead of coercing structured native failures to Object text'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'acknowledges only the original Promise and preserves later edits field by field'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'retains a malformed success as UNKNOWN with all author input'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'uses a new writer on reload or duplicated tabs and never overwrites the inherited copy'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'fails closed on a missing or corrupt pointed copy and retains independent raw bytes'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'detects silent data writes and repairs only the original attempted copy without another identity'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'detects a silently dropped pointer and data corruption at the final readback'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'does not overwrite a changed copy or pointer and keeps later author text exportable'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'stores incomplete replay JSON and slug drafts separately for every candidate'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'merges imported UNKNOWN without dropping later local fields or executing a request'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'refuses importing a different original UNKNOWN over the current one'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'validates selected copy bytes again before restoring and refuses a changed source'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'rejects extra draft fields and forged native grant data rather than retaining executable '
+    'authority'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'checks the one-time grant source independently of its opaque token'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'shows a retained prior success as history while a different live action remains UNKNOWN'),
+   ('Original workflow caller custody \u2014 synthetic DTOs only',
+    'rejects sequence exhaustion without dropping input'),
+   ('Imported workflow UNKNOWN custody',
+    'keeps the imported original and later text when the first adoption write is silent'),
+   ('Imported workflow UNKNOWN custody',
+    'keeps the imported original and later text when the first adoption write is throw'),
+   ('Imported workflow UNKNOWN custody',
+    'keeps the imported original and later text when the first adoption write is write-then-throw'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'retains UNKNOWN after a known rejection with not_checked and after reload'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'decodes a retained FAILED_KNOWN claim with not_checked as UNKNOWN'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'refuses to close a FAILED_KNOWN claim with not_checked'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'retains UNKNOWN after a known rejection with not_observed and after reload'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'decodes a retained FAILED_KNOWN claim with not_observed as UNKNOWN'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'refuses to close a FAILED_KNOWN claim with not_observed'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'retains UNKNOWN after a known rejection with unavailable and after reload'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'decodes a retained FAILED_KNOWN claim with unavailable as UNKNOWN'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'refuses to close a FAILED_KNOWN claim with unavailable'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'retains UNKNOWN after a known rejection with dispatching and after reload'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'decodes a retained FAILED_KNOWN claim with dispatching as UNKNOWN'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'refuses to close a FAILED_KNOWN claim with dispatching'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'retains UNKNOWN after a known rejection with outcome_unknown and after reload'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'decodes a retained FAILED_KNOWN claim with outcome_unknown as UNKNOWN'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'refuses to close a FAILED_KNOWN claim with outcome_unknown'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'retains UNKNOWN after a known rejection with future-stage and after reload'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'decodes a retained FAILED_KNOWN claim with future-stage as UNKNOWN'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'refuses to close a FAILED_KNOWN claim with future-stage'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'retains UNKNOWN after a known rejection with completed and after reload'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'decodes a retained FAILED_KNOWN claim with completed as UNKNOWN'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'refuses to close a FAILED_KNOWN claim with completed'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'does not trust a failed_known receipt when the invocation itself is uncertain'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'retains the original bytes and blocks a legacy retired failure with an uncertain receipt'),
+   ('A known invocation rejection cannot settle an uncertain original workflow',
+    'does not decode or close NOT_SENT when a native failure contradicts that local claim'))),
+ ('src/previewRecovery.test.ts',
+  (('decoded preview recovery envelope',
+    'preserves bytes independently and hashes scope, source revision and metadata as well as PNG'),
+   ('decoded preview recovery envelope', 'rejects a different projectId and does not mutate its input'),
+   ('decoded preview recovery envelope',
+    'rejects a different generation and does not mutate its input'),
+   ('decoded preview recovery envelope', 'rejects a different branchId and does not mutate its input'),
+   ('decoded preview recovery envelope', 'rejects a different sceneId and does not mutate its input'),
+   ('decoded preview recovery envelope', 'rejects a different profileId and does not mutate its input'),
+   ('decoded preview recovery envelope', 'rejects future revisions and incomplete source metadata'),
+   ('decoded preview recovery envelope', 'rejects changed pixels with an otherwise intact envelope'),
+   ('decoded preview recovery envelope', 'rejects metadata corruption in sceneName'),
+   ('decoded preview recovery envelope', 'rejects metadata corruption in sourceRevision'),
+   ('decoded preview recovery envelope', 'rejects metadata corruption in frameIndex'),
+   ('decoded preview recovery envelope', 'rejects metadata corruption in pixelWidth'),
+   ('decoded preview recovery envelope', 'rejects metadata corruption in capturedAt'),
+   ('decoded preview recovery envelope',
+    'rejects authority fields instead of serializing a token or authorized path'),
+   ('decoded preview recovery envelope',
+    'bounds raw bytes, dimensions, frame count and numeric entry'))),
+ ('src/programMaster.test.ts',
+  (('source-bound Program AV monitor clock projection',
+    'maps current visual and audio masters to both eligible source scenes'),
+   ('source-bound Program AV monitor clock projection',
+    'rejects stale revisions, changed output profiles, unknown tokens and unrelated renderers'),
+   ('source-bound Program AV monitor clock projection',
+    'rejects silently reinterpreting a different frame rate, scene cut or master length'),
+   ('source-bound Program AV monitor clock projection',
+    'maps explicitly selected noncontiguous cuts onto authored project offsets'))))
+WORKFLOW_PREVIEW_BROWSER_SELECTIONS = (('browser-workflow-recovery',
+  'workflow-action-recovery.spec.ts',
+  ('raw recorder/compiler and separate candidate inputs survive navigation and reload without dispatch',
+   'the actual API sends the retained caller id and exact original args after a confirmed backup',
+   'incomplete replay JSON remains raw and cannot request a grant or invoke a workflow',
+   'native structured UNKNOWN diagnostics and original identity survive refresh, export and reload',
+   'a not-observed receipt cannot clear UNKNOWN or manufacture a retry route',
+   'reload while the reply is lost keeps the same operation with no automatic grant or dispatch',
+   'a success for another generation cannot acknowledge the retained action',
+   'an old unversioned success DTO remains unconfirmed instead of being treated as current authority',
+   'a non-completed receipt cannot acknowledge a live action even when every source identity matches',
+   'a known failure can be acknowledged explicitly without sending or losing the draft',
+   'a retained known-failure flag on reload does not resolve a previous UNKNOWN automatically',
+   'permission rejection before invoke is a local NOT_SENT result with the original request preserved',
+   'revision drift during permission prevents dispatch without rewriting the original source stamp',
+   'leaving the editor while permission is pending prevents a late dispatch',
+   "a late reply settles only its original owner and does not replace another generation's input",
+   'author changes made while a compile is pending survive acknowledgment and reload',
+   'same-turn duplicate clicks create one original request and one grant',
+   'a silently dropped pending backup invokes neither permission nor workflow and keeps raw input '
+   'exportable',
+   'final-copy corruption after pointer write cannot authorize dispatch or be overwritten by repair',
+   'importing an original UNKNOWN into another tab merges input and never dispatches it',
+   'a corrupt pointed recovery copy stays exportable and blocks new action identity',
+   'an import finishing during an original invocation reports that it was not applied and preserves '
+   'custody',
+   'plan-only uses the same original caller protocol without a mutation grant',
+   'a known rejection with not_checked cannot release the original workflow action',
+   'a known rejection with not_observed cannot release the original workflow action',
+   'a known rejection with unavailable cannot release the original workflow action',
+   'a known rejection with dispatching cannot release the original workflow action',
+   'a known rejection with outcome_unknown cannot release the original workflow action',
+   'a known rejection with future-stage cannot release the original workflow action',
+   'a known rejection with completed cannot release the original workflow action',
+   'an imported UNKNOWN survives a silent first adoption write and later author edits',
+   'an imported UNKNOWN survives a throw first adoption write and later author edits',
+   'an imported UNKNOWN survives a write-then-throw first adoption write and later author edits')),
+ ('browser-preview-recovery',
+  'preview-recovery.spec.ts',
+  ('revision changes retain the actually decoded previous PNG and label it not current',
+   'a real browser reload restores the stored Blob without reusing a native token',
+   'same-revision reopen remains historical and workspace navigation keeps the copy',
+   'a pending native read and concurrent revision change preserve the old PNG through disconnect and '
+   'reopen',
+   "another id cannot display or delete the old scope's preview",
+   "another generation cannot display or delete the old scope's preview",
+   "another active_branch cannot display or delete the old scope's preview",
+   'profile and scene selection never borrow retained pixels from another scope',
+   'a late native response after selection changed never becomes a recovery copy',
+   'PNG-shaped bytes that the browser cannot decode are never retained',
+   'a quota fault preserves the earlier durable copy and keeps the new image recoverably honest',
+   'retrying a failed recovery write confirms the latest decoded frame and preserves a peer',
+   'corrupt pixels fail readback, preserve raw rows and restore an earlier valid copy',
+   'a damaged own copy stays until explicit removal and a new decoded preview can be retained',
+   'a late persistence acknowledgement cannot replace a newer decoded image',
+   'a duplicated writer with the same timestamp cannot lose its concurrent immutable copy',
+   'the real record bound refuses a new copy without deleting other writers',
+   'an explicit AV choice and its in-flight component survive a scene boundary within the same master',
+   'an explicit AV choice suspends outside its cut without reads and resumes on return',
+   'AV authority id A-to-B-to-A never resurrects a previous explicit choice',
+   'AV authority generation A-to-B-to-A never resurrects a previous explicit choice',
+   'AV authority active_branch A-to-B-to-A never resurrects a previous explicit choice',
+   'AV authority revision A-to-B-to-A never resurrects a previous explicit choice',
+   'AV authority profile A-to-B-to-A never resurrects a previous explicit choice',
+   'AV authority frameToken A-to-B-to-A never resurrects a previous explicit choice',
+   'AV authority exportToken A-to-B-to-A never resurrects a previous explicit choice',
+   "a late frame from the former scene never becomes the current scene's recovery copy")))
+WORKFLOW_PREVIEW_SOURCE_PATHS = ('Cargo.lock',
+ 'apps/desktop/src-tauri/Cargo.toml',
+ 'apps/desktop/src-tauri/src/main.rs',
+ 'apps/desktop/src-tauri/src/workflow_native.rs',
+ 'apps/studio/src/App.tsx',
+ 'apps/studio/src/NativeFrameStage.tsx',
+ 'apps/studio/src/RetainedPreviewFrame.tsx',
+ 'apps/studio/src/WorkflowActionRecovery.tsx',
+ 'apps/studio/src/WorkflowWorkspace.tsx',
+ 'apps/studio/src/api.ts',
+ 'apps/studio/src/previewRecovery.test.ts',
+ 'apps/studio/src/previewRecovery.ts',
+ 'apps/studio/src/programMaster.test.ts',
+ 'apps/studio/src/programMaster.ts',
+ 'apps/studio/src/types.ts',
+ 'apps/studio/src/usePreviewRecovery.ts',
+ 'apps/studio/src/workflowActionDraft.test.ts',
+ 'apps/studio/src/workflowActionDraft.ts',
+ 'apps/studio/tests/fixtures/preview-recovery.html',
+ 'apps/studio/tests/fixtures/preview-recovery.tsx',
+ 'apps/studio/tests/fixtures/workflow-action-recovery.html',
+ 'apps/studio/tests/fixtures/workflow-action-recovery.tsx',
+ 'apps/studio/tests/preview-recovery.spec.ts',
+ 'apps/studio/tests/program-av-monitor.spec.ts',
+ 'apps/studio/tests/workflow-action-recovery.spec.ts',
+ 'crates/native/src/production.rs',
+ 'crates/native/tests/desktop_workflow_route.rs',
+ 'tooling/tests/test_ci_canvas_service.py')
+WORKFLOW_PREVIEW_SOURCE_PATHS += ("apps/desktop/src-tauri/src/effect_grants.rs",
+                                  "crates/native/Cargo.toml", "Cargo.toml")
+BROWSER_DESCRIBE_TITLES.update({('workflow-action-recovery.spec.ts', 'raw recorder/compiler and separate candidate inputs survive navigation and reload without dispatch'): (),
+ ('workflow-action-recovery.spec.ts', 'the actual API sends the retained caller id and exact original args after a confirmed backup'): (),
+ ('workflow-action-recovery.spec.ts', 'incomplete replay JSON remains raw and cannot request a grant or invoke a workflow'): (),
+ ('workflow-action-recovery.spec.ts', 'native structured UNKNOWN diagnostics and original identity survive refresh, export and reload'): (),
+ ('workflow-action-recovery.spec.ts', 'a not-observed receipt cannot clear UNKNOWN or manufacture a retry route'): (),
+ ('workflow-action-recovery.spec.ts', 'reload while the reply is lost keeps the same operation with no automatic grant or dispatch'): (),
+ ('workflow-action-recovery.spec.ts', 'a success for another generation cannot acknowledge the retained action'): (),
+ ('workflow-action-recovery.spec.ts', 'an old unversioned success DTO remains unconfirmed instead of being treated as current authority'): (),
+ ('workflow-action-recovery.spec.ts', 'a non-completed receipt cannot acknowledge a live action even when every source identity matches'): (),
+ ('workflow-action-recovery.spec.ts', 'a known failure can be acknowledged explicitly without sending or losing the draft'): (),
+ ('workflow-action-recovery.spec.ts', 'a retained known-failure flag on reload does not resolve a previous UNKNOWN automatically'): (),
+ ('workflow-action-recovery.spec.ts', 'permission rejection before invoke is a local NOT_SENT result with the original request preserved'): (),
+ ('workflow-action-recovery.spec.ts', 'revision drift during permission prevents dispatch without rewriting the original source stamp'): (),
+ ('workflow-action-recovery.spec.ts', 'leaving the editor while permission is pending prevents a late dispatch'): (),
+ ('workflow-action-recovery.spec.ts', "a late reply settles only its original owner and does not replace another generation's input"): (),
+ ('workflow-action-recovery.spec.ts', 'author changes made while a compile is pending survive acknowledgment and reload'): (),
+ ('workflow-action-recovery.spec.ts', 'same-turn duplicate clicks create one original request and one grant'): (),
+ ('workflow-action-recovery.spec.ts', 'a silently dropped pending backup invokes neither permission nor workflow and keeps raw input exportable'): (),
+ ('workflow-action-recovery.spec.ts', 'final-copy corruption after pointer write cannot authorize dispatch or be overwritten by repair'): (),
+ ('workflow-action-recovery.spec.ts', 'importing an original UNKNOWN into another tab merges input and never dispatches it'): (),
+ ('workflow-action-recovery.spec.ts', 'a corrupt pointed recovery copy stays exportable and blocks new action identity'): (),
+ ('workflow-action-recovery.spec.ts', 'an import finishing during an original invocation reports that it was not applied and preserves custody'): (),
+ ('workflow-action-recovery.spec.ts', 'plan-only uses the same original caller protocol without a mutation grant'): (),
+ ('workflow-action-recovery.spec.ts', 'a known rejection with not_checked cannot release the original workflow action'): (),
+ ('workflow-action-recovery.spec.ts', 'a known rejection with not_observed cannot release the original workflow action'): (),
+ ('workflow-action-recovery.spec.ts', 'a known rejection with unavailable cannot release the original workflow action'): (),
+ ('workflow-action-recovery.spec.ts', 'a known rejection with dispatching cannot release the original workflow action'): (),
+ ('workflow-action-recovery.spec.ts', 'a known rejection with outcome_unknown cannot release the original workflow action'): (),
+ ('workflow-action-recovery.spec.ts', 'a known rejection with future-stage cannot release the original workflow action'): (),
+ ('workflow-action-recovery.spec.ts', 'a known rejection with completed cannot release the original workflow action'): (),
+ ('workflow-action-recovery.spec.ts', 'an imported UNKNOWN survives a silent first adoption write and later author edits'): (),
+ ('workflow-action-recovery.spec.ts', 'an imported UNKNOWN survives a throw first adoption write and later author edits'): (),
+ ('workflow-action-recovery.spec.ts', 'an imported UNKNOWN survives a write-then-throw first adoption write and later author edits'): (),
+ ('preview-recovery.spec.ts', 'revision changes retain the actually decoded previous PNG and label it not current'): (),
+ ('preview-recovery.spec.ts', 'a real browser reload restores the stored Blob without reusing a native token'): (),
+ ('preview-recovery.spec.ts', 'same-revision reopen remains historical and workspace navigation keeps the copy'): (),
+ ('preview-recovery.spec.ts', 'a pending native read and concurrent revision change preserve the old PNG through disconnect and reopen'): (),
+ ('preview-recovery.spec.ts', "another id cannot display or delete the old scope's preview"): (),
+ ('preview-recovery.spec.ts', "another generation cannot display or delete the old scope's preview"): (),
+ ('preview-recovery.spec.ts', "another active_branch cannot display or delete the old scope's preview"): (),
+ ('preview-recovery.spec.ts', 'profile and scene selection never borrow retained pixels from another scope'): (),
+ ('preview-recovery.spec.ts', 'a late native response after selection changed never becomes a recovery copy'): (),
+ ('preview-recovery.spec.ts', 'PNG-shaped bytes that the browser cannot decode are never retained'): (),
+ ('preview-recovery.spec.ts', 'a quota fault preserves the earlier durable copy and keeps the new image recoverably honest'): (),
+ ('preview-recovery.spec.ts', 'retrying a failed recovery write confirms the latest decoded frame and preserves a peer'): (),
+ ('preview-recovery.spec.ts', 'corrupt pixels fail readback, preserve raw rows and restore an earlier valid copy'): (),
+ ('preview-recovery.spec.ts', 'a damaged own copy stays until explicit removal and a new decoded preview can be retained'): (),
+ ('preview-recovery.spec.ts', 'a late persistence acknowledgement cannot replace a newer decoded image'): (),
+ ('preview-recovery.spec.ts', 'a duplicated writer with the same timestamp cannot lose its concurrent immutable copy'): (),
+ ('preview-recovery.spec.ts', 'the real record bound refuses a new copy without deleting other writers'): (),
+ ('preview-recovery.spec.ts', 'an explicit AV choice and its in-flight component survive a scene boundary within the same master'): (),
+ ('preview-recovery.spec.ts', 'an explicit AV choice suspends outside its cut without reads and resumes on return'): (),
+ ('preview-recovery.spec.ts', 'AV authority id A-to-B-to-A never resurrects a previous explicit choice'): (),
+ ('preview-recovery.spec.ts', 'AV authority generation A-to-B-to-A never resurrects a previous explicit choice'): (),
+ ('preview-recovery.spec.ts', 'AV authority active_branch A-to-B-to-A never resurrects a previous explicit choice'): (),
+ ('preview-recovery.spec.ts', 'AV authority revision A-to-B-to-A never resurrects a previous explicit choice'): (),
+ ('preview-recovery.spec.ts', 'AV authority profile A-to-B-to-A never resurrects a previous explicit choice'): (),
+ ('preview-recovery.spec.ts', 'AV authority frameToken A-to-B-to-A never resurrects a previous explicit choice'): (),
+ ('preview-recovery.spec.ts', 'AV authority exportToken A-to-B-to-A never resurrects a previous explicit choice'): (),
+ ('preview-recovery.spec.ts', "a late frame from the former scene never becomes the current scene's recovery copy"): (),
+ ('program-av-monitor.spec.ts', 'Program AV monitor reads exact source token only for matching scene, profile and revision'): (),
+ ('program-av-monitor.spec.ts', 'browser demo cannot invent final AV monitoring from a semantic project'): ()})
+
 BROWSER_SCOPES = {
     "browser-contracts": tuple(row[0] for row in BROWSER_SELECTIONS),
     "creative-production-browser": ("browser-production-design", "browser-creative-workbench"),
     "review-browser": ("browser-review",),
+    "workflow-preview-browser": ("browser-program-av-monitor", "browser-workflow-recovery", "browser-preview-recovery"),
 }
 CREATIVE_PRODUCTION_SOURCE_PATHS = ('apps/studio/src/App.tsx',
  'apps/studio/src/CompositionStudy.tsx',
@@ -957,6 +1270,8 @@ BROWSER_SELECTION_TIMEOUTS = {label: 180 + 30 * len(titles) for label, _, titles
 # Retain the Workbench budget, including startup and every per-case bound.
 BROWSER_SELECTION_TIMEOUTS["browser-creative-workbench"] = 1260
 BROWSER_SELECTION_TIMEOUTS["browser-review"] = 1050
+BROWSER_SELECTION_TIMEOUTS.update({label: 180 + 30 * len(titles)
+                                   for label, _, titles in WORKFLOW_PREVIEW_BROWSER_SELECTIONS})
 
 
 CREATIVE_PRODUCTION_UNITS = (('src/productionDesignDraft.test.ts',
@@ -1249,9 +1564,12 @@ REVIEW_UNITS = (('src/reviewDraft.test.ts',
 
 
 def selected_unit_inventory(selection):
-    require(selection in ("creative-production", "review"), "unknown selected unit scope")
-    rows = CREATIVE_PRODUCTION_UNITS if selection == "creative-production" else REVIEW_UNITS
-    expected_files, expected_tests = (2, 67) if selection == "creative-production" else (1, 72)
+    require(selection in ("creative-production", "review", "workflow-preview"), "unknown selected unit scope")
+    rows, expected_files, expected_tests = {
+        "creative-production": (CREATIVE_PRODUCTION_UNITS, 2, 67),
+        "review": (REVIEW_UNITS, 1, 72),
+        "workflow-preview": (WORKFLOW_PREVIEW_UNITS, 3, 79),
+    }[selection]
     require(isinstance(rows, tuple) and len(rows) == expected_files
             and len({name for name, _ in rows}) == expected_files
             and sum(len(titles) for _, titles in rows) == expected_tests,
@@ -1316,7 +1634,8 @@ def selection_plan(selection):
                          for label, filename, titles in chosen],
             "not_selected": [{"label": label, "file": filename, "titles": list(titles),
                              "status": "NOT_SELECTED", "technical_credit": "NONE"}
-                             for label, filename, titles in (*SELECTIONS, *BROWSER_SELECTIONS, *REVIEW_BROWSER_SELECTIONS)
+                             for label, filename, titles in (*SELECTIONS, *BROWSER_SELECTIONS, *REVIEW_BROWSER_SELECTIONS,
+                                                            *WORKFLOW_PREVIEW_BROWSER_SELECTIONS)
                              if label not in labels],
             "excluded_service_cases": [{"file": filename, "title": title,
                                        "status": "NOT_SELECTED", "technical_credit": "NONE"}
@@ -1535,6 +1854,8 @@ def source_observation(repo, selection=None):
                                  "tooling/vite_editor_security_probe.mjs")))
     if is_browser_scope(selection):
         paths = tuple(dict.fromkeys((*paths, *BROWSER_SOURCE_PATHS)))
+    if selection == "workflow-preview-browser":
+        paths = tuple(dict.fromkeys((*paths, *WORKFLOW_PREVIEW_SOURCE_PATHS)))
     files = {}
     for name in paths:
         original = subprocess.check_output(["git", "show", head + ":" + name], cwd=repo, timeout=30)
@@ -2339,13 +2660,28 @@ def browser_selections(scope="browser-contracts"):
             and "browser-review" not in labels
             and "review-preservation.spec.ts" not in files,
             "Review browser inventory differs")
+    require(len(WORKFLOW_PREVIEW_BROWSER_SELECTIONS) == 2
+            and tuple((label, filename, len(titles)) for label, filename, titles
+                      in WORKFLOW_PREVIEW_BROWSER_SELECTIONS) == (
+                ("browser-workflow-recovery", "workflow-action-recovery.spec.ts", 33),
+                ("browser-preview-recovery", "preview-recovery.spec.ts", 27)),
+            "workflow and preview browser inventory differs")
+    for label, filename, titles in WORKFLOW_PREVIEW_BROWSER_SELECTIONS:
+        require(label not in labels and filename not in files
+                and isinstance(titles, tuple) and len(set(titles)) == len(titles)
+                and all(isinstance(title, str) and title for title in titles),
+                "workflow and preview browser identities differ")
+        labels.add(label)
+        files.add(filename)
     expected_labels, expected_count = {
         "browser-contracts": (tuple(row[0] for row in BROWSER_SELECTIONS), 206),
         "creative-production-browser": (("browser-production-design", "browser-creative-workbench"), 58),
         "review-browser": (("browser-review",), 29),
+        "workflow-preview-browser": (("browser-program-av-monitor", "browser-workflow-recovery", "browser-preview-recovery"), 62),
     }[scope]
     require(selected_labels == expected_labels, "browser scope inventory differs")
-    chosen = tuple(row for row in (*BROWSER_SELECTIONS, *REVIEW_BROWSER_SELECTIONS)
+    chosen = tuple(row for row in (*BROWSER_SELECTIONS, *REVIEW_BROWSER_SELECTIONS,
+                                    *WORKFLOW_PREVIEW_BROWSER_SELECTIONS)
                    if row[0] in selected_labels)
     require(len(chosen) == len(selected_labels), "browser scope has unknown or duplicate files")
     require(sum(len(row[2]) for row in chosen) == expected_count,
@@ -2605,7 +2941,8 @@ def validate_creative_production_units(document, studio, selection="creative-pro
 def run_creative_production_units(repo, output, selection="creative-production"):
     """Run the selected Vitest files and production build once for a composed SHA."""
     units = selected_unit_inventory(selection)
-    source_scope = "review-browser" if selection == "review" else "creative-production-browser"
+    source_scope = {"review": "review-browser", "creative-production": "creative-production-browser",
+                    "workflow-preview": "workflow-preview-browser"}[selection]
     repo, output = repo.resolve(), output.resolve()
     require(repo.is_dir() and not output.exists(), "fresh unit evidence and existing source required")
     output.mkdir(parents=True, exist_ok=False)
@@ -2681,11 +3018,119 @@ def run_creative_production_units(repo, output, selection="creative-production")
     return 0 if report["status"] == "PASS" else 1
 
 
+WORKFLOW_ROUTE_CASES = ('effect_grants::tests::creation_cannot_cross_workspace_registry_window_key_or_original_title',
+ 'effect_grants::tests::creation_expiry_and_previous_receipt_wire_shape_remain_explicit',
+ 'effect_grants::tests::creation_is_exactly_one_time_in_its_trusted_workspace_session',
+ 'effect_grants::tests::creation_scope_never_grants_an_existing_project_or_another_effect',
+ 'effect_grants::tests::creation_subject_preserves_structural_boundaries_and_rejects_invalid_identity',
+ 'effect_grants::tests::exact_grant_is_one_time',
+ 'effect_grants::tests::expired_grant_fails_closed_without_sleeping',
+ 'effect_grants::tests::grant_never_crosses_effect_boundaries_and_mismatch_consumes_it',
+ 'effect_grants::tests::project_generation_revision_and_subject_are_exact',
+ 'effect_grants::tests::project_import_is_the_only_supported_unscoped_grant',
+ 'effect_grants::tests::unsupported_external_effects_cannot_be_granted',
+ 'routed::ambiguous_route_reopens_and_refuses_same_key_without_second_effect',
+ 'routed::cancelled_route_retains_dispatch_intent_and_refuses_after_reopen',
+ 'routed::completed_route_replays_local_identity_and_retains_separate_broker_id',
+ 'routed::foreign_connection_and_invalid_identity_never_dispatch',
+ 'routed::invalid_grant_and_stale_scope_are_rejected_before_dispatch',
+ 'routed::known_native_rejection_preserves_code_without_provider_message',
+ 'routed::readonly_plan_uses_current_scope_without_a_mutation_grant',
+ 'routed::terminal_append_refusal_keeps_original_after_helper_return_without_public_disclosure',
+ 'workflow_wire_requires_original_request_identity_and_rejects_unknown_fields')
+
+
+def validate_workflow_route_output(exit_code, output):
+    """Admit the complete Linux route target, including its eleven grant tests."""
+    require(type(exit_code) is int and exit_code == 0 and isinstance(output, str),
+            "workflow route process must exit successfully")
+    require(len(WORKFLOW_ROUTE_CASES) == 20 and len(set(WORKFLOW_ROUTE_CASES)) == 20,
+            "workflow route inventory differs")
+    rows = re.findall(r"^test (\S+) \.\.\. (\S+)[^\n]*$", output, re.MULTILINE)
+    summaries = re.findall(r"^test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored; "
+                           r"(\d+) measured; (\d+) filtered out;(?:[^\n]*)$", output, re.MULTILINE)
+    require(len(rows) == 20 and len({name for name, _ in rows}) == 20
+            and {name for name, _ in rows} == set(WORKFLOW_ROUTE_CASES)
+            and all(status == "ok" for _, status in rows)
+            and summaries == [("ok", "20", "0", "0", "0", "0")],
+            "workflow route original closed result differs")
+    return {"status": "PASS", "cases": sorted(name for name, _ in rows),
+            "passed": 20, "ignored": 0,
+            "scope": "NINE_REAL_ROUTE_CONTRACTS_AND_ELEVEN_GRANTS; BOUNDED_TEST_TRANSPORT_ONLY",
+            "native_application_execution": "NOT_RUN", "formal_acceptance": False}
+
+
+def run_workflow_route(repo, output):
+    repo, output = repo.resolve(), output.resolve()
+    require(repo.is_dir() and not output.exists() and not output.is_relative_to(repo),
+            "fresh isolated workflow route output required")
+    output.mkdir(parents=True, exist_ok=False)
+    report = {"schema": "motionwright.workflow-route-ci/1", "status": "FAIL", "commands": [],
+              "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "job": os.environ.get("GITHUB_JOB"), "native_render": "NOT_RUN", "installed_tauri": "NOT_RUN",
+              "human_acceptance": False, "formal_acceptance": False}
+    try:
+        require(sys.platform.startswith("linux"), "closed workflow route verification requires Linux")
+        before = source_observation(repo, "workflow-preview-browser")
+        report["source_before"] = before
+        write_new(output / "source-before.json", before)
+        cargo, rustc = shutil.which("cargo"), shutil.which("rustc")
+        require(cargo is not None and rustc is not None, "cargo and rustc required")
+        # Preserve rustup's invocation basename while fingerprinting the resolved executable.
+        tools = {name: {"invoked_path": str(Path(path).absolute()),
+                        "path": str(Path(path).resolve(strict=True)),
+                        **digest(Path(path).resolve(strict=True))}
+                 for name, path in (("cargo", cargo), ("rustc", rustc))}
+        report["tools"] = tools
+        env = dict(os.environ)
+        for variable in PROCESS_ENVIRONMENT_KEYS:
+            env.pop(variable, None)
+        env.update(CARGO_TERM_COLOR="never", RUST_BACKTRACE="0")
+        commands = (("rustc-identity", [rustc, "-Vv"], 60),
+                    ("cargo-identity", [cargo, "-V"], 60),
+                    ("route-contracts", [cargo, "test", "--locked", "-p", "motionwright-native",
+                                         "--test", "desktop_workflow_route", "--", "--test-threads=1"], 1200),
+                    ("desktop-check", [cargo, "check", "--locked", "-p", "motionwright-desktop"], 1200))
+        for label, argv, timeout in commands:
+            command = execute(argv, repo, env, output, label, timeout)
+            report["commands"].append({"label": label, **command})
+            require_observed_command(command)
+            require(command["exit_code"] == 0, "workflow route command failed: " + label)
+            if label == "route-contracts":
+                path = output / (label + ".stdout.log")
+                require(digest(path) == {key: command["stdout"][key] for key in ("bytes", "sha256")},
+                        "original workflow route log changed")
+                report["route_contracts"] = validate_workflow_route_output(
+                    command["exit_code"], path.read_text(encoding="utf-8"))
+        report["source_after"] = source_observation(repo, "workflow-preview-browser")
+        require(report["source_after"] == before, "workflow route source changed")
+        for identity in tools.values():
+            require(digest(Path(identity["path"])) == {key: identity[key] for key in ("bytes", "sha256")},
+                    "workflow route executable changed")
+        report.update(status="PASS", desktop_shell="COMPILED_ONLY_NOT_LAUNCHED")
+    except UnknownObservation as error:
+        report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command,
+                      terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
+    except Exception as error:
+        report.update(error_type=type(error).__name__, error=str(error))
+    write_new(output / "receipt.json", report)
+    print(json.dumps({"status": report["status"], "receipt": str(output / "receipt.json")}))
+    return 0 if report["status"] == "PASS" else 1
+
+
+def workflow_route_main(arguments):
+    parser = argparse.ArgumentParser(description="Verify the exact desktop workflow route and shell compile.")
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    return run_workflow_route(args.repo, args.output)
+
+
 def unit_build_main(arguments):
     parser = argparse.ArgumentParser(description="Verify an exact selected unit inventory and production build.")
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--selection", choices=("creative-production", "review"),
+    parser.add_argument("--selection", choices=("creative-production", "review", "workflow-preview"),
                         default="creative-production")
     args = parser.parse_args(arguments)
     return run_creative_production_units(args.repo, args.output, args.selection)
@@ -2788,5 +3233,7 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "workflow-route":
+        raise SystemExit(workflow_route_main(sys.argv[2:]))
     sys.exit(archive_main(sys.argv[2:]) if sys.argv[1:2] == ["archive"]
              else unit_build_main(sys.argv[2:]) if sys.argv[1:2] == ["unit-build"] else main())

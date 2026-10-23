@@ -78,6 +78,9 @@ import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
 import NativeAvReview from "./NativeAvReview";
 import NativeFrameStage from "./NativeFrameStage";
+import RetainedPreviewFrame from "./RetainedPreviewFrame";
+import { previewRecoveryScope } from "./previewRecovery";
+import { usePreviewRecovery } from "./usePreviewRecovery";
 import { nativeFrameAtPlayhead } from "./nativeFrameSelection";
 import { editorialTimeForMasterMedia, programMasterAtPlayhead } from "./programMaster";
 import { resolveSceneRenderReceipt } from "./renderReceipt";
@@ -215,7 +218,7 @@ function IconButton({
   );
 }
 
-function PreviewSurface({
+export function PreviewSurface({
   scene,
   project,
   playhead,
@@ -243,14 +246,33 @@ function PreviewSurface({
   editorialPlaying: boolean;
 }) {
   const receipt = resolveSceneRenderReceipt(project, scene, profile, renderEvidence);
-  // App keys this view by exact project revision, display profile, render
-  // grant and AV grant. A source change remounts the monitor in DESIGN mode,
-  // preventing an old media opt-in from reappearing when a user switches back.
-  const [previewSource, selectPreviewSource] = useState<"design" | "frames" | "av">("design");
   const nativeFrame = nativeFrameAtPlayhead(project, scene, profile, renderEvidence, playhead);
   const nativeAv = programMasterAtPlayhead(project, scene, profile, renderEvidence, avEvidence, playhead);
-  const showingNative = previewSource === "frames" && nativeFrame !== null;
-  const showingAv = previewSource === "av" && nativeAv !== null;
+  const authorityKey = JSON.stringify([project.id, project.generation, project.active_branch,
+    project.revision, scene?.id, profile?.id, nativeFrame?.token, nativeAv?.exportToken]);
+  // AV belongs to the whole admitted master, so its explicit choice must
+  // survive scene/playhead changes. Capture authority stays scene-specific.
+  const avAuthorityKey = JSON.stringify([project.id, project.generation, project.active_branch,
+    project.revision, profile?.id, renderEvidence?.preview?.map(grant => grant.token), avEvidence?.export_token]);
+  // Revisions preserve decoded pixels, while native reads still require an
+  // explicit opt-in tied to the exact current authority. A restored local copy
+  // is always historical, even when its source revision matches the project.
+  const [choice, setChoice] = useState<{ source: "design" | "frames" | "av" | "recovery"; authority: string }>(
+    { source: "recovery", authority: "" },
+  );
+  const selectPreviewSource = (source: typeof choice.source) => setChoice({
+    source, authority: source === "av" ? avAuthorityKey : authorityKey,
+  });
+  // A real authority change consumes the previous opt-in. Returning A -> B -> A
+  // cannot resurrect it; moving between scenes of the same master can retain it.
+  useEffect(() => {
+    setChoice(previous => previous.authority === (previous.source === "av" ? avAuthorityKey : authorityKey)
+      ? previous : { source: "recovery", authority: authorityKey });
+  }, [avAuthorityKey, authorityKey]);
+  const recovery = usePreviewRecovery(previewRecoveryScope(project, scene, profile), project.revision, authorityKey);
+  const showingNative = choice.source === "frames" && choice.authority === authorityKey && nativeFrame !== null;
+  const showingAv = choice.source === "av" && choice.authority === avAuthorityKey && nativeAv !== null;
+  const showingHistorical = recovery.frame !== null && !showingNative && !showingAv && choice.source !== "design";
   const relative = scene ? Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start))) : 0;
   const hasProgramDesign = hasEditableProgramDesign(scene);
 
@@ -263,13 +285,16 @@ function PreviewSurface({
           <span className="toolbar-divider" />
           <span className="muted">
             {showingAv ? "Verified H.264/AAC master · decoded review" :
-              showingNative ? "Verified native PNG · sampled frames" : "Design representation"}
+              showingNative ? "Verified native PNG · sampled frames" :
+              showingHistorical ? "Retained historical preview · not current" : "Design representation"}
           </span>
           <span
             className="preview-revision"
-            aria-label={`Preview representation is based on project revision ${project.revision}`}
+            aria-label={showingHistorical
+              ? `Retained preview source revision ${recovery.frame!.sourceRevision}; current project revision ${project.revision}; not current`
+              : `Preview representation is based on project revision ${project.revision}`}
           >
-            PROJECT r{project.revision}
+            {showingHistorical ? `SOURCE r${recovery.frame!.sourceRevision} · NOT CURRENT` : `PROJECT r${project.revision}`}
           </span>
         </div>
         {receipt?.kind === "current" && (
@@ -282,6 +307,10 @@ function PreviewSurface({
             {showingNative ? "Show design" : "Show native frames"}
           </button>
         )}
+        {recovery.frame && <button type="button" className={"button compact native-frame-toggle " + (showingHistorical ? "selected" : "")}
+          onClick={() => selectPreviewSource(showingHistorical ? "design" : "recovery")}>
+          {showingHistorical ? "Show design" : "Show retained preview"}
+        </button>}
         {nativeAv && (
           <button type="button" className={"button compact native-frame-toggle " + (showingAv ? "selected" : "")}
             title="Review the exact source-bound native H.264/AAC master. This is not a general media import."
@@ -297,7 +326,7 @@ function PreviewSurface({
       <div className="preview-stage">
         <div className="safe-frame">
           <div className="frame-meta">
-            <span>{scene?.name ?? "No scene selected"}</span>
+            <span>{showingHistorical ? recovery.frame!.sceneName : scene?.name ?? "No scene selected"}</span>
             <span>{scene ? rendererLabels[scene.renderer] : "—"}</span>
           </div>
           {scene ? (
@@ -316,7 +345,7 @@ function PreviewSurface({
                 <div className="semantic-node accent">{rendererLabels[scene.renderer]}</div>
               </div>
               </>}
-              {hasProgramDesign && !showingNative && !showingAv &&
+              {hasProgramDesign && !showingNative && !showingAv && !showingHistorical &&
                 <ProgramDesignStudy project={project} scene={scene} time={relative} profile={profile}/>}
               <div className="preview-progress" aria-hidden="true">
                 <span
@@ -333,13 +362,16 @@ function PreviewSurface({
               <span>Its semantic preview and revision state will appear here.</span>
             </div>
           )}
+          {showingHistorical && recovery.frame && <RetainedPreviewFrame
+            frame={recovery.frame} currentRevision={project.revision} confirmed={recovery.confirmed} />}
           {showingNative && nativeFrame && (
-            <NativeFrameStage key={nativeFrame.token + ":" + (scene?.id ?? "")}
-              project={project} selection={nativeFrame} editorialPlaying={editorialPlaying} />
+            <NativeFrameStage key={authorityKey}
+              project={project} selection={nativeFrame} editorialPlaying={editorialPlaying}
+              onDecoded={decoded => recovery.remember(decoded, authorityKey, scene?.name ?? "Scene")} />
           )}
           {showingAv && nativeAv && (
             <NativeAvReview
-              key={nativeAv.exportToken}
+              key={avAuthorityKey}
               embedded
               project={project}
               exportToken={nativeAv.exportToken}
@@ -377,12 +409,31 @@ function PreviewSurface({
             <><CircleDashed size={13} aria-hidden="true" /> No render evidence attached</>
           )}
         </span>
-        {receipt && (
+        {(receipt || showingHistorical) && (
           <button className="button compact" type="button" onClick={onInspectRender}>
             Inspect receipt in Deliver
           </button>
         )}
       </footer>
+      {(recovery.frame || recovery.error) && <div className="preview-recovery-status" aria-label="Preview recovery status"
+        style={{ padding: "0.6rem 1rem", borderTop: "1px solid var(--border)", fontSize: "0.78rem", lineHeight: 1.5 }}>
+        {recovery.frame && <span role="status">{recovery.busy ? "Saving the decoded preview for reopening…"
+          : recovery.confirmed ? "Recovery copy confirmed for reopening. It remains historical and cannot certify a current render."
+          : recovery.owned.length > 0
+            ? "Preview remains visible in memory; its recovery copy is not confirmed. An earlier saved copy is preserved."
+            : "Preview remains visible in memory; its recovery copy is not confirmed. Retry recovery before closing Studio."}</span>}
+        {recovery.error && <p role="alert">{recovery.error}</p>}
+        {showingHistorical && <p>No current render is shown. Inspect its status in Deliver to request a new authorized render.</p>}
+        {recovery.error && <button type="button" className="button compact" disabled={recovery.busy}
+          onClick={recovery.retry}>Retry preview recovery</button>}
+        {recovery.frame && recovery.confirmed && recovery.frame.writerId === recovery.writerId &&
+          <button type="button" className="button compact" disabled={recovery.busy}
+            onClick={() => void recovery.discard()}>Remove my retained preview</button>}
+        {recovery.canDiscardEarlier && <button type="button" className="button compact" disabled={recovery.busy}
+          onClick={() => void recovery.discardEarlier()}>Remove my earlier recovery copy</button>}
+        {recovery.damagedOwned.length > 0 && <button type="button" className="button compact" disabled={recovery.busy}
+          onClick={() => void recovery.discardDamaged()}>Remove my damaged recovery copy</button>}
+      </div>}
     </section>
   );
 }
@@ -2029,8 +2080,8 @@ export default function App() {
       case "Timeline":
         return <PreviewSurface
           key={JSON.stringify([
-            project.id, project.generation, project.revision, selectedProfile?.id,
-            nativeRenderReceipt?.preview?.[0]?.token, nativeAvReceipt?.export_token,
+            project.id, project.generation, project.active_branch,
+            selectedProfile?.id,
           ])}
           scene={selectedScene} project={project} playhead={playhead}
           rate={timebaseRate} mode={displayMode} profile={selectedProfile}

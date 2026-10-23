@@ -2119,6 +2119,7 @@ dependencies = [
  "motionwright-native",
  "motionwright-service",
  "same-file",
+ "semwright-native-sdk",
  "serde",
  "serde_json",
  "sha2 0.10.9",

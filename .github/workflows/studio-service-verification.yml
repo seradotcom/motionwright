@@ -10,7 +10,7 @@ on:
         type: choice
         required: true
         default: authoring-drafts
-        options: [creative-production, creative-production-browser, project-authoring, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts]
+        options: [creative-production, creative-production-browser, project-authoring, production-design, creative-workbench, complete-authoring, authoring-drafts, narrative, all, canvas, ink, program, brief, brief-recovery, brief-uncertain, active-voice, camera, gesture, beat-draft, beat-time, delivery-recipe, recipe-authority, review, review-browser, inspector, profile-metadata, profile-authority, projection-navigation, browser-contracts, workflow-preview-browser]
 permissions:
   contents: read
 concurrency:
@@ -62,12 +62,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   creative-unit-build:
-    name: ${{ inputs.selection == 'review' && 'Review units (72) and production build' || 'Creative Production and Workbench units (67) and production build' }}
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","creative-production","creative-production-browser","production-design","creative-workbench","review"]'), inputs.selection)
+    name: ${{ inputs.selection == 'workflow-preview-browser' && 'Workflow and Preview units (79), native route and desktop compile' || inputs.selection == 'review' && 'Review units (72) and production build' || 'Creative Production and Workbench units (67) and production build' }}
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","creative-production","creative-production-browser","production-design","creative-workbench","review","workflow-preview-browser"]'), inputs.selection)
     needs: g0
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.selection == 'workflow-preview-browser' && 75 || 30 }}
     env:
+      CARGO_HOME: ${{ github.workspace }}/v/c
+      CARGO_TARGET_DIR: ${{ github.workspace }}/v/t
       NPM_CONFIG_CACHE: ${{ github.workspace }}/v/npm
       TMP: ${{ github.workspace }}/v/x
       TEMP: ${{ github.workspace }}/v/x
@@ -97,21 +99,45 @@ jobs:
           npm ci --no-audit --no-fund
       - name: Verify security probe, selected exact Vitest assertions and build
         env:
-          REQUESTED_UNIT_SELECTION: ${{ inputs.selection == 'review' && 'review' || 'creative-production' }}
+          REQUESTED_UNIT_SELECTION: ${{ inputs.selection == 'workflow-preview-browser' && 'workflow-preview' || inputs.selection == 'review' && 'review' || 'creative-production' }}
         run: |
           set -euo pipefail
           python -B -I tooling/ci_canvas_service.py unit-build --repo . --output ../v/unit-build --selection "$REQUESTED_UNIT_SELECTION"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        if: inputs.selection == 'workflow-preview-browser'
+        with:
+          toolchain: '1.98.1'
+      - name: Install desktop compile prerequisites
+        if: inputs.selection == 'workflow-preview-browser'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - name: Verify original workflow route contracts and actual desktop compile
+        if: inputs.selection == 'workflow-preview-browser'
+        run: |
+          set -euo pipefail
+          python -B -I tooling/ci_canvas_service.py workflow-route --repo . --output ../v/native-route
+      - name: Retain original native route commands and source identities
+        if: always() && inputs.selection == 'workflow-preview-browser'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: workflow-route-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: v/native-route
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - name: Retain original unit report, command receipts and actual build output
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: studio-${{ inputs.selection == 'review' && 'review' || 'creative' }}-unit-build-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: studio-${{ inputs.selection == 'workflow-preview-browser' && 'workflow-preview' || inputs.selection == 'review' && 'review' || 'creative' }}-unit-build-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: v/unit-build
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
   real-service:
-    name: ${{ contains(fromJSON('["browser-contracts","creative-production-browser","review-browser"]'), matrix.selection) && 'Synthetic browser contracts' || 'Real SQLite and Studio' }} / ${{ matrix.selection }}
+    name: ${{ contains(fromJSON('["browser-contracts","creative-production-browser","review-browser","workflow-preview-browser"]'), matrix.selection) && 'Synthetic browser contracts' || 'Real SQLite and Studio' }} / ${{ matrix.selection }}
     if: github.event_name == 'workflow_dispatch'
     needs: g0
     runs-on: ubuntu-24.04
@@ -148,11 +174,11 @@ jobs:
         with:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
-        if: ${{ !contains(fromJSON('["browser-contracts","creative-production-browser","review-browser"]'), matrix.selection) }}
+        if: ${{ !contains(fromJSON('["browser-contracts","creative-production-browser","review-browser","workflow-preview-browser"]'), matrix.selection) }}
         with:
           toolchain: '1.98.1'
       - name: Retain real-service Rust identities
-        if: ${{ !contains(fromJSON('["browser-contracts","creative-production-browser","review-browser"]'), matrix.selection) }}
+        if: ${{ !contains(fromJSON('["browser-contracts","creative-production-browser","review-browser","workflow-preview-browser"]'), matrix.selection) }}
         run: |
           set -euo pipefail
           rustc -Vv > ../v/tools/rustc.txt
