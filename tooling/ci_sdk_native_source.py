@@ -234,8 +234,6 @@ MANDATORY_MODULES = (
      "bdcd4dad442cc94d31c429e567f35a0cbee0de9941d85c1b7ee6f8cb06737a0f"),
 )
 FAILURE_SITES = {
-    "color::png_completion_tests::png_completion_rejects_missing_iend":
-        ("color", 1320, "assert!(", ["source rejected=", "decoded rejected=", "rejected=false"]),
     "color::png_completion_tests::png_completion_rejects_corrupt_iend_crc":
         ("color", 1320, "assert!(", ["source rejected=", "decoded rejected=", "rejected=false"]),
     "color::png_completion_tests::png_completion_rejects_bytes_after_iend":
@@ -247,8 +245,9 @@ FAILURE_SITES = {
         ("runtime", 2557, 'assert_eq!(result.unwrap_err().code, "Timeout");',
          ["called `Result::unwrap_err()` on an `Ok` value"]),
     "runtime::native_closure_tests::output_probe_cannot_complete_past_the_shared_deadline":
-        ("runtime", 2605, 'result.err().expect("shared deadline must expire").code,',
-         ["shared deadline must expire"]),
+        ("runtime", 2610, "assert!(",
+         ["the media probe completed after the shared deadline",
+          "crates/driver-mlt-video/src/runtime.rs:2610:9:"]),
     "jobs::native_staging_closure_tests::replaced_staged_media_is_rejected_with_identical_xml":
         ("jobs", 1346, 'assert_eq!(error.code, "StaleReference");',
          ["assertion `left == right` failed", 'left: "BackendFailed"', 'right: "StaleReference"']),
@@ -374,7 +373,7 @@ def causal_pair():
     failures = {name: {"source": "crates/driver-mlt-video/src/" + row[0] + ".rs",
                        "line": row[1], "markers": row[3]}
                 for name, row in FAILURE_SITES.items()}
-    require(len(CAUSAL_CASES) == 11 and len(failures) == 7
+    require(len(CAUSAL_CASES) == 11 and len(failures) == 6
             and set(failures) <= set(CAUSAL_CASES), "causal inventory changed")
     return {"id": "sdk-native-source", "failures": failures,
             "baseline": {"sha": RED, "tree": TREES[RED], "targets": {"mlt": list(CAUSAL_CASES)}},

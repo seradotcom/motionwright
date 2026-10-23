@@ -183,8 +183,8 @@ class SourceGateTests(unittest.TestCase):
 
     def test_causal_roster_is_exact_and_controls_are_not_dropped(self):
         pair = gate.causal_pair()
-        self.assertEqual(len(pair["failures"]), 7)
-        self.assertEqual(len(gate.CAUSAL_CASES) - len(pair["failures"]), 4)
+        self.assertEqual(len(pair["failures"]), 6)
+        self.assertEqual(len(gate.CAUSAL_CASES) - len(pair["failures"]), 5)
         raw = "".join(n + ": test\n" for n in gate.CAUSAL_CASES).encode()
         selected = gate.roster(raw, 0, gate.MLT_TESTS[0], gate.CAUSAL_CASES)
         self.assertEqual(selected["all"], tuple(gate.CAUSAL_CASES))
@@ -201,7 +201,7 @@ class SourceGateTests(unittest.TestCase):
         self.assertEqual(gate.roster(b"0 tests, 0 benchmarks\n", 0,
                                     gate.MLT_TESTS[-1])["all"], ())
 
-    def test_all_seven_causal_failures_and_four_controls_use_existing_observer(self):
+    def test_all_six_causal_failures_and_five_controls_use_existing_observer(self):
         for name in gate.CAUSAL_CASES:
             with self.subTest(name=name):
                 result = self.admit(name, "baseline")
@@ -494,10 +494,10 @@ class SourceGateTests(unittest.TestCase):
             gate.execution_context(self.env, "linux", scope=gate.DIAGNOSTIC_SCOPE)
         with self.assertRaises(gate.custody.VerificationError):
             gate.execution_roles("physical")
-        self.assertEqual(len(gate.causal_pair()["failures"]), 7)
+        self.assertEqual(len(gate.causal_pair()["failures"]), 6)
 
     def test_diagnostic_unexpected_pass_is_observed_without_rewriting_g1(self):
-        name = gate.CAUSAL_CASES[0]
+        name = "color::png_completion_tests::png_completion_rejects_corrupt_iend_crc"
         result = self.diagnostic(name, passed=True)
         self.assertEqual(result["outcome"], "OBSERVED_LIBTEST_PASS")
         self.assertEqual(result["status"], "DIAGNOSTIC_OBSERVATION_NOT_ACCEPTANCE")
@@ -513,14 +513,13 @@ class SourceGateTests(unittest.TestCase):
         name = gate.CAUSAL_CASES[8]
         pair, listed, context, row, raw = self.diagnostic_fixture(name)
         expected = pair["failures"][name]
-        raw = raw.replace((":" + str(expected["line"]) + ":").encode(), b":2610:")
-        raw = raw.replace(expected["markers"][0].encode(),
-                          b"the media probe completed after the shared deadline")
+        raw = raw.replace((":" + str(expected["line"]) + ":").encode(), b":2605:")
+        raw = raw.replace(expected["markers"][0].encode(), b"shared deadline must expire")
         result = gate.diagnostic_observation(pair, name, raw, row, self.binary,
                                               self.binary, listed, context)
         self.assertEqual(result["outcome"], "OBSERVED_LIBTEST_FAILURE")
         self.assertFalse(result["frozen_g1_comparison"]["matched"])
-        self.assertIn(":2610:", result["panics"][0][1])
+        self.assertIn(":2605:", result["panics"][0][1])
         self.assertFalse(result["frozen_marker_observations"][0]["present"])
         self.assertEqual(result["combined_original_stream_sha256"],
                          gate.hashlib.sha256(raw).hexdigest())
@@ -576,7 +575,7 @@ class SourceGateTests(unittest.TestCase):
         self.assertEqual(seen, [(name, "diagnostic-" + str(i))
                                 for i, name in enumerate(gate.CAUSAL_CASES)])
         self.assertEqual(len(results), 11)
-        self.assertEqual(sum(not row["frozen_g1_comparison"]["matched"] for row in results), 7)
+        self.assertEqual(sum(not row["frozen_g1_comparison"]["matched"] for row in results), 6)
         with self.assertRaises(gate.custody.VerificationError):
             gate.diagnostic_cases(self.binary, listed, pair, self.repo, self.target, {},
                                   self.root, context, results, {"fixture": self.binary}, command)
@@ -643,6 +642,68 @@ class SourceGateTests(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     self.assertEqual(gate.main(args), code)
                 self.assertEqual(run.call_args.kwargs, {"scope": gate.DIAGNOSTIC_SCOPE})
+
+
+    def observed_assertion_fixture(self, name, source, line, message, *, column=9):
+        pair, listed, context, row, _ = self.case(name, "baseline")
+        row = {**row, "exit_code": 101}
+        raw = (f"running 1 test\ntest {name} ... FAILED\n\n"
+               f"thread '{name}' panicked at {source}:{line}:{column}:\n{message}\n\n"
+               f"test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; "
+               f"{len(listed['all'])-1} filtered out; finished in 0.01s\n").encode()
+        return pair, listed, context, row, raw
+
+    def test_missing_iend_remains_an_existing_baseline_pass_control(self):
+        name = "color::png_completion_tests::png_completion_rejects_missing_iend"
+        self.assertIn(name, gate.CAUSAL_CASES)
+        self.assertNotIn(name, gate.causal_pair()["failures"])
+        self.assertEqual(self.admit(name, "baseline")["status"], "PASS")
+        self.assertEqual(self.admit(name, "repair")["status"], "PASS")
+        observed = self.diagnostic(name, passed=True)
+        self.assertEqual(observed["frozen_expected_exit"], 0)
+        self.assertTrue(observed["frozen_g1_comparison"]["matched"])
+        self.assertFalse(observed["g1_acceptance"])
+
+    def test_missing_iend_failure_cannot_be_credited_as_a_new_causal_red(self):
+        name = "color::png_completion_tests::png_completion_rejects_missing_iend"
+        pair, listed, context, row, raw = self.observed_assertion_fixture(
+            name, "crates/driver-mlt-video/src/color.rs", 1320,
+            "source rejected=false, decoded rejected=false")
+        with self.assertRaises(gate.custody.VerificationError):
+            gate.observer.admit_case(pair, "baseline", name, raw, row,
+                                     self.binary, self.binary, listed, context)
+
+    def test_shared_deadline_requires_the_observed_probe_completion_assertion(self):
+        name = "runtime::native_closure_tests::output_probe_cannot_complete_past_the_shared_deadline"
+        pair, listed, context, row, raw = self.observed_assertion_fixture(
+            name, "crates/driver-mlt-video/src/runtime.rs", 2610,
+            "the media probe completed after the shared deadline")
+        self.assertEqual(pair["failures"][name]["line"], 2610)
+        result = gate.observer.admit_case(pair, "baseline", name, raw, row,
+                                          self.binary, self.binary, listed, context)
+        self.assertEqual(result["status"], "EXPECTED_CAUSAL_RED")
+        observed = gate.diagnostic_observation(pair, name, raw, row, self.binary,
+                                                self.binary, listed, context)
+        self.assertTrue(observed["frozen_g1_comparison"]["matched"])
+        self.assertTrue(all(item["present"] for item in observed["frozen_marker_observations"]))
+        self.assertFalse(observed["g1_acceptance"])
+
+    def test_shared_deadline_rejects_the_old_site_marker_or_an_unrelated_probe_failure(self):
+        name = "runtime::native_closure_tests::output_probe_cannot_complete_past_the_shared_deadline"
+        for line, column, message in (
+            (2605, 9, "shared deadline must expire"),
+            (2605, 9, "the media probe completed after the shared deadline"),
+            (2610, 9, "shared deadline must expire"),
+            (2610, 9, "unrelated probe failed before completion"),
+            (2610, 8, "the media probe completed after the shared deadline"),
+        ):
+            with self.subTest(line=line, column=column, message=message):
+                pair, listed, context, row, raw = self.observed_assertion_fixture(
+                    name, "crates/driver-mlt-video/src/runtime.rs", line, message, column=column)
+                with self.assertRaises(gate.custody.VerificationError):
+                    gate.observer.admit_case(pair, "baseline", name, raw, row,
+                                             self.binary, self.binary, listed, context)
+
 
 
 if __name__ == "__main__":
