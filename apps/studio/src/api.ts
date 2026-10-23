@@ -64,7 +64,7 @@ import type {
   WorkflowActionResult,
   WorkflowOverview,
 } from "./types";
-import { rationalSeconds } from "./types";
+import { applyGeneralSceneTiming } from "./sceneTimingAuthority";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 let browserState = structuredClone(fixtureBootstrap);
@@ -1220,20 +1220,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       });
       break;
     }
-    case "move_scene": {
-      assertUnlocked(next, sceneResource(change.scene_id), ["content", "timing"]);
-      const from = next.scenes.findIndex((scene) => scene.id === change.scene_id);
-      if (from >= 0 && change.to_index >= 0 && change.to_index < next.scenes.length) {
-        const [scene] = next.scenes.splice(from, 1);
-        next.scenes.splice(change.to_index, 0, scene);
-        let cursor = 0;
-        next.scenes.forEach((entry) => {
-          entry.start = { num: String(cursor), den: "1" };
-          cursor += Number(entry.duration.num) / Number(entry.duration.den);
-        });
-      }
+    case "move_scene":
+      applyGeneralSceneTiming(next, change);
       break;
-    }
     case "update_scene_objective": {
       assertUnlocked(next, sceneResource(change.scene_id), ["content"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
@@ -1275,34 +1264,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       applyMusicCutToProject(next,proposal);
       break;
     }
-    case "set_scene_duration": {
-      assertUnlocked(next, sceneResource(change.scene_id), ["timing"]);
-      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
-      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
-      const duration = Number(change.duration.num) / Number(change.duration.den);
-      if (!Number.isFinite(duration) || duration <= 0 || duration > 86_400) {
-        throw new Error("scene duration is out of bounds");
-      }
-      if (scene.nodes.some((node) => node.keyframes.some((keyframe) =>
-        Number(keyframe.at.num) / Number(keyframe.at.den) >= duration
-      ))) {
-        throw new Error("scene duration would strand an authored keyframe");
-      }
-      if (scene.beats.some((beat) => {
-        const start = Number(beat.start.num) / Number(beat.start.den);
-        const beatDuration = Number(beat.duration.num) / Number(beat.duration.den);
-        return !Number.isFinite(start + beatDuration) || start + beatDuration > duration;
-      })) {
-        throw new Error("scene duration would strand an authored beat");
-      }
-      scene.duration = structuredClone(change.duration);
-      let cursor = 0;
-      next.scenes.forEach((entry) => {
-        entry.start = rationalSeconds(cursor);
-        cursor += Number(entry.duration.num) / Number(entry.duration.den);
-      });
+    case "set_scene_duration":
+      applyGeneralSceneTiming(next, change);
       break;
-    }
     case "upsert_scene_beat": {
       assertUnlocked(next, sceneResource(change.scene_id), ["content", "timing"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);

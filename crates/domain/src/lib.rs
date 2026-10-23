@@ -26,6 +26,7 @@ mod procedural;
 mod product_stage;
 mod production_design;
 mod render_tail_impact;
+mod scene_timing_guard;
 mod semantic_sfx;
 mod stage_capture;
 pub use brand_campaign::*;
@@ -1068,6 +1069,12 @@ impl Project {
     }
 
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
+        if matches!(
+            change,
+            Change::MoveScene { .. } | Change::SetSceneDuration { .. }
+        ) {
+            return self.apply_general_scene_timing(change);
+        }
         if matches!(
             change,
             Change::SetDeliveryRecipe { .. }
