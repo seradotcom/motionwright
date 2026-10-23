@@ -1,0 +1,122 @@
+name: SDK Native Source Verification
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/sdk-native-source-verification.yml
+      - tooling/ci_sdk_native_source.py
+      - tooling/tests/test_ci_sdk_native_source.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/sdk-native-source-verification.yml
+      - tooling/ci_sdk_native_source.py
+      - tooling/tests/test_ci_sdk_native_source.py
+  workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Frozen SDK source pair and affected Linux contracts
+        type: choice
+        required: true
+        options: [sdk_native_source]
+        default: sdk_native_source
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-native-source-g0:
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'sdk_native_source')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_SDK_G0_TEMP: ${{ runner.temp }}/sdk-native-source-controls
+      MW_G0_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Verify public source policies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/source_policy.py
+          python -B tooling/acceptance_policy.py
+          python -B tooling/creative_status_policy.py
+          python -B tooling/public_surface_policy.py
+      - name: Verify observer controls through both entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --expected-source "$MW_G0_SOURCE_SHA" --test-directory tooling/tests \
+            --pattern test_ci_sdk_native_source.py --mode both --require-complete \
+            --timeout 180 --report "$RUNNER_TEMP/sdk-native-source-g0/result.json"
+      - name: Preserve observer control originals
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sdk-native-source-G0-${{ env.MW_G0_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-native-source-g0/
+          if-no-files-found: error
+          retention-days: 14
+
+  sdk-native-source:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'sdk_native_source'
+    needs: sdk-native-source-g0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    concurrency:
+      group: sdk-native-source-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_SDK_SCOPE: sdk_native_source
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: gate
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: seradotcom/semwright
+          ref: def9c35e38432704cbb45d9ba2c3683a8dd373ba
+          path: sdk
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.22.0'
+      - name: Observe exact RED and GREEN sources and affected contracts
+        working-directory: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/ci_sdk_native_source.py --gate "$GITHUB_WORKSPACE/gate" \
+            --sdk "$GITHUB_WORKSPACE/sdk" \
+            --output "$RUNNER_TEMP/sdk-native-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: Retain original commands, binaries, sources and admission receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sdk-native-source-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-native-source-${{ github.run_id }}-${{ github.run_attempt }}/evidence/
+          if-no-files-found: error
+          retention-days: 14
