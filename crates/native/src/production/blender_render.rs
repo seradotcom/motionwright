@@ -2234,7 +2234,7 @@ mod tests {
             }
             for sha in [String::new(), "abc".into(), "AB".repeat(32), "g".repeat(64)] {
                 let mut invalid = good.clone();
-                invalid.source.as_mut().unwrap().file.sha256 = sha.into();
+                invalid.source.as_mut().unwrap().file.sha256 = sha;
                 assert!(validate_lit_request(&invalid).is_err());
             }
             for bytes in [0, MAX_BLEND_BYTES + 1] {

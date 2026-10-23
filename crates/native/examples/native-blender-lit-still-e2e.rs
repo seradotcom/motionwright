@@ -2,7 +2,7 @@
 //! Four independent Host contexts are provisioned by the existing Python helper;
 //! this caller does not start Blender, grant Broker authority or retry effects.
 use motionwright_domain::{
-    BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RendererKind, RevisionStamp,
+    BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RendererKind,
 };
 use motionwright_native::production::{
     BlenderLitStillJournal, BlenderLitStillRequest, ProductionConnection, ProductionCoordinator,
