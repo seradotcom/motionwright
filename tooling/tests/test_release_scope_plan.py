@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
+import zipfile
 
 SPEC = importlib.util.spec_from_file_location(
     "release_scope_plan_under_test", Path(__file__).resolve().parents[1] / "release_scope_plan.py")
@@ -647,6 +651,628 @@ class ObservationFileBoundaryTests(unittest.TestCase):
             with mock.patch.object(Path, "open", changing_open):
                 with self.assertRaisesRegex(scope.ScopeError, "observation_file_changed"):
                     scope.read_json_file(path)
+
+
+class RetainedTypedReaderTests(unittest.TestCase):
+    """Synthetic controls only; production trust pins are never modified on disk."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="typed-reader-synthetic-")
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.reader_root = self.root / "reader"
+        self.execution_root = self.reader_root / "execution"
+        self.originals, self.integrity = self.root / "originals", self.root / "integrity"
+        for path in (self.execution_root, self.originals, self.integrity):
+            path.mkdir(parents=True, exist_ok=True)
+        self.product = {"repository": "synthetic/fixture", "sha": "c" * 40, "tree": "d" * 40}
+        self.source = {"gate_sha": "a" * 40, "gate_tree": "b" * 40,
+                       "product_sha": self.product["sha"], "product_tree": self.product["tree"]}
+        self.github = {"repository": "synthetic/fixture", "run_id": 101, "attempt": 1,
+                       "event": "workflow_dispatch", "workflow": ".github/workflows/fixture.yml",
+                       "jobs": {"g0": 201, "compile": 202}, "artifact_ids": [301, 302]}
+        jobs, artifacts, custody = {}, {}, {"artifacts": []}
+        for job_id, artifact_id, name in ((201, 301, "g0"), (202, 302, "compile")):
+            log_path = self.originals / ("job-" + str(job_id) + ".log.original")
+            log = self.write(log_path, b"synthetic retained job log")
+            jobs[str(job_id)] = {"name": name, "steps": [{"number": 1, "name": "Synthetic required step"}],
+                                 "log": {**log, "path": log_path.name}}
+            body = b"synthetic content; never executed"
+            stream = io.BytesIO()
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr("original.bin", body)
+            archive_path = self.originals / ("artifact-" + str(artifact_id) + ".zip.original")
+            archive_identity = self.write(archive_path, stream.getvalue())
+            artifacts[str(artifact_id)] = {**archive_identity, "name": name, "member_count": 1,
+                                           "expanded_bytes": len(body)}
+            retained = self.integrity / "extract" / ("artifact-" + str(artifact_id)) / "original.bin"
+            retained.parent.mkdir(parents=True)
+            member = self.write(retained, body)
+            custody["artifacts"].append({"id": artifact_id, "members": [{**member,
+                "path": "original.bin", "directory": False, "original_crc_checked": True,
+                "retained_in_original_zip": True,
+                "extracted_path": "extract/artifact-" + str(artifact_id) + "/original.bin"}]})
+        self.metadata = {
+            "run.json.original": {"id": 101, "run_attempt": 1, "head_sha": "a" * 40},
+            "jobs.json.original": {"jobs": [{"id": 201, "steps": [{"name": "Synthetic required step", "conclusion": "success"}]}]},
+            "artifacts.json.original": {"artifacts": [301, 302]},
+            "archive-index.json": {"artifacts": [301, 302]}, "custody.json": custody}
+        metadata_records = {}
+        for name, value in self.metadata.items():
+            root = self.integrity if name == "custody.json" else self.originals
+            metadata_records[name] = self.write(root / name, scope.canonical(value))
+        self.pins = {"jobs": jobs, "artifacts": artifacts, "artifact_ids": [301, 302],
+                     "metadata": {name: scope.digest(scope.canonical(value))
+                                  for name, value in self.metadata.items()}}
+        binding_path = self.root / "git-bindings.json"
+        git_identity = self.write(binding_path, b'{"synthetic":true}')
+        reader_text = "\n".join([
+            "PINS = json.loads(" + repr(json.dumps(self.pins)) + ")",
+            "GATE = " + repr(self.source["gate_sha"]), "PRODUCT = " + repr(self.source["product_sha"]),
+            "TREES = " + repr({"gate": self.source["gate_tree"], "product": self.source["product_tree"]}),
+            "RUN, ATTEMPT = 101, 1", "REPO, REPO_ID = 'synthetic/fixture', 999",
+            "WORKFLOW = '.github/workflows/fixture.yml'",
+            "GIT_BINDING_SHA = " + repr(git_identity["sha256"]),
+            "GIT_BINDING_BYTES = " + str(git_identity["bytes"]),
+            "raise AssertionError('reader code must never execute')", ""])
+        self.reader_path = self.reader_root / "retained_reader.py"
+        reader_identity = self.write(self.reader_path, reader_text.encode())
+        patch = mock.patch.dict(scope.RETAINED_READERS, {scope.RETAINED_COMPILE_FAMILY: reader_identity})
+        patch.start()
+        self.addCleanup(patch.stop)
+        source_before = [{**reader_identity, "path": str(self.reader_path)}]
+        for name in ("reader_controls.py", "stability_controls.py"):
+            path = self.reader_root / name
+            source_before.append({**self.write(path, b"synthetic control source"), "path": str(path)})
+        self.report = {
+            "schema": "motionwright.private-nsis-compile-admission/1",
+            "status": "EXACT_TWO_VARIANT_COMPILE_OBSERVATIONS_ADMITTED_WITH_LIMITATIONS",
+            "reader_implementation": {**reader_identity, "path": str(self.reader_path)},
+            "source": copy.deepcopy(self.source), "github": copy.deepcopy(self.github),
+            "originals": {"archives": copy.deepcopy(artifacts), "metadata": metadata_records,
+                "all_77_zip_members_crc_and_sha256_reread": True,
+                "all_77_retained_extraction_members_sha256_reread": True,
+                "original_bytes_modified": False},
+            "unexecuted_scopes": {"physical_gate_implementation": "NOT_IMPLEMENTED_IN_THIS_GATE",
+                "setup_execution": "NOT_RUN", "application_execution": "NOT_RUN", "installation": "NOT_RUN",
+                "upgrade": "NOT_RUN", "interruption": "NOT_RUN", "recovery": "NOT_RUN",
+                "installed_edit_reopen": "NOT_RUN", "predecessor_profile": "NOT_ADMITTED", "human_acceptance": "NOT_RUN"},
+            "decision_limits": {"technical_criteria_verdict": "NOT_ISSUED", "release_readiness": "NOT_EVALUATED",
+                "release_publication": False, "other_sha_result_transfer": False,
+                "autodispatch_or_retry": False, "product_reexecuted_by_reader": False}}
+        self.report_path = self.reader_root / "report.json"
+        report_identity = self.write(self.report_path, scope.canonical(self.report))
+        self.execution = {"schema": "motionwright.a6.read-only-original-admission-execution/1",
+            "status": "READER_EXIT_OBSERVED", "exit_code": 0, "native_retry": False,
+            "originals_written": False, "product_execution": False, "source_unchanged": True,
+            "source_before": source_before, "source_after": copy.deepcopy(source_before),
+            "report": {**report_identity, "path": str(self.report_path)}}
+        for key, name, raw in (("stdout", "stdout.log", b"synthetic bounded read"),
+                               ("stderr", "stderr.log", b""),
+                               ("input_control_receipt", "controls.json", b"{}")):
+            path = self.execution_root / name
+            self.execution[key] = {**self.write(path, raw), "path": str(path)}
+        self.execution_path = self.execution_root / "receipt.json"
+        execution_identity = self.write(self.execution_path, scope.canonical(self.execution))
+        self.locator = {"family": scope.RETAINED_COMPILE_FAMILY, "reader": str(self.reader_path),
+            "report": str(self.report_path), "execution_receipt": str(self.execution_path),
+            "originals": str(self.originals), "integrity": str(self.integrity), "git_bindings": str(binding_path)}
+        self.binding = {"family": scope.RETAINED_COMPILE_FAMILY,
+                        "report": report_identity, "execution_receipt": execution_identity}
+
+    @staticmethod
+    def write(path, raw):
+        path.write_bytes(raw)
+        return {"bytes": len(raw), "sha256": scope.digest(raw)}
+
+    def rebind(self):
+        self.binding["report"] = self.write(self.report_path, scope.canonical(self.report))
+        self.execution["report"].update(self.binding["report"])
+        self.binding["execution_receipt"] = self.write(self.execution_path, scope.canonical(self.execution))
+
+    def plan(self, *, candidate=None, bindings=True, locator=None):
+        plan = scope.build_plan(candidate or self.product, {PATH: WORKFLOW}, catalog())
+        return scope.attach_typed_readbacks(plan,
+            {"schema": scope.TYPED_LOCATORS_SCHEMA, "entries": [locator or self.locator]},
+            {"schema": scope.TYPED_BINDINGS_SCHEMA, "entries": [self.binding]} if bindings else None)
+
+    def row(self, **kwargs):
+        return self.plan(**kwargs)["typed_evidence"]["readbacks"][0]
+
+    def test_exact_retained_inputs_are_read_without_running_reader_or_product(self):
+        with mock.patch.object(subprocess, "run", side_effect=AssertionError("no process authorized")):
+            row = self.row()
+        self.assertEqual(row["status"], "HISTORICAL_RETAINED_BYTES_VERIFIED")
+        self.assertEqual(row["retained_members_rehashed"], 2)
+        self.assertEqual(row["reader_execution"], "NOT_REEXECUTED")
+        self.assertEqual(row["product_execution"], "NOT_RUN")
+        self.assertEqual(row["binding_authentication"], "EXTERNAL_REVIEW_REQUIRED_NOT_AUTHENTICATED_BY_PLANNER")
+        self.assertTrue(row["requested_product_identity_matches"])
+
+    def test_compile_even_same_product_never_changes_scope_completeness(self):
+        before = scope.build_plan(self.product, {PATH: WORKFLOW}, catalog())
+        after = self.plan()
+        for key in ("status", "scope_plan_complete", "scope_observations_complete", "evidence_admission",
+                    "candidate_readiness", "release_verdict", "human_acceptance", "retry_authorized"):
+            self.assertEqual(after[key], before[key], key)
+        self.assertEqual(self.row()["candidate_disposition"], "READBACK_REQUIRED")
+        self.assertEqual(self.row()["unexecuted_scopes"]["installation"], "NOT_RUN")
+
+    def test_foreign_source_is_explicit_historical_not_transferred(self):
+        for key in ("sha", "tree", "repository"):
+            candidate = dict(self.product)
+            candidate[key] = "foreign/repository" if key == "repository" else "f" * 40
+            with self.subTest(key=key):
+                row = self.row(candidate=candidate)
+                self.assertFalse(row["requested_product_identity_matches"])
+                self.assertEqual(row["candidate_disposition"], "READBACK_REQUIRED")
+
+    def test_missing_binding_does_not_read_inputs(self):
+        with mock.patch.object(scope, "_typed_read", side_effect=AssertionError("no binding")):
+            self.assertEqual(self.row(bindings=False)["code"], "typed_reviewed_binding_missing")
+
+    def test_unsupported_family_does_not_read_or_execute(self):
+        locator = {"family": "native-video-unreviewed/1", "status": "PASS"}
+        with mock.patch.object(scope, "_typed_read", side_effect=AssertionError("unsupported")):
+            self.assertEqual(self.row(locator=locator)["code"], "typed_family_unsupported")
+
+    def test_changed_known_reader_is_rejected_before_parsing(self):
+        self.reader_path.write_bytes(self.reader_path.read_bytes().replace(b"raise", b"print"))
+        with mock.patch.object(scope, "_retained_reader_constants", side_effect=AssertionError("untrusted code parsed")):
+            self.assertEqual(self.row()["code"], "typed_original_digest_mismatch")
+
+    def test_unreviewed_report_hash_is_rejected(self):
+        self.report["status"] = "PASS"
+        self.write(self.report_path, scope.canonical(self.report))
+        self.assertIn(self.row()["code"], ("typed_original_size_mismatch", "typed_original_digest_mismatch"))
+
+    def test_self_rebound_pass_json_cannot_claim_supported_scope(self):
+        self.report["status"] = "PASS"
+        self.rebind()
+        self.assertEqual(self.row()["code"], "typed_retained_report_scope")
+
+    def test_report_without_originals_is_never_sufficient(self):
+        (self.originals / "run.json.original").unlink()
+        self.assertEqual(self.row()["status"], "READBACK_REQUIRED")
+
+    def test_report_identity_swaps_refused_even_with_rebound_report_hash(self):
+        original = copy.deepcopy(self.report)
+        for section, key, replacement in (
+                ("source", "gate_sha", "e" * 40), ("source", "product_sha", "e" * 40),
+                ("source", "gate_tree", "e" * 40), ("source", "product_tree", "e" * 40),
+                ("github", "repository", "foreign/repository"), ("github", "run_id", 102),
+                ("github", "attempt", 2), ("github", "attempt", True),
+                ("github", "workflow", ".github/workflows/other.yml"),
+                ("github", "jobs", {"g0": 201, "compile": 203}),
+                ("github", "artifact_ids", [301, 303])):
+            with self.subTest(section=section, key=key, replacement=replacement):
+                self.report = copy.deepcopy(original)
+                self.report[section][key] = replacement
+                self.rebind()
+                self.assertEqual(self.row()["code"], "typed_retained_identity_mismatch")
+
+    def test_omitted_skipped_or_changed_step_original_refused_despite_rebinding(self):
+        original = copy.deepcopy(self.metadata["jobs.json.original"])
+        for steps in ([], [{"name": "Synthetic required step", "conclusion": "skipped"}],
+                       [{"name": "Different step", "conclusion": "success"}]):
+            with self.subTest(steps=steps):
+                value = copy.deepcopy(original)
+                value["jobs"][0]["steps"] = steps
+                identity = self.write(self.originals / "jobs.json.original", scope.canonical(value))
+                self.report["originals"]["metadata"]["jobs.json.original"] = identity
+                self.rebind()
+                self.assertEqual(self.row()["code"], "typed_reader_original_binding")
+
+    def test_unknown_stays_unknown_when_report_is_missing(self):
+        self.execution.update(status="UNKNOWN", exit_code=None)
+        self.rebind()
+        self.report_path.unlink()
+        row = self.row()
+        self.assertEqual(row["code"], "typed_execution_unknown")
+        self.assertEqual(row["execution_outcome"], "UNKNOWN")
+        self.assertFalse(row["retry_authorized"])
+
+    def test_nonzero_boolean_or_omitted_exit_refused(self):
+        for value in (1, False, None):
+            with self.subTest(exit_code=value):
+                self.execution["exit_code"] = value
+                self.rebind()
+                self.assertEqual(self.row()["status"], "READBACK_REQUIRED")
+
+    def test_changed_source_before_after_refused(self):
+        self.execution["source_after"][0]["sha256"] = "f" * 64
+        self.rebind()
+        self.assertEqual(self.row()["code"], "typed_reader_source_changed")
+
+    def test_effectful_receipt_refused(self):
+        for key in ("native_retry", "originals_written", "product_execution"):
+            with self.subTest(key=key):
+                self.execution[key] = True
+                self.rebind()
+                self.assertEqual(self.row()["code"], "typed_execution_effect_not_read_only")
+                self.execution[key] = False
+
+    def test_compile_report_cannot_promote_installation_or_human_acceptance(self):
+        for key in ("installation", "upgrade", "interruption", "recovery", "human_acceptance"):
+            with self.subTest(key=key):
+                self.report["unexecuted_scopes"][key] = "PASS"
+                self.rebind()
+                self.assertEqual(self.row()["code"], "typed_compile_scope_promoted")
+                self.report["unexecuted_scopes"][key] = "NOT_RUN"
+
+    def test_altered_archive_or_crc_bytes_are_refused_without_extraction(self):
+        path = self.originals / "artifact-302.zip.original"
+        raw = bytearray(path.read_bytes())
+        raw[14] ^= 1
+        path.write_bytes(raw)
+        with mock.patch.object(zipfile, "ZipFile", side_effect=AssertionError("no archive reparsing")):
+            self.assertEqual(self.row()["code"], "typed_original_digest_mismatch")
+
+    def test_changed_extracted_payload_is_refused(self):
+        path = self.integrity / "extract/artifact-302/original.bin"
+        path.write_bytes(path.read_bytes().replace(b"content", b"changed"))
+        self.assertEqual(self.row()["code"], "typed_original_digest_mismatch")
+
+    def test_missing_or_additional_extracted_member_is_refused(self):
+        root = self.integrity / "extract/artifact-302"
+        (root / "unexpected.bin").write_bytes(b"extra")
+        self.assertEqual(self.row()["code"], "typed_retained_member_roster")
+        (root / "unexpected.bin").unlink()
+        (root / "original.bin").unlink()
+        self.assertEqual(self.row()["code"], "typed_retained_member_roster")
+
+    def test_unsafe_member_names_are_rejected(self):
+        for name in ("../escape", "/absolute", "a//b", "a/./b", "a\\b", "C:drive", "CON.txt", "a.", "a ", "a\0b"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(scope.ScopeError, "typed_unsafe_member"):
+                    scope._typed_member(name)
+
+    def test_oversize_or_capture_budget_rejected_before_open(self):
+        budget = {"streamed_bytes": 0, "files_read": 0}
+        with mock.patch.object(Path, "open", side_effect=AssertionError("oversize opened")):
+            with self.assertRaisesRegex(scope.ScopeError, "typed_expected_size"):
+                scope._typed_read(self.reader_path, {"bytes": scope.TYPED_MAX_SINGLE + 1, "sha256": "f" * 64}, budget)
+            with self.assertRaisesRegex(scope.ScopeError, "typed_capture_size"):
+                scope._typed_read(self.reader_path, {"bytes": scope.TYPED_MAX_CAPTURE + 1, "sha256": "f" * 64}, budget, capture=True)
+
+    def test_stream_budget_cannot_be_reset_between_files(self):
+        budget = {"streamed_bytes": scope.TYPED_MAX_STREAMED, "files_read": 0}
+        with self.assertRaisesRegex(scope.ScopeError, "typed_stream_budget"):
+            scope._typed_read(self.reader_path, scope.RETAINED_READERS[scope.RETAINED_COMPILE_FAMILY], budget)
+
+    def test_descriptor_from_other_file_is_refused(self):
+        other = self.root / "same-bytes-other-inode.py"
+        other.write_bytes(self.reader_path.read_bytes())
+        original_open = Path.open
+        def redirected(path, *args, **kwargs):
+            return original_open(other if path == self.reader_path and args == ("rb",) else path, *args, **kwargs)
+        with mock.patch.object(Path, "open", redirected):
+            self.assertEqual(self.row()["code"], "typed_opened_identity_mismatch")
+
+    def test_reparse_attribute_is_refused_before_open(self):
+        original_lstat = Path.lstat
+        def attributes(path, *args, **kwargs):
+            info = original_lstat(path, *args, **kwargs)
+            values = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+            if path == self.reader_path:
+                values["st_file_attributes"] = 0x400
+            return SimpleNamespace(**values)
+        with mock.patch.object(Path, "lstat", attributes):
+            self.assertEqual(self.row()["code"], "typed_link_or_reparse")
+
+    def test_atime_changes_do_not_change_content_identity(self):
+        info = self.reader_path.stat()
+        values = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+        values["st_atime_ns"] += 1000000
+        self.assertEqual(scope._typed_identity(info), scope._typed_identity(SimpleNamespace(**values)))
+
+    def test_same_size_restored_mtime_change_between_passes_refused(self):
+        path, original_open = self.reader_path, Path.open
+        before = path.stat()
+        original = path.read_bytes()
+        changed = False
+        @contextlib.contextmanager
+        def mutation(candidate, *args, **kwargs):
+            nonlocal changed
+            with original_open(candidate, *args, **kwargs) as stream:
+                yield stream
+            if candidate == path and args == ("rb",) and not changed:
+                changed = True
+                with original_open(path, "wb") as stream:
+                    stream.write(original.replace(b"raise", b"print"))
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        with mock.patch.object(Path, "open", mutation):
+            self.assertEqual(self.row()["status"], "READBACK_REQUIRED")
+        self.assertTrue(changed)
+
+    def test_reader_replacement_after_original_reads_is_refused(self):
+        original_read = scope._typed_read
+        def changing(path, expected, budget, **kwargs):
+            result = original_read(path, expected, budget, **kwargs)
+            if Path(path).name == "original.bin":
+                raw = self.reader_path.read_bytes()
+                self.reader_path.write_bytes(raw.replace(b"raise", b"print"))
+            return result
+        with mock.patch.object(scope, "_typed_read", changing):
+            self.assertEqual(self.row()["code"], "typed_original_digest_mismatch")
+
+    def test_ambiguous_bindings_and_locators_are_refused(self):
+        plan = scope.build_plan(self.product, {PATH: WORKFLOW}, catalog())
+        locators = {"schema": scope.TYPED_LOCATORS_SCHEMA, "entries": [self.locator]}
+        bindings = {"schema": scope.TYPED_BINDINGS_SCHEMA, "entries": [self.binding, self.binding]}
+        with self.assertRaisesRegex(scope.ScopeError, "typed_binding_family_duplicate"):
+            scope.attach_typed_readbacks(plan, locators, bindings)
+        locators["entries"].append(self.locator)
+        with self.assertRaisesRegex(scope.ScopeError, "typed_locator_family_duplicate"):
+            scope.attach_typed_readbacks(plan, locators, None)
+
+    def run_cli(self, *, typed=True, binding=True):
+        # This controls CLI exit policy, not GitHub authentication or product execution.
+        locator_path, binding_path = self.root / "locators.json", self.root / "reviewed-bindings.json"
+        self.write(locator_path, scope.canonical({"schema": scope.TYPED_LOCATORS_SCHEMA, "entries": [self.locator]}))
+        self.write(binding_path, scope.canonical({"schema": scope.TYPED_BINDINGS_SCHEMA, "entries": [self.binding]}))
+        complete = scope.build_plan(SOURCE, {PATH: WORKFLOW}, catalog(),
+                                    [observation("packages"), observation("lifecycle")])
+        self.assertTrue(complete["scope_plan_complete"])
+        self.assertTrue(complete["scope_observations_complete"])
+        files = {PATH: WORKFLOW, scope.CATALOG_PATH: scope.canonical(catalog()),
+                 scope.SCRIPT_PATH: Path(scope.__file__).read_bytes()}
+        argv = ["--repo", str(self.root), "--source-sha", SOURCE["sha"], "--repository", SOURCE["repository"]]
+        if typed:
+            argv += ["--typed-evidence-locators", str(locator_path)]
+            if binding:
+                argv += ["--reviewed-reader-bindings", str(binding_path)]
+        with mock.patch.object(scope, "read_source", return_value=(SOURCE["tree"], files)), \
+             mock.patch.object(scope, "build_plan", return_value=complete), \
+             contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = scope.main(argv)
+        return code, json.loads(stdout.getvalue())
+
+    def test_cli_requested_incomplete_or_unknown_readback_cannot_exit_zero(self):
+        code, report = self.run_cli(binding=False)
+        self.assertEqual(code, 3)
+        self.assertTrue(report["scope_observations_complete"])
+        self.assertFalse(report["typed_evidence"]["retained_readbacks_complete"])
+        self.execution.update(status="UNKNOWN", exit_code=None)
+        self.rebind()
+        code, report = self.run_cli()
+        self.assertEqual(code, 3)
+        self.assertEqual(report["typed_evidence"]["readbacks"][0]["execution_outcome"], "UNKNOWN")
+
+    def test_cli_complete_historical_readback_exits_zero_without_admission(self):
+        code, report = self.run_cli()
+        self.assertEqual(code, 0)
+        self.assertTrue(report["typed_evidence"]["retained_readbacks_complete"])
+        self.assertEqual(report["typed_evidence"]["readbacks"][0]["candidate_disposition"], "READBACK_REQUIRED")
+        self.assertEqual(report["evidence_admission"], "NOT_PERFORMED")
+        self.assertEqual(report["release_verdict"], "NOT_GRANTED")
+
+    def test_cli_without_locators_preserves_existing_exit_policy(self):
+        with mock.patch.object(scope, "_typed_read", side_effect=AssertionError("no optional read requested")):
+            code, report = self.run_cli(typed=False)
+        self.assertEqual(code, 0)
+        self.assertNotIn("typed_evidence", report)
+
+    def test_regular_exe_named_and_descriptor_modes_bind_to_same_bytes(self):
+        path = self.root / "synthetic-retained.exe"
+        identity = self.write(path, b"MZsynthetic bytes; this file is never executed")
+        budget = {"streamed_bytes": 0, "files_read": 0}
+        self.assertEqual(scope._typed_read(path, identity, budget, capture=True), path.read_bytes())
+        self.assertEqual(budget["streamed_bytes"], identity["bytes"] * 2)
+
+    def test_windows_exe_exception_rejects_other_modes_types_and_identities(self):
+        base = self.reader_path.stat()
+        values = {key: getattr(base, key) for key in dir(base) if key.startswith("st_")}
+        values["st_mode"] = 0o100666
+        opened = SimpleNamespace(**values)
+        named_values = {**values, "st_mode": 0o100777}
+        named = SimpleNamespace(**named_values)
+        path = self.root / "synthetic.exe"
+        with mock.patch.object(scope, "os", SimpleNamespace(name="nt")):
+            self.assertTrue(scope._typed_descriptor_matches(path, named, opened))
+            self.assertFalse(scope._typed_descriptor_matches(path.with_suffix(".bin"), named, opened))
+            self.assertFalse(scope._typed_descriptor_matches(path, opened, named))
+            for key, value in (("st_mode", 0o100444), ("st_mode", 0o040666),
+                               ("st_ino", opened.st_ino + 1), ("st_dev", opened.st_dev + 1),
+                               ("st_size", opened.st_size + 1), ("st_mtime_ns", opened.st_mtime_ns + 1),
+                               ("st_ctime_ns", opened.st_ctime_ns + 1),
+                               ("st_file_attributes", getattr(opened, "st_file_attributes", 0) ^ 0x1)):
+                with self.subTest(key=key, value=value):
+                    changed = SimpleNamespace(**{**values, key: value})
+                    self.assertFalse(scope._typed_descriptor_matches(path, named, changed))
+        with mock.patch.object(scope, "os", SimpleNamespace(name="posix")):
+            self.assertFalse(scope._typed_descriptor_matches(path, named, opened))
+
+    def test_exe_path_mode_change_during_read_is_not_normalized(self):
+        path = self.root / "synthetic-mode-change.exe"
+        identity = self.write(path, b"MZsynthetic mode stability control")
+        self.addCleanup(lambda: path.chmod(0o666) if path.exists() else None)
+        original_open, changed = Path.open, False
+        @contextlib.contextmanager
+        def mutate(candidate, *args, **kwargs):
+            nonlocal changed
+            with original_open(candidate, *args, **kwargs) as stream:
+                yield stream
+            if candidate == path and args == ("rb",) and not changed:
+                changed = True
+                path.chmod(0o444)
+        with mock.patch.object(Path, "open", mutate):
+            with self.assertRaisesRegex(scope.ScopeError, "typed_original_changed"):
+                scope._typed_read(path, identity, {"streamed_bytes": 0, "files_read": 0})
+        self.assertTrue(changed)
+
+    def test_cli_nonobject_report_roots_produce_structured_refusals(self):
+        for value in ([{}], None, "PASS"):
+            with self.subTest(root=value):
+                self.report = value
+                self.rebind()
+                code, result = self.run_cli()
+                self.assertEqual(code, 3)
+                row = result["typed_evidence"]["readbacks"][0]
+                self.assertEqual(row["code"], "typed_report_object_required")
+                self.assertEqual(row["status"], "READBACK_REQUIRED")
+
+    def test_cli_nonobject_execution_roots_produce_structured_refusals(self):
+        for value in ([{}], None, "PASS"):
+            with self.subTest(root=value):
+                self.binding["execution_receipt"] = self.write(self.execution_path, scope.canonical(value))
+                code, result = self.run_cli()
+                self.assertEqual(code, 3)
+                row = result["typed_evidence"]["readbacks"][0]
+                self.assertEqual(row["code"], "typed_execution_object_required")
+                self.assertEqual(row["status"], "READBACK_REQUIRED")
+
+
+DIAGNOSTIC_WORKFLOW = b"""name: Evidence fixture
+on:
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Execute selected checks
+        run: true
+      - name: Seal original evidence
+        id: archive
+        if: success()
+        run: true
+      - name: Retain sealed originals
+        if: always()
+        uses: actions/upload-artifact@0123456789012345678901234567890123456789
+      - name: Retain unsealed diagnostics
+        if: always() && steps.archive.outcome != 'success'
+        uses: actions/upload-artifact@0123456789012345678901234567890123456789
+"""
+
+
+def diagnostic_catalog(raw=DIAGNOSTIC_WORKFLOW):
+    preamble, jobs = scope._source_outline(raw.decode())
+    source_job = jobs["verify"]
+    steps = [{"ordinal": step["ordinal"], "name": step["name"],
+              "guard": step["guard"], "kind": scope._kind(step),
+              "source_block_sha256": scope.digest(step["raw"].encode()),
+              "api_binding": "EXPLICIT_NAME"}
+             for step in source_job["steps"] if scope._kind(step)]
+    entry = {
+        "path": PATH, "sha256": scope.digest(raw),
+        "preamble_sha256": scope.digest(preamble.encode()),
+        "evidence_class": "source_contracts",
+        "purpose": "Keep failed custody diagnostics separate from successful sealed originals.",
+        "inputs": {}, "input_dispositions": {}, "job_dispositions": [],
+        "jobs": {"verify": {"source_name": "verify", "guard": None,
+                 "runs_on": "ubuntu-24.04", "needs": None, "strategy": None,
+                 "source_sha256": scope.digest(source_job["raw"].encode()),
+                 "instance_sets": {"selected": [{}]}, "steps": steps}},
+        "cases": [{"id": "selected", "inputs": {}, "kind": "TECHNICAL_SCOPE",
+                   "required_job_instances": [{"job_id": "verify", "display_name": "verify",
+                     "matrix": {}, "name_binding": "literal_definition", "required_steps": [1, 2, 3]}],
+                   "coverage_basis": "Every successful scope requires execution, sealing and sealed retention.",
+                   "original_attempt": None, "blocking_reason": None}],
+        "limitations": ["Synthetic source-definition fixture, never execution evidence."]}
+    return {"schema": scope.REVIEWED_CATALOG_SCHEMA, "workflows": [],
+            "reviewed_scopes": [entry], "limitations": ["Descriptive only."]}
+
+
+class DiagnosticRetentionTests(unittest.TestCase):
+    def plan(self, raw=DIAGNOSTIC_WORKFLOW, review=None):
+        return scope.build_plan(SOURCE, {PATH: raw}, review or diagnostic_catalog(raw))
+
+    def assert_source_refused(self, raw, code, review=None):
+        result = self.plan(raw, review)
+        self.assertFalse(result["definition_review_complete"])
+        self.assertEqual([row["code"] for row in result["review_gaps"]], [code])
+        self.assertEqual(result["release_verdict"], "NOT_GRANTED")
+        self.assertFalse(result["automatic_dispatch"])
+
+    def test_conditional_diagnostics_preserve_required_successful_seal(self):
+        result = self.plan()
+        self.assertTrue(result["definition_review_complete"])
+        self.assertTrue(result["scope_plan_complete"])
+        required = result["obligations"][0]["required_job_instances"][0]["required_steps"]
+        self.assertEqual(required, [1, 2, 3])
+        self.assertFalse(result["scope_observations_complete"])
+        self.assertEqual(result["status"], "READBACK_REQUIRED")
+        self.assertEqual(result["technical_criteria_verdict"], "NOT_GRANTED")
+
+    def test_conditional_diagnostic_cannot_be_a_positive_success_obligation(self):
+        review = diagnostic_catalog()
+        review["reviewed_scopes"][0]["cases"][0]["required_job_instances"][0]["required_steps"].append(4)
+        self.assert_source_refused(DIAGNOSTIC_WORKFLOW,
+                                   "diagnostic_retention_positive_obligation", review)
+
+    def test_missing_source_anchor_is_refused(self):
+        raw = DIAGNOSTIC_WORKFLOW.replace(b"id: archive", b"id: different")
+        self.assert_source_refused(raw, "diagnostic_retention_anchor")
+
+    def test_duplicate_source_anchor_is_refused(self):
+        raw = DIAGNOSTIC_WORKFLOW.replace(b"      - name: Execute selected checks\n",
+            b"      - name: Execute selected checks\n        id: archive\n")
+        self.assert_source_refused(raw, "diagnostic_retention_anchor")
+
+    def test_anchor_must_be_required_in_every_case_and_matrix_member(self):
+        review = diagnostic_catalog()
+        entry = review["reviewed_scopes"][0]
+        other = copy.deepcopy(entry["cases"][0])
+        other["id"] = "other"
+        other["required_job_instances"][0]["required_steps"] = [1, 3]
+        entry["cases"].append(other)
+        entry["jobs"]["verify"]["instance_sets"]["other"] = [{}]
+        self.assert_source_refused(DIAGNOSTIC_WORKFLOW,
+                                   "diagnostic_retention_anchor_not_required", review)
+
+    def test_later_anchor_cannot_explain_prior_diagnostics(self):
+        raw = DIAGNOSTIC_WORKFLOW.replace(b"        id: archive\n", b"")
+        raw += b"      - name: Later seal\n        id: archive\n        if: success()\n        run: true\n"
+        review = diagnostic_catalog(raw)
+        review["reviewed_scopes"][0]["cases"][0]["required_job_instances"][0]["required_steps"].append(5)
+        self.assert_source_refused(raw, "diagnostic_retention_anchor", review)
+
+    def test_retention_action_cannot_impersonate_executable_seal(self):
+        raw = DIAGNOSTIC_WORKFLOW.replace(
+            b"        if: success()\n        run: true",
+            b"        if: success()\n        uses: actions/upload-artifact@0123456789012345678901234567890123456789")
+        self.assert_source_refused(raw, "diagnostic_retention_anchor")
+
+    def test_expression_variants_cannot_create_skip_waivers(self):
+        for guard in (b"always() && steps.archive.outcome == 'success'",
+                      b"always() && steps.archive.outcome != 'success' || true",
+                      b"steps.archive.outcome != 'success'",
+                      b"always() && steps.archive.conclusion != 'success'"):
+            with self.subTest(guard=guard):
+                raw = DIAGNOSTIC_WORKFLOW.replace(
+                    b"always() && steps.archive.outcome != 'success'", guard)
+                with self.assertRaisesRegex(scope.ScopeError, "reviewed_uncovered_step"):
+                    self.plan(raw)
+
+    def test_guarded_executable_check_cannot_be_waived_as_diagnostic(self):
+        raw = DIAGNOSTIC_WORKFLOW.replace(
+            b"      - name: Retain unsealed diagnostics\n        if: always() && steps.archive.outcome != 'success'\n"
+            b"        uses: actions/upload-artifact@0123456789012345678901234567890123456789",
+            b"      - name: Retain unsealed diagnostics\n        if: always() && steps.archive.outcome != 'success'\n"
+            b"        run: true")
+        with self.assertRaisesRegex(scope.ScopeError, "reviewed_uncovered_step"):
+            self.plan(raw)
+
+    def test_unconditional_retention_remains_required(self):
+        review = diagnostic_catalog()
+        review["reviewed_scopes"][0]["cases"][0]["required_job_instances"][0]["required_steps"].remove(3)
+        with self.assertRaisesRegex(scope.ScopeError, "reviewed_uncovered_step"):
+            self.plan(review=review)
+
+    def test_anchor_requires_explicit_success_guard(self):
+        for guard in (b"always()", b"success() || failure()", b"inputs.optional"):
+            with self.subTest(guard=guard):
+                raw = DIAGNOSTIC_WORKFLOW.replace(b"        if: success()", b"        if: " + guard)
+                self.assert_source_refused(raw, "diagnostic_retention_anchor")
+
+    def test_existing_failure_only_retention_remains_descriptive(self):
+        raw = DIAGNOSTIC_WORKFLOW.replace(b"always() && steps.archive.outcome != 'success'",
+                                          b"failure() || cancelled()")
+        result = self.plan(raw)
+        self.assertTrue(result["scope_plan_complete"])
+        self.assertFalse(result["scope_observations_complete"])
+        self.assertEqual(result["release_verdict"], "NOT_GRANTED")
+
 
 
 if __name__ == "__main__":
