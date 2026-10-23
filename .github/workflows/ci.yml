@@ -113,6 +113,74 @@ jobs:
           path: ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/job-plan-contracts
           if-no-files-found: error
           retention-days: 30
+      - name: Verify workflow syntax and expression contexts
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        env:
+          MW_WORKFLOW_SYNTAX_ROOT: ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/workflow-syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$MW_WORKFLOW_SYNTAX_ROOT/tool"
+          archive="$MW_WORKFLOW_SYNTAX_ROOT/actionlint.tar.gz"
+          curl --fail --silent --show-error --location --retry 0 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive" 2>"$MW_WORKFLOW_SYNTAX_ROOT/download.stderr"
+          printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "$archive" \
+            | sha256sum --check >"$MW_WORKFLOW_SYNTAX_ROOT/archive-check.stdout"
+          tar -xzf "$archive" -C "$MW_WORKFLOW_SYNTAX_ROOT/tool" actionlint
+          python3 -I -B - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          evidence = pathlib.Path(os.environ["MW_WORKFLOW_SYNTAX_ROOT"])
+          tool = evidence / "tool/actionlint"
+          source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root).decode().strip()
+          if source != os.environ["GITHUB_SHA"]:
+              raise SystemExit("workflow syntax checkout differs from the selected source")
+          paths = sorted(p for p in (root / ".github/workflows").iterdir()
+                         if p.is_file() and p.suffix in (".yml", ".yaml"))
+          if not paths:
+              raise SystemExit("no workflows were selected for syntax validation")
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          before = {p.relative_to(root).as_posix(): digest(p) for p in paths}
+          version = subprocess.run([str(tool), "-version"], cwd=root, capture_output=True, timeout=15)
+          (evidence / "version.stdout").write_bytes(version.stdout)
+          (evidence / "version.stderr").write_bytes(version.stderr)
+          if version.returncode != 0:
+              raise SystemExit(version.returncode)
+          argv = [str(tool), "-shellcheck=", "-pyflakes=", "-format", "{{json .}}", *map(str, paths)]
+          observed = subprocess.run(argv, cwd=root, capture_output=True, timeout=120)
+          (evidence / "findings.json").write_bytes(observed.stdout)
+          (evidence / "actionlint.stderr").write_bytes(observed.stderr)
+          after = {p.relative_to(root).as_posix(): digest(p) for p in paths}
+          receipt = {"schema": "motionwright.workflow-syntax-observation/1",
+                     "source_sha": source, "run_id": os.environ["GITHUB_RUN_ID"],
+                     "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "job": os.environ["GITHUB_JOB"],
+                     "tool_version": "1.7.12", "tool_sha256": digest(tool),
+                     "archive_sha256": digest(evidence / "actionlint.tar.gz"),
+                     "argv": argv, "exit_code": observed.returncode,
+                     "workflow_sha256": before, "unchanged_after": before == after,
+                     "stdout_sha256": digest(evidence / "findings.json"),
+                     "stderr_sha256": digest(evidence / "actionlint.stderr"),
+                     "shellcheck": "NOT_RUN", "pyflakes": "NOT_RUN",
+                     "product_test_execution": False, "formal_acceptance": False}
+          (evidence / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+          print(observed.stdout.decode("utf-8", errors="replace"))
+          print(observed.stderr.decode("utf-8", errors="replace"), file=sys.stderr)
+          raise SystemExit(observed.returncode if before == after else 1)
+          PY
+      - name: Preserve original workflow syntax evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: workflow-syntax-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/workflow-syntax/*.json
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/workflow-syntax/*.stdout
+            ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/workflow-syntax/*.stderr
+          if-no-files-found: error
+          retention-days: 30
       - name: Bind job result to original source, plan and execution
         id: source
         if: always()
