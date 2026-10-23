@@ -1,8 +1,7 @@
 //! Disposable Actions producer: one saved source, exact native export, original
 //! Broker route, and fresh-process readback. No fixture claims human acceptance.
 use motionwright_domain::{
-    CanvasNode, Change, CoordinateSpace, NodeStyle, Project, RationalTime, RevisionStamp,
-    VisualToken,
+    CanvasNode, Change, CoordinateSpace, NodeStyle, Project, RationalTime, VisualToken,
 };
 use motionwright_hyperframes_profile::{self as model, CompiledSource};
 use motionwright_native::{
