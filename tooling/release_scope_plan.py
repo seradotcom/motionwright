@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import subprocess
 import stat
@@ -22,6 +23,17 @@ SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 WORKFLOW = re.compile(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml\Z")
 KEY = re.compile(r"[A-Za-z0-9_-]+\Z")
 MAX_JSON = 32 * 1024 * 1024
+TYPED_LOCATORS_SCHEMA = "motionwright.release-reader-locators/1"
+TYPED_BINDINGS_SCHEMA = "motionwright.release-reader-bindings/1"
+RETAINED_COMPILE_FAMILY = "nsis-compile-originals/1"
+# Reviewed implementation identities, not caller-supplied executable code. The
+# optional private reader is read as data and is never imported or executed.
+RETAINED_READERS = {RETAINED_COMPILE_FAMILY: {
+    "bytes": 52442,
+    "sha256": "dfe02ef9627e4d2395964a6c7a2e31a4abbc8dc73143add5fd032da1fde3140e"}}
+TYPED_MAX_SINGLE = 128 * 1024 * 1024
+TYPED_MAX_CAPTURE = 2 * 1024 * 1024
+TYPED_MAX_STREAMED = 512 * 1024 * 1024
 
 
 class ScopeError(ValueError):
@@ -270,7 +282,8 @@ def _source_outline(text):
             last = step_starts[number + 1][0] if number + 1 < len(step_starts) else len(block)
             part = block[index:last]
             values = source_fields([" " * (indent + 2) + first, *part[1:]], indent + 2)
-            steps.append({"ordinal": number + 1, "name": values.get("name"),
+            steps.append({"ordinal": number + 1, "id": values.get("id"),
+                          "name": values.get("name"),
                           "guard": values.get("if"), "run": values.get("run"),
                           "uses": values.get("uses"), "raw": "\n".join(part)})
         jobs[job_id] = {"source_name": meta.get("name", job_id),
@@ -376,6 +389,17 @@ def _input_value(value, spec):
         require(isinstance(value, str) and value in spec["options"], "catalog_choice_input")
     else:
         require(isinstance(value, str), "catalog_string_input")
+
+
+
+def _retention_failure_reference(step):
+    """Recognize only a failure diagnostic upload; authenticate its anchor below."""
+    if step["kind"] != "ARTIFACT_RETENTION":
+        return None
+    match = re.fullmatch(
+        r"always\(\) && steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outcome != 'success'",
+        step["guard"] or "")
+    return match.group(1) if match else None
 
 
 def _validate_reviewed_scope(entry):
@@ -525,7 +549,8 @@ def _validate_reviewed_scope(entry):
         for step in jobs[job_id]["steps"]:
             # Failure diagnostics remain retained in the definition but are not
             # success-path obligations. No arbitrary skip waiver is supported.
-            failure_only = step["guard"] in ("failure()", "failure() || cancelled()")
+            failure_only = (step["guard"] in ("failure()", "failure() || cancelled()")
+                            or _retention_failure_reference(step) is not None)
             require(step["ordinal"] in covered_steps[job_id] or failure_only,
                     "reviewed_uncovered_step")
 
@@ -573,6 +598,25 @@ def review_scope_definition(raw, entry):
                     "workflow_step_identity_changed")
             require(digest(original["raw"].encode("utf-8")) == step["source_block_sha256"],
                     "workflow_step_source_changed")
+
+        for step in contract["steps"]:
+            reference = _retention_failure_reference(step)
+            if reference is None:
+                continue
+            anchors = [item for item in actual["steps"] if item["id"] == reference]
+            require(len(anchors) == 1, "diagnostic_retention_anchor")
+            anchor = anchors[0]
+            require(anchor["ordinal"] < step["ordinal"]
+                    and _kind(anchor) == "EXECUTABLE_STEP"
+                    and anchor["guard"] == "success()", "diagnostic_retention_anchor")
+            for case in entry["cases"]:
+                for instance in case["required_job_instances"]:
+                    if instance["job_id"] != job_id:
+                        continue
+                    require(anchor["ordinal"] in instance["required_steps"],
+                            "diagnostic_retention_anchor_not_required")
+                    require(step["ordinal"] not in instance["required_steps"],
+                            "diagnostic_retention_positive_obligation")
 
 
 def _reviewed_obligations(source, workflows, entry, observations, gaps, dispositions):
@@ -876,6 +920,356 @@ def build_plan(source, workflows, catalog, observations=None):
     return result
 
 
+def _typed_identity(info):
+    # Reading can update atime. It is not a content or replacement identity.
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns,
+            getattr(info, "st_file_attributes", 0))
+
+
+def _typed_stat(path, *, directory=False):
+    require(path.is_absolute() and ".." not in path.parts, "typed_path_not_absolute")
+    current = path
+    while True:
+        info = current.lstat()
+        require(not stat.S_ISLNK(info.st_mode)
+                and not getattr(info, "st_file_attributes", 0) & 0x400,
+                "typed_link_or_reparse")
+        if current.parent == current:
+            break
+        current = current.parent
+    info = path.lstat()
+    require(stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode),
+            "typed_file_type")
+    if not directory:
+        require(0 <= info.st_size <= TYPED_MAX_SINGLE, "typed_file_size")
+    return info
+
+
+def _typed_descriptor_matches(path, named, opened):
+    named_id, opened_id = _typed_identity(named), _typed_identity(opened)
+    if named_id == opened_id:
+        return True
+    # Windows Python can infer executable bits from the .exe filename for
+    # lstat, while the already-open descriptor reports rw bits without them.
+    # Admit only that observed delta. All remaining fields and permission bits
+    # still match; path/path and descriptor/descriptor stability use full mode.
+    return (os.name == "nt" and path.suffix.lower() == ".exe"
+            and stat.S_ISREG(named.st_mode) and stat.S_ISREG(opened.st_mode)
+            and opened.st_mode & 0o111 == 0
+            and named.st_mode == opened.st_mode | 0o111
+            and named_id[:2] + named_id[3:] == opened_id[:2] + opened_id[3:])
+
+
+def _typed_read(path, expected, budget, *, capture=False):
+    """Two bounded byte reads, each tied to its descriptor and named original."""
+    path = Path(path)
+    require(isinstance(expected, dict) and type(expected.get("bytes")) is int
+            and 0 <= expected["bytes"] <= TYPED_MAX_SINGLE, "typed_expected_size")
+    _sha(expected.get("sha256"), SHA256, "typed_expected_hash")
+    require(not capture or expected["bytes"] <= TYPED_MAX_CAPTURE, "typed_capture_size")
+    before = _typed_stat(path)
+    require(before.st_size == expected["bytes"], "typed_original_size_mismatch")
+    identity, first, raw = _typed_identity(before), None, None
+    for pass_index in range(2):
+        require(_typed_identity(_typed_stat(path)) == identity, "typed_original_changed")
+        hasher, count, chunks = hashlib.sha256(), 0, []
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            require(_typed_descriptor_matches(path, before, opened),
+                    "typed_opened_identity_mismatch")
+            opened_identity = _typed_identity(opened)
+            while True:
+                chunk = stream.read(min(256 * 1024, expected["bytes"] - count + 1))
+                if not chunk:
+                    break
+                count += len(chunk)
+                budget["streamed_bytes"] += len(chunk)
+                require(count <= expected["bytes"], "typed_original_grew")
+                require(budget["streamed_bytes"] <= TYPED_MAX_STREAMED, "typed_stream_budget")
+                hasher.update(chunk)
+                if capture and pass_index == 0:
+                    chunks.append(chunk)
+            require(_typed_identity(os.fstat(stream.fileno())) == opened_identity,
+                    "typed_original_changed")
+        require(_typed_identity(_typed_stat(path)) == identity, "typed_original_changed")
+        observed = {"bytes": count, "sha256": hasher.hexdigest()}
+        require(observed == {key: expected[key] for key in ("bytes", "sha256")},
+                "typed_original_digest_mismatch")
+        require(first is None or observed == first, "typed_read_passes_disagree")
+        first = observed
+        if capture and pass_index == 0:
+            raw = b"".join(chunks)
+    budget["files_read"] += 1
+    return raw
+
+
+def _typed_member(name):
+    require(isinstance(name, str) and name and "\\" not in name
+            and ":" not in name and "\0" not in name,
+            "typed_unsafe_member")
+    require(not PurePosixPath(name).is_absolute()
+            and all(part and part not in (".", "..") and not part.endswith((" ", "."))
+                    and not re.fullmatch(r"(?i)(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part)
+                    for part in name.split("/")), "typed_unsafe_member")
+    return name
+
+
+def _typed_inventory(root):
+    _typed_stat(root, directory=True)
+    pending, names, folded, entries = [root], set(), set(), 0
+    while pending:
+        current = pending.pop()
+        with os.scandir(current) as children:
+            for child in children:
+                entries += 1
+                require(entries <= 256, "typed_extraction_entry_limit")
+                path = Path(child.path)
+                info = path.lstat()
+                if stat.S_ISDIR(info.st_mode):
+                    _typed_stat(path, directory=True)
+                    pending.append(path)
+                else:
+                    _typed_stat(path)
+                    name = _typed_member(path.relative_to(root).as_posix())
+                    require(name.casefold() not in folded, "typed_member_collision")
+                    names.add(name)
+                    folded.add(name.casefold())
+    return names
+
+
+def _retained_reader_constants(raw):
+    """Read only literal declarations from an already hash-pinned reader."""
+    selected = {"PINS", "GATE", "PRODUCT", "TREES", "RUN", "ATTEMPT", "REPO",
+                "WORKFLOW", "GIT_BINDING_SHA", "GIT_BINDING_BYTES"}
+    result = {}
+    for node in ast.parse(raw.decode("utf-8")).body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        names = ([target.id] if isinstance(target, ast.Name) else
+                 [part.id for part in target.elts] if isinstance(target, ast.Tuple)
+                 and all(isinstance(part, ast.Name) for part in target.elts) else [])
+        if not selected.intersection(names):
+            continue
+        if names == ["PINS"]:
+            value = node.value
+            require(isinstance(value, ast.Call) and not value.keywords and len(value.args) == 1
+                    and isinstance(value.func, ast.Attribute) and value.func.attr == "loads"
+                    and isinstance(value.func.value, ast.Name) and value.func.value.id == "json",
+                    "typed_reader_declaration")
+            encoded = ast.literal_eval(value.args[0])
+            require(isinstance(encoded, str), "typed_reader_declaration")
+            values = [decode(encoded.encode("utf-8"))]
+        else:
+            literal = ast.literal_eval(node.value)
+            values = [literal] if isinstance(target, ast.Name) else list(literal)
+        require(len(values) == len(names), "typed_reader_declaration")
+        for name, value in zip(names, values):
+            if name in selected:
+                require(name not in result, "typed_reader_duplicate_declaration")
+                result[name] = value
+    require(set(result) == selected, "typed_reader_declaration_missing")
+    return result
+
+
+def _retained_compile_readback(locator, binding, candidate):
+    """Reuse exact retained inputs; do not reexecute the private reader or product."""
+    fields(locator, ("family", "reader", "report", "execution_receipt", "originals",
+                     "integrity", "git_bindings"), "typed_locator_fields")
+    fields(binding, ("family", "report", "execution_receipt"), "typed_binding_fields")
+    expected_reader = RETAINED_READERS[locator["family"]]
+    budget = {"streamed_bytes": 0, "files_read": 0}
+    reader_path, report_path, execution_path = (
+        Path(locator[key]) for key in ("reader", "report", "execution_receipt"))
+    reader_raw = _typed_read(reader_path, expected_reader, budget, capture=True)
+    constants = _retained_reader_constants(reader_raw)
+    pins = constants["PINS"]
+    execution = decode(_typed_read(execution_path, binding["execution_receipt"], budget, capture=True))
+    require(isinstance(execution, dict), "typed_execution_object_required")
+    if execution.get("status") == "UNKNOWN" or execution.get("exit_code") is None:
+        raise ScopeError("typed_execution_unknown")
+    require(execution.get("schema") == "motionwright.a6.read-only-original-admission-execution/1"
+            and execution.get("status") == "READER_EXIT_OBSERVED"
+            and type(execution.get("exit_code")) is int and execution["exit_code"] == 0,
+            "typed_reader_execution_not_successful")
+    report = decode(_typed_read(report_path, binding["report"], budget, capture=True))
+    require(isinstance(report, dict), "typed_report_object_required")
+    for key in ("native_retry", "originals_written", "product_execution"):
+        require(execution.get(key) is False, "typed_execution_effect_not_read_only")
+    require(execution.get("source_unchanged") is True
+            and execution.get("source_before") == execution.get("source_after"),
+            "typed_reader_source_changed")
+    require({key: execution["report"][key] for key in ("bytes", "sha256")} == binding["report"],
+            "typed_execution_report_binding")
+    require(report.get("schema") == "motionwright.private-nsis-compile-admission/1"
+            and report.get("status") ==
+            "EXACT_TWO_VARIANT_COMPILE_OBSERVATIONS_ADMITTED_WITH_LIMITATIONS",
+            "typed_retained_report_scope")
+    require({key: report["reader_implementation"][key] for key in ("bytes", "sha256")}
+            == expected_reader, "typed_report_reader_identity")
+    expected_source = {"gate_sha": constants["GATE"], "gate_tree": constants["TREES"]["gate"],
+                       "product_sha": constants["PRODUCT"], "product_tree": constants["TREES"]["product"]}
+    expected_github = {"repository": constants["REPO"], "run_id": constants["RUN"],
+                       "attempt": constants["ATTEMPT"], "event": "workflow_dispatch",
+                       "workflow": constants["WORKFLOW"],
+                       "jobs": {pin["name"]: int(key) for key, pin in pins["jobs"].items()},
+                       "artifact_ids": pins["artifact_ids"]}
+    require(canonical(report["source"]) == canonical(expected_source)
+            and canonical(report["github"]) == canonical(expected_github),
+            "typed_retained_identity_mismatch")
+    require(report["originals"]["archives"] == pins["artifacts"], "typed_archive_roster")
+    require(report["originals"]["all_77_zip_members_crc_and_sha256_reread"] is True
+            and report["originals"]["all_77_retained_extraction_members_sha256_reread"] is True
+            and report["originals"]["original_bytes_modified"] is False,
+            "typed_prior_original_read_incomplete")
+    require(report["unexecuted_scopes"] == {
+        "physical_gate_implementation": "NOT_IMPLEMENTED_IN_THIS_GATE", "setup_execution": "NOT_RUN",
+        "application_execution": "NOT_RUN", "installation": "NOT_RUN", "upgrade": "NOT_RUN",
+        "interruption": "NOT_RUN", "recovery": "NOT_RUN", "installed_edit_reopen": "NOT_RUN",
+        "predecessor_profile": "NOT_ADMITTED", "human_acceptance": "NOT_RUN"},
+        "typed_compile_scope_promoted")
+    require(report["decision_limits"]["technical_criteria_verdict"] == "NOT_ISSUED"
+            and report["decision_limits"]["release_readiness"] == "NOT_EVALUATED"
+            and all(report["decision_limits"][key] is False for key in (
+                "release_publication", "other_sha_result_transfer", "autodispatch_or_retry",
+                "product_reexecuted_by_reader")), "typed_retained_verdict_promoted")
+    # Rebase retained control files only by their recorded basename. No path or
+    # command from a report is executed, downloaded, imported or extracted.
+    before = execution["source_before"]
+    require(isinstance(before, list) and len(before) == 3, "typed_reader_source_roster")
+    require({key: before[0][key] for key in ("bytes", "sha256")} == expected_reader,
+            "typed_execution_reader_identity")
+    require(before[0]["path"] == report["reader_implementation"]["path"],
+            "typed_recorded_reader_path")
+    names = set()
+    for item in before:
+        name = _typed_member(PureWindowsPath(item["path"]).name)
+        require(name.casefold() not in names, "typed_reader_source_collision")
+        names.add(name.casefold())
+        _typed_read(reader_path if item is before[0] else reader_path.parent / name, item, budget)
+    for key in ("stdout", "stderr", "input_control_receipt"):
+        item = execution[key]
+        _typed_read(execution_path.parent / _typed_member(PureWindowsPath(item["path"]).name), item, budget)
+    originals, integrity = Path(locator["originals"]), Path(locator["integrity"])
+    metadata = {}
+    require(set(report["originals"]["metadata"]) == set(pins["metadata"]), "typed_metadata_roster")
+    for name, canonical_pin in pins["metadata"].items():
+        _typed_member(name)
+        root = integrity if name == "custody.json" else originals
+        value = decode(_typed_read(root / name, report["originals"]["metadata"][name], budget, capture=True))
+        reader_canonical = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                      ensure_ascii=False, allow_nan=False).encode("utf-8")
+        require(digest(reader_canonical) == canonical_pin, "typed_reader_original_binding")
+        metadata[name] = value
+    _typed_read(Path(locator["git_bindings"]), {
+        "bytes": constants["GIT_BINDING_BYTES"], "sha256": constants["GIT_BINDING_SHA"]}, budget)
+    for job in pins["jobs"].values():
+        item = job["log"]
+        _typed_read(originals / _typed_member(item["path"]), item, budget)
+    custody = metadata["custody.json"]
+    require([entry["id"] for entry in custody["artifacts"]] == pins["artifact_ids"],
+            "typed_custody_artifact_roster")
+    member_count = 0
+    for entry in custody["artifacts"]:
+        artifact_id, members = entry["id"], entry["members"]
+        pin = pins["artifacts"][str(artifact_id)]
+        _typed_read(originals / ("artifact-" + str(artifact_id) + ".zip.original"), pin, budget)
+        require(len(members) == pin["member_count"], "typed_member_count")
+        names = [_typed_member(member["path"]) for member in members]
+        require(len(names) == len({name.casefold() for name in names}), "typed_member_collision")
+        extraction = integrity / "extract" / ("artifact-" + str(artifact_id))
+        require(_typed_inventory(extraction) == set(names), "typed_retained_member_roster")
+        for member in members:
+            require(member["directory"] is False and member["original_crc_checked"] is True
+                    and member["retained_in_original_zip"] is True,
+                    "typed_prior_member_read_incomplete")
+            require(member["extracted_path"] == "extract/artifact-" + str(artifact_id) + "/" + member["path"],
+                    "typed_extraction_binding")
+            _typed_read(extraction / member["path"], member, budget)
+        require(sum(member["bytes"] for member in members) == pin["expanded_bytes"],
+                "typed_expanded_size")
+        member_count += len(members)
+    # Detect replacement after dependent reads; this is not an atomic snapshot.
+    for path, identity in ((reader_path, expected_reader), (report_path, binding["report"]),
+                           (execution_path, binding["execution_receipt"])):
+        _typed_read(path, identity, budget)
+    return {
+        "family": locator["family"], "status": "HISTORICAL_RETAINED_BYTES_VERIFIED",
+        "candidate_disposition": "READBACK_REQUIRED",
+        "retained_result_reuse": "EXACT_RETAINED_READER_RESULT_WITH_EXPLICIT_BINDING",
+        "binding_authentication": "EXTERNAL_REVIEW_REQUIRED_NOT_AUTHENTICATED_BY_PLANNER",
+        "reader_implementation": expected_reader, "retained_report": binding["report"],
+        "retained_execution_receipt": binding["execution_receipt"],
+        "source": expected_source, "github": expected_github,
+        "required_steps": {key: value["steps"] for key, value in pins["jobs"].items()},
+        "original_archives": pins["artifacts"], "retained_members_rehashed": member_count,
+        "requested_product_identity_matches": candidate["repository"] == constants["REPO"]
+            and candidate["sha"] == constants["PRODUCT"] and candidate["tree"] == constants["TREES"]["product"],
+        "scope": "COMPILE_ONLY", "unexecuted_scopes": report["unexecuted_scopes"],
+        "reader_execution": "NOT_REEXECUTED", "product_execution": "NOT_RUN",
+        "zip_crc_revalidation": "NOT_REPEATED_EXACT_ARCHIVE_BYTES_OF_RETAINED_READER_VERIFIED",
+        "input_stability": "TWO_HASH_MATCHING_READS_WITH_DESCRIPTOR_AND_PATH_BINDING",
+        "atomic_whole_corpus_snapshot": False, "writes_after_final_observation": "NOT_EXCLUDED",
+        "evidence_admission": "NOT_PERFORMED", "release_verdict": "NOT_GRANTED",
+        "human_acceptance": "NOT_RUN", "retry_authorized": False,
+        "resources": budget}
+
+
+def attach_typed_readbacks(plan, locators, bindings):
+    """Add optional historical readbacks without changing scope completeness.
+
+    Bindings are a separate, explicitly reviewed input. They authenticate no
+    person or service here. Their digest is recorded; absent, unknown or invalid
+    families remain READBACK_REQUIRED. API conclusions cannot supply a binding.
+    """
+    fields(locators, ("schema", "entries"), "typed_locators_fields")
+    require(locators["schema"] == TYPED_LOCATORS_SCHEMA and isinstance(locators["entries"], list)
+            and len(locators["entries"]) <= 16, "typed_locators_schema")
+    if bindings is None:
+        entries, binding_hash = [], None
+    else:
+        fields(bindings, ("schema", "entries"), "typed_bindings_fields")
+        require(bindings["schema"] == TYPED_BINDINGS_SCHEMA and isinstance(bindings["entries"], list)
+                and len(bindings["entries"]) <= 16, "typed_bindings_schema")
+        entries, binding_hash = bindings["entries"], digest(canonical(bindings))
+    mapped = {}
+    for entry in entries:
+        require(isinstance(entry, dict) and isinstance(entry.get("family"), str)
+                and entry["family"] not in mapped, "typed_binding_family_duplicate")
+        mapped[entry["family"]] = entry
+    rows, seen = [], set()
+    for locator in locators["entries"]:
+        require(isinstance(locator, dict) and isinstance(locator.get("family"), str),
+                "typed_locator_family")
+        family = locator["family"]
+        require(family not in seen, "typed_locator_family_duplicate")
+        seen.add(family)
+        row = {"family": family, "status": "READBACK_REQUIRED", "candidate_disposition": "READBACK_REQUIRED",
+               "evidence_admission": "NOT_PERFORMED", "retry_authorized": False}
+        if family not in RETAINED_READERS:
+            row["code"] = "typed_family_unsupported"
+        elif family not in mapped:
+            row["code"] = "typed_reviewed_binding_missing"
+        else:
+            try:
+                row = _retained_compile_readback(locator, mapped[family], plan["source"])
+            except (ScopeError, OSError, ValueError, KeyError, TypeError, SyntaxError) as error:
+                row["code"] = str(error) if isinstance(error, ScopeError) else "typed_original_unavailable_or_invalid"
+                if row["code"] == "typed_execution_unknown":
+                    row["execution_outcome"] = "UNKNOWN"
+        rows.append(row)
+    # Never set observation completeness, verdicts or dispatch permissions here.
+    result = {**plan, "typed_evidence": {"schema": "motionwright.release-typed-readbacks/1",
+              "reviewed_binding_sha256": binding_hash, "readbacks": rows,
+              "retained_readbacks_complete": bool(rows) and all(
+                  row["status"] == "HISTORICAL_RETAINED_BYTES_VERIFIED" for row in rows),
+              "scope_completeness_effect": "NONE", "candidate_admission": "NOT_PERFORMED"}}
+    result.pop("plan_id", None)
+    result["plan_id"] = digest(canonical(result))
+    return result
+
+
 def _git(repo, *arguments):
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
@@ -925,6 +1319,10 @@ def main(argv=None):
     parser.add_argument("--planner-sha", help="Exact helper/catalog commit; defaults to source SHA")
     parser.add_argument("--observations", type=Path,
                         help="Retained original API response bundles; read only, never authenticated here")
+    parser.add_argument("--typed-evidence-locators", type=Path,
+                        help="Optional private paths for a supported retained evidence family; no execution")
+    parser.add_argument("--reviewed-reader-bindings", type=Path,
+                        help="Separate reviewed report/receipt hashes; external review is not authenticated here")
     args = parser.parse_args(argv)
     try:
         tree, files = read_source(args.repo, args.source_sha)
@@ -942,6 +1340,12 @@ def main(argv=None):
         plan = build_plan({"repository": args.repository, "sha": args.source_sha, "tree": tree},
                           {path: raw for path, raw in files.items() if WORKFLOW.fullmatch(path)},
                           decode(planner_files[CATALOG_PATH]), observations)
+        require(args.typed_evidence_locators is not None or args.reviewed_reader_bindings is None,
+                "typed_bindings_without_locators")
+        if args.typed_evidence_locators is not None:
+            plan = attach_typed_readbacks(
+                plan, read_json_file(args.typed_evidence_locators),
+                read_json_file(args.reviewed_reader_bindings) if args.reviewed_reader_bindings else None)
         plan["execution"] = {"planner_source_sha": planner_sha, "planner_tree_sha": planner_tree,
                              "catalog_source_sha": planner_sha,
                              "planner_git_sha256": digest(expected),
@@ -951,7 +1355,9 @@ def main(argv=None):
         del plan["plan_id"]
         plan["plan_id"] = digest(canonical(plan))
         print(json.dumps(plan, indent=2, sort_keys=True))
-        return 0 if plan["scope_plan_complete"] and plan["scope_observations_complete"] else 3
+        typed_complete = (args.typed_evidence_locators is None
+                          or plan["typed_evidence"]["retained_readbacks_complete"])
+        return 0 if plan["scope_plan_complete"] and plan["scope_observations_complete"] and typed_complete else 3
     except (ScopeError, OSError, UnicodeError, ValueError) as error:
         code = str(error) if isinstance(error, ScopeError) else "source_or_input_unavailable"
         print(json.dumps({"schema": "motionwright.release-scope-refusal/1", "code": code,

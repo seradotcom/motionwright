@@ -1,0 +1,108 @@
+name: Retained macOS Package Metadata
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/macos-package-metadata.yml
+      - tooling/ci_macos_package_metadata.py
+      - tooling/tests/test_ci_macos_package_metadata.py
+      - tooling/ci_foundation_causal.py
+      - tooling/ci_storage_apply_recovery.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/macos-package-metadata.yml
+      - tooling/ci_macos_package_metadata.py
+      - tooling/tests/test_ci_macos_package_metadata.py
+      - tooling/ci_foundation_causal.py
+      - tooling/ci_storage_apply_recovery.py
+  workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Inspect the exact retained macOS candidate without rebuilding or launching it
+        type: choice
+        required: true
+        options: [retained_macos_79929]
+        default: retained_macos_79929
+
+permissions:
+  contents: read
+
+jobs:
+  metadata-g0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_G0_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Verify public source policies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/source_policy.py
+          python -B tooling/acceptance_policy.py
+          python -B tooling/creative_status_policy.py
+          python -B tooling/public_surface_policy.py
+      - name: Verify exact artifact and observer controls through both entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --expected-source "$MW_G0_SOURCE_SHA" --test-directory tooling/tests \
+            --pattern test_ci_macos_package_metadata.py --mode both --require-complete \
+            --timeout 180 --report "$RUNNER_TEMP/macos-metadata-g0/result.json"
+      - name: Preserve control originals
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-metadata-G0-${{ env.MW_G0_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/macos-metadata-g0/
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-package-metadata:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'retained_macos_79929'
+    needs: metadata-g0
+    runs-on: macos-14
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: retained-macos-metadata-artifact-12481147459
+      cancel-in-progress: false
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_MAC_METADATA_SCOPE: retained_macos_79929
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Observe retained DMG and application metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/ci_macos_package_metadata.py --gate "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/macos-metadata-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: Preserve original archive, receipts, command streams and observation
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-metadata-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/macos-metadata-${{ github.run_id }}-${{ github.run_attempt }}/evidence/
+          if-no-files-found: error
+          retention-days: 30
