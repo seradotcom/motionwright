@@ -1074,9 +1074,19 @@ impl Project {
                 | Change::UpsertDeliverable { .. }
                 | Change::RemoveAsset { .. }
                 | Change::RemoveDeliverable { .. }
+                | Change::ImportMeasuredVoice { .. }
+                | Change::AddVoiceTrack { .. }
+                | Change::SetActiveVoiceTrack { .. }
+                | Change::AddTranscriptSegment { .. }
+                | Change::UpsertTranscriptSegment { .. }
+                | Change::RemoveTranscriptSegment { .. }
+                | Change::AddAudioCue { .. }
+                | Change::UpsertAudioCue { .. }
+                | Change::RemoveAudioCue { .. }
+                | Change::SetMixIntent { .. }
         ) {
-            // A failed recipe, profile change or deletion must not leave the caller with a
-            // partially changed document, even outside Store's transaction.
+            // A rejected change must not leave the caller with a partially changed document,
+            // even outside Store's transaction.
             let mut candidate = self.clone();
             candidate.apply_change_in_place(change)?;
             if let Change::UpsertDeliverable { profile } = change {
