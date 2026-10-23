@@ -133,10 +133,10 @@ jobs:
           assert src["source_sha"]==rec["executed_source_sha"]==os.environ["GITHUB_SHA"]
           assert src["tree_sha"]==rec["tree_sha"]
           assert rec["status"]=="PASS" and rec["exit_code"]==0 and rec["require_complete"] is True
-          expected={"discovery:test_conformance_history_guard.py":43,
-                    "dotted:tooling.tests.test_conformance_history_guard":43,
-                    "discovery:test_conformance_policy.py":51,
-                    "dotted:tooling.tests.test_conformance_policy":51}
+          expected={"discovery:test_conformance_history_guard.py":57,
+                    "dotted:tooling.tests.test_conformance_history_guard":57,
+                    "discovery:test_conformance_policy.py":63,
+                    "dotted:tooling.tests.test_conformance_policy":63}
           assert len(rec["steps"])==len(expected)==4
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           for step in rec["steps"]:
@@ -155,9 +155,9 @@ jobs:
           with (root/"history-g1-acceptance-limits.json").open("x") as output:
               json.dump({"schema":"motionwright.history-test-scope/1",
                          "source_sha":src["source_sha"],"tree_sha":src["tree_sha"],
-                         "synthetic_H03_history_methods":86,
-                         "synthetic_conformance_policy_methods":102,
-                         "omitted":0,"passed":188,
+                         "synthetic_H03_history_methods":114,
+                         "synthetic_conformance_policy_methods":126,
+                         "omitted":0,"passed":240,
                          "all_396_real_private_historical_records_assessed":False,
                          "formal_acceptance":False,"human_approval":False,
                          "release_authorized":False},output,indent=2)
