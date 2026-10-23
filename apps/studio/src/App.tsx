@@ -2054,7 +2054,7 @@ export default function App() {
   const renderWorkspace = () => {
     switch (workspace) {
       case "Brief":
-        return <RichBriefView project={project} commit={commitReportedRequired} />;
+        return <RichBriefView project={project} commit={commitReportedRequired} commitClaim={commitCamera} />;
       case "Narrative":
         return <RichNarrativeView project={project} scene={selectedScene} commit={commitCamera} />;
       case "Audio":
@@ -2103,7 +2103,8 @@ export default function App() {
       case "Alternatives":
         return <RichAlternativesView project={project} scene={selectedScene} commit={commit} />;
       case "Changes":
-        return <ChangesWorkspace project={project} commit={commit} />;
+        return <ChangesWorkspace key={[project.id, project.generation, project.active_branch].join(":")}
+          project={project} commit={commit} commitBranch={commitCamera} busy={busy} />;
       case "Dependencies":
         return <DependenciesWorkspace
           key={[project.id, project.generation, project.revision].join(":")}

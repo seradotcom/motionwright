@@ -266,11 +266,337 @@ CREATIVE_PRODUCTION_SELECTIONS = (('production-design',
    'retained input',
    'creative workbench pointer backup failure sends no real grant or change; explicit healthy retry saves '
    'retained input')))
-SELECTIONS = (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS)
+BRANCH_CLAIM_SELECTIONS = (('branch-authoring',
+  'branch-authoring-service.spec.ts',
+  ('causal: a rejected branch creation preserves the exact authored name',
+   'causal: a late original branch reply preserves a later name',
+   'causal: an unsaved branch name survives App navigation and reload without a mutation',
+   'one explicit name creates one editable branch through SQLite and a new service process',
+   'UTF-8 branch limit keeps invalid input without sending it',
+   'silent branch recovery bytes loss blocks creation until exact readback',
+   'silent branch recovery pointer loss blocks creation until exact readback',
+   'a committed but lost branch reply survives reopen and explicit inspection without replay',
+   'a later A-to-B-to-A branch name stays editable after its original reply and reload',
+   'restoring an unconfirmed branch preserves both copies after silent pointer failure',
+   'restoring an unconfirmed branch preserves both copies after throw pointer failure',
+   'restoring an unconfirmed branch preserves both copies after write-then-throw pointer failure',
+   'an ordinary branch name survives a failed first pointer read before one explicit creation',
+   'an UNKNOWN branch and a deliberately cleared name survive failed first pointer read without replay',
+   'an ordinary branch name survives a failed first copy read before one explicit creation',
+   'an UNKNOWN branch and a deliberately cleared name survive failed first copy read without replay',
+   'a failed initial pointer read can recover an empty session without discarding newly typed input')),
+ ('claim-source',
+  'claim-source-service.spec.ts',
+  ('raw source revision and inactive source buffers survive App navigation and reload before one valid '
+   'commit',
+   'same-text source edit invalidates its review and supports a new situated review through SQLite reopen',
+   'a committed lost Claim reply stays UNKNOWN through reload and only a separate intent writes again',
+   "a held original reply preserves later source input and another claim's independent draft",
+   'unconfirmed silent-copy blocks all Claim dispatch until explicit recovery succeeds',
+   'unconfirmed silent-pointer blocks all Claim dispatch until explicit recovery succeeds',
+   "a real external edit causes a stale save conflict without overwriting either author's work",
+   'explicit removal of source and version preserves claim identity through restart',
+   'a held Add reply cannot erase the next authored claim in the new-claim editor',
+   'retry after initial copy read failure restores untouched raw input before one explicit real save',
+   'retry after initial pointer read failure restores untouched raw input before one explicit real save',
+   'an edit and return to saved values during initial copy read failure preserves later intent and original '
+   'UNKNOWN',
+   'an edit and return to saved values during initial pointer read failure preserves later intent and '
+   'original UNKNOWN',
+   'retry after the first pointer read fails accepts a confirmed empty slot without losing newly authored '
+   'raw input')))
+BRANCH_CLAIM_UNITS = (('src/branchDraft.test.ts',
+  (('branch author intent and exact original result', 'raw name belongs to the exact id'),
+   ('branch author intent and exact original result', 'raw name belongs to the exact generation'),
+   ('branch author intent and exact original result', 'raw name belongs to the exact active_branch'),
+   ('branch author intent and exact original result',
+    'incomplete and invalid raw names are retained through the recovery codec'),
+   ('branch author intent and exact original result', 'invalid name "" is rejected without rewriting input'),
+   ('branch author intent and exact original result',
+    'invalid name "   " is rejected without rewriting input'),
+   ('branch author intent and exact original result',
+    'invalid name "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂" is rejected without rewriting input'),
+   ('branch author intent and exact original result',
+    'invalid name "name\\u0000" is rejected without rewriting input'),
+   ('branch author intent and exact original result',
+    'invalid name "name\x85" is rejected without rewriting input'),
+   ('branch author intent and exact original result',
+    'native ASCII case and UTF-8 size limits are matched without silent truncation'),
+   ('branch author intent and exact original result',
+    'matching and unrelated property observations cannot acknowledge UNKNOWN'),
+   ('branch author intent and exact original result',
+    'only the original callback with an exact added branch can clear its submitted name'),
+   ('branch author intent and exact original result',
+    'later author input survives the original branch reply'),
+   ('branch author intent and exact original result', 'ABA author input survives the original branch reply'),
+   ('branch author intent and exact original result',
+    'an invalid revision original result keeps the unconfirmed name'),
+   ('branch author intent and exact original result',
+    'an invalid owner original result keeps the unconfirmed name'),
+   ('branch author intent and exact original result',
+    'an invalid missing original result keeps the unconfirmed name'),
+   ('branch author intent and exact original result',
+    'an invalid name original result keeps the unconfirmed name'),
+   ('branch author intent and exact original result',
+    'an invalid parent original result keeps the unconfirmed name'),
+   ('branch author intent and exact original result',
+    'an invalid base original result keeps the unconfirmed name'),
+   ('branch author intent and exact original result',
+    'an invalid workspace original result keeps the unconfirmed name'),
+   ('branch author intent and exact original result',
+    'an invalid extra original result keeps the unconfirmed name'),
+   ('branch author intent and exact original result',
+    'a rejection remains UNKNOWN while a proven local no-dispatch failure can be prepared explicitly'),
+   ('branch copy readback and concurrent writers', 'raw bytes and the tab pointer must both be confirmed'),
+   ('branch copy readback and concurrent writers',
+    'a restored UNKNOWN carries its exact source guard through a new writer and reload'),
+   ('branch copy readback and concurrent writers',
+    'twenty reloads of one UNKNOWN preserve its raw name within the same recovery budget'),
+   ('branch copy readback and concurrent writers',
+    'silent bytes publication cannot count as a confirmed recovery'),
+   ('branch copy readback and concurrent writers',
+    'silent pointer publication cannot count as a confirmed recovery'),
+   ('branch copy readback and concurrent writers',
+    'a peer pointer installed during data publication is retained and blocks publication'),
+   ('branch copy readback and concurrent writers',
+    'a final byte change after pointer publication remains visible and blocks retry'),
+   ('branch copy readback and concurrent writers', "another writer's bytes is never silently replaced"),
+   ('branch copy readback and concurrent writers', "another writer's pointer is never silently replaced"),
+   ('branch copy readback and concurrent writers',
+    'full or corrupt copies stay intact when the bounded catalogue refuses another name'),
+   ('branch copy readback and concurrent writers', 'a corrupted scope envelope cannot become a saved name'),
+   ('branch copy readback and concurrent writers', 'a corrupted writer envelope cannot become a saved name'),
+   ('branch copy readback and concurrent writers', 'a corrupted attempt envelope cannot become a saved name'),
+   ('branch copy readback and concurrent writers',
+    'a corrupted sequence envelope cannot become a saved name'),
+   ('branch copy readback and concurrent writers', 'a corrupted extra envelope cannot become a saved name'),
+   ('explicit saved-source review never invents an original acknowledgement',
+    'separation preserves UNKNOWN and later ABA=false without replay'),
+   ('explicit saved-source review never invents an original acknowledgement',
+    'separation preserves UNKNOWN and later ABA=true without replay'),
+   ('explicit saved-source review never invents an original acknowledgement',
+    'an original changing during bytes publication blocks the reloaded successor'),
+   ('explicit saved-source review never invents an original acknowledgement',
+    'an original changing during pointer publication blocks the reloaded successor'),
+   ('explicit saved-source review never invents an original acknowledgement',
+    'gap history cannot allow a separate creation'),
+   ('explicit saved-source review never invents an original acknowledgement',
+    'empty history cannot allow a separate creation'),
+   ('explicit saved-source review never invents an original acknowledgement',
+    'duplicate history cannot allow a separate creation'),
+   ('explicit saved-source review never invents an original acknowledgement',
+    'a source change between project reads invalidates the review'),
+   ('branch initial read recovery keeps actual author decisions',
+    'adopts an ordinary unread copy, keeping its exact raw name and older source revision'),
+   ('branch initial read recovery keeps actual author decisions',
+    'adopts untouched UNKNOWN and its exact retained origin without creating another attempt'),
+   ('branch initial read recovery keeps actual author decisions',
+    'retains later explicit raw name "" above both edit sequences'),
+   ('branch initial read recovery keeps actual author decisions',
+    'retains later explicit raw name "  later raw branch  " above both edit sequences'),
+   ('branch initial read recovery keeps actual author decisions',
+    'retains later explicit raw name "  Authored branch A  " above both edit sequences'),
+   ('branch initial read recovery keeps actual author decisions',
+    'A to B to A remains a later edit even when equal to the recovered raw name'),
+   ('branch initial read recovery keeps actual author decisions',
+    'a retained NOT_SENT becomes UNKNOWN in a new writer while its original bytes remain unchanged'),
+   ('branch initial read recovery keeps actual author decisions',
+    'refuses an incompatible uncertain attempt instead of replacing its authority'),
+   ('branch initial read recovery keeps actual author decisions', 'refuses a recovered foreign id'),
+   ('branch initial read recovery keeps actual author decisions', 'refuses a recovered foreign generation'),
+   ('branch initial read recovery keeps actual author decisions',
+    'refuses a recovered foreign active_branch'),
+   ('branch initial read recovery keeps actual author decisions',
+    'deduplicates exact origins and rejects differing bytes for one origin key'),
+   ('branch initial read recovery keeps actual author decisions',
+    'refuses edit-sequence overflow without replacing the recovered or local raw input'),
+   ('branch initial read recovery keeps actual author decisions',
+    'adopted work survives a failed successor backup and later typing before its next backup'),
+   ('branch recovery pointer observation',
+    'a failed first read remains unknown and can anchor the first successful writer'),
+   ('branch recovery pointer observation', 'a previously observed pointer null cannot adopt a replacement'),
+   ('branch recovery pointer observation',
+    'a previously observed pointer "20000000-0000-4000-8000-000000000001" cannot adopt a replacement'),
+   ('branch recovery pointer observation',
+    'the first successful null anchors absence rather than granting permission for a later writer'),
+   ('branch recovery pointer observation',
+    'publication rechecks ownership after recovery read and preserves the original bytes'))),
+ ('src/claimSourceDraft.test.ts',
+  (('Claim author input, identity and exact original response',
+    'isolates project, generation, branch and individual claim buffers'),
+   ('Claim author input, identity and exact original response',
+    'retains incomplete or inexact source revision ""'),
+   ('Claim author input, identity and exact original response',
+    'retains incomplete or inexact source revision "1e"'),
+   ('Claim author input, identity and exact original response',
+    'retains incomplete or inexact source revision "-"'),
+   ('Claim author input, identity and exact original response',
+    'retains incomplete or inexact source revision "01"'),
+   ('Claim author input, identity and exact original response',
+    'retains incomplete or inexact source revision "1.5"'),
+   ('Claim author input, identity and exact original response',
+    'retains incomplete or inexact source revision "9007199254740993"'),
+   ('Claim author input, identity and exact original response',
+    'keeps inactive source buffers and optional empty versus absent pin distinct'),
+   ('Claim author input, identity and exact original response',
+    'measures source fields and copies in UTF-8 bytes without truncating raw input'),
+   ('Claim author input, identity and exact original response',
+    'binds a source-only edit to the complete preimage and same claim ID'),
+   ('Claim author input, identity and exact original response',
+    'rejects a changed preimage even when the project revision matches'),
+   ('Claim author input, identity and exact original response',
+    'checks the existing project content lock before arming'),
+   ('Claim author input, identity and exact original response',
+    'checks the existing claim content lock before arming'),
+   ('Claim author input, identity and exact original response',
+    'rejects a capture-bound source change without rewriting its claim or capture'),
+   ('Claim author input, identity and exact original response',
+    'does not acknowledge an observed project with identical submitted values'),
+   ('Claim author input, identity and exact original response',
+    'keeps later input even after typing B and returning to the original submitted A'),
+   ('Claim author input, identity and exact original response',
+    'rejects an original ACK with wrong project and keeps UNKNOWN'),
+   ('Claim author input, identity and exact original response',
+    'rejects an original ACK with wrong generation and keeps UNKNOWN'),
+   ('Claim author input, identity and exact original response',
+    'rejects an original ACK with wrong branch and keeps UNKNOWN'),
+   ('Claim author input, identity and exact original response',
+    'rejects an original ACK with wrong revision and keeps UNKNOWN'),
+   ('Claim author input, identity and exact original response',
+    'rejects an original ACK with wrong target source and keeps UNKNOWN'),
+   ('Claim author input, identity and exact original response',
+    'rejects an original ACK with wrong deleted other claim and keeps UNKNOWN'),
+   ('Claim author input, identity and exact original response',
+    'rejects an original ACK with wrong changed other claim and keeps UNKNOWN'),
+   ('Claim author input, identity and exact original response',
+    'rejects an original ACK with wrong reordered claims and keeps UNKNOWN'),
+   ('Claim author input, identity and exact original response', 'rejects a reply for another local attempt'),
+   ('Claim author input, identity and exact original response',
+    'accepts exactly one appended claim while preserving all previous claim fields'),
+   ('Claim recovery custody without replay',
+    'preserves corrupt and foreign copies and rejects extra execution authority'),
+   ('Claim recovery custody without replay',
+    'recovers original incomplete input after a read failure without inventing an edit, UNKNOWN=false'),
+   ('Claim recovery custody without replay',
+    'recovers original incomplete input after a read failure without inventing an edit, UNKNOWN=true'),
+   ('Claim recovery custody without replay',
+    'preserves an explicit edit made while recovery is blocked, return-to-initial=false'),
+   ('Claim recovery custody without replay',
+    'preserves an explicit edit made while recovery is blocked, return-to-initial=true'),
+   ('Claim recovery custody without replay',
+    'keeps a newer ordinary draft active while retaining the earlier ordinary copy'),
+   ('Claim recovery custody without replay',
+    'two failed original reads do not become author edits before a successful recovery'),
+   ('Claim recovery custody without replay',
+    'a recovered UNKNOWN is not a later edit when separate-copy publication must be retried'),
+   ('Claim recovery custody without replay',
+    'refuses a foreign owner or target while recovering a failed read'),
+   ('Claim recovery custody without replay',
+    'does not replace an active uncertain attempt with a different recovered attempt'),
+   ('Claim recovery custody without replay',
+    'first pointer read failure remains unobserved until a later valid writer is read'),
+   ('Claim recovery custody without replay',
+    'a known writer cannot be replaced after its original data read failed'),
+   ('Claim recovery custody without replay',
+    'observed null is a custody observation rather than a failed pointer read'),
+   ('Claim recovery custody without replay',
+    'a repeated pointer read failure cannot erase a prior successful observation'),
+   ('Claim recovery custody without replay',
+    'pointer replacement after a first recovered observation blocks successor publication'),
+   ('Claim recovery custody without replay', 'recovers a NOT_SENT checkpoint conservatively as UNKNOWN'),
+   ('Claim recovery custody without replay', 'does not confirm custody after data-silent'),
+   ('Claim recovery custody without replay', 'does not confirm custody after data-throw'),
+   ('Claim recovery custody without replay', 'does not confirm custody after pointer-silent'),
+   ('Claim recovery custody without replay', 'does not confirm custody after pointer-throw'),
+   ('Claim recovery custody without replay', 'does not confirm custody after pointer-write-throw'),
+   ('Claim recovery custody without replay',
+    'detects an interleaved data replacement during pointer publication'),
+   ('Claim recovery custody without replay',
+    'rechecks custody after budget enumeration and preserves the interleaved writer'),
+   ('Claim recovery custody without replay',
+    'does not overwrite an earlier saved checkpoint with new author input'),
+   ('Claim recovery custody without replay',
+    'stable read-history-read on the original revision cannot release a future commit'),
+   ('Claim recovery custody without replay',
+    'requires complete history and a stable second read without acknowledging equal values'),
+   ('Claim recovery custody without replay',
+    'retains exact old UNKNOWN bytes when separate-copy phase 1 fails'),
+   ('Claim recovery custody without replay',
+    'retains exact old UNKNOWN bytes when separate-copy phase 2 fails'),
+   ('Claim recovery custody without replay',
+    'a confirmed separate edit retains the exact UNKNOWN copy and uses the later explicit base'),
+   ('Claim recovery custody without replay',
+    'rejects a fresh document with the same stamp but changed claim 0'),
+   ('Claim recovery custody without replay',
+    'rejects a fresh document with the same stamp but changed claim 1'),
+   ('Claim recovery custody without replay',
+    'cannot release into an unreviewed same-stamp document with changed claim 0'),
+   ('Claim recovery custody without replay',
+    'cannot release into an unreviewed same-stamp document with changed claim 1'),
+   ('Claim recovery custody without replay',
+    'explicitly choosing current values preserves the old draft object and does not dispatch'),
+   ('Claim pointer publication after a partial local write',
+    'same-draft retry publishes its own pointer after silent, earlier-writer=false'),
+   ('Claim pointer publication after a partial local write',
+    'same-draft retry publishes its own pointer after throw-before, earlier-writer=false'),
+   ('Claim pointer publication after a partial local write',
+    'same-draft retry publishes its own pointer after silent, earlier-writer=true'),
+   ('Claim pointer publication after a partial local write',
+    'same-draft retry publishes its own pointer after throw-before, earlier-writer=true'),
+   ('Claim pointer publication after a partial local write',
+    'same-draft retry remains blocked while pointer publication still silent fails'),
+   ('Claim pointer publication after a partial local write',
+    'same-draft retry remains blocked while pointer publication still throw-before fails'),
+   ('Claim pointer publication after a partial local write',
+    'a setter that writes the new pointer then throws cannot grant the active session publication custody'),
+   ('Claim pointer publication after a partial local write',
+    'same-draft retry cannot overwrite another writer published after the original pointer failure'),
+   ('Claim pointer publication after a partial local write',
+    'same-draft pointer repair rechecks its data after publication without overwriting an interleaved '
+    'replacement'))))
+BRANCH_CLAIM_SOURCE_PATHS = ('apps/studio/src/App.tsx',
+ 'apps/studio/src/BriefWorkspace.tsx',
+ 'apps/studio/src/ClaimSourceEditor.tsx',
+ 'apps/studio/src/HistoryWorkspaces.tsx',
+ 'apps/studio/src/ReviewWorkspace.tsx',
+ 'apps/studio/src/api.ts',
+ 'apps/studio/src/branchDraft.test.ts',
+ 'apps/studio/src/branchDraft.ts',
+ 'apps/studio/src/claim-source-editor.css',
+ 'apps/studio/src/claimSourceDraft.test.ts',
+ 'apps/studio/src/claimSourceDraft.ts',
+ 'apps/studio/src/reviewDraft.ts',
+ 'apps/studio/src/types.ts',
+ 'apps/studio/src/useBranchDraft.tsx',
+ 'apps/studio/src/useClaimSourceDraft.ts',
+ 'apps/studio/tests/branch-authoring-service.spec.ts',
+ 'apps/studio/tests/claim-source-service.spec.ts',
+ 'crates/domain/src/claim_source_edit.rs',
+ 'crates/domain/src/history.rs',
+ 'crates/domain/src/lib.rs',
+ 'crates/domain/tests/claim_source_edit.rs',
+ 'crates/service/tests/claim_source_edit.rs')
+CLAIM_SOURCE_RUST_CASES = {'domain': ('source_only_edit_preserves_claim_id_order_references_and_unrelated_content',
+            'invalid_preimage_id_noop_source_and_utf8_limits_are_atomic',
+            'locks_protect_project_or_target_without_blocking_an_unrelated_claim',
+            'wire_requires_complete_preimage_and_replacement_but_accepts_explicit_null',
+            'source_change_invalidates_resolved_review_even_when_text_does_not_change',
+            'new_review_requires_an_existing_claim_target',
+            'immutable_capture_source_and_context_reject_edits_without_rebinding_original_evidence'),
+ 'service': ('exact_source_edit_reopens_with_same_identity_history_and_original_request_receipt',
+             'another_client_revision_conflicts_even_when_the_claim_preimage_is_still_exact',
+             'current_revision_does_not_authorize_a_stale_claim_preimage',
+             'a_source_only_change_invalidates_resolved_active_branch_reviews_and_retains_their_history',
+             'content_locks_reject_project_or_target_edits_without_changing_the_saved_project',
+             'explicit_source_withdrawal_is_durable_and_a_rejected_noop_adds_no_content_event',
+             'immutable_capture_bindings_survive_direct_service_rejections_and_durable_reopen',
+             'invalid_fields_assets_future_sources_and_missing_review_targets_have_no_partial_commit')}
+SELECTIONS = (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS, *BRANCH_CLAIM_SELECTIONS)
 
 # Each per-file process limit includes every declared test timeout and the
 # configured 120s server startup. Only an original run establishes actual timing.
 SELECTION_GROUPS = {
+    "branch-claim": {"labels": ("branch-authoring", "claim-source"), "required_tests": 31},
     "project-authoring": {"labels": tuple(row[0] for row in PROJECT_AUTHORING_SELECTIONS),
                           "required_tests": 136},
     "creative-production": {"labels": ("production-design", "creative-workbench"),
@@ -286,6 +612,8 @@ SELECTION_GROUPS = {
     },
 }
 SELECTION_TIMEOUTS = {
+    "branch-authoring": 2220,
+    "claim-source": 1860,
     "production-design": 1140,
     "creative-workbench": 1260,
     "canvas": 1800,
@@ -1564,11 +1892,12 @@ REVIEW_UNITS = (('src/reviewDraft.test.ts',
 
 
 def selected_unit_inventory(selection):
-    require(selection in ("creative-production", "review", "workflow-preview"), "unknown selected unit scope")
+    require(selection in ("creative-production", "review", "workflow-preview", "branch-claim"), "unknown selected unit scope")
     rows, expected_files, expected_tests = {
         "creative-production": (CREATIVE_PRODUCTION_UNITS, 2, 67),
         "review": (REVIEW_UNITS, 1, 72),
         "workflow-preview": (WORKFLOW_PREVIEW_UNITS, 3, 79),
+        "branch-claim": (BRANCH_CLAIM_UNITS, 2, 134),
     }[selection]
     require(isinstance(rows, tuple) and len(rows) == expected_files
             and len({name for name, _ in rows}) == expected_files
@@ -1596,13 +1925,20 @@ def selected_selections(selection):
     require(isinstance(selection, str), "selection must be a single named scope")
     if is_browser_scope(selection):
         return browser_selections(selection)
-    require(SELECTIONS == (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS)
+    require(SELECTIONS == (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS, *BRANCH_CLAIM_SELECTIONS)
             and len(PROJECT_AUTHORING_SELECTIONS) == 19
             and sum(len(row[2]) for row in PROJECT_AUTHORING_SELECTIONS) == 136
             and len(HISTORICAL_PROJECT_AUTHORING_SELECTIONS) == 19
             and sum(len(row[2]) for row in HISTORICAL_PROJECT_AUTHORING_SELECTIONS) == 135
             and len(CREATIVE_PRODUCTION_SELECTIONS) == 2
-            and sum(len(row[2]) for row in CREATIVE_PRODUCTION_SELECTIONS) == 17,
+            and sum(len(row[2]) for row in CREATIVE_PRODUCTION_SELECTIONS) == 17
+            and len(BRANCH_CLAIM_SELECTIONS) == 2
+            and tuple((label, filename, len(titles)) for label, filename, titles in BRANCH_CLAIM_SELECTIONS) == (
+                ("branch-authoring", "branch-authoring-service.spec.ts", 17),
+                ("claim-source", "claim-source-service.spec.ts", 14))
+            and all(isinstance(titles, tuple) and len(set(titles)) == len(titles)
+                    and all(isinstance(title, str) and title for title in titles)
+                    for _, _, titles in BRANCH_CLAIM_SELECTIONS),
             "service catalogue differs from its closed historical and composed scopes")
     if selection == "all":
         return SELECTIONS
@@ -1850,7 +2186,7 @@ def source_observation(repo, selection=None):
         "tooling/ci_canvas_service.py",
         "tooling/tests/test_ci_canvas_service.py",
     )
-    paths = tuple(dict.fromkeys((*paths, *CREATIVE_PRODUCTION_SOURCE_PATHS,
+    paths = tuple(dict.fromkeys((*paths, *CREATIVE_PRODUCTION_SOURCE_PATHS, *BRANCH_CLAIM_SOURCE_PATHS,
                                  "tooling/vite_editor_security_probe.mjs")))
     if is_browser_scope(selection):
         paths = tuple(dict.fromkeys((*paths, *BROWSER_SOURCE_PATHS)))
@@ -2134,7 +2470,7 @@ def selected_service_store_bindings(root, inventory, selections, captures, binar
     """Bind every new service case to its original closed store and final oracle."""
     known = {row["manifest"] for row in captures}
     require(isinstance(required_labels, set) and required_labels
-            and required_labels <= ({row[0] for row in CREATIVE_PRODUCTION_SELECTIONS} | {"review"}),
+            and required_labels <= ({row[0] for row in CREATIVE_PRODUCTION_SELECTIONS} | {"review", "branch-authoring", "claim-source"}),
             "unknown case/store binding scope")
     bound, used = [], set()
     for selection in selections:
@@ -2152,7 +2488,7 @@ def selected_service_store_bindings(root, inventory, selections, captures, binar
         collect(document["suites"])
         for case in cases:
             attachments = case["tests"][0]["results"][0].get("attachments", [])
-            evidence_name = label + "-service-evidence"
+            evidence_name = "branch-authoring-evidence" if label == "branch-authoring" else label + "-service-evidence"
             originals = {}
             for name in ("closed-store-outcomes", evidence_name):
                 found = [item for item in attachments if item.get("name") == name]
@@ -2221,7 +2557,7 @@ def selected_service_store_bindings(root, inventory, selections, captures, binar
                 "an unknown Production plan matching-peer result survives reload without replay and needs a fresh history review",
             }
             participants = 2 if label == "production-design" and case["title"] in peer_titles else 1
-            if label == "review":
+            if label in ("review", "branch-authoring", "claim-source"):
                 require(isinstance(evidence.get("service"), dict) and "services" not in evidence,
                         "Review original singular service authority differs")
                 services = [evidence["service"]]
@@ -2446,6 +2782,9 @@ def archive_closed_bindings(root, inventory, source):
     if any(row["label"] == "review" for row in selections):
         result["review_cases"] = selected_service_store_bindings(
             root, inventory, selections, captures, binary_path, {"review"})
+    if any(row["label"] in {item[0] for item in BRANCH_CLAIM_SELECTIONS} for row in selections):
+        result["branch_claim_cases"] = selected_service_store_bindings(
+            root, inventory, selections, captures, binary_path, {row[0] for row in BRANCH_CLAIM_SELECTIONS})
     return result
 
 
@@ -2942,7 +3281,7 @@ def run_creative_production_units(repo, output, selection="creative-production")
     """Run the selected Vitest files and production build once for a composed SHA."""
     units = selected_unit_inventory(selection)
     source_scope = {"review": "review-browser", "creative-production": "creative-production-browser",
-                    "workflow-preview": "workflow-preview-browser"}[selection]
+                    "workflow-preview": "workflow-preview-browser", "branch-claim": None}[selection]
     repo, output = repo.resolve(), output.resolve()
     require(repo.is_dir() and not output.exists(), "fresh unit evidence and existing source required")
     output.mkdir(parents=True, exist_ok=False)
@@ -3130,7 +3469,7 @@ def unit_build_main(arguments):
     parser = argparse.ArgumentParser(description="Verify an exact selected unit inventory and production build.")
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--selection", choices=("creative-production", "review", "workflow-preview"),
+    parser.add_argument("--selection", choices=("creative-production", "review", "workflow-preview", "branch-claim"),
                         default="creative-production")
     args = parser.parse_args(arguments)
     return run_creative_production_units(args.repo, args.output, args.selection)
@@ -3232,7 +3571,100 @@ def main():
     return 0 if report["status"] == "PASS" else 1
 
 
+
+
+
+def validate_claim_source_output(exit_code, output, package):
+    """Require each original domain/service assertion, not just success totals."""
+    require(package in ("domain", "service"), "unknown Claim contract target")
+    cases = CLAIM_SOURCE_RUST_CASES[package]
+    expected = 7 if package == "domain" else 8
+    require(isinstance(cases, tuple) and len(cases) == len(set(cases)) == expected,
+            "Claim contract inventory differs")
+    require(type(exit_code) is int and exit_code == 0 and isinstance(output, str),
+            "Claim contract process must exit successfully")
+    rows = re.findall(r"^test (\S+) \.\.\. (\S+)[^\n]*$", output, re.MULTILINE)
+    summaries = re.findall(r"^test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored; "
+                           r"(\d+) measured; (\d+) filtered out;(?:[^\n]*)$", output, re.MULTILINE)
+    require(len(rows) == len({name for name, _ in rows}) == expected
+            and {name for name, _ in rows} == set(cases)
+            and all(status == "ok" for _, status in rows)
+            and summaries == [("ok", str(expected), "0", "0", "0", "0")],
+            "Claim original closed result differs")
+    return {"status": "PASS", "package": package, "cases": sorted(cases),
+            "passed": expected, "ignored": 0, "formal_acceptance": False}
+
+
+def run_claim_source_contracts(repo, output):
+    repo, output = repo.resolve(), output.resolve()
+    require(repo.is_dir() and not output.exists() and not output.is_relative_to(repo),
+            "fresh isolated Claim contract output required")
+    output.mkdir(parents=True, exist_ok=False)
+    report = {"schema": "motionwright.claim-source-contract-ci/1", "status": "FAIL", "commands": [],
+              "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "job": os.environ.get("GITHUB_JOB"), "native_render": "NOT_RUN", "installed_tauri": "NOT_RUN",
+              "human_acceptance": False, "formal_acceptance": False}
+    try:
+        require(sys.platform.startswith("linux"), "closed Claim contract verification requires Linux")
+        before = source_observation(repo)
+        report["source_before"] = before
+        write_new(output / "source-before.json", before)
+        cargo, rustc = shutil.which("cargo"), shutil.which("rustc")
+        require(cargo is not None and rustc is not None, "cargo and rustc required")
+        # Preserve rustup's invocation basename while fingerprinting the resolved executable.
+        tools = {name: {"invoked_path": str(Path(path).absolute()),
+                        "path": str(Path(path).resolve(strict=True)),
+                        **digest(Path(path).resolve(strict=True))}
+                 for name, path in (("cargo", cargo), ("rustc", rustc))}
+        report["tools"] = tools
+        env = dict(os.environ)
+        for variable in PROCESS_ENVIRONMENT_KEYS:
+            env.pop(variable, None)
+        env.update(CARGO_TERM_COLOR="never", RUST_BACKTRACE="0")
+        commands = (("rustc-identity", [rustc, "-Vv"], 60),
+                    ("cargo-identity", [cargo, "-V"], 60),
+                    ("domain", [cargo, "test", "--locked", "-p", "motionwright-domain",
+                                "--test", "claim_source_edit", "--", "--test-threads=1"], 1200),
+                    ("service", [cargo, "test", "--locked", "-p", "motionwright-service",
+                                 "--test", "claim_source_edit", "--", "--test-threads=1"], 1200),
+                    ("native-consumer-check", [cargo, "check", "--locked", "-p", "motionwright-native",
+                                               "--all-targets"], 1200))
+        for label, argv, timeout in commands:
+            command = execute(argv, repo, env, output, label, timeout)
+            report["commands"].append({"label": label, **command})
+            require_observed_command(command)
+            require(command["exit_code"] == 0, "Claim contract command failed: " + label)
+            if label in ("domain", "service"):
+                path = output / (label + ".stdout.log")
+                require(digest(path) == {key: command["stdout"][key] for key in ("bytes", "sha256")},
+                        "original Claim contract log changed")
+                report[label] = validate_claim_source_output(
+                    command["exit_code"], path.read_text(encoding="utf-8"), label)
+        report["source_after"] = source_observation(repo)
+        require(report["source_after"] == before, "Claim contract source changed")
+        for identity in tools.values():
+            require(digest(Path(identity["path"])) == {key: identity[key] for key in ("bytes", "sha256")},
+                    "Claim contract executable changed")
+        report.update(status="PASS", native_consumer="COMPILED_ONLY_NOT_EXECUTED")
+    except UnknownObservation as error:
+        report.update(status="UNKNOWN", error=str(error), unsealed_command=error.command,
+                      terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
+    except Exception as error:
+        report.update(error_type=type(error).__name__, error=str(error))
+    write_new(output / "receipt.json", report)
+    print(json.dumps({"status": report["status"], "receipt": str(output / "receipt.json")}))
+    return 0 if report["status"] == "PASS" else 1
+
+def claim_source_main(arguments):
+    parser = argparse.ArgumentParser(description="Verify exact Claim domain/service contracts and native consumer compilation.")
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    return run_claim_source_contracts(args.repo, args.output)
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "claim-source-contracts":
+        raise SystemExit(claim_source_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "workflow-route":
         raise SystemExit(workflow_route_main(sys.argv[2:]))
     sys.exit(archive_main(sys.argv[2:]) if sys.argv[1:2] == ["archive"]

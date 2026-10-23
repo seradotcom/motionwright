@@ -187,6 +187,7 @@ export interface Claim {
   id: string; text: string; source: SourceReference | null;
   context: string; source_revision: string | null;
 }
+export type ClaimEditableFields = Pick<Claim, "text" | "source" | "context" | "source_revision">;
 export interface Brief {
   objective: string; audience: string; constraints: string[];
   exclusions: string[]; claims: Claim[];
@@ -672,6 +673,7 @@ export type Change =
   | { type: "rename_project"; title: string }
   | { type: "set_brief"; objective: string; audience: string; constraints: string[]; exclusions: string[] }
   | { type: "add_claim"; text: string; source: SourceReference | null; context: string; source_revision: string | null }
+  | { type: "update_claim"; claim_id: string; expected: ClaimEditableFields; replacement: ClaimEditableFields }
   | { type: "set_narrative_premise"; premise: string }
   | { type: "add_scene"; name: string; objective: string; duration_seconds: number }
   | { type: "move_scene"; scene_id: string; to_index: number }

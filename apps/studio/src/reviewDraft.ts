@@ -42,7 +42,7 @@ export function reviewIdentity(scope: string): [string, string, string, ReviewTa
   const value: unknown = JSON.parse(scope);
   if (!Array.isArray(value) || value.length !== 5 || !value.slice(0, 3).every(uuid)
     || !["comment", "resolution", "alternative"].includes(value[3]) || typeof value[4] !== "string"
-    || (value[3] === "comment" ? !/^(project|scene):/.test(value[4]) || !uuid(value[4].split(":")[1]) : !uuid(value[4])))
+    || (value[3] === "comment" ? !/^(project|scene|claim):/.test(value[4]) || value[4].split(":").length !== 2 || !uuid(value[4].split(":")[1]) : !uuid(value[4])))
     throw new Error("The review recovery owner or target is invalid.");
   const [id, generation, branch, kind, target] = value as [string, string, string, ReviewTarget["kind"], string];
   if (kind === "comment" && target.startsWith("project:") && target !== "project:" + id)
@@ -59,6 +59,8 @@ function assertOwner(draft: ReviewDraft, project: Project): ReviewTarget {
 }
 function assertTarget(draft: ReviewDraft, project: Project): ReviewTarget {
   const target = assertOwner(draft, project);
+  if (target.kind === "comment" && target.id.startsWith("claim:") && !project.brief.claims.some(claim => "claim:" + claim.id === target.id))
+    throw new Error("The reviewed claim is no longer present. Its raw input was kept.");
   if (target.kind === "comment" && target.id.startsWith("scene:") && !project.scenes.some(scene => "scene:" + scene.id === target.id))
     throw new Error("The reviewed scene is no longer present. Its raw input was kept.");
   if (target.kind === "resolution" && !project.reviews.some(review => review.id === target.id))
@@ -275,7 +277,7 @@ function validChange(value: unknown): value is ReviewChange {
     && /^-?(?:0|[1-9]\d{0,18})$/.test(input.num) && /^[1-9]\d{0,18}$/.test(input.den));
   return value.type === "add_review" && exactKeys(value, ["type", "kind", "resource", "body", "start", "end", "locale", "profile_id"])
     && ["creative", "technical", "editorial"].includes(String(value.kind))
-    && typeof value.resource === "string" && /^(project|scene):[0-9a-f-]{36}$/i.test(value.resource)
+    && typeof value.resource === "string" && /^(project|scene|claim):[0-9a-f-]{36}$/i.test(value.resource)
     && typeof value.body === "string" && bytes(value.body) <= 8000 && !!value.body.trim() && time(value.start) && time(value.end)
     && (value.locale === null || typeof value.locale === "string") && (value.profile_id === null || uuid(value.profile_id));
 }

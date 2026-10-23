@@ -250,7 +250,7 @@ export default function ReviewWorkspace({
   );
 }
 
-function ReviewRecoveryStatus({ editor }: { editor: ReturnType<typeof useReviewDraft> }) {
+export function ReviewRecoveryStatus({ editor }: { editor: ReturnType<typeof useReviewDraft> }) {
   return <div role="group" aria-label="Review draft recovery">
     {editor.unknown && <p role="status">Original review outcome UNKNOWN. {editor.saving
       ? "Waiting for the original response." : "The input was retained and this request will not be replayed."}</p>}
@@ -276,7 +276,7 @@ function ReviewRecoveryStatus({ editor }: { editor: ReturnType<typeof useReviewD
       onClick={editor.download}>Export review recovery copy</button>}
   </div>;
 }
-function ReviewResolution({ project, review, commit }: {
+export function ReviewResolution({ project, review, commit }: {
   project: Project; review: CreativeReview; commit: (change: Change) => Promise<Project>;
 }) {
   const editor = useReviewDraft(project, { kind: "resolution", id: review.id }, commit);
