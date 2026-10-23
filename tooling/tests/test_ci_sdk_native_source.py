@@ -369,6 +369,39 @@ class SourceGateTests(unittest.TestCase):
         self.assertNotIn("--ignored", workflow)
         self.assertNotIn("playwright install", workflow)
         self.assertNotIn("cargo run", workflow)
+
+    def test_runner_temporary_directory_is_evaluated_only_at_step_scope(self):
+        workflow = (TOOLING.parent / gate.WORKFLOW).read_text()
+
+        def check_document(document):
+            # GitHub resolves workflow/job env before a runner exists.
+            # Step env is evaluated with runner context available.
+            lines = document.splitlines()
+            scopes = []
+            for index, line in enumerate(lines):
+                if line not in ("env:", "    env:"):
+                    continue
+                indent = len(line) - len(line.lstrip())
+                content = []
+                for child in lines[index + 1:]:
+                    if child.strip() and len(child) - len(child.lstrip()) <= indent:
+                        break
+                    content.append(child)
+                scopes.append("\n".join(content))
+            for scope in scopes:
+                self.assertNotRegex(scope, r"\$\{\{[^}]*\brunner(?:\.|\[)")
+
+        check_document(workflow)
+        binding = "          MW_SDK_G0_TEMP: ${{ runner.temp }}/sdk-native-source-controls"
+        self.assertEqual(workflow.count(binding), 1)
+        self.assertIn(
+            "      - name: Verify observer controls through both entrypoints\n"
+            "        env:\n" + binding + "\n", workflow)
+        rejected = workflow.replace(
+            "    env:\n", "    env:\n      MW_SDK_G0_TEMP: ${{ runner.temp }}/sdk-native-source-controls\n", 1)
+        with self.assertRaises(AssertionError):
+            check_document(rejected)
+
     def test_selected_mlt_integrations_preserve_all_52_cases_and_captions(self):
         counts = {item["name"]: len(item["closed_roster"]) for item in gate.MLT_INTEGRATIONS}
         self.assertEqual(counts, {"conformance": 17, "domain_contract": 4,

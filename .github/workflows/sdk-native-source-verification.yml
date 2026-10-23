@@ -32,7 +32,6 @@ jobs:
     timeout-minutes: 10
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      MW_SDK_G0_TEMP: ${{ runner.temp }}/sdk-native-source-controls
       MW_G0_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -51,6 +50,8 @@ jobs:
           python -B tooling/creative_status_policy.py
           python -B tooling/public_surface_policy.py
       - name: Verify observer controls through both entrypoints
+        env:
+          MW_SDK_G0_TEMP: ${{ runner.temp }}/sdk-native-source-controls
         shell: bash
         run: |
           set -euo pipefail
