@@ -61,6 +61,13 @@ impl Project {
                 "claim source edit has no changes".into(),
             ));
         }
+        // Asset references need this project's context; the general claim
+        // validator only checks the source's wire shape.
+        if let Some(SourceReference::Asset { asset_id }) = &replacement.source
+            && !self.assets.iter().any(|asset| asset.id == *asset_id)
+        {
+            return Err(DomainError::NotFound(format!("asset:{asset_id}")));
+        }
         if let Some(SourceReference::ProjectRevision { revision }) = &replacement.source
             && *revision > self.revision
         {
