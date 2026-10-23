@@ -55,7 +55,10 @@ fn edit(project: &Project) -> Change {
 }
 fn reject_unchanged(project: &mut Project, change: &Change) {
     let before = project.clone();
-    assert!(project.apply_change(change).is_err());
+    assert!(
+        project.apply_change(change).is_err(),
+        "Proposal must be rejected: {change:?}"
+    );
     assert_eq!(
         *project, before,
         "Rejected edit must preserve the entire project"
@@ -74,6 +77,36 @@ fn source_only_edit_preserves_claim_id_order_references_and_unrelated_content() 
     }
     expected.updated_at = project.updated_at;
     assert_eq!(project, expected);
+    project.validate().unwrap();
+
+    let asset_id = Uuid::new_v4();
+    commit(
+        &mut project,
+        Change::AddAsset {
+            asset: Asset {
+                id: asset_id,
+                name: "Registered source evidence".into(),
+                media_type: "application/json".into(),
+                content_sha256: None,
+                source_revision: Some("source-v1".into()),
+            },
+        },
+    );
+    let before_asset_edit = project.clone();
+    let expected = ClaimEditableFields::from(&project.brief.claims[0]);
+    let mut replacement = expected.clone();
+    replacement.source = Some(SourceReference::Asset { asset_id });
+    project
+        .apply_change(&Change::UpdateClaim {
+            claim_id: project.brief.claims[0].id,
+            expected,
+            replacement,
+        })
+        .unwrap();
+    let mut expected_project = before_asset_edit;
+    expected_project.brief.claims[0].source = Some(SourceReference::Asset { asset_id });
+    expected_project.updated_at = project.updated_at;
+    assert_eq!(project, expected_project);
     project.validate().unwrap();
 }
 

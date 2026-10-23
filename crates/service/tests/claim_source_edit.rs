@@ -55,7 +55,8 @@ fn assert_rejected(service: &StudioService, project: &Project, request: &str, ch
     assert!(
         service
             .apply(project.id, &project.stamp(), request, change)
-            .is_err()
+            .is_err(),
+        "Request {request} must be rejected: {change:?}"
     );
     assert_eq!(service.project(project.id).unwrap(), *project);
     assert_eq!(
@@ -81,7 +82,30 @@ fn exact_source_edit_reopens_with_same_identity_history_and_original_request_rec
     let path = directory.path().join("studio.sqlite3");
     let service = StudioService::open(&path).unwrap();
     let before = fixture(&service);
-    let change = edit(&before, "Explicit replacement source");
+    let source_file = directory.path().join("claim-source.json");
+    fs::write(&source_file, br#"{"source":"explicit authored fixture"}"#).unwrap();
+    let before = service
+        .import_asset_file(
+            before.id,
+            &before.stamp(),
+            "claim-source-import",
+            &source_file,
+            "Imported source for claim edit".into(),
+            "application/json".into(),
+        )
+        .unwrap()
+        .project;
+    let source_asset_id = before.assets.last().unwrap().id;
+    let expected = ClaimEditableFields::from(&before.brief.claims[0]);
+    let mut replacement = expected.clone();
+    replacement.source = Some(SourceReference::Asset {
+        asset_id: source_asset_id,
+    });
+    let change = Change::UpdateClaim {
+        claim_id: before.brief.claims[0].id,
+        expected,
+        replacement,
+    };
     let result = service
         .apply(before.id, &before.stamp(), "claim-source-original", &change)
         .unwrap();
@@ -91,6 +115,12 @@ fn exact_source_edit_reopens_with_same_identity_history_and_original_request_rec
     assert_eq!(saved.brief.claims.len(), before.brief.claims.len());
     assert_eq!(saved.brief.claims[0].id, before.brief.claims[0].id);
     assert_eq!(saved.brief.claims[0].text, before.brief.claims[0].text);
+    assert_eq!(
+        saved.brief.claims[0].source,
+        Some(SourceReference::Asset {
+            asset_id: source_asset_id,
+        })
+    );
     assert_eq!(
         saved.brief.claims[0].context,
         before.brief.claims[0].context
