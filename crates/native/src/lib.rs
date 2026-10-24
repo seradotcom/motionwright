@@ -16,6 +16,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub mod assembly;
+pub mod blender_product_scene;
 pub mod canonical;
 mod component_text;
 pub mod creative_doctor;
