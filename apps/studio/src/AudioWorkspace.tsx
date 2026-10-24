@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import SemanticSfxWorkbench from "./SemanticSfxWorkbench";
 import NarrationTakeReview from "./NarrationTakeReview";
+import {narrationCorrectionFocus,type NarrationCorrectionTarget} from "./narrationRevisionReview";
 import NativeOriginalMixReview from "./NativeOriginalMixReview";
 import type {
   AudioCue,
@@ -478,6 +479,17 @@ function AudioWorkspaceEditor({
     }
   };
 
+  const openNarrationCorrection = (target: NarrationCorrectionTarget) => {
+    const destination = narrationCorrectionFocus(project, target);
+    const field = document.getElementById(destination.fieldId);
+    if (!(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement))
+      throw new Error("The existing source editor is unavailable. No take or saved value was changed.");
+    if (field.disabled) throw new Error("The current source is protected. Review its explicit release before editing.");
+    field.focus({ preventScroll: true });
+    field.scrollIntoView({ block: "center", behavior: "auto" });
+    onSeek(destination.seconds);
+  };
+
   const waveformPageCount = waveform
     ? Math.max(1, Math.ceil(waveform.peak_count / waveform.page_size))
     : 0;
@@ -653,7 +665,7 @@ function AudioWorkspaceEditor({
             <NewCue project={project} commit={commit}/>
           </section>
 
-          <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit}/>
+          <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit} onCorrect={openNarrationCorrection}/>
           <NativeOriginalMixReview project={project} desktopMode={desktopMode} commit={commitRecipe}/>
           <SemanticSfxWorkbench project={project} commit={commit} onSeek={onSeek}/>
           <MixEditor project={project} commit={commit}/>

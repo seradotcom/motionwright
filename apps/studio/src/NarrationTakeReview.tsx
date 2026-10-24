@@ -4,8 +4,12 @@ import {BookOpenCheck,GitCompareArrows,LockKeyhole} from 'lucide-react';
 import type {Project,RationalTime,Change} from './types';
 import type {NarrationSourceSnapshot,NarrationReplacementImpact,NarrationTimelineReview} from './narrationReviewTypes';
 import {nativeNarrationReplacementImpact,nativeNarrationSourceSnapshot} from './api';
+import {captureNarrationReviewOrigin,createNarrationRevisionReview,exactNarrationTime,
+ narrationCorrectionFocus,narrationRevisionReviewCurrent,sameNarrationReviewProject,
+ type NarrationCorrectionTarget,type NarrationReviewOrigin,type NarrationRevisionReview} from './narrationRevisionReview';
 
 const reason=(value:unknown)=>value instanceof Error?value.message:String(value);
+const reviewPageSize=24;
 // Display approximation only. The source and impact retain exact rational
 // num/den *strings* from the canonical domain without any re-quantization.
 const seconds=(value:RationalTime)=>{
@@ -16,11 +20,15 @@ const seconds=(value:RationalTime)=>{
 };
 
 export default function NarrationTakeReview({
-  project,desktopMode,commit
+  project,desktopMode,commit,onCorrect
 }:{
-  project:Project;desktopMode:boolean;commit:(change:Change)=>Promise<void>
+  project:Project;desktopMode:boolean;commit:(change:Change)=>Promise<void>;onCorrect:(target:NarrationCorrectionTarget)=>void
 }){
   const [baseline,setBaseline]=useState<NarrationSourceSnapshot|null>(null);
+  const [origin,setOrigin]=useState<NarrationReviewOrigin|null>(null);
+  const [comparison,setComparison]=useState<NarrationRevisionReview|null>(null);
+  const [visibleSegments,setVisibleSegments]=useState(reviewPageSize);
+  const [visibleCues,setVisibleCues]=useState(reviewPageSize);
   const [impact,setImpact]=useState<NarrationReplacementImpact|null>(null);
   const [timelineReview,setTimelineReview]=useState<NarrationTimelineReview|null>(null);
   const [busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
@@ -29,16 +37,19 @@ export default function NarrationTakeReview({
   const [recordedReason,setRecordedReason]=useState('');
   const [confirmed,setConfirmed]=useState(false);
   const [notice,setNotice]=useState<string|null>(null);
-  const sourceScope=[project.id,project.generation,project.revision].join(':');
+  const sourceScope=[project.id,project.generation,project.active_branch,project.revision].join(':');
+  const currentProject=useRef(project);currentProject.current=project;
+  const currentComparison=!busy&&!error&&narrationRevisionReviewCurrent(comparison,project)?comparison:null;
   const latest=useRef(sourceScope);latest.current=sourceScope;
   const serial=useRef(0);
   const locked=project.production_design?.narration_take_lock??null;
   // A cross-project source must never migrate into another owner's take review.
   useEffect(()=>{
-    setBaseline(null);setImpact(null);setTimelineReview(null);setError(null);setRecordableSha(null);
+    setBaseline(null);setOrigin(null);setComparison(null);setImpact(null);setTimelineReview(null);setError(null);setRecordableSha(null);
+    setVisibleSegments(reviewPageSize);setVisibleCues(reviewPageSize);
     serial.current++;setBusy(false);setNotice(null);
     setRecordedReviewer('');setRecordedReason('');setConfirmed(false);
-  },[project.id,project.generation]);
+  },[project.id,project.generation,project.active_branch]);
   useEffect(()=>{serial.current++;setBusy(false);setImpact(null);setTimelineReview(null);setError(null);setNotice(null);setRecordableSha(null);setConfirmed(false);},[project.revision]);
   const capture=async()=>{
     const ticket=++serial.current;
@@ -52,6 +63,9 @@ export default function NarrationTakeReview({
          result.source.human_owner_lock_authenticated){
         throw new Error('Narration source snapshot did not match the selected editorial revision.');
       }
+      if(!sameNarrationReviewProject(project,currentProject.current))throw new Error('Narration source changed while its baseline was read. Select it again.');
+      setOrigin(captureNarrationReviewOrigin(project,result));setComparison(null);
+      setVisibleSegments(reviewPageSize);setVisibleCues(reviewPageSize);
       setBaseline(result.source);
       setRecordableSha(result.recordable_source_verified?result.recordable_content_sha256:null);
       if(result.recorded_take?.source_content_sha256 && locked
@@ -61,7 +75,7 @@ export default function NarrationTakeReview({
     finally{if(ticket===serial.current&&latest.current===sourceScope)setBusy(false);}
   };
   const compare=async()=>{
-    if(!baseline)return;
+    if(!baseline||!origin)return;
     const ticket=++serial.current;
     setBusy(true);setError(null);setImpact(null);setTimelineReview(null);setNotice(null);
     try{
@@ -80,10 +94,22 @@ export default function NarrationTakeReview({
          next.timeline_review.human_approved){
         throw new Error('Narration placement review belongs to another source or falsely claims execution/approval.');
       }
+      if(!sameNarrationReviewProject(project,currentProject.current))throw new Error('Narration source changed while impact was read. Compare its current revision again.');
+      const reviewed=createNarrationRevisionReview(origin,project,next);
+      setComparison(reviewed);
+      setVisibleSegments(reviewPageSize);setVisibleCues(reviewPageSize);
       setTimelineReview(next.timeline_review);
       setImpact(next.impact);
     }catch(failure){if(ticket===serial.current&&latest.current===sourceScope)setError(reason(failure));}
     finally{if(ticket===serial.current&&latest.current===sourceScope)setBusy(false);}
+  };
+  const correct=(kind:'transcript'|'cue',id:string)=>{
+    try{
+      if(!currentComparison||busy)throw new Error('Narration impact is stale or still being read. Compare the current saved revision again.');
+      const target:NarrationCorrectionTarget={kind,id,project:currentComparison.project};
+      narrationCorrectionFocus(project,target);onCorrect(target);
+      setError(null);setNotice('Opened the existing source field at its original ID. Navigation did not select a take or save an edit.');
+    }catch(failure){setError(reason(failure));}
   };
   const commitNarration=async(kind:'record'|'release')=>{
     const ticket=++serial.current;
@@ -163,7 +189,46 @@ export default function NarrationTakeReview({
       <p>{baseline.transcript.length} measured/manual segments · {baseline.cues.length} related cues · {baseline.timing_review.replaceAll('_',' ').toLowerCase()}</p>
       <p>Owner lock: not authenticated · imported audio decode in this comparison: not performed</p>
     </section>}
-    {impact&&<section className="audio-narration-source-impact" aria-label="Narration edit impact">
+    {comparison&&!currentComparison&&<p role="status">{busy?'Reading the current narration source.':error?'The source read or correction could not be confirmed.':'The earlier narration comparison is stale.'} Original segment IDs: {comparison.segments.map(row=>row.id).join(', ')||'(none)'}; cue IDs: {comparison.cues.map(row=>row.id).join(', ')||'(none)'}. Compare the current saved revision before opening a correction.</p>}
+    {currentComparison&&<section className="audio-narration-source-evidence" aria-label="Narration words and timing comparison">
+      <h3>Review source changes, then correct an existing field</h3>
+      <p>Original r{currentComparison.origin.project.revision} → saved r{currentComparison.project.revision}. This view uses the returned source impact; it does not decode audio or approve the result.</p>
+      <p>Original take {currentComparison.origin.reply.source.voice_track.label} · {currentComparison.origin.reply.source.voice_track.id}</p>
+      <p>Current take {currentComparison.project.audio.voice_tracks.find(track=>track.id===currentComparison.project.audio.active_voice_track_id)?.label} · {currentComparison.project.audio.active_voice_track_id}</p>
+      <p className="mono">Original {currentComparison.reply.impact.previous_source_sha256} · Current {currentComparison.reply.impact.candidate_source_sha256}</p>
+      <p>Showing {Math.min(visibleSegments,currentComparison.segments.length)} of {currentComparison.segments.length} affected segments. Original and current texts remain complete.</p>
+      {currentComparison.segments.slice(0,visibleSegments).map(row=><section aria-label={'Narration segment comparison '+row.id} key={row.id}>
+        <h4>Segment {row.id} · {row.status.replaceAll('_',' ')}</h4>
+        <dl><dt>Original words and timing</dt><dd style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{row.before?<>
+          <span>{row.before.text}</span><br/><span>{exactNarrationTime(row.before.start)} → {exactNarrationTime(row.before.end)}</span><br/>
+          <span>Speaker: {row.before.speaker??'(none)'} · {row.before.alignment.kind} alignment · take {row.before.voice_track_id}</span>
+        </>:'Not present in the original source'}</dd>
+        <dt>Current saved words and timing</dt><dd style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{row.after?<>
+          <span>{row.after.text}</span><br/><span>{exactNarrationTime(row.after.start)} → {exactNarrationTime(row.after.end)}</span><br/>
+          <span>Speaker: {row.after.speaker??'(none)'} · {row.after.alignment.kind} alignment · take {row.after.voice_track_id}</span>
+        </>:'Not present in the current take; the original remains visible'}</dd></dl>
+        {row.after?<button type="button" className="button button-secondary" disabled={busy||!!locked}
+          onClick={()=>correct('transcript',row.id)}>Open current transcript {row.id}</button>:<p>Removed or inactive source: navigation will not recreate it or change the active take.</p>}
+      </section>)}
+      {visibleSegments<currentComparison.segments.length&&<button type="button" className="button button-secondary"
+        onClick={()=>setVisibleSegments(count=>Math.min(count+reviewPageSize,currentComparison.segments.length))}>Show more transcript segments</button>}
+      <p>Showing {Math.min(visibleCues,currentComparison.cues.length)} of {currentComparison.cues.length} affected cues.</p>
+      {currentComparison.cues.slice(0,visibleCues).map(row=><section aria-label={'Narration cue comparison '+row.id} key={row.id}>
+        <h4>Cue {row.id} · {row.status.replaceAll('_',' ')}</h4>
+        <dl><dt>Original cue</dt><dd style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{row.before?<>
+          {row.before.label} · {exactNarrationTime(row.before.at)} · source {row.before.source_segment_id} · {row.before.evidence}
+        </>:'Not present in the original source'}</dd>
+        <dt>Current saved cue</dt><dd style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{row.after?<>
+          {row.after.label} · {exactNarrationTime(row.after.at)} · source {row.after.source_segment_id} · {row.after.evidence}
+        </>:'Not present in the current narration source'}</dd></dl>
+        {row.after&&<button type="button" className="button button-secondary" disabled={busy||!!locked}
+          onClick={()=>correct('cue',row.id)}>Open current cue {row.id}</button>}
+      </section>)}
+      {visibleCues<currentComparison.cues.length&&<button type="button" className="button button-secondary"
+        onClick={()=>setVisibleCues(count=>Math.min(count+reviewPageSize,currentComparison.cues.length))}>Show more narration cues</button>}
+      <p>Only current source fields can be opened. Save explicitly in their existing editors; prior words, exact rational values and IDs above are never rewritten by navigation.</p>
+    </section>}
+    {impact&&currentComparison&&<section className="audio-narration-source-impact" aria-label="Narration edit impact">
       <p><strong>Source impact: revision {impact.previous_project_revision} → {impact.next_project_revision}</strong></p>
       <p>{impact.changed_segment_ids.length} changed transcript segments · {impact.changed_cue_ids.length} affected cues · original voice file {impact.voice_media_replaced?'replaced':'unchanged'}</p>
       <ul>{impact.affected_spans.map((span,index)=><li key={span.source_segment_id+'-'+index}>
