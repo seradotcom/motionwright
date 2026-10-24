@@ -142,7 +142,7 @@ test("approved editorial text stays separate from audio while an actual timing c
     await button(page, "Approve exact editorial text").click(); await revision(page, initial.revision + 2);
     const approved = await service.project(initial.id), approvedScript = narrativeEditingState(approved).script;
     expect(approvedScript?.text).toBe(raw); expect(approvedScript?.approval).not.toBeNull();
-    await page.getByLabel("Proposal scene", { exact: true }).selectOption(scene.id);
+    await page.getByRole("combobox", { name: "Proposal scene", exact: true }).selectOption(scene.id);
     await page.getByLabel("Proposed scene duration (exact seconds)", { exact: true }).fill("1e");
     await page.getByLabel("Duration proposal reason", { exact: true }).fill("Inspect the hard conflict without shortening the words");
     await button(page, "Retain duration proposal without applying").click(); expect(applies(service)).toHaveLength(before + 2);
@@ -186,9 +186,9 @@ test("authoring a beat, exact preferred duration and hold survives navigation, b
     await page.getByLabel("Minimum editorial hold (seconds, optional)", { exact: true }).fill("1/3");
     await button(page, "Save minimum editorial hold").click(); await revision(page, initial.revision + 2);
     await expect(page.getByRole("region", { name: "Editorial narrative editor", exact: true }).getByRole("table")).toContainText("UNKNOWN — unbound");
-    await page.getByLabel("Realization editorial beat", { exact: true }).selectOption(added.id);
-    await page.getByLabel("Realization scene", { exact: true }).selectOption(initial.scenes[0].id);
-    await page.getByLabel("Realization interval", { exact: true }).selectOption("scene");
+    await page.getByRole("combobox", { name: "Realization editorial beat", exact: true }).selectOption(added.id);
+    await page.getByRole("combobox", { name: "Realization scene", exact: true }).selectOption(initial.scenes[0].id);
+    await page.getByRole("combobox", { name: "Realization interval", exact: true }).selectOption("scene");
     await button(page, "Bind editorial realization").click(); await revision(page, initial.revision + 3);
     final = await service.project(initial.id); saved = final; added = saved.narrative.beats.find(beat => beat.id === added.id)!;
     expect(added.preferred_duration).toEqual({ num: "1001", den: "30000" });
@@ -236,7 +236,7 @@ test("an explicitly reviewed fresh duration is applied by the actual UI and reop
     await button(page, "Approve exact editorial text").click(); await revision(page, initial.revision + 2);
     const approved = narrativeEditingState(await service.project(initial.id)).script;
     const duration = { num: String(BigInt(scene.duration.num) + BigInt(scene.duration.den)), den: scene.duration.den };
-    await page.getByLabel("Proposal scene", { exact: true }).selectOption(scene.id);
+    await page.getByRole("combobox", { name: "Proposal scene", exact: true }).selectOption(scene.id);
     await page.getByLabel("Proposed scene duration (exact seconds)", { exact: true }).fill(duration.num + "/" + duration.den);
     await page.getByLabel("Duration proposal reason", { exact: true }).fill("One additional exact second, subject to the actual domain guard");
     await button(page, "Retain duration proposal without applying").click(); await revision(page, initial.revision + 3);
