@@ -1620,3 +1620,91 @@ fn real_budget_one_reopens_reclaim_orphan_behind_live_capture() {
     drop(retained);
     drop(retained_store);
 }
+
+pub(super) fn run_derived_completed(base: &Path, blob_root: &Path, mode: &str) {
+    let token = Uuid::now_v7();
+    let stdout_path = base.join(format!("{token}.stdout"));
+    let stderr_path = base.join(format!("{token}.stderr"));
+    let child = test_binary_command("cas_retention::derived::tests::derived_journal_actor")
+        .env("MOTIONWRIGHT_TEST_DERIVED_BASE", base)
+        .env("MOTIONWRIGHT_TEST_DERIVED_MODE", mode)
+        .env(CHILD_MODE, "derived")
+        .env(TARGET_ROOT, blob_root)
+        .env(PROJECT, token.to_string())
+        .env(PHASE, "")
+        .env(ACTION, "exit")
+        .stdin(Stdio::null())
+        .stdout(File::create_new(&stdout_path).unwrap())
+        .stderr(File::create_new(&stderr_path).unwrap())
+        .spawn()
+        .unwrap();
+    let mut guard = ExitChildGuard(Some(child));
+    let status = wait_for_child(guard.0.as_mut().unwrap(), &stderr_path);
+    guard.0.take();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "{}\n{}",
+        fs::read_to_string(stdout_path).unwrap(),
+        fs::read_to_string(stderr_path).unwrap()
+    );
+}
+
+pub(super) fn with_paused_derived_checkpoint(
+    base: &Path,
+    blob_root: &Path,
+    mode: &str,
+    phase: &'static str,
+    inspect: impl FnOnce(),
+) {
+    let token = Uuid::now_v7();
+    let stderr = base.join(format!("{token}.stderr"));
+    let mut child = test_binary_command("cas_retention::derived::tests::derived_journal_actor")
+        .env("MOTIONWRIGHT_TEST_DERIVED_BASE", base)
+        .env("MOTIONWRIGHT_TEST_DERIVED_MODE", mode)
+        .env(CHILD_MODE, "derived")
+        .env(TARGET_ROOT, blob_root)
+        .env(PROJECT, token.to_string())
+        .env(PHASE, phase)
+        .env(ACTION, "hold")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(File::create_new(&stderr).unwrap())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (sender, lines) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if sender.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut actor = Actor {
+        child: Some(child),
+        reader: Some(reader),
+        lines,
+        stdout: Vec::new(),
+        stderr,
+        observation: base.join(format!("{token}.unused")),
+        phase,
+        project_id: token,
+    };
+    actor.wait_checkpoint();
+    actor.assert_alive();
+    inspect();
+    actor.assert_alive();
+    actor.resume();
+    let status = actor.wait();
+    actor.child.take();
+    actor.reader.take().unwrap().join().unwrap();
+    actor.stdout.extend(actor.lines.try_iter());
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "{}\n{}",
+        actor.stdout.join("\n"),
+        fs::read_to_string(&actor.stderr).unwrap()
+    );
+}

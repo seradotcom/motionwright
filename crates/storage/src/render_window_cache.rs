@@ -1,6 +1,7 @@
 //! Explicit, disposable source-window cache receipts for independently generated
 //! derived artifacts. No direct renderer admission or incremental-frame savings claim.
 use super::{DerivedCacheHit, DerivedCacheRecord, Result, StorageError, Store, validate_digest};
+use crate::cas_retention::derived::proxy;
 use motionwright_domain::{
     Project, RenderImpactCause, RenderTailImpactReport, RenderTailInspectRequest, RevisionStamp,
     SourceFrameWindow,
@@ -56,7 +57,7 @@ fn recorded_scope(
     )
 }
 
-fn scope(key: &RenderWindowCacheKey) -> String {
+pub(crate) fn scope(key: &RenderWindowCacheKey) -> String {
     recorded_scope(
         key.project_id,
         key.expected.generation,
@@ -169,12 +170,14 @@ impl Store {
                 return Err(invalid("indexed project cache quota exceeded"));
             }
         }
-        let record = self.put_derived_cache_file(
+        let admission = proxy::Admission::begin(self, key)?;
+        let record = self.put_derived_cache_file_with_admission(
             &scope(key),
             KIND,
             &key.fingerprint_sha256,
             source,
             work_units,
+            admission.as_ref(),
         )?;
         // The admission statement rechecks current authority atomically
         // with the registration. A concurrent project commit cannot insert
@@ -217,12 +220,18 @@ impl Store {
                 |row| row.get(0),
             )
             .optional()?;
-        if admitted.is_none() {
+        let admitted = match &admission {
+            Some(admission) => admission.finish(self)?,
+            None => admitted.is_some(),
+        };
+        if !admitted {
             validate_key(self, key)?;
             return Err(invalid(
                 "cache registration was superseded by a concurrent edit",
             ));
         }
+        drop(admission);
+        let _ = proxy::maintain_store(self, crate::CasRetentionPolicy::default());
         Ok(record)
     }
 
@@ -275,6 +284,10 @@ impl Store {
             });
         }
         let mut impact = project.inspect_render_tail_impact(request)?;
+        let proxy_access = proxy::acquire(&self.blob_root, false)?;
+        if matches!(proxy_access, proxy::Access::Busy) {
+            return Err(invalid("proxy admission is active; purge was not started"));
+        }
         let mut stmt = self.conn.prepare(
             "SELECT generation, revision, deliverable_id, source_start,
                     source_end, fingerprint_sha256
@@ -357,10 +370,20 @@ impl Store {
                 },
                 fingerprint_sha256: entry.fingerprint.clone(),
             };
-            // This removes the derived manifest, not the immutable content blob.
-            // The SQL row is removed *after* eviction; on interruption, a
-            // remaining row can only point to a cache miss, never stale pixels.
-            if self.evict_derived_cache_exact(&scope(&key), KIND, &key.fingerprint_sha256)? {
+            // Revoke this Store's binding before its SQL row. Other databases
+            // and independently adopted generic manifests retain their custody.
+            let removed = match proxy::withdraw(
+                self,
+                &proxy_access,
+                &scope(&key),
+                &key.fingerprint_sha256,
+            )? {
+                Some(removed) => removed,
+                None => {
+                    self.evict_derived_cache_exact(&scope(&key), KIND, &key.fingerprint_sha256)?
+                }
+            };
+            if removed {
                 manifests_removed += 1;
             }
             self.conn.execute(
@@ -415,6 +438,12 @@ impl Store {
         if limit == 0 || limit > 256 {
             return Err(invalid("eviction batch must be in 1..=256"));
         }
+        let proxy_access = proxy::acquire(&self.blob_root, false)?;
+        if matches!(proxy_access, proxy::Access::Busy) {
+            return Err(invalid(
+                "proxy admission is active; eviction drain was deferred",
+            ));
+        }
         let mut stmt = self.conn.prepare(
             "SELECT project_id,generation,revision,deliverable_id,
                     source_start,source_end,fingerprint_sha256
@@ -468,7 +497,11 @@ impl Store {
             );
             // Safe without reading project source: the trigger revoked this
             // registration in the same transaction as the revision update.
-            if self.evict_derived_cache_exact(&owner, KIND, digest)? {
+            let revoked = match proxy::withdraw(self, &proxy_access, &owner, digest)? {
+                Some(removed) => removed,
+                None => self.evict_derived_cache_exact(&owner, KIND, digest)?,
+            };
+            if revoked {
                 removed += 1;
             }
             self.conn.execute(

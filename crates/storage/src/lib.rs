@@ -940,9 +940,10 @@ impl Store {
         // interrupted edit. Tombstones and misses remain authoritative even
         // if filesystem cleanup encounters an unsafe or inaccessible file.
         let _ = store.drain_render_window_evictions(64);
-        // Filesystem-only, bounded and conservative: an installed cache-only
-        // session does not need to import a bundle to reclaim expired objects.
-        let _ = cas_retention::derived::maintain(&store.blob_root, CasRetentionPolicy::default());
+        // Bounded recovery of this database's proxy admissions and filesystem
+        // custody. SQLite is never queried while holding the catalog gate.
+        let _ =
+            cas_retention::derived::proxy::maintain_store(&store, CasRetentionPolicy::default());
         Ok(store)
     }
 

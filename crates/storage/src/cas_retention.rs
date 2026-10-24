@@ -1375,6 +1375,7 @@ enum RecoveryPosition {
     Publication(String),
     Intent(Uuid),
     Retired(Uuid),
+    ProxyBinding(Uuid),
     DerivedReference(Uuid),
     DerivedPublication(String),
     DerivedRetention(String),
@@ -1408,6 +1409,7 @@ fn recovery_candidates(catalog: &Catalog) -> BTreeSet<RecoveryPosition> {
             .copied()
             .map(RecoveryPosition::Retired),
     );
+    candidates.extend(derived::proxy::candidates(catalog, None));
     candidates.extend(derived::candidates(catalog));
     candidates
 }
@@ -1722,8 +1724,13 @@ impl Store {
             root_managed: true,
             ..Default::default()
         };
+        let access = derived::proxy::acquire(&self.blob_root, false)?;
+        if matches!(access, derived::proxy::Access::Busy) {
+            return Ok(derived::proxy::deferred_report());
+        }
         let (mut queue, starting_cursor) = {
             let gate = root.gate()?;
+            derived::proxy::check_access(&access, &gate)?;
             (
                 recovery_queue(&gate.catalog),
                 gate.catalog.recovery_cursor.clone(),
@@ -1756,6 +1763,9 @@ impl Store {
                 RecoveryPosition::Intent(id) => {
                     recover_intent_candidate(self, &root, id, &mut report)?
                 }
+                RecoveryPosition::ProxyBinding(id) => {
+                    derived::proxy::recover_candidate(self, &access, id, now, &mut report)?
+                }
                 RecoveryPosition::DerivedReference(id) => {
                     derived::recover_reference(&root, id, now, &mut report)?
                 }
@@ -1782,6 +1792,7 @@ impl Store {
             }
         }
         let mut gate = root.gate()?;
+        derived::proxy::check_access(&access, &gate)?;
         let current_candidates = recovery_candidates(&gate.catalog);
         report.truncated = current_candidates
             .iter()

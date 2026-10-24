@@ -170,6 +170,25 @@ impl Store {
         source: impl AsRef<Path>,
         work_units: u64,
     ) -> Result<DerivedCacheRecord> {
+        self.put_derived_cache_file_with_admission(
+            scope,
+            kind,
+            fingerprint_sha256,
+            source,
+            work_units,
+            None,
+        )
+    }
+
+    pub(crate) fn put_derived_cache_file_with_admission(
+        &self,
+        scope: &str,
+        kind: &str,
+        fingerprint_sha256: &str,
+        source: impl AsRef<Path>,
+        work_units: u64,
+        admission: Option<&super::cas_retention::derived::proxy::Admission>,
+    ) -> Result<DerivedCacheRecord> {
         validate_scope(scope)?;
         validate_kind(kind)?;
         validate_digest(fingerprint_sha256)?;
@@ -211,15 +230,22 @@ impl Store {
             created_at: Utc::now().to_rfc3339(),
         });
         if managed {
-            let record =
-                super::cas_retention::derived::publish(self, &staged, &destination, record)?;
+            let record = super::cas_retention::derived::publish(
+                self,
+                &staged,
+                &destination,
+                record,
+                admission,
+            )?;
             drop(staged);
             // Rejected input must not trigger unrelated cleanup or change
             // retained cache metadata. Admission succeeds before maintenance.
-            let _ = super::cas_retention::derived::maintain(
-                &self.blob_root,
-                super::CasRetentionPolicy::default(),
-            );
+            if admission.is_none() {
+                let _ = super::cas_retention::derived::maintain(
+                    &self.blob_root,
+                    super::CasRetentionPolicy::default(),
+                );
+            }
             return Ok(record);
         }
         let encoded = serde_json::to_vec_pretty(&record)?;
@@ -377,6 +403,8 @@ impl Store {
         validate_kind(kind)?;
         validate_digest(fingerprint_sha256)?;
         let digest = digest_text(scope);
+        let proxy_guard =
+            super::cas_retention::derived::proxy::explicit_eviction_guard(&self.blob_root)?;
         let mut previous = None;
         let mut removed = false;
         // Remove the fallback key as well, so evicting a managed key cannot
@@ -399,8 +427,11 @@ impl Store {
                 }
             }
             if managed
-                && let Some(result) =
-                    super::cas_retention::derived::evict(&self.blob_root, &location)?
+                && let Some(result) = super::cas_retention::derived::evict(
+                    &self.blob_root,
+                    &location,
+                    proxy_guard.as_ref(),
+                )?
             {
                 removed |= result;
                 continue;

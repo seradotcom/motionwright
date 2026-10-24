@@ -4,6 +4,7 @@
 //! are never reclassified. All transitions below hold the managed root gate.
 use super::*;
 use crate::derived_cache::DerivedCacheRecord;
+pub(crate) mod proxy;
 
 const MANIFEST_LIMIT: u64 = 64 * 1024;
 
@@ -34,6 +35,8 @@ pub(super) struct State {
     retention: BTreeMap<String, Option<u64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     maintenance_cursor: Option<RecoveryPosition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proxy: Option<proxy::ProxyState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +77,8 @@ struct Reference {
     // A reserved stage with no physical ID is never swept by name alone.
     staging: Option<Staging>,
     phase: Phase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proxy_origin: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -397,6 +402,7 @@ fn reconcile_reference(gate: &mut RootGate, id: Uuid, now: u64) -> Result<bool> 
         return Ok(false);
     };
     validate_reference(&gate.root, &reference)?;
+    proxy::check_reference(&gate.catalog, id, &reference)?;
     let observed = if matches!(reference.phase, Phase::Retiring) {
         None
     } else {
@@ -441,6 +447,7 @@ fn reconcile_reference(gate: &mut RootGate, id: Uuid, now: u64) -> Result<bool> 
     if matches!(reference.phase, Phase::Retiring) {
         let digest = reference.record.blob_sha256.clone();
         state_mut(&mut gate.catalog).references.remove(&id);
+        proxy::forget_reference(gate, id);
         mark_unreferenced(&mut gate.catalog, &digest, now);
         gate.save()?;
         Ok(false)
@@ -465,7 +472,11 @@ pub(crate) fn publish(
     staged: &crate::StagedFileImport,
     destination: &Path,
     requested: DerivedCacheRecord,
+    admission: Option<&proxy::Admission>,
 ) -> Result<DerivedCacheRecord> {
+    if let Some(admission) = admission {
+        admission.check_store(store)?;
+    }
     let root = discover(&store.blob_root)?
         .ok_or_else(|| invalid("derived publication requires a managed root"))?;
     let mut gate = root.gate()?;
@@ -556,8 +567,9 @@ pub(crate) fn publish(
         }
         (id, reference)
     } else {
+        let id = Uuid::now_v7();
         (
-            Uuid::now_v7(),
+            id,
             Reference {
                 record: record.clone(),
                 manifest: Manifest {
@@ -568,9 +580,13 @@ pub(crate) fn publish(
                 },
                 staging: manifest_id.is_none().then_some(Staging { file_id: None }),
                 phase: Phase::Prepared,
+                proxy_origin: (admission.is_some() && manifest_id.is_none()).then_some(id),
             },
         )
     };
+    if let Some(admission) = admission {
+        admission.attach(&mut gate, id, &reference)?;
+    }
     let digest = record.blob_sha256.clone();
     {
         let state = state_mut(&mut gate.catalog);
@@ -590,6 +606,7 @@ pub(crate) fn publish(
             file_id: Some(file_id.clone()),
         });
         reference.manifest.file_id = Some(file_id);
+        proxy::bind_manifest(&mut gate, id, &reference)?;
         state_mut(&mut gate.catalog)
             .references
             .insert(id, reference.clone());
@@ -668,6 +685,11 @@ pub(crate) fn publish(
         ));
     }
     reference.phase = Phase::Active;
+    if admission.is_none() {
+        // A successful generic caller is independent filesystem authority.
+        // Failed or interrupted generic attempts do not promote proxy custody.
+        reference.proxy_origin = None;
+    }
     state_mut(&mut gate.catalog)
         .references
         .insert(id, reference.clone());
@@ -682,11 +704,16 @@ pub(crate) fn publish(
 
 // Unregistered manifests retain only metadata-eviction semantics. They confer
 // no physical CAS ownership. None asks the caller to use that legacy behavior.
-pub(crate) fn evict(blob_root: &Path, destination: &Path) -> Result<Option<bool>> {
+pub(crate) fn evict(
+    blob_root: &Path,
+    destination: &Path,
+    proxy_guard: Option<&proxy::Guard>,
+) -> Result<Option<bool>> {
     let Some(root) = discover(blob_root)? else {
         return Ok(None);
     };
     let mut gate = root.gate()?;
+    proxy::check_eviction(proxy_guard, &gate)?;
     let ids = gate
         .catalog
         .derived
@@ -714,6 +741,7 @@ pub(crate) fn evict(blob_root: &Path, destination: &Path) -> Result<Option<bool>
             .cloned()
             .ok_or_else(|| invalid("derived admission disappeared under gate"))?;
         validate_reference(&root, &reference)?;
+        proxy::check_reference(&gate.catalog, id, &reference)?;
         let existed = retirement_manifest(&reference)?.is_some();
         reference.phase = Phase::Retiring;
         state_mut(&mut gate.catalog)
@@ -889,8 +917,11 @@ pub(super) fn recover_retention(
     Ok(None)
 }
 
-fn maintenance_candidates(catalog: &Catalog) -> BTreeSet<RecoveryPosition> {
+fn maintenance_candidates(catalog: &Catalog, store: Option<&Store>) -> BTreeSet<RecoveryPosition> {
     let mut values = candidates(catalog);
+    if let Some(store) = store {
+        values.extend(proxy::candidates(catalog, Some(store)));
+    }
     values.extend(
         catalog
             .captures
@@ -909,9 +940,18 @@ fn maintenance_candidates(catalog: &Catalog) -> BTreeSet<RecoveryPosition> {
     values
 }
 
-// The public cache APIs use &self. This bounded filesystem-only collector does
-// not borrow SQLite or wait for its writer while holding the root gate.
+// The generic cache API does not resolve another Store\'s SQL authority.
 pub(crate) fn maintain(blob_root: &Path, policy: CasRetentionPolicy) -> Result<CasRecoveryReport> {
+    maintain_inner(blob_root, policy, None)
+}
+
+// A single bounded queue shares the budget between filesystem maintenance and
+// this Store\'s proxy bindings. SQL observation happens outside the root gate.
+fn maintain_inner(
+    blob_root: &Path,
+    policy: CasRetentionPolicy,
+    store: Option<&Store>,
+) -> Result<CasRecoveryReport> {
     if policy.max_objects == 0 || policy.max_objects > MAX_RECOVERY_OBJECTS {
         return Err(invalid(
             "derived recovery object budget is outside supported bounds",
@@ -920,16 +960,20 @@ pub(crate) fn maintain(blob_root: &Path, policy: CasRetentionPolicy) -> Result<C
     let Some(root) = discover(blob_root)? else {
         return Ok(CasRecoveryReport::default());
     };
-    let now = event_time(&root.root)?;
+    let access = proxy::acquire(blob_root, false)?;
+    if matches!(access, proxy::Access::Busy) {
+        return Ok(proxy::deferred_report());
+    }
     let (mut queue, starting_cursor) = {
         let gate = root.gate()?;
+        proxy::check_access(&access, &gate)?;
         if gate.catalog.derived.is_none() {
             return Ok(CasRecoveryReport {
                 root_managed: true,
                 ..Default::default()
             });
         }
-        let mut values = maintenance_candidates(&gate.catalog)
+        let mut values = maintenance_candidates(&gate.catalog, store)
             .into_iter()
             .collect::<Vec<_>>();
         let cursor = gate
@@ -960,7 +1004,13 @@ pub(crate) fn maintain(blob_root: &Path, policy: CasRetentionPolicy) -> Result<C
         }
         report.inspected += 1;
         last = Some(candidate.clone());
+        let now = event_time(&root.root)?;
         let added = match candidate {
+            RecoveryPosition::ProxyBinding(id) => {
+                let store =
+                    store.ok_or_else(|| invalid("SQL binding entered generic maintenance"))?;
+                proxy::recover_candidate(store, &access, id, now, &mut report)?
+            }
             RecoveryPosition::Capture(id) => {
                 recover_capture_candidate(&root, id, policy, now, &mut report)?
             }
@@ -994,7 +1044,8 @@ pub(crate) fn maintain(blob_root: &Path, policy: CasRetentionPolicy) -> Result<C
         }
     }
     let mut gate = root.gate()?;
-    let current = maintenance_candidates(&gate.catalog);
+    proxy::check_access(&access, &gate)?;
+    let current = maintenance_candidates(&gate.catalog, store);
     report.truncated = current.iter().any(|value| !visited.contains(value));
     let next = if report.truncated { last } else { None };
     let cursor = gate
@@ -1289,6 +1340,23 @@ mod tests {
                 store
                     .put_render_window_proxy(&key, base.join("derived-input.bin"), 17)
                     .unwrap();
+            }
+            "proxy_recover" => {
+                let key: crate::RenderWindowCacheKey =
+                    serde_json::from_slice(&fs::read(base.join("proxy-key.json")).unwrap())
+                        .unwrap();
+                let report = store.recover_cas(zero()).unwrap();
+                let project = store.load_project(key.project_id).unwrap();
+                fs::write(
+                    base.join("proxy-recovery.json"),
+                    serde_json::to_vec(&serde_json::json!({
+                        "removed": report.removed, "inspected": report.inspected,
+                        "unresolved": report.unresolved, "truncated": report.truncated,
+                        "project": project,
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
             }
             "evict" => {
                 assert!(
@@ -1811,5 +1879,243 @@ mod tests {
                 winner_bytes
             );
         }
+    }
+
+    fn proxy_case(
+        store: &mut Store,
+        fixture: &Fixture,
+    ) -> (motionwright_domain::Project, crate::RenderWindowCacheKey) {
+        let project = store.create_named_project("Proxy custody control").unwrap();
+        let project = store
+            .apply(
+                project.id,
+                &project.stamp(),
+                "proxy-control-scene",
+                &motionwright_domain::Change::AddScene {
+                    name: "Source".into(),
+                    objective: "Proxy custody".into(),
+                    duration_seconds: 2,
+                },
+            )
+            .unwrap()
+            .project;
+        let key = crate::RenderWindowCacheKey {
+            project_id: project.id,
+            expected: project.stamp(),
+            deliverable_id: project.deliverables[0].id,
+            source_window: motionwright_domain::SourceFrameWindow { start: 0, end: 60 },
+            fingerprint_sha256: fixture.fingerprint.clone(),
+        };
+        fs::write(
+            fixture.base.join("proxy-key.json"),
+            serde_json::to_vec(&key).unwrap(),
+        )
+        .unwrap();
+        (project, key)
+    }
+
+    #[test]
+    fn derived_cache_proxy_recovery_preserves_successful_generic_adoption() {
+        let fixture = Fixture::new();
+        let mut store = fixture.open();
+        let (project, key) = proxy_case(&mut store, &fixture);
+        let rows = all_sql_rows(&store);
+        exit_at(&fixture, "put_proxy", "derived_after_manifest_publication");
+        let owner = crate::render_window_cache::scope(&key);
+        let record = store
+            .put_derived_cache_file(&owner, KIND, &key.fingerprint_sha256, &fixture.source, 17)
+            .unwrap();
+        let manifest = store
+            .derived_cache_manifest_path(&record.scope_sha256, KIND, &key.fingerprint_sha256)
+            .unwrap();
+        let bytes = fs::read(&manifest).unwrap();
+        let report = store.recover_cas(zero()).unwrap();
+        assert_eq!(report.unresolved, 0, "{report:?}");
+        assert_eq!(report.removed, 0, "{report:?}");
+        assert_eq!(all_sql_rows(&store), rows);
+        assert_eq!(store.load_project(project.id).unwrap(), project);
+        assert!(store.lookup_render_window_proxy(&key).unwrap().is_none());
+        assert_eq!(fs::read(&manifest).unwrap(), bytes);
+        fixture.assert_blob();
+        drop(store);
+        let mut store = fixture.open();
+        assert_eq!(store.recover_cas(zero()).unwrap().removed, 0);
+        assert_eq!(fs::read(&manifest).unwrap(), bytes);
+        assert!(
+            store
+                .evict_derived_cache_exact(&owner, KIND, &key.fingerprint_sha256)
+                .unwrap()
+        );
+        assert_eq!(store.recover_cas(zero()).unwrap().removed, 1);
+        assert_eq!(all_sql_rows(&store), rows);
+        assert_eq!(fs::read(&fixture.source).unwrap(), PAYLOAD);
+    }
+
+    #[test]
+    fn derived_cache_shared_database_proxy_withdrawal_preserves_peer_until_explicit_eviction() {
+        let fixture = Fixture::new();
+        let mut first = fixture.open();
+        let (project, key) = proxy_case(&mut first, &fixture);
+        let mut second = Store::open_with_managed_blob_root(
+            fixture.base.join("peer.sqlite3"),
+            &fixture.blob_root,
+        )
+        .unwrap();
+        second.create_project(&project).unwrap();
+        assert_ne!(first.cas_database_id, second.cas_database_id);
+        assert_ne!(first.cas_store_id, second.cas_store_id);
+        let record = first
+            .put_render_window_proxy(&key, &fixture.source, 17)
+            .unwrap();
+        second
+            .put_render_window_proxy(&key, &fixture.source, 17)
+            .unwrap();
+        let manifest = first
+            .derived_cache_manifest_path(&record.scope_sha256, KIND, &key.fingerprint_sha256)
+            .unwrap();
+        let before = fs::read(&manifest).unwrap();
+        let second_rows = all_sql_rows(&second);
+        first
+            .apply(
+                project.id,
+                &project.stamp(),
+                "proxy-owner-revision",
+                &motionwright_domain::Change::AddScene {
+                    name: "Next".into(),
+                    objective: "Revoke only primary".into(),
+                    duration_seconds: 1,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            first
+                .drain_render_window_evictions(64)
+                .unwrap()
+                .tombstones_selected,
+            0
+        );
+        assert_eq!(all_sql_rows(&second), second_rows);
+        assert_eq!(second.load_project(project.id).unwrap(), project);
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+        assert_eq!(second.recover_cas(zero()).unwrap().removed, 0);
+        fixture.assert_blob();
+        // This public API has always been global exact manifest revocation.
+        // Its explicit call may turn the peer's retained SQL key into a miss.
+        assert!(
+            first
+                .evict_derived_cache_exact(
+                    &crate::render_window_cache::scope(&key),
+                    KIND,
+                    &key.fingerprint_sha256
+                )
+                .unwrap()
+        );
+        assert!(second.lookup_render_window_proxy(&key).unwrap().is_none());
+        assert_eq!(all_sql_rows(&second), second_rows);
+        assert_eq!(second.recover_cas(zero()).unwrap().removed, 1);
+        assert_eq!(all_sql_rows(&second), second_rows);
+        assert_eq!(fs::read(&fixture.source).unwrap(), PAYLOAD);
+    }
+
+    #[test]
+    fn derived_cache_deleted_project_foreign_keys_leave_proxy_custody_recoverable() {
+        let fixture = Fixture::new();
+        let mut store = fixture.open();
+        let (project, key) = proxy_case(&mut store, &fixture);
+        let record = store
+            .put_render_window_proxy(&key, &fixture.source, 17)
+            .unwrap();
+        let manifest = store
+            .derived_cache_manifest_path(&record.scope_sha256, KIND, &key.fingerprint_sha256)
+            .unwrap();
+        // Exercise actual SQLite FK deletion, not a claimed public deletion UI.
+        assert_eq!(
+            store
+                .conn
+                .execute("DELETE FROM projects WHERE id=?1", [project.id.to_string()])
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM render_window_cache_entries",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM render_window_cache_evictions",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        let rows = all_sql_rows(&store);
+        drop(store);
+        let mut store = fixture.open();
+        let report = store.recover_cas(zero()).unwrap();
+        assert_eq!(report.removed, 1, "{report:?}");
+        assert_eq!(report.unresolved, 0, "{report:?}");
+        assert_eq!(all_sql_rows(&store), rows);
+        assert!(!manifest.exists());
+        assert!(!fixture.blob().exists());
+        assert_eq!(fs::read(&fixture.source).unwrap(), PAYLOAD);
+    }
+
+    #[test]
+    fn derived_cache_live_proxy_writer_defers_store_open_and_gc_without_waiting_for_catalog_gate() {
+        let fixture = Fixture::new();
+        let mut store = fixture.open();
+        let (project, key) = proxy_case(&mut store, &fixture);
+        drop(store);
+        crate::cas_retention_process_tests::with_paused_derived_checkpoint(
+            &fixture.base,
+            &fixture.blob_root,
+            "put_proxy",
+            "derived_after_manifest_publication",
+            || {
+                crate::cas_retention_process_tests::run_derived_completed(
+                    &fixture.base,
+                    &fixture.blob_root,
+                    "proxy_recover",
+                );
+                let observation: serde_json::Value = serde_json::from_slice(
+                    &fs::read(fixture.base.join("proxy-recovery.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(observation["removed"], 0);
+                assert_eq!(observation["inspected"], 0);
+                assert_eq!(observation["unresolved"], 1);
+                assert_eq!(observation["truncated"], true);
+                assert_eq!(
+                    observation["project"],
+                    serde_json::to_value(&project).unwrap()
+                );
+                fixture.assert_blob();
+            },
+        );
+        let mut reopened = fixture.open();
+        assert_eq!(reopened.load_project(project.id).unwrap(), project);
+        let report = reopened.recover_cas(zero()).unwrap();
+        assert_eq!(report.removed, 0);
+        assert_eq!(report.unresolved, 0);
+        let count: i64 = reopened
+            .conn
+            .query_row(
+                "SELECT count(*) FROM render_window_cache_entries WHERE project_id=?1",
+                [key.project_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        fixture.assert_blob();
     }
 }
