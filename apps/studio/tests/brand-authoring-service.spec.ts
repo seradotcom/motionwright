@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 import type { Change, Project } from "../src/types";
 import type { BrandProfile } from "../src/brandGovernance";
 import { defaultHeroConfig } from "../src/creativeProduction";
 import {
-  BRAND_COPY_PREFIX, brandCopyKey, brandPointerKey, brandScope,
+  BRAND_COPY_PREFIX, brandCopyKey, brandPointerKey, brandScope, decodeBrandCopy,
   type BrandCopy, type BrandTarget, type CampaignRaw, type GovernanceRaw,
 } from "../src/brandAuthoringDraft";
 import { ScopedChangeService, type ServiceRpcRequest, type StoreFinalization } from "./support/scopedChangeService";
@@ -129,13 +129,13 @@ async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
   } finally { clearTimeout(timer); }
 }
 /** The real SQLite response is observed first; only its delivery to App is lost. */
-function holdAndLoseTasteReply(service: ScopedChangeService) {
+function holdAndLoseTasteReply(service: ScopedChangeService, type: Change["type"] = "set_taste_profile") {
   const original = service.invoke.bind(service), release = deferred<void>(), committed = deferred<Project>(), finished = deferred<void>();
   void committed.promise.catch(() => undefined);
   let armed = true, matched = false;
   service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
     const request = args.request as ApplyRequest | undefined;
-    if (!armed || command !== "apply_change" || request?.change.type !== "set_taste_profile") return original<T>(command, args);
+    if (!armed || command !== "apply_change" || request?.change.type !== type) return original<T>(command, args);
     armed = false; matched = true;
     try {
       const saved = await original<Project>(command, args);
@@ -605,3 +605,118 @@ test("a reviewed selected campaign changes the real semantic Hero while preservi
       rules: [...profile.rules, { kind: "allowed_accents", id: randomUUID(), colors: [...colors] }] }, exceptions: [] });
   });
 });
+
+for (const target of ["governance", "campaign"] as const) {
+  test(`Brand ${target} retains its first observed UNKNOWN bytes when a failed recovery read is followed by a same-writer replacement`, async ({ page }, info) => {
+    let selectedId = "", accent = "";
+    await withBrand(page, info, async ({ service, baseline, initialCounts, observations, cleanup, observe }) => {
+      const root = target === "governance" ? governance(page) : campaign(page), panel = recovery(page, target);
+      const label = target === "governance" ? "brand and taste" : "campaign";
+      const input = field(root, target === "governance" ? "Taste label" : "Brand rollout campaign");
+      const disabledAction = target === "governance" ? "Save taste" : "Review per-scene brand changes";
+      const submitted = "Original " + target + " input with a real uncertain result";
+      const held = holdAndLoseTasteReply(service, target === "governance" ? "set_taste_profile" : "apply_brand_campaign");
+      cleanup.push(held.dispose);
+      await input.fill(submitted);
+      if (target === "campaign") {
+        await field(root, "Brand rollout owner").fill("Synthetic author declaration");
+        await field(root, "Brand rollout rationale").fill("A controlled first-observed-copy recovery regression.");
+        await root.getByRole("combobox", { name: "Brand rollout accent", exact: true }).selectOption(accent);
+        const scene = baseline.scenes.find(value => value.id === selectedId)!;
+        await root.getByRole("group", { name: "Select up to eight existing editable scenes", exact: true })
+          .locator("label").filter({ hasText: scene.name }).getByRole("checkbox").check();
+        await root.getByLabel(/I understand existing Hero components will be rebuilt/).check();
+        await button(root, "Review per-scene brand changes").click();
+        await expect(root.getByRole("region", { name: "Proposed brand campaign changes", exact: true }))
+          .toContainText("1 component(s) would change");
+        await root.getByLabel(/I reviewed the exact rows, campaign, brand digest/).check();
+      }
+      await button(root, target === "governance" ? "Save taste" : "Apply owner-reviewed campaign via project CAS").click();
+      const saved = await bounded(held.committed, "Original real " + target + " response before recovery failure");
+      held.release();
+      await expect(panel.getByRole("alert")).toContainText("Injected brand reply loss after the actual SQLite commit.");
+      const first = await ownCopy(page, baseline, target), before = await service.observeStoredProject(saved);
+      expect(first.value.draft.pending?.outcome).toBe("UNKNOWN");
+      expect(saved.revision).toBe(baseline.revision + 1);
+      const once = { apply: initialCounts.apply + 1, projectEditGrants: initialCounts.projectEditGrants + 1 };
+      expect(mutationCounts(service)).toEqual(once);
+      const marker = "brand-test-first-observed-source";
+      await page.addInitScript(marker => {
+        const key = sessionStorage.getItem(marker); if (key === null) return;
+        sessionStorage.removeItem(marker);
+        const get = Storage.prototype.getItem; let fired = false;
+        window.__BRAND_SERVICE_BLOCKED_READS__ = 0;
+        Storage.prototype.getItem = function(name) {
+          if (this === localStorage && name === key && !fired) {
+            fired = true; window.__BRAND_SERVICE_BLOCKED_READS__ = 1;
+            throw new Error("Initial brand source read temporarily unavailable.");
+          }
+          return get.call(this, name);
+        };
+        window.__BRAND_SERVICE_RESTORE_STORAGE__ = () => { Storage.prototype.getItem = get; };
+      }, marker);
+      const failRead = async (key: string) => {
+        await page.evaluate(({ marker, key }) => sessionStorage.setItem(marker, key), { marker, key });
+        await page.reload(); await openBrand(page);
+        await expect(panel.getByRole("alert", { name: label + " recovery warning", exact: true }))
+          .toContainText("Initial brand source read temporarily unavailable.");
+        expect(await page.evaluate(() => window.__BRAND_SERVICE_BLOCKED_READS__)).toBe(1);
+        await page.evaluate(() => window.__BRAND_SERVICE_RESTORE_STORAGE__?.());
+      };
+      await failRead(first.key);
+      await input.fill("An edit while original recovery is blocked"); await input.fill("");
+      await button(panel, "Retry " + label + " recovery copy").click();
+      await expect(panel.getByRole("alert", { name: label + " recovery warning", exact: true })).toHaveCount(0);
+      await expect(panel.getByRole("heading", { name: "Review the original " + label + " attempt", exact: true })).toBeVisible();
+      await expect(input).toHaveValue(""); await expect(button(root, disabledAction)).toBeDisabled();
+      const recovered = await ownCopy(page, baseline, target);
+      expect(recovered.value.draft.pending).toEqual(first.value.draft.pending);
+      await unchangedRaw(page, first); expect(mutationCounts(service)).toEqual(once);
+      await failRead(recovered.key);
+      await input.fill("Later raw input after the second recovery failure");
+      const replacementCopy = JSON.parse(recovered.raw); replacementCopy.draft.pending = null;
+      const replacement = JSON.stringify(replacementCopy);
+      expect(decodeBrandCopy(replacement, brandScope(baseline, target), recovered.value.writerId).draft.pending).toBeNull();
+      await page.evaluate(({ key, raw }) => localStorage.setItem(key, raw), { key: recovered.key, raw: replacement });
+      await button(panel, "Retry " + label + " recovery copy").click();
+      await expect(panel.getByRole("alert", { name: label + " recovery warning", exact: true }),
+        "BRAND_FIRST_READ_SAME_WRITER_REPLACEMENT_REFUSED").toContainText("original brand recovery bytes changed");
+      await expect(input).toHaveValue("Later raw input after the second recovery failure");
+      await expect(button(root, disabledAction)).toBeDisabled();
+      await panel.locator('details[aria-label="' + label + ' recovery copies"]').locator("summary").first().click();
+      const received = page.waitForEvent("download"); await button(panel, "Download original " + label + " copy 1").click();
+      const downloaded = await (await received).path();
+      if (!downloaded) throw new Error("The first brand observation did not produce a download.");
+      const bytes = await readFile(downloaded);
+      expect(bytes.equals(Buffer.from(recovered.raw, "utf8"))).toBe(true);
+      await expect(button(panel, "Restore " + label + " copy 1")).toBeDisabled();
+      expect(await page.evaluate(key => localStorage.getItem(key), recovered.key)).toBe(replacement);
+      expect(mutationCounts(service)).toEqual(once);
+      expect(await observe("replacement refusal preserves the real Project and original attempt")).toEqual(saved);
+      const after = await service.observeStoredProject(saved);
+      expect(after.project).toEqual(before.project); expect(after.journal).toEqual(before.journal);
+      await service.close(); await service.start();
+      expect(await service.project(saved.id)).toEqual(saved); expect(await service.history(saved.id, 0)).toEqual(before.journal);
+      Object.assign(observations, { target, first, recovered, replacement, before, after, counts: once, additionalMutations: 0, additionalGrants: 0 });
+      await info.attach("first-observed-brand-copy", { body: bytes, contentType: "application/json" });
+      await page.screenshot({ path: info.outputPath("brand-first-observed-copy.png"), fullPage: true });
+    }, target === "campaign" ? async (service, project) => {
+      const ids = new Set(project.scenes.map(scene => scene.id));
+      project = await service.apply(project, { type: "add_scene", name: "First read campaign source", objective: "A real editable component for recovery testing.", duration_seconds: 6 });
+      const added = project.scenes.filter(scene => !ids.has(scene.id)); expect(added).toHaveLength(1); selectedId = added[0].id;
+      project = await service.apply(project, { type: "upsert_product_hero", instance_id: randomUUID(), scene_id: selectedId, config: defaultHeroConfig() });
+      const sourceAccent = project.production_design!.heroes.find(hero => hero.scene_id === selectedId)!.config.accent;
+      accent = sourceAccent.toLowerCase() === "#f5b84a" ? "#a5c8df" : "#f5b84a";
+      const colors = new Set<string>([accent]);
+      for (const scene of project.scenes) for (const node of scene.nodes)
+        if (node.style.fill && /^#[a-f0-9]{6}$/i.test(node.style.fill)) colors.add(node.style.fill.toLowerCase());
+      for (const hero of project.production_design!.heroes) colors.add(hero.config.accent.toLowerCase());
+      for (const stage of project.production_design!.stages ?? []) colors.add(stage.config.accent.toLowerCase());
+      for (const procedural of project.production_design!.procedural_fields ?? []) colors.add(procedural.config.fill.toLowerCase());
+      if (colors.size > 16) throw new Error("The test fixture exceeds the real brand palette budget.");
+      const profile = project.production_design!.brand_profile!;
+      return service.apply(project, { type: "set_brand_governance", profile: { ...profile, version: profile.version + 1,
+        rules: [...profile.rules, { kind: "allowed_accents", id: randomUUID(), colors: [...colors] }] }, exceptions: [] });
+    } : undefined);
+  });
+}

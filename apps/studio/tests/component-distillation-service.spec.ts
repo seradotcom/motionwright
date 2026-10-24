@@ -1,8 +1,8 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { CanvasNode, Change, Project } from "../src/types";
 import type { ComponentDistillationInput } from "../src/componentDistillation";
-import { DISTILLATION_RECOVERY_PREFIX, distillationPointerKey, distillationScope } from "../src/componentDistillationDraft";
+import { decodeDistillationCopy, DISTILLATION_RECOVERY_PREFIX, distillationPointerKey, distillationScope } from "../src/componentDistillationDraft";
 import type { DistillationDraft, DistillationTarget } from "../src/componentDistillationDraft";
 import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
 
@@ -51,6 +51,23 @@ async function failFirstPointerRead(page: Page, pointer: string) {
     };
     (window as unknown as { __RESTORE_DISTILLATION_READ__?: () => void }).__RESTORE_DISTILLATION_READ__ = () => { Storage.prototype.getItem = original; };
   }, { pointer, marker });
+  return marker;
+}
+async function failFirstCopyRead(page: Page, key: string) {
+  const marker = "motionwright.test.distillation-first-copy:" + crypto.randomUUID();
+  await page.addInitScript(({ key, marker }) => {
+    const original = Storage.prototype.getItem;
+    if (original.call(sessionStorage, marker) === "fired") return;
+    let armed = true;
+    Storage.prototype.getItem = function(name) {
+      if (armed && this === localStorage && name === key) {
+        armed = false; sessionStorage.setItem(marker, "fired");
+        throw new Error("Injected first Distillation copy read failure.");
+      }
+      return original.call(this, name);
+    };
+    (window as unknown as { __RESTORE_DISTILLATION_READ__?: () => void }).__RESTORE_DISTILLATION_READ__ = () => { Storage.prototype.getItem = original; };
+  }, { key, marker });
   return marker;
 }
 async function restorePointerRead(page: Page) {
@@ -385,5 +402,78 @@ for (const fault of ["data", "pointer"] as const) {
       expect(await service.reopen(initial.id)).toEqual(final);
     } catch (reason) { primary = { reason }; }
     finally { await finish(page, info, service, [], final, observations, [], primary); }
+  });
+}
+
+for (const target of ["author", "review"] as const) {
+  test(`Distillation ${target} retains its first observed UNKNOWN bytes when a failed recovery read is followed by a same-writer replacement`, async ({ page }, info) => {
+    const service = await setup(info), observations: Record<string, unknown> = { target }, original = service.invoke.bind(service);
+    let final: Project | undefined, primary: Failure | undefined;
+    try {
+      const seed = target === "author" ? { project: await sources(service), ids: [] } : await withProposals(service, 1);
+      const initial = seed.project; await attach(page, service, initial);
+      if (target === "author") await author(page, initial); else await reviewer(page, seed.ids[0]);
+      let armed = true;
+      service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+        const request = args.request as ApplyArgs["request"] | undefined;
+        if (!armed || command !== "apply_change" || request?.change.type !== changeTypes[target]) return original<T>(command, args);
+        armed = false; await original<Project>(command, args);
+        throw new Error("Original Distillation response lost after actual commit.");
+      };
+      await button(page, saveNames[target]).click();
+      const unknown = page.getByRole("region", { name: "Unconfirmed Distillation " + target, exact: true });
+      await expect(unknown).toBeVisible(); service.invoke = original;
+      final = await service.project(initial.id); expect(final.revision).toBe(initial.revision + 1);
+      const editorTarget: DistillationTarget = target === "author" ? { kind: "author" } : { kind: "review", proposalId: seed.ids[0] };
+      const first = await activeCopy(page, initial, editorTarget), before = await service.observeStoredProject(final);
+      expect(first.draft.pending?.outcome).toBe("UNKNOWN");
+      const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+      const reopen = async () => {
+        await page.reload(); await open(page);
+        if (target === "review") await page.getByLabel("Distillation review candidate").selectOption(seed.ids[0]);
+      };
+      const marker = await failFirstCopyRead(page, first.key); await reopen();
+      const warning = page.getByRole("alert", { name: "Distillation " + target + " backup warning", exact: true });
+      await expect(warning).toContainText("Injected first Distillation copy read failure");
+      expect(await page.evaluate(key => sessionStorage.getItem(key), marker)).toBe("fired"); await restorePointerRead(page);
+      const input = target === "author" ? label(page) : note(page);
+      await input.fill("Later input while recovery is blocked"); await input.fill("");
+      await button(page, "Retry Distillation " + target + " backup").click();
+      await expect(warning).toHaveCount(0); await expect(unknown).toBeVisible(); await expect(input).toHaveValue("");
+      const recovered = await activeCopy(page, final, editorTarget);
+      expect(recovered.writer).not.toBe(first.writer); expect(recovered.draft.pending).toEqual(first.draft.pending);
+      expect(await page.evaluate(key => localStorage.getItem(key), first.key)).toBe(first.raw);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      const secondMarker = await failFirstCopyRead(page, recovered.key); await reopen();
+      await expect(warning).toContainText("Injected first Distillation copy read failure");
+      expect(await page.evaluate(key => sessionStorage.getItem(key), secondMarker)).toBe("fired"); await restorePointerRead(page);
+      await input.fill("Later input after the second read failure");
+      const replacementCopy = JSON.parse(recovered.raw); replacementCopy.draft.pending = null;
+      const replacement = JSON.stringify(replacementCopy);
+      expect(decodeDistillationCopy(replacement, recovered.scope, recovered.writer).draft.pending).toBeNull();
+      await page.evaluate(({ key, raw }) => localStorage.setItem(key, raw), { key: recovered.key, raw: replacement });
+      await button(page, "Retry Distillation " + target + " backup").click();
+      await expect(warning, "DISTILLATION_FIRST_READ_SAME_WRITER_REPLACEMENT_REFUSED").toContainText("original Distillation recovery bytes changed");
+      await expect(input).toHaveValue("Later input after the second read failure");
+      await expect(button(page, saveNames[target])).toBeDisabled();
+      const copies = page.getByRole("region", { name: "Distillation " + target + " recovery copies", exact: true });
+      await copies.locator("summary").first().click();
+      const received = page.waitForEvent("download"); await button(page, "Download Distillation " + target + " copy 1").click();
+      const downloaded = await (await received).path();
+      if (!downloaded) throw new Error("The first Distillation observation did not produce a download.");
+      const bytes = await readFile(downloaded); expect(bytes.equals(Buffer.from(recovered.raw, "utf8"))).toBe(true);
+      await expect(button(page, "Discard Distillation " + target + " copy 1")).toBeDisabled();
+      await expect(button(page, "Restore Distillation " + target + " copy 1")).toBeDisabled();
+      expect(await page.evaluate(key => localStorage.getItem(key), recovered.key)).toBe(replacement);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      const after = await service.observeStoredProject(final);
+      expect(after.project).toEqual(before.project); expect(after.journal).toEqual(before.journal);
+      await service.close(); await service.start();
+      expect(await service.project(final.id)).toEqual(final); expect(await service.history(final.id, 0)).toEqual(before.journal);
+      Object.assign(observations, { initial, first, recovered, replacement, before, after, writes, grants, additionalMutations: 0, additionalGrants: 0 });
+      await info.attach("first-observed-distillation-copy", { body: bytes, contentType: "application/json" });
+      await page.screenshot({ path: info.outputPath("distillation-first-observed-copy.png"), fullPage: true });
+    } catch (reason) { primary = { reason }; }
+    finally { service.invoke = original; await finish(page, info, service, [], final, observations, [() => restorePointerRead(page)], primary); }
   });
 }

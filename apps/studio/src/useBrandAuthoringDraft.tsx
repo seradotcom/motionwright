@@ -14,8 +14,10 @@ import type {
   BrandCustody, BrandDraft, BrandOperation, BrandOutcome, BrandRaw, BrandRecoveryEntry, BrandTarget,
 } from "./brandAuthoringDraft";
 
+type ObservedBrandCopy = { key: string; writerId: string; raw: string | null };
 interface BrandSession {
   draft: BrandDraft; custody: BrandCustody; pointerObserved: boolean; editedWhileRecoveryBlocked: boolean;
+  firstRead: ObservedBrandCopy | null;
   preparing: boolean; saving: boolean; recoveryProblem: string | null; storageError: string | null;
   error: string | null; notice: string | null; copies: BrandRecoveryEntry[]; limited: boolean; notify?: () => void;
 }
@@ -31,15 +33,46 @@ function busy(project: Project) {
 }
 function refresh(session: BrandSession) {
   try {
+    // A successful inventory read after an initial failure belongs to this
+    // recovery attempt even if subsequent enumeration cannot complete.
+    if (session.recoveryProblem && session.pointerObserved && session.custody.expectedPointer !== null && !session.firstRead)
+      observeBrandCopy(session.draft.scope, session.custody.expectedPointer, session);
     const value = readBrandCopies(window.localStorage, session.draft.scope);
     session.copies = value.entries; session.limited = value.limited;
   } catch (reason) { session.storageError = message(reason); }
+  finally {
+    const source = session.firstRead;
+    if (source && source.raw !== null) {
+      let value: BrandRecoveryEntry["value"] = null, error: string | null = null;
+      try { value = decodeBrandCopy(source.raw, session.draft.scope, source.writerId); } catch (reason) { error = message(reason); }
+      session.copies = [{ ...source, raw: source.raw, value, error }, ...session.copies.filter(copy => copy.key !== source.key)];
+    }
+  }
 }
 function fork(session: BrandSession) {
   session.custody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: session.custody.expectedPointer };
 }
-function readOriginal(scope: string, writerId: string) {
+function observeBrandCopy(scope: string, writerId: string, state: Pick<BrandSession, "firstRead">) {
   const key = brandCopyKey(scope, writerId), raw = window.localStorage.getItem(key);
+  if (state.firstRead && (state.firstRead.key !== key || state.firstRead.raw !== raw))
+    throw new Error("The original brand recovery bytes changed. The first observation remains available for download.");
+  state.firstRead ??= { key, writerId, raw };
+  return { key, raw };
+}
+function assertBrandFirstRead(session: BrandSession) {
+  const source = session.firstRead;
+  if (!source) return;
+  if (source.raw === null || window.localStorage.getItem(source.key) !== source.raw)
+    throw new Error("The original brand recovery bytes changed or remain missing. The first observation was kept.");
+  const pointer = window.sessionStorage.getItem(brandPointerKey(session.draft.scope));
+  if (pointer !== source.writerId && !(pointer === session.custody.writerId && session.custody.expectedRaw !== null
+    && window.localStorage.getItem(brandCopyKey(session.draft.scope, pointer)) === session.custody.expectedRaw))
+    throw new Error("The original brand recovery pointer changed. No different copy was adopted.");
+  if (window.localStorage.getItem(source.key) !== source.raw)
+    throw new Error("The original brand recovery bytes changed during confirmation.");
+}
+function readOriginal(scope: string, writerId: string, state: Pick<BrandSession, "firstRead">) {
+  const { key, raw } = observeBrandCopy(scope, writerId, state);
   if (raw === null) throw new Error("The earlier brand copy is missing. Its pointer and the current input were kept.");
   const draft = retainBrandOrigin(decodeBrandCopy(raw, scope, writerId).draft, { key, raw });
   assertBrandOrigins(window.localStorage, draft);
@@ -50,17 +83,19 @@ function sessionFor(project: Project, target: BrandTarget): BrandSession {
   const scope = brandScope(project, target), found = sessions.get(scope);
   if (found) return found;
   let pointer: string | null = null, observed = false, recovered: BrandDraft | null = null, problem: string | null = null;
+  const observation: Pick<BrandSession, "firstRead"> = { firstRead: null };
   try {
     pointer = window.sessionStorage.getItem(brandPointerKey(scope)); observed = true;
     const reload = performance.getEntriesByType("navigation").some(entry => (entry as PerformanceNavigationTiming).type === "reload");
     if (pointer && reload && !window.opener) {
-      recovered = readOriginal(scope, pointer).draft;
+      recovered = readOriginal(scope, pointer, observation).draft;
       if (window.sessionStorage.getItem(brandPointerKey(scope)) !== pointer)
         throw new Error("The brand pointer changed while reading its original copy.");
     }
   } catch (reason) { problem = message(reason); recovered = null; }
   const session: BrandSession = {
     draft: recovered ?? createBrandDraft(project, target),
+    firstRead: observation.firstRead,
     custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: pointer },
     pointerObserved: observed, editedWhileRecoveryBlocked: false, preparing: false, saving: false,
     recoveryProblem: problem, storageError: problem, error: null,
@@ -73,7 +108,10 @@ function sessionFor(project: Project, target: BrandTarget): BrandSession {
 function backup(session: BrandSession): boolean {
   try {
     if (session.recoveryProblem) throw new Error(session.recoveryProblem + " Read that source before continuing; current input remains exportable.");
+    assertBrandFirstRead(session);
     writeBrandCopy(window.localStorage, window.sessionStorage, session.draft, session.custody);
+    assertBrandFirstRead(session);
+    session.firstRead = null;
     session.storageError = null; refresh(session);
     return session.storageError === null;
   } catch (reason) { session.storageError = message(reason); refresh(session); return false; }
@@ -216,7 +254,7 @@ export function useBrandAuthoringDraft(
         session.pointerObserved = observed.observed; session.custody.expectedPointer = observed.value;
         let next = session.draft, original: ReturnType<typeof readOriginal> | null = null;
         if (observed.value !== null) {
-          original = readOriginal(scope, observed.value);
+          original = readOriginal(scope, observed.value, session);
           next = recoverBrandRead(session.draft, original.draft, session.editedWhileRecoveryBlocked);
         }
         assertBrandOrigins(window.localStorage, next);

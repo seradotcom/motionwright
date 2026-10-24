@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { Change, Project } from "../src/types";
-import type { ProductionDraft } from "../src/productionDesignDraft";
+import { decodeProductionCopy, productionScope, type ProductionDraft } from "../src/productionDesignDraft";
 import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
 
 // Actual App, source-built StudioService, effect grants and SQLite. Faults alter
@@ -471,3 +471,83 @@ test("Production confirms an empty pointer after an initial read failure while r
   } catch (reason) { primary = { reason }; }
   finally { await finish(page, info, service, [], final, observations, [], primary); }
 });
+
+for (const target of ["component", "plan"] as const) {
+  test(`Production ${target} retains its first observed UNKNOWN bytes when a failed recovery read is followed by a same-writer replacement`, async ({ page }, info) => {
+    const service = await setup(info), observations: Record<string, unknown> = { target };
+    const originalInvoke = service.invoke.bind(service);
+    let final: Project | undefined, primary: Failure | undefined;
+    try {
+      const initial = await unlocked(service), sceneId = target === "component" ? heroCreationScene(initial).id : null;
+      const scope = productionScope(initial, target === "plan" ? { kind: "plan" } : { kind: "hero", sceneId });
+      const label = target === "plan" ? "Production plan" : "Component";
+      await attach(page, service, initial, target === "plan");
+      if (target === "plan") await fillPlan(page, "An actual original plan before a failed recovery read");
+      else await headline(page).fill("An actual original component");
+      let armed = true;
+      service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+        const request = args.request as ApplyArgs["request"] | undefined;
+        if (!armed || command !== "apply_change" || request?.change.type !== (target === "plan" ? "set_production_plan" : "upsert_product_hero"))
+          return originalInvoke<T>(command, args);
+        armed = false; await originalInvoke<Project>(command, args);
+        throw new Error("The real Production mutation committed; its original response delivery was lost.");
+      };
+      await button(page, target === "plan" ? "Save production plan" : "Add to scene").click();
+      const unknown = page.getByRole("region", { name: "Unconfirmed " + label, exact: true });
+      await expect(unknown).toBeVisible(); service.invoke = originalInvoke;
+      final = await service.project(initial.id); expect(final.revision).toBe(initial.revision + 1);
+      const first = await activePlanCopy(page, scope), before = await service.observeStoredProject(final);
+      expect(first.draft.pending?.outcome).toBe("UNKNOWN");
+      const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+      const reopenEditor = async () => {
+        await page.reload(); await openProduction(page, target === "plan");
+        if (sceneId) await page.getByLabel("Production working scene").selectOption(sceneId);
+      };
+      await injectFirstPlanRead(page, scope, "copy"); await reopenEditor();
+      const warning = page.getByRole("alert", { name: label + " backup warning", exact: true });
+      await expect(warning).toContainText("Injected first Production copy read failure");
+      expect((await restorePlanRead(page)).fired).toBe(true);
+      const input = target === "plan" ? concept(page) : headline(page);
+      await input.fill("Later text authored during unavailable recovery"); await input.fill("");
+      await button(page, "Retry " + label + " backup").click();
+      await expect(warning).toHaveCount(0); await expect(unknown).toBeVisible(); await expect(input).toHaveValue("");
+      const recovered = await activePlanCopy(page, scope);
+      expect(recovered.draft.pending).toEqual(first.draft.pending);
+      expect(await page.evaluate(key => localStorage.getItem(key), first.key)).toBe(first.raw);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      // Re-arm the same one-shot read fault for the real recovered writer.
+      await page.evaluate(marker => sessionStorage.removeItem(marker), "motionwright-test-production-read:copy:" + scope);
+      await reopenEditor(); await expect(warning).toContainText("Injected first Production copy read failure");
+      expect((await restorePlanRead(page)).fired).toBe(true);
+      await input.fill("Later input after the second read failure");
+      const replacementCopy = JSON.parse(recovered.raw); replacementCopy.draft.pending = null;
+      const replacement = JSON.stringify(replacementCopy);
+      // B is a valid local copy under A's writer, but is not the bytes that
+      // this failed read first observed. Its removal of UNKNOWN is not consent.
+      expect(decodeProductionCopy(replacement, scope, recovered.writerId).draft.pending).toBeNull();
+      await page.evaluate(({ key, raw }) => localStorage.setItem(key, raw), { key: recovered.key, raw: replacement });
+      await button(page, "Retry " + label + " backup").click();
+      await expect(warning, "PRODUCTION_FIRST_READ_SAME_WRITER_REPLACEMENT_REFUSED").toContainText("original Production recovery bytes changed");
+      await expect(input).toHaveValue("Later input after the second read failure");
+      await expect(button(page, target === "plan" ? "Save production plan" : "Update component")).toBeDisabled();
+      const copies = page.getByRole("region", { name: label + " recovery copies", exact: true });
+      await copies.locator("summary").first().click();
+      const received = page.waitForEvent("download"); await button(page, "Download " + label + " copy 1").click();
+      const downloaded = await (await received).path();
+      if (!downloaded) throw new Error("The first Production observation did not produce a download.");
+      const bytes = await readFile(downloaded);
+      expect(bytes.equals(Buffer.from(recovered.raw, "utf8"))).toBe(true);
+      await expect(button(page, "Discard " + label + " copy 1")).toBeDisabled();
+      expect(await page.evaluate(key => localStorage.getItem(key), recovered.key)).toBe(replacement);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      const after = await service.observeStoredProject(final);
+      expect(after.project).toEqual(before.project); expect(after.journal).toEqual(before.journal);
+      await service.close(); await service.start();
+      expect(await service.project(final.id)).toEqual(final); expect(await service.history(final.id, 0)).toEqual(before.journal);
+      Object.assign(observations, { initial, first, recovered, replacement, before, after, writes, grants, additionalMutations: 0, additionalGrants: 0 });
+      await info.attach("first-observed-production-copy", { body: bytes, contentType: "application/json" });
+      await page.screenshot({ path: info.outputPath("production-first-observed-copy.png"), fullPage: true });
+    } catch (reason) { primary = { reason }; }
+    finally { service.invoke = originalInvoke; await finish(page, info, service, [], final, observations, [], primary); }
+  });
+}

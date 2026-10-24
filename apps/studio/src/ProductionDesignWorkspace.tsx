@@ -43,7 +43,9 @@ type ProductionCommit = (change: Change) => Promise<Project>;
 const previewIdentity = "00000000-0000-4000-8000-000000000005";
 const aspects = [{ label:"16:9", width:1920,height:1080 },{ label:"9:16",width:1080,height:1920 },{label:"1:1",width:1080,height:1080}];
 
+type ObservedProductionCopy = { key: string; writerId: string; raw: string | null };
 type ProductionSession = { draft: ProductionDraft; custody: ProductionCustody; inFlight: boolean; preparing: boolean;
+  firstRead: ObservedProductionCopy | null;
   pointerObserved: boolean; editedWhileRecoveryBlocked: boolean;
   error: string | null; backupError: string | null; recoveryProblem: string | null; notice: string | null; copies: ProductionRecoveryEntry[]; limited: boolean; notify?: () => void };
 // Author buffers survive tab/workspace navigation. They never own Project state
@@ -58,14 +60,49 @@ function productionBusy(project: Project) {
   const owner = JSON.stringify([project.id, project.generation, project.active_branch]);
   return [...productionSessions.values()].some(value => productionOwner(value.draft.scope) === owner && (value.inFlight || value.preparing));
 }
+function observeProductionCopy(scope: string, writerId: string, state: Pick<ProductionSession, "firstRead">) {
+  const key = productionCopyKey(scope, writerId), raw = window.localStorage.getItem(key);
+  if (state.firstRead && (state.firstRead.key !== key || state.firstRead.raw !== raw))
+    throw new Error("The original Production recovery bytes changed. The first observation remains available for download.");
+  // Record even an observed absence before decoding or another read can fail.
+  state.firstRead ??= { key, writerId, raw };
+  return { key, raw };
+}
+function assertProductionFirstRead(session: ProductionSession) {
+  const source = session.firstRead;
+  if (!source) return;
+  if (source.raw === null || window.localStorage.getItem(source.key) !== source.raw)
+    throw new Error("The original Production recovery bytes changed or remain missing. The first observation was kept.");
+  const pointer = window.sessionStorage.getItem(productionPointerKey(session.draft.scope));
+  if (pointer !== source.writerId && !(pointer === session.custody.writerId && session.custody.expectedRaw !== null
+    && window.localStorage.getItem(productionCopyKey(session.draft.scope, pointer)) === session.custody.expectedRaw))
+    throw new Error("The original Production recovery pointer changed. No different copy was adopted.");
+  if (window.localStorage.getItem(source.key) !== source.raw)
+    throw new Error("The original Production recovery bytes changed during confirmation.");
+}
 function refreshProductionCopies(session: ProductionSession) {
-  try { const result = readProductionCopies(window.localStorage, session.draft.scope); session.copies = result.entries; session.limited = result.limited; }
+  try {
+    // An inventory read may be the first successful read after a transient
+    // failure. Anchor it before a later copy/listing can fail or change.
+    if (session.recoveryProblem && session.pointerObserved && session.custody.expectedPointer !== null && !session.firstRead)
+      observeProductionCopy(session.draft.scope, session.custody.expectedPointer, session);
+    const result = readProductionCopies(window.localStorage, session.draft.scope); session.copies = result.entries; session.limited = result.limited;
+  }
   catch (reason) { session.backupError = message(reason); }
+  finally {
+    const source = session.firstRead;
+    if (source && source.raw !== null) {
+      let value: ProductionRecoveryEntry["value"] = null;
+      try { value = decodeProductionCopy(source.raw, session.draft.scope, source.writerId); } catch { /* Exact unreadable input stays downloadable. */ }
+      session.copies = [{ ...source, raw: source.raw, value }, ...session.copies.filter(copy => copy.key !== source.key)];
+    }
+  }
 }
 function getProductionSession(project: Project, target: ProductionTarget): ProductionSession {
   const scope = productionScope(project, target), existing = productionSessions.get(scope);
   if (existing) return existing;
   let pointer: string | null = null, pointerObserved = false, recovered: ProductionDraft | null = null, backupError: string | null = null;
+  const observation: Pick<ProductionSession, "firstRead"> = { firstRead: null };
   try {
     pointer = window.sessionStorage.getItem(productionPointerKey(scope));
     pointerObserved = true;
@@ -73,7 +110,7 @@ function getProductionSession(project: Project, target: ProductionTarget): Produ
     // pointer is automatic only on reload; all copies remain explicitly visible.
     const reload = performance.getEntriesByType("navigation").some(entry => (entry as PerformanceNavigationTiming).type === "reload");
     if (pointer && reload && !window.opener) {
-      const key = productionCopyKey(scope, pointer), raw = window.localStorage.getItem(key);
+      const { key, raw } = observeProductionCopy(scope, pointer, observation);
       if (raw === null) throw new Error("The Production pointer refers to a missing copy. Earlier author bytes were not replaced.");
       const candidate = retainProductionOrigin(decodeProductionCopy(raw, scope, pointer).draft, { key, raw });
       assertProductionOrigins(window.localStorage, candidate);
@@ -84,6 +121,7 @@ function getProductionSession(project: Project, target: ProductionTarget): Produ
   } catch (reason) { backupError = message(reason); }
   const session: ProductionSession = {
     draft: recovered ?? createProductionDraft(project, target),
+    firstRead: observation.firstRead,
     custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: pointer },
     pointerObserved, editedWhileRecoveryBlocked: false,
     inFlight: false, preparing: false, error: null, backupError, recoveryProblem: backupError,
@@ -103,7 +141,10 @@ function backupProduction(session: ProductionSession): boolean {
       const old = decodeProductionCopy(session.custody.expectedRaw, session.draft.scope, session.custody.writerId).draft;
       if (!productionHasWork(old) && !sameValue(old, session.draft)) forkProductionWriter(session);
     }
+    assertProductionFirstRead(session);
     writeProductionCopy(window.localStorage, window.sessionStorage, session.draft, session.custody);
+    assertProductionFirstRead(session);
+    session.firstRead = null;
     session.backupError = null; refreshProductionCopies(session); return session.backupError === null;
   } catch (reason) {
     session.backupError = message(reason) + " Your current input remains in this editor; saving requires a verified copy and pointer.";
@@ -243,6 +284,7 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
   function discard(copy: ProductionRecoveryEntry) {
     if (busy || copy.writerId === session.custody.writerId) return;
     try {
+      if (session.firstRead?.key === copy.key) throw new Error("The first Production recovery observation is still required. Download its original bytes before resolving that source.");
       if (session.draft.origins?.some(origin => origin.key === copy.key)) throw new Error("This copy retains an earlier unconfirmed Production attempt. Download it without removing its original bytes.");
       if (window.sessionStorage.getItem(productionPointerKey(session.draft.scope)) === copy.writerId && !backupProduction(session)) return;
       if (window.localStorage.getItem(copy.key) !== copy.raw) throw new Error("This Production recovery changed. Review it before discarding.");
@@ -282,7 +324,7 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
           if (window.sessionStorage.getItem(productionPointerKey(session.draft.scope)) !== null)
             throw new Error("The Production recovery pointer changed before publication.");
         } else {
-          const key = productionCopyKey(session.draft.scope, pointer), raw = window.localStorage.getItem(key);
+          const { key, raw } = observeProductionCopy(session.draft.scope, pointer, session);
           if (raw === null) throw new Error("The earlier recovery copy is still missing. Current input remains in this editor.");
           const recovered = retainProductionOrigin(decodeProductionCopy(raw, session.draft.scope, pointer).draft, { key, raw });
           assertProductionOrigins(window.localStorage, recovered); assertProductionOrigins(window.localStorage, session.draft);
@@ -345,7 +387,7 @@ function ProductionDraftFeedback({ editor, project }: { editor: ProductionEditor
         {copy.value && <details><summary>Inspect copied input</summary><pre>{JSON.stringify(copy.value.draft.input, null, 2)}</pre></details>}
         {copy.value && <button className="secondary-button" disabled={busy || session.recoveryProblem !== null || productionUnconfirmed(draft)} onClick={() => editor.restore(copy)}>Restore {label} copy {index + 1}</button>}
         <button className="text-button" type="button" onClick={() => editor.download(copy.raw)}>Download {label} copy {index + 1}</button>
-        <button className="text-button" disabled={busy || draft.origins?.some(origin => origin.key === copy.key)} onClick={() => editor.discard(copy)}>Discard {label} copy {index + 1}</button>
+        <button className="text-button" disabled={busy || session.firstRead?.key === copy.key || draft.origins?.some(origin => origin.key === copy.key)} onClick={() => editor.discard(copy)}>Discard {label} copy {index + 1}</button>
       </div>)}
     </details>}
   </section>;

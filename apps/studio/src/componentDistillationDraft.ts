@@ -92,7 +92,21 @@ export function reconcileDistillationDraft(draft: DistillationDraft, project: Pr
 }
 /** A failed first read is not an observed empty pointer. Keep the first
  * successful observation even if reading or decoding its copy then fails. */
-export interface DistillationRecoveryPointer { observed: boolean; value: string | null }
+export interface DistillationRecoveryPointer {
+  observed: boolean; value: string | null;
+  /** First successful byte observation, including an observed missing copy. */
+  firstRead?: { key: string; writerId: string; raw: string | null };
+}
+export function observeDistillationRecoveryCopy(storage: Pick<Storage, "getItem">, scope: string,
+  observation: DistillationRecoveryPointer): DistillationRecoveryPointer["firstRead"] {
+  if (!observation.observed || observation.value === null) return undefined;
+  const writerId = observation.value, key = distillationCopyKey(scope, writerId), raw = storage.getItem(key);
+  if (observation.firstRead && (observation.firstRead.key !== key || observation.firstRead.raw !== raw))
+    throw new Error("The original Distillation recovery bytes changed. The first observation remains available for download.");
+  // Pin before decoding or another inventory/read operation can fail.
+  observation.firstRead ??= { key, writerId, raw };
+  return observation.firstRead;
+}
 export function readDistillationRecovery(storage: Pick<Storage, "getItem">, pointers: Pick<Storage, "getItem">,
   current: DistillationDraft, project: Project, observation: DistillationRecoveryPointer): DistillationDraft {
   checkScope(current, project);
@@ -103,7 +117,7 @@ export function readDistillationRecovery(storage: Pick<Storage, "getItem">, poin
     if (pointers.getItem(pointerKey) !== null) throw new Error("The earlier pointer changed while recovery was being read.");
     return current;
   }
-  const key = distillationCopyKey(current.scope, pointer), raw = storage.getItem(key);
+  const { key, raw } = observeDistillationRecoveryCopy(storage, current.scope, observation)!;
   if (raw === null) throw new Error("The earlier copy is still missing. Download the current input while recovery is unavailable.");
   const recovered = decodeDistillationCopy(raw, current.scope, pointer).draft;
   if (current.pending && (!recovered.pending || current.pending.id !== recovered.pending.id

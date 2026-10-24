@@ -7,17 +7,17 @@ import { sameValue } from "./creativeProduction";
 import { bootstrap, projectHistory } from "./api";
 import {
   acknowledgeDistillationDraft, createDistillationDraft, decodeDistillationCopy, editDistillationDraft, encodeDistillationFile,
-  inspectDistillationOutcome, prepareDistillationSubmission, readDistillationCopies, readDistillationRecovery, reconcileDistillationDraft,
+  inspectDistillationOutcome, observeDistillationRecoveryCopy, prepareDistillationSubmission, readDistillationCopies, readDistillationRecovery, reconcileDistillationDraft,
   releaseDistillationOutcome, resolveDistillationDraft, retainDistillationFailure, retainReviewedDistillationIntent,
   selectDistillationReview, writeDistillationCopy, distillationCompatibleNodes, distillationConflict,
-  distillationHasWork, distillationLabel, distillationNegativeCase, distillationOutcomeMatches, distillationPointerKey,
+  distillationHasWork, distillationLabel, distillationNegativeCase, distillationOutcomeMatches, distillationPointerKey, distillationCopyKey,
   distillationScope, distillationUnconfirmed, DISTILLATION_RECOVERY_PREFIX,
 } from "./componentDistillationDraft";
 import type { DistillationAuthorRaw, DistillationCustody, DistillationDraft, DistillationOutcomeReview, DistillationRaw,
-  DistillationRecoveryEntry, DistillationReviewRaw, DistillationTarget } from "./componentDistillationDraft";
+  DistillationRecoveryEntry, DistillationRecoveryPointer, DistillationReviewRaw, DistillationTarget } from "./componentDistillationDraft";
 
 type Props = { project: Project; busy: boolean; commit: (change: Change) => Promise<Project> };
-type Session = { draft: DistillationDraft; custody: DistillationCustody; pointerObserved: boolean; inFlight: boolean;
+type Session = { draft: DistillationDraft; custody: DistillationCustody; recoveryObservation: DistillationRecoveryPointer; inFlight: boolean;
   error: string | null; backupError: string | null; recoveryProblem: string | null; notice: string | null;
   copies: DistillationRecoveryEntry[]; limited: boolean; notify?: () => void };
 // Per-tab author inputs only. These sessions neither own nor publish Projects.
@@ -27,27 +27,52 @@ const message = (reason: unknown) => reason instanceof Error ? reason.message : 
 function notify(session: Session) { for (const value of sessions.values()) if (owner(value.draft.scope) === owner(session.draft.scope)) value.notify?.(); }
 function projectBusy(project: Project) { const key = JSON.stringify([project.id, project.generation, project.active_branch]); return [...sessions.values()].some(value => owner(value.draft.scope) === key && value.inFlight); }
 function refreshCopies(session: Session) {
-  try { const found = readDistillationCopies(window.localStorage, session.draft.scope); session.copies = found.entries; session.limited = found.limited; }
+  try {
+    if (session.recoveryProblem && !session.recoveryObservation.firstRead)
+      observeDistillationRecoveryCopy(window.localStorage, session.draft.scope, session.recoveryObservation);
+    const found = readDistillationCopies(window.localStorage, session.draft.scope); session.copies = found.entries; session.limited = found.limited;
+  }
   catch (reason) { session.backupError = message(reason); }
+  finally {
+    const source = session.recoveryObservation.firstRead;
+    if (source && source.raw !== null) {
+      let value: DistillationRecoveryEntry["value"] = null;
+      try { value = decodeDistillationCopy(source.raw, session.draft.scope, source.writerId); } catch { /* The original unreadable bytes stay downloadable. */ }
+      session.copies = [{ ...source, raw: source.raw, value }, ...session.copies.filter(copy => copy.key !== source.key)];
+    }
+  }
 }
 function sessionFor(project: Project, target: DistillationTarget): Session {
   const scope = distillationScope(project, target), existing = sessions.get(scope); if (existing) return existing;
-  let pointer: string | null = null, pointerObserved = false, recovered: DistillationDraft | null = null, backupError: string | null = null;
+  let recovered: DistillationDraft | null = null, backupError: string | null = null;
+  const recoveryObservation: DistillationRecoveryPointer = { observed: false, value: null };
   try {
-    pointer = window.sessionStorage.getItem(distillationPointerKey(scope)); pointerObserved = true;
+    recoveryObservation.value = window.sessionStorage.getItem(distillationPointerKey(scope)); recoveryObservation.observed = true;
     const reload = performance.getEntriesByType("navigation").some(entry => (entry as PerformanceNavigationTiming).type === "reload");
     // A cloned/new tab gets its own author buffer and an explicit copies list.
-    if (pointer && reload && !window.opener) {
+    if (recoveryObservation.value && reload && !window.opener) {
       recovered = readDistillationRecovery(window.localStorage, window.sessionStorage,
-        createDistillationDraft(project, target), project, { observed: true, value: pointer });
+        createDistillationDraft(project, target), project, recoveryObservation);
     }
   } catch (reason) { backupError = message(reason); }
   const session: Session = { draft: recovered ? reconcileDistillationDraft(recovered, project) : createDistillationDraft(project, target),
-    custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: pointer }, pointerObserved, inFlight: false,
+    custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: recoveryObservation.value }, recoveryObservation, inFlight: false,
     error: null, backupError, recoveryProblem: backupError, notice: recovered ? "Recovered this tab's Distillation input. No saved operation was repeated." : null, copies: [], limited: false };
   sessions.set(scope, session); refreshCopies(session); return session;
 }
 function forkWriter(session: Session) { session.custody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: session.custody.expectedPointer }; }
+function assertFirstRead(session: Session) {
+  const source = session.recoveryObservation.firstRead;
+  if (!source) return;
+  if (source.raw === null || window.localStorage.getItem(source.key) !== source.raw)
+    throw new Error("The original Distillation recovery bytes changed or remain missing. The first observation was kept.");
+  const pointer = window.sessionStorage.getItem(distillationPointerKey(session.draft.scope));
+  if (pointer !== source.writerId && !(pointer === session.custody.writerId && session.custody.expectedRaw !== null
+    && window.localStorage.getItem(distillationCopyKey(session.draft.scope, pointer)) === session.custody.expectedRaw))
+    throw new Error("The original Distillation recovery pointer changed. No different copy was adopted.");
+  if (window.localStorage.getItem(source.key) !== source.raw)
+    throw new Error("The original Distillation recovery bytes changed during confirmation.");
+}
 function backup(session: Session): boolean {
   try {
     if (session.recoveryProblem) throw new Error(session.recoveryProblem + " Retry reading the earlier copy before another save; it may contain an unconfirmed attempt.");
@@ -55,7 +80,10 @@ function backup(session: Session): boolean {
       const before = decodeDistillationCopy(session.custody.expectedRaw, session.draft.scope, session.custody.writerId).draft;
       if (!distillationHasWork(before) && !sameValue(before, session.draft)) forkWriter(session);
     }
+    assertFirstRead(session);
     writeDistillationCopy(window.localStorage, window.sessionStorage, session.draft, session.custody);
+    assertFirstRead(session);
+    delete session.recoveryObservation.firstRead;
     session.backupError = null; refreshCopies(session); return session.backupError === null;
   } catch (reason) { session.backupError = message(reason) + " Current input remains in this editor. Saving requires a verified copy and pointer."; refreshCopies(session); return false; }
 }
@@ -116,7 +144,7 @@ function useDraft(project: Project, target: DistillationTarget, commit: Props["c
     } catch (reason) { session.error = message(reason); notify(session); }
   }
   function restore(copy: DistillationRecoveryEntry) {
-    if (busy || distillationUnconfirmed(session.draft) || !copy.value) return;
+    if (busy || session.recoveryProblem || distillationUnconfirmed(session.draft) || !copy.value) return;
     try {
       if (distillationHasWork(session.draft) && !backup(session)) return;
       const raw = window.localStorage.getItem(copy.key); if (raw === null || raw !== copy.raw) throw new Error("This Distillation copy changed. Refresh the list first.");
@@ -160,6 +188,8 @@ function useDraft(project: Project, target: DistillationTarget, commit: Props["c
   function discard(copy: DistillationRecoveryEntry) {
     if (busy || copy.writerId === session.custody.writerId) return;
     try {
+      if (session.recoveryObservation.firstRead?.key === copy.key)
+        throw new Error("The first Distillation recovery observation is still required. Download its original bytes before resolving that source.");
       if (window.sessionStorage.getItem(distillationPointerKey(session.draft.scope)) === copy.writerId && !backup(session)) return;
       if (window.localStorage.getItem(copy.key) !== copy.raw) throw new Error("This Distillation copy changed. Review it before discarding.");
       window.localStorage.removeItem(copy.key);
@@ -175,20 +205,28 @@ function useDraft(project: Project, target: DistillationTarget, commit: Props["c
       if (backup(session)) session.notice = "Verified a new copy of your current input. Earlier bytes remain separate."; notify(session);
     } catch (reason) { session.backupError = message(reason); notify(session); }
   }
+  function downloadCopy(copy: DistillationRecoveryEntry) {
+    try {
+      const url = URL.createObjectURL(new Blob([copy.raw], { type: "application/json" }));
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = "motionwright-distillation-copy-" + copy.writerId + ".json";
+      document.body.appendChild(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
+      session.notice = "Started downloading the exact retained Distillation copy. No operation was repeated."; notify(session);
+    } catch (reason) { session.error = message(reason); notify(session); }
+  }
   function retryBackup() {
     if (busy) return;
     try {
       if (session.recoveryProblem) {
-        const observation = { observed: session.pointerObserved, value: session.custody.expectedPointer };
+        const observation = session.recoveryObservation;
         let recovered: DistillationDraft;
         try { recovered = readDistillationRecovery(window.localStorage, window.sessionStorage, session.draft, current.current, observation); }
-        finally { session.pointerObserved = observation.observed; session.custody.expectedPointer = observation.value; }
+        finally { session.custody.expectedPointer = observation.value; }
         invalidateReview(); forkWriter(session); session.draft = recovered; session.recoveryProblem = null;
       }
       backup(session); notify(session);
     } catch (reason) { session.backupError = message(reason); notify(session); }
   }
-  return { session, draft: session.draft, busy, conflict, review, reviewing, edit, select, send, choose, restore, readOutcome, continueEditing, download, discard, freshCopy, retryBackup };
+  return { session, draft: session.draft, busy, conflict, review, reviewing, edit, select, send, downloadCopy, choose, restore, readOutcome, continueEditing, download, discard, freshCopy, retryBackup };
 }
 
 function DraftFeedback({ editor }: { editor: ReturnType<typeof useDraft> }) {
@@ -225,8 +263,9 @@ function DraftFeedback({ editor }: { editor: ReturnType<typeof useDraft> }) {
       {copies.map((copy, index) => <div role="group" aria-label={label + " recovery copy " + (index + 1)} key={copy.key}>
         <p>{copy.value ? new Date(copy.value.updatedAt).toLocaleString() + (distillationUnconfirmed(copy.value.draft) ? " · Unconfirmed attempt" : " · Local input") : "Unreadable copy; original bytes were preserved."}</p>
         {copy.value && <details><summary>Inspect copied input</summary><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(copy.value.draft.raw, null, 2)}</pre></details>}
-        {copy.value && <button type="button" className="secondary-button" disabled={busy || distillationUnconfirmed(draft)} onClick={() => editor.restore(copy)}>Restore {label} copy {index + 1}</button>}
-        <button type="button" className="text-button" disabled={busy} onClick={() => editor.discard(copy)}>Discard {label} copy {index + 1}</button>
+        {copy.value && <button type="button" className="secondary-button" disabled={busy || !!session.recoveryProblem || distillationUnconfirmed(draft)} onClick={() => editor.restore(copy)}>Restore {label} copy {index + 1}</button>}
+        <button type="button" className="text-button" onClick={() => editor.downloadCopy(copy)}>Download {label} copy {index + 1}</button>
+        <button type="button" className="text-button" disabled={busy || session.recoveryObservation.firstRead?.key === copy.key} onClick={() => editor.discard(copy)}>Discard {label} copy {index + 1}</button>
       </div>)}
     </details>}
   </section>;

@@ -5,7 +5,7 @@ import { emptyProductionDesign } from "./creativeProduction";
 import type { CanvasNode, Change, Project, ProjectEvent } from "./types";
 import {
   acknowledgeDistillationDraft, createDistillationDraft, decodeDistillationCopy, editDistillationDraft,
-  encodeDistillationCopy, encodeDistillationFile, inspectDistillationOutcome, prepareDistillationSubmission,
+  encodeDistillationCopy, encodeDistillationFile, inspectDistillationOutcome, observeDistillationRecoveryCopy, prepareDistillationSubmission,
   readDistillationCopies, reconcileDistillationDraft, releaseDistillationOutcome, resolveDistillationDraft,
   retainDistillationFailure, retainReviewedDistillationIntent, selectDistillationReview,
   distillationConflict, distillationCopyKey, distillationOutcomeMatches, distillationPointerKey, readDistillationRecovery,
@@ -72,7 +72,7 @@ describe("Distillation first-read recovery preserves observed custody and later 
     expect(observation).toEqual({ observed: false, value: null });
     pointers.getItem = get;
     expect(readDistillationRecovery(storage, pointers, current, project, observation)).toEqual(retained);
-    expect(observation).toEqual({ observed: true, value: writer }); expect(storage.getItem(key)).toBe(raw);
+    expect(observation).toMatchObject({ observed: true, value: writer }); expect(storage.getItem(key)).toBe(raw);
     expect(current).toEqual(createDistillationDraft(project, retained.target));
   });
   it("a first confirmed null retains the complete current draft, including any pending comparison", async () => {
@@ -87,7 +87,7 @@ describe("Distillation first-read recovery preserves observed custody and later 
     const observation: DistillationRecoveryPointer = { observed: false, value: null };
     storage.getItem = () => { throw new Error("Copy read unavailable"); };
     expect(() => readDistillationRecovery(storage, pointers, current, project, observation)).toThrow("unavailable");
-    expect(observation).toEqual({ observed: true, value: writer });
+    expect(observation).toMatchObject({ observed: true, value: writer });
     storage.getItem = get; pointers.removeItem(pointer);
     expect(() => readDistillationRecovery(storage, pointers, current, project, observation)).toThrow("pointer changed");
     expect(observation.value).toBe(writer); expect(storage.getItem(key)).toBe(raw);
@@ -151,10 +151,57 @@ describe("Distillation first-read recovery preserves observed custody and later 
       };
       const observation: DistillationRecoveryPointer = { observed: false, value: null };
       expect(() => readDistillationRecovery(storage, pointers, current, project, observation)).toThrow("changed while recovery");
-      expect(current).toEqual(before); expect(observation).toEqual({ observed: true, value: writer });
+      expect(current).toEqual(before); expect(observation).toMatchObject({ observed: true, value: writer });
       expect(storage.getItem(key)).toBe(race === "copy" ? "Changed source bytes" : original); expect(pointers.getItem(pointer)).toBe(race === "pointer" ? fork : writer);
     });
   }
+});
+
+describe("Distillation first observed bytes remain the retry source", () => {
+  for (const kind of ["author", "review"] as const) {
+    it(`${kind} pins UNKNOWN bytes seen during inventory after a failed read and refuses same-writer substitution`, async () => {
+      const { project, prepared } = await armed(kind), current = edit(createDistillationDraft(project, prepared.draft.target), "Later input");
+      const { storage, pointers, key } = recoverySource(prepared.draft), original = storage.getItem(key)!;
+      const observation: DistillationRecoveryPointer = { observed: false, value: null }, get = storage.getItem.bind(storage);
+      storage.getItem = () => { throw new Error("Transient initial copy read failure"); };
+      expect(() => readDistillationRecovery(storage, pointers, current, project, observation)).toThrow("Transient");
+      expect(observation.firstRead).toBeUndefined();
+      storage.getItem = get;
+      observeDistillationRecoveryCopy(storage, current.scope, observation);
+      expect(observation.firstRead).toEqual({ key, writerId: writer, raw: original });
+      const replacement = JSON.parse(original); replacement.draft.pending = null;
+      storage.setItem(key, JSON.stringify(replacement));
+      expect(decodeDistillationCopy(storage.getItem(key)!, current.scope, writer).draft.pending).toBeNull();
+      expect(() => readDistillationRecovery(storage, pointers, current, project, observation)).toThrow("original Distillation recovery bytes changed");
+      expect(observation.firstRead!.raw).toBe(original); expect(current.pending).toBeNull();
+      storage.setItem(key, original);
+      const recovered = readDistillationRecovery(storage, pointers, current, project, observation);
+      expect(recovered.raw).toEqual(current.raw); expect(recovered.pending).toEqual(prepared.draft.pending);
+      expect(recovered.sequence).toBeGreaterThan(current.sequence);
+    });
+  }
+  it("pins corrupt observed bytes before decoding and never treats a replacement as their repair", async () => {
+    const project = await source(), current = createDistillationDraft(project, { kind: "author" });
+    const { storage, pointers, key } = recoverySource(author(project)), healthy = storage.getItem(key)!;
+    const observation: DistillationRecoveryPointer = { observed: false, value: null };
+    storage.setItem(key, "{incomplete original");
+    expect(() => readDistillationRecovery(storage, pointers, current, project, observation)).toThrow();
+    expect(observation.firstRead).toEqual({ key, writerId: writer, raw: "{incomplete original" });
+    storage.setItem(key, healthy);
+    expect(() => readDistillationRecovery(storage, pointers, current, project, observation)).toThrow("original Distillation recovery bytes changed");
+    expect(observation.firstRead!.raw).toBe("{incomplete original");
+  });
+  it("pins a missing copy before validation and rejects a later same-writer insertion", async () => {
+    const project = await source(), current = createDistillationDraft(project, { kind: "author" });
+    const { storage, pointers, key } = recoverySource(author(project)), healthy = storage.getItem(key)!;
+    const observation: DistillationRecoveryPointer = { observed: false, value: null };
+    storage.removeItem(key);
+    expect(() => readDistillationRecovery(storage, pointers, current, project, observation)).toThrow("still missing");
+    expect(observation.firstRead).toEqual({ key, writerId: writer, raw: null });
+    storage.setItem(key, healthy);
+    expect(() => readDistillationRecovery(storage, pointers, current, project, observation)).toThrow("original Distillation recovery bytes changed");
+    expect(observation.firstRead!.raw).toBeNull();
+  });
 });
 
 describe("Distillation raw author/reviewer scope and original response authority", () => {
