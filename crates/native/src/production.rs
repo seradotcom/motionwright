@@ -36,6 +36,7 @@ mod mlt_timeline;
 mod path_boundary_tests;
 mod receipt_custody;
 mod recovery;
+mod renderer_registry;
 pub use blender_original::{
     BlenderOriginalEdit, BlenderOriginalFile, BlenderOriginalJournal, BlenderOriginalPhase,
     BlenderOriginalRequest,
@@ -44,6 +45,7 @@ pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
+pub use renderer_registry::{RendererRegistryObservation, RendererRegistryState};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
@@ -539,6 +541,7 @@ fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
         })
     } else if WORKFLOW_READ_COMMANDS.contains(&command)
         || WORKFLOW_ACTION_COMMANDS.contains(&command)
+        || command == "doctor"
     {
         Some(ExpectedAuthority {
             provider: "semwright-core",
@@ -5401,5 +5404,191 @@ os._exit(0)
         );
         assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
         assert_eq!(reopened.project(project.id).unwrap(), project);
+    }
+
+    #[test]
+    fn renderer_registry_uses_only_the_fixed_builtin_doctor_authority() {
+        let authority = expected_authority("doctor").unwrap();
+        assert_eq!(authority.provider, "semwright-core");
+        assert_eq!(authority.source, SourceKind::Builtin);
+        assert!(!authority.provider_generation_required);
+        for command in [
+            "doctor.extra",
+            "doctor arbitrary",
+            "driver.doctor",
+            "capabilities.list",
+        ] {
+            assert!(expected_authority(command).is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_registry_transport_preserves_evidence_without_native_readiness() {
+        let (service, project, temp) = fixture_service();
+        let before = serde_json::to_value(&project).unwrap();
+        let mut reply = transport_reply("doctor");
+        reply.data = Some(super::renderer_registry::registry_test_data(vec![
+            super::renderer_registry::registry_test_provider("driver:blender", true),
+            super::renderer_registry::registry_test_provider("driver:manim-community", false),
+        ]));
+        let stdout = serde_json::to_string(&reply).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &stdout, "", 0);
+        let client = ProductionClient::new(connection).unwrap();
+        let stamp = motionwright_domain::RevisionStamp {
+            resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+        };
+        let registry = client.discover_renderer_registry(&stamp).await.unwrap();
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(registry.broker_request_id(), "transport-fixture-original");
+        assert_eq!(registry.catalog_revision(), 9);
+        assert_eq!(registry.provider_version_for("blender"), Some("0.1.0"));
+        let baseline = crate::creative_doctor::inspect_creative_runtime(
+            &project,
+            "synthetic-source-pin",
+            crate::creative_doctor::CliEvidence::VersionCompatible,
+            true,
+        );
+        let report = crate::creative_doctor::inspect_creative_runtime_with_registry(
+            &project,
+            "synthetic-source-pin",
+            crate::creative_doctor::CliEvidence::VersionCompatible,
+            true,
+            registry,
+        )
+        .unwrap();
+        assert!(report.broker_dispatch_performed);
+        assert!(!report.ready_for_native_production);
+        assert!(!report.install_performed);
+        assert!(!report.authorizing_grant_created);
+        assert!(
+            report
+                .renderers
+                .iter()
+                .all(|renderer| !renderer.provider_verified)
+        );
+        assert_eq!(
+            report
+                .renderers
+                .iter()
+                .map(|renderer| renderer.state)
+                .collect::<Vec<_>>(),
+            baseline
+                .renderers
+                .iter()
+                .map(|renderer| renderer.state)
+                .collect::<Vec<_>>(),
+        );
+        let connected = report
+            .checks
+            .iter()
+            .find(|check| check.id == "renderer_registry_blender")
+            .unwrap();
+        assert_eq!(connected.status, "validated");
+        assert!(connected.detail.contains("present_connected"));
+        assert!(connected.detail.contains("provider_identity_version=0.1.0"));
+        let missing = report
+            .checks
+            .iter()
+            .find(|check| check.id == "renderer_registry_motion_canvas")
+            .unwrap();
+        assert!(missing.detail.contains("not_registered_current_broker"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .filter(|check| check.id.starts_with("native_runtime_"))
+                .all(|check| check.status == "not_tested")
+        );
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .filter(|check| check.id.starts_with("native_runtime_"))
+                .count(),
+            4
+        );
+        assert_eq!(
+            serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_registry_foreign_resource_is_rejected_before_cli_dispatch() {
+        let (_service, project, temp) = fixture_service();
+        let stdout = serde_json::to_string(&transport_reply("doctor")).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &stdout, "", 0);
+        let client = ProductionClient::new(connection).unwrap();
+        let stamp = motionwright_domain::RevisionStamp {
+            resource: format!("{}-other", project.resource_key()),
+            generation: project.generation,
+            revision: project.revision,
+        };
+        let error = client.discover_renderer_registry(&stamp).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::PolicyDenied);
+        assert!(!counter.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_registry_failed_authentication_or_data_never_proves_absence() {
+        for case in [
+            "provider",
+            "source",
+            "missing_provenance",
+            "fake",
+            "incomplete_registry",
+        ] {
+            let (service, project, temp) = fixture_service();
+            let before = serde_json::to_value(&project).unwrap();
+            let mut reply = transport_reply("doctor");
+            reply.data = Some(super::renderer_registry::registry_test_data(vec![]));
+            match case {
+                "provider" => {
+                    reply.execution.provenance.as_mut().unwrap().provider = "driver:blender".into()
+                }
+                "source" => {
+                    reply.execution.provenance.as_mut().unwrap().source = SourceKind::Driver
+                }
+                "missing_provenance" => reply.execution.provenance = None,
+                "fake" => reply.data.as_mut().unwrap()["fake"] = serde_json::json!(true),
+                "incomplete_registry" => {
+                    reply.data.as_mut().unwrap()["providers"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("providers");
+                }
+                _ => unreachable!(),
+            }
+            let stdout = serde_json::to_string(&reply).unwrap();
+            let (connection, counter) =
+                fake_transport_connection(&temp, project.resource_key(), &stdout, "", 0);
+            let client = ProductionClient::new(connection).unwrap();
+            let stamp = motionwright_domain::RevisionStamp {
+                resource: project.resource_key(),
+                generation: project.generation,
+                revision: project.revision,
+            };
+            assert!(
+                client.discover_renderer_registry(&stamp).await.is_err(),
+                "case: {case}"
+            );
+            assert_eq!(
+                std::fs::read(&counter).unwrap(),
+                b"invoked\n",
+                "case: {case}"
+            );
+            assert_eq!(
+                serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+                before,
+                "case: {case}"
+            );
+        }
     }
 }
