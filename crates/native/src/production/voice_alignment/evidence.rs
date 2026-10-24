@@ -260,7 +260,7 @@ pub(super) fn inspect_source(bytes: &[u8]) -> Check<SourceEvidence> {
 pub(super) fn runtime_request() -> Value {
     json!({"contract_version":CONTRACT,"torch_version":"2.8.0+cpu","torchaudio_version":"2.8.0+cpu","numpy_version":"2.2.6","model_id":"WAV2VEC2_ASR_BASE_960H","checkpoint_sha256":CHECKPOINT_SHA,"checkpoint_size_bytes":377664473,"worker_sha256":WORKER_SHA,"contract_sha256":CONTRACT_SHA})
 }
-fn validate_request(r: &Value, s: &SourceEvidence) -> Check<()> {
+pub(super) fn validate_request(r: &Value, s: &SourceEvidence) -> Check<()> {
     object(
         r,
         &[

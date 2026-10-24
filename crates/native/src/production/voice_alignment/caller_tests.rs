@@ -197,8 +197,14 @@ fn synthetic_qualified_result_applies_one_atomic_revision_and_verified_replay() 
     assert_eq!(after.audio.transcript.len(), 2);
     assert_eq!(after.audio.transcript[0].text, "A");
     assert_eq!(after.audio.transcript[1].text, "B");
-    assert_eq!(after.audio.transcript[0].start, rational(1, 50).unwrap());
-    assert_eq!(after.audio.transcript[1].end, rational(8, 50).unwrap());
+    assert_eq!(
+        after.audio.transcript[0].start,
+        RationalTime { num: 1, den: 50 }
+    );
+    assert_eq!(
+        after.audio.transcript[1].end,
+        RationalTime { num: 4, den: 25 }
+    );
     assert!(after.audio.transcript.iter().all(|s| matches!(
         &s.alignment,
         AlignmentEvidence::Measured {
@@ -482,5 +488,91 @@ fn altered_registration_mutation_policy_and_terminal_job_never_qualify() {
             f.project
         );
         assert_eq!(f.coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn impossible_ctc_target_rejects_before_staging_dispatch_or_receipt() {
+    let f = backend_fixture();
+    assert_eq!((f.prepared.source.sample_frames - 400) / 320 + 1, 9);
+    let request_id = Uuid::new_v4();
+    assert_ne!(request_id, f.prepared.intent.request_id);
+    let request_key = request_id.to_string();
+    let input_root = f.admission.native_input_root.clone();
+    fs::create_dir(&input_root).unwrap();
+    let intent = VoiceAlignmentIntent {
+        request_id,
+        voice_track_id: f.prepared.intent.voice_track_id,
+        transcript_version: 1,
+        transcript_text: "ABCDEFGHIJ".into(),
+    };
+    assert!(evidence::transcript_is_supported(&intent.transcript_text));
+    assert!(
+        f.coordinator
+            .service
+            .latest_production_receipt(f.project.id, &request_key)
+            .unwrap()
+            .is_none()
+    );
+    let error = match f
+        .coordinator
+        .prepare_voice_alignment_with_admission(
+            f.project.id,
+            &f.prepared.expected,
+            intent,
+            f.admission,
+            &AtomicBool::new(false),
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("Impossible CTC target unexpectedly qualified"),
+    };
+    assert!(format!("{error:?}").contains("not enough model frames for CTC target"));
+    assert!(error.outcome_known);
+    assert!(fs::read_dir(&input_root).unwrap().next().is_none());
+    assert!(!input_root.join(format!("{request_id}.wav")).exists());
+    assert_eq!(f.coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+    assert!(!f.counter.exists());
+    assert!(
+        f.coordinator
+            .service
+            .latest_production_receipt(f.project.id, &request_key)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        f.coordinator.service.project(f.project.id).unwrap(),
+        f.project
+    );
+}
+
+#[test]
+fn invalid_runtime_job_identifiers_never_qualify() {
+    for job_id in [
+        "j".repeat(129),
+        "job_with_underscore".into(),
+        "j\u{00f3}b".into(),
+    ] {
+        let f = backend_fixture();
+        let mut observed = synthetic_witness(f.receipt, &f.prepared);
+        observed.completed_receipt.payload["result"]["data"]["runtime_job"]["id"] = json!(job_id);
+        let error = match f
+            .coordinator
+            .qualify_voice_alignment(*observed, f.prepared, &f.admission)
+        {
+            Err(error) => error,
+            Ok(_) => panic!("Invalid runtime job identifier unexpectedly qualified"),
+        };
+        assert!(
+            format!("{error:?}")
+                .contains("Runtime job identifier is outside the admitted SDK contract")
+        );
+        assert_eq!(
+            f.coordinator.service.project(f.project.id).unwrap(),
+            f.project
+        );
+        assert_eq!(f.coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+        assert!(!f.counter.exists());
     }
 }

@@ -117,20 +117,14 @@ fn token(value: &Value) -> NativeResult<&str> {
 }
 
 fn rational(numerator: u64, denominator: u64) -> NativeResult<RationalTime> {
-    let (mut left, mut right) = (numerator, denominator);
-    while right != 0 {
-        (left, right) = (right, left % right);
-    }
-    // Only internally reconstructed integer frame/sample counts enter this
-    // conversion. It is not a JSON evidence constructor or float conversion.
-    let value: RationalTime = serde_json::from_value(json!({
-        "num":numerator / left,"den":denominator / left,
-    }))
-    .map_err(|_| rejected("Reconstructed rational time is invalid"))?;
-    value
-        .validate()
-        .map_err(|_| rejected("Reconstructed rational time is invalid"))?;
-    Ok(value)
+    let numerator = i64::try_from(numerator)
+        .map_err(|_| rejected("Reconstructed rational numerator exceeds the domain range"))?;
+    let denominator = i64::try_from(denominator)
+        .map_err(|_| rejected("Reconstructed rational denominator exceeds the domain range"))?;
+    // Reconstructed integer frame/sample counts use the domain constructor.
+    // The public string wire format is not an evidence ingress here.
+    RationalTime::new(numerator, denominator)
+        .map_err(|_| rejected("Reconstructed rational time is invalid"))
 }
 
 fn current_project(project: &Project, expected: &RevisionStamp) -> NativeResult<()> {
@@ -253,7 +247,7 @@ impl ProductionCoordinator {
                 "sample_rate_hz":16000,"channels":1,"sample_frames":source.sample_frames},
             "runtime":evidence::runtime_request(),
         });
-        evidence::canonical_request(&request).map_err(rejected)?;
+        evidence::validate_request(&request, &source).map_err(rejected)?;
         let file_name = format!("{}.wav", intent.request_id);
         let args = json!({"file_name":file_name,"request":request});
         let prepared = PreparedAlignment {
@@ -413,6 +407,13 @@ impl ProductionCoordinator {
             ],
         )?;
         let job_id = token(&job["id"])?;
+        checked(
+            job_id.len() <= 128
+                && job_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
+            "Runtime job identifier is outside the admitted SDK contract",
+        )?;
         checked(
             job["status"] == json!("succeeded")
                 && job["tool_name"] == json!(TOOL)
