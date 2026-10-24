@@ -20,12 +20,14 @@ mod music_clock;
 mod music_conform;
 mod narration_impact;
 mod narration_lock;
+mod narrative_editing;
 mod otio_cut_review;
 mod paid_generation;
 mod procedural;
 mod product_stage;
 mod production_design;
 mod render_tail_impact;
+mod scene_timing_guard;
 mod semantic_sfx;
 mod stage_capture;
 pub use brand_campaign::*;
@@ -50,6 +52,7 @@ pub use music_clock::*;
 pub use music_conform::*;
 pub use narration_impact::*;
 pub use narration_lock::*;
+pub use narrative_editing::*;
 pub use otio_cut_review::*;
 pub use paid_generation::*;
 pub use procedural::*;
@@ -667,7 +670,9 @@ impl Project {
         }
         if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
             let empty = ProductionDesign::default();
-            if !self.paid_generation.is_empty()
+            if self.narrative.editing.is_some()
+                || self.branch_workspaces.iter().any(|workspace| workspace.base_state.narrative.editing.is_some() || workspace.current_state.narrative.editing.is_some())
+                || !self.paid_generation.is_empty()
                 || self.production_design != empty
                 || self.branch_workspaces.iter().any(|workspace| {
                     workspace.base_state.production_design != empty
@@ -752,6 +757,7 @@ impl Project {
         validate_deliverable_context(self)?;
         self.brief.validate()?;
         self.narrative.validate()?;
+        validate_narrative_realizations(&self.narrative, &self.scenes)?;
         for beat in &self.narrative.beats {
             if !resource_beat_ids.insert(beat.id) {
                 return Err(DomainError::Invalid(
@@ -1068,6 +1074,31 @@ impl Project {
     }
 
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
+        // Preserve the existing domain guards inside the original implementation.
+        // This outer transaction also protects editorial metadata through branch
+        // checkout/merge and existing SceneBeat changes.
+        if self.narrative.editing.is_some() || !self.narrative.protected_sections.is_empty()
+            || matches!(change, Change::EditNarrative { .. })
+        {
+            let mut candidate = self.clone();
+            candidate.apply_change_with_domain_guards(change)?;
+            preserve_approved_editorial_script(self, &candidate, change)?;
+            preserve_protected_editorial_beats(self, &candidate, change)?;
+            preserve_narrative_minimum_holds(self, &candidate)?;
+            candidate.validate()?;
+            *self = candidate;
+            return Ok(());
+        }
+        self.apply_change_with_domain_guards(change)
+    }
+
+    fn apply_change_with_domain_guards(&mut self, change: &Change) -> Result<()> {
+        if matches!(
+            change,
+            Change::MoveScene { .. } | Change::SetSceneDuration { .. }
+        ) {
+            return self.apply_general_scene_timing(change);
+        }
         if matches!(
             change,
             Change::SetDeliveryRecipe { .. }
@@ -1394,6 +1425,7 @@ impl Project {
             } => {
                 self.update_claim_source(*claim_id, expected, replacement)?;
             }
+            Change::EditNarrative { expected, edit } => self.apply_narrative_edit(expected, edit)?,
             Change::SetNarrativePremise { premise } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 self.narrative.premise = premise.clone();
@@ -2836,6 +2868,10 @@ pub enum Change {
         claim_id: Uuid,
         expected: ClaimEditableFields,
         replacement: ClaimEditableFields,
+    },
+    EditNarrative {
+        expected: NarrativeEditSource,
+        edit: Box<NarrativeEdit>,
     },
     SetNarrativePremise {
         premise: String,

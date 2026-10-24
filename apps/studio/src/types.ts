@@ -1,3 +1,4 @@
+import type { NarrativeEditingState, NarrativeEditingChange } from "./narrativeEditing";
 import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
 import type { DeliveryRecipe } from "./deliveryRecipe";
 import type { MeasuredTable, MeasuredView } from "./measuredData";
@@ -199,6 +200,7 @@ export interface NarrativeBeat {
 export interface ProtectedSection { beat_id: string; reason: string; }
 export interface Narrative {
   premise: string; beats: NarrativeBeat[]; protected_sections: ProtectedSection[];
+  editing?: NarrativeEditingState | null;
 }
 export interface VoiceTrack {
   id: string; asset_id: string; label: string; sample_rate_hz: number; channels: number;
@@ -637,6 +639,7 @@ export interface Project {
 import type { BrandCampaignRollout } from "./brandCampaign";
 
 export type Change =
+  | NarrativeEditingChange
   | { type:"record_narration_take"; expected_source_sha256:string; expected_project_revision:number; reviewer:string; reason:string }
   | { type:"release_narration_take"; expected_source_sha256:string; reviewer:string; reason:string }
   | { type:"apply_brand_campaign"; rollout:BrandCampaignRollout }

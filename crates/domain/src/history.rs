@@ -61,6 +61,7 @@ impl BranchState {
 
         self.brief.validate()?;
         self.narrative.validate()?;
+        validate_narrative_realizations(&self.narrative, &self.scenes)?;
         self.audio.validate()?;
         self.visual_language.validate()?;
         self.production_design
