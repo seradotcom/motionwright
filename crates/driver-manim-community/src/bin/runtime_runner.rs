@@ -320,7 +320,7 @@ fn parse_probe_args(raw: Vec<String>) -> Result<ProbeArgs, String> {
         return Err("runner requires the exact bounded probe argument set".into());
     }
     let mut values = BTreeMap::new();
-    for pair in raw[1..].chunks_exact(2) {
+    for pair in raw[1..].as_chunks::<2>().0 {
         let key = pair[0].as_str();
         if !matches!(
             key,
