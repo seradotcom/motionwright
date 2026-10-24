@@ -862,3 +862,348 @@ fn binding_migration_ddl_rolls_back_after_abrupt_exit() {
         );
     }
 }
+
+// Portable import has a filesystem publication boundary separate from SQLite.
+// These process cuts establish recovery semantics, not power-loss atomicity or
+// permission to replay an operation whose durable result remains unknown.
+const BUNDLE_CHILD_MODE: &str = "MOTIONWRIGHT_TEST_BUNDLE_CHILD_MODE";
+const BUNDLE_CASE_PATH: &str = "MOTIONWRIGHT_TEST_BUNDLE_CASE_PATH";
+const BUNDLE_PROJECT: &str = "MOTIONWRIGHT_TEST_BUNDLE_PROJECT";
+const BUNDLE_PHASE: &str = "MOTIONWRIGHT_TEST_BUNDLE_PHASE";
+const BUNDLE_OBSERVATION: &str = "MOTIONWRIGHT_TEST_BUNDLE_OBSERVATION";
+const BUNDLE_EXIT: i32 = 87;
+
+pub(super) fn bundle_checkpoint(project_id: Uuid, phase: &str) {
+    if std::env::var(BUNDLE_PHASE).as_deref() == Ok(phase)
+        && std::env::var(BUNDLE_PROJECT).as_deref() == Ok(project_id.to_string().as_str())
+    {
+        println!("BUNDLE_CHECKPOINT:{project_id}:{phase}");
+        std::io::stdout().flush().unwrap();
+        std::process::exit(BUNDLE_EXIT);
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct BundleCrashCase {
+    database: PathBuf,
+    bundle: PathBuf,
+    project_id: Uuid,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BundleCrashObservation {
+    tables: std::collections::BTreeMap<String, Vec<Vec<String>>>,
+    project: Option<ProjectBackup>,
+    blobs: Vec<Option<String>>,
+}
+
+fn bundle_crash_observation(case: &BundleCrashCase) -> BundleCrashObservation {
+    assert!(case.database.is_file());
+    let mut store = Store::open(&case.database).unwrap();
+    let manifest = load_bundle_manifest(&case.bundle).unwrap();
+    let names: Vec<String> = store.conn
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    let mut tables = std::collections::BTreeMap::new();
+    for name in names {
+        let sql = format!("SELECT * FROM \"{}\"", name.replace('"', "\"\""));
+        let mut statement = store.conn.prepare(&sql).unwrap();
+        let columns = statement.column_count();
+        let mut rows: Vec<Vec<String>> = statement
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|column| {
+                        row.get::<_, rusqlite::types::Value>(column)
+                            .map(|value| format!("{value:?}"))
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        rows.sort();
+        tables.insert(name, rows);
+    }
+    let project = match store.export_project(case.project_id) {
+        Ok(backup) => Some(backup),
+        Err(StorageError::NotFound) => None,
+        Err(error) => panic!("unexpected recovered project result: {error}"),
+    };
+    let blobs = manifest
+        .blobs
+        .iter()
+        .map(|blob| match store.read_blob(&blob.sha256, 4096) {
+            Ok(bytes) => {
+                assert_eq!(bytes.len() as u64, blob.size_bytes);
+                let digest = hex::encode(Sha256::digest(&bytes));
+                assert_eq!(digest, blob.sha256);
+                Some(digest)
+            }
+            Err(StorageError::BlobMissing { .. }) => None,
+            Err(error) => panic!("unexpected recovered CAS result: {error}"),
+        })
+        .collect();
+    BundleCrashObservation {
+        tables,
+        project,
+        blobs,
+    }
+}
+
+fn run_bundle_crash_child(
+    root: &Path,
+    config: &Path,
+    case: &BundleCrashCase,
+    name: &str,
+    phase: &str,
+    mode: &str,
+    label: &str,
+) -> Option<BundleCrashObservation> {
+    let output = root.join(format!("{label}.stdout"));
+    let errors = root.join(format!("{label}.stderr"));
+    let observation = root.join(format!("{label}.json"));
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("apply_crash_tests::{name}"),
+            "--nocapture",
+        ])
+        .env(BUNDLE_CHILD_MODE, mode)
+        .env(BUNDLE_CASE_PATH, config)
+        .env(BUNDLE_PROJECT, case.project_id.to_string())
+        .env(BUNDLE_PHASE, phase)
+        .env(BUNDLE_OBSERVATION, &observation)
+        .stdin(std::process::Stdio::null())
+        .stdout(File::create_new(&output).unwrap())
+        .stderr(File::create_new(&errors).unwrap())
+        .spawn()
+        .unwrap();
+    let status = wait_migration_child(child);
+    let stdout = fs::read_to_string(output).unwrap();
+    let stderr = fs::read_to_string(errors).unwrap();
+    if mode == "writer" {
+        assert_eq!(status.code(), Some(BUNDLE_EXIT), "{stdout}\n{stderr}");
+        assert!(stdout.contains(&format!("BUNDLE_CHECKPOINT:{}:{phase}", case.project_id)));
+        None
+    } else {
+        assert!(status.success(), "{stdout}\n{stderr}");
+        assert!(stdout.contains(&format!("BUNDLE_OBSERVED:{}", case.project_id)));
+        Some(serde_json::from_slice(&fs::read(observation).unwrap()).unwrap())
+    }
+}
+
+fn exercise_bundle_process_cut(name: &str, phase: &str) {
+    if let Ok(mode) = std::env::var(BUNDLE_CHILD_MODE) {
+        let case: BundleCrashCase =
+            serde_json::from_slice(&fs::read(std::env::var_os(BUNDLE_CASE_PATH).unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(std::env::var(BUNDLE_PHASE).unwrap(), phase);
+        assert_eq!(
+            std::env::var(BUNDLE_PROJECT).unwrap(),
+            case.project_id.to_string()
+        );
+        if mode == "writer" {
+            let mut target = Store::open(&case.database).unwrap();
+            target.import_project_bundle(&case.bundle).unwrap();
+            panic!("portable import did not reach its requested checkpoint");
+        }
+        assert_eq!(mode, "observer");
+        let observed = bundle_crash_observation(&case);
+        serde_json::to_writer(
+            File::create_new(std::env::var_os(BUNDLE_OBSERVATION).unwrap()).unwrap(),
+            &observed,
+        )
+        .unwrap();
+        println!("BUNDLE_OBSERVED:{}", case.project_id);
+        return;
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let mut source = Store::open(root.join("source/state.sqlite3")).unwrap();
+    let mut project = source
+        .create_named_project("Portable process recovery")
+        .unwrap();
+    for (index, bytes) in [
+        b"alpha portable content".as_slice(),
+        b"beta portable content",
+        b"gamma shared content",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = root.join(format!("source-{index}.bin"));
+        fs::write(&input, bytes).unwrap();
+        let descriptor = source.ingest_blob_file(&input).unwrap();
+        project = source
+            .apply(
+                project.id,
+                &project.stamp(),
+                &format!("source-asset-{index}"),
+                &Change::AddAsset {
+                    asset: motionwright_domain::Asset {
+                        id: Uuid::now_v7(),
+                        name: format!("portable-{index}"),
+                        media_type: "application/octet-stream".into(),
+                        content_sha256: Some(descriptor.sha256),
+                        source_revision: Some("local-import".into()),
+                    },
+                },
+            )
+            .unwrap()
+            .project;
+    }
+    let bundle = root.join("portable");
+    let manifest = source.export_project_bundle(project.id, &bundle).unwrap();
+    drop(source);
+    let original_manifest = fs::read(bundle.join("manifest.json")).unwrap();
+    let original_members: Vec<_> = manifest
+        .blobs
+        .iter()
+        .map(|blob| fs::read(bundle.join(&blob.relative_path)).unwrap())
+        .collect();
+    assert_eq!(manifest.blobs.len(), 3);
+
+    let database = root.join("target/state.sqlite3");
+    let mut target = Store::open(&database).unwrap();
+    let sentinel = target
+        .create_named_project("Existing shared asset owner")
+        .unwrap();
+    let shared = &manifest.blobs[2];
+    let captured = target
+        .ingest_blob_file(bundle.join(&shared.relative_path))
+        .unwrap();
+    assert_eq!(captured.sha256, shared.sha256);
+    target
+        .apply(
+            sentinel.id,
+            &sentinel.stamp(),
+            "retain-shared-content",
+            &Change::AddAsset {
+                asset: motionwright_domain::Asset {
+                    id: Uuid::now_v7(),
+                    name: "shared existing content".into(),
+                    media_type: "application/octet-stream".into(),
+                    content_sha256: Some(shared.sha256.clone()),
+                    source_revision: Some("local-import".into()),
+                },
+            },
+        )
+        .unwrap();
+    drop(target);
+    let case = BundleCrashCase {
+        database,
+        bundle,
+        project_id: project.id,
+    };
+    let before = bundle_crash_observation(&case);
+    assert!(before.project.is_none());
+    assert_eq!(before.blobs, vec![None, None, Some(shared.sha256.clone())]);
+    let config = root.join("case.json");
+    serde_json::to_writer(File::create_new(&config).unwrap(), &case).unwrap();
+    run_bundle_crash_child(
+        &root,
+        &config,
+        &case,
+        name,
+        phase,
+        "writer",
+        "interrupted-writer",
+    );
+    let interrupted = run_bundle_crash_child(
+        &root,
+        &config,
+        &case,
+        name,
+        phase,
+        "observer",
+        "fresh-observer",
+    )
+    .unwrap();
+
+    if phase == "after_member_publication" {
+        assert!(
+            interrupted.project.is_none(),
+            "uncommitted import became visible"
+        );
+        assert_eq!(
+            interrupted.tables, before.tables,
+            "partial SQLite import survived"
+        );
+        assert_eq!(
+            interrupted.blobs,
+            vec![
+                Some(manifest.blobs[0].sha256.clone()),
+                None,
+                Some(shared.sha256.clone())
+            ]
+        );
+        // The observer established NotApplied. This deliberately new import is
+        // not an automatic retry of UNKNOWN. Existing immutable or shared CAS
+        // is reused; no unowned cleanup or deletion is performed.
+        let mut reopened = Store::open(&case.database).unwrap();
+        reopened.import_project_bundle(&case.bundle).unwrap();
+    } else {
+        assert_eq!(phase, "after_bundle_commit");
+        assert!(interrupted.project.is_some(), "committed import was lost");
+        assert!(interrupted.blobs.iter().all(Option::is_some));
+        // Read back the known committed result. Never reissue the interrupted
+        // operation merely because its return value was not received.
+    }
+
+    let recovered = run_bundle_crash_child(
+        &root,
+        &config,
+        &case,
+        name,
+        phase,
+        "observer",
+        "recovered-observer",
+    )
+    .unwrap();
+    let restored = recovered.project.unwrap();
+    assert_eq!(restored.project.id, project.id);
+    assert_ne!(restored.project.generation, project.generation);
+    assert_eq!(restored.project.revision, project.revision);
+    assert_eq!(restored.project.assets, project.assets);
+    assert_eq!(restored.events, manifest.backup.events);
+    assert!(recovered.blobs.iter().all(Option::is_some));
+    for (table, rows) in before.tables {
+        for row in rows {
+            assert!(
+                recovered.tables[&table].contains(&row),
+                "existing row changed in {table}"
+            );
+        }
+    }
+    assert_eq!(
+        fs::read(case.bundle.join("manifest.json")).unwrap(),
+        original_manifest
+    );
+    for (member, expected) in manifest.blobs.iter().zip(original_members) {
+        assert_eq!(
+            fs::read(case.bundle.join(&member.relative_path)).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn real_bundle_exit_after_first_cas_publication_recovers_without_partial_sqlite() {
+    exercise_bundle_process_cut(
+        "real_bundle_exit_after_first_cas_publication_recovers_without_partial_sqlite",
+        "after_member_publication",
+    );
+}
+
+#[test]
+fn real_bundle_exit_after_commit_is_observed_without_reissuing_import() {
+    exercise_bundle_process_cut(
+        "real_bundle_exit_after_commit_is_observed_without_reissuing_import",
+        "after_bundle_commit",
+    );
+}

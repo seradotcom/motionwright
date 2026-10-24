@@ -233,6 +233,11 @@ impl Store {
             after_check();
             for captured in &staged {
                 file_import::publish_file_import_under_root(blob_root, captured)?;
+                #[cfg(test)]
+                crate::apply_crash_tests::bundle_checkpoint(
+                    manifest.backup.project.id,
+                    "after_member_publication",
+                );
             }
             Ok(())
         })

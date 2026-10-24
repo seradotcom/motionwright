@@ -1314,6 +1314,8 @@ impl Store {
         // lock remains held through captured publication and SQLite commit.
         publish_captured_blobs(&self.blob_root)?;
         tx.commit()?;
+        #[cfg(test)]
+        crate::apply_crash_tests::bundle_checkpoint(project.id, "after_bundle_commit");
         Ok(project)
     }
 
