@@ -1150,7 +1150,11 @@ class DistributionOwnedFilesTests(unittest.TestCase):
             def observe_open(path, flags, *args, **kwargs):
                 nonlocal capture_observed
                 observed = Path(path)
-                if observed == capture:
+                # The later POSIX publication guard reopens capture for reading.
+                # Only output creation must observe the retained, rewound source.
+                if observed == capture and flags & os.O_CREAT:
+                    self.assertTrue(flags & os.O_EXCL)
+                    self.assertEqual(flags & (os.O_WRONLY | os.O_RDWR), os.O_WRONLY)
                     self.assertEqual(len(source_descriptors), 1)
                     self.assertEqual(bytes(pre_capture_bytes), data)
                     self.assertEqual(
