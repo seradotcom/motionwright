@@ -390,6 +390,14 @@ impl Store {
         )
     }
 
+    pub(super) fn stage_derived_file_import(&self, source: &Path) -> Result<StagedFileImport> {
+        self.stage_file_import_with_purpose(
+            source,
+            u64::MAX,
+            super::cas_retention::CapturePurpose::DerivedCache,
+        )
+    }
+
     fn stage_file_import_with_purpose(
         &self,
         source: &Path,

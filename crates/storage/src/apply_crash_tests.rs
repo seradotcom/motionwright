@@ -551,10 +551,16 @@ fn exercise(name: &str, phase: &str) {
         .unwrap()
         .unwrap()
         .blob_path;
-    let owner = root
-        .join("derived-cache/sha256")
-        .join(&record.scope_sha256[..2])
-        .join(&record.scope_sha256);
+    let owner = store
+        .derived_cache_manifest_path(
+            &record.scope_sha256,
+            &record.kind,
+            &record.fingerprint_sha256,
+        )
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
     let manifests = fs::read_dir(owner)
         .unwrap()
         .map(|entry| entry.unwrap().path())

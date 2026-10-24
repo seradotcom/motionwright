@@ -940,6 +940,9 @@ impl Store {
         // interrupted edit. Tombstones and misses remain authoritative even
         // if filesystem cleanup encounters an unsafe or inaccessible file.
         let _ = store.drain_render_window_evictions(64);
+        // Filesystem-only, bounded and conservative: an installed cache-only
+        // session does not need to import a bundle to reclaim expired objects.
+        let _ = cas_retention::derived::maintain(&store.blob_root, CasRetentionPolicy::default());
         Ok(store)
     }
 

@@ -83,23 +83,40 @@ impl Store {
             .join("derived-cache")
     }
 
-    /// No derived-cache operation may traverse an application-owned symlink
-    /// at the cache root, shard or owner directory. Lookup stays read-only.
+    /// All paths retain the legacy root/shard checks. Managed roots additionally
+    /// use their immutable root UUID, so sibling CAS roots cannot share a key.
     fn checked_derived_cache_dirs(&self, scope_sha256: &str, create: bool) -> Result<bool> {
+        self.checked_derived_cache_dirs_at(scope_sha256, create, true)
+    }
+
+    fn derived_cache_data_root(&self, managed: bool) -> Result<PathBuf> {
+        if managed
+            && let Some(root) = super::cas_retention::derived::manifest_root(&self.blob_root)?
+        {
+            return Ok(root);
+        }
+        Ok(self.derived_cache_root().join("sha256"))
+    }
+
+    fn checked_derived_cache_dirs_at(
+        &self,
+        scope_sha256: &str,
+        create: bool,
+        managed: bool,
+    ) -> Result<bool> {
         validate_digest(scope_sha256)?;
         let root = self.derived_cache_root();
         let parent = root
             .parent()
             .ok_or_else(|| invalid("cache root has no parent"))?;
         ensure_regular_directory(parent, "derived cache trusted parent")?;
-        let dirs = [
-            root.clone(),
-            root.join("sha256"),
-            root.join("sha256").join(&scope_sha256[..2]),
-            root.join("sha256")
-                .join(&scope_sha256[..2])
-                .join(scope_sha256),
-        ];
+        let data = self.derived_cache_data_root(managed)?;
+        let mut dirs = vec![root.clone(), root.join("sha256")];
+        if data != root.join("sha256") {
+            dirs.push(data.clone());
+        }
+        dirs.push(data.join(&scope_sha256[..2]));
+        dirs.push(data.join(scope_sha256));
         for directory in dirs {
             if create {
                 create_checked_blob_directory(&directory)?;
@@ -118,19 +135,28 @@ impl Store {
         Ok(true)
     }
 
-    fn derived_cache_manifest_path(
+    pub(super) fn derived_cache_manifest_path(
         &self,
         scope_sha256: &str,
         kind: &str,
         fingerprint_sha256: &str,
+    ) -> Result<PathBuf> {
+        self.derived_cache_manifest_path_at(scope_sha256, kind, fingerprint_sha256, true)
+    }
+
+    fn derived_cache_manifest_path_at(
+        &self,
+        scope_sha256: &str,
+        kind: &str,
+        fingerprint_sha256: &str,
+        managed: bool,
     ) -> Result<PathBuf> {
         validate_digest(scope_sha256)?;
         validate_digest(fingerprint_sha256)?;
         validate_kind(kind)?;
         let key = cache_key(scope_sha256, kind, fingerprint_sha256);
         Ok(self
-            .derived_cache_root()
-            .join("sha256")
+            .derived_cache_data_root(managed)?
             .join(&scope_sha256[..2])
             .join(scope_sha256)
             .join(format!("{key}.json")))
@@ -147,13 +173,22 @@ impl Store {
         validate_scope(scope)?;
         validate_kind(kind)?;
         validate_digest(fingerprint_sha256)?;
+        let _ = super::cas_retention::derived::maintain(
+            &self.blob_root,
+            super::CasRetentionPolicy::default(),
+        );
+        let managed = super::cas_retention::derived::manifest_root(&self.blob_root)?.is_some();
         let scope_sha256 = digest_text(scope);
         let destination =
             self.derived_cache_manifest_path(&scope_sha256, kind, fingerprint_sha256)?;
         self.checked_derived_cache_dirs(&scope_sha256, true)?;
         let retained = self.read_derived_cache_record(&scope_sha256, kind, fingerprint_sha256)?;
         // Capture once, but do not publish rejected bytes into shared CAS.
-        let staged = self.stage_file_import(source.as_ref())?;
+        let staged = if managed {
+            self.stage_derived_file_import(source.as_ref())?
+        } else {
+            self.stage_file_import(source.as_ref())?
+        };
         if let Some(existing) = &retained
             && (existing.blob_sha256 != staged.descriptor().sha256
                 || existing.size_bytes != staged.descriptor().size_bytes)
@@ -162,7 +197,11 @@ impl Store {
                 "same scope/kind/fingerprint produced different verified bytes",
             ));
         }
-        let blob = self.publish_file_import(&staged)?;
+        let blob = if managed {
+            staged.descriptor().clone()
+        } else {
+            self.publish_file_import(&staged)?
+        };
         // An evicted blob does not revoke the retained manifest's identity.
         // Exact repair preserves the first publisher's timestamp and work.
         let record = retained.unwrap_or_else(|| DerivedCacheRecord {
@@ -175,6 +214,9 @@ impl Store {
             work_units,
             created_at: Utc::now().to_rfc3339(),
         });
+        if managed {
+            return super::cas_retention::derived::publish(self, &staged, &destination, record);
+        }
         let encoded = serde_json::to_vec_pretty(&record)?;
         if encoded.len() as u64 > MAX_DERIVED_CACHE_MANIFEST_BYTES {
             return Err(invalid("cache manifest exceeds bounded manifest size"));
@@ -249,33 +291,38 @@ impl Store {
         kind: &str,
         fingerprint_sha256: &str,
     ) -> Result<Option<DerivedCacheRecord>> {
-        let manifest = self.derived_cache_manifest_path(scope_sha256, kind, fingerprint_sha256)?;
-        if !self.checked_derived_cache_dirs(scope_sha256, false)? {
-            return Ok(None);
+        let mut previous = None;
+        for managed in [true, false] {
+            let manifest = self.derived_cache_manifest_path_at(
+                scope_sha256,
+                kind,
+                fingerprint_sha256,
+                managed,
+            )?;
+            if previous.as_ref() == Some(&manifest) {
+                continue;
+            }
+            previous = Some(manifest.clone());
+            if !self.checked_derived_cache_dirs_at(scope_sha256, false, managed)? {
+                continue;
+            }
+            match fs::symlink_metadata(&manifest) {
+                Ok(_) => {
+                    ensure_regular_file(&manifest, "derived cache manifest")?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            }
+            if let Some(record) = super::cas_retention::derived::read_record(
+                &manifest,
+                scope_sha256,
+                kind,
+                fingerprint_sha256,
+            )? {
+                return Ok(Some(record));
+            }
         }
-        let size = match fs::symlink_metadata(&manifest) {
-            Ok(_) => ensure_regular_file(&manifest, "derived cache manifest")?.len(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        if size > MAX_DERIVED_CACHE_MANIFEST_BYTES {
-            return Err(StorageError::BlobTooLarge {
-                size,
-                limit: MAX_DERIVED_CACHE_MANIFEST_BYTES,
-            });
-        }
-        let record: DerivedCacheRecord = serde_json::from_slice(&fs::read(&manifest)?)?;
-        if record.format_version != DERIVED_CACHE_FORMAT_VERSION
-            || record.scope_sha256 != scope_sha256
-            || record.kind != kind
-            || record.fingerprint_sha256 != fingerprint_sha256
-        {
-            return Err(invalid(
-                "cache manifest identity does not match requested scope/kind/fingerprint",
-            ));
-        }
-        validate_digest(&record.blob_sha256)?;
-        Ok(Some(record))
+        Ok(None)
     }
 
     pub fn lookup_derived_cache(
@@ -313,8 +360,8 @@ impl Store {
 }
 
 impl Store {
-    /// Evict exactly one verified *derived manifest*, never its CAS blob.
-    /// A corrupt or symlinked entry is an error instead of a silent purge.
+    /// Revoke the exact manifest and journal any owned derived reference.
+    /// Physical CAS deletion remains a separate bounded retention operation.
     pub fn evict_derived_cache_exact(
         &self,
         scope: &str,
@@ -325,22 +372,48 @@ impl Store {
         validate_kind(kind)?;
         validate_digest(fingerprint_sha256)?;
         let digest = digest_text(scope);
-        let location = self.derived_cache_manifest_path(&digest, kind, fingerprint_sha256)?;
-        if !self.checked_derived_cache_dirs(&digest, false)? {
-            return Ok(false);
-        }
-        match fs::symlink_metadata(&location) {
-            Ok(_) => {
-                // Deleting a derived manifest cannot grant access to bytes:
-                // a corrupt manifest is still safe to delete, while symlinks
-                // and special files must fail closed.
-                ensure_regular_file(&location, "derived cache eviction manifest")?;
-                fs::remove_file(location)?;
-                Ok(true)
+        let mut previous = None;
+        let mut removed = false;
+        // Remove the fallback key as well, so evicting a managed key cannot
+        // accidentally reveal a retained legacy manifest for the same key.
+        for managed in [true, false] {
+            let location =
+                self.derived_cache_manifest_path_at(&digest, kind, fingerprint_sha256, managed)?;
+            if previous.as_ref() == Some(&location) {
+                continue;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.into()),
+            previous = Some(location.clone());
+            let dirs_exist = self.checked_derived_cache_dirs_at(&digest, false, managed)?;
+            if dirs_exist {
+                match fs::symlink_metadata(&location) {
+                    Ok(_) => {
+                        ensure_regular_file(&location, "derived cache eviction manifest")?;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            if managed
+                && let Some(result) =
+                    super::cas_retention::derived::evict(&self.blob_root, &location)?
+            {
+                removed |= result;
+                continue;
+            }
+            if !dirs_exist {
+                continue;
+            }
+            match fs::symlink_metadata(&location) {
+                Ok(_) => {
+                    ensure_regular_file(&location, "derived cache eviction manifest")?;
+                    fs::remove_file(&location)?;
+                    removed = true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
+        Ok(removed)
     }
 }
 
@@ -511,6 +584,259 @@ mod tests {
             .unwrap();
         assert_eq!(repeated.removed, 0);
         assert!(!repeated.truncated);
+    }
+
+    #[test]
+    fn shared_derived_blob_is_reclaimed_only_after_its_last_manifest_is_evicted() {
+        let temp = tempdir().unwrap();
+        let database = temp.path().join("studio.sqlite3");
+        let source = temp.path().join("shared-derived.bin");
+        let contents = b"one physical derived output with two live cache references";
+        fs::write(&source, contents).unwrap();
+        let scope = "project:two-derived-references:generation:one";
+        let kind = "preview-index";
+        let first_key = digest("first-derived-fingerprint");
+        let second_key = digest("second-derived-fingerprint");
+        let mut store = Store::open(&database).unwrap();
+        let first = store
+            .put_derived_cache_file(scope, kind, &first_key, &source, 37)
+            .unwrap();
+        let second = store
+            .put_derived_cache_file(scope, kind, &second_key, &source, 37)
+            .unwrap();
+        assert_eq!(first.blob_sha256, second.blob_sha256);
+        let blob = store.blob_path(&first.blob_sha256).unwrap();
+        let first_manifest = store
+            .derived_cache_manifest_path(&first.scope_sha256, kind, &first_key)
+            .unwrap();
+        let second_manifest = store
+            .derived_cache_manifest_path(&second.scope_sha256, kind, &second_key)
+            .unwrap();
+        assert_ne!(first_manifest, second_manifest);
+        let second_bytes = fs::read(&second_manifest).unwrap();
+        assert_eq!(fs::read(&blob).unwrap(), contents);
+
+        assert!(
+            store
+                .evict_derived_cache_exact(scope, kind, &first_key)
+                .unwrap()
+        );
+        let retained = store
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 64,
+            })
+            .unwrap();
+        assert!(retained.root_managed);
+        assert!(!retained.truncated);
+        assert_eq!(retained.removed, 0);
+        assert_eq!(fs::read(&blob).unwrap(), contents);
+        assert_eq!(fs::read(&second_manifest).unwrap(), second_bytes);
+        assert!(matches!(
+            fs::symlink_metadata(&first_manifest),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+
+        assert!(
+            store
+                .evict_derived_cache_exact(scope, kind, &second_key)
+                .unwrap()
+        );
+        drop(store);
+        let mut reopened = Store::open(&database).unwrap();
+        let collected = reopened
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 64,
+            })
+            .unwrap();
+        assert!(collected.root_managed);
+        assert!(!collected.truncated);
+        assert!(
+            matches!(
+                fs::symlink_metadata(&blob),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            ),
+            "both derived references were explicitly evicted: {collected:?}"
+        );
+        assert_eq!(collected.removed, 1);
+        assert_eq!(fs::read(&source).unwrap(), contents);
+        assert!(matches!(
+            fs::symlink_metadata(&second_manifest),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    #[test]
+    fn explicit_blob_lease_survives_reopen_and_release_enables_derived_cleanup() {
+        let temp = tempdir().unwrap();
+        let database = temp.path().join("studio.sqlite3");
+        let source = temp.path().join("leased-derived.bin");
+        let contents = b"derived bytes retained by an explicitly acquired durable lease";
+        fs::write(&source, contents).unwrap();
+        let scope = "project:leased-derived:generation:one";
+        let kind = "preview-index";
+        let fingerprint = digest("leased-derived-fingerprint");
+        let store = Store::open(&database).unwrap();
+        let record = store
+            .put_derived_cache_file(scope, kind, &fingerprint, &source, 37)
+            .unwrap();
+        let blob = store.blob_path(&record.blob_sha256).unwrap();
+        let lease = store.lease_blob(&record.blob_sha256).unwrap();
+        assert!(
+            store
+                .evict_derived_cache_exact(scope, kind, &fingerprint)
+                .unwrap()
+        );
+        drop(store);
+
+        let mut reopened = Store::open(&database).unwrap();
+        let retained = reopened
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 64,
+            })
+            .unwrap();
+        assert!(retained.root_managed);
+        assert!(!retained.truncated);
+        assert_eq!(retained.removed, 0);
+        assert_eq!(fs::read(&blob).unwrap(), contents);
+        reopened.release_blob_lease(lease).unwrap();
+        let collected = reopened
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 64,
+            })
+            .unwrap();
+        assert!(collected.root_managed);
+        assert!(!collected.truncated);
+        assert!(
+            matches!(
+                fs::symlink_metadata(&blob),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            ),
+            "only explicit lease release permits this cleanup: {collected:?}"
+        );
+        assert_eq!(collected.removed, 1);
+        assert_eq!(fs::read(&source).unwrap(), contents);
+    }
+
+    #[test]
+    fn legacy_lookup_path_survives_derived_eviction_and_store_reopen() {
+        let temp = tempdir().unwrap();
+        let database = temp.path().join("studio.sqlite3");
+        let source = temp.path().join("borrowed-derived.bin");
+        let contents = b"derived bytes already lent through a legacy PathBuf";
+        fs::write(&source, contents).unwrap();
+        let scope = "project:borrowed-derived:generation:one";
+        let kind = "preview-index";
+        let fingerprint = digest("borrowed-derived-fingerprint");
+        let store = Store::open(&database).unwrap();
+        let record = store
+            .put_derived_cache_file(scope, kind, &fingerprint, &source, 37)
+            .unwrap();
+        let hit = store
+            .lookup_derived_cache(scope, kind, &fingerprint)
+            .unwrap()
+            .unwrap();
+        assert_eq!(hit.record, record);
+        let borrowed = hit.blob_path.clone();
+        drop(hit);
+        assert!(
+            store
+                .evict_derived_cache_exact(scope, kind, &fingerprint)
+                .unwrap()
+        );
+        drop(store);
+
+        let mut reopened = Store::open(&database).unwrap();
+        let report = reopened
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 64,
+            })
+            .unwrap();
+        assert!(report.root_managed);
+        assert!(!report.truncated);
+        assert_eq!(report.removed, 0);
+        assert_eq!(fs::read(&borrowed).unwrap(), contents);
+        assert_eq!(fs::read(&source).unwrap(), contents);
+        assert!(
+            !reopened
+                .evict_derived_cache_exact(scope, kind, &fingerprint)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn peer_project_source_adoption_survives_derived_eviction_and_reopen() {
+        let temp = tempdir().unwrap();
+        let owner_database = temp.path().join("owner.sqlite3");
+        let peer_database = temp.path().join("peer.sqlite3");
+        let blob_root = temp.path().join("shared-cas");
+        let source = temp.path().join("adopted-derived.bin");
+        let contents = b"shared derived bytes independently adopted as a project source";
+        fs::write(&source, contents).unwrap();
+        let scope = "project:derived-owner:generation:one";
+        let kind = "preview-index";
+        let fingerprint = digest("peer-adopted-derived-fingerprint");
+        let owner = Store::open_with_blob_root(&owner_database, &blob_root).unwrap();
+        let record = owner
+            .put_derived_cache_file(scope, kind, &fingerprint, &source, 37)
+            .unwrap();
+        let blob = owner.blob_path(&record.blob_sha256).unwrap();
+
+        // Adopt through the real project mutation; no lookup or blob ingest
+        // may supply an unrelated permanent pin and conceal this boundary.
+        let mut peer = Store::open_with_blob_root(&peer_database, &blob_root).unwrap();
+        let project = peer
+            .create_named_project("Independent source owner")
+            .unwrap();
+        let adopted = peer
+            .apply(
+                project.id,
+                &project.stamp(),
+                "adopt-shared-derived-as-source",
+                &motionwright_domain::Change::AddAsset {
+                    asset: motionwright_domain::Asset {
+                        id: Uuid::now_v7(),
+                        name: "Adopted source".into(),
+                        media_type: "application/octet-stream".into(),
+                        content_sha256: Some(record.blob_sha256.clone()),
+                        source_revision: Some("peer-project-admission".into()),
+                    },
+                },
+            )
+            .unwrap()
+            .project;
+        drop(peer);
+        assert!(
+            owner
+                .evict_derived_cache_exact(scope, kind, &fingerprint)
+                .unwrap()
+        );
+        drop(owner);
+
+        let mut reopened_owner = Store::open_with_blob_root(&owner_database, &blob_root).unwrap();
+        let report = reopened_owner
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 64,
+            })
+            .unwrap();
+        assert!(report.root_managed);
+        assert!(!report.truncated);
+        assert_eq!(report.removed, 0);
+        assert_eq!(fs::read(&blob).unwrap(), contents);
+        assert_eq!(fs::read(&source).unwrap(), contents);
+        let reopened_peer = Store::open_with_blob_root(&peer_database, &blob_root).unwrap();
+        assert_eq!(reopened_peer.load_project(adopted.id).unwrap(), adopted);
+        assert_eq!(
+            reopened_peer
+                .read_blob(&record.blob_sha256, contents.len() as u64)
+                .unwrap(),
+            contents
+        );
     }
 
     #[test]

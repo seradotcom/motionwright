@@ -11,7 +11,11 @@ use std::{
 };
 use uuid::Uuid;
 
+pub(super) mod derived;
+
+// Root anchors remain v1. Only roots using derived custody adopt catalog v2.
 const FORMAT_VERSION: u32 = 1;
+const CATALOG_FORMAT_VERSION: u32 = 2;
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RECOVERY_OBJECTS: usize = 4096;
 const ROOT_ANCHOR: &str = ".motionwright-cas-root-v1.json";
@@ -126,6 +130,9 @@ struct Catalog {
     retired_locks: BTreeMap<Uuid, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recovery_cursor: Option<RecoveryPosition>,
+    // Omission preserves the exact v1 checksum preimage before promotion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    derived: Option<derived::State>,
 }
 
 #[derive(Debug, Clone)]
@@ -465,6 +472,7 @@ pub(super) fn prepare_blob_root(root: &Path, require_managed: bool) -> Result<()
             publications: BTreeMap::new(),
             retired_locks: BTreeMap::new(),
             recovery_cursor: None,
+            derived: None,
         };
         write_new_control(&control.join("catalog.json"), &encode_catalog(&catalog)?)?;
         let anchor = RootAnchor {
@@ -534,7 +542,8 @@ impl ManagedRoot {
         let envelope: CatalogEnvelope = read_control(&self.control.join("catalog.json"))?;
         let catalog = envelope.catalog;
         if envelope.sha256 != hash_bytes(&serde_json::to_vec(&catalog)?)
-            || catalog.format_version != FORMAT_VERSION
+            || !((catalog.format_version == FORMAT_VERSION && catalog.derived.is_none())
+                || (catalog.format_version == CATALOG_FORMAT_VERSION && catalog.derived.is_some()))
             || catalog.root_id != self.root_id
             || catalog.canonical_root != self.root
             || catalog.directory_id != self.directory_id
@@ -599,6 +608,9 @@ pub(super) fn begin_capture(
     };
     let created_ms = now_ms()?;
     let mut gate = managed.gate()?;
+    if purpose == CapturePurpose::DerivedCache {
+        derived::state_mut(&mut gate.catalog);
+    }
     let live = open_control(&managed.lock_path(id), false, true, true)?;
     live.lock()?;
     let lock_id = file_identity(&live)?;
@@ -719,6 +731,7 @@ impl Store {
         let mut gate = managed.gate()?;
         self.verify_blob(digest)?;
         let lease_id = Uuid::now_v7();
+        derived::invalidate_retention(&mut gate.catalog, digest);
         gate.catalog.leases.insert(
             lease_id,
             LeaseRecord {
@@ -751,6 +764,11 @@ impl Store {
             return Err(invalid("lease binding differs"));
         }
         gate.catalog.leases.remove(&lease.lease_id);
+        derived::mark_unreferenced(
+            &mut gate.catalog,
+            &lease.digest,
+            derived::event_time(&managed.root)?,
+        );
         gate.save()
     }
 }
@@ -822,6 +840,9 @@ impl Store {
                 .get_mut(id)
                 .ok_or_else(|| invalid("validated capture disappeared"))?
                 .intent_id = Some(operation_id);
+        }
+        for digest in &digests {
+            derived::invalidate_retention(&mut gate.catalog, digest);
         }
         gate.catalog.intents.insert(
             operation_id,
@@ -897,6 +918,7 @@ impl ImportIntent {
         };
         let publication_id = Uuid::now_v7();
         if missing {
+            derived::forget_absent_publication(&mut gate.catalog, &descriptor.sha256);
             gate.catalog.publications.insert(
                 descriptor.sha256.clone(),
                 PublicationRecord {
@@ -909,6 +931,11 @@ impl ImportIntent {
                 },
             );
             gate.save()?;
+            #[cfg(test)]
+            crate::cas_retention_process_tests::checkpoint(
+                &self.root.root,
+                "import_after_publication_reservation",
+            );
         }
         let result =
             super::file_import::publish_file_import_unmanaged(staged.captured_root(), staged)?;
@@ -1197,15 +1224,22 @@ fn checked_publication_file(
     digest: &str,
     record: &PublicationRecord,
 ) -> Result<Option<File>> {
+    checked_owned_blob(root, digest, &record.descriptor, &record.file_id)
+}
+
+fn checked_owned_blob(
+    root: &ManagedRoot,
+    digest: &str,
+    descriptor: &BlobDescriptor,
+    file_id: &str,
+) -> Result<Option<File>> {
     let path = match super::checked_existing_blob_path_from_root(&root.root, digest) {
         Ok(path) => path,
         Err(StorageError::BlobMissing { .. }) => return Ok(None),
         Err(error) => return Err(error),
     };
     let mut file = open_control(&path, false, false, false)?;
-    if file_identity(&file)? != record.file_id
-        || file.metadata()?.len() != record.descriptor.size_bytes
-    {
+    if file_identity(&file)? != file_id || file.metadata()?.len() != descriptor.size_bytes {
         return Err(invalid("publication physical identity or size changed"));
     }
     let mut hash = Sha256::new();
@@ -1219,14 +1253,14 @@ fn checked_publication_file(
         read = read
             .checked_add(count as u64)
             .ok_or_else(|| invalid("publication size overflow"))?;
-        if read > record.descriptor.size_bytes {
+        if read > descriptor.size_bytes {
             return Err(invalid("publication grew during cleanup"));
         }
         hash.update(&buffer[..count]);
     }
-    if read != record.descriptor.size_bytes
+    if read != descriptor.size_bytes
         || hex::encode(hash.finalize()) != digest
-        || record.descriptor.sha256 != digest
+        || descriptor.sha256 != digest
     {
         return Err(invalid("publication content differs from its reservation"));
     }
@@ -1303,6 +1337,7 @@ impl CaptureLease {
 pub(super) enum CapturePurpose {
     Legacy,
     BundleImport,
+    DerivedCache,
 }
 
 impl RootGate {
@@ -1340,12 +1375,15 @@ enum RecoveryPosition {
     Publication(String),
     Intent(Uuid),
     Retired(Uuid),
+    DerivedReference(Uuid),
+    DerivedPublication(String),
+    DerivedRetention(String),
 }
 
 fn recovery_candidates(catalog: &Catalog) -> BTreeSet<RecoveryPosition> {
     let mut candidates = BTreeSet::new();
     for (id, capture) in &catalog.captures {
-        if capture.purpose == CapturePurpose::BundleImport {
+        if capture.purpose != CapturePurpose::Legacy {
             candidates.insert(RecoveryPosition::Capture(*id));
         }
     }
@@ -1370,6 +1408,7 @@ fn recovery_candidates(catalog: &Catalog) -> BTreeSet<RecoveryPosition> {
             .copied()
             .map(RecoveryPosition::Retired),
     );
+    candidates.extend(derived::candidates(catalog));
     candidates
 }
 
@@ -1384,6 +1423,7 @@ fn recovery_queue(catalog: &Catalog) -> std::collections::VecDeque<RecoveryPosit
 
 fn is_pinned(catalog: &Catalog, digest: &str, excluding: Uuid) -> bool {
     catalog.legacy_pins.contains(digest)
+        || derived::protects(catalog, digest)
         || catalog.leases.values().any(|lease| lease.digest == digest)
         || catalog
             .intents
@@ -1486,7 +1526,7 @@ fn recover_capture_candidate(
     let Some(snapshot) = gate.catalog.captures.get(&id).cloned() else {
         return Ok(None);
     };
-    if snapshot.purpose != CapturePurpose::BundleImport {
+    if snapshot.purpose == CapturePurpose::Legacy {
         report.retained_by_pins += 1;
         return Ok(None);
     }
@@ -1576,7 +1616,9 @@ fn recover_publication_candidate(
         report.retained_by_pins += 1;
         return Ok(None);
     }
-    if retained(publication.created_ms, now, policy.retention) {
+    if derived::retains(gate, digest, now, policy.retention)?
+        || retained(publication.created_ms, now, policy.retention)
+    {
         report.retained_by_age += 1;
         return Ok(None);
     }
@@ -1651,6 +1693,9 @@ fn recover_intent_candidate(
         return Ok(None);
     }
     gate.catalog.intents.remove(&id);
+    for digest in &resolved.snapshot.digests {
+        derived::mark_unreferenced(&mut gate.catalog, digest, derived::event_time(&root.root)?);
+    }
     gate.catalog
         .retired_locks
         .insert(id, resolved.snapshot.lock_id.clone());
@@ -1673,7 +1718,7 @@ impl Store {
         {
             return Err(invalid("database identity changed before recovery"));
         }
-        let now = now_ms()?;
+        let now = derived::event_time(&root.root)?;
         let mut report = CasRecoveryReport {
             root_managed: true,
             ..Default::default()
@@ -1707,6 +1752,15 @@ impl Store {
                 }
                 RecoveryPosition::Intent(id) => {
                     recover_intent_candidate(self, &root, id, &mut report)?
+                }
+                RecoveryPosition::DerivedReference(id) => {
+                    derived::recover_reference(&root, id, now, &mut report)?
+                }
+                RecoveryPosition::DerivedPublication(digest) => {
+                    derived::recover_publication(&root, &digest, policy, now, &mut report)?
+                }
+                RecoveryPosition::DerivedRetention(digest) => {
+                    derived::recover_retention(&root, &digest, policy, now, &mut report)?
                 }
                 RecoveryPosition::Retired(id) => {
                     let mut gate = root.gate()?;
