@@ -253,3 +253,159 @@ def verify_source_lock(root: Path, lock: object) -> None:
     _need(package.get("version") == version
           and package.get("license") == license_expression,
           "metadata_mismatch")
+
+
+# This caller-pinned disposition is separate from source consistency. A matching
+# digest identifies reviewed bytes; neither an issuer string nor an SPDX value
+# authenticates a grant. The reviewed build caller supplies the expected digest.
+DISTRIBUTION_CARGO_INPUTS = (
+    "Cargo.toml", "Cargo.lock", "apps/desktop/src-tauri/Cargo.toml",
+    "crates/native/Cargo.toml",
+)
+MAX_CARGO_INPUT_BYTES = 2 * 1024 * 1024
+MAX_DISTRIBUTION_PAYLOAD_BYTES = 2_147_483_647
+
+
+def _distribution_need(condition: bool, code: str) -> None:
+    if not condition:
+        raise SourceAdmissionError("distribution_admission_" + code)
+
+
+def _distribution_object(value: object, keys: set[str], code: str) -> dict:
+    _distribution_need(isinstance(value, dict) and set(value) == keys, code)
+    return value
+
+
+def _distribution_json(data: bytes) -> object:
+    try:
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_strict_object)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise SourceAdmissionError("distribution_admission_json_invalid") from exc
+
+
+def distribution_scope(arch: str) -> dict:
+    """The selected Windows main executable boundary, not a global copy policy."""
+    _distribution_need(isinstance(arch, str) and arch in {"x64", "arm64", "x86"},
+                       "arch_invalid")
+    return {
+        "action": "prepare-distribution",
+        "component": "motionwright.desktop.main",
+        "destination_class": "windows.nsis.capture-include",
+        "arch": arch,
+        "policy": "motionwright.nsis-main-distribution/1",
+    }
+
+
+def distribution_source_context(root: Path) -> dict:
+    """Bind retained source evidence and the selected Cargo input bytes.
+
+    This does not resolve Cargo, prove a binary was built from these inputs,
+    authenticate a reviewer, or grant distribution rights.
+    """
+    root = Path(root)
+    encoded = _read(root, "SOURCE_LOCK.json", MAX_EVIDENCE_BYTES)
+    lock = _distribution_json(encoded)
+    verify_source_lock(root, lock)
+    inputs = {
+        relative: hashlib.sha256(
+            _read(root, relative, MAX_CARGO_INPUT_BYTES)
+        ).hexdigest()
+        for relative in DISTRIBUTION_CARGO_INPUTS
+    }
+    return {
+        "source_lock_sha256": hashlib.sha256(encoded).hexdigest(),
+        "cargo_inputs": inputs,
+    }
+
+
+def _distribution_reference(root: Path, value: object, seen: set[str]) -> bytes:
+    reference = _distribution_object(
+        value, {"path", "bytes", "sha256"}, "reference_invalid")
+    key = "/".join(_relative(reference["path"])).casefold()
+    _distribution_need(key not in seen, "reference_reused")
+    seen.add(key)
+    _distribution_need(type(reference["bytes"]) is int
+                       and 0 < reference["bytes"] <= MAX_EVIDENCE_BYTES
+                       and isinstance(reference["sha256"], str)
+                       and SHA256.fullmatch(reference["sha256"]) is not None,
+                       "reference_invalid")
+    encoded = _read(root, reference["path"], MAX_EVIDENCE_BYTES)
+    _distribution_need(len(encoded) == reference["bytes"]
+                       and hashlib.sha256(encoded).hexdigest() == reference["sha256"],
+                       "reference_mismatch")
+    return encoded
+
+
+def _distribution_payload(value: object) -> dict:
+    payload = _distribution_object(value, {"bytes", "sha256"}, "payload_invalid")
+    _distribution_need(type(payload["bytes"]) is int
+                       and 0 < payload["bytes"] <= MAX_DISTRIBUTION_PAYLOAD_BYTES
+                       and isinstance(payload["sha256"], str)
+                       and SHA256.fullmatch(payload["sha256"]) is not None,
+                       "payload_invalid")
+    return dict(payload)
+
+
+def verify_distribution_admission(
+    root: Path, *, arch: str, record_path: object, record_sha256: object,
+) -> dict:
+    """Return the reviewed payload identity only for an applicable disposition.
+
+    Source consistency is checked before deciding disposition. Negative records
+    never authorize payload inspection/capture. Positive records additionally
+    require reviewed build evidence binding the same inputs, scope and payload.
+    All records are bounded, read once by retained descriptor, and never executed.
+    """
+    root = Path(root)
+    scope = distribution_scope(arch)
+    context = distribution_source_context(root)
+    _distribution_need(isinstance(record_path, str) and bool(record_path)
+                       and isinstance(record_sha256, str)
+                       and SHA256.fullmatch(record_sha256) is not None,
+                       "missing")
+    key = "/".join(_relative(record_path)).casefold()
+    encoded = _read(root, record_path, MAX_EVIDENCE_BYTES)
+    _distribution_need(hashlib.sha256(encoded).hexdigest() == record_sha256,
+                       "record_hash_mismatch")
+    record = _distribution_object(
+        _distribution_json(encoded),
+        {"schema", "status", "scope", "source", "review", "payload", "build_provenance"},
+        "record_invalid",
+    )
+    _distribution_need(record["schema"] == "motionwright.distribution-admission/1",
+                       "schema_invalid")
+    _distribution_need(isinstance(record["status"], str)
+                       and record["status"] in {"unresolved", "prohibited", "permitted"},
+                       "status_invalid")
+    _distribution_need(record["source"] == context, "source_mismatch")
+    _distribution_need(record["scope"] == scope, "scope_mismatch")
+    review = _distribution_object(
+        record["review"], {"issuer", "reference", "basis", "evidence", "obligations"},
+        "review_invalid",
+    )
+    _distribution_need(all(_text(review[field]) for field in ("issuer", "reference", "basis")),
+                       "review_invalid")
+    references = review["evidence"]
+    _distribution_need(isinstance(references, list) and 1 <= len(references) <= 16,
+                       "review_invalid")
+    obligations = review["obligations"]
+    _distribution_need(isinstance(obligations, list) and len(obligations) <= 16
+                       and all(_text(item) for item in obligations), "review_invalid")
+    seen = {key}
+    for reference in references:
+        _distribution_reference(root, reference, seen)
+    if record["status"] != "permitted":
+        _distribution_need(record["payload"] is None and record["build_provenance"] is None,
+                           "negative_record_invalid")
+        raise SourceAdmissionError("distribution_admission_" + record["status"])
+    payload = _distribution_payload(record["payload"])
+    provenance = _distribution_object(
+        _distribution_json(_distribution_reference(root, record["build_provenance"], seen)),
+        {"schema", "source", "scope", "payload"}, "build_invalid",
+    )
+    _distribution_need(provenance["schema"] == "motionwright.distribution-build/1"
+                       and provenance["source"] == context
+                       and provenance["scope"] == scope
+                       and _distribution_payload(provenance["payload"]) == payload,
+                       "build_mismatch")
+    return payload
