@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import tempfile
 import types
 import unittest
@@ -389,6 +390,109 @@ class ColdSourceTests(unittest.TestCase):
         self.assertNotIn("ci_acc007_cold.py --freeze", text)
         for command in ("waveform_bench --release", "acceptance_bench --release", "Maximum resident set size"):
             self.assertIn(command, text)
+
+
+class ColdMountClosureTests(unittest.TestCase):
+    """Source/argv controls; no namespace, bwrap, wheel install or ML execution."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="c-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+
+    def mounts(self, **changes):
+        inputs = dict(base_prefix=Path("/opt/python/3.12/x64"), venv=Path("/private/runtime"),
+                      fixture=Path("/intake/fixture"), checkpoint=Path("/intake/model.pth"),
+                      seals=Path("/private/seals"), adapter=Path("/source/tooling/ci_acc007_cold.py"))
+        inputs.update(changes)
+        return gate.closed_read_only_mounts(**inputs)
+
+    def test_allowed_layout_exports_exact_24_files_without_fixture_parent(self):
+        mounts = self.mounts()
+        expected = {"/intake/fixture/" + name for name in {*gate.FIXTURE_PINS, "MANIFEST.json"}}
+        self.assertEqual(len(expected), 24)
+        self.assertEqual({p for p in mounts if p.startswith("/intake/fixture/")}, expected)
+        self.assertNotIn("/intake/fixture", mounts)
+        self.assertNotIn("/intake", mounts)
+        self.assertNotIn("/etc", mounts)
+        self.assertIn("/private/runtime", mounts)
+        self.assertIn("/private/seals", mounts)
+        self.assertIn("/opt/python/3.12/x64", mounts)
+        self.assertEqual(len(mounts), len(set(mounts)))
+
+    def test_actual_plan_cannot_export_extra_socket_or_credential(self):
+        fixture = self.root / "f"
+        fixture.mkdir()
+        for name in {*gate.FIXTURE_PINS, "MANIFEST.json"}:
+            path = fixture / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"synthetic nominal source; not real fixture admission")
+        secret = fixture / "unrelated-credential"
+        secret.write_bytes(b"synthetic credential canary")
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(sock.close)
+        ambient = fixture / ".s"
+        sock.bind(str(ambient))  # Local inert inode only; no listen/connect.
+        value = freeze_fixture(self.root)
+        value["fixture_root"] = str(fixture)
+        subject = gate.Gate(value, gate.encoded(value), frozen_context())
+        subject.fixture = fixture
+        subject.base_prefix = Path("/opt/python/3.12/x64")
+        subject.seals.mkdir(parents=True)
+        request = subject.seals / "request.json"
+        request.write_bytes(b"{}\n")
+        subject.request = gate.physical(request)
+        with mock.patch.object(gate, "namespace_ids", return_value={"pid": 1, "net": 2, "mnt": 3}):
+            plan = subject.plan("control")
+        argv = gate.sandbox_argv(plan, 7, 8)
+        exported = {Path(argv[i + 1]) for i, value in enumerate(argv) if value == "--ro-bind"}
+        for extra in (secret, ambient):
+            self.assertTrue(extra.exists())
+            self.assertFalse(any(source == extra or source in extra.parents for source in exported))
+        self.assertEqual({p.relative_to(fixture).as_posix() for p in exported if fixture in p.parents},
+                         {*gate.FIXTURE_PINS, "MANIFEST.json"})
+        self.assertEqual(plan["read_only_checks"], [str(subject.venv), str(fixture),
+                         value["checkpoint"], str(subject.seals), str(subject.source / "tooling/ci_acc007_cold.py")])
+
+    def test_root_home_state_and_noncanonical_runtime_bases_are_rejected(self):
+        for base in ("/", "/home", "/home/runner", "/root", "/run", "/var", "/tmp", "/etc", "/opt"):
+            with self.subTest(base=base), self.assertRaisesRegex(gate.Rejected, "runtime_base_prefix_scope"):
+                self.mounts(base_prefix=Path(base))
+        with self.assertRaisesRegex(gate.Rejected, "mount_path_not_absolute"):
+            self.mounts(base_prefix=Path("/opt/python/../credentials"))
+
+    def test_system_ancestor_cannot_reexpose_private_inputs(self):
+        for key in ("venv", "fixture", "checkpoint", "seals", "adapter"):
+            for parent in ("/usr", "/opt/python/3.12/x64"):
+                with self.subTest(key=key, parent=parent), self.assertRaisesRegex(gate.Rejected, "system_mount_overlaps_private_input"):
+                    self.mounts(**{key: Path(parent) / "unrelated-private-input"})
+        with self.assertRaisesRegex(gate.Rejected, "system_mount_overlaps_private_input"):
+            self.mounts(fixture=Path("/opt"))
+
+    def test_owned_directory_cannot_reexpose_nominal_fixture_parent(self):
+        for key in ("venv", "seals"):
+            with self.subTest(key=key), self.assertRaisesRegex(gate.Rejected, "owned_mount_overlaps_frozen_input"):
+                self.mounts(**{key: Path("/intake")})
+
+    def test_only_explicit_loader_cache_can_enter_empty_etc(self):
+        for cache in ("/etc", "/etc/environment", "/etc/ld.so.preload", "/run/agent.sock"):
+            with self.subTest(cache=cache), self.assertRaisesRegex(gate.Rejected, "unreviewed_system_configuration"):
+                self.mounts(loader_cache=cache)
+        for cache in (None, "/etc/ld.so.cache"):
+            plan = plan_fixture()
+            plan["read_only_mounts"] = self.mounts(loader_cache=cache)
+            argv = gate.sandbox_argv(plan, 7, 8)
+            self.assertIn(["--dir", "/etc"], [argv[i:i + 2] for i in range(argv.index("--"))])
+            sources = {argv[i + 1] for i, value in enumerate(argv) if value == "--ro-bind"}
+            self.assertNotIn("/etc", sources)
+            self.assertEqual({p for p in sources if p.startswith("/etc/")}, {cache} if cache else set())
+
+    def test_legacy_system_directories_are_closed_and_cannot_enclose_inputs(self):
+        self.assertIn("/lib", self.mounts(legacy_dirs=("/lib",)))
+        with self.assertRaisesRegex(gate.Rejected, "unreviewed_system_mount"):
+            self.mounts(legacy_dirs=("/run",))
+        with self.assertRaisesRegex(gate.Rejected, "system_mount_overlaps_private_input"):
+            self.mounts(legacy_dirs=("/lib",), fixture=Path("/lib/private-fixture"))
 
 
 if __name__ == "__main__":

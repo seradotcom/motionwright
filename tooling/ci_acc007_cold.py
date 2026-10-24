@@ -295,12 +295,56 @@ def resource_values(raw):
             "as_scope": "hard_per_process_RLIMIT_AS", "aggregate_memory_limit_claimed": False}
 
 
+def closed_read_only_mounts(base_prefix, venv, fixture, checkpoint, seals, adapter,
+                           *, legacy_dirs=(), loader_cache=None):
+    """Expose nominal fixture files, never their ambient intake directory.
+
+    The runtime base is a canonical installation path observed by prepare().
+    System mounts cannot contain any private input: otherwise a parent bind
+    would make the individual-file allowlist ineffective. The freshly built
+    venv and newly owned seals directory retain their existing closed custody.
+    """
+    base_prefix, venv, fixture, checkpoint, seals, adapter = map(
+        Path, (base_prefix, venv, fixture, checkpoint, seals, adapter))
+    private = (venv, fixture, checkpoint, seals, adapter)
+    require(all(p.is_absolute() and ".." not in p.parts for p in (base_prefix, *private)),
+            "mount_path_not_absolute")
+    # Ubuntu's system interpreter or a dedicated /opt tool installation is
+    # sufficient for this Linux-only lane. Home/state roots are not runtimes.
+    require(base_prefix == Path("/usr") or Path("/usr") in base_prefix.parents
+            or Path("/opt") in base_prefix.parents, "runtime_base_prefix_scope")
+    legacy = tuple(map(Path, legacy_dirs))
+    require(set(legacy) <= {Path(p) for p in ("/bin", "/sbin", "/lib", "/lib64")},
+            "unreviewed_system_mount")
+    system = sorted({Path("/usr"), base_prefix, *legacy}, key=lambda p: (len(p.parts), str(p)))
+    for outer in system:
+        require(all(outer != p and outer not in p.parents and p not in outer.parents for p in private),
+                "system_mount_overlaps_private_input")
+    for outer in (venv, seals):
+        require(all(outer != p and outer not in p.parents and p not in outer.parents
+                    for p in (fixture, checkpoint, adapter)), "owned_mount_overlaps_frozen_input")
+    # Only collapse redundant *system* roots. Never collapse nominal fixture
+    # file mounts into a shared ancestor, even if its contents were hash-read.
+    selected = []
+    for p in system:
+        if not any(q == p or q in p.parents for q in selected):
+            selected.append(p)
+    selected.extend((venv, seals, checkpoint, adapter))
+    selected.extend(fixture / name for name in sorted({*FIXTURE_PINS, "MANIFEST.json"}))
+    if loader_cache is not None:
+        require(Path(loader_cache) == Path("/etc/ld.so.cache"), "unreviewed_system_configuration")
+        selected.append(Path(loader_cache))
+    require(len(selected) == len(set(selected)), "duplicate_mount_source")
+    return [str(p) for p in selected]
+
+
 def sandbox_argv(plan, status_fd, boundary_fd):
     require(type(status_fd) is int and type(boundary_fd) is int and status_fd > 2
             and boundary_fd > 2 and status_fd != boundary_fd, "launcher_fds")
     args = [plan["bwrap"], "--unshare-user", "--disable-userns", "--unshare-pid", "--as-pid-1",
             "--unshare-net", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session",
-            "--cap-drop", "ALL", "--clearenv", "--json-status-fd", str(status_fd)]
+            "--cap-drop", "ALL", "--clearenv", "--json-status-fd", str(status_fd),
+            "--dir", "/etc"]
     for source in plan["read_only_mounts"]:
         args += ["--ro-bind", source, source]
     for name, target in plan["system_symlinks"].items():
@@ -519,6 +563,12 @@ class Gate:
         for name, pin in f["tools"].items():
             self.before["tool/" + name] = pinned(pin["path"], {k: pin[k] for k in ("bytes", "sha256")})
             require(os.access(pin["path"], os.X_OK), "tool_not_executable")
+        # The dynamic loader may need this one public system input. No host
+        # /etc tree, credentials, preload configuration or pathname sockets
+        # are exported. Record its physical identity for the same postcheck.
+        loader_cache = Path("/etc/ld.so.cache")
+        if loader_cache.exists() or loader_cache.is_symlink():
+            self.before["system/ld.so.cache"] = physical(loader_cache, limit=2 * 1024 * 1024)
         fixture = canonical_path(f["fixture_root"])
         require(len(FIXTURE_PINS) == 23, "frozen_fixture_roster_missing")
         for name, pin in FIXTURE_PINS.items():
@@ -647,19 +697,19 @@ class Gate:
 
     def plan(self, mode):
         adapter = self.source / "tooling/ci_acc007_cold.py"
-        mounts = sorted(set([Path("/usr"), Path("/etc"), self.base_prefix, self.venv, self.fixture,
-                            Path(self.freeze["checkpoint"]), self.seals, adapter]), key=lambda p: (len(p.parts), str(p)))
-        selected = []
-        for p in mounts:
-            if not any(q == p or q in p.parents for q in selected):
-                selected.append(p)
-        aliases = {}
+        aliases, legacy_dirs = {}, []
         for path in ("/bin", "/sbin", "/lib", "/lib64"):
             p = Path(path)
             if p.is_symlink():
                 aliases[path] = os.readlink(p)
             elif p.exists():
-                selected.append(p)
+                legacy_dirs.append(p)
+        cache = self.before.get("system/ld.so.cache")
+        if cache is not None:
+            require(physical(cache["path"], limit=cache["bytes"]) == cache, "system_cache_changed")
+        selected = closed_read_only_mounts(self.base_prefix, self.venv, self.fixture,
+            self.freeze["checkpoint"], self.seals, adapter, legacy_dirs=legacy_dirs,
+            loader_cache=cache["path"] if cache is not None else None)
         plan = {"schema": "motionwright.acc007-cold-launch/2", "mode": mode, "context": self.current,
                 "freeze_sha256": digest(self.raw_freeze), "bwrap": self.freeze["tools"]["bwrap"]["path"],
                 "python": self.python, "adapter": str(adapter), "attempt": str(self.attempt),
@@ -667,7 +717,7 @@ class Gate:
                 "bridge": str(self.fixture / "profile/alignment_runtime_bridge.py"), "checkpoint": self.freeze["checkpoint"],
                 "request_path": self.request["path"], "request_sha256": self.request["sha256"],
                 "request_identity": self.request["identity"], "host_namespaces": namespace_ids(),
-                "read_only_mounts": [str(p) for p in selected], "system_symlinks": aliases,
+                "read_only_mounts": selected, "system_symlinks": aliases,
                 "read_only_checks": [str(self.venv), str(self.fixture), self.freeze["checkpoint"], str(self.seals), str(adapter)],
                 "plan_path": str(self.seals / (mode + ".plan.json")),
                 "status_path": str(self.logs / (mode + ".bwrap.original.jsonl")),
