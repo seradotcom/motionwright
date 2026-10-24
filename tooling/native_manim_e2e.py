@@ -150,28 +150,26 @@ def wait_for_socket(process: subprocess.Popen[bytes], socket: Path, log: Path) -
     raise AssertionError("semwrightd did not expose the owner socket")
 
 
-def probe_video(path: Path) -> dict:
-    result = subprocess.run(
-        [
-            str(FFPROBE),
-            "-v",
-            "error",
-            "-show_streams",
-            "-show_format",
-            "-of",
-            "json",
-            str(path),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"ffprobe failed ({result.returncode}): {result.stderr[:16384]!r}"
+def probe_video(path: Path, *, evidence=None, camera_custody=None) -> dict:
+    argv = [
+        str(FFPROBE), "-v", "error", "-show_streams", "-show_format",
+        "-of", "json", str(path),
+    ]
+    if evidence is None:
+        result = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            check=False, timeout=30,
         )
-    media = json.loads(result.stdout)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"ffprobe failed ({result.returncode}): {result.stderr[:16384]!r}"
+            )
+        media = json.loads(result.stdout)
+    else:
+        media = captured_json(
+            argv, env=os.environ.copy(), evidence=evidence, label="ffprobe-original",
+            timeout=30, camera_custody=camera_custody, record_native=False,
+        )
     videos = [
         stream
         for stream in media.get("streams", [])
@@ -200,31 +198,27 @@ def probe_video(path: Path) -> dict:
     }
 
 
-def capability_catalog(env: dict[str, str], socket: Path, session: Path) -> list[dict]:
+def capability_catalog(env: dict[str, str], socket: Path, session: Path, *,
+                       evidence=None, camera_custody=None) -> list[dict]:
     capabilities: list[dict] = []
     offset = 0
     catalog_revision = None
     while True:
-        discovered = run_json(
-            [
-                str(SW_BINS / "semwright"),
-                "--socket",
-                str(socket),
-                "--session-file",
-                str(session),
-                "--json",
-                "capabilities",
-                "search",
-                "",
-                "--provider",
-                "driver:manim-community",
-                "--limit",
-                "100",
-                "--offset",
-                str(offset),
-            ],
-            env=env,
-        )
+        argv = [
+            str(SW_BINS / "semwright"),
+            "--socket", str(socket),
+            "--session-file", str(session),
+            "--json", "capabilities", "search", "",
+            "--provider", "driver:manim-community",
+            "--limit", "100", "--offset", str(offset),
+        ]
+        if evidence is None:
+            discovered = run_json(argv, env=env)
+        else:
+            discovered = captured_json(
+                argv, env=env, evidence=evidence, label=f"capabilities-{offset}",
+                camera_custody=camera_custody, record_native=False,
+            )
         data = discovered.get("data", {})
         revision = data.get("revision")
         if catalog_revision is None:
@@ -243,8 +237,8 @@ def capability_catalog(env: dict[str, str], socket: Path, session: Path) -> list
         offset = next_offset
     return capabilities
 
-
-def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None):
+def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None,
+                  record_native=True):
     """Capture original process streams in private files before interpreting them."""
     from native_manim_camera_evidence import CameraEvidenceError, object_bytes, read
     streams = []
@@ -261,7 +255,7 @@ def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None
         try:
             code = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            if camera_custody is not None:
+            if camera_custody is not None and record_native:
                 camera_custody.native_process = {
                     "pid": process.pid, "timeout_seconds": timeout,
                     "process_returncode": None, "native_outcome": "UNKNOWN",
@@ -274,7 +268,7 @@ def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None
                 if camera_custody is not None:
                     camera_custody.secondary("native-client-timeout-cleanup", cleanup)
             raise
-        if camera_custody is not None:
+        if camera_custody is not None and record_native:
             camera_custody.native_process = {
                 "pid": process.pid, "process_returncode": code,
                 "native_outcome": "NOT_INTERPRETED",
@@ -285,7 +279,7 @@ def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None
             # A nonzero wrapper process code cannot classify a native UNKNOWN.
             raise CameraEvidenceError(f"native_example_process_exit_{code}_see_original_private_diagnostic")
         value = object_bytes(read(evidence / f"{label}.stdout.log"))
-        if camera_custody is not None:
+        if camera_custody is not None and record_native:
             camera_custody.native_result = value
         return value
     finally:
@@ -303,7 +297,7 @@ def captured_json(argv, *, env, evidence, label, timeout=60, camera_custody=None
                     camera_custody.secondary("native-process-stream-close", cleanup)
 
 
-def camera_options(args):
+def camera_options(args, *, camera=True):
     from native_manim_camera_evidence import custody_module, require
     require(sys.platform == "linux" and os.geteuid() != 0,
             "camera_physical_runner_must_be_linux_nonroot")
@@ -321,8 +315,9 @@ def camera_options(args):
     observed = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                                        text=True).strip()
     require(observed == GITHUB_SHA, "camera_original_checkout_identity")
-    require(MW_CAMERA_SEED.is_file(), "camera_source_seed_binary_absent")
-    if getattr(args, "source_cycle_enabled", False):
+    if camera:
+        require(MW_CAMERA_SEED.is_file(), "camera_source_seed_binary_absent")
+    if camera and getattr(args, "source_cycle_enabled", False):
         require(MW_CAMERA_SOURCE.is_file(), "camera_source_cycle_binary_absent")
     recipient = {
         "spki_der_base64": os.environ.get("PRIVATE_EVIDENCE_RECIPIENT_SPKI", ""),
@@ -338,37 +333,66 @@ def camera_options(args):
     return recipient, current
 
 
+def checked_static_originals(native, seeded, evidence):
+    """Bind retained pre-render observation to the original successful Rust result."""
+    from native_manim_camera_evidence import object_bytes, read, require, sha
+    native_raw = read(evidence / "motionwright-manim-evidence.json")
+    original = object_bytes(native_raw)
+    require(original == native, "static_stdout_and_durable_evidence_differ")
+    require(original.get("native_manim_e2e") == "PASS"
+            and all(key in seeded and seeded[key] is not None
+                    and original.get(key) == seeded[key]
+                    for key in ("project_id", "generation", "revision", "scene_id")),
+            "static_native_source_binding")
+    observation_raw = read(evidence / "motionwright-manim-runtime-observation.json")
+    observed = object_bytes(observation_raw)
+    require(set(observed) == {
+                "schema", "project_id", "generation", "revision",
+                "observation", "error", "render_started",
+            }
+            and observed["schema"] == "motionwright-manim-runtime-probe-e2e/1"
+            and all(observed[key] == seeded.get(key)
+                    for key in ("project_id", "generation", "revision"))
+            and observed["error"] is None
+            and observed["render_started"] is False
+            and type(observed["observation"]) is dict
+            and observed["observation"] == original.get("runtime_observation"),
+            "static_original_runtime_observation_binding")
+    return original, {
+        "native_evidence_sha256": sha(native_raw),
+        "runtime_observation_sha256": sha(observation_raw),
+    }
+
+
 def _run_single(args, *, source_cycle=None):
     camera = args.scenario == "camera120"
     cycle_observation = None
+    static_result = None
     if source_cycle is not None and not camera:
         raise ValueError("camera source cycle requires the camera producer")
-    if camera:
-        from native_manim_camera_evidence import (
-            CameraCustody, EVIDENCE_NAME, finish_render, prepare_seed, private_json,
-        )
-        recipient, current = camera_options(args)
-        if source_cycle is not None and current != source_cycle["current"]:
-            raise ValueError("camera cycle context changed between native phases")
-    elif args.evidence_root is not None or args.sealed_originals is not None:
-        raise ValueError("private camera custody arguments require camera120")
-    evidence = args.evidence_root if camera else EVIDENCE
+    from native_manim_camera_evidence import (
+        CameraCustody, EVIDENCE_NAME, finish_render, prepare_seed, private_json,
+    )
+    recipient, current = camera_options(args, camera=camera)
+    if source_cycle is not None and current != source_cycle["current"]:
+        raise ValueError("camera cycle context changed between native phases")
+    evidence = args.evidence_root
     evidence.mkdir(parents=True, exist_ok=False, mode=0o700)
-    # Camera originals remain in their private directory until runner disposal,
-    # including when sealing fails. They are never automatically removed here.
+    # Every native profile retains its owner and original streams until runner
+    # disposal, even when observation, process cleanup or sealing fails.
     workspace = (
         contextlib.nullcontext(str(source_cycle["owner"]))
-        if source_cycle is not None else
-        (contextlib.nullcontext(tempfile.mkdtemp(
-            prefix="motionwright-native-manim-camera-", dir=os.environ["RUNNER_TEMP"]))
-         if camera else tempfile.TemporaryDirectory(prefix="motionwright-native-manim-"))
+        if source_cycle is not None else contextlib.nullcontext(tempfile.mkdtemp(
+            prefix=("motionwright-native-manim-camera-" if camera
+                    else "motionwright-native-manim-static-"),
+            dir=os.environ["RUNNER_TEMP"],
+        ))
     )
     with workspace as raw:
         root = Path(raw).resolve()
         root.chmod(0o700)
-        scope = (CameraCustody(root, evidence, args.sealed_originals, recipient, current)
-                 if camera else contextlib.nullcontext(None))
-        with scope as camera_custody:
+        with CameraCustody(root, evidence, args.sealed_originals,
+                           recipient, current) as camera_custody:
             phase_root = root
             if source_cycle is not None:
                 phase_root = root / "edited1040"
@@ -442,7 +466,11 @@ def _run_single(args, *, source_cycle=None):
                     "independent_vendor_binary_authentication": False,
                 })
             else:
-                seeded = run_json([str(MW_EXAMPLE), "seed", str(database)], env=env)
+                seeded = captured_json(
+                    [str(MW_EXAMPLE), "seed", str(database)], env=env,
+                    evidence=evidence, label="static-seed",
+                    camera_custody=camera_custody, record_native=False,
+                )
                 if seeded.get("primitive_count") != 3:
                     raise AssertionError(f"unexpected Manim seed: {seeded}")
 
@@ -583,7 +611,10 @@ def _run_single(args, *, source_cycle=None):
 
             try:
                 wait_for_socket(daemon, socket, daemon_log)
-                capabilities = capability_catalog(env, socket, session)
+                capabilities = capability_catalog(
+                    env, socket, session, evidence=evidence,
+                    camera_custody=camera_custody,
+                )
                 ids = {item.get("id") for item in capabilities}
                 required = {
                     "driver.manim-community.doctor",
@@ -648,22 +679,20 @@ def _run_single(args, *, source_cycle=None):
                             capture=captured_json,
                         )
                 else:
-                    result = run_json(
+                    result = camera_custody.once(lambda: captured_json(
                         [
-                            str(MW_EXAMPLE),
-                            "realize",
-                            str(database),
+                            str(MW_EXAMPLE), "realize", str(database),
                             str(connection_path),
                             str(evidence / "motionwright-manim-evidence.json"),
                         ],
-                        env=env,
-                        timeout=420,
-                    )
+                        env=env, evidence=evidence, label="native-example", timeout=420,
+                        camera_custody=camera_custody,
+                    ))
                     if result.get("native_manim_e2e") != "PASS":
                         raise AssertionError(f"Motionwright Manim realization did not pass: {result}")
 
-                    original_evidence = json.loads(
-                        (evidence / "motionwright-manim-evidence.json").read_text(encoding="utf-8")
+                    original_evidence, original_hashes = checked_static_originals(
+                        result, seeded, evidence,
                     )
                     artifact = original_evidence["result"]["artifact"]
                     relative = artifact["relative_path"]
@@ -675,32 +704,42 @@ def _run_single(args, *, source_cycle=None):
                         raise AssertionError(
                             f"independent MP4 digest mismatch: {observed_digest} != {artifact['sha256']}"
                         )
-                    media = probe_video(artifact_path)
+                    media = probe_video(
+                        artifact_path, evidence=evidence, camera_custody=camera_custody,
+                    )
 
                     review_mp4 = evidence / "motionwright-manim-community.mp4"
                     shutil.copyfile(artifact_path, review_mp4)
-                    write_private_json(
-                        evidence / "result.json",
-                        {
-                            "native_manim_e2e": "PASS",
-                            "motionwright_sha": GITHUB_SHA,
-                            "semwright_sha": PIN,
-                            "semwright_version": semwright_version(),
-                            "manim_version": MANIM_VERSION,
-                            "python_sha256": digest(PYTHON),
-                            "ffmpeg_sha256": digest(FFMPEG),
-                            "driver_sha256": digest(driver),
-                            "runner_sha256": digest(runner),
-                            "project": seeded,
-                            "mp4": {
-                                "relative_path": relative,
-                                "sha256": observed_digest,
-                                "bytes": artifact_path.stat().st_size,
-                                **media,
-                            },
-                            "capabilities_checked": sorted(required),
+                    static_result = {
+                        "native_manim_e2e": "PASS",
+                        "motionwright_sha": GITHUB_SHA,
+                        "semwright_sha": PIN,
+                        "semwright_version": semwright_version(),
+                        "manim_version": MANIM_VERSION,
+                        "python_sha256": digest(PYTHON),
+                        "ffmpeg_sha256": digest(FFMPEG),
+                        "driver_sha256": digest(driver),
+                        "runner_sha256": digest(runner),
+                        "project": seeded,
+                        "mp4": {
+                            "relative_path": relative,
+                            "sha256": observed_digest,
+                            "bytes": artifact_path.stat().st_size,
+                            **media,
                         },
-                    )
+                        "capabilities_checked": sorted(required),
+                        **original_hashes,
+                        "native_effect_invocations": 1,
+                        "sealed_custody_required": True,
+                        "native_editable_reopen_verified": False,
+                        "human_acceptance": False,
+                    }
+                    # Preserve verification inside the encrypted snapshot, but
+                    # do not expose the legacy PASS marker until custody exits.
+                    private_json(evidence / "static-render-verification.json", {
+                        **static_result,
+                        "native_manim_e2e": "PASS_REQUIRES_SEALED_CUSTODY",
+                    })
             finally:
                 try:
                     if daemon.poll() is None:
@@ -716,12 +755,25 @@ def _run_single(args, *, source_cycle=None):
                             except ProcessLookupError:
                                 pass
                             daemon.wait(timeout=5)
-                    log_stream.close()
-
                 except BaseException as cleanup_error:
-                    if camera_custody is None:
-                        raise
                     camera_custody.secondary("broker-cleanup", cleanup_error)
+                # Preserve the log even if bounded broker shutdown itself failed.
+                try:
+                    log_stream.flush()
+                    os.fsync(log_stream.fileno())
+                except BaseException as cleanup_error:
+                    camera_custody.secondary("broker-log-custody", cleanup_error)
+                try:
+                    log_stream.close()
+                except BaseException as cleanup_error:
+                    camera_custody.secondary("broker-log-close", cleanup_error)
+
+        if not camera:
+            # __exit__ has sealed the actual selected originals and failed closed
+            # on partial capture or cleanup errors. This is an exclusive new file.
+            static_result["sealed_originals_sha256"] = digest(args.sealed_originals)
+            static_result["sealed_originals_bytes"] = args.sealed_originals.stat().st_size
+            private_json(evidence / "result.json", static_result)
 
     if camera:
         return {
@@ -762,20 +814,20 @@ def main(argv=None) -> None:
         status_key = "native_manim_camera_e2e" if camera else "native_manim_e2e"
     print(json.dumps({
         status_key: "PASS", "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN,
-        "evidence": "private sealed originals" if camera else str(EVIDENCE),
+        "evidence": "private sealed originals",
     }, sort_keys=True))
 
 
 if __name__ == "__main__":
     try:
         main()
-    except BaseException:
-        if not any(value in sys.argv for value in ("camera120", "camera120-source-cycle")):
+    except BaseException as error:
+        if isinstance(error, SystemExit) and error.code == 0:
             raise
         # Original stdout/stderr, Rust diagnostics, journal and wrapper error
         # belong in the private snapshot, never in public Actions logs.
         try:
-            sys.stderr.write("Manim camera verification did not complete; inspect sealed originals. No replay.\n")
+            sys.stderr.write("Manim verification did not complete; inspect sealed originals. No replay.\n")
         except BaseException:
             pass
         raise SystemExit(2) from None
