@@ -629,5 +629,242 @@ class SourceCohortIntegrationTests(unittest.TestCase):
             self.assertEqual(original.read_bytes(), b"unchanged original attempt")
 
 
+
+class WorkerBudgetTests(unittest.TestCase):
+    """Controlled GI timing exercises the real worker, without a native action."""
+
+    def run_worker(self, *, setup_seconds=0.0, register_seconds=0.0,
+                   missing_controls=False, setter_error=False, parent_deadline=None):
+        from contextlib import ExitStack
+        from types import ModuleType
+        clock = [100.0]
+        journal = Journal()
+        bridge = Bridge(journal)
+        if missing_controls:
+            bridge.apps = []
+        if setter_error:
+            bridge.set_error = TimeoutError("controlled missing reply")
+        idle = []
+        timers = []
+        registrations = []
+
+        class Loop:
+            stopped = False
+            def quit(self):
+                self.stopped = True
+            def run(self):
+                for _ in range(20):
+                    if self.stopped:
+                        return
+                    if idle:
+                        idle.pop(0)()
+                    elif timers:
+                        when, callback = timers.pop(0)
+                        clock[0] = max(clock[0], when)
+                        callback()
+                    else:
+                        raise AssertionError("worker made no bounded progress")
+                raise AssertionError("unbounded controlled event loop")
+
+        loop = Loop()
+        def register(event):
+            registrations.append(event)
+            clock[0] += register_seconds
+            return True
+        listener = SimpleNamespace(register=register, deregister=lambda event: None)
+        atspi = SimpleNamespace(
+            init=lambda: 0, set_timeout=lambda *args: None,
+            EventListener=SimpleNamespace(new=lambda *args: listener))
+        def timeout_add(milliseconds, callback):
+            timers.append((clock[0] + milliseconds / 1000.0, callback))
+            return len(timers)
+        glib = SimpleNamespace(MainLoop=lambda: loop,
+                               idle_add=lambda callback: idle.append(callback),
+                               timeout_add=timeout_add)
+        gi = ModuleType("gi")
+        def require_version(*_):
+            clock[0] += setup_seconds
+        gi.require_version = require_version
+        repository = ModuleType("gi.repository")
+        repository.Atspi, repository.GLib = atspi, glib
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            journal.read = lambda name: {
+                "data_root": str((scratch / "data").resolve()),
+                "binding": dict(BINDING),
+            }
+            journal.close = lambda: None
+            with ExitStack() as stack:
+                stack.enter_context(patch.dict(sys.modules, {
+                    "gi": gi, "gi.repository": repository}))
+                stack.enter_context(patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}))
+                stack.enter_context(patch.object(probe.sys, "platform", "linux"))
+                stack.enter_context(patch.object(probe.time, "monotonic",
+                                                 side_effect=lambda: clock[0]))
+                stack.enter_context(patch.object(probe, "DiskJournal",
+                                                 return_value=journal))
+                stack.enter_context(patch.object(probe, "AtspiBridge",
+                                                 side_effect=lambda api, **kw: bridge))
+                stack.enter_context(patch.object(probe, "x11_identity",
+                                                 return_value=dict(BINDING)))
+                result = probe.worker(scratch, 4, parent_deadline=parent_deadline)
+        return result, bridge, clock[0], registrations, journal
+
+    def test_slow_initialization_cannot_renew_budget_or_edit(self):
+        result, bridge, _, _, journal = self.run_worker(setup_seconds=5.0)
+        self.assertEqual((bridge.edits, bridge.clicks), (0, 0))
+        self.assertEqual(result["status"], "NOT_SENT")
+        self.assertEqual(result["reason"], "DEADLINE")
+        self.assertNotIn("edit-intent", journal.entries)
+
+    def test_waiting_after_initialization_uses_remaining_budget(self):
+        result, bridge, finished, _, _ = self.run_worker(
+            setup_seconds=2.0, missing_controls=True)
+        self.assertLessEqual(finished, 104.0)
+        self.assertEqual(result["status"], "NOT_SENT")
+        self.assertEqual(result["reason"], "DEADLINE")
+        self.assertEqual((bridge.edits, bridge.clicks), (0, 0))
+
+    def test_registration_stops_at_original_deadline(self):
+        result, bridge, finished, registrations, _ = self.run_worker(register_seconds=1.0)
+        self.assertLessEqual(len(registrations), 4)
+        self.assertLessEqual(finished, 104.0)
+        self.assertEqual(result["reason"], "DEADLINE")
+        self.assertEqual((bridge.edits, bridge.clicks), (0, 0))
+
+    def test_available_budget_keeps_one_edit_and_one_action(self):
+        result, bridge, _, _, _ = self.run_worker(setup_seconds=0.5)
+        self.assertEqual(result["status"], "ACTION_ACCEPTED")
+        self.assertEqual((bridge.edits, bridge.clicks), (1, 1))
+
+    def test_missing_reply_stays_unknown_without_second_effect(self):
+        result, bridge, _, _, journal = self.run_worker(setter_error=True)
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertEqual((bridge.edits, bridge.clicks), (1, 0))
+        self.assertNotIn("create-intent", journal.entries)
+
+
+
+    def test_inherited_deadline_includes_process_startup_time(self):
+        result, bridge, finished, _, _ = self.run_worker(
+            setup_seconds=0.5, missing_controls=True, parent_deadline=101.0)
+        self.assertLessEqual(finished, 101.0)
+        self.assertEqual((result["status"], result["reason"]), ("NOT_SENT", "DEADLINE"))
+        self.assertEqual((bridge.edits, bridge.clicks), (0, 0))
+
+    def test_parent_cannot_extend_worker_local_bound(self):
+        result, bridge, finished, _, _ = self.run_worker(
+            setup_seconds=0.5, missing_controls=True, parent_deadline=200.0)
+        self.assertLessEqual(finished, 104.0)
+        self.assertEqual(result["reason"], "DEADLINE")
+        self.assertEqual((bridge.edits, bridge.clicks), (0, 0))
+
+    def test_already_expired_parent_cannot_initialize_or_mutate(self):
+        result, bridge, _, registrations, _ = self.run_worker(parent_deadline=99.0)
+        self.assertEqual((result["status"], result["reason"]), ("NOT_SENT", "DEADLINE"))
+        self.assertEqual(registrations, [])
+        self.assertEqual((bridge.edits, bridge.clicks), (0, 0))
+
+    def test_nonfinite_or_nonpositive_parent_deadline_is_refused(self):
+        for deadline in (float("nan"), float("inf"), float("-inf"), 0, -1):
+            with self.subTest(deadline=deadline):
+                with self.assertRaisesRegex(probe.ProbeError, "WORKER_PARENT_DEADLINE_INVALID"):
+                    self.run_worker(parent_deadline=deadline)
+
+
+class BridgeBudgetTests(unittest.TestCase):
+    """Remote reads may consume the budget; later calls must stop."""
+    def bridge(self, api, deadline):
+        bridge = object.__new__(probe.AtspiBridge)
+        bridge.api = api
+        bridge.deadline = deadline
+        return bridge
+
+    def test_large_tree_stops_between_native_child_reads(self):
+        clock = [100.0]
+        observed = []
+        def child(index):
+            observed.append(index)
+            clock[0] += 0.4
+            return object()
+        node = SimpleNamespace(get_child_count=lambda: 10, get_child_at_index=child)
+        bridge = self.bridge(SimpleNamespace(), 101.0)
+        with patch.object(probe.time, "monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(probe.ProbeError, "DEADLINE"):
+                bridge.children(node)
+        self.assertEqual(observed, [0, 1, 2])
+
+    def test_expired_budget_prevents_native_setter(self):
+        effects = []
+        api = SimpleNamespace(EditableText=SimpleNamespace(
+            set_text_contents=lambda *args: effects.append(args)))
+        bridge = self.bridge(api, 100.0)
+        with patch.object(probe.time, "monotonic", return_value=100.0):
+            with self.assertRaisesRegex(probe.ProbeError, "DEADLINE"):
+                bridge.set_text(object(), "must not be sent")
+        self.assertEqual(effects, [])
+
+    def test_text_count_cannot_authorize_read_after_deadline(self):
+        clock = [100.0]
+        reads = []
+        def count(node):
+            clock[0] = 101.0
+            return 3
+        api = SimpleNamespace(Text=SimpleNamespace(get_character_count=count,
+            get_text=lambda *args: reads.append(args)))
+        bridge = self.bridge(api, 101.0)
+        with patch.object(probe.time, "monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(probe.ProbeError, "DEADLINE"):
+                bridge.read_text(object())
+        self.assertEqual(reads, [])
+
+
+
+
+class ParentDeadlineContractTests(unittest.TestCase):
+    def test_parent_passes_one_absolute_budget_with_custody_reserve(self):
+        from contextlib import ExitStack
+        journal = Journal()
+        journal.close = lambda: None
+        observed = {}
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            def run(command, **options):
+                observed.update(command=command, options=options)
+                result = {"schema": "motionwright.ci.accessible-action/1",
+                          "status": "ACTION_ACCEPTED", "binding": dict(BINDING)}
+                (scratch / probe.JOURNAL_NAME / "result.json").write_text(
+                    json.dumps(result), encoding="utf-8")
+                return SimpleNamespace(returncode=0)
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(probe, "DiskJournal", return_value=journal))
+                stack.enter_context(patch.object(probe.time, "monotonic", return_value=100.0))
+                stack.enter_context(patch.object(probe.os, "O_DIRECTORY", 0, create=True))
+                stack.enter_context(patch.object(probe.os, "O_NOFOLLOW", 0, create=True))
+                stack.enter_context(patch.object(probe.os, "open", return_value=999))
+                stack.enter_context(patch.object(probe.os, "close"))
+                stack.enter_context(patch.object(probe.os, "fsync"))
+                stack.enter_context(patch.object(probe.subprocess, "run", side_effect=run))
+                probe.invoke_worker(scratch, seconds=4, source_sha="a" * 40,
+                                    semwright_sha="b" * 40, binding=dict(BINDING))
+        command = observed["command"]
+        self.assertEqual(float(command[command.index("--seconds") + 1]), 3.0)
+        self.assertEqual(float(command[command.index("--worker-deadline") + 1]), 103.0)
+        self.assertEqual(observed["options"]["timeout"], 4)
+        self.assertEqual(len([x for x in command if x == "--worker"]), 1)
+
+    def test_hidden_worker_cli_preserves_parent_deadline(self):
+        argv = ["probe", "--worker", "--scratch", "unused-controlled-scratch",
+                "--seconds", "3", "--worker-deadline", "103.0"]
+        with patch.object(sys, "argv", argv), patch.object(
+                probe, "worker", return_value={"status": "ACTION_ACCEPTED"}) as worker:
+            with self.assertRaises(SystemExit) as result:
+                probe.main()
+        self.assertEqual(result.exception.code, 0)
+        worker.assert_called_once_with(Path("unused-controlled-scratch"), 3.0,
+                                       parent_deadline=103.0)
+
+
+
 if __name__ == "__main__":
     unittest.main()

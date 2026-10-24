@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from functools import partial
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -293,12 +294,13 @@ def x11_identity():
 
 
 class AtspiBridge:
-    def __init__(self, api):
+    def __init__(self, api, *, deadline=None):
         self.api = api
-        self.desktop = api.get_desktop(0)
+        self.deadline = deadline
+        self.desktop = self.call(api.get_desktop, 0)
         if self.desktop is None:
             raise ProbeError("ATSPI_DESKTOP_UNAVAILABLE")
-        self.desktop.set_cache_mask(api.Cache.NONE)
+        self.call(self.desktop.set_cache_mask, api.Cache.NONE)
         self.roles = {
             api.Role.DIALOG: "dialog", api.Role.ENTRY: "entry",
             api.Role.TEXT: "text", api.Role.PUSH_BUTTON: "button",
@@ -309,61 +311,78 @@ class AtspiBridge:
                         "EDITABLE", "DEFUNCT")
         }
 
+    def call(self, function, *arguments):
+        # A D-Bus call already in flight may still time out in the parent. Never
+        # start another read or effect after the one inherited budget expires.
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            raise ProbeError("DEADLINE")
+        return function(*arguments)
+
     def children(self, node):
-        count = node.get_child_count()
+        count = self.call(node.get_child_count)
         if count < 0 or count > MAX_NODES:
             raise ProbeError("ACCESSIBLE_CHILD_LIMIT")
-        result = [node.get_child_at_index(i) for i in range(count)]
+        result = [self.call(node.get_child_at_index, i) for i in range(count)]
         if any(child is None for child in result):
             raise NotReady("ACCESSIBLE_TREE_INCOMPLETE")
         return result
 
     def applications(self):
-        self.desktop.clear_cache()
+        self.call(self.desktop.clear_cache)
         return self.children(self.desktop)
 
-    @staticmethod
-    def pid(node):
-        pid = node.get_process_id()
+    def pid(self, node):
+        pid = self.call(node.get_process_id)
         if not isinstance(pid, int) or pid <= 0:
             raise ProbeError("ATSPI_PROCESS_ID_UNAVAILABLE")
         return pid
 
     def owner_pid(self, node):
-        app = node.get_application()
+        app = self.call(node.get_application)
         if app is None:
             raise ProbeError("ATSPI_APPLICATION_UNAVAILABLE")
         return self.pid(app)
 
     def view(self, node):
-        state = node.get_state_set()
-        return View(node, self.roles.get(node.get_role(), "other"),
-                    node.get_name(),
+        state = self.call(node.get_state_set)
+        return View(node, self.roles.get(self.call(node.get_role), "other"),
+                    self.call(node.get_name),
                     frozenset(k for k, v in self.states.items() if state.contains(v)),
-                    frozenset(node.get_interfaces()))
+                    frozenset(self.call(node.get_interfaces)))
 
     def read_text(self, node):
-        count = self.api.Text.get_character_count(node)
+        count = self.call(self.api.Text.get_character_count, node)
         if not 0 <= count <= 256:
             raise ProbeError("TITLE_LENGTH_LIMIT")
-        return self.api.Text.get_text(node, 0, count)
+        return self.call(self.api.Text.get_text, node, 0, count)
 
     def set_text(self, node, value):
-        return self.api.EditableText.set_text_contents(node, value)
+        return self.call(self.api.EditableText.set_text_contents, node, value)
 
     def actions(self, node):
-        count = self.api.Action.get_n_actions(node)
+        count = self.call(self.api.Action.get_n_actions, node)
         if not 0 <= count <= 16:
             raise ProbeError("ACTION_LIMIT")
-        return [self.api.Action.get_action_name(node, i) for i in range(count)]
+        return [self.call(self.api.Action.get_action_name, node, i) for i in range(count)]
 
     def invoke(self, node, index):
-        return self.api.Action.do_action(node, index)
+        return self.call(self.api.Action.do_action, node, index)
 
 
-def worker(scratch, seconds):
+def worker(scratch, seconds, *, parent_deadline=None):
     if not 1 <= seconds <= 44:
         raise ProbeError("WORKER_DEADLINE_OUT_OF_RANGE")
+    deadline = time.monotonic() + seconds
+    if parent_deadline is not None:
+        if not math.isfinite(parent_deadline) or parent_deadline <= 0:
+            raise ProbeError("WORKER_PARENT_DEADLINE_INVALID")
+        deadline = min(deadline, parent_deadline)
+
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise ProbeError("DEADLINE")
+        return budget
     if sys.platform != "linux" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise ProbeError("DISPOSABLE_LINUX_CI_REQUIRED")
     journal = DiskJournal(scratch / JOURNAL_NAME)
@@ -373,21 +392,27 @@ def worker(scratch, seconds):
               "object:property-change", "object:text-changed", "window")
     result = None
     try:
+        # Setup, listener registration and traversal consume the same budget
+        # as the parent. No child phase can restart the clock.
+        remaining()
         # GI imports stay in the child; offline tests need no desktop packages.
         import gi
         gi.require_version("Atspi", "2.0")
         from gi.repository import Atspi, GLib
+        remaining()
         if Atspi.init() not in (0, 1):
             raise ProbeError("ATSPI_INITIALIZATION_FAILED")
+        remaining()
         Atspi.set_timeout(800, 2500)
 
         launch = journal.read("launch-intent")
         if launch["data_root"] != str((scratch / "data").resolve()):
             raise ProbeError("JOURNAL_DATA_ROOT_MISMATCH")
         binding = launch["binding"]
-        bridge = AtspiBridge(Atspi)
+        remaining()
+        bridge = AtspiBridge(Atspi, deadline=deadline)
         attempt = Attempt(bridge, x11_identity, journal, binding,
-                          deadline=time.monotonic() + seconds)
+                          deadline=deadline)
         loop = GLib.MainLoop()
         queued = False
         busy = False
@@ -427,11 +452,13 @@ def worker(scratch, seconds):
                 queued = True
                 GLib.idle_add(advance)
 
+        remaining()
         listener = Atspi.EventListener.new(schedule, None)
         for event in events:
+            remaining()
             if not listener.register(event):
                 raise ProbeError("ATSPI_EVENT_REGISTRATION_FAILED")
-        GLib.timeout_add(max(1, int(seconds * 1000)),
+        GLib.timeout_add(max(1, int(remaining() * 1000)),
                          lambda: (finish("DEADLINE"), False)[1])
         schedule()
         loop.run()
@@ -482,10 +509,14 @@ def invoke_worker(scratch, *, seconds, source_sha, semwright_sha, binding):
         with (directory / "worker.stdout").open("xb") as out, (
             directory / "worker.stderr").open("xb") as err:
             try:
+                # Linux's monotonic clock is shared by parent and child.
+                # Reserve one second for the child's durable result custody.
+                worker_deadline = time.monotonic() + max(1, seconds - 1)
                 process = subprocess.run(
                     [sys.executable, "-B", str(Path(__file__).resolve()),
                      "--worker", "--scratch", str(scratch),
-                     "--seconds", str(max(1, seconds - 1))],
+                     "--seconds", str(max(1, seconds - 1)),
+                     "--worker-deadline", repr(worker_deadline)],
                     env=env, stdout=out, stderr=err, timeout=seconds, check=False,
                 )
             except subprocess.TimeoutExpired:
@@ -592,6 +623,7 @@ def probe_accessible_cold_relaunch(*, app_run, scratch, source_sha,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--worker-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--scratch", required=True, type=Path)
     parser.add_argument("--seconds", type=float, default=24)
     parser.add_argument("--app-run", type=Path)
@@ -601,7 +633,7 @@ def main():
     parser.add_argument("--storage-source-repo", type=Path)
     args = parser.parse_args()
     if args.worker:
-        result = worker(args.scratch, args.seconds)
+        result = worker(args.scratch, args.seconds, parent_deadline=args.worker_deadline)
         raise SystemExit(0 if result["status"] == "ACTION_ACCEPTED" else 2)
     if not all((args.app_run, args.source_sha, args.semwright_sha, args.output)):
         parser.error("--app-run, --source-sha, --semwright-sha and --output are required")
