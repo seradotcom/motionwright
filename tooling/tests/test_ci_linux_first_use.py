@@ -37,7 +37,7 @@ def verbose(module, cases=None, suffix="ok", repeated_method=True):
         target = module + "." + cls + ("." + method if repeated_method else "")
         rows.append(f"{method} ({target}) ... {suffix}")
     return ("\n".join(rows) + "\n\n----------------------------------------------------------------------\n"
-            "Ran 42 tests in 0.010s\n\nOK\n").encode()
+            "Ran 56 tests in 0.010s\n\nOK\n").encode()
 
 
 def execution(folder):
@@ -112,15 +112,15 @@ class ClosedSourceResultsTests(unittest.TestCase):
     def admit(self):
         return gate.admit_execution(self.root, self.record, state(), GITHUB)
 
-    def test_two_original_entrypoints_admit_exact_84_cases(self):
+    def test_two_original_entrypoints_admit_exact_112_cases(self):
         result = self.admit()
-        self.assertEqual([len(v) for v in result.values()], [42, 42])
+        self.assertEqual([len(v) for v in result.values()], [56, 56])
         self.assertIn("JournalFilesystemTests.test_exclusive_entries_keep_original_bytes", next(iter(result.values())))
 
     def test_both_supported_verbose_id_formats_are_nominal(self):
         for repeated in (False, True):
             with self.subTest(repeated=repeated):
-                self.assertEqual(len(gate.nominal_results(verbose(gate.TEST_MODULE, repeated_method=repeated), gate.TEST_MODULE)), 42)
+                self.assertEqual(len(gate.nominal_results(verbose(gate.TEST_MODULE, repeated_method=repeated), gate.TEST_MODULE)), 56)
 
     def test_unchanged_count_cannot_hide_duplicate_and_omitted_case(self):
         cases = sorted(gate.EXPECTED_CASES)
@@ -135,14 +135,50 @@ class ClosedSourceResultsTests(unittest.TestCase):
             gate.nominal_results(verbose(gate.TEST_MODULE, cases=cases), gate.TEST_MODULE)
 
     def test_zero_or_missing_nominal_results_are_refused(self):
-        for raw in (b"Ran 42 tests in 0s\nOK\n", verbose(gate.TEST_MODULE, cases=[])):
-            with self.subTest(raw=raw[:20]), self.assertRaises(gate.GateError):
+        legacy_classes = (
+            "SelectionAndAttemptTests.", "X11IdentityTests.",
+            "ColdOracleIntegrationContractTests.", "JournalFilesystemTests.",
+            "SourceCohortIntegrationTests.",
+        )
+        legacy_cases = sorted(case for case in gate.EXPECTED_CASES
+                              if case.startswith(legacy_classes))
+        self.assertEqual(len(legacy_cases), 42)
+        legacy_claiming_56 = verbose(gate.TEST_MODULE, cases=legacy_cases)
+        legacy_claiming_42 = legacy_claiming_56.replace(b"Ran 56 tests", b"Ran 42 tests", 1)
+        controls = (
+            ("summary_without_nominals", b"Ran 56 tests in 0s\nOK\n"),
+            ("empty_nominals", verbose(gate.TEST_MODULE, cases=[])),
+            ("legacy_42_with_original_summary", legacy_claiming_42),
+            ("legacy_42_with_forged_56_summary", legacy_claiming_56),
+        )
+        for label, raw in controls:
+            with self.subTest(control=label), self.assertRaises(gate.GateError):
                 gate.nominal_results(raw, gate.TEST_MODULE)
 
     def test_skip_expected_failure_and_failure_are_not_pass(self):
         for result in ("skipped 'Linux only'", "expected failure", "FAIL", "ERROR"):
             with self.subTest(result=result), self.assertRaisesRegex(gate.GateError, "not_ok"):
                 gate.nominal_results(verbose(gate.TEST_MODULE, suffix=result), gate.TEST_MODULE)
+        step = self.record["steps"][0]
+        path = self.root / step["stderr"]["file"]
+        raw = path.read_bytes()
+        method = "test_exclusive_entries_keep_original_bytes"
+        module = gate.PATTERN[:-3]
+        original_line = f"{method} ({module}.JournalFilesystemTests.{method}) ... ok\n".encode()
+        skipped_line = (f"{method} ({module}.JournalFilesystemTests.{method}) "
+                        "... skipped 'Linux dirfd fixture unavailable'\n").encode()
+        self.assertEqual(raw.count(original_line), 1)
+        self.assertEqual(raw.count(b"\n\nOK\n"), 1)
+        raw = raw.replace(original_line, skipped_line, 1)
+        raw = raw.replace(b"\n\nOK\n", b"\n\nOK (skipped=1)\n", 1)
+        path.write_bytes(raw)
+        step["stderr"]["sha256"] = hashlib.sha256(raw).hexdigest()
+        step["counts"] = gate.runner.parse_unittest_summary(raw.decode())
+        self.assertEqual(step["counts"]["tests_run"], 56)
+        self.assertEqual(step["counts"]["passed"], 55)
+        self.assertEqual(step["counts"]["skipped"], 1)
+        with self.assertRaisesRegex(gate.GateError, "source_counts_incomplete_or_changed"):
+            self.admit()
 
     def test_foreign_test_module_is_refused(self):
         with self.assertRaisesRegex(gate.GateError, "foreign_test_module"):
@@ -179,8 +215,12 @@ class ClosedSourceResultsTests(unittest.TestCase):
             self.admit()
 
     def test_summary_omission_or_corruption_is_refused(self):
-        for key, value in (("tests_run", 41), ("skipped", 1), ("passed", 41), ("errors", 1), ("errors", False)):
-            with self.subTest(key=key), patch.dict(self.record["steps"][0]["counts"], {key: value}), self.assertRaises(gate.GateError):
+        changes = (("tests_run", 55), ("tests_run", 42), ("skipped", 1),
+                   ("passed", 55), ("passed", 42), ("errors", 1), ("errors", False))
+        for key, value in changes:
+            with self.subTest(key=key, value=value), patch.dict(
+                self.record["steps"][0]["counts"], {key: value}
+            ), self.assertRaises(gate.GateError):
                 self.admit()
 
     def test_nonterminal_incomplete_source_and_false_exit_are_refused(self):
@@ -189,6 +229,29 @@ class ClosedSourceResultsTests(unittest.TestCase):
                        {"source_postcheck_error": "changed"}):
             with self.subTest(change=change), patch.dict(self.record, change), self.assertRaises(gate.GateError):
                 self.admit()
+        source_state = state()
+        g0 = g0_execution(self.root)
+        source_gate = {
+            "schema": gate.SOURCE_SCHEMA, "status": "PASS", "invocations": 112,
+            "system_python": "/usr/bin/python3", "github": copy.deepcopy(GITHUB),
+            "claims": copy.deepcopy(gate.CLAIMS),
+            "source_before": source_state, "source_after": source_state,
+            "test_ids": gate.admit_execution(self.root, self.record, source_state, GITHUB),
+            "g0_entry_points": gate.admit_g0(self.root, g0, source_state, GITHUB),
+        }
+        intent = {"schema": gate.SOURCE_SCHEMA, "status": "STARTED",
+                  "github": copy.deepcopy(GITHUB), "before": source_state}
+        for name, value in (("execution.json", self.record), ("g0.json", g0),
+                            ("intent.json", intent), ("source-gate.json", source_gate)):
+            gate.publish(self.root / name, value)
+        admitted = gate.admit_source_gate(self.root, source_state, GITHUB)
+        self.assertIn("source-gate.json", admitted)
+        stale = copy.deepcopy(source_gate)
+        stale["invocations"] = 84
+        (self.root / "source-gate.json").write_bytes(
+            (json.dumps(stale, indent=2, sort_keys=True) + "\n").encode())
+        with self.assertRaisesRegex(gate.GateError, "source_gate_not_admitted_for_this_run"):
+            gate.admit_source_gate(self.root, source_state, GITHUB)
 
     def test_one_entrypoint_swapped_entrypoints_or_wrong_python_refused(self):
         original = copy.deepcopy(self.record["steps"])
