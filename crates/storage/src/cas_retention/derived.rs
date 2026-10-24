@@ -12,7 +12,7 @@ thread_local! {
     // Root-scoped and thread-local: parallel tests cannot grant a clock to
     // another Store. This facility does not exist in a product build.
     static TEST_CLOCKS: std::cell::RefCell<BTreeMap<PathBuf, u64>> =
-        std::cell::RefCell::new(BTreeMap::new());
+        const { std::cell::RefCell::new(BTreeMap::new()) };
 }
 
 pub(super) fn event_time(root: &Path) -> Result<u64> {
