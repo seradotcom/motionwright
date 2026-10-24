@@ -356,6 +356,34 @@ fn validate_reference_blob(gate: &RootGate, reference: &Reference) -> Result<()>
     Ok(())
 }
 
+// Retiring metadata is already authorized by the journal. Do not parse
+// damaged contents as deletion authority; bind the unlink to the exact file.
+fn retirement_manifest(reference: &Reference) -> Result<Option<File>> {
+    let file = match open_control(&reference.manifest.path, false, false, false) {
+        Ok(file) => file,
+        Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let expected = reference
+        .manifest
+        .file_id
+        .as_deref()
+        .ok_or_else(|| invalid("retiring manifest has no known physical identity"))?;
+    if file_identity(&file)? != expected
+        || file_identity(&open_control(
+            &reference.manifest.path,
+            false,
+            false,
+            false,
+        )?)? != expected
+    {
+        return Err(invalid("retiring derived manifest was replaced"));
+    }
+    Ok(Some(file))
+}
+
 // Acquiring rootgate excludes every protocol writer throughout these FS
 // transitions. No SQLite query or externally pausable work occurs under it.
 fn reconcile_reference(gate: &mut RootGate, id: Uuid, now: u64) -> Result<bool> {
@@ -369,7 +397,11 @@ fn reconcile_reference(gate: &mut RootGate, id: Uuid, now: u64) -> Result<bool> 
         return Ok(false);
     };
     validate_reference(&gate.root, &reference)?;
-    let observed = read_manifest(&reference.manifest.path)?;
+    let observed = if matches!(reference.phase, Phase::Retiring) {
+        None
+    } else {
+        read_manifest(&reference.manifest.path)?
+    };
     match reference.phase {
         Phase::Prepared => {
             if let Some(observed) = observed {
@@ -391,10 +423,7 @@ fn reconcile_reference(gate: &mut RootGate, id: Uuid, now: u64) -> Result<bool> 
             }
         }
         Phase::Retiring => {
-            if let Some(observed) = observed {
-                if !matches_manifest(&reference, &observed) {
-                    return Err(invalid("retiring derived manifest was replaced"));
-                }
+            if let Some(file) = retirement_manifest(&reference)? {
                 fs::remove_file(&reference.manifest.path)?;
                 sync_directory(
                     reference
@@ -404,6 +433,7 @@ fn reconcile_reference(gate: &mut RootGate, id: Uuid, now: u64) -> Result<bool> 
                         .ok_or_else(|| invalid("manifest parent is missing"))?,
                 )?;
                 checkpoint(&gate.root.root, "derived_after_manifest_unlink");
+                drop(file);
             }
         }
     }
@@ -676,9 +706,6 @@ pub(crate) fn evict(blob_root: &Path, destination: &Path) -> Result<Option<bool>
     let mut removed = false;
     let now = event_time(&root.root)?;
     for id in ids {
-        if !reconcile_reference(&mut gate, id, now)? {
-            continue;
-        }
         let mut reference = gate
             .catalog
             .derived
@@ -687,11 +714,7 @@ pub(crate) fn evict(blob_root: &Path, destination: &Path) -> Result<Option<bool>
             .cloned()
             .ok_or_else(|| invalid("derived admission disappeared under gate"))?;
         validate_reference(&root, &reference)?;
-        let observed = read_manifest(destination)?
-            .ok_or_else(|| invalid("derived eviction manifest disappeared"))?;
-        if !matches_manifest(&reference, &observed) {
-            return Err(invalid("derived eviction manifest was replaced"));
-        }
+        let existed = retirement_manifest(&reference)?.is_some();
         reference.phase = Phase::Retiring;
         state_mut(&mut gate.catalog)
             .references
@@ -699,7 +722,7 @@ pub(crate) fn evict(blob_root: &Path, destination: &Path) -> Result<Option<bool>
         gate.save()?;
         checkpoint(&root.root, "derived_before_manifest_unlink");
         reconcile_reference(&mut gate, id, now)?;
-        removed = true;
+        removed |= existed;
     }
     Ok(Some(removed))
 }
