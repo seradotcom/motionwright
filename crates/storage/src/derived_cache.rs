@@ -418,6 +418,102 @@ mod tests {
     }
 
     #[test]
+    fn evicted_unborrowed_derived_blob_is_reclaimed_after_reopen() {
+        let temp = tempdir().unwrap();
+        let database = temp.path().join("studio.sqlite3");
+        let source = temp.path().join("owned-derived-preview.bin");
+        let contents = b"owned derived preview that was never handed to a consumer";
+        fs::write(&source, contents).unwrap();
+        let scope = "project:retention-fixture:generation:one";
+        let kind = "preview-index";
+        let fingerprint = digest("unborrowed-derived-renderer-fonts-and-source");
+        let mut store = Store::open(&database).unwrap();
+        let record = store
+            .put_derived_cache_file(scope, kind, &fingerprint, &source, 37)
+            .unwrap();
+        assert_eq!(record.blob_sha256, hex::encode(Sha256::digest(contents)));
+        assert_eq!(record.size_bytes, contents.len() as u64);
+
+        // Observe fixture bytes directly. A lookup/verified path would lend
+        // them to a legacy consumer and must conservatively prevent cleanup.
+        let blob = store.blob_path(&record.blob_sha256).unwrap();
+        let manifest = store
+            .derived_cache_manifest_path(&record.scope_sha256, kind, &fingerprint)
+            .unwrap();
+        let manifest_bytes = fs::read(&manifest).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<DerivedCacheRecord>(&manifest_bytes).unwrap(),
+            record
+        );
+        assert_eq!(fs::read(&blob).unwrap(), contents);
+        let active = store
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 64,
+            })
+            .unwrap();
+        assert!(active.root_managed);
+        assert!(!active.truncated);
+        assert_eq!(active.removed, 0);
+        assert_eq!(fs::read(&blob).unwrap(), contents);
+        assert_eq!(fs::read(&manifest).unwrap(), manifest_bytes);
+
+        assert!(
+            store
+                .evict_derived_cache_exact(scope, kind, &fingerprint)
+                .unwrap()
+        );
+        assert!(matches!(
+            fs::symlink_metadata(&manifest),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        drop(store);
+
+        let mut reopened = Store::open(&database).unwrap();
+        let retained = reopened
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::from_secs(24 * 60 * 60),
+                max_objects: 64,
+            })
+            .unwrap();
+        assert!(retained.root_managed);
+        assert!(!retained.truncated);
+        assert_eq!(retained.removed, 0);
+        assert_eq!(fs::read(&blob).unwrap(), contents);
+        assert_eq!(fs::read(&source).unwrap(), contents);
+
+        let collected = reopened
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 64,
+            })
+            .unwrap();
+        assert!(collected.root_managed);
+        assert!(!collected.truncated);
+        assert!(
+            matches!(
+                fs::symlink_metadata(&blob),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            ),
+            "an evicted, unborrowed derived publication must be reclaimed: {collected:?}"
+        );
+        assert_eq!(collected.removed, 1);
+        assert_eq!(fs::read(&source).unwrap(), contents);
+        assert!(matches!(
+            fs::symlink_metadata(&manifest),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        let repeated = reopened
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 64,
+            })
+            .unwrap();
+        assert_eq!(repeated.removed, 0);
+        assert!(!repeated.truncated);
+    }
+
+    #[test]
     fn same_fingerprint_cannot_silently_alias_different_output() {
         let temp = tempdir().unwrap();
         let store = Store::open(temp.path().join("studio.sqlite3")).unwrap();
