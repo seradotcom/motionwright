@@ -1282,6 +1282,14 @@ mod tests {
                     )
                     .unwrap();
             }
+            "put_proxy" => {
+                let key: crate::RenderWindowCacheKey =
+                    serde_json::from_slice(&fs::read(base.join("proxy-key.json")).unwrap())
+                        .unwrap();
+                store
+                    .put_render_window_proxy(&key, base.join("derived-input.bin"), 17)
+                    .unwrap();
+            }
             "evict" => {
                 assert!(
                     store
@@ -1595,5 +1603,213 @@ mod tests {
             manifest_bytes
         );
         assert_eq!(store.recover_cas(zero()).unwrap().removed, 0);
+    }
+    #[test]
+    fn derived_cache_real_proxy_manifest_cut_retires_only_unregistered_admission() {
+        // Run the existing-winner control before the expected RED case. Both
+        // use the public proxy producer; neither borrows a published PathBuf.
+        for already_registered in [true, false] {
+            let fixture = Fixture::new();
+            let mut store = fixture.open();
+            let project = store
+                .create_named_project("Interrupted proxy admission")
+                .unwrap();
+            let project = store
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "proxy-admission-scene",
+                    &motionwright_domain::Change::AddScene {
+                        name: "Source".into(),
+                        objective: "Proxy admission owner".into(),
+                        duration_seconds: 2,
+                    },
+                )
+                .unwrap()
+                .project;
+            let original_source = fixture.base.join("original-source.bin");
+            let original_bytes = b"project source must survive failed proxy admission";
+            fs::write(&original_source, original_bytes).unwrap();
+            let original_blob = store.ingest_blob_file(&original_source).unwrap();
+            assert_ne!(original_blob.sha256, fixture.digest);
+            let project = store
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "proxy-admission-source",
+                    &motionwright_domain::Change::AddAsset {
+                        asset: motionwright_domain::Asset {
+                            id: Uuid::now_v7(),
+                            name: "Owned source".into(),
+                            media_type: "application/octet-stream".into(),
+                            content_sha256: Some(original_blob.sha256.clone()),
+                            source_revision: Some("fixture-source-v1".into()),
+                        },
+                    },
+                )
+                .unwrap()
+                .project;
+            let key = crate::RenderWindowCacheKey {
+                project_id: project.id,
+                expected: project.stamp(),
+                deliverable_id: project.deliverables[0].id,
+                source_window: motionwright_domain::SourceFrameWindow { start: 0, end: 60 },
+                fingerprint_sha256: fixture.fingerprint.clone(),
+            };
+            let mut winner_key = key.clone();
+            if !already_registered {
+                winner_key.fingerprint_sha256 = hash_bytes(b"independent committed proxy");
+            }
+            let winner_input = fixture.base.join("winner-input.bin");
+            let winner_bytes: &[u8] = if already_registered {
+                PAYLOAD
+            } else {
+                b"different committed proxy must remain unchanged"
+            };
+            fs::write(&winner_input, winner_bytes).unwrap();
+            let winner = store
+                .put_render_window_proxy(&winner_key, &winner_input, 17)
+                .unwrap();
+            assert_eq!(winner.blob_sha256 == fixture.digest, already_registered);
+            let winner_manifest = store
+                .derived_cache_manifest_path(
+                    &winner.scope_sha256,
+                    &winner.kind,
+                    &winner.fingerprint_sha256,
+                )
+                .unwrap();
+            let winner_manifest_before = fs::read(&winner_manifest).unwrap();
+            let root = discover(&fixture.blob_root).unwrap().unwrap();
+            let gate = root.gate().unwrap();
+            let (winner_reference_id, winner_reference) = gate
+                .catalog
+                .derived
+                .as_ref()
+                .unwrap()
+                .references
+                .iter()
+                .find(|(_, reference)| reference.manifest.path == winner_manifest)
+                .unwrap();
+            let winner_reference_id = *winner_reference_id;
+            let winner_reference_before = serde_json::to_value(winner_reference).unwrap();
+            assert!(!gate.catalog.legacy_pins.contains(&fixture.digest));
+            assert!(!gate.catalog.legacy_pins.contains(&winner.blob_sha256));
+            drop(gate);
+            let before_sql = all_sql_rows(&store);
+            fs::write(
+                fixture.base.join("proxy-key.json"),
+                serde_json::to_vec(&key).unwrap(),
+            )
+            .unwrap();
+            drop(store);
+
+            exit_at(&fixture, "put_proxy", "derived_after_manifest_publication");
+            // Observe the published exact bytes before Store::open can recover.
+            fixture.assert_blob();
+            let gate = root.gate().unwrap();
+            let interrupted = gate
+                .catalog
+                .derived
+                .as_ref()
+                .unwrap()
+                .references
+                .values()
+                .find(|reference| {
+                    reference.record.fingerprint_sha256 == key.fingerprint_sha256
+                        && reference.record.blob_sha256 == fixture.digest
+                })
+                .unwrap();
+            let interrupted_manifest = interrupted.manifest.path.clone();
+            let interrupted_record: DerivedCacheRecord =
+                serde_json::from_slice(&fs::read(&interrupted_manifest).unwrap()).unwrap();
+            assert_eq!(interrupted_record.blob_sha256, fixture.digest);
+            assert_eq!(interrupted_record.size_bytes, PAYLOAD.len() as u64);
+            assert!(!gate.catalog.legacy_pins.contains(&fixture.digest));
+            drop(gate);
+            let mut store = fixture.open();
+            assert_eq!(all_sql_rows(&store), before_sql);
+            assert_eq!(store.load_project(project.id).unwrap(), project);
+            if !already_registered {
+                assert!(store.lookup_render_window_proxy(&key).unwrap().is_none());
+            }
+            assert_eq!(
+                store
+                    .drain_render_window_evictions(64)
+                    .unwrap()
+                    .tombstones_selected,
+                0
+            );
+            let report = store.recover_cas(zero()).unwrap();
+            assert_eq!(report.unresolved, 0, "{report:?}");
+            assert!(!report.truncated, "{report:?}");
+            // Check the positive custody controls before the causal RED assertion.
+            assert_eq!(all_sql_rows(&store), before_sql);
+            assert_eq!(store.load_project(project.id).unwrap(), project);
+            assert_eq!(fs::read(&original_source).unwrap(), original_bytes);
+            assert_eq!(
+                fs::read(digest_path(&fixture.blob_root, &original_blob.sha256).unwrap()).unwrap(),
+                original_bytes
+            );
+            assert_eq!(fs::read(&fixture.source).unwrap(), PAYLOAD);
+            assert_eq!(fs::read(&winner_input).unwrap(), winner_bytes);
+            assert_eq!(
+                fs::read(digest_path(&fixture.blob_root, &winner.blob_sha256).unwrap()).unwrap(),
+                winner_bytes
+            );
+            assert_eq!(fs::read(&winner_manifest).unwrap(), winner_manifest_before);
+            let gate = root.gate().unwrap();
+            let retained_winner = gate
+                .catalog
+                .derived
+                .as_ref()
+                .unwrap()
+                .references
+                .get(&winner_reference_id)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(retained_winner).unwrap(),
+                winner_reference_before
+            );
+            assert!(!gate.catalog.legacy_pins.contains(&fixture.digest));
+            assert!(!gate.catalog.legacy_pins.contains(&winner.blob_sha256));
+            assert!(gate.catalog.captures.is_empty());
+            drop(gate);
+            assert!(
+                fs::read_dir(fixture.blob_root.join(".staging"))
+                    .unwrap()
+                    .next()
+                    .is_none()
+            );
+            assert_eq!(
+                report.removed,
+                usize::from(!already_registered),
+                "an interrupted fresh proxy must retire its unregistered admission; \
+                 the same-key committed winner must remain: {report:?}"
+            );
+            if !already_registered {
+                assert_eq!(
+                    fs::symlink_metadata(&interrupted_manifest)
+                        .unwrap_err()
+                        .kind(),
+                    std::io::ErrorKind::NotFound
+                );
+                assert_eq!(
+                    fs::symlink_metadata(fixture.blob()).unwrap_err().kind(),
+                    std::io::ErrorKind::NotFound
+                );
+            }
+            drop(store);
+            let mut reopened = fixture.open();
+            assert_eq!(reopened.recover_cas(zero()).unwrap().removed, 0);
+            assert_eq!(all_sql_rows(&reopened), before_sql);
+            assert_eq!(reopened.load_project(project.id).unwrap(), project);
+            assert_eq!(fs::read(&original_source).unwrap(), original_bytes);
+            assert_eq!(fs::read(&fixture.source).unwrap(), PAYLOAD);
+            assert_eq!(fs::read(&winner_manifest).unwrap(), winner_manifest_before);
+            assert_eq!(
+                fs::read(digest_path(&fixture.blob_root, &winner.blob_sha256).unwrap()).unwrap(),
+                winner_bytes
+            );
+        }
     }
 }
