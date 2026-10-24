@@ -99,7 +99,16 @@ async function finish(page: Page, info: TestInfo, service: ScopedChangeService, 
   observations: Record<string, unknown>, preparations: (() => Promise<unknown>)[], primary?: Failure) {
   const failures: unknown[] = primary ? [primary.reason] : [];
   let custody: StoreFinalization | undefined;
-  try { custody = await service.finalizeClosedStore(info.outputPath("closed-store"), final, peers, [...preparations, () => page.close()]); }
+  try {
+    const pendingPreparations = preparations.map(action => Promise.resolve().then(action));
+    // The finalizer observes every original outcome. Page closure waits for
+    // restoration/gate disposal to settle, including rejected preparations.
+    const preparationsSettled = Promise.allSettled(pendingPreparations);
+    custody = await service.finalizeClosedStore(info.outputPath("closed-store"), final, peers, [
+      ...pendingPreparations.map(pending => () => pending),
+      async () => { await preparationsSettled; await page.close(); },
+    ]);
+  }
   catch (reason) { failures.push(reason); }
   try {
     const path = info.outputPath("component-distillation-service-evidence.json");
