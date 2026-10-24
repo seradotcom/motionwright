@@ -1953,7 +1953,7 @@ async fn review_native_av_master(
 async fn read_native_av_audio_qc(
     state: State<'_, AppState>,
     request: MasterReviewRequest,
-) -> NativeAvAudioQcResponse {
+) -> Result<NativeAvAudioQcResponse, String> {
     let project = match state.service.project(request.project_id) {
         Ok(project)
             if project.generation == request.generation && project.revision == request.revision =>
@@ -1961,13 +1961,17 @@ async fn read_native_av_audio_qc(
             project
         }
         _ => {
-            return NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::SourceChanged);
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::SourceChanged,
+            ));
         }
     };
     let source = match state.av_delivery.resolve(&project, request.export_token) {
         Ok(source) => source,
         Err(_) => {
-            return NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::SessionUnavailable);
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::SessionUnavailable,
+            ));
         }
     };
     // The registry binds the profile privately. Connection selection remains
@@ -1975,9 +1979,9 @@ async fn read_native_av_audio_qc(
     let connection_path = match selected_connection_path(&state, project.id) {
         Ok(path) => path,
         Err(_) => {
-            return NativeAvAudioQcResponse::unavailable(
+            return Ok(NativeAvAudioQcResponse::unavailable(
                 AudioQcUnavailableReason::ConnectionUnavailable,
-            );
+            ));
         }
     };
     let initial_connection_path = connection_path.clone();
@@ -1994,15 +1998,17 @@ async fn read_native_av_audio_qc(
         Ok(latest)
             if latest.generation == request.generation && latest.revision == request.revision => {}
         _ => {
-            return NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::SourceChanged);
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::SourceChanged,
+            ));
         }
     }
-    match selected_connection_path(&state, request.project_id) {
+    Ok(match selected_connection_path(&state, request.project_id) {
         Ok(path) if path == initial_connection_path => result,
         _ => NativeAvAudioQcResponse::unavailable(
             AudioQcUnavailableReason::ConnectionUnavailable,
         ),
-    }
+    })
 }
 
 /// Current receipt references only; never a media or execution capability.
@@ -2010,7 +2016,7 @@ async fn read_native_av_audio_qc(
 async fn native_av_audio_qc_receipt_inventory(
     state: State<'_, AppState>,
     request: av_delivery::AudioQcInventoryRequest,
-) -> av_delivery::NativeAvAudioQcInventoryResponse {
+) -> Result<av_delivery::NativeAvAudioQcInventoryResponse, String> {
     use av_delivery::NativeAvAudioQcInventoryResponse as Response;
     let project = match state.service.project(request.project_id) {
         Ok(project)
@@ -2019,17 +2025,17 @@ async fn native_av_audio_qc_receipt_inventory(
             project
         }
         _ => {
-            return Response::Unavailable {
+            return Ok(Response::Unavailable {
                 reason: AudioQcUnavailableReason::SourceChanged,
-            };
+            });
         }
     };
     let path = match selected_connection_path(&state, project.id) {
         Ok(path) => path,
         Err(_) => {
-            return Response::Unavailable {
+            return Ok(Response::Unavailable {
                 reason: AudioQcUnavailableReason::ConnectionUnavailable,
-            };
+            });
         }
     };
     let initial_path = path.clone();
@@ -2048,7 +2054,7 @@ async fn native_av_audio_qc_receipt_inventory(
     .unwrap_or(Response::Unavailable {
         reason: AudioQcUnavailableReason::MeasurementUnavailable,
     });
-    match audio_read_still_current(
+    Ok(match audio_read_still_current(
         &state,
         request.project_id,
         request.generation,
@@ -2057,7 +2063,7 @@ async fn native_av_audio_qc_receipt_inventory(
     ) {
         Ok(()) => result,
         Err(reason) => Response::Unavailable { reason },
-    }
+    })
 }
 
 /// The durable UUID and recorded digest are untrusted selectors. Native
@@ -2066,21 +2072,25 @@ async fn native_av_audio_qc_receipt_inventory(
 async fn recover_native_av_audio_qc(
     state: State<'_, AppState>,
     request: av_delivery::AudioQcRecoveryRequest,
-) -> NativeAvAudioQcResponse {
+) -> Result<NativeAvAudioQcResponse, String> {
     let project = match state.service.project(request.project_id) {
         Ok(project)
             if project.generation == request.generation && project.revision == request.revision =>
         {
             project
         }
-        _ => return NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::SourceChanged),
+        _ => {
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::SourceChanged,
+            ));
+        }
     };
     let path = match selected_connection_path(&state, project.id) {
         Ok(path) => path,
         Err(_) => {
-            return NativeAvAudioQcResponse::unavailable(
+            return Ok(NativeAvAudioQcResponse::unavailable(
                 AudioQcUnavailableReason::ConnectionUnavailable,
-            );
+            ));
         }
     };
     let initial_path = path.clone();
@@ -2095,10 +2105,10 @@ async fn recover_native_av_audio_qc(
     .unwrap_or_else(|_| {
         NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::MeasurementUnavailable)
     });
-    match audio_read_still_current(&state, project_id, generation, revision, initial_path) {
+    Ok(match audio_read_still_current(&state, project_id, generation, revision, initial_path) {
         Ok(()) => result,
         Err(reason) => NativeAvAudioQcResponse::unavailable(reason),
-    }
+    })
 }
 
 fn audio_read_still_current(
