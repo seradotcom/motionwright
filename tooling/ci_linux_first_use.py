@@ -38,9 +38,66 @@ G0_PATTERNS = (
     "test_runtime_first_use_audit.py", "test_ci_job_plan.py",
     "test_source_policy_credentials.py",
 )
+FIRST_USE_G0_PATTERN = "test_runtime_first_use_audit.py"
+FIRST_USE_ATOMIC_PATH = "tooling/tests/test_runtime_first_use_atomic_receipt.py"
+FIRST_USE_G0_CASES = frozenset((
+    'test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_cli_preserves_uncertainty_after_real_receipt_publication',
+    'test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_cli_refusal_keeps_preexisting_report_unchanged',
+    'test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_failed_publication_preserves_a_foreign_destination',
+    'test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_first_fsync_sees_no_final_public_name',
+    'test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_fsync_error_never_exposes_partial_final_receipt',
+    'test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_post_link_readback_failure_preserves_complete_receipt',
+    'test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_post_publish_directory_sync_error_keeps_complete_report',
+    'test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_stage_link_failure_does_not_publish_or_keep_partial',
+    'test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_two_simultaneous_writers_have_one_complete_winner',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_cli_failure_returns_code_not_owner_path',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_cli_prints_sanitized_json_and_never_session_or_paths',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_connection_file_swapped_after_descriptor_open_is_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_connection_inode_swap_after_path_preflight_fails_closed',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_connection_resource_mismatch_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_duplicate_json_keys_rejected_instead_of_last_one_winning',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_excess_cli_output_rejected_without_echo',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_executable_inode_swap_after_path_preflight_fails_closed',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_explicit_preflight_is_read_only_and_never_claims_broker_ready',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_invalid_expected_digest_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_invalid_project_uuid_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_mismatched_version_fails_closed',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_missing_connection_field_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_missing_executable_is_fail_closed',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_missing_output_root_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_missing_socket_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_modified_executable_rejected_by_streamed_digest',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_mutually_exclusive_selection_modes_required',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_no_output_receipt_created_without_explicit_output_option',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_noncanonical_generation_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_old_generation_registry_rejected_without_env_fallback',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_other_project_registry_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_oversized_session_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_real_subprocess_arguments_are_readonly_and_secret_free',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_receipt_destination_must_be_absolute',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_receipt_is_exclusive_and_existing_bytes_are_not_replaced',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_registry_reference_inode_swap_after_preflight_fails_closed',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_registry_unknown_fields_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_registry_version_cannot_silently_upgrade',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_relative_connection_path_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_relative_session_path_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_saved_reference_does_not_replace_a_missing_owner_file',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_saved_registry_reference_passes_scope_validation',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_saved_relative_file_reference_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_schema_mismatch_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_session_file_swapped_after_descriptor_open_is_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_symlink_ancestor_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_symlink_connection_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_unknown_connection_field_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_unknown_source_lock_version_not_claimed_supported',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_version_probe_only_with_explicit_opt_in',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_world_readable_session_rejected',
+    'test_runtime_first_use_audit.FirstUseAuditTests.test_world_writable_output_root_rejected',
+))
 PATHS = (
     ".github/workflows/package-candidate.yml",
     "tooling/ci_linux_first_use.py", "tooling/tests/test_ci_linux_first_use.py",
+    "tooling/runtime_first_use_audit.py", FIRST_USE_ATOMIC_PATH,
     "tooling/ci_test_runner.py", "tooling/linux_first_use_accessible.py", TEST_PATH,
     "tooling/linux_cold_start.py", "tooling/linux_gui_probe.py",
     "tooling/source_checkout_observation.py", "tooling/storage_schema_contract.py",
@@ -287,9 +344,51 @@ def admit_execution(folder, receipt, state, github):
     return result
 
 
+def first_use_nominal_results(raw, mode):
+    """Close this G0 family across regular and short-description verbose IDs."""
+    require(mode in ("discovery", "dotted"), "first_use_g0_entry_mode")
+    prefix = "" if mode == "discovery" else "tooling.tests."
+    expected = {prefix + case for case in FIRST_USE_G0_CASES}
+    text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+    header = re.compile(
+        r"^(test_[A-Za-z0-9_]+) \(([A-Za-z0-9_.]+)\)(?: \.\.\. (.*))?$"
+    )
+    observed = []
+    pending = None
+    needs_description = False
+    for line in text.splitlines():
+        found = header.fullmatch(line)
+        if found:
+            require(pending is None, "first_use_g0_missing_terminal")
+            method, name, tail = found.groups()
+            identity = name if name.endswith("." + method) else name + "." + method
+            require(identity in expected and identity not in observed,
+                    "first_use_g0_foreign_duplicate_or_wrong_mode")
+            if tail == "ok":
+                observed.append(identity)
+            else:
+                require(tail in (None, ""), "first_use_g0_non_success")
+                pending = identity
+                needs_description = tail is None
+            continue
+        if pending is not None:
+            require((needs_description and bool(line[:-7]) and line.endswith(" ... ok"))
+                    or (not needs_description and line == "ok"),
+                    "first_use_g0_missing_or_non_success_terminal")
+            observed.append(pending)
+            pending = None
+            continue
+        require(line != "ok" and not line.endswith(" ... ok"), "first_use_g0_orphan_terminal")
+    require(pending is None and len(observed) == len(set(observed)) == 52
+            and set(observed) == expected, "first_use_g0_nominal_roster_incomplete")
+    return sorted(identity[len(prefix):] for identity in observed)
+
+
 def admit_g0(folder, receipt, state, github):
     """Recheck the existing CI fast-policy families from their original streams."""
     source = state["source"]
+    require(isinstance(source.get("files"), dict) and set(source["files"]) == set(PATHS),
+            "g0_source_dependency_closure_missing")
     require(receipt.get("schema") == "motionwright.unittest-execution/1"
             and receipt.get("status") == "PASS" and type(receipt.get("exit_code")) is int
             and receipt["exit_code"] == 0 and receipt.get("require_complete") is True
@@ -331,6 +430,11 @@ def admit_g0(folder, receipt, state, github):
                 and all(counts[k] == 0 for k in (
                     "failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                 "g0_counts_incomplete_or_changed")
+        if label in ("discovery:" + FIRST_USE_G0_PATTERN,
+                     "dotted:tooling.tests." + FIRST_USE_G0_PATTERN[:-3]):
+            require(counts["tests_run"] == counts["passed"] == 52,
+                    "first_use_g0_requires_fifty_two")
+            first_use_nominal_results(stderr, label.split(":", 1)[0])
         admitted[label] = counts["tests_run"]
     return admitted
 

@@ -83,6 +83,20 @@ def window():
                 "document_sha256": "f" * 64}}
 
 
+def first_use_g0_verbose(prefix="", cases=None, repeated_method=True, descriptions=False):
+    selected = sorted(gate.FIRST_USE_G0_CASES if cases is None else cases)
+    rows = []
+    for index, case in enumerate(selected):
+        method = case.rsplit(".", 1)[-1]
+        name = prefix + (case if repeated_method else case.rsplit(".", 1)[0])
+        if descriptions and index % 5 == 0:
+            rows.append(f"{method} ({name})\nSynthetic short description. ... ok")
+        else:
+            rows.append(f"{method} ({name}) ... ok")
+    return ("\n".join(rows) + "\n\n----------------------------------------------------------------------\n"
+            f"Ran {len(selected)} tests in 0.010s\n\nOK\n").encode()
+
+
 def g0_execution(folder):
     record = execution(folder)
     record["test_definition_sha256"] = {"tooling/tests/" + p: "d" * 64 for p in gate.G0_PATTERNS}
@@ -90,7 +104,9 @@ def g0_execution(folder):
     choices = [("discovery:" + p, ["discover", "-s", "tooling/tests", "-p", p, "-v"]) for p in gate.G0_PATTERNS]
     choices += [("dotted:tooling.tests." + p[:-3], ["tooling.tests." + p[:-3], "-v"]) for p in sorted(gate.G0_PATTERNS)]
     for index, (label, tail) in enumerate(choices):
-        raw = b"Ran 2 tests in 0.001s\n\nOK\n"
+        raw = (first_use_g0_verbose("tooling.tests." if label.startswith("dotted:") else "")
+               if "test_runtime_first_use_audit" in label
+               else b"Ran 2 tests in 0.001s\n\nOK\n")
         step = {"entry_point": label, "status": "PASS", "exit_code": 0,
                 "command": ["/usr/bin/python3", "-B", "-E", "-s", "-m", "unittest", *tail],
                 "counts": gate.runner.parse_unittest_summary(raw.decode())}
@@ -276,7 +292,9 @@ class ClosedSourceResultsTests(unittest.TestCase):
         g0 = g0_execution(self.root)
         admitted = gate.admit_g0(self.root, g0, state(), GITHUB)
         self.assertEqual(len(admitted), 18)
-        self.assertEqual(set(admitted.values()), {2})
+        self.assertEqual(set(admitted.values()), {2, 52})
+        self.assertEqual(admitted["discovery:test_runtime_first_use_audit.py"], 52)
+        self.assertEqual(admitted["dotted:tooling.tests.test_runtime_first_use_audit"], 52)
         g0["steps"].pop()
         with self.assertRaisesRegex(gate.GateError, "all_g0_entry_points"):
             gate.admit_g0(self.root, g0, state(), GITHUB)
@@ -483,6 +501,124 @@ class WorkflowContextTests(unittest.TestCase):
             target)
         self.assertIn("tooling/ci_linux_first_use.py source", target)
         self.assertEqual(source.count("MW_CI_JOB_TEST_TMP:"), 1)
+
+
+class FirstUseG0ClosureTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.g0 = g0_execution(self.root)
+
+    def admit(self, source_state=None):
+        return gate.admit_g0(self.root, self.g0, state() if source_state is None else source_state, GITHUB)
+
+    def replace_stderr(self, index, raw):
+        step = self.g0["steps"][index]
+        path = self.root / step["stderr"]["file"]
+        path.write_bytes(raw)
+        step["stderr"]["sha256"] = hashlib.sha256(raw).hexdigest()
+        step["counts"] = gate.runner.parse_unittest_summary(raw.decode())
+
+    def first_use_index(self, mode):
+        label = ("discovery:test_runtime_first_use_audit.py" if mode == "discovery"
+                 else "dotted:tooling.tests.test_runtime_first_use_audit")
+        return next(i for i, step in enumerate(self.g0["steps"]) if step["entry_point"] == label)
+
+    def test_first_use_has_exact_fifty_two_names_in_both_entrypoints(self):
+        result = self.admit()
+        self.assertEqual(result["discovery:test_runtime_first_use_audit.py"], 52)
+        self.assertEqual(result["dotted:tooling.tests.test_runtime_first_use_audit"], 52)
+        for mode, prefix in (("discovery", ""), ("dotted", "tooling.tests.")):
+            for repeated in (False, True):
+                raw = first_use_g0_verbose(prefix, repeated_method=repeated, descriptions=True)
+                self.assertEqual(gate.first_use_nominal_results(raw, mode), sorted(gate.FIRST_USE_G0_CASES))
+
+    def test_dotted_forty_three_cannot_borrow_discovery_atomic_nine(self):
+        base_cases = [case for case in gate.FIRST_USE_G0_CASES
+                      if case.startswith("test_runtime_first_use_audit.")]
+        self.assertEqual(len(base_cases), 43)
+        for forged_count in (False, True):
+            with self.subTest(forged_count=forged_count):
+                self.g0 = g0_execution(self.root)
+                raw = first_use_g0_verbose("tooling.tests.", base_cases)
+                if forged_count:
+                    raw = raw.replace(b"Ran 43 tests", b"Ran 52 tests", 1)
+                self.replace_stderr(self.first_use_index("dotted"), raw)
+                with self.assertRaises(gate.GateError):
+                    self.admit()
+
+    def test_rehashed_missing_duplicate_foreign_or_skipped_atomic_cannot_pass(self):
+        cases = sorted(gate.FIRST_USE_G0_CASES)
+        atomic = next(case for case in cases if case.startswith("test_runtime_first_use_atomic_receipt."))
+        other = next(case for case in cases if case != atomic)
+        controls = (
+            [case for case in cases if case != atomic],
+            [other if case == atomic else case for case in cases],
+            ["test_runtime_first_use_atomic_receipt.AtomicSupportReceiptTests.test_foreign"
+             if case == atomic else case for case in cases],
+        )
+        for selected in controls:
+            with self.subTest(selected=len(selected)):
+                self.g0 = g0_execution(self.root)
+                raw = first_use_g0_verbose(cases=selected)
+                self.replace_stderr(self.first_use_index("discovery"), raw)
+                with self.assertRaises(gate.GateError):
+                    self.admit()
+        self.g0 = g0_execution(self.root)
+        raw = first_use_g0_verbose()
+        method = atomic.rsplit(".", 1)[-1]
+        old = f"{method} ({atomic}) ... ok\n".encode()
+        self.assertEqual(raw.count(old), 1)
+        raw = raw.replace(old, f"{method} ({atomic}) ... skipped 'unavailable'\n".encode(), 1)
+        raw = raw.replace(b"\n\nOK\n", b"\n\nOK (skipped=1)\n", 1)
+        self.replace_stderr(self.first_use_index("discovery"), raw)
+        with self.assertRaises(gate.GateError):
+            self.admit()
+
+    def test_atomic_and_runtime_dependency_inputs_cannot_be_omitted(self):
+        for missing in ("tooling/tests/test_runtime_first_use_atomic_receipt.py",
+                        "tooling/runtime_first_use_audit.py"):
+            with self.subTest(missing=missing):
+                original = state()
+                original["source"]["files"].pop(missing)
+                with self.assertRaisesRegex(gate.GateError, "g0_source_dependency_closure"):
+                    self.admit(original)
+
+    def test_hidden_atomic_source_change_refuses_full_gate_without_rewriting_originals(self):
+        source_state = state()
+        altered = copy.deepcopy(source_state)
+        altered["source"]["files"]["tooling/tests/test_runtime_first_use_atomic_receipt.py"]["checkout"]["sha256"] = "f" * 64
+        execution_record = execution(self.root)
+        gate_record = {
+            "schema": gate.SOURCE_SCHEMA, "status": "PASS", "invocations": 112,
+            "system_python": "/usr/bin/python3", "github": copy.deepcopy(GITHUB),
+            "claims": copy.deepcopy(gate.CLAIMS), "source_before": source_state,
+            "source_after": altered,
+            "test_ids": gate.admit_execution(self.root, execution_record, source_state, GITHUB),
+            "g0_entry_points": self.admit(source_state),
+        }
+        intent = {"schema": gate.SOURCE_SCHEMA, "status": "STARTED",
+                  "github": copy.deepcopy(GITHUB), "before": source_state}
+        for name, value in (("execution.json", execution_record), ("g0.json", self.g0),
+                            ("intent.json", intent), ("source-gate.json", gate_record)):
+            (self.root / name).write_bytes((json.dumps(value) + "\n").encode())
+        before = {path.name: path.read_bytes() for path in self.root.iterdir()}
+        with self.assertRaisesRegex(gate.GateError, "source_or_storage_cohort_changed"):
+            gate.admit_source_gate(self.root, source_state, GITHUB)
+        self.assertEqual(before, {path.name: path.read_bytes() for path in self.root.iterdir()})
+
+    def test_missing_or_orphan_terminals_and_wrong_mode_are_not_nominal_success(self):
+        raw = first_use_g0_verbose(descriptions=True)
+        controls = (
+            raw.replace(b"Synthetic short description. ... ok", b"Synthetic short description. ... FAIL", 1),
+            raw.replace(b"Synthetic short description. ... ok\n", b"", 1),
+            b"ok\n" + raw,
+            first_use_g0_verbose("tooling.tests."),
+        )
+        for control in controls:
+            with self.subTest(control=control[:80]), self.assertRaises(gate.GateError):
+                gate.first_use_nominal_results(control, "discovery")
 
 
 if __name__ == "__main__":

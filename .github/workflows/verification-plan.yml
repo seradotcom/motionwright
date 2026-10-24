@@ -49,6 +49,7 @@ jobs:
           python tooling/ci_test_runner.py --repo . \
             --test-directory tooling/tests \
             --pattern test_ci_impact_plan.py \
+            --pattern test_ci_linux_first_use.py \
             --pattern test_release_scope_plan.py \
             --pattern test_conformance_policy.py \
             --pattern test_conformance_currency_impact.py \
