@@ -1,7 +1,8 @@
 use super::*;
 
 // Every service bundle entry uses the same static-SVG policy as direct
-// file import. Asset labels and MIME types can only tighten the policy;
+// file import. Every MIME declaration is checked, and bytes are sniffed
+// regardless of metadata. Asset names remain display labels, not source paths;
 // neither metadata nor an earlier inspection grants an exemption.
 pub(super) struct SvgBundleAdmission;
 
@@ -27,15 +28,11 @@ impl motionwright_storage::BundleAssetAdmission for SvgBundleAdmission {
             ));
         }
         for alias in aliases {
-            let svg_label = Path::new(&alias.name)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"));
             validate_importable_asset_reader(
                 std::io::Cursor::new(prefix),
                 actual_size,
                 &alias.media_type,
-                svg_label,
+                false,
             )?;
         }
         Ok(())
@@ -107,18 +104,22 @@ mod svg_bundle_admission_tests {
                 .validate(bytes, bytes.len() as u64, &[&opaque])
                 .is_ok()
         );
-        for restricted in [
-            alias("declared.bin", "image/svg+xml"),
-            alias("restricted.SVG", "application/octet-stream"),
-        ] {
-            for aliases in [[&opaque, &restricted], [&restricted, &opaque]] {
-                assert!(
-                    SvgBundleAdmission
-                        .validate(bytes, bytes.len() as u64, &aliases)
-                        .is_err()
-                );
-            }
+        let restricted = alias("declared.bin", "image/svg+xml");
+        for aliases in [[&opaque, &restricted], [&restricted, &opaque]] {
+            assert!(
+                SvgBundleAdmission
+                    .validate(bytes, bytes.len() as u64, &aliases)
+                    .is_err()
+            );
         }
+        // Direct import permits an independently chosen display name. A
+        // bundle must not reinterpret that label as an original filesystem path.
+        let label_only = alias("display-label.svg", "application/octet-stream");
+        assert!(
+            SvgBundleAdmission
+                .validate(bytes, bytes.len() as u64, &[&label_only])
+                .is_ok()
+        );
     }
 
     #[test]
