@@ -2146,6 +2146,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "motionwright-driver-hyperframes"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "libc",
+ "motionwright-hyperframes-profile",
+ "schemars 1.2.2",
+ "semwright-backend-api",
+ "semwright-driver-host",
+ "semwright-driver-sdk",
+ "semwright-policy",
+ "semwright-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "motionwright-hyperframes-profile"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "schemars 1.2.2",
+ "semwright-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "motionwright-manim-community-driver"
 version = "0.1.0"
 dependencies = [
@@ -2172,6 +2206,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+ "ttf-parser",
  "uuid",
  "zip",
 ]
@@ -2181,12 +2216,15 @@ name = "motionwright-native"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "hex",
  "motionwright-domain",
+ "motionwright-hyperframes-profile",
  "motionwright-manim-profile",
  "motionwright-service",
  "motionwright-storage",
  "rusqlite",
+ "semwright-audio-domain",
  "semwright-effect-conformance",
  "semwright-media-time",
  "semwright-motion-authoring",
@@ -3250,6 +3288,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "semwright-audio-domain"
+version = "1.0.0"
+source = "git+https://github.com/seradotcom/semwright?rev=54d3459a051adbce4cae9f60c0dea8f60c824be6#54d3459a051adbce4cae9f60c0dea8f60c824be6"
+dependencies = [
+ "hex",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "uuid",
+]
+
+[[package]]
 name = "semwright-backend-api"
 version = "1.0.0"
 source = "git+https://github.com/seradotcom/semwright?rev=54d3459a051adbce4cae9f60c0dea8f60c824be6#54d3459a051adbce4cae9f60c0dea8f60c824be6"
@@ -3259,6 +3310,29 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "semwright-driver-host"
+version = "1.0.0"
+source = "git+https://github.com/seradotcom/semwright?rev=54d3459a051adbce4cae9f60c0dea8f60c824be6#54d3459a051adbce4cae9f60c0dea8f60c824be6"
+dependencies = [
+ "async-trait",
+ "hex",
+ "libc",
+ "semwright-backend-api",
+ "semwright-driver-sdk",
+ "semwright-platform-api",
+ "semwright-platform-services",
+ "semwright-policy",
+ "semwright-protocol",
+ "semwright-types",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tokio-util",
+ "windows",
 ]
 
 [[package]]
@@ -3411,6 +3485,21 @@ dependencies = [
  "uuid",
  "windows",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "semwright-policy"
+version = "1.0.0"
+source = "git+https://github.com/seradotcom/semwright?rev=54d3459a051adbce4cae9f60c0dea8f60c824be6#54d3459a051adbce4cae9f60c0dea8f60c824be6"
+dependencies = [
+ "hex",
+ "semwright-platform-api",
+ "semwright-platform-services",
+ "semwright-types",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "uuid",
 ]
 
 [[package]]
@@ -4543,9 +4632,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.2"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -4779,6 +4868,12 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "ttf-parser"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "typed-path"

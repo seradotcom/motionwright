@@ -28,7 +28,10 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": false,
-    "targets": ["deb", "appimage"],
+    "targets": [
+      "deb",
+      "appimage"
+    ],
     "windows": {
       "allowDowngrades": false,
       "nsis": {
@@ -37,9 +40,17 @@
         "installerHooks": "windows/uninstall-ownership.nsh"
       }
     },
-    "icon": ["icons/icon.png"],
+    "icon": [
+      "icons/icon.png"
+    ],
     "category": "Video",
     "shortDescription": "Semwright-native creative production studio",
-    "longDescription": "Motionwright is a local-first creative production studio for semantic audiovisual projects."
+    "longDescription": "Motionwright is a local-first creative production studio for semantic audiovisual projects.",
+    "resources": {
+      "../../../LICENSE": "licenses/motionwright/LICENSE",
+      "../../../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "../../../vendor/glib-0.18.5/LICENSE": "licenses/glib-0.18.5/LICENSE",
+      "../../../vendor/glib-0.18.5/COPYRIGHT": "licenses/glib-0.18.5/COPYRIGHT"
+    }
   }
 }

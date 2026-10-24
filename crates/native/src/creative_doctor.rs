@@ -1,8 +1,9 @@
 //! Read-only project runtime diagnosis. Version-compatible Semwright CLI !=
 //! authorized Broker, installed Driver Host, verified media or user approval.
 //! This module cannot install software, read owner secrets, grant effects or
-//! mutate creative source. Tauri owns the external CLI version-only probe.
-use motionwright_domain::{Project, RendererKind, RightsStatus};
+//! mutate creative source. Tauri owns the external CLI probe and read-only registry request.
+use crate::production::RendererRegistryObservation;
+use motionwright_domain::{Project, RendererKind, RevisionStamp, RightsStatus};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -72,7 +73,7 @@ impl CliEvidence {
 pub struct CreativeDoctorCheck {
     pub id: &'static str,
     pub status: &'static str,
-    pub detail: &'static str,
+    pub detail: String,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct CreativeDoctorRenderer {
@@ -179,7 +180,7 @@ pub fn inspect_creative_runtime(
             } else {
                 "blocked"
             },
-            detail: "Current project schema and internal references were checked. No asset bytes were read.",
+            detail: "Current project schema and internal references were checked. No asset bytes were read.".into(),
         },
         CreativeDoctorCheck {
             id: "native_sdk_contracts",
@@ -188,7 +189,7 @@ pub fn inspect_creative_runtime(
             } else {
                 "not_tested"
             },
-            detail: "First-party application operation contracts, not the external Broker, were validated.",
+            detail: "First-party application operation contracts, not the external Broker, were validated.".into(),
         },
         CreativeDoctorCheck {
             id: "semwright_cli_version",
@@ -197,32 +198,32 @@ pub fn inspect_creative_runtime(
             } else {
                 "blocked"
             },
-            detail: cli.reason(),
+            detail: cli.reason().into(),
         },
         CreativeDoctorCheck {
             id: "broker_session_and_effect_grants",
             status: "not_tested",
-            detail: "No Broker handshake, project policy grant or native effect has occurred in this doctor.",
+            detail: "No Broker handshake, project policy grant or native effect has occurred in this doctor.".into(),
         },
         CreativeDoctorCheck {
             id: "driver_host_renderer_discovery",
             status: "not_tested",
-            detail: "A source-declared driver is not evidence that it is installed or operational on the owner machine.",
+            detail: "A source-declared driver is not evidence that it is installed or operational on the owner machine.".into(),
         },
         CreativeDoctorCheck {
             id: "asset_blob_integrity",
             status: "not_tested",
-            detail: "Asset record digests are not proof that the local CAS contains the expected bytes; run a separate integrity scan.",
+            detail: "Asset record digests are not proof that the local CAS contains the expected bytes; run a separate integrity scan.".into(),
         },
         CreativeDoctorCheck {
             id: "installation_footprint_and_rollback",
             status: "not_tested",
-            detail: "No download destination, package size, entitlement, rollback or installation was inspected or changed.",
+            detail: "No download destination, package size, entitlement, rollback or installation was inspected or changed.".into(),
         },
         CreativeDoctorCheck {
             id: "rendered_media_acceptance",
             status: "not_tested",
-            detail: "A real native source readback, master file, frame/audio quality and independent human review remain required.",
+            detail: "A real native source readback, master file, frame/audio quality and independent human review remain required.".into(),
         },
     ];
     let outputs = project
@@ -278,6 +279,96 @@ pub fn require_doctor_scope(
     } else {
         Ok(())
     }
+}
+
+pub fn inspect_creative_runtime_with_registry(
+    project: &Project,
+    source_pin: &str,
+    cli: CliEvidence,
+    native_sdk_contracts_checked: bool,
+    registry: RendererRegistryObservation,
+) -> Result<CreativeRuntimeDoctorReport, &'static str> {
+    if !matches!(cli, CliEvidence::VersionCompatible) {
+        return Err("Renderer registry observation requires compatible CLI evidence");
+    }
+    let stamp = RevisionStamp {
+        resource: project.resource_key(),
+        generation: project.generation,
+        revision: project.revision,
+    };
+    if !registry.matches_scope(&stamp) {
+        return Err("Renderer registry observation belongs to another project revision");
+    }
+    let mut report =
+        inspect_creative_runtime(project, source_pin, cli, native_sdk_contracts_checked);
+    report.broker_dispatch_performed = true;
+    report.runtime_version_detail = "Semwright CLI version compatibility and an authenticated read-only Broker registry response were observed. Native runtime versions and renderer readiness remain unobserved.";
+    for check in &mut report.checks {
+        match check.id {
+            "semwright_cli_version" => check.detail = "The digest-pinned Semwright CLI completed its bounded version compatibility probe before the authenticated registry request. CLI compatibility does not establish native runtime compatibility.".into(),
+            "broker_session_and_effect_grants" => check.detail = "The Broker returned an authenticated read-only doctor response. Project effect grants and mutating native routes were not exercised by this check.".into(),
+            "driver_host_renderer_discovery" => check.detail = "The current Broker provider registry was observed. Native driver processes, runtime versions, renderer availability, and rendering were not tested by the registry request.".into(),
+            _ => {}
+        }
+    }
+    report.checks.push(CreativeDoctorCheck {
+        id: "broker_renderer_registry", status: "validated",
+        detail: format!(
+            "Authenticated Semwright doctor registry observed; catalog_revision={}; broker_request_id={}. The complete current registry establishes registration and lease connection state only; it does not establish physical installation or native runtime compatibility.",
+            registry.catalog_revision(),registry.broker_request_id(),
+        ),
+    });
+    const CHECKS: [(&str, &str, &str, &str); 4] = [
+        (
+            "motion-canvas",
+            "driver:motion-canvas",
+            "renderer_registry_motion_canvas",
+            "native_runtime_motion_canvas_version",
+        ),
+        (
+            "mlt",
+            "driver:mlt-video",
+            "renderer_registry_mlt",
+            "native_runtime_mlt_version",
+        ),
+        (
+            "blender",
+            "driver:blender",
+            "renderer_registry_blender",
+            "native_runtime_blender_version",
+        ),
+        (
+            "manim-community",
+            "driver:manim-community",
+            "renderer_registry_manim_community",
+            "native_runtime_manim_community_version",
+        ),
+    ];
+    for (renderer, provider, registry_check, version_check) in CHECKS {
+        let state = registry
+            .state_for(renderer)
+            .ok_or("Renderer registry contract is incomplete")?;
+        let generation = state
+            .generation()
+            .map_or_else(|| "not_registered".to_owned(), |value| value.to_string());
+        let provider_version = registry
+            .provider_version_for(renderer)
+            .unwrap_or("not_registered");
+        report.checks.push(CreativeDoctorCheck {
+            id:registry_check,status:"validated",
+            detail:format!(
+                "provider={provider}; registry_state={}; provider_generation={generation}; provider_identity_version={provider_version}. Provider version is metadata, not an observed native runtime version. An unregistered provider is absent from this Broker registry, not evidence that its application is uninstalled.",
+                state.label(),
+            ),
+        });
+        report.checks.push(CreativeDoctorCheck {
+            id:version_check,status:"not_tested",
+            detail:format!(
+                "Native runtime version for {renderer} was not observed. Registry membership, provider identity version, active leases, and advertised interfaces do not establish native runtime compatibility or renderer readiness.",
+            ),
+        });
+    }
+    Ok(report)
 }
 
 #[cfg(test)]

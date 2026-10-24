@@ -16,12 +16,16 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub mod assembly;
+pub mod blender_product_scene;
 pub mod canonical;
 mod component_text;
 pub mod creative_doctor;
 mod expressive;
 pub mod film;
+pub mod hyperframes;
 pub mod manim_camera_projection;
+pub mod manim_editable_projection;
+pub mod manim_static_projection;
 pub mod mlt_av_audio;
 pub mod mlt_edit_plan;
 pub mod multi_renderer;
@@ -871,6 +875,9 @@ impl OperationHandler for ApplyHandler {
             Ok(value) => value,
             Err(error) => return Completion::NotApplied(error),
         };
+        if let Err(error) = guard_generic_audio_change(&change) {
+            return Completion::NotApplied(error);
+        }
 
         apply_completion(
             self.service
@@ -4991,3 +4998,224 @@ mod narration_tests;
 
 /// Original-source, bounded PCM preview only; native SDK remains host authority.
 pub mod original_mix;
+
+/// Whether a change needs an owner-qualified audio ingress instead of a generic edit.
+/// Both the Native SDK and desktop shell use this same boundary.
+pub fn requires_qualified_audio_boundary(change: &Change) -> bool {
+    match change {
+        Change::ImportMeasuredVoice { .. }
+        | Change::AddVoiceTrack { .. }
+        | Change::ApplyVoiceAlignment { .. } => true,
+        Change::AddTranscriptSegment { segment } | Change::UpsertTranscriptSegment { segment } => {
+            matches!(
+                segment.alignment,
+                motionwright_domain::AlignmentEvidence::Measured { .. }
+            )
+        }
+        Change::AddAudioCue { cue } | Change::UpsertAudioCue { cue } => {
+            matches!(
+                cue.evidence,
+                motionwright_domain::CueEvidence::Measured
+                    | motionwright_domain::CueEvidence::TranscriptAligned
+            )
+        }
+        _ => false,
+    }
+}
+
+fn guard_generic_audio_change(change: &Change) -> NativeResult<()> {
+    if requires_qualified_audio_boundary(change) {
+        return Err(Error::invalid(
+            "audio evidence is reserved for a qualified audio boundary",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod qualified_audio_boundary_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    const VOICE_ID: &str = "11111111-1111-4111-8111-111111111111";
+    const ASSET_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const SEGMENT_ID: &str = "33333333-3333-4333-8333-333333333333";
+    const CUE_ID: &str = "44444444-4444-4444-8444-444444444444";
+    const RECEIPT_ID: &str = "55555555-5555-4555-8555-555555555555";
+
+    fn segment_wire(kind: &str) -> Value {
+        let alignment = match kind {
+            "manual" => json!({"kind": "manual"}),
+            "unknown" => json!({"kind": "unknown"}),
+            "measured" => json!({
+                "kind": "measured",
+                "engine": "controlled-fixture-not-native",
+                "source_sha256": "ab".repeat(32),
+                "confidence_millis": null
+            }),
+            _ => panic!("unexpected segment fixture evidence"),
+        };
+        json!({
+            "id": SEGMENT_ID, "voice_track_id": VOICE_ID,
+            "start": {"num": "1", "den": "2"}, "end": {"num": "3", "den": "2"},
+            "text": "hello", "speaker": null, "alignment": alignment
+        })
+    }
+
+    fn cue_wire(evidence: &str) -> Value {
+        assert!(matches!(
+            evidence,
+            "manual" | "unknown" | "measured" | "transcript_aligned"
+        ));
+        json!({
+            "id": CUE_ID, "label": "controlled fixture",
+            "at": {"num": "1", "den": "2"}, "source_segment_id": SEGMENT_ID,
+            "evidence": evidence
+        })
+    }
+
+    fn transcript_change(operation: &str, kind: &str) -> Change {
+        serde_json::from_value(json!({"type": operation, "segment": segment_wire(kind)}))
+            .expect("real transcript Change fixture must deserialize")
+    }
+
+    fn cue_change(operation: &str, evidence: &str) -> Change {
+        serde_json::from_value(json!({"type": operation, "cue": cue_wire(evidence)}))
+            .expect("real cue Change fixture must deserialize")
+    }
+
+    fn voice_alignment_change(empty_roster: bool) -> Change {
+        let segments = if empty_roster {
+            vec![]
+        } else {
+            vec![segment_wire("measured")]
+        };
+        let cues = if empty_roster {
+            vec![]
+        } else {
+            vec![cue_wire("transcript_aligned")]
+        };
+        serde_json::from_value(json!({
+            "type": "apply_voice_alignment",
+            "application": {
+                "profile": "acc007-en-ctc-1", "voice_track_id": VOICE_ID, "asset_id": ASSET_ID,
+                "source_sha256": "ab".repeat(32), "transcript_version": 1,
+                "transcript_text": "hello",
+                "transcript_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                "receipt": {
+                    "id": RECEIPT_ID, "request_id": "controlled-fixture-not-native-1",
+                    "request_sha256": "cd".repeat(32), "command": "controlled-fixture-not-native",
+                    "receipt_sha256": "ef".repeat(32)
+                },
+                "segments": segments, "cues": cues
+            }
+        })).expect("real ApplyVoiceAlignment fixture must deserialize")
+    }
+
+    #[test]
+    fn generic_guard_rejects_populated_voice_alignment() {
+        let change = voice_alignment_change(false);
+        let Change::ApplyVoiceAlignment { application } = &change else {
+            panic!("fixture must be ApplyVoiceAlignment");
+        };
+        assert_eq!(application.segments.len(), 1);
+        assert_eq!(application.cues.len(), 1);
+        assert!(guard_generic_audio_change(&change).is_err());
+    }
+    #[test]
+    fn generic_guard_rejects_voice_alignment_with_empty_roster() {
+        let change = voice_alignment_change(true);
+        let Change::ApplyVoiceAlignment { application } = &change else {
+            panic!("fixture must be ApplyVoiceAlignment");
+        };
+        assert!(application.segments.is_empty());
+        assert!(application.cues.is_empty());
+        assert!(guard_generic_audio_change(&change).is_err());
+    }
+    #[test]
+    fn transcript_parser_preserves_manual_and_unknown_evidence() {
+        for kind in ["manual", "unknown"] {
+            let args = json!({"segment": segment_wire(kind)});
+            let change = change_from_args(OperationKind::UpsertTranscriptSegment, &args)
+                .expect("manual and unknown transcript edits must remain available");
+            assert!(matches!(&change, Change::UpsertTranscriptSegment { .. }));
+            assert!(guard_generic_audio_change(&change).is_ok());
+            let wire = serde_json::to_value(&change).expect("Change must serialize");
+            assert_eq!(wire["segment"]["alignment"], json!({"kind": kind}));
+        }
+    }
+    #[test]
+    fn transcript_parser_still_rejects_measured_evidence() {
+        let decoded = transcript_change("upsert_transcript_segment", "measured");
+        assert!(matches!(decoded, Change::UpsertTranscriptSegment { .. }));
+        let args = json!({"segment": segment_wire("measured")});
+        let error = change_from_args(OperationKind::UpsertTranscriptSegment, &args)
+            .expect_err("measured alignment must not enter through the generic parser");
+        assert!(
+            error.to_string().contains(
+                "measured transcript alignment is reserved for a qualified alignment boundary"
+            ),
+            "rejection must come from the existing qualified-alignment boundary"
+        );
+    }
+    #[test]
+    fn cue_parser_preserves_manual_and_unknown_evidence() {
+        for evidence in ["manual", "unknown"] {
+            let args = json!({"cue": cue_wire(evidence)});
+            let change = change_from_args(OperationKind::UpsertAudioCue, &args)
+                .expect("manual and unknown cue edits must remain available");
+            assert!(matches!(&change, Change::UpsertAudioCue { .. }));
+            assert!(guard_generic_audio_change(&change).is_ok());
+            let wire = serde_json::to_value(&change).expect("Change must serialize");
+            assert_eq!(wire["cue"]["evidence"], json!(evidence));
+        }
+    }
+    #[test]
+    fn cue_parser_still_rejects_measured_and_transcript_aligned_evidence() {
+        for evidence in ["measured", "transcript_aligned"] {
+            let decoded = cue_change("upsert_audio_cue", evidence);
+            assert!(matches!(decoded, Change::UpsertAudioCue { .. }));
+            let args = json!({"cue": cue_wire(evidence)});
+            let error = change_from_args(OperationKind::UpsertAudioCue, &args)
+                .expect_err("qualified cue evidence must not enter through the generic parser");
+            assert!(
+                error.to_string().contains("qualified"),
+                "rejection must come from the existing qualified cue boundary"
+            );
+        }
+    }
+    #[test]
+    fn generic_guard_allows_manual_and_unknown_transcript_edits() {
+        for operation in ["add_transcript_segment", "upsert_transcript_segment"] {
+            for kind in ["manual", "unknown"] {
+                let change = transcript_change(operation, kind);
+                assert!(!requires_qualified_audio_boundary(&change));
+            }
+        }
+    }
+    #[test]
+    fn generic_guard_still_rejects_measured_transcript_edits() {
+        for operation in ["add_transcript_segment", "upsert_transcript_segment"] {
+            let change = transcript_change(operation, "measured");
+            assert!(requires_qualified_audio_boundary(&change));
+        }
+    }
+    #[test]
+    fn generic_guard_allows_manual_and_unknown_cue_edits() {
+        for operation in ["add_audio_cue", "upsert_audio_cue"] {
+            for evidence in ["manual", "unknown"] {
+                let change = cue_change(operation, evidence);
+                assert!(!requires_qualified_audio_boundary(&change));
+            }
+        }
+    }
+    #[test]
+    fn generic_guard_still_rejects_measured_and_transcript_aligned_cues() {
+        for operation in ["add_audio_cue", "upsert_audio_cue"] {
+            for evidence in ["measured", "transcript_aligned"] {
+                let change = cue_change(operation, evidence);
+                assert!(requires_qualified_audio_boundary(&change));
+            }
+        }
+    }
+}

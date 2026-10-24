@@ -1,6 +1,10 @@
 import { CircleCheck, CircleDashed, LockKeyhole, Package, ShieldCheck, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import CreativeRuntimeDoctorPanel from "./CreativeRuntimeDoctorPanel";
+import {sameValue} from "./creativeProduction";
+import {integrationScope,integrationEmptyInput,integrationExtension,integrationHandoff,
+  integrationExtensionInput,integrationHandoffInput,integrationSnapshot} from "./integrationAuthoringDraft";
+import {useIntegrationAuthoringDraft,IntegrationRecoveryFeedback} from "./useIntegrationAuthoringDraft";
 import {
   chooseSemwrightConnection,
   clearSavedSemwrightConnection,
@@ -26,18 +30,6 @@ const kindLabels: Record<ExtensionKind, string> = {
   "catalog-package": "Catalog package",
 };
 
-const newDraft = (): ExtensionProfile => ({
-  id: crypto.randomUUID(),
-  name: "Reviewed optional package",
-  kind: "remotion-renderer",
-  package_version: "",
-  digest_sha256: "",
-  license: "",
-  source: "",
-  rights_status: "unknown",
-  enabled: false,
-  permissions: ["read_project"],
-});
 
 function BoundaryRow({
   name,
@@ -61,72 +53,93 @@ function BoundaryRow({
   );
 }
 
-export default function IntegrationsWorkspace({
-  project,
-  nativeSdk,
-  commit,
-}: {
-  project: Project;
-  nativeSdk: Bootstrap["native_sdk"];
-  commit: (change: Change) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState<ExtensionProfile>(newDraft);
-  const [showForm, setShowForm] = useState(false);
+type IntegrationProps={
+  project:Project;nativeSdk:Bootstrap["native_sdk"];commit:(change:Change)=>Promise<Project>;
+};
+export default function IntegrationsWorkspace(props:IntegrationProps) {
+  const key=JSON.stringify([integrationScope(props.project),props.nativeSdk.mode,
+    props.nativeSdk.pinned_revision,props.nativeSdk.version]);
+  return <IntegrationWorkspaceEditor key={key} {...props}/>;
+}
+function IntegrationWorkspaceEditor({project,nativeSdk,commit}:IntegrationProps) {
+  const editor=useIntegrationAuthoringDraft(project,commit);
+  const input=editor.draft.input;
+  const draft:ExtensionProfile={
+    id:input.extensionId,name:input.extensionName,kind:input.extensionKind,package_version:input.extensionVersion,
+    digest_sha256:input.extensionDigest,license:input.extensionLicense,source:input.extensionSource,
+    rights_status:input.extensionRights,enabled:input.extensionEnabled,permissions:input.extensionPermissions,
+  };
+  const setDraft=(next:ExtensionProfile|((before:ExtensionProfile)=>ExtensionProfile))=>{
+    editor.editMany(integrationExtensionInput(typeof next==="function"?next(draft):next));
+  };
+  const showForm=input.showExtensionForm;
+  const setShowForm=(next:boolean|((before:boolean)=>boolean))=>
+    editor.edit("showExtensionForm",typeof next==="function"?next(showForm):next);
+  const mounted = useRef(false);
+  const runtimeEpoch = useRef(0);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; runtimeEpoch.current++; };
+  }, []);
   const [runtimeCompatibility, setRuntimeCompatibility] =
     useState<ProductionRuntimeCompatibility | null>(null);
   const [runtimeProbeFailed, setRuntimeProbeFailed] = useState(false);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [runtimeActionNote, setRuntimeActionNote] = useState<string | null>(null);
-  const [handoffDraft, setHandoffDraft] = useState<HandoffBinding>(() => ({
-    id: crypto.randomUUID(),
-    system: "launchwright",
-    direction: "context_input",
-    external_kind: "release",
-    external_id: "",
-    external_revision: null,
-    local_resource: "project:" + project.id,
-    artifact_sha256: null,
-  }));
-  const validDigest = /^[0-9a-f]{64}$/.test(draft.digest_sha256);
-  const validDraft = Boolean(
-    draft.name.trim() &&
-      draft.package_version.trim() &&
-      draft.license.trim() &&
-      draft.source.trim() &&
-      validDigest,
-  );
+  const handoffDraft:HandoffBinding={
+    id:input.handoffId,system:"launchwright",direction:input.handoffDirection,external_kind:input.handoffKind,
+    external_id:input.handoffExternalId,external_revision:input.handoffRevision,
+    local_resource:input.handoffLocalResource,artifact_sha256:input.handoffDigest,
+  };
+  const setHandoffDraft=(next:HandoffBinding)=>editor.editMany(integrationHandoffInput(next));
+  const validDigest=/^[0-9a-f]{64}$/.test(draft.digest_sha256);
+  const extensionProblem=(()=>{
+    try {const value=integrationExtension(input);
+      return project.extensions.some(existing=>sameValue(existing,value))?"These exact descriptor fields are already saved.":null;}
+    catch(error){return error instanceof Error?error.message:String(error);}
+  })();
+  const validDraft=extensionProblem===null&&!editor.blocked;
   const activeKinds = useMemo(
     () => new Set(project.extensions.filter((extension) => extension.enabled).map((extension) => extension.kind)),
     [project.extensions],
   );
 
   useEffect(() => {
-    let cancelled = false;
+    const epoch = ++runtimeEpoch.current;
+    const current = () => mounted.current && runtimeEpoch.current === epoch;
     setRuntimeCompatibility(null);
     setRuntimeProbeFailed(false);
     void productionRuntimeCompatibility(project)
       .then((status) => {
-        if (!cancelled) setRuntimeCompatibility(status);
+        if (current()) setRuntimeCompatibility(status);
       })
       .catch(() => {
-        if (!cancelled) setRuntimeProbeFailed(true);
+        if (current()) setRuntimeProbeFailed(true);
       });
     return () => {
-      cancelled = true;
+      if (runtimeEpoch.current === epoch) runtimeEpoch.current++;
     };
   }, [project.id, project.generation, nativeSdk.mode]);
 
   const updateRuntimeSelection = async (action: "choose" | "clear") => {
-    if (runtimeBusy || nativeSdk.mode !== "tauri") return;
+    if (runtimeBusy || nativeSdk.mode !== "tauri" || !mounted.current) return;
+    // Initial compatibility reads and explicit owner actions share authority.
+    // Starting an action revokes older reads; it does not cancel native work.
+    const epoch = ++runtimeEpoch.current;
+    const current = () => mounted.current && runtimeEpoch.current === epoch;
+    setRuntimeCompatibility(null);
+    setRuntimeProbeFailed(false);
     setRuntimeBusy(true);
     setRuntimeActionNote(null);
     try {
       const changed = action === "choose"
         ? await chooseSemwrightConnection(project)
         : await clearSavedSemwrightConnection(project);
+      if (!current()) return;
       // A canceled native chooser does not install/replace anything.
       // Revoking only the saved pointer never stops an existing provider job.
       const status = await productionRuntimeCompatibility(project);
+      if (!current()) return;
       setRuntimeCompatibility(status);
       setRuntimeProbeFailed(false);
       setRuntimeActionNote(action === "choose"
@@ -137,17 +150,20 @@ export default function IntegrationsWorkspace({
             ? "Saved project connection reference removed. Existing native jobs and the owner's original connection file were not touched."
             : "No saved project connection was present. An explicit environment connection may still apply."));
     } catch (error) {
+      if (!current()) return;
       setRuntimeActionNote(error instanceof Error ? error.message : String(error));
       // An invalid selection must not overwrite a previously working
       // connection. Probe again; report its actual live state.
       try {
-        setRuntimeCompatibility(await productionRuntimeCompatibility(project));
+        const status = await productionRuntimeCompatibility(project);
+        if (!current()) return;
+        setRuntimeCompatibility(status);
         setRuntimeProbeFailed(false);
       } catch {
-        setRuntimeProbeFailed(true);
+        if (current()) setRuntimeProbeFailed(true);
       }
     } finally {
-      setRuntimeBusy(false);
+      if (current()) setRuntimeBusy(false);
     }
   };
 
@@ -220,36 +236,29 @@ export default function IntegrationsWorkspace({
     }
   }, [runtimeCompatibility, runtimeProbeFailed]);
 
-  const saveDraft = async () => {
-    if (!validDraft) return;
-    await commit({ type: "upsert_extension", extension: draft });
-    setDraft(newDraft());
-    setShowForm(false);
+  const saveDraft=async()=>{if(validDraft)await editor.send("extension");};
+  const handoffNeedsDigest=handoffDraft.direction==="artifact_output"||handoffDraft.direction==="evidence_output";
+  const handoffProblem=(()=>{
+    try {const value=integrationHandoff(input,integrationSnapshot(project).resources);
+      return project.handoffs.some(existing=>sameValue(existing,value))?"These exact binding fields are already saved.":null;}
+    catch(error){return error instanceof Error?error.message:String(error);}
+  })();
+  const handoffValid=handoffProblem===null&&!editor.blocked;
+  const saveHandoff=async()=>{if(handoffValid)await editor.send("handoff");};
+  const startExtension=()=>{
+    const empty=integrationEmptyInput(project);
+    editor.loadFields(integrationExtensionInput({
+      id:empty.extensionId,name:empty.extensionName,kind:empty.extensionKind,package_version:empty.extensionVersion,
+      digest_sha256:empty.extensionDigest,license:empty.extensionLicense,source:empty.extensionSource,
+      rights_status:empty.extensionRights,enabled:empty.extensionEnabled,permissions:empty.extensionPermissions,
+    }));
   };
-
-  const handoffNeedsDigest =
-    handoffDraft.direction === "artifact_output" || handoffDraft.direction === "evidence_output";
-  const handoffValid = Boolean(
-    handoffDraft.external_id.trim() &&
-      handoffDraft.local_resource &&
-      (handoffNeedsDigest ? /^[0-9a-f]{64}$/.test(handoffDraft.artifact_sha256 ?? "") : handoffDraft.artifact_sha256 === null),
-  );
-
-  const saveHandoff = async () => {
-    if (!handoffValid) return;
-    await commit({ type: "upsert_handoff", binding: handoffDraft });
-    setHandoffDraft({
-      id: crypto.randomUUID(),
-      system: "launchwright",
-      direction: "context_input",
-      external_kind: "release",
-      external_id: "",
-      external_revision: null,
-      local_resource: "project:" + project.id,
-      artifact_sha256: null,
-    });
+  const startHandoff=()=>{
+    const empty=integrationEmptyInput(project);
+    editor.loadFields({handoffId:empty.handoffId,handoffDirection:empty.handoffDirection,handoffKind:empty.handoffKind,
+      handoffExternalId:empty.handoffExternalId,handoffRevision:empty.handoffRevision,
+      handoffLocalResource:empty.handoffLocalResource,handoffDigest:empty.handoffDigest});
   };
-
   const setPermission = (permission: ExtensionProfile["permissions"][number], checked: boolean) => {
     setDraft((current) => ({
       ...current,
@@ -269,6 +278,7 @@ export default function IntegrationsWorkspace({
         <span className="count-label">{project.extensions.length} descriptors</span>
       </header>
 
+      <IntegrationRecoveryFeedback editor={editor}/>
       <section className="integration-section" aria-label="Runtime boundaries">
         <div className="integration-section-heading">
           <div>
@@ -360,13 +370,8 @@ export default function IntegrationsWorkspace({
                 value={handoffDraft.direction}
                 onChange={(event) => {
                   const direction = event.target.value as HandoffDirection;
-                  const output = direction === "artifact_output" || direction === "evidence_output";
-                  setHandoffDraft({
-                    ...handoffDraft,
-                    direction,
-                    external_kind: direction === "artifact_output" ? "artifact" : direction === "evidence_output" ? "evidence" : "release",
-                    artifact_sha256: output ? "" : null,
-                  });
+                  // A direction change does not erase a separately authored kind or output digest.
+                  setHandoffDraft({...handoffDraft,direction});
                 }}
               >
                 <option value="context_input">Consume context</option>
@@ -404,7 +409,7 @@ export default function IntegrationsWorkspace({
                 aria-label="External resource revision"
                 value={handoffDraft.external_revision ?? ""}
                 placeholder="optional exact revision"
-                onChange={(event) => setHandoffDraft({ ...handoffDraft, external_revision: event.target.value.trim() ? event.target.value : null })}
+                onChange={(event) => setHandoffDraft({ ...handoffDraft, external_revision: event.target.value })}
               />
             </label>
             <label className="span-two">
@@ -414,6 +419,8 @@ export default function IntegrationsWorkspace({
                 value={handoffDraft.local_resource}
                 onChange={(event) => setHandoffDraft({ ...handoffDraft, local_resource: event.target.value })}
               >
+                {!integrationSnapshot(project).resources.includes(handoffDraft.local_resource)&&
+                  <option value={handoffDraft.local_resource}>Missing original binding · {handoffDraft.local_resource}</option>}
                 <option value={"project:" + project.id}>Project · {project.title}</option>
                 {project.scenes.map((scene) => <option key={scene.id} value={"scene:" + scene.id}>Scene · {scene.name}</option>)}
                 {project.assets.map((asset) => <option key={asset.id} value={"asset:" + asset.id}>Asset · {asset.name}</option>)}
@@ -427,20 +434,22 @@ export default function IntegrationsWorkspace({
                   className="mono"
                   aria-label="Handoff artifact digest"
                   value={handoffDraft.artifact_sha256 ?? ""}
-                  maxLength={64}
                   placeholder="64 lowercase hex characters"
-                  onChange={(event) => setHandoffDraft({ ...handoffDraft, artifact_sha256: event.target.value.trim().toLowerCase() })}
+                  onChange={(event) => setHandoffDraft({ ...handoffDraft, artifact_sha256: event.target.value })}
                 />
               </label>
             )}
           </div>
           <div className="handoff-editor-footer">
             <span>No remote mutation is performed by creating this binding.</span>
+            <button type="button" className="button secondary compact" disabled={editor.busy||!!editor.draft.pending}
+              onClick={startHandoff}>New binding</button>
             <button className="button button-primary compact" type="button" disabled={!handoffValid} onClick={() => void saveHandoff()}>
               Record binding
             </button>
           </div>
         </div>
+        {handoffProblem&&<p className="integration-runtime-note" role="status">{handoffProblem}</p>}
         <div className="handoff-list">
           {project.handoffs.length === 0 ? (
             <div className="integration-empty compact">
@@ -455,7 +464,10 @@ export default function IntegrationsWorkspace({
               </div>
               <span className="mono">{binding.external_revision ?? "unversioned"}</span>
               <span className="mono">{binding.artifact_sha256 ? binding.artifact_sha256.slice(0, 12) + "…" : binding.local_resource}</span>
-              <button className="plain-icon" type="button" aria-label={"Remove handoff " + binding.external_id} onClick={() => void commit({ type: "remove_handoff", binding_id: binding.id })}>
+              <button className="button secondary compact" type="button" disabled={editor.blocked}
+                onClick={()=>editor.loadFields(integrationHandoffInput(binding))}>Edit binding {binding.external_id}</button>
+              <button className="plain-icon" type="button" aria-label={"Remove handoff " + binding.external_id}
+                disabled={editor.blocked} onClick={() => void editor.send("remove_handoff",binding.id)}>
                 <Trash2 size={14} />
               </button>
             </div>
@@ -472,6 +484,8 @@ export default function IntegrationsWorkspace({
           <button className="button button-primary compact" type="button" onClick={() => setShowForm((value) => !value)}>
             {showForm ? "Close form" : "Register descriptor"}
           </button>
+          <button type="button" className="button secondary compact" disabled={editor.busy||!!editor.draft.pending}
+            onClick={startExtension}>New descriptor</button>
         </div>
 
         <div className="extension-capability-strip">
@@ -515,9 +529,8 @@ export default function IntegrationsWorkspace({
                   className="mono"
                   aria-label="Extension digest"
                   value={draft.digest_sha256}
-                  maxLength={64}
                   placeholder="64 lowercase hex characters"
-                  onChange={(event) => setDraft({ ...draft, digest_sha256: event.target.value.trim().toLowerCase() })}
+                  onChange={(event) => setDraft({ ...draft, digest_sha256: event.target.value })}
                 />
               </label>
               <label>
@@ -562,6 +575,7 @@ export default function IntegrationsWorkspace({
               <span className={validDigest ? "descriptor-valid" : "descriptor-warning"}>
                 {validDigest ? "Digest shape valid." : "A reviewed SHA-256 digest is required."}
               </span>
+              {extensionProblem&&<span role="status">{extensionProblem}</span>}
               <button className="button button-primary" type="button" disabled={!validDraft} onClick={() => void saveDraft()}>
                 Register versioned descriptor
               </button>
@@ -592,16 +606,19 @@ export default function IntegrationsWorkspace({
                 {extension.permissions.length ? extension.permissions.map((permission) => <span key={permission}>{permission}</span>) : <span>no permissions</span>}
               </div>
               <div className="extension-actions">
+                <button className="button secondary compact" type="button" disabled={editor.blocked}
+                  onClick={()=>editor.loadFields(integrationExtensionInput(extension))}>Edit descriptor {extension.name}</button>
                 <button
                   className="button compact"
                   type="button"
-                  disabled={!extension.enabled && extension.rights_status !== "cleared"}
-                  onClick={() => void commit({ type: "upsert_extension", extension: { ...extension, enabled: !extension.enabled } })}
+                  disabled={editor.blocked||!extension.enabled && extension.rights_status !== "cleared"}
+                  onClick={() => void editor.send("toggle_extension",extension.id)}
                 >
                   {extension.enabled ? <LockKeyhole size={13} /> : <CircleCheck size={13} />}
                   {extension.enabled ? "Disable" : "Enable"}
                 </button>
-                <button className="plain-icon" type="button" aria-label={"Remove extension " + extension.name} onClick={() => void commit({ type: "remove_extension", extension_id: extension.id })}>
+                <button className="plain-icon" type="button" aria-label={"Remove extension " + extension.name} disabled={editor.blocked}
+                  onClick={() => void editor.send("remove_extension",extension.id)}>
                   <Trash2 size={14} />
                 </button>
               </div>

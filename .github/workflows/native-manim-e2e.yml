@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Source contracts, static scene, original camera, or one saved-source camera cycle
+        description: Source contracts, static scene, camera, or an original editable-source cycle
         type: choice
-        options: [source-contracts, static-scene, camera120, camera120-source-cycle]
-        default: static-scene
+        options: [source-contracts, static-scene, camera120, camera120-source-cycle, editable-source-cycle]
+        default: source-contracts
       evidence_recipient_spki:
         description: Canonical RSA-3072 public SPKI DER in base64 for private originals
         type: string
@@ -21,13 +21,20 @@ on:
       - 'SOURCE_LOCK.json'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - 'crates/domain/**'
       - 'crates/service/**'
       - 'crates/storage/**'
       - 'crates/native/**'
       - 'crates/manim-profile/**'
+      - 'crates/hyperframes-profile/**'
       - 'crates/driver-manim-community/**'
       - 'tooling/native_manim_e2e.py'
+      - 'tooling/native_manim_editable_cycle.py'
+      - 'tooling/native_manim_editable_pixels.py'
+      - 'tooling/test_native_manim_editable_cycle.py'
+      - 'tooling/test_native_manim_editable_pixels.py'
+      - 'tooling/tests/test_native_manim_editable_workflow.py'
       - 'tooling/native_manim_camera_evidence.py'
       - 'tooling/native_manim_camera_cycle.py'
       - 'tooling/native_manim_camera_pixels.py'
@@ -35,9 +42,11 @@ on:
       - 'tooling/mlt_official_runtime_intake.py'
       - 'tooling/requirements/mlt-g2-custody.txt'
       - 'tooling/tests/test_native_manim_camera_evidence.py'
+      - 'tooling/tests/test_native_manim_static_custody.py'
       - 'tooling/tests/test_native_manim_camera_cycle.py'
       - 'tooling/tests/test_native_manim_camera_cycle_publication.py'
       - 'tooling/tests/test_native_manim_camera_pixels.py'
+      - 'tooling/tests/test_native_manim_runtime_receipt.py'
       - 'tooling/ci_test_runner.py'
       - 'tooling/native_scene_public_artifact.py'
       - 'tooling/cross_app_public_artifact.py'
@@ -48,7 +57,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ (inputs.scenario == 'camera120' || inputs.scenario == 'camera120-source-cycle') && 'native-manim-camera-original' || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
+  group: ${{ (inputs.scenario == 'camera120' || inputs.scenario == 'camera120-source-cycle' || inputs.scenario == 'editable-source-cycle') && 'native-manim-camera-original' || format('native-manim-roundtrip-{0}-{1}', github.event_name, github.head_ref || github.ref_name) }}
   cancel-in-progress: false
 
 defaults:
@@ -65,7 +74,7 @@ env:
 jobs:
   source-contracts:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -83,11 +92,18 @@ jobs:
           event = os.environ["WORKFLOW_EVENT"]
           scenario = os.environ["MANIM_REQUESTED_SCENARIO"]
           if event == "workflow_dispatch":
-              if scenario not in {"source-contracts", "static-scene", "camera120", "camera120-source-cycle"}:
+              if scenario not in {"source-contracts", "static-scene", "camera120", "camera120-source-cycle", "editable-source-cycle"}:
                   raise SystemExit("Unsupported Manim workflow scenario")
           elif event != "pull_request":
               raise SystemExit("Unsupported Manim workflow event")
           PY
+
+      - name: Quick source and conformance policies
+        run: |
+          python3 -B tooling/source_policy.py
+          python3 -B tooling/acceptance_policy.py
+          python3 -B tooling/creative_status_policy.py
+          python3 -B tooling/public_surface_policy.py
 
       - name: Install pinned private-custody test dependencies outside the checkout
         run: |
@@ -95,6 +111,61 @@ jobs:
           "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
             --disable-pip-version-check --require-hashes \
             -r tooling/requirements/mlt-g2-custody.txt
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --only-binary=:all: --no-deps Pillow==10.2.0
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -c \
+            'import PIL; assert PIL.__version__ == "10.2.0"'
+
+      - name: Require 13 writer and 32 native-observer source contracts
+        run: |
+          python3 -B tooling/ci_test_runner.py \
+            --test-directory crates/driver-manim-community/tests \
+            --pattern test_native_color_writer.py \
+            --pattern test_native_video_observer.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-n3-g0/report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-n3-g0/report.json").read_bytes())
+          assert value["status"] == "PASS" and value["exit_code"] == 0
+          assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert value["require_complete"] is True and "source_postcheck_error" not in value
+          expected = {"discovery:test_native_color_writer.py": 13,
+                      "discovery:test_native_video_observer.py": 32}
+          assert len(value["steps"]) == len(expected)
+          assert {step["entry_point"] for step in value["steps"]} == set(expected)
+          for step in value["steps"]:
+              assert step["status"] == "PASS" and step["exit_code"] == 0
+              counts = step["counts"]
+              assert counts["terminal_status"] == "OK"
+              assert counts["tests_run"] == counts["passed"] == expected[step["entry_point"]]
+              assert all(counts[key] == 0 for key in (
+                  "errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
+          PY
+
+      - name: Require 16 runtime receipt and original-video admission regressions
+        run: |
+          python3 -B tooling/ci_test_runner.py \
+            --pattern test_native_manim_runtime_receipt.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-runtime-receipt-g0/report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-runtime-receipt-g0/report.json").read_bytes())
+          assert value["status"] == "PASS" and value["exit_code"] == 0
+          assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert value["require_complete"] is True and "source_postcheck_error" not in value
+          assert len(value["steps"]) == 1
+          step = value["steps"][0]
+          assert step["entry_point"] == "discovery:test_native_manim_runtime_receipt.py"
+          assert step["status"] == "PASS" and step["exit_code"] == 0
+          counts = step["counts"]
+          assert counts["terminal_status"] == "OK" and counts["tests_run"] == counts["passed"] == 16
+          assert all(counts[key] == 0 for key in (
+              "errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
+          PY
 
       - name: Require 24 complete source-bound camera pixel regressions
         run: |
@@ -179,6 +250,544 @@ jobs:
           ))
           PY
 
+      - name: Require 29 complete static original-custody regressions on Linux
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_manim_static_custody.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-static-custody-g0/report.json"
+          python3 -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          value = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "manim-static-custody-g0/report.json").read_bytes()
+          )
+          assert value["status"] == "PASS" and type(value["exit_code"]) is int and value["exit_code"] == 0
+          assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert value["require_complete"] is True and "source_postcheck_error" not in value
+          assert len(value["steps"]) == 1
+          step = value["steps"][0]
+          assert step["entry_point"] == "discovery:test_native_manim_static_custody.py"
+          assert step["status"] == "PASS" and type(step["exit_code"]) is int and step["exit_code"] == 0
+          counts = step["counts"]
+          assert counts["terminal_status"] == "OK"
+          assert all(type(counts[key]) is int and counts[key] == 29 for key in ("tests_run", "passed"))
+          assert all(type(counts[key]) is int and counts[key] == 0 for key in (
+              "errors", "failures", "skipped", "expected_failures", "unexpected_successes",
+          ))
+          PY
+
+      - name: Require 12 editable-cycle and 10 original-pixel source contracts
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --test-directory tooling \
+            --pattern test_native_manim_editable_cycle.py \
+            --pattern test_native_manim_editable_pixels.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-editable-cycle-g0/report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-editable-cycle-g0/report.json").read_bytes())
+          assert value["status"] == "PASS" and value["exit_code"] == 0
+          assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert value["require_complete"] is True and "source_postcheck_error" not in value
+          expected = {"discovery:test_native_manim_editable_cycle.py": 12,
+                      "discovery:test_native_manim_editable_pixels.py": 10}
+          assert len(value["steps"]) == len(expected)
+          assert {step["entry_point"] for step in value["steps"]} == set(expected)
+          for step in value["steps"]:
+              assert step["status"] == "PASS" and step["exit_code"] == 0
+              counts = step["counts"]
+              assert counts["terminal_status"] == "OK"
+              assert counts["tests_run"] == counts["passed"] == expected[step["entry_point"]]
+              assert all(counts[key] == 0 for key in (
+                  "errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
+          PY
+
+      - name: Require 6 original editable-workflow publication controls
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_manim_editable_workflow.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-editable-workflow-g0/report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "manim-editable-workflow-g0/report.json").read_bytes())
+          assert value["status"] == "PASS" and value["exit_code"] == 0
+          assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert value["require_complete"] is True and "source_postcheck_error" not in value
+          assert len(value["steps"]) == 1
+          step = value["steps"][0]
+          assert step["entry_point"] == "discovery:test_native_manim_editable_workflow.py"
+          assert step["status"] == "PASS" and step["exit_code"] == 0
+          counts = step["counts"]
+          assert counts["terminal_status"] == "OK" and counts["tests_run"] == counts["passed"] == 6
+          assert all(counts[key] == 0 for key in (
+              "errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
+          PY
+
+      - name: Require 24 public-scene source contracts with custody dependencies
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_scene_public_artifact.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-scene-publication-g0/report.json"
+
+      - name: Admit the closed 239 Python source contracts and original streams
+        run: |
+          python3 -B - <<'PY'
+          import ast
+          from datetime import datetime
+          import hashlib
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+          import sys
+
+          # Replaced by the materializer with the reviewed 12 closed source rosters.
+          SUITES = [('crates/driver-manim-community/tests/test_native_color_writer.py', 'manim-n3-g0', 13, 'system', '2a2d0b95b89597f1e96d6d91308229a35cc50ad421edc0d885c6eed9406af404'), ('crates/driver-manim-community/tests/test_native_video_observer.py', 'manim-n3-g0', 32, 'system', 'e683cb00e1fb542a15e3f73b59c848b79d79c5e0173797f50b7d8d7c075c87b0'), ('tooling/tests/test_native_manim_runtime_receipt.py', 'manim-runtime-receipt-g0', 16, 'system', 'c5bd64a581e06366f054c711e84366b7eee04685ad815178f7d26ecf8a5052eb'), ('tooling/tests/test_native_manim_camera_pixels.py', 'manim-camera-pixel-g0', 24, 'system', 'b97699ede776bd27b3caa910cbaa3c0240fc290bd17ce76de6f833fe77470a4a'), ('tooling/tests/test_native_manim_camera_evidence.py', 'manim-camera-custody-g0', 30, 'custody', '6b0a140d1c6ad05182f56c661fbc8c8035a108e16b29ad0ddb75118a65060061'), ('tooling/tests/test_native_manim_camera_cycle.py', 'manim-camera-cycle-g0', 35, 'custody', '373ce2df1cdebce3862568e8db6ed5577f7ed6ae4c390a843efe2244e2ce85c6'), ('tooling/tests/test_native_manim_camera_cycle_publication.py', 'manim-camera-cycle-publication-g0', 8, 'custody', 'a2aaef843216e8c237c1fcb1d0b517d3b5ed127ed4e6b6336780ee5f1d313724'), ('tooling/tests/test_native_manim_static_custody.py', 'manim-static-custody-g0', 29, 'custody', 'ed3ff504746851d9efa0712b1807f9c29c7328734ed6b34376a9c5ce0ac8bd80'), ('tooling/test_native_manim_editable_cycle.py', 'manim-editable-cycle-g0', 12, 'custody', '188a66131e17ca1f34ed43ec74833e7c22c2bac2c22687ce32a89893282ca5b3'), ('tooling/test_native_manim_editable_pixels.py', 'manim-editable-cycle-g0', 10, 'custody', '1c1d11e4d9ecdb206dc818c11136980b6bb9480f735adfbd56b980a8e7bb4ee0'), ('tooling/tests/test_native_manim_editable_workflow.py', 'manim-editable-workflow-g0', 6, 'custody', '05b30217b62050b8ecba0f7aae492c5f309d7b8825ae7fdb1f16c353fe0232da'), ('tooling/tests/test_native_scene_public_artifact.py', 'manim-scene-publication-g0', 24, 'custody', '9320b244e95e794b4422066053933ed457290830088751e18e9dca2c656fc9a2')]
+
+          REVIEWED_DIAGNOSTICS = {
+              "test_native_manim_camera_evidence.CameraOriginalCustodyTests.test_late_receipt_write_failure_keeps_result_and_ciphertext": ("Manim camera original custody is incomplete; no replay.",),
+              "test_native_manim_camera_evidence.CameraOriginalCustodyTests.test_partial_original_capture_blocks_pass_but_retains_native_ok": ("Manim camera original custody is incomplete; no replay.",),
+              "test_native_manim_camera_evidence.CameraOriginalCustodyTests.test_successful_callback_survives_stream_sync_failure_without_false_pass": ("Manim camera original custody is incomplete; no replay.",),
+              "test_native_manim_static_custody.StaticCustodyTests.test_broker_cleanup_failure_still_closes_and_retains_log_before_sealing": ("Manim camera original custody is incomplete; no replay.",),
+              "test_native_manim_static_custody.StaticCustodyTests.test_real_partial_snapshot_retains_readable_originals_and_never_writes_pass": ("Manim camera original custody is incomplete; no replay.",),
+              "test_native_manim_static_custody.StaticCustodyTests.test_seal_failure_keeps_owner_streams_and_native_ok_without_legacy_pass": ("Manim camera original custody is incomplete; no replay.",),
+          }
+
+
+          def need(value, message):
+              if not value:
+                  raise ValueError(message)
+
+
+          def digest(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+
+          def strict_json(raw):
+              def pairs(items):
+                  result = {}
+                  for key, value in items:
+                      need(key not in result, "Duplicate JSON key")
+                      result[key] = value
+                  return result
+              return json.loads(raw, object_pairs_hook=pairs,
+                                parse_constant=lambda _: need(False, "Nonfinite JSON"))
+
+
+          def original_bytes(path):
+              path = Path(path)
+              before = path.lstat()
+              need(stat.S_ISREG(before.st_mode) and not path.is_symlink(), "Original must be regular")
+              raw = path.read_bytes()
+              after = path.lstat()
+              keys = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+              need(tuple(getattr(before, key) for key in keys) == tuple(getattr(after, key) for key in keys)
+                   and len(raw) == before.st_size, "Original changed during readback")
+              return raw
+
+
+          def suite_ids(raw, path, count, roster_sha256):
+              tree = ast.parse(raw, filename=path)
+              need(not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                           and node.name == "load_tests" for node in ast.walk(tree)), "Dynamic discovery is not reviewed")
+              names, classes = [], []
+              for cls in tree.body:
+                  if not isinstance(cls, ast.ClassDef):
+                      continue
+                  methods = [node.name for node in cls.body if isinstance(node, ast.FunctionDef)
+                             and node.name.startswith("test_")]
+                  if methods:
+                      need([ast.unparse(base) for base in cls.bases] == ["unittest.TestCase"]
+                           and cls.name not in classes and len(set(methods)) == len(methods),
+                           "Inherited/dynamic/duplicate test roster is not reviewed")
+                      classes.append(cls.name)
+                      names.extend(Path(path).stem + "." + cls.name + "." + method for method in methods)
+              names.sort()
+              need(len(names) == count and len(set(names)) == count
+                   and digest(("\n".join(names) + "\n").encode()) == roster_sha256,
+                   "Source nominal roster changed; require review")
+              return names
+
+
+          def nominal_cases(raw, expected_ids):
+              """Strict CPython class-only/full-method names and six reviewed diagnostics.
+
+              Only the parsing view normalizes CRLF; originals are never rewritten.
+              """
+              text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+              need(not any(character in text for character in ("\r", "\x00", "\v", "\f", "\x85", "\u2028", "\u2029")),
+                   "Unreviewed control or line-separator bytes")
+              footer = re.search(r"\n-{70}\nRan ([0-9]+) tests? in [0-9]+(?:\.[0-9]+)?s\n\nOK\n\Z", text)
+              need(footer is not None and footer.group(1) == str(len(expected_ids)), "Final canonical unittest footer is absent")
+              body = text[:footer.start()]
+              need(body.endswith("\n"), "Missing nominal terminal before footer")
+              lines, found, index = body[:-1].split("\n"), [], 0
+              header = re.compile(r"^(test_[A-Za-z0-9_]+) \(([A-Za-z_][A-Za-z0-9_.]*)\) \.\.\. (.*)$")
+              while index < len(lines):
+                  match = header.fullmatch(lines[index])
+                  need(match is not None, "Orphan terminal, displaced footer or unreviewed diagnostic")
+                  method, identity, status = match.groups()
+                  full = identity if identity.rsplit(".", 1)[-1] == method else identity + "." + method
+                  need(full in expected_ids, "Unrequested or mismatched nominal case")
+                  if status != "ok":
+                      diagnostic = REVIEWED_DIAGNOSTICS.get(full)
+                      need(type(diagnostic) is tuple and diagnostic and status == diagnostic[0]
+                           and lines[index + 1:index + len(diagnostic)] == list(diagnostic[1:])
+                           and index + len(diagnostic) < len(lines) and lines[index + len(diagnostic)] == "ok",
+                           "Unreviewed/nonadjacent diagnostic or unsuccessful terminal")
+                      index += len(diagnostic)
+                  found.append(full)
+                  index += 1
+              need(found == expected_ids, "Nominal execution differs from the closed source roster/order")
+              return found
+
+
+          def check_step(step, row, ids, logs, executable):
+              path, directory, count, interpreter, roster_sha256 = row
+              need(type(step) is dict and step.get("entry_point") == "discovery:" + Path(path).name,
+                   "Unexpected entry point")
+              expected_command = [str(executable), "-B", "-E", "-s", "-m", "unittest", "discover",
+                                  "-s", str(Path(path).parent), "-p", Path(path).name, "-v"]
+              need(step.get("command") == expected_command, "Interpreter or discovery command differs")
+              need(step.get("status") == "PASS" and type(step.get("exit_code")) is int and step["exit_code"] == 0,
+                   "Unsuccessful/uncertain/noninteger process result")
+              duration = step.get("duration_seconds")
+              need(type(duration) in (int, float) and math.isfinite(duration) and duration >= 0, "Invalid duration")
+              counts = step.get("counts")
+              expected = {"terminal_status": "OK", "tests_run": count, "passed": count,
+                          "errors": 0, "failures": 0, "skipped": 0, "expected_failures": 0, "unexpected_successes": 0}
+              need(type(counts) is dict and set(counts) == set(expected), "Result counts schema differs")
+              need(all(type(counts[key]) is int and counts[key] == value for key, value in expected.items()
+                       if key != "terminal_status") and counts["terminal_status"] == "OK", "Omitted/noninteger/failed results")
+              for stream in ("stdout", "stderr"):
+                  need(type(step.get(stream)) is dict and set(step[stream]) == {"file", "sha256"}
+                       and step[stream]["sha256"] == digest(logs[stream]), "Original stream identity differs")
+              return nominal_cases(logs["stderr"], ids)
+
+
+          def check_report(value, rows, source_sha, tree, github, definitions, locks, runner_sha, executable_sha):
+              need(type(value) is dict and value.get("schema") == "motionwright.unittest-execution/1", "Unreviewed receipt schema")
+              need(value.get("executed_source_sha") == source_sha and value.get("tree_sha") == tree
+                   and value.get("github") == github, "Receipt belongs to another source/run/attempt/job")
+              need(value.get("status") == "PASS" and type(value.get("exit_code")) is int and value["exit_code"] == 0
+                   and value.get("require_complete") is True and "source_postcheck_error" not in value,
+                   "Incomplete/unknown/failed source receipt")
+              need(value.get("test_definition_sha256") == definitions and value.get("source_locks") == locks
+                   and value.get("runner_sha256") == runner_sha and value.get("python_executable_sha256") == executable_sha,
+                   "Source, lock, runner or interpreter bytes differ")
+              need(type(value.get("steps")) is list and len(value["steps"]) == len(rows), "Missing/extra entry point")
+              need(datetime.fromisoformat(value["started_at_utc"]) <= datetime.fromisoformat(value["completed_at_utc"]),
+                   "Receipt completion precedes start")
+
+
+          def admit_source239():
+              root, temporary = Path.cwd(), Path(os.environ["RUNNER_TEMP"])
+              output = temporary / "manim-source239-admission"
+              output.mkdir(exist_ok=False)
+              record = {"schema": "motionwright.manim.source239-admission/1", "status": "FAIL_SOURCE_CONTRACTS",
+                        "scope": "239 unique Python source contracts in 12 discovery suites; no Rust/native/render/release acceptance",
+                        "new_test_executions": 0, "formal_acceptance": False, "reports": []}
+              def source_state():
+                  def git(*args):
+                      return subprocess.check_output(["git", *args], text=True).strip()
+                  head, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
+                  need(re.fullmatch(r"[0-9a-f]{40}", head) and head == os.environ["GITHUB_SHA"]
+                       and not git("status", "--porcelain", "--untracked-files=no"), "Dirty/wrong executed source")
+                  for options in (("--others", "--exclude-standard"), ("--others", "--ignored", "--exclude-standard")):
+                      need(not git("ls-files", *options), "Unbound checkout input")
+                  return {"executed_source_sha": head, "tree_sha": tree}
+              watched = {}
+              def read(path):
+                  path = Path(path)
+                  raw = original_bytes(path)
+                  watched[str(path)] = digest(raw)
+                  return raw
+              try:
+                  source = source_state()
+                  record.update(source)
+                  github = {key: os.environ.get(key, "") for key in
+                            ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}
+                  need(all(github.values()) and github["GITHUB_JOB"] == "source-contracts", "Source job identity is incomplete")
+                  record["github"] = github
+                  runner_sha = digest(read(root / "tooling/ci_test_runner.py"))
+                  locks = {name: digest(read(root / name)) for name in
+                           ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json") if (root / name).is_file()}
+                  all_ids, grouped = [], {}
+                  for row in SUITES:
+                      grouped.setdefault(row[1], []).append(row)
+                  need(len(SUITES) == 12 and len(grouped) == 10, "Reviewed suite/report closure differs")
+                  for directory, rows in grouped.items():
+                      folder = temporary / directory
+                      expected_files = {"report.json"} | {f"report-{i:02d}-{stream}.log" for i in range(len(rows)) for stream in ("stdout", "stderr")}
+                      need(folder.resolve(strict=True) == folder and set(p.name for p in folder.iterdir()) == expected_files,
+                           "Original report directory is aliased or not closed")
+                      report_raw = read(folder / "report.json")
+                      value = strict_json(report_raw)
+                      definitions = {row[0]: digest(read(root / row[0])) for row in rows}
+                      executable = Path(sys.executable) if rows[0][3] == "system" else temporary / "manim-custody-venv/bin/python"
+                      executable_sha = digest(executable.read_bytes())
+                      check_report(value, rows, source["executed_source_sha"], source["tree_sha"], github,
+                                   definitions, locks, runner_sha, executable_sha)
+                      admitted = []
+                      for index, row in enumerate(rows):
+                          need(row[3] == rows[0][3], "Mixed interpreters in a receipt")
+                          ids = suite_ids(read(root / row[0]), row[0], row[2], row[4])
+                          logs = {stream: read(folder / f"report-{index:02d}-{stream}.log") for stream in ("stdout", "stderr")}
+                          step = value["steps"][index]
+                          for stream in logs:
+                              need(step[stream]["file"] == f"report-{index:02d}-{stream}.log", "Aliased original stream")
+                          admitted.extend(check_step(step, row, ids, logs, executable))
+                      all_ids.extend(admitted)
+                      record["reports"].append({"directory": directory, "original_receipt_sha256": digest(report_raw),
+                                                "nominal_ids": admitted, "status": "PASS_SOURCE_CONTRACTS"})
+                  need(len(all_ids) == len(set(all_ids)) == 239, "Source239 contains omissions/duplicates")
+                  need(source_state() == source and all(digest(original_bytes(Path(path))) == pin for path, pin in watched.items()),
+                       "Source or originals changed during admission")
+                  record.update(status="PASS_SOURCE_CONTRACTS", unique_tests=239, discovery_suites=12,
+                                original_bytes_sha256=watched)
+              except BaseException as exc:
+                  record["error"] = str(exc)
+                  raise
+              finally:
+                  with (output / "admission.json").open("x", encoding="utf-8", newline="\n") as handle:
+                      json.dump(record, handle, indent=2, sort_keys=True)
+                      handle.write("\n")
+
+
+          admit_source239()
+          PY
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'source-contracts'
+        with:
+          toolchain: 1.98.1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'source-contracts'
+        with:
+          key: motionwright-native-manim-1.98.1
+          cache-on-failure: true
+
+      - name: Build and lint bounded Motionwright Manim provider
+        if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'source-contracts'
+        run: |
+          cargo build --locked -p motionwright-manim-community-driver --bins
+          cargo test --locked -p motionwright-manim-profile -p motionwright-manim-community-driver
+          cargo clippy --locked -p motionwright-manim-profile -p motionwright-manim-community-driver \
+            --all-targets -- -D warnings
+          cargo build --locked -p motionwright-native \
+            --example native-manim-e2e --example native-manim-camera-seed \
+            --example native-manim-camera-e2e
+          cargo test --locked -p motionwright-native --example native-manim-camera-seed
+          cargo test --locked -p motionwright-native \
+            --test manim_static_projection --test manim_editable_projection -- --nocapture
+          cargo test --locked -p motionwright-native multi_renderer::tests -- --nocapture
+          cargo test --locked -p motionwright-native \
+            production::tests::production_allowlist_binds_blender_to_the_native_driver \
+            -- --nocapture
+
+      - name: Require named example14 and runtime-version Rust source contracts
+        if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'source-contracts'
+        run: |
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          import time
+
+          # Replaced with exact nominal names from the reviewed source export.
+          RUST_CASES = {'example14': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
+
+
+          def rust_need(value, message):
+              if not value:
+                  raise ValueError(message)
+
+
+          def rust_sha(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+
+          def rust_text(raw):
+              text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+              rust_need(not any(c in text for c in ("\r", "\x00", "\v", "\f", "\x85", "\u2028", "\u2029")),
+                        "Unreviewed Rust control/line separator")
+              return text
+
+
+          def rust_list(raw):
+              lines = rust_text(raw).split("\n")
+              rust_need(lines[-1] == "", "Truncated Rust --list")
+              rows = lines[:-1]
+              rust_need(rows and all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_:]*: test", line) for line in rows),
+                        "Unreviewed/empty Rust --list output")
+              names = [line[:-6] for line in rows]
+              rust_need(names == sorted(set(names)), "Duplicate/unordered Rust discovery")
+              return names
+
+
+          def rust_selected(discovered, expected, prefix):
+              rust_need(expected and len(expected) == len(set(expected)), "Empty/duplicate scope is not PASS")
+              selected = [name for name in discovered if prefix is None or prefix in name]
+              rust_need(selected == expected, "Compiled discovery differs from the reviewed nominal source scope")
+              return [name for name in discovered if name not in expected]
+
+
+          def rust_result(raw, expected, not_selected):
+              rust_need(expected and len(expected) == len(set(expected)), "Empty/duplicate Rust execution is not PASS")
+              lines = rust_text(raw).strip("\n").split("\n")
+              rust_need(lines and lines[0] == f"running {len(expected)} tests", "Wrong/zero Rust execution count")
+              ending = re.fullmatch(
+                  r"test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored; 0 measured; ([0-9]+) filtered out; finished in [0-9]+(?:\.[0-9]+)?s",
+                  lines[-1])
+              rust_need(ending is not None and int(ending.group(1)) == len(expected)
+                        and int(ending.group(2)) == len(not_selected), "Missing/failed/omitted Rust footer")
+              body = lines[1:-1]
+              rust_need(body and body[-1] == "", "Missing separator before Rust footer")
+              body = body[:-1]
+              found, diagnostics, index = [], [], 0
+              while index < len(body):
+                  match = re.fullmatch(r"test ([A-Za-z_][A-Za-z0-9_:]*) \.\.\. (.*)", body[index])
+                  rust_need(match is not None, "Orphan Rust terminal/diagnostic")
+                  name, result = match.groups()
+                  rust_need(name in expected, "Unexpected Rust test identity")
+                  if result != "ok":
+                      # --nocapture is preserved for the existing example. Diagnostics
+                      # are retained and never interpreted as evidence of success.
+                      pending = [result]
+                      rust_need(result not in ("ignored", "FAILED") and not result.startswith("ignored,"),
+                                "Ignored/failed Rust case")
+                      index += 1
+                      while index < len(body) and body[index] != "ok":
+                          line = body[index]
+                          rust_need(not line.startswith(("test ", "test result:", "running ")),
+                                    "Nominal terminal omitted before another Rust case/footer")
+                          pending.append(line)
+                          index += 1
+                      rust_need(index < len(body) and body[index] == "ok", "Missing terminal ok for Rust case")
+                      diagnostics.append({"test_id": name, "diagnostic_lines": len(pending),
+                                          "diagnostic_evidence_credit": False})
+                  found.append(name)
+                  index += 1
+              rust_need(found == expected, "Rust cases are duplicated, omitted or out of order")
+              return diagnostics
+
+
+          def run_named_rust_contracts():
+              rust_need(sys.platform.startswith("linux"), "This lane requires the complete Linux roster; Windows empty scope is NOT_APPLICABLE")
+              output = Path(os.environ["RUNNER_TEMP"]) / "manim-rust-source-contracts"
+              output.mkdir(exist_ok=False)
+              record = {"schema": "motionwright.manim.rust-source-contracts/1", "status": "FAIL_SOURCE_CONTRACTS",
+                        "scope": "14 example + 4 renderer-version + 3 runtime-version source contracts on Linux; no native Manim render",
+                        "formal_acceptance": False, "automatic_retry": False, "commands": [], "scopes": []}
+              uncertain = False
+              def source_state():
+                  def git(*args):
+                      return subprocess.check_output(["git", *args]).decode("utf-8", "strict").strip()
+                  head, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
+                  rust_need(head == os.environ["GITHUB_SHA"] and re.fullmatch(r"[0-9a-f]{40}", head)
+                            and not git("status", "--porcelain", "--untracked-files=no"), "Rust checkout/source is dirty or foreign")
+                  # Actual compiled selection is independently checked by full --list.
+                  # Tracked physical bytes are observed around Cargo; generated target
+                  # files and the separately owned native SDK checkout are not credited.
+                  paths = subprocess.check_output(["git", "ls-files", "-z"]).decode("utf-8", "strict").split("\0")
+                  rust_need(paths[-1] == "" and len(paths[:-1]) == len(set(paths[:-1])), "Invalid tracked source closure")
+                  physical = {}
+                  for name in paths[:-1]:
+                      path = Path(name)
+                      rust_need(not path.is_absolute() and ".." not in path.parts and path.is_file()
+                                and not path.is_symlink(), "Tracked source is missing/aliased/nonregular")
+                      raw = path.read_bytes()
+                      physical[name] = {"bytes": len(raw), "sha256": rust_sha(raw)}
+                  return {"executed_source_sha": head, "tree_sha": tree, "tracked_physical_files": physical}
+              def capture(label, command):
+                  nonlocal uncertain
+                  rust_need(not uncertain, "Prior UNKNOWN forbids any subsequent command/retry")
+                  started = time.monotonic()
+                  row = {"label": label, "command": command, "status": "UNKNOWN_NO_RETRY", "exit_code": None}
+                  record["commands"].append(row)
+                  try:
+                      completed = subprocess.run(command, capture_output=True, timeout=900,
+                                                 env=dict(os.environ, CARGO_TERM_COLOR="never"))
+                      stdout, stderr, code = completed.stdout, completed.stderr, completed.returncode
+                      uncertain = type(code) is not int or code < 0
+                  except subprocess.TimeoutExpired as exc:
+                      stdout, stderr, code = exc.stdout or b"", exc.stderr or b"", None
+                      uncertain = True
+                  row.update(exit_code=code, duration_seconds=round(time.monotonic() - started, 6),
+                             status="UNKNOWN_NO_RETRY" if uncertain else "PASS" if code == 0 else "FAIL")
+                  for stream, raw in (("stdout", stdout), ("stderr", stderr)):
+                      name = label + "-" + stream + ".log"
+                      with (output / name).open("xb") as handle:
+                          handle.write(raw)
+                      row[stream] = {"file": name, "bytes": len(raw), "sha256": rust_sha(raw)}
+                  if uncertain:
+                      record["status"] = "UNKNOWN_NO_RETRY"
+                  rust_need(type(code) is int and code == 0, "Cargo command is failed/uncertain; no retry")
+                  return stdout
+              try:
+                  before = source_state()
+                  record["source_before"] = before
+                  record.update(executed_source_sha=before["executed_source_sha"], tree_sha=before["tree_sha"],
+                                github={key: os.environ.get(key, "") for key in
+                                        ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")})
+                  rust_need(all(record["github"].values()), "Rust run/job identity is incomplete")
+                  base = ["cargo", "test", "--locked", "-p", "motionwright-native"]
+                  # Both complete lists are captured before execution; intentional
+                  # exclusions are named separately and never promoted to PASS.
+                  lib_names = rust_list(capture("lib-list", base + ["--lib", "--", "--list", "--format", "terse"]))
+                  example_names = rust_list(capture("example-list", base + ["--example", "native-manim-e2e", "--", "--list", "--format", "terse"]))
+                  plans = [
+                      ("example14", example_names, None, ["--example", "native-manim-e2e"]),
+                      ("renderer4", lib_names, "production::renderer_versions::tests", ["--lib", "production::renderer_versions::tests"]),
+                      ("runtime3", lib_names, "production::tests::manim_runtime_version_", ["--lib", "production::tests::manim_runtime_version_"]),
+                  ]
+                  selected = []
+                  for label, names, prefix, args in plans:
+                      not_selected = rust_selected(names, RUST_CASES[label], prefix)
+                      row = {"scope": label, "selected_ids": RUST_CASES[label], "not_selected_ids": not_selected,
+                             "not_selected_status": "NOT_SELECTED_NO_CREDIT", "status": "NOT_RUN"}
+                      record["scopes"].append(row)
+                      selected.append((label, args, row))
+                  for label, args, row in selected:
+                      raw = capture(label + "-execute", base + args + ["--", "--nocapture", "--test-threads=1"])
+                      row["diagnostics"] = rust_result(raw, row["selected_ids"], row["not_selected_ids"])
+                      row["status"] = "PASS_SOURCE_CONTRACTS"
+                  after = source_state()
+                  record["source_after"] = after
+                  rust_need(after == before, "Source changed while compiling/discovering/executing Rust contracts")
+                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=21)
+              except BaseException as exc:
+                  if uncertain:
+                      record["status"] = "UNKNOWN_NO_RETRY"
+                  record["error"] = str(exc)
+                  raise
+              finally:
+                  # After UNKNOWN this is custody-only: no Git, Cargo or later scope runs.
+                  with (output / "receipt.json").open("x", encoding="utf-8", newline="\n") as handle:
+                      json.dump(record, handle, indent=2, sort_keys=True)
+                      handle.write("\n")
+
+
+          run_named_rust_contracts()
+          PY
+
       - name: Retain original source-contract reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -189,17 +798,25 @@ jobs:
             ${{ runner.temp }}/manim-camera-custody-g0/
             ${{ runner.temp }}/manim-camera-cycle-g0/
             ${{ runner.temp }}/manim-camera-cycle-publication-g0/
+            ${{ runner.temp }}/manim-static-custody-g0/
+            ${{ runner.temp }}/manim-n3-g0/
+            ${{ runner.temp }}/manim-runtime-receipt-g0/
+            ${{ runner.temp }}/manim-editable-cycle-g0/
+            ${{ runner.temp }}/manim-editable-workflow-g0/
+            ${{ runner.temp }}/manim-scene-publication-g0/
+            ${{ runner.temp }}/manim-source239-admission/
+            ${{ runner.temp }}/manim-rust-source-contracts/
           if-no-files-found: error
           retention-days: 14
 
   native-manim-roundtrip:
     needs: source-contracts
     if: >-
-      ${{ github.event_name == 'pull_request' ||
-          (github.event_name == 'workflow_dispatch' &&
-           (inputs.scenario == 'static-scene' ||
-            inputs.scenario == 'camera120' ||
-            inputs.scenario == 'camera120-source-cycle')) }}
+      ${{ github.event_name == 'workflow_dispatch' &&
+          (inputs.scenario == 'static-scene' ||
+           inputs.scenario == 'camera120' ||
+           inputs.scenario == 'camera120-source-cycle' ||
+           inputs.scenario == 'editable-source-cycle') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -213,6 +830,10 @@ jobs:
           "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
             --disable-pip-version-check --require-hashes \
             -r tooling/requirements/mlt-g2-custody.txt
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -m pip install \
+            --disable-pip-version-check --only-binary=:all: --no-deps Pillow==10.2.0
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -c \
+            'import PIL; assert PIL.__version__ == "10.2.0"'
 
       - name: Validate one camera dispatch and public recovery key
         if: github.event_name == 'workflow_dispatch' && (inputs.scenario == 'camera120' || inputs.scenario == 'camera120-source-cycle')
@@ -229,6 +850,39 @@ jobs:
           public_key({"spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
                       "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]})
           PY
+
+      - name: Validate one editable dispatch and public recovery key
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'editable-source-cycle'
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test ! -e "$RUNNER_TEMP/manim-editable-private-$GITHUB_SHA"
+          test ! -e "$RUNNER_TEMP/manim-editable-sealed-$GITHUB_SHA"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import os, sys
+          sys.path.insert(0, "tooling")
+          from ci_private_evidence import public_key
+          public_key({"spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
+                      "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]})
+          PY
+
+      - name: Validate one static dispatch and public recovery key
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'static-scene'
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import os, sys
+          sys.path.insert(0, "tooling")
+          from ci_private_evidence import public_key
+          public_key({"spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
+                      "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]})
+          PY
+          mkdir -m 700 "$RUNNER_TEMP/manim-static-private" "$RUNNER_TEMP/manim-static-sealed"
 
       - name: Resolve exact Semwright source pin
         id: pin
@@ -270,47 +924,157 @@ jobs:
           ffmpeg -version | head -1
           python3 --version
 
-      - name: Provision read-only Manim Community 0.21.0 runtime bundle
+      - name: Provision exact Manim 0.21.0 and observed PyAV 15.0.0 runtime
         run: |
+          set -euo pipefail
+          umask 077
           runtime="$SEMWRIGHT_TEST_MANIM_RUNTIME"
-          mkdir -p "$runtime/site-packages"
-          python3 -m pip install \
-            --disable-pip-version-check \
-            --no-compile \
-            --target "$runtime/site-packages" \
-            'manim==0.21.0'
-          cat > "$runtime/runtime.json" <<'JSON'
-          {"schema":1,"manim_version":"0.21.0"}
-          JSON
-          PYTHONPATH="$runtime/site-packages" \
-            PYTHONNOUSERSITE=1 \
-            PYTHONDONTWRITEBYTECODE=1 \
-            python3 -c 'import manim,sys; assert manim.__version__ == "0.21.0"; print(manim.__version__)'
+          private="$RUNNER_TEMP/manim-runtime-provision"
+          test ! -e "$runtime"
+          mkdir -m 700 "$runtime" "$private"
+          mkdir -m 700 "$runtime/site-packages" "$private/wheels"
+          python3 -m pip download --disable-pip-version-check --no-cache-dir \
+            --no-deps --only-binary=:all: --dest "$private/wheels" 'av==15.0.0' \
+            >"$private/download.stdout.log" 2>"$private/download.stderr.log"
           python3 - <<'PY'
-          import hashlib, json, os
+          import hashlib, json, os, subprocess, sys
           from pathlib import Path
           root = Path(os.environ["SEMWRIGHT_TEST_MANIM_RUNTIME"])
-          rows = []
-          for path in sorted((root / "site-packages").rglob("*")):
-              if not path.is_file() or path.is_symlink():
-                  continue
-              rel = path.relative_to(root).as_posix()
+          private = Path(os.environ["RUNNER_TEMP"]) / "manim-runtime-provision"
+          wheels = list((private / "wheels").glob("av-15.0.0-*.whl"))
+          if len(wheels) != 1 or not wheels[0].is_file() or wheels[0].is_symlink():
+              raise SystemExit("Require exactly one observed platform PyAV wheel")
+          wheel = wheels[0]
+          original = {"filename": wheel.name, "bytes": wheel.stat().st_size,
+                      "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}
+          with (private / "install.stdout.log").open("xb") as stdout, \
+               (private / "install.stderr.log").open("xb") as stderr:
+              subprocess.run([
+                  sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+                  "--no-cache-dir", "--no-compile", "--target", str(root / "site-packages"),
+                  "--report", str(private / "pip-install.json"),
+                  "manim==0.21.0", str(wheel),
+              ], stdout=stdout, stderr=stderr, check=True, timeout=900)
+          if original["sha256"] != hashlib.sha256(wheel.read_bytes()).hexdigest():
+              raise SystemExit("PyAV wheel changed during installation")
+          with (private / "pyav-wheel.json").open("x", encoding="utf-8") as stream:
+              json.dump(original, stream, sort_keys=True)
+              stream.write("\n")
+          receipt = {
+              "schema": 2, "manim_version": "0.21.0", "pyav_version": "15.0.0",
+              "source_color_policy": "srgb-rgba8-opaque-v1",
+              "color_recipe": "srgb-to-rec709-full12-v2",
+          }
+          with (root / "runtime.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, sort_keys=True)
+              stream.write("\n")
+          PY
+          PYTHONPATH="$runtime/site-packages" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+            python3 - <<'PY'
+          import hashlib, json, os, platform, shutil, subprocess, sys, zipfile
+          from pathlib import Path
+          import av
+          import av._core
+          import av.filter
+          import av.logging
+          import manim
+          root = Path(os.environ["SEMWRIGHT_TEST_MANIM_RUNTIME"]).resolve(strict=True)
+          packages = (root / "site-packages").resolve(strict=True)
+          private = Path(os.environ["RUNNER_TEMP"]) / "manim-runtime-provision"
+          if manim.__version__ != "0.21.0" or av.__version__ != "15.0.0":
+              raise SystemExit("Installed Manim/PyAV versions differ from runtime schema 2")
+          if not all(Path(module.__file__).resolve(strict=True).is_relative_to(packages)
+                     for module in (manim, av, av._core)):
+              raise SystemExit("Runtime imports escaped the installed bundle")
+          if not {"buffer", "showinfo", "buffersink"} <= set(av.filter.filters_available):
+              raise SystemExit("PyAV native metadata filters are unavailable")
+          if not all(callable(getattr(av.logging, name, None)) for name in (
+                  "get_level", "set_level", "set_libav_level",
+                  "get_skip_repeated", "set_skip_repeated")):
+              raise SystemExit("PyAV native logging observation API is unavailable")
+
+          def file_identity(path):
+              path = path.resolve(strict=True)
               h = hashlib.sha256()
               with path.open("rb") as stream:
                   for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                       h.update(chunk)
-              rows.append((rel, path.stat().st_size, h.hexdigest()))
+              return {"path": str(path), "bytes": path.stat().st_size, "sha256": h.hexdigest()}
+
+          wheel_info = json.loads((private / "pyav-wheel.json").read_bytes())
+          wheel = private / "wheels" / wheel_info["filename"]
+          observed_wheel = file_identity(wheel)
+          if any(observed_wheel[key] != wheel_info[key] for key in ("bytes", "sha256")):
+              raise SystemExit("Observed PyAV wheel identity changed")
+          loaded = set()
+          for line in Path("/proc/self/maps").read_text(encoding="utf-8").splitlines():
+              fields = line.split(maxsplit=5)
+              if len(fields) == 6 and fields[5].startswith("/"):
+                  path = Path(fields[5])
+                  if path.is_file() and path.resolve(strict=True).is_relative_to(packages):
+                      loaded.add(path.resolve(strict=True))
+          native_files = []
+          with zipfile.ZipFile(wheel) as archive:
+              members = archive.namelist()
+              if len(members) != len(set(members)):
+                  raise SystemExit("PyAV wheel contains duplicate members")
+              for path in sorted(loaded):
+                  relative = path.relative_to(packages).as_posix()
+                  if relative not in members:
+                      continue
+                  with path.open("rb") as stream:
+                      if stream.read(4) != b"\x7fELF":
+                          continue
+                  row = file_identity(path)
+                  wheel_sha = hashlib.sha256(archive.read(relative)).hexdigest()
+                  if wheel_sha != row["sha256"]:
+                      raise SystemExit("Loaded PyAV native bytes differ from the observed wheel")
+                  native_files.append({"path": relative, "bytes": row["bytes"],
+                                       "sha256": row["sha256"], "wheel_sha256": wheel_sha})
+          core = Path(av._core.__file__).resolve(strict=True).relative_to(packages).as_posix()
+          if not native_files or core not in {row["path"] for row in native_files}:
+              raise SystemExit("No original wheel binding for the loaded PyAV core")
+          selected_python = Path(os.environ.get("SEMWRIGHT_TEST_PYTHON", sys.executable)).resolve(strict=True)
+          if selected_python != Path(sys.executable).resolve(strict=True):
+              raise SystemExit("Observed Python differs from the selected Driver Host interpreter")
+          binaries = {"python": file_identity(selected_python)}
+          versions = {"python": sys.version}
+          for name in ("ffmpeg", "ffprobe"):
+              selected = os.environ.get("SEMWRIGHT_TEST_" + name.upper()) or shutil.which(name)
+              if not selected:
+                  raise SystemExit("Missing selected native executable: " + name)
+              path = Path(selected).resolve(strict=True)
+              binaries[name] = file_identity(path)
+              versions[name] = subprocess.check_output(
+                  [str(path), "-version"], text=True, timeout=20).splitlines()[0]
+          rows = []
+          for path in sorted(packages.rglob("*")):
+              if path.is_file() and not path.is_symlink():
+                  identity = file_identity(path)
+                  rows.append((path.relative_to(root).as_posix(),
+                               identity["bytes"], identity["sha256"]))
           payload = json.dumps(rows, separators=(",", ":"), ensure_ascii=True).encode()
+          pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
           receipt = {
-              "schema": 1,
-              "manim_version": "0.21.0",
-              "files": len(rows),
-              "inventory_sha256": hashlib.sha256(payload).hexdigest(),
+              "schema": "motionwright.manim.runtime-inventory/2",
+              "context": {"source_sha": os.environ["GITHUB_SHA"], "semwright_sha": pin,
+                          "run_id": os.environ["GITHUB_RUN_ID"],
+                          "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]},
+              "manim_version": manim.__version__, "pyav_version": av.__version__,
+              "libav_versions": {name: list(version) for name, version in sorted(av.library_versions.items())},
+              "platform": {"system": platform.system(), "machine": platform.machine()},
+              "runtime_receipt_sha256": file_identity(root / "runtime.json")["sha256"],
+              "binaries": binaries, "binary_versions": versions,
+              "pyav_wheel": wheel_info, "pyav_native_files": native_files,
+              "files": len(rows), "inventory_sha256": hashlib.sha256(payload).hexdigest(),
+              "native_render_performed": False,
           }
-          Path("verification/native-manim-e2e").mkdir(parents=True, exist_ok=True)
-          Path("verification/native-manim-e2e/runtime-inventory.json").write_text(
-              json.dumps(receipt, indent=2, sort_keys=True) + "\n"
-          )
+          destination = Path("verification/native-manim-e2e")
+          destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+          with (destination / "runtime-inventory.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          (destination / "runtime-inventory.json").chmod(0o600)
           PY
 
       - name: Configure disposable-runner Driver Host sandbox
@@ -334,20 +1098,227 @@ jobs:
             --example native-manim-e2e --example native-manim-camera-seed \
             --example native-manim-camera-e2e
           cargo test --locked -p motionwright-native --example native-manim-camera-seed
+          cargo test --locked -p motionwright-native \
+            --test manim_static_projection --test manim_editable_projection -- --nocapture
           cargo test --locked -p motionwright-native multi_renderer::tests -- --nocapture
           cargo test --locked -p motionwright-native \
             production::tests::production_allowlist_binds_blender_to_the_native_driver \
             -- --nocapture
 
+      - name: Require named example14 and runtime-version Rust source contracts
+        run: |
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          import time
+
+          # Replaced with exact nominal names from the reviewed source export.
+          RUST_CASES = {'example14': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
+
+
+          def rust_need(value, message):
+              if not value:
+                  raise ValueError(message)
+
+
+          def rust_sha(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+
+          def rust_text(raw):
+              text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+              rust_need(not any(c in text for c in ("\r", "\x00", "\v", "\f", "\x85", "\u2028", "\u2029")),
+                        "Unreviewed Rust control/line separator")
+              return text
+
+
+          def rust_list(raw):
+              lines = rust_text(raw).split("\n")
+              rust_need(lines[-1] == "", "Truncated Rust --list")
+              rows = lines[:-1]
+              rust_need(rows and all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_:]*: test", line) for line in rows),
+                        "Unreviewed/empty Rust --list output")
+              names = [line[:-6] for line in rows]
+              rust_need(names == sorted(set(names)), "Duplicate/unordered Rust discovery")
+              return names
+
+
+          def rust_selected(discovered, expected, prefix):
+              rust_need(expected and len(expected) == len(set(expected)), "Empty/duplicate scope is not PASS")
+              selected = [name for name in discovered if prefix is None or prefix in name]
+              rust_need(selected == expected, "Compiled discovery differs from the reviewed nominal source scope")
+              return [name for name in discovered if name not in expected]
+
+
+          def rust_result(raw, expected, not_selected):
+              rust_need(expected and len(expected) == len(set(expected)), "Empty/duplicate Rust execution is not PASS")
+              lines = rust_text(raw).strip("\n").split("\n")
+              rust_need(lines and lines[0] == f"running {len(expected)} tests", "Wrong/zero Rust execution count")
+              ending = re.fullmatch(
+                  r"test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored; 0 measured; ([0-9]+) filtered out; finished in [0-9]+(?:\.[0-9]+)?s",
+                  lines[-1])
+              rust_need(ending is not None and int(ending.group(1)) == len(expected)
+                        and int(ending.group(2)) == len(not_selected), "Missing/failed/omitted Rust footer")
+              body = lines[1:-1]
+              rust_need(body and body[-1] == "", "Missing separator before Rust footer")
+              body = body[:-1]
+              found, diagnostics, index = [], [], 0
+              while index < len(body):
+                  match = re.fullmatch(r"test ([A-Za-z_][A-Za-z0-9_:]*) \.\.\. (.*)", body[index])
+                  rust_need(match is not None, "Orphan Rust terminal/diagnostic")
+                  name, result = match.groups()
+                  rust_need(name in expected, "Unexpected Rust test identity")
+                  if result != "ok":
+                      # --nocapture is preserved for the existing example. Diagnostics
+                      # are retained and never interpreted as evidence of success.
+                      pending = [result]
+                      rust_need(result not in ("ignored", "FAILED") and not result.startswith("ignored,"),
+                                "Ignored/failed Rust case")
+                      index += 1
+                      while index < len(body) and body[index] != "ok":
+                          line = body[index]
+                          rust_need(not line.startswith(("test ", "test result:", "running ")),
+                                    "Nominal terminal omitted before another Rust case/footer")
+                          pending.append(line)
+                          index += 1
+                      rust_need(index < len(body) and body[index] == "ok", "Missing terminal ok for Rust case")
+                      diagnostics.append({"test_id": name, "diagnostic_lines": len(pending),
+                                          "diagnostic_evidence_credit": False})
+                  found.append(name)
+                  index += 1
+              rust_need(found == expected, "Rust cases are duplicated, omitted or out of order")
+              return diagnostics
+
+
+          def run_named_rust_contracts():
+              rust_need(sys.platform.startswith("linux"), "This lane requires the complete Linux roster; Windows empty scope is NOT_APPLICABLE")
+              output = Path(os.environ["RUNNER_TEMP"]) / "manim-rust-source-contracts"
+              output.mkdir(exist_ok=False)
+              record = {"schema": "motionwright.manim.rust-source-contracts/1", "status": "FAIL_SOURCE_CONTRACTS",
+                        "scope": "14 example + 4 renderer-version + 3 runtime-version source contracts on Linux; no native Manim render",
+                        "formal_acceptance": False, "automatic_retry": False, "commands": [], "scopes": []}
+              uncertain = False
+              def source_state():
+                  def git(*args):
+                      return subprocess.check_output(["git", *args]).decode("utf-8", "strict").strip()
+                  head, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
+                  rust_need(head == os.environ["GITHUB_SHA"] and re.fullmatch(r"[0-9a-f]{40}", head)
+                            and not git("status", "--porcelain", "--untracked-files=no"), "Rust checkout/source is dirty or foreign")
+                  # Actual compiled selection is independently checked by full --list.
+                  # Tracked physical bytes are observed around Cargo; generated target
+                  # files and the separately owned native SDK checkout are not credited.
+                  paths = subprocess.check_output(["git", "ls-files", "-z"]).decode("utf-8", "strict").split("\0")
+                  rust_need(paths[-1] == "" and len(paths[:-1]) == len(set(paths[:-1])), "Invalid tracked source closure")
+                  physical = {}
+                  for name in paths[:-1]:
+                      path = Path(name)
+                      rust_need(not path.is_absolute() and ".." not in path.parts and path.is_file()
+                                and not path.is_symlink(), "Tracked source is missing/aliased/nonregular")
+                      raw = path.read_bytes()
+                      physical[name] = {"bytes": len(raw), "sha256": rust_sha(raw)}
+                  return {"executed_source_sha": head, "tree_sha": tree, "tracked_physical_files": physical}
+              def capture(label, command):
+                  nonlocal uncertain
+                  rust_need(not uncertain, "Prior UNKNOWN forbids any subsequent command/retry")
+                  started = time.monotonic()
+                  row = {"label": label, "command": command, "status": "UNKNOWN_NO_RETRY", "exit_code": None}
+                  record["commands"].append(row)
+                  try:
+                      completed = subprocess.run(command, capture_output=True, timeout=900,
+                                                 env=dict(os.environ, CARGO_TERM_COLOR="never"))
+                      stdout, stderr, code = completed.stdout, completed.stderr, completed.returncode
+                      uncertain = type(code) is not int or code < 0
+                  except subprocess.TimeoutExpired as exc:
+                      stdout, stderr, code = exc.stdout or b"", exc.stderr or b"", None
+                      uncertain = True
+                  row.update(exit_code=code, duration_seconds=round(time.monotonic() - started, 6),
+                             status="UNKNOWN_NO_RETRY" if uncertain else "PASS" if code == 0 else "FAIL")
+                  for stream, raw in (("stdout", stdout), ("stderr", stderr)):
+                      name = label + "-" + stream + ".log"
+                      with (output / name).open("xb") as handle:
+                          handle.write(raw)
+                      row[stream] = {"file": name, "bytes": len(raw), "sha256": rust_sha(raw)}
+                  if uncertain:
+                      record["status"] = "UNKNOWN_NO_RETRY"
+                  rust_need(type(code) is int and code == 0, "Cargo command is failed/uncertain; no retry")
+                  return stdout
+              try:
+                  before = source_state()
+                  record["source_before"] = before
+                  record.update(executed_source_sha=before["executed_source_sha"], tree_sha=before["tree_sha"],
+                                github={key: os.environ.get(key, "") for key in
+                                        ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")})
+                  rust_need(all(record["github"].values()), "Rust run/job identity is incomplete")
+                  base = ["cargo", "test", "--locked", "-p", "motionwright-native"]
+                  # Both complete lists are captured before execution; intentional
+                  # exclusions are named separately and never promoted to PASS.
+                  lib_names = rust_list(capture("lib-list", base + ["--lib", "--", "--list", "--format", "terse"]))
+                  example_names = rust_list(capture("example-list", base + ["--example", "native-manim-e2e", "--", "--list", "--format", "terse"]))
+                  plans = [
+                      ("example14", example_names, None, ["--example", "native-manim-e2e"]),
+                      ("renderer4", lib_names, "production::renderer_versions::tests", ["--lib", "production::renderer_versions::tests"]),
+                      ("runtime3", lib_names, "production::tests::manim_runtime_version_", ["--lib", "production::tests::manim_runtime_version_"]),
+                  ]
+                  selected = []
+                  for label, names, prefix, args in plans:
+                      not_selected = rust_selected(names, RUST_CASES[label], prefix)
+                      row = {"scope": label, "selected_ids": RUST_CASES[label], "not_selected_ids": not_selected,
+                             "not_selected_status": "NOT_SELECTED_NO_CREDIT", "status": "NOT_RUN"}
+                      record["scopes"].append(row)
+                      selected.append((label, args, row))
+                  for label, args, row in selected:
+                      raw = capture(label + "-execute", base + args + ["--", "--nocapture", "--test-threads=1"])
+                      row["diagnostics"] = rust_result(raw, row["selected_ids"], row["not_selected_ids"])
+                      row["status"] = "PASS_SOURCE_CONTRACTS"
+                  after = source_state()
+                  record["source_after"] = after
+                  rust_need(after == before, "Source changed while compiling/discovering/executing Rust contracts")
+                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=21)
+              except BaseException as exc:
+                  if uncertain:
+                      record["status"] = "UNKNOWN_NO_RETRY"
+                  record["error"] = str(exc)
+                  raise
+              finally:
+                  # After UNKNOWN this is custody-only: no Git, Cargo or later scope runs.
+                  with (output / "receipt.json").open("x", encoding="utf-8", newline="\n") as handle:
+                      json.dump(record, handle, indent=2, sort_keys=True)
+                      handle.write("\n")
+
+
+          run_named_rust_contracts()
+          PY
+
+      - name: Retain original Rust source-contract reports from the native job
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manim-rust-source-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/manim-rust-source-contracts/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Realize application-owned scene through real Broker and Manim Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
-          MANIM_NATIVE_SCENARIO: ${{ inputs.scenario || 'static-scene' }}
+          MANIM_NATIVE_SCENARIO: ${{ inputs.scenario }}
           PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
           PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
         run: |
-          if [ "$MANIM_NATIVE_SCENARIO" = "camera120-source-cycle" ]; then
+          set -euo pipefail
+          if [ "$MANIM_NATIVE_SCENARIO" = "editable-source-cycle" ]; then
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_e2e.py \
+              --scenario editable-source-cycle \
+              --evidence-root "$RUNNER_TEMP/manim-editable-private-$GITHUB_SHA" \
+              --sealed-cycle-root "$RUNNER_TEMP/manim-editable-sealed-$GITHUB_SHA" \
+              | tee "$RUNNER_TEMP/manim-editable-cycle-wrapper.log"
+          elif [ "$MANIM_NATIVE_SCENARIO" = "camera120-source-cycle" ]; then
             "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_e2e.py \
               --scenario camera120-source-cycle \
               --evidence-root "$RUNNER_TEMP/manim-camera-private/original-$GITHUB_SHA" \
@@ -361,13 +1332,19 @@ jobs:
               --evidence-root "$RUNNER_TEMP/manim-camera-private/$GITHUB_SHA" \
               --sealed-originals "$RUNNER_TEMP/manim-camera-sealed/originals.mwci" \
               | tee "$RUNNER_TEMP/manim-camera-wrapper.log"
+          elif [ "$MANIM_NATIVE_SCENARIO" = "static-scene" ]; then
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_manim_e2e.py \
+              --scenario static-scene \
+              --evidence-root "$RUNNER_TEMP/manim-static-private/$GITHUB_SHA" \
+              --sealed-originals "$RUNNER_TEMP/manim-static-sealed/originals.mwci" \
+              | tee "$RUNNER_TEMP/manim-static-wrapper.log"
           else
-            python3 tooling/native_manim_e2e.py \
-              | tee verification/native-manim-e2e/run.log
+            exit 2
           fi
 
       - name: Reject unsafe public Blender and Manim scene media
-        run: python3 -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
 
       - name: Verify original camera evidence and completed sealed custody
         if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'camera120'
@@ -380,39 +1357,344 @@ jobs:
           sealed = json.loads((root / "camera-custody.json").read_bytes())
           assert result["native_manim_camera_e2e"] == "PASS"
           assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
-          assert result["native_effect_invocations"] == 1
-          assert result["mp4"]["frame_count"] == 120
+          assert type(result["native_effect_invocations"]) is int and result["native_effect_invocations"] == 1
+          assert type(result["mp4"]["frame_count"]) is int and result["mp4"]["frame_count"] == 120
           assert sealed["status"] == "PASS" and sealed["selected_originals_complete"] is True
-          assert sealed["secondary_error_count"] == 0 and sealed["native_result_retained"] is True
+          assert type(sealed["secondary_error_count"]) is int and sealed["secondary_error_count"] == 0
+          assert sealed["native_result_retained"] is True
           PY
 
-      - name: Verify Manim review evidence
-        if: inputs.scenario != 'camera120' && inputs.scenario != 'camera120-source-cycle'
+      - name: Verify four original editable phases and sealed custody
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'editable-source-cycle'
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
         run: |
-          test -s "verification/native-manim-e2e/${GITHUB_SHA}/result.json"
-          test -s "verification/native-manim-e2e/${GITHUB_SHA}/motionwright-manim-evidence.json"
-          test -s "verification/native-manim-e2e/${GITHUB_SHA}/motionwright-manim-community.mp4"
-          python3 - <<'PY'
-          import json, os
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import json, os, sys
           from pathlib import Path
-          root = Path("verification/native-manim-e2e") / os.environ["GITHUB_SHA"]
-          result = json.loads((root / "result.json").read_text())
-          assert result["native_manim_e2e"] == "PASS"
-          assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
-          assert len(result["semwright_sha"]) == 40
-          assert result["semwright_version"] == "1.0.0"
-          assert result["manim_version"] == "0.21.0"
-          assert result["mp4"]["width"] == 640
-          assert result["mp4"]["height"] == 360
-          assert result["mp4"]["bytes"] > 0
-          assert len(result["mp4"]["sha256"]) == 64
+          sys.path.insert(0, "tooling")
+
+          def verified_editable_cycle_summary(evidence_root, sealed_root, current, recipient_sha256):
+              """Read the original cycle and seals; never dispatch or decode native video."""
+              import re
+              from native_manim_camera_evidence import read, read_object, require, sha
+              from native_manim_editable_cycle import PHASES, EVIDENCE_NAME, verify_phase
+
+              require(set(current) == {"source_sha", "semwright_sha", "run_id", "run_attempt"}
+                      and all(type(current[key]) is str and re.fullmatch(r"[0-9a-f]{40}", current[key])
+                              for key in ("source_sha", "semwright_sha"))
+                      and type(current["run_id"]) is str and current["run_id"].isdigit()
+                      and current["run_attempt"] == "1"
+                      and type(recipient_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", recipient_sha256),
+                      "editable_public_original_context")
+              result_path = evidence_root / "cycle-result.json"
+              result = read_object(result_path)
+              observed_flags = (
+                  "fresh_process_and_session_per_phase", "same_saved_store",
+                  "typed_edit_import_and_fresh_readback",
+                  "original_bundle_byte_preserving_native_reopen",
+                  "edited_bundle_byte_preserving_native_reopen",
+                  "all_24_decoded_frames_equal_for_both_reopens",
+                  "edited_text_observed_in_all_frames",
+                  "license_and_origin_retained_alongside_original_font",
+              )
+              require(result.get("schema") == "motionwright.manim.editable.source-cycle-observation/1"
+                      and result.get("status") == "PASS" and result.get("context") == current
+                      and type(result.get("native_effect_invocations")) is int
+                      and result["native_effect_invocations"] == 4
+                      and all(result.get(key) is True for key in observed_flags)
+                      and all(result.get(key) is False for key in (
+                          "motion_canvas_equivalence_verified", "all_manim_features_accepted",
+                          "human_acceptance", "automatic_retry")),
+                      "editable_public_cycle_scope")
+              rows = result.get("phase_results")
+              require(type(rows) is list and len(rows) == 4
+                      and all(type(row) is dict and set(row) == {
+                          "phase", "result_sha256", "ciphertext_sha256"} for row in rows)
+                      and [row["phase"] for row in rows] == list(PHASES),
+                      "editable_public_four_ordered_outcomes")
+              summaries = []
+              for phase, row in zip(PHASES, rows):
+                  root = evidence_root / phase
+                  phase_result = read_object(root / "result.json")
+                  require(phase_result.get("phase") == phase
+                          and row["result_sha256"] == sha(read(root / "result.json")),
+                          "editable_public_original_phase_changed")
+                  if phase == "reopen-edited":
+                      require(phase_result.get("original_pixel_cycle_sha256") == result.get("pixel_cycle_sha256"),
+                              "editable_public_fourth_original_pixel_binding")
+                  custody = verify_phase({
+                      "current": current, "evidence": root, "phase_observation": phase_result,
+                      "native_path": root / EVIDENCE_NAME,
+                      "sealed_originals": sealed_root / (phase + ".mwseal"),
+                  }, current)
+                  require(custody.get("recipient_sha256") == recipient_sha256
+                          and row["ciphertext_sha256"] == custody["ciphertext_sha256"],
+                          "editable_public_seal_binding")
+                  summaries.append({
+                      "phase": phase, "result_sha256": row["result_sha256"],
+                      "ciphertext_sha256": custody["ciphertext_sha256"],
+                      "ciphertext_bytes": custody["ciphertext_bytes"],
+                  })
+              require(len({row["ciphertext_sha256"] for row in summaries}) == 4,
+                      "editable_public_distinct_original_seals")
+              pixel_path = evidence_root / "reopen-edited" / "editable-pixel-cycle.json"
+              pixels = read_object(pixel_path)
+              frames = pixels.get("frames")
+              require(result.get("pixel_cycle_sha256") == sha(read(pixel_path))
+                      and pixels.get("schema") == "motionwright.manim.editable.original-pixel-cycle/1"
+                      and pixels.get("status") == "PASS_REQUIRES_SEALED_CUSTODY"
+                      and type(pixels.get("frame_count_per_phase")) is int
+                      and pixels.get("frame_count_per_phase") == 24
+                      and all(pixels.get(key) is True for key in (
+                          "original_reopen_all_frames_equal", "edited_reopen_all_frames_equal",
+                          "saved_text_change_observed_in_all_frames"))
+                      and type(frames) is list and len(frames) == 24
+                      and all(type(row) is dict and type(row.get("index")) is int and row["index"] == index
+                              and row.get("original_reopen_all_rgba_equal") is True
+                              and row.get("edited_reopen_all_rgba_equal") is True
+                              and all(type(row.get(key)) is str
+                                      and re.fullmatch(r"[0-9a-f]{64}", row[key])
+                                      for key in ("original_rgba_sha256", "edited_rgba_sha256"))
+                              and row["original_rgba_sha256"] != row["edited_rgba_sha256"]
+                              for index, row in enumerate(frames))
+                      and type(pixels.get("native_video_decode_invocations")) is int
+                      and pixels.get("native_video_decode_invocations") == 0
+                      and type(pixels.get("render_invocations")) is int
+                      and pixels.get("render_invocations") == 0
+                      and pixels.get("human_acceptance") is False,
+                      "editable_public_all_original_pixels")
+              decoder = pixels.get("png_decoder")
+              require(type(decoder) is dict and decoder.get("implementation") == "Pillow"
+                      and type(decoder.get("version")) is str
+                      and re.fullmatch(r"[A-Za-z0-9_.+-]{1,64}", decoder["version"])
+                      and type(decoder.get("files")) is list and len(decoder["files"]) == 2
+                      and all(type(row) is dict and set(row) == {"name", "bytes", "sha256"}
+                              and type(row["name"]) is str
+                              and re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", row["name"])
+                              and type(row["bytes"]) is int and 0 < row["bytes"] <= 32 * 1024 * 1024
+                              and type(row["sha256"]) is str
+                              and re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
+                              for row in decoder["files"])
+                      and decoder["files"][0]["name"] == "Image.py"
+                      and decoder["files"][1]["name"].startswith("_imaging."),
+                      "editable_public_observed_png_decoder")
+              negative = pixels.get("original_media_as_edited_negative", {})
+              require(negative.get("status") == "EXPECTED_PIXEL_REJECTION"
+                      and negative.get("rejection") == "editable_text_change_unobserved"
+                      and negative.get("synthetic_pixels_used") is False,
+                      "editable_public_causal_original_negative")
+              return {
+                  "schema": "motionwright.manim.editable.source-cycle-public/1",
+                  "status": "VERIFIED_SCOPED_EDITABLE_SOURCE_CYCLE",
+                  "motionwright_sha": current["source_sha"], "semwright_sha": current["semwright_sha"],
+                  "profile": "editable-source-cycle", "native_effect_invocations": 4,
+                  "publisher_native_effect_invocations": 0, "decoded_frame_count_per_phase": 24,
+                  "original_cycle_result_sha256": sha(read(result_path)),
+                  "original_pixel_cycle_sha256": sha(read(pixel_path)),
+                  "sealed_originals_recipient_sha256": recipient_sha256, "phases": summaries,
+                  **{key: True for key in observed_flags},
+                  "motion_canvas_equivalence_verified": False, "all_manim_features_accepted": False,
+                  "human_acceptance": False, "automatic_retry": False,
+              }
+
+          source = os.environ["GITHUB_SHA"]
+          pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+          current = {"source_sha": source, "semwright_sha": pin,
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]}
+          temporary = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          summary = verified_editable_cycle_summary(
+              temporary / ("manim-editable-private-" + source),
+              temporary / ("manim-editable-sealed-" + source), current,
+              os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"])
+          destination = Path("verification/native-manim-editable-public")
+          destination.mkdir(parents=True, exist_ok=False)
+          with (destination / "public-evidence.json").open("x", encoding="utf-8") as stream:
+              json.dump(summary, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+
+      - name: Verify static originals and completed sealed custody
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'static-scene'
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import base64
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tooling")
+          from ci_private_evidence import (
+              HEX, MAGIC, MAX_FILES, MAX_TOTAL, SEAL_SCHEMA, json_bytes, regular, strict,
+          )
+          from native_manim_camera_evidence import read_object, require, sha
+          from native_manim_e2e import PIN, checked_static_originals
+
+          def static_typed_metadata(result, sealed, seed, native, terminal, preseal):
+              import json
+
+              def same_json(left, right):
+                  try:
+                      options = dict(sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=True, allow_nan=False)
+                      return json.dumps(left, **options) == json.dumps(right, **options)
+                  except (TypeError, ValueError):
+                      return False
+
+              require(type(seed.get("revision")) is int and seed["revision"] >= 1
+                      and same_json(result.get("project"), seed), "static_typed_project")
+              require(type(result.get("native_effect_invocations")) is int
+                      and result["native_effect_invocations"] == 1,
+                      "static_typed_invocation")
+              media = result.get("mp4", {})
+              artifact = native.get("result", {}).get("artifact", {})
+              require(type(media) is dict and type(artifact) is dict
+                      and all(type(media.get(key)) is int and media[key] == expected
+                              for key, expected in (("width", 640), ("height", 360)))
+                      and type(media.get("bytes")) is int and media["bytes"] > 0
+                      and type(artifact.get("bytes")) is int
+                      and artifact["bytes"] == media["bytes"], "static_typed_media")
+              require(type(sealed.get("secondary_error_count")) is int
+                      and sealed["secondary_error_count"] == 0
+                      and type(sealed.get("ciphertext_bytes")) is int
+                      and sealed["ciphertext_bytes"] > 0
+                      and type(result.get("sealed_originals_bytes")) is int
+                      and result["sealed_originals_bytes"] == sealed["ciphertext_bytes"],
+                      "static_typed_custody_counts")
+              observation = terminal.get("original_process_observation", {})
+              require(type(observation) is dict
+                      and type(observation.get("process_returncode")) is int
+                      and observation["process_returncode"] == 0
+                      and type(observation.get("pid")) is int and observation["pid"] > 0
+                      and observation.get("automatic_retry") is False
+                      and same_json(terminal.get("native_result"), native),
+                      "static_typed_original_terminal")
+              expected_preseal = dict(result)
+              del expected_preseal["sealed_originals_sha256"], expected_preseal["sealed_originals_bytes"]
+              expected_preseal["native_manim_e2e"] = "PASS_REQUIRES_SEALED_CUSTODY"
+              require(same_json(preseal, expected_preseal), "static_typed_preseal")
+
+          def verify_static():
+              source = os.environ["GITHUB_SHA"]
+              temporary = Path(os.environ["RUNNER_TEMP"])
+              root = temporary / "manim-static-private" / source
+              result = read_object(root / "result.json")
+              seed = read_object(root / "static-seed.stdout.log")
+              native = read_object(root / "native-example.stdout.log")
+              _, original_hashes = checked_static_originals(native, seed, root)
+              require(result.get("native_manim_e2e") == "PASS"
+                      and result.get("motionwright_sha") == source
+                      and result.get("semwright_sha") == PIN
+                      and result.get("semwright_version") == "1.0.0"
+                      and result.get("manim_version") == "0.21.0"
+                      and type(result.get("native_effect_invocations")) is int
+                      and result["native_effect_invocations"] == 1
+                      and result.get("project") == seed
+                      and all(result.get(key) == value for key, value in original_hashes.items())
+                      and result.get("sealed_custody_required") is True
+                      and result.get("native_editable_reopen_verified") is False
+                      and result.get("human_acceptance") is False, "static_result_binding")
+              before_seal = dict(result)
+              del before_seal["sealed_originals_sha256"], before_seal["sealed_originals_bytes"]
+              before_seal["native_manim_e2e"] = "PASS_REQUIRES_SEALED_CUSTODY"
+              preseal = read_object(root / "static-render-verification.json")
+              require(preseal == before_seal,
+                      "static_preseal_verification_binding")
+              terminal = read_object(root / "original-terminal.json")
+              require(terminal.get("native_example_invoked") is True
+                      and terminal.get("native_result") == native
+                      and terminal.get("native_error") is None
+                      and terminal.get("later_error") is None
+                      and terminal.get("secondary_errors") == []
+                      and terminal.get("automatic_retry") is False
+                      and type(terminal.get("original_process_observation", {}).get(
+                          "process_returncode")) is int
+                      and terminal["original_process_observation"]["process_returncode"] == 0,
+                      "static_original_terminal")
+              context = {"source_sha": source, "semwright_sha": PIN,
+                         "run_id": os.environ["GITHUB_RUN_ID"],
+                         "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]}
+              sealed = read_object(root / "camera-custody.json")
+              require(context["run_attempt"] == "1"
+                      and sealed.get("schema") == "motionwright.manim.camera.sealed-custody/1"
+                      and sealed.get("status") == "PASS"
+                      and sealed.get("context") == context
+                      and sealed.get("selected_originals_complete") is True
+                      and sealed.get("native_result_retained") is True
+                      and type(sealed.get("secondary_error_count")) is int
+                      and sealed["secondary_error_count"] == 0
+                      and sealed.get("original_owner_tree_removed") is False
+                      and sealed.get("producer_authenticated_by_encryption") is False
+                      and sealed.get("recipient_sha256") == os.environ[
+                          "PRIVATE_EVIDENCE_RECIPIENT_SHA256"], "static_complete_custody")
+              static_typed_metadata(result, sealed, seed, native, terminal, preseal)
+              # Preserve Native5 schema2 runtime and original Rust video admission.
+              # These are retained originals, not a new render/decoder or an SDK grant.
+              inventory = read_object(root / "runtime-inventory.json")
+              require(inventory.get("schema") == "motionwright.manim.runtime-inventory/2"
+                      and inventory.get("context") == context
+                      and inventory.get("manim_version") == "0.21.0"
+                      and inventory.get("pyav_version") == "15.0.0"
+                      and inventory.get("native_render_performed") is False,
+                      "static_native5_runtime_inventory")
+              admission = read_object(root / "native-video-admission.json")
+              require(admission.get("schema") == "motionwright.manim.original-native-video-admission/1"
+                      and admission.get("status") == "PASS"
+                      and admission.get("authority") == "original_driver_rust_parser_and_receipt"
+                      and admission.get("artifact_sha256") == result["mp4"]["sha256"]
+                      and admission.get("plan_sha256") == native["result"]["plan_sha256"]
+                      and type(admission.get("frame_count")) is int and admission["frame_count"] > 0
+                      and type(admission.get("native_metadata_frame_count")) is int
+                      and admission["native_metadata_frame_count"] == admission["frame_count"]
+                      and type(admission.get("native_decode_or_render_invocations")) is int
+                      and admission["native_decode_or_render_invocations"] == 0,
+                      "static_native5_original_video_admission")
+              envelope, _ = regular(temporary / "manim-static-sealed" / "originals.mwci",
+                                    MAX_TOTAL + MAX_FILES * 4096 + 8192 + 64)
+              require(sha(envelope) == sealed.get("ciphertext_sha256")
+                      == result["sealed_originals_sha256"]
+                      and len(envelope) == sealed.get("ciphertext_bytes")
+                      == result["sealed_originals_bytes"]
+                      and envelope.startswith(MAGIC), "static_ciphertext_binding")
+              offset = len(MAGIC)
+              length = int.from_bytes(envelope[offset:offset + 4], "big")
+              require(0 < length <= 8192, "static_seal_header_size")
+              aad = envelope[offset + 4:offset + 4 + length]
+              header = strict(aad)
+              require(set(header) == {
+                          "schema", "algorithm", "recipient_spki_sha256", "context",
+                          "nonce", "wrapped_key", "plaintext_sha256", "plaintext_bytes",
+                      } and json_bytes(header) == aad
+                      and header["schema"] == SEAL_SCHEMA
+                      and header["algorithm"] == "RSA-OAEP-SHA256+AES-256-GCM"
+                      and header["context"] == context
+                      and header["recipient_spki_sha256"] == sealed["recipient_sha256"]
+                      and type(header["plaintext_bytes"]) is int
+                      and 0 < header["plaintext_bytes"] <= MAX_TOTAL + MAX_FILES * 4096
+                      and type(header["plaintext_sha256"]) is str
+                      and HEX.fullmatch(header["plaintext_sha256"]) is not None
+                      and len(envelope) == offset + 4 + length + header["plaintext_bytes"] + 16,
+                      "static_seal_header_binding")
+              for key, size in (("nonce", 12), ("wrapped_key", 384)):
+                  raw = base64.b64decode(header[key], validate=True)
+                  require(len(raw) == size and base64.b64encode(raw).decode() == header[key],
+                          "static_seal_header_encoding")
+
+          try:
+              verify_static()
+          except BaseException:
+              raise SystemExit(
+                  "Static Manim publication withheld; inspect encrypted originals. No replay."
+              ) from None
           PY
 
       - name: Stage only verified Manim MP4, not original Broker receipts
-        if: always()
+        if: always() && inputs.scenario != 'editable-source-cycle'
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
-          MANIM_NATIVE_SCENARIO: ${{ inputs.scenario || 'static-scene' }}
+          MANIM_NATIVE_SCENARIO: ${{ inputs.scenario }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
         run: |
           if [ "$MANIM_NATIVE_SCENARIO" = "camera120-source-cycle" ]; then
             "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
@@ -499,6 +1781,7 @@ jobs:
                       and readback.get("canonical_stamp") == stamp
                       and all(readback.get(key) == binding[key]
                               for key in ("project_id", "scene_id", "deliverable_id"))
+                      and type(readback.get("production_receipt_window_limit")) is int
                       and readback.get("production_receipt_window_limit") == 256,
                       "cycle_public_readback_binding")
               require(all(readback.get(key) is True for key in (
@@ -533,6 +1816,7 @@ jobs:
                       and negative.get("edited_plan_sha256") == second["compiled_plan_sha256"]
                       and negative.get("original_native_evidence_sha256")
                           == observation["original_native_evidence_sha256"]
+                      and type(negative.get("decoded_frame_count")) is int
                       and negative.get("decoded_frame_count") == 120
                       and negative.get("metadata_and_original_digest_verified_before_geometry") is True
                       and all(negative.get(key) is False for key in (
@@ -607,21 +1891,26 @@ jobs:
               --sealed-originals "$RUNNER_TEMP/manim-camera-sealed/originals.mwci" \
               --output-root "verification/native-manim-public" \
               --job-status "$NATIVE_CI_JOB_STATUS"
-          else
-            python3 tooling/native_scene_public_artifact.py \
-              --scene manim \
+          elif [ "$MANIM_NATIVE_SCENARIO" = "static-scene" ]; then
+            "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/native_scene_public_artifact.py \
+              --scene manim --profile static \
               --source-sha "$GITHUB_SHA" \
-              --evidence-root "verification/native-manim-e2e/$GITHUB_SHA" \
+              --evidence-root "$RUNNER_TEMP/manim-static-private/$GITHUB_SHA" \
+              --sealed-originals "$RUNNER_TEMP/manim-static-sealed/originals.mwci" \
               --output-root "verification/native-manim-public" \
               --job-status "$NATIVE_CI_JOB_STATUS"
+          else
+            exit 2
           fi
           python3 -m json.tool verification/native-manim-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
+        if: always() && inputs.scenario != 'editable-source-cycle'
         with:
           name: motionwright-native-manim-${{ github.sha }}
-          path: verification/native-manim-public
+          path: |
+            verification/native-manim-public/public-evidence.json
+            verification/native-manim-public/motionwright-manim-community.mp4
           if-no-files-found: error
           retention-days: 14
 
@@ -642,5 +1931,36 @@ jobs:
         with:
           name: motionwright-manim-camera-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/manim-camera-sealed/originals.mwci
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain encrypted static originals on every terminal outcome
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.scenario == 'static-scene'
+        with:
+          name: motionwright-manim-static-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/manim-static-sealed/originals.mwci
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain verified editable source-cycle summary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'editable-source-cycle'
+        with:
+          name: motionwright-manim-editable-cycle-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: verification/native-manim-editable-public/public-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain attempted editable source-cycle outcomes without replay
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.scenario == 'editable-source-cycle'
+        with:
+          name: motionwright-manim-editable-originals-${{ github.sha }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manim-editable-sealed-${{ github.sha }}/original.mwseal
+            ${{ runner.temp }}/manim-editable-sealed-${{ github.sha }}/reopen-original.mwseal
+            ${{ runner.temp }}/manim-editable-sealed-${{ github.sha }}/edited.mwseal
+            ${{ runner.temp }}/manim-editable-sealed-${{ github.sha }}/reopen-edited.mwseal
           if-no-files-found: error
           retention-days: 14

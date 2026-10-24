@@ -2,7 +2,7 @@
 
 Storage and project-document versions are separate contracts. This module does
 not open a store, migrate a database, write receipts, or authorize a mutation.
-The existing source observer owns checkout admission; these pure validators
+The existing source observer owns checkout admission; these read-only validators
 interpret its bounded original declaration and the selected SQLite layout.
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ import copy
 import hashlib
 from pathlib import Path
 import re
+from uuid import UUID
 
 SCHEMA = "motionwright.storage-source-cohort/1"
 SOURCE_PATH = "crates/storage/src/lib.rs"
@@ -19,9 +20,44 @@ DOCUMENT_SCHEMA_AFTER_SAVE = 2
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA64 = re.compile(r"[0-9a-f]{64}\Z")
 FAMILIES = {2: "historical-v0", 3: "historical-v0",
-            4: "v1-with-legacy-zero-null"}
+            4: "v1-with-legacy-zero-null", 5: "v1-with-legacy-zero-null"}
 FIELDS = {"schema", "source_sha", "source_tree", "storage_schema",
           "document_schema_after_save", "receipt_family", "source_input"}
+
+# The schema-5 receipt representation is unchanged. Its CAS control layout is
+# separately required; a source-admitted version 5 is not an alias for version 4.
+# These are the declarations created by cas_retention::migrate_schema. There are
+# no project foreign keys: committed import markers intentionally survive a
+# deleted project and must never be treated as a cascading project projection.
+CAS_DDL = {
+    "cas_store_identity": """CREATE TABLE cas_store_identity (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        store_id TEXT NOT NULL UNIQUE
+    )""",
+    "cas_import_commits": """CREATE TABLE cas_import_commits (
+        operation_id TEXT PRIMARY KEY NOT NULL,
+        root_id TEXT NOT NULL,
+        store_id TEXT NOT NULL,
+        request_sha256 TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        generation TEXT NOT NULL
+    )""",
+}
+CAS_COLUMNS = {
+    "cas_store_identity": (
+        (0, "singleton", "INTEGER", 0, None, 1, 0),
+        (1, "store_id", "TEXT", 1, None, 0, 0),
+    ),
+    "cas_import_commits": tuple(
+        (position, name, "TEXT", 1, None, int(position == 0), 0)
+        for position, name in enumerate(("operation_id", "root_id", "store_id",
+                                         "request_sha256", "project_id", "generation"))
+    ),
+}
+CAS_INDEXES = {
+    "cas_store_identity": ("sqlite_autoindex_cas_store_identity_1", "u", 1, "store_id"),
+    "cas_import_commits": ("sqlite_autoindex_cas_import_commits_1", "pk", 0, "operation_id"),
+}
 
 
 class StorageContractError(ValueError):
@@ -179,6 +215,65 @@ def validate_receipt_columns(columns, cohort):
             and payload[1] == "apply_binding_json" and payload[2].upper() == "TEXT"
             and payload[3] == 0 and payload[4] is None and payload[5] == 0 and payload[6] == 0,
             "storage_binding_columns_differ")
+
+
+def _cas_ddl(value):
+    require(isinstance(value, str) and 0 < len(value) <= 16384,
+            "storage_cas_ddl_missing")
+    # The admitted declarations have no quoted values or comments. Whitespace
+    # and keyword case are immaterial; additional clauses or constraints are not.
+    return re.sub(r"\s+", "", value).casefold()
+
+
+def validate_schema_layout(connection, cohort):
+    """Inspect the admitted layout through the caller's read-only connection.
+
+    No database is opened, migrated or repaired here. Source admission selects
+    the expected version; PRAGMA user_version only checks that selection.
+    """
+    version = validate_cohort(cohort)["storage_schema"]
+    require(connection.execute("PRAGMA main.user_version").fetchone() == (version,),
+            "storage_schema_version_mismatch")
+    validate_receipt_columns(
+        connection.execute("PRAGMA main.table_xinfo('receipts')").fetchall(), cohort)
+    tables = tuple(CAS_DDL)
+    indexes = tuple(value[0] for value in CAS_INDEXES.values())
+    objects = connection.execute(
+        "SELECT type,name,tbl_name,sql FROM main.sqlite_schema "
+        "WHERE name COLLATE NOCASE IN (?,?,?,?) "
+        "OR tbl_name COLLATE NOCASE IN (?,?) LIMIT 5",
+        (*tables, *indexes, *tables),
+    ).fetchall()
+    if version < 5:
+        require(not objects, "historical_storage_has_reserved_cas_objects")
+        return
+    expected = {("table", name, name) for name in tables}
+    expected.update(("index", CAS_INDEXES[name][0], name) for name in tables)
+    require(len(objects) == 4 and {tuple(row[:3]) for row in objects} == expected,
+            "storage_cas_objects_differ")
+    declarations = {row[1]: row[3] for row in objects}
+    for name in tables:
+        require(_cas_ddl(declarations[name]) == _cas_ddl(CAS_DDL[name]),
+                "storage_cas_ddl_differs")
+        columns = connection.execute(f"PRAGMA main.table_xinfo('{name}')").fetchall()
+        require(tuple(columns) == CAS_COLUMNS[name], "storage_cas_columns_differ")
+        index, origin, column_id, column = CAS_INDEXES[name]
+        require(declarations[index] is None, "storage_cas_index_ddl_differs")
+        require(connection.execute(f"PRAGMA main.index_list('{name}')").fetchall()
+                == [(0, index, 1, origin, 0)], "storage_cas_indexes_differ")
+        require(connection.execute(f"PRAGMA main.index_xinfo('{index}')").fetchall()
+                == [(0, column_id, column, 0, "BINARY", 1),
+                    (1, -1, None, 0, "BINARY", 0)], "storage_cas_index_columns_differ")
+        require(not connection.execute(f"PRAGMA main.foreign_key_list('{name}')").fetchall(),
+                "storage_cas_foreign_keys_present")
+    identity = connection.execute(
+        "SELECT singleton,store_id FROM main.cas_store_identity LIMIT 2").fetchall()
+    require(len(identity) == 1 and type(identity[0][0]) is int and identity[0][0] == 1
+            and isinstance(identity[0][1], str), "storage_cas_identity_not_singular")
+    try:
+        UUID(identity[0][1])
+    except (ValueError, AttributeError) as error:
+        raise StorageContractError("storage_cas_identity_malformed") from error
 
 
 def validate_document(document, cohort):

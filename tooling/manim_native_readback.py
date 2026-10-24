@@ -266,14 +266,48 @@ def rational(value):
     return Fraction(n, d)
 
 
-def run_bounded(argv, max_stdout, timeout_seconds=120):
-    """Supervise only this new read-only decoder, with bounded memory and stderr."""
+def run_bounded(argv, max_stdout, timeout_seconds=120, *, input_bytes=None, capture=None):
+    """Supervise one read-only decoder; stdin and capture are opt-in."""
+    require(type(max_stdout) is int and max_stdout > 0, "readonly_decoder_stdout_budget")
+    require(type(timeout_seconds) in (int, float)
+            and math.isfinite(timeout_seconds) and timeout_seconds > 0,
+            "readonly_decoder_timeout_budget")
+    require(input_bytes is None or (type(input_bytes) is bytes
+            and 0 < len(input_bytes) <= 32 * 1024 * 1024), "readonly_decoder_stdin_budget")
+    require(capture is None or (type(capture) is dict and not capture),
+            "readonly_decoder_capture_must_be_new")
     started = time.monotonic()
-    process = subprocess.Popen([str(arg) for arg in argv], stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+    deadline = started + timeout_seconds
     outputs = [bytearray(), bytearray()]
     overflow = threading.Event()
     errors = []
+    stdin_complete = input_bytes is None
+    if capture is not None:
+        capture.update({"state": "RESERVED", "stdout": b"", "stderr": b"",
+                        "stdin_bytes": 0 if input_bytes is None else len(input_bytes),
+                        "stdin_sha256": None if input_bytes is None else sha(input_bytes)})
+    try:
+        process = subprocess.Popen(
+            [str(arg) for arg in argv],
+            stdin=subprocess.DEVNULL if input_bytes is None else subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+    except BaseException as error:
+        if capture is not None:
+            capture.update({"state": "NOT_STARTED",
+                            "startup_error_type": type(error).__name__,
+                            "terminal": {"exit_code": None,
+                                         "elapsed_seconds": time.monotonic() - started,
+                                         "whole_process_completed": False}})
+        raise
+
+    def stop():
+        try:
+            if process.poll() is None:
+                process.kill()
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            errors.append("kill:" + type(error).__name__)
 
     def drain(stream, index, limit):
         try:
@@ -285,33 +319,96 @@ def run_bounded(argv, max_stdout, timeout_seconds=120):
                 outputs[index].extend(chunk[:room])
                 if len(outputs[index]) > limit:
                     overflow.set()
-                    process.kill()
+                    stop()
                     break
         except OSError as error:
-            errors.append(str(error))
+            errors.append("read:" + type(error).__name__)
+            stop()
         finally:
-            stream.close()
+            try:
+                stream.close()
+            except OSError as error:
+                errors.append("close:" + type(error).__name__)
+
+    def feed():
+        nonlocal stdin_complete
+        try:
+            view = memoryview(input_bytes)
+            while view:
+                written = process.stdin.write(view)
+                if written is None or written <= 0:
+                    raise OSError("decoder_stdin_write_incomplete")
+                view = view[written:]
+            process.stdin.flush()
+            stdin_complete = True
+        except OSError as error:
+            errors.append("write:" + type(error).__name__)
+            stop()
+        finally:
+            try:
+                process.stdin.close()
+            except OSError as error:
+                errors.append("close_stdin:" + type(error).__name__)
 
     threads = [threading.Thread(target=drain, args=(process.stdout, 0, max_stdout), daemon=True),
                threading.Thread(target=drain, args=(process.stderr, 1, 65536), daemon=True)]
-    for thread in threads:
-        thread.start()
+    if input_bytes is not None:
+        threads.append(threading.Thread(target=feed, daemon=True))
+    active = []
     timed_out = False
+    original_error = None
     try:
-        process.wait(timeout=timeout_seconds)
+        for thread in threads:
+            thread.start()
+            active.append(thread)
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+        for thread in active:
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in active):
+            timed_out = True
+            stop()
     except subprocess.TimeoutExpired:
         timed_out = True
-        process.kill()
-        process.wait(timeout=10)
-    for thread in threads:
-        thread.join(timeout=10)
-    require(not any(thread.is_alive() for thread in threads), "decoder_pipe_not_closed")
+        stop()
+    except BaseException as error:
+        original_error = error
+        stop()
+    finally:
+        # One cleanup allowance, shared by process and every pipe thread.
+        cleanup_deadline = time.monotonic() + 10
+        if process.poll() is None:
+            stop()
+            try:
+                process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                errors.append("cleanup:TimeoutExpired")
+            except OSError as error:
+                errors.append("cleanup:" + type(error).__name__)
+        for thread in active:
+            thread.join(timeout=max(0, cleanup_deadline - time.monotonic()))
+        pipes_closed = not any(thread.is_alive() for thread in active)
+        terminal = {"exit_code": process.returncode,
+                    "elapsed_seconds": time.monotonic() - started,
+                    "stdout_bytes": len(outputs[0]), "stderr_bytes": len(outputs[1]),
+                    "stderr_sha256": sha(outputs[1]),
+                    "whole_process_completed": process.returncode is not None and pipes_closed,
+                    "timed_out": timed_out, "output_budget_exceeded": overflow.is_set(),
+                    "pipes_closed": pipes_closed, "stdin_complete": stdin_complete,
+                    "pipe_errors": list(errors)}
+        if capture is not None:
+            capture.update({"state": "TERMINAL_OBSERVED", "terminal": terminal,
+                            "stdout": bytes(outputs[0]), "stderr": bytes(outputs[1])})
+    # Retain exact bounded streams and terminal before interpreting success.
+    if original_error is not None:
+        raise original_error
     require(not timed_out, "readonly_decoder_timeout")
     require(not overflow.is_set(), "readonly_decoder_output_budget")
-    require(not errors, "readonly_decoder_pipe_error")
+    require(pipes_closed, "decoder_pipe_not_closed")
+    require(not errors and stdin_complete, "readonly_decoder_pipe_error")
     require(process.returncode == 0,
             f"readonly_decoder_failed:{process.returncode}:{bytes(outputs[1]).decode('utf-8', 'replace')[:2000]}")
-    return bytes(outputs[0]), {"exit_code": process.returncode, "elapsed_seconds": time.monotonic() - started,
+    return bytes(outputs[0]), {"exit_code": process.returncode,
+                              "elapsed_seconds": terminal["elapsed_seconds"],
                               "stdout_bytes": len(outputs[0]), "stderr_bytes": len(outputs[1]),
                               "stderr_sha256": sha(outputs[1]), "whole_process_completed": True}
 

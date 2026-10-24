@@ -204,13 +204,13 @@ class _BootObservations:
 
 
 def expected_storage_schema(storage_cohort, first_use_contract):
-    """Keep historical defaults while requiring separate admission for schema4."""
+    """Keep historical defaults while requiring source admission for schema4/5."""
     _first_use_title(first_use_contract)
     historical = (LEGACY_EXPECTED_SCHEMA if first_use_contract == LEGACY_FIRST_USE_CONTRACT
                   else EXPECTED_SCHEMA)
     version = storage.expected_schema(storage_cohort, historical_default=historical)
     require((first_use_contract == LEGACY_FIRST_USE_CONTRACT and version == 2)
-            or (first_use_contract == CURRENT_FIRST_USE_CONTRACT and version in (3, 4)),
+            or (first_use_contract == CURRENT_FIRST_USE_CONTRACT and version in (3, 4, 5)),
             "SQLite cohort conflicts with the admitted first-use contract")
     return version
 
@@ -231,8 +231,7 @@ def read_project_snapshot(
             require(db.execute("PRAGMA user_version").fetchone() == (expected_schema,),
                     "Installed SQLite project schema does not match its source contract")
             if storage_cohort is not None:
-                storage.validate_receipt_columns(
-                    db.execute("PRAGMA main.table_xinfo(\'receipts\')").fetchall(), storage_cohort)
+                storage.validate_schema_layout(db, storage_cohort)
             rows = db.execute(
                 "SELECT id, generation, revision, title, document_json FROM projects ORDER BY id"
             ).fetchall()
@@ -297,8 +296,7 @@ def _empty_library_ready(database: Path, *, storage_cohort=None) -> bool:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("PRAGMA trusted_schema=OFF")
             if storage_cohort is not None:
-                storage.validate_receipt_columns(
-                    connection.execute("PRAGMA main.table_xinfo(\'receipts\')").fetchall(), storage_cohort)
+                storage.validate_schema_layout(connection, storage_cohort)
             return (
                 connection.execute("PRAGMA quick_check(1)").fetchone() == ("ok",)
                 and connection.execute("PRAGMA user_version").fetchone() == (expected_schema,)

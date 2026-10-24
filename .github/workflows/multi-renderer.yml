@@ -5,10 +5,14 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "SOURCE_LOCK.json"
       - "crates/domain/**"
+      - "crates/storage/**"
       - "crates/native/**"
+      - "crates/service/**"
       - "crates/manim-profile/**"
+      - "crates/hyperframes-profile/**"
       - "crates/driver-manim-community/**"
       - "docs/renderers.md"
       - ".github/workflows/multi-renderer.yml"
@@ -17,10 +21,14 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "SOURCE_LOCK.json"
       - "crates/domain/**"
+      - "crates/storage/**"
       - "crates/native/**"
+      - "crates/service/**"
       - "crates/manim-profile/**"
+      - "crates/hyperframes-profile/**"
       - "crates/driver-manim-community/**"
       - "docs/renderers.md"
       - ".github/workflows/multi-renderer.yml"
@@ -43,8 +51,93 @@ jobs:
         run: python3 tooling/source_policy.py
       - name: Renderer profile and provider contracts
         run: cargo test --locked -p motionwright-manim-profile -p motionwright-manim-community-driver
-      - name: Blender and Manim projections
-        run: cargo test --locked -p motionwright-native multi_renderer::tests --all-targets
+      - name: Compile Manim entrypoints and require projection, editable-source and clock contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          g1_logs="$RUNNER_TEMP/multi-renderer-source-g1"
+          mkdir -m 700 "$g1_logs"
+          run_contract() {
+            label="$1"
+            expected="$2"
+            shift 2
+            set +e
+            "$@" 2>&1 | tee "$g1_logs/$label.log"
+            contract_statuses=("${PIPESTATUS[@]}")
+            set -e
+            if [ "${#contract_statuses[@]}" -ne 2 ]; then
+              printf '%s\n' "Unexpected source/capture pipeline width" >&2
+              return 2
+            fi
+            contract_exit="${contract_statuses[0]}"
+            capture_exit="${contract_statuses[1]}"
+            python3 - "$g1_logs/$label.log" "$expected" "$label" "$contract_exit" "$capture_exit" <<'PY'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          path, expected_count, label, exit_code = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+          capture_exit = int(sys.argv[5])
+          required_by_label = {'projections': ['multi_renderer::tests::blender_projection_is_bounded_geometry_with_revision_identity', 'multi_renderer::tests::blender_projection_negotiates_non_normal_blend_before_dispatch', 'multi_renderer::tests::manim_projection_rejects_non_normal_blend_before_compiling_scene', 'multi_renderer::tests::blender_semantic_names_preserve_readable_identity_with_bounded_uniqueness', 'multi_renderer::tests::blender_projection_refuses_text_instead_of_rasterizing_it_implicitly', 'multi_renderer::tests::manim_legacy_projection_rejects_authored_typography_without_rewriting_source', 'multi_renderer::tests::manim_legacy_projection_preserves_supported_sizes_and_refuses_clamping', 'multi_renderer::tests::manim_compiler_emits_only_generated_declarative_scene_code', 'multi_renderer::tests::renderer_projection_fails_closed_on_foreign_renderer', 'multi_renderer::tests::original_blender_plan_preserves_the_existing_geometry_and_full_identity', 'multi_renderer::tests::original_blender_camera_uses_geometry_basis_without_inventing_a_canvas_uuid', 'multi_renderer::tests::original_blender_plan_refuses_unsupported_zoom_and_rotation', 'multi_renderer::tests::original_blender_plan_rejects_native_name_collision_between_distinct_full_uuids', 'multi_renderer::tests::original_blender_plan_binds_content_beyond_the_revision_label', 'multi_renderer::tests::original_blender_plan_rejects_unbounded_depth_and_camera_position', 'multi_renderer::tests::original_blender_plan_rejects_non_finite_camera_and_foreign_renderer'], 'manim-static-projection': ['static_projection_preserves_offset_duration_full_ids_geometry_and_stacking', 'static_projection_refuses_every_unrepresented_property_without_rewriting_source', 'static_saved_package_import_edit_once_and_reopen_preserve_canonical_source', 'static_import_refuses_extra_edit_without_applying_any_change', 'normal_manim_profile_requires_one_saved_output_and_preserves_its_exact_clock'], 'manim-editable-projection': ['editable_projection_preserves_full_source_font_identity_clock_and_transform', 'editable_projection_refuses_unrepresentable_or_uncleared_data_without_rewriting_project', 'editable_text_import_is_one_service_change_and_survives_sqlite_reopen', 'editable_import_refuses_extra_style_change_and_locked_text_without_any_commit', 'editable_style_roundtrip_changes_font_metrics_through_existing_style_change', 'original_exported_input_is_the_exact_current_plan_without_font_replacement', 'original_input_contract_rejects_missing_changed_or_ungranted_carriers_before_dispatch'], 'brand-fonts': ['brand_fonts::tests::brand_font_source_preserves_digest_identity_and_owner_declaration', 'brand_fonts::tests::brand_font_source_never_promotes_unknown_or_restricted_rights', 'brand_fonts::tests::brand_font_source_rejects_paths_urls_noncanonical_and_foreign_assets', 'brand_fonts::tests::brand_font_source_rejects_wrong_type_digest_alias_or_duplicate', 'brand_fonts::tests::brand_font_cas_checks_revision_and_survives_fresh_service_readback'], 'native-manim-example': ['camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed'], 'fractional-rate-admission': ['production::tests::fractional_rate_conversion_is_refused_before_dispatch_and_exact_rate_runs'], 'partitioned-master-clock': ['film::tests::rational_frame_identity_preserves_partitioned_master_without_accumulated_error'], 'profile-rate-drift': ['film::tests::native_render_rejects_frame_rate_drift_from_profile']}
+          required = required_by_label[label]
+          assert len(required) == len(set(required)) == expected_count
+          raw = path.read_bytes()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace").replace("\r\n", "\n"))
+          actual = re.findall(r"(?m)^test (\S+) \.\.\. (ok|FAILED|ignored)$", text)
+          rows = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
+          complete = (exit_code == 0 and capture_exit == 0 and head == os.environ["GITHUB_SHA"] and not dirty
+                      and len(actual) == len(required) and sorted(actual) == sorted((name, "ok") for name in required)
+                      and len(rows) == 1 and rows[0][:5] == ("ok", str(expected_count), "0", "0", "0"))
+          receipt = {"schema": "motionwright.native.closed-source-roster/1", "source_sha": head, "tree_sha": tree,
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                     "job": os.environ["GITHUB_JOB"], "label": label, "required": sorted(required),
+                     "observed": actual, "terminal_rows": rows, "exit_code": exit_code, "capture_exit_code": capture_exit,
+                     "log": {"file": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+                     "stream_representation": "Original process stdout/stderr merged by shell",
+                     "status": "PASS" if complete else "FAIL", "native_execution": False,
+                     "formal_acceptance": False}
+          with path.with_suffix(".receipt.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          print(json.dumps({"label": label, "status": receipt["status"], "source_sha": head,
+                            "required_count": expected_count, "observed_count": len(actual), "exit_code": exit_code}))
+          if not complete:
+              raise SystemExit("Exact source roster omitted, renamed, duplicated, skipped, failed or source changed")
+          PY
+          }
+          cargo build --locked -p motionwright-manim-community-driver --bins
+          cargo build --locked -p motionwright-native --example native-manim-e2e
+          run_contract projections 16 cargo test --locked -p motionwright-native \
+            --lib multi_renderer::tests:: -- --nocapture
+          run_contract native-manim-example 12 cargo test --locked -p motionwright-native \
+            --example native-manim-e2e -- --nocapture
+          run_contract manim-static-projection 5 cargo test --locked -p motionwright-native \
+            --test manim_static_projection -- --nocapture
+          run_contract manim-editable-projection 7 cargo test --locked -p motionwright-native \
+            --test manim_editable_projection -- --nocapture
+          run_contract fractional-rate-admission 1 cargo test --locked -p motionwright-native \
+            --lib production::tests::fractional_rate_conversion_is_refused_before_dispatch_and_exact_rate_runs \
+            -- --exact --nocapture
+          run_contract partitioned-master-clock 1 cargo test --locked -p motionwright-native \
+            --lib film::tests::rational_frame_identity_preserves_partitioned_master_without_accumulated_error \
+            -- --exact --nocapture
+          run_contract profile-rate-drift 1 cargo test --locked -p motionwright-native \
+            --lib film::tests::native_render_rejects_frame_rate_drift_from_profile \
+            -- --exact --nocapture
+          run_contract brand-fonts 5 cargo test --locked -p motionwright-service \
+            --lib brand_fonts::tests:: -- --nocapture
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code --quiet
+      - name: Retain multi-renderer source G1 originals
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: multi-renderer-source-g1-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/multi-renderer-source-g1/
+          if-no-files-found: error
+          retention-days: 14
       - name: Production driver boundaries
         run: cargo test --locked -p motionwright-native production::tests --all-targets
       - name: Manim camera source persistence and reopen
@@ -99,3 +192,12 @@ jobs:
           assert summaries[0][:5] == ("ok", "1", "0", "0", "0"), "Catalogue assertion did not pass"
           print("blender-catalog-contract=PASS actual_tests=1")
           PY
+
+      - name: Retain canonical Blender catalog original
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: blender-catalog-source-original-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/blender-catalog-original.log
+          if-no-files-found: error
+          retention-days: 14

@@ -1,5 +1,5 @@
 import type { Project, Scene } from "./types";
-import type { CameraReframe } from "./cameraReframe";
+import { CAMERA_REFRAME_VERSION, CAMERA_REFRAME_MANIM_VERSION, type CameraReframe } from "./cameraReframe";
 
 // Local author intent and its exact transport snapshot. Neither a recovery
 // record nor a pending ACK authorizes another service call.
@@ -45,8 +45,23 @@ export function editCameraDraft(draft: CameraDraft, field: CameraField, raw: str
   return {...draft,fields:{...draft.fields,[field]:raw},sequence:draft.sequence+1};
 }
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
+// A saved component selects its own version. Renderer choice and foreign or
+// incomplete recovery records never imply migration of the authored camera.
+function validDraftSource(value:unknown,cameraId:string,sceneId:string):value is CameraReframe {
+  return record(value) && Object.keys(value).length===CAMERA_FIELDS.length+3 &&
+    value.id===cameraId && value.scene_id===sceneId && uuid(value.id) && uuid(value.scene_id) &&
+    (value.component_version===CAMERA_REFRAME_VERSION || value.component_version===CAMERA_REFRAME_MANIM_VERSION) &&
+    CAMERA_FIELDS.every(field=>typeof value[field]==="number" && Number.isFinite(value[field])) &&
+    Number.isSafeInteger(value.duration_frames);
+}
+function draftComponentVersion(draft:CameraDraft):number {
+  if(draft.base===null)return CAMERA_REFRAME_VERSION;
+  if(!validDraftSource(draft.base,draft.cameraId,draft.sceneId))
+    throw new Error("The saved Camera source version or identity is invalid; original copies were retained.");
+  return draft.base.component_version;
+}
 export function cameraDraftValue(draft: CameraDraft): CameraReframe {
-  const camera: CameraReframe={id:draft.cameraId,scene_id:draft.sceneId,component_version:1,
+  const camera: CameraReframe={id:draft.cameraId,scene_id:draft.sceneId,component_version:draftComponentVersion(draft),
     start_center_x:0,start_center_y:0,end_center_x:0,end_center_y:0,duration_frames:0};
   for (const field of CAMERA_FIELDS) {
     const raw=draft.fields[field].trim();
@@ -157,10 +172,10 @@ export function validCameraDraft(value:unknown,scope:string):value is CameraDraf
       typeof sent.sequence!=="number"||!Number.isSafeInteger(sent.revision)||
       !Number.isSafeInteger(sent.sequence)||sent.revision<0||sent.sequence<0||
       (sent.operation!=="upsert"&&sent.operation!=="detach")||
-      (sent.operation==="upsert"&&!record(sent.source))||
+      (sent.operation==="upsert"&&!validDraftSource(sent.source,value.cameraId,value.sceneId))||
       (sent.operation==="detach"&&sent.source!==null))return false;
   }
-  if(value.base!==null&&!record(value.base))return false;
+  if(value.base!==null&&!validDraftSource(value.base,value.cameraId,value.sceneId))return false;
   return true;
 }
 export function decodeCameraCopy(raw:string,scope:string,writerId:string):CameraDraft {

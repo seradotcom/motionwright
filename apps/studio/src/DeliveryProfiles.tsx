@@ -1,6 +1,8 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import NativeAvReview from "./NativeAvReview";
+import NativeAvReview, { NativeAudioQcHistory } from "./NativeAvReview";
+import DeliveryAudioTargets from "./DeliveryAudioTargets";
+import { nativeAvSelectionFromEvidence, retainedNativeAvReviewSelections } from "./nativeAvAudioQc";
 import {
   evaluateFirstNativeRenderGate, firstRenderRuntimeScope,
   type ScopedRuntimeObservation,
@@ -43,6 +45,12 @@ import type {
 } from "./types";
 
 type Commit = (change: Change) => Promise<void>;
+
+function retainOriginalMasterSelection(project: Project, profileId: string,
+  evidence: MltAvMasterEvidence | NativeMultisegmentAvMasterEvidence) {
+  const selection = nativeAvSelectionFromEvidence(project, profileId, evidence);
+  if (selection) retainedNativeAvReviewSelections.remember(project, profileId, selection);
+}
 
 const codecLabel: Record<DeliverableProfile["video_codec"], string> = {
   h264: "H.264",
@@ -418,10 +426,13 @@ export default function DeliveryProfiles({
   const [verifiedMedia, setVerifiedMedia] = useState<PortableMediaVerification | null>(null);
   const [showNativeAvReview, setShowNativeAvReview] = useState(false);
   const [multiMaster, setMultiMaster] = useState<NativeMultisegmentAvMasterEvidence | null>(null);
+  const [, refreshRetainedReviews] = useState(0);
+  useEffect(() => retainedNativeAvReviewSelections.subscribe(() => refreshRetainedReviews(value => value + 1)), []);
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
   const fontFamily = "Instrument Sans Variable";
   const monoFontFamily = "IBM Plex Mono";
   const filmDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "film", commitRecipe);
+  const targetsDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "targets", commitRecipe);
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
   const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "new" | null>(null);
@@ -512,6 +523,9 @@ export default function DeliveryProfiles({
   );
   const filmDraftBlocked = filmDraft.dirty || filmDraft.awaiting || filmDraft.pending
     || filmDraft.conflicts.length > 0 || filmDraft.recoveryBlocked || filmDraft.sourceBehind;
+  const targetsDraftBlocked = targetsDraft.dirty || targetsDraft.awaiting || targetsDraft.pending
+    || targetsDraft.conflicts.length > 0 || targetsDraft.recoveryBlocked || targetsDraft.sourceBehind;
+  const recipeDraftBlocked = filmDraftBlocked || targetsDraftBlocked;
   const renderIntentsComplete = motionScenes.length > 0 && motionScenes.every((scene) =>
     narrativeRoles.some(option => option.value === filmDraft.savedValues[scene.id + ":role"])
       && motionArchetypes.some(option => option.value === filmDraft.savedValues[scene.id + ":archetype"]));
@@ -531,7 +545,7 @@ export default function DeliveryProfiles({
     desktopMode &&
     selected &&
     !profileDraftBlocked &&
-    !filmDraftBlocked &&
+    !recipeDraftBlocked &&
     renderIntentsComplete &&
     nativePaletteReady &&
     fontFamily.trim() &&
@@ -578,12 +592,17 @@ export default function DeliveryProfiles({
     && selected.audio_sample_rate_hz === 48000
     && selected.color_space === "rec709"
     && selected.container === "mp4");
-  const masterReady = Boolean(desktopMode && selected && !profileDraftBlocked && !filmDraftBlocked
+  const masterReady = Boolean(desktopMode && selected && !profileDraftBlocked && !recipeDraftBlocked
     && verifiedWavIntent && voiceAligned && masterPreviewToken && masterProfileSupported);
-  const currentAv = avEvidence?.generation === project.generation
+  const currentAv = avEvidence?.project_resource === "project:" + project.id && avEvidence.generation === project.generation
     && avEvidence.deliverable_id === selected?.id ? avEvidence : null;
-  const currentMultiMaster = multiMaster?.generation === project.generation
+  const currentMultiMaster = multiMaster?.project_resource === "project:" + project.id && multiMaster.generation === project.generation
     && multiMaster.deliverable_id === selected?.id ? multiMaster : null;
+  useEffect(() => {
+    if (!selected) return;
+    if (currentAv) retainOriginalMasterSelection(project, selected.id, currentAv);
+    if (currentMultiMaster) retainOriginalMasterSelection(project, selected.id, currentMultiMaster);
+  }, [project.id, project.generation, project.active_branch, project.revision, selected?.id, currentAv, currentMultiMaster]);
   const multiSourceFrames = currentMotion?.segments.reduce(
     (sum, segment) => sum + segment.frame_count, 0,
   ) ?? 0;
@@ -592,7 +611,7 @@ export default function DeliveryProfiles({
   const multiVoiceAligned = Number.isFinite(voiceDurationSeconds)
     && Number.isFinite(multiVideoSeconds)
     && Math.abs(voiceDurationSeconds - multiVideoSeconds) <= 1 / 48_000;
-  const multiMasterReady = Boolean(desktopMode && selected && !profileDraftBlocked && !filmDraftBlocked
+  const multiMasterReady = Boolean(desktopMode && selected && !profileDraftBlocked && !recipeDraftBlocked
     && verifiedWavIntent && multiVoiceAligned && multiSourceToken
     && currentMultiSource && currentMultiSource.total_frames === multiSourceFrames
     && masterProfileSupported);
@@ -609,10 +628,22 @@ export default function DeliveryProfiles({
     ? null : activeReviewToken;
   const masterArtifact = currentAv?.master.artifact as Record<string, unknown> | undefined;
   const masterDigest = typeof masterArtifact?.sha256 === "string" ? masterArtifact.sha256 : null;
+  // A remount may retain only the original read token. It never restores a
+  // report/PASS or feeds activeExportToken; Desktop must revalidate every read.
+  const retainedReview = selected ? retainedNativeAvReviewSelections.read(project, selected.id) : null;
+  const reviewToken = activeReviewToken ?? retainedReview?.exportToken ?? null;
+  const reviewingMultiple = Boolean(currentMotion?.segments.length && currentMotion.segments.length > 1);
+  const reviewMasterSha256 = activeReviewToken
+    ? reviewingMultiple ? currentMultiMaster?.master_sha256 ?? null : masterDigest
+    : retainedReview?.masterSha256 ?? null;
+  const reviewOnly = activeReviewToken
+    ? reviewingMultiple && Boolean(currentMultiMaster?.review_only
+      || currentMultiMaster?.evidence_scope === "native-captioned-multisegment-av-review-only-not-decoded-pixel-approved")
+    : Boolean(retainedReview?.reviewOnly);
   const currentExport = exportEvidence?.deliverable_id === selected?.id ? exportEvidence : null;
   const reviewAvailable = Boolean(desktopMode && selected && !profileDraftBlocked
-    && Boolean(activeReviewToken));
-  const exportReady = Boolean(desktopMode && selected && !profileDraftBlocked && !filmDraftBlocked
+    && Boolean(reviewToken));
+  const exportReady = Boolean(desktopMode && selected && !profileDraftBlocked && !recipeDraftBlocked
     && Boolean(activeExportToken)
     && masterDeliveryPath.trim().toLowerCase().endsWith(".mp4"));
 
@@ -628,7 +659,7 @@ export default function DeliveryProfiles({
     fontFamily,
     monoFontFamily,
   ]);
-  const currentPreflight = !filmDraftBlocked && preflight?.key === preflightKey ? preflight.report : null;
+  const currentPreflight = !recipeDraftBlocked && preflight?.key === preflightKey ? preflight.report : null;
   const liveFilm = useRef({ key: preflightKey, ready: renderReady, mounted: true });
   liveFilm.current.key = preflightKey;
   liveFilm.current.ready = renderReady;
@@ -649,12 +680,12 @@ export default function DeliveryProfiles({
   const liveNative = useRef({
     project, profileId: selected?.id ?? null, inputSerial: nativeInputSerial,
     keys: nativeActionKeys, readiness: nativeReadiness,
-    draftBlocked: profileDraftBlocked || filmDraftBlocked, currentProjectState,
+    draftBlocked: profileDraftBlocked || recipeDraftBlocked, currentProjectState,
   });
   liveNative.current = {
     project, profileId: selected?.id ?? null, inputSerial: nativeInputSerial,
     keys: nativeActionKeys, readiness: nativeReadiness,
-    draftBlocked: profileDraftBlocked || filmDraftBlocked, currentProjectState,
+    draftBlocked: profileDraftBlocked || recipeDraftBlocked, currentProjectState,
   };
   const prepareNativeDispatch = (action: NativeAction) => {
     if (!selected) throw new Error("Choose a current delivery profile before starting a native action.");
@@ -691,6 +722,7 @@ export default function DeliveryProfiles({
     if (!selected) throw new Error("Select a saved profile before building a Film projection.");
     if (profileDraftBlocked) throw new Error("Save or resolve the output profile draft before building a Film projection.");
     if (filmDraftBlocked) throw new Error("Save or resolve the scene intent draft before building a Film projection.");
+    if (targetsDraftBlocked) throw new Error("Save or resolve the delivery audio targets before building a Film projection.");
     const num = Number(selected.frame_rate.num);
     const den = Number(selected.frame_rate.den);
     if (!Number.isInteger(num) || !Number.isInteger(den) || num <= 0 || den <= 0) {
@@ -771,7 +803,7 @@ export default function DeliveryProfiles({
   };
 
   const removeProfile = () => {
-    if (!selected || profileDraftBlocked || filmDraftBlocked) return;
+    if (!selected || profileDraftBlocked || recipeDraftBlocked) return;
     void run("remove", async () => {
       await commit({ type: "remove_deliverable", profile_id: selected.id });
     });
@@ -865,11 +897,15 @@ export default function DeliveryProfiles({
 
   const assembleMultiMaster = () => {
     if (!selected || !selectedVoice || !multiSourceToken || !multiMasterReady) return;
+    setShowNativeAvReview(false);
     void run("multi-master", async () => {
       const gesture = prepareNativeDispatch("multi-master");
       const verified = await assembleNativeMultisegmentAvMaster(
         project, selected.id, selectedVoice.id, multiSourceToken, gesture.beforeDispatch,
       );
+      // Keep a completed reply for its original context before the current
+      // view decides whether it may display it. No QC or export is adopted.
+      retainOriginalMasterSelection(project, selected.id, verified);
       if (!gesture.stillCurrent()) { notePreviousNativeResult(); return; }
       setMultiMaster(verified);
       setMessage(verified.review_only
@@ -883,11 +919,13 @@ export default function DeliveryProfiles({
 
   const assembleMaster = () => {
     if (!selected || !selectedVoice || !masterPreviewToken || !masterReady) return;
+    setShowNativeAvReview(false);
     void run("master", async () => {
       const gesture = prepareNativeDispatch("master");
       const result = await assembleNativeAvMaster(
         project, selected.id, selectedVoice.id, masterPreviewToken, gesture.beforeDispatch,
       );
+      retainOriginalMasterSelection(project, selected.id, result);
       if (!gesture.stillCurrent()) { notePreviousNativeResult(); return; }
       onAvEvidence(result);
       setMessage("Native H.264/AAC MP4 master recorded for r" + result.revision
@@ -1326,11 +1364,20 @@ export default function DeliveryProfiles({
                 onClick={saveProfile}>
                 <Save size={14} /> {busy === "save" ? "Saving…" : "Save profile"}
               </button>
-              <button type="button" className="button" disabled={project.deliverables.length <= 1 || busy !== null || profileDraftBlocked || filmDraftBlocked} onClick={removeProfile}>
+              <button type="button" className="button" disabled={project.deliverables.length <= 1 || busy !== null || profileDraftBlocked || recipeDraftBlocked} onClick={removeProfile}>
                 <Trash2 size={14} /> Remove
               </button>
             </div>
             </fieldset>
+
+            <DeliveryAudioTargets key={JSON.stringify([project.id, project.generation, project.active_branch, selected.id])}
+              controller={targetsDraft} profileId={selected.id} revision={project.revision}
+              blockedReason={profileDraftBlocked ? "Save or resolve the output profile draft before saving audio targets."
+                : busy !== null ? "Wait for the current delivery operation before saving audio targets." : null}
+              onDraftAction={() => { noteNativeInput(); liveFilm.current.ready = false; }} />
+            {targetsDraftBlocked && <p className="delivery-truth-note warning" role="status">
+              Save or resolve pending audio targets before checking Film, rendering, assembling or exporting a native master. Those operations use the saved recipe.
+            </p>}
 
             <section className="caption-export-panel" aria-label="Native Motion Canvas production">
               <header>
@@ -1642,14 +1689,25 @@ export default function DeliveryProfiles({
                   {showNativeAvReview && reviewAvailable ? "Close native review" : "Review native MP4"}
                 </button>
               </div>
-              {showNativeAvReview && reviewAvailable && activeReviewToken && (
+              {showNativeAvReview && reviewAvailable && reviewToken && (
                 <NativeAvReview
-                  key={project.id + ":" + project.revision + ":" + activeReviewToken}
+                  key={JSON.stringify([project.id, project.generation, project.active_branch, project.revision, selected.id, reviewToken])}
                   project={project}
-                  exportToken={activeReviewToken}
-                  reviewOnly={Boolean(currentMultiMaster?.review_only)}
+                  exportToken={reviewToken}
+                  reviewOnly={reviewOnly}
+                  deliverableId={selected.id}
+                  masterSha256={reviewMasterSha256}
                 />
               )}
+              <NativeAudioQcHistory project={project} deliverableId={selected.id} />
+              {!activeReviewToken && retainedReview && <p className="delivery-truth-note">
+                A read-only master selector was retained in this session. Opening review revalidates
+                the original media and numeric audio report; no previous QC result or export permission is restored.
+              </p>}
+              {!reviewToken && <p className="delivery-truth-note" role="status">
+                Audio QC unavailable: no original master token is retained for this source and profile.
+                Restarting the app requires recovery of the original selector; this view does not render or measure again.
+              </p>}
               {currentMultiMaster?.review_only && currentMultiMaster.revision === project.revision && (
                 <div className="delivery-truth-note warning" role="status">
                   <CircleDashed size={14} /> This captioned H.264/AAC master is review-only.

@@ -5,6 +5,8 @@ use super::{
 };
 use motionwright_domain::DomainError;
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+use std::fs::OpenOptions;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,7 +171,7 @@ use super::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
 };
@@ -333,6 +335,7 @@ pub struct StagedFileImport {
     path: PathBuf,
     descriptor: BlobDescriptor,
     blob_root: PathBuf,
+    pub(super) retention: Option<super::cas_retention::CaptureLease>,
 }
 impl StagedFileImport {
     pub fn path(&self) -> &Path {
@@ -341,10 +344,17 @@ impl StagedFileImport {
     pub fn descriptor(&self) -> &BlobDescriptor {
         &self.descriptor
     }
+    pub(super) fn captured_root(&self) -> &Path {
+        &self.blob_root
+    }
 }
 impl Drop for StagedFileImport {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if let Some(retention) = self.retention.take() {
+            let _ = retention.discard();
+        } else {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 impl Store {
@@ -361,20 +371,43 @@ impl Store {
         source: &Path,
         max_bytes: u64,
     ) -> Result<StagedFileImport> {
+        self.stage_file_import_with_purpose(
+            source,
+            max_bytes,
+            super::cas_retention::CapturePurpose::Legacy,
+        )
+    }
+
+    pub(super) fn stage_bundle_file_import_with_limit(
+        &self,
+        source: &Path,
+        max_bytes: u64,
+    ) -> Result<StagedFileImport> {
+        self.stage_file_import_with_purpose(
+            source,
+            max_bytes,
+            super::cas_retention::CapturePurpose::BundleImport,
+        )
+    }
+
+    pub(super) fn stage_derived_file_import(&self, source: &Path) -> Result<StagedFileImport> {
+        self.stage_file_import_with_purpose(
+            source,
+            u64::MAX,
+            super::cas_retention::CapturePurpose::DerivedCache,
+        )
+    }
+
+    fn stage_file_import_with_purpose(
+        &self,
+        source: &Path,
+        max_bytes: u64,
+        purpose: super::cas_retention::CapturePurpose,
+    ) -> Result<StagedFileImport> {
         ensure_regular_directory(&self.blob_root, "blob root")?;
         let input = open_regular_import_source(source, max_bytes)?;
-        let staging_root = self.blob_root.join(".staging");
-        create_checked_blob_directory(&staging_root)?;
-        let path = staging_root.join(format!("{}.part", Uuid::now_v7().simple()));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        // A create_new collision must never clean up another call's file.
-        let output = options.open(&path)?;
+        let (path, output, retention) =
+            super::cas_retention::begin_capture(&self.blob_root, self.cas_store_id, purpose)?;
         let mut staged = StagedFileImport {
             path,
             descriptor: BlobDescriptor {
@@ -382,6 +415,7 @@ impl Store {
                 size_bytes: 0,
             },
             blob_root: self.blob_root.clone(),
+            retention,
         };
         {
             // Handles close before the outer guard cleans up on any error.
@@ -428,6 +462,9 @@ impl Store {
                 size_bytes,
             };
         }
+        if let Some(retention) = staged.retention.as_mut() {
+            retention.completed(&staged.descriptor)?;
+        }
         Ok(staged)
     }
 
@@ -441,6 +478,13 @@ impl Store {
 /// Callers may hold an SQLite IMMEDIATE transaction that serializes project ID
 /// claims while this filesystem-only step runs.
 pub(super) fn publish_file_import_under_root(
+    blob_root: &Path,
+    staged: &StagedFileImport,
+) -> Result<BlobDescriptor> {
+    super::cas_retention::publish_legacy(blob_root, staged)
+}
+
+pub(super) fn publish_file_import_unmanaged(
     blob_root: &Path,
     staged: &StagedFileImport,
 ) -> Result<BlobDescriptor> {

@@ -191,6 +191,61 @@ def source_files(root: Path, files: object) -> list[dict]:
     return sorted(inventory, key=lambda row: row["name"])
 
 
+def validate_png_crc_bytes(data: bytes, width: int, height: int, *,
+                           max_bytes: int = 16 * 1024 * 1024) -> dict:
+    """Validate one complete PNG transport; FFmpeg remains the pixel decoder."""
+    require(type(max_bytes) is int and 0 < max_bytes <= 32 * 1024 * 1024,
+            "png_frame_budget")
+    require(type(width) is int and type(height) is int and width > 0 and height > 0,
+            "png_geometry_mismatch")
+    signature = b"\x89PNG\r\n\x1a\n"
+    require(type(data) is bytes and len(signature) < len(data) <= max_bytes,
+            "png_frame_budget")
+    header = {}
+    animated = False
+    require(data.startswith(signature), "invalid_png_signature")
+    position = len(signature)
+    saw_ihdr, saw_idat, saw_iend = False, False, False
+    chunk_count = 0
+    while position < len(data):
+        require(position + 12 <= len(data), "truncated_png_chunk")
+        length = struct.unpack_from(">I", data, position)[0]
+        require(length <= max_bytes and position + 12 + length <= len(data),
+                "png_chunk_byte_budget")
+        kind = data[position + 4:position + 8]
+        animated = animated or kind in {b"acTL", b"fcTL", b"fdAT"}
+        require(all(65 <= x <= 90 or 97 <= x <= 122 for x in kind),
+                "invalid_png_chunk_name")
+        payload_end = position + 8 + length
+        expected_crc = struct.unpack_from(">I", data, payload_end)[0]
+        actual_crc = zlib.crc32(data[position + 4:payload_end]) & 0xffffffff
+        require(actual_crc == expected_crc, "corrupt_png_crc")
+        if kind == b"IHDR":
+            require(not saw_ihdr and chunk_count == 0 and length == 13,
+                    "invalid_png_ihdr")
+            x, y = struct.unpack_from(">II", data, position + 8)
+            require((x, y) == (width, height), "png_geometry_mismatch")
+            header = {"width": x, "height": y,
+                      "bit_depth": data[position + 16], "color_type": data[position + 17],
+                      "compression": data[position + 18], "filter": data[position + 19],
+                      "interlace": data[position + 20]}
+            saw_ihdr = True
+        elif kind == b"IDAT":
+            require(saw_ihdr and not saw_iend, "invalid_png_idat")
+            saw_idat = True
+        elif kind == b"IEND":
+            require(saw_ihdr and saw_idat and length == 0
+                    and payload_end + 4 == len(data), "invalid_png_end")
+            saw_iend = True
+        require(not saw_iend or payload_end + 4 == len(data),
+                "png_bytes_after_iend")
+        chunk_count += 1
+        require(chunk_count <= 4096, "png_chunk_count_budget")
+        position = payload_end + 4
+    require(saw_ihdr and saw_idat and saw_iend, "incomplete_png_structure")
+    return {**header, "animated": animated, "chunk_count": chunk_count}
+
+
 def validate_png_crc_sequence(frames_path: Path, count: int,
                               width: int, height: int) -> None:
     """Validate PNG transport CRCs; FFmpeg remains the sole pixel decoder."""
@@ -207,41 +262,7 @@ def validate_png_crc_sequence(frames_path: Path, count: int,
                 and after.st_size == before.st_size
                 and after.st_mtime_ns == before.st_mtime_ns,
                 "png_changed_during_crc")
-        require(data.startswith(signature), "invalid_png_signature")
-        position = len(signature)
-        saw_ihdr, saw_idat, saw_iend = False, False, False
-        chunk_count = 0
-        while position < len(data):
-            require(position + 12 <= len(data), "truncated_png_chunk")
-            length = struct.unpack_from(">I", data, position)[0]
-            require(length <= 16 * 1024 * 1024 and position + 12 + length <= len(data),
-                    "png_chunk_byte_budget")
-            kind = data[position + 4:position + 8]
-            require(all(65 <= x <= 90 or 97 <= x <= 122 for x in kind),
-                    "invalid_png_chunk_name")
-            payload_end = position + 8 + length
-            expected_crc = struct.unpack_from(">I", data, payload_end)[0]
-            actual_crc = zlib.crc32(data[position + 4:payload_end]) & 0xffffffff
-            require(actual_crc == expected_crc, "corrupt_png_crc")
-            if kind == b"IHDR":
-                require(not saw_ihdr and chunk_count == 0 and length == 13,
-                        "invalid_png_ihdr")
-                x, y = struct.unpack_from(">II", data, position + 8)
-                require((x, y) == (width, height), "png_geometry_mismatch")
-                saw_ihdr = True
-            elif kind == b"IDAT":
-                require(saw_ihdr and not saw_iend, "invalid_png_idat")
-                saw_idat = True
-            elif kind == b"IEND":
-                require(saw_ihdr and saw_idat and length == 0
-                        and payload_end + 4 == len(data), "invalid_png_end")
-                saw_iend = True
-            require(not saw_iend or payload_end + 4 == len(data),
-                    "png_bytes_after_iend")
-            chunk_count += 1
-            require(chunk_count <= 4096, "png_chunk_count_budget")
-            position = payload_end + 4
-        require(saw_ihdr and saw_idat and saw_iend, "incomplete_png_structure")
+        validate_png_crc_bytes(data, width, height)
 
 
 def managed_node(project: dict, scene_id: str, node_id: str) -> dict:

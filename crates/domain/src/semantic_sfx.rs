@@ -102,6 +102,20 @@ impl<'de> Deserialize<'de> for SfxAnchor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SfxTailPolicy {
+    #[default]
+    WithinScene,
+    ContinueAcrossCuts,
+}
+
+impl SfxTailPolicy {
+    pub fn is_within_scene(&self) -> bool {
+        *self == Self::WithinScene
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticSfxCue {
@@ -119,6 +133,9 @@ pub struct SemanticSfxCue {
     pub gain_milli_db: i32,
     pub attack_frames: u16,
     pub release_frames: u16,
+    /// Opt in to preserving the complete source tail across authored cuts.
+    #[serde(default, skip_serializing_if = "SfxTailPolicy::is_within_scene")]
+    pub tail_policy: SfxTailPolicy,
     /// A declaration only, not third-party rights or source authentication.
     pub original_source_attestation: String,
 }
@@ -215,7 +232,14 @@ impl SemanticSfxCue {
         };
         let scene_frames = exact_frame(scene.duration)?;
         let at = relative_frame + i128::from(self.offset_frames);
-        if at < 0 || at + i128::from(self.source_frames) > scene_frames {
+        if at < 0 || at >= scene_frames {
+            return Err(DomainError::Invalid(
+                "SFX onset must stay inside its half-open authored scene interval".into(),
+            ));
+        }
+        if self.tail_policy == SfxTailPolicy::WithinScene
+            && at + i128::from(self.source_frames) > scene_frames
+        {
             return Err(DomainError::Invalid(
                 "SFX authored cue and release tail must stay inside the scene interval".into(),
             ));
@@ -229,6 +253,14 @@ impl SemanticSfxCue {
         let end = start
             .checked_add(u64::from(self.source_frames))
             .ok_or_else(|| DomainError::Invalid("SFX duration frame overflow".into()))?;
+        if self.tail_policy == SfxTailPolicy::ContinueAcrossCuts {
+            let cut_frames = exact_cut_frames(project.scenes.iter())?;
+            if end > cut_frames {
+                return Err(DomainError::Invalid(
+                    "SFX tail exceeds the complete project cut; no implicit trim".into(),
+                ));
+            }
+        }
         if end > 36_000 {
             return Err(DomainError::Invalid(
                 "SFX native film exceeds bounded 20-minute limit".into(),
@@ -250,8 +282,36 @@ impl SemanticSfxCue {
     }
 }
 
+fn exact_cut_frames<'a>(scenes: impl IntoIterator<Item = &'a Scene>) -> Result<u64> {
+    let mut total = 0_u64;
+    for scene in scenes {
+        let frames = u64::try_from(exact_frame(scene.duration)?)
+            .map_err(|_| DomainError::Invalid("SFX cut duration out of range".into()))?;
+        total = total
+            .checked_add(frames)
+            .ok_or_else(|| DomainError::Invalid("SFX cut frame overflow".into()))?;
+    }
+    Ok(total)
+}
+
+fn checked_schedule(mut schedule: Vec<ScheduledSfx>) -> Result<Vec<ScheduledSfx>> {
+    schedule.sort_by_key(|record| (record.absolute_start_frame, record.cue_id));
+    let mut ending: Vec<u64> = Vec::new();
+    for item in &schedule {
+        ending.retain(|end| *end > item.absolute_start_frame);
+        if ending.len() >= MAX_SFX_OVERLAP {
+            return Err(DomainError::Invalid(
+                "More than four simultaneous SFX sources require an explicit new mix profile"
+                    .into(),
+            ));
+        }
+        ending.push(item.absolute_end_frame);
+    }
+    Ok(schedule)
+}
+
 impl Project {
-    pub fn validated_sfx_schedule(&self) -> Result<Vec<ScheduledSfx>> {
+    fn source_sfx_schedule(&self) -> Result<Vec<ScheduledSfx>> {
         if self.audio.sfx_cues.len() > MAX_SFX_CUES {
             return Err(DomainError::Invalid("SFX cue collection exceeds 64".into()));
         }
@@ -263,19 +323,118 @@ impl Project {
             }
             schedule.push(cue.validate_in(self)?);
         }
-        schedule.sort_by_key(|record| (record.absolute_start_frame, record.cue_id));
-        let mut ending: Vec<u64> = Vec::new();
-        for item in &schedule {
-            ending.retain(|end| *end > item.absolute_start_frame);
-            if ending.len() >= MAX_SFX_OVERLAP {
-                return Err(DomainError::Invalid(
-                    "More than four simultaneous SFX sources require an explicit new mix profile"
-                        .into(),
-                ));
+        checked_schedule(schedule)
+    }
+
+    fn sfx_schedule_in_profile(
+        &self,
+        profile: &DeliverableProfile,
+        source: &[ScheduledSfx],
+    ) -> Result<Vec<ScheduledSfx>> {
+        if profile.included_scene_ids.is_empty() {
+            return Ok(source.to_vec());
+        }
+        let selected = crate::delivery::scenes_for_profile(&self.scenes, profile)?;
+        if !self
+            .audio
+            .sfx_cues
+            .iter()
+            .any(|cue| selected.iter().any(|scene| scene.id == cue.scene_id))
+        {
+            return Ok(Vec::new());
+        }
+        let total = exact_cut_frames(selected.iter().copied())?;
+        let mut cursor = 0_u64;
+        let mut schedule = Vec::new();
+        for scene in selected {
+            let original_start = u64::try_from(exact_frame(scene.start)?)
+                .map_err(|_| DomainError::Invalid("SFX scene start out of range".into()))?;
+            for cue in self
+                .audio
+                .sfx_cues
+                .iter()
+                .filter(|cue| cue.scene_id == scene.id)
+            {
+                let placement = source
+                    .iter()
+                    .find(|placement| placement.cue_id == cue.id)
+                    .ok_or_else(|| DomainError::Invalid("SFX source placement is absent".into()))?;
+                let relative = placement
+                    .absolute_start_frame
+                    .checked_sub(original_start)
+                    .ok_or_else(|| {
+                        DomainError::Invalid("SFX onset precedes its source scene".into())
+                    })?;
+                let start = cursor
+                    .checked_add(relative)
+                    .ok_or_else(|| DomainError::Invalid("SFX cut onset overflow".into()))?;
+                let end = start
+                    .checked_add(u64::from(cue.source_frames))
+                    .ok_or_else(|| DomainError::Invalid("SFX cut tail overflow".into()))?;
+                if end > total || end > 36_000 {
+                    return Err(DomainError::Invalid(
+                        "SFX tail exceeds the selected delivery cut; no implicit trim".into(),
+                    ));
+                }
+                schedule.push(ScheduledSfx {
+                    cue_id: cue.id,
+                    absolute_start_frame: start,
+                    absolute_end_frame: end,
+                    first_sample: start.checked_mul(SFX_SAMPLES_PER_FRAME).ok_or_else(|| {
+                        DomainError::Invalid("SFX cut sample offset overflow".into())
+                    })?,
+                    sample_count: placement.sample_count,
+                });
             }
-            ending.push(item.absolute_end_frame);
+            cursor =
+                cursor
+                    .checked_add(u64::try_from(exact_frame(scene.duration)?).map_err(|_| {
+                        DomainError::Invalid("SFX scene duration out of range".into())
+                    })?)
+                    .ok_or_else(|| DomainError::Invalid("SFX cut cursor overflow".into()))?;
+        }
+        checked_schedule(schedule)
+    }
+
+    pub fn validated_sfx_schedule(&self) -> Result<Vec<ScheduledSfx>> {
+        let schedule = self.source_sfx_schedule()?;
+        // Legacy scene-local projects keep their domain admission. The new
+        // opt-in tail must fit every authored cut that includes its scene.
+        // A non-30-fps output profile can still be stored; native admission
+        // decides whether its format can be realized without conversion.
+        if self
+            .audio
+            .sfx_cues
+            .iter()
+            .any(|cue| cue.tail_policy == SfxTailPolicy::ContinueAcrossCuts)
+        {
+            for profile in &self.deliverables {
+                self.sfx_schedule_in_profile(profile, &schedule)?;
+            }
         }
         Ok(schedule)
+    }
+
+    pub fn validated_sfx_schedule_for_profile(
+        &self,
+        profile_id: Uuid,
+    ) -> Result<Vec<ScheduledSfx>> {
+        let profile = self
+            .deliverables
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .ok_or_else(|| DomainError::NotFound(format!("deliverable:{profile_id}")))?;
+        self.sfx_schedule_in_profile(profile, &self.source_sfx_schedule()?)
+    }
+
+    /// Exact duration of the existing authored cut, before any native work.
+    pub fn sfx_cut_frames(&self, profile_id: Uuid) -> Result<u64> {
+        let profile = self
+            .deliverables
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .ok_or_else(|| DomainError::NotFound(format!("deliverable:{profile_id}")))?;
+        exact_cut_frames(crate::delivery::scenes_for_profile(&self.scenes, profile)?)
     }
 
     pub(crate) fn upsert_semantic_sfx(&mut self, cue: &SemanticSfxCue) -> Result<()> {

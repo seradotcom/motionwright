@@ -410,7 +410,11 @@ mod tests {
     use super::*;
     use motionwright_domain::{Change, RationalTime};
     use serde_json::{Value, json};
-    use std::{collections::BTreeMap, fs, path::Path};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        fs,
+        path::Path,
+    };
 
     struct Files {
         directory: tempfile::TempDir,
@@ -492,23 +496,52 @@ mod tests {
         events: Value,
         payload_sha256: String,
         blobs: BTreeMap<PathBuf, Vec<u8>>,
+        directories: BTreeSet<PathBuf>,
+        control: BTreeMap<PathBuf, Option<Vec<u8>>>,
     }
 
-    fn blob_files(root: &Path, relative: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
+    fn blob_files(
+        root: &Path,
+        relative: &Path,
+        output: &mut BTreeMap<PathBuf, Vec<u8>>,
+        directories: &mut BTreeSet<PathBuf>,
+    ) {
         let path = root.join(relative);
-        let entries = match fs::read_dir(&path) {
-            Ok(entries) => entries,
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
             Err(error) => panic!("cannot inspect owned test CAS: {error}"),
         };
-        for entry in entries {
+        assert!(metadata.is_dir());
+        assert!(!metadata.file_type().is_symlink());
+        directories.insert(relative.to_path_buf());
+        for entry in fs::read_dir(&path).unwrap() {
             let entry = entry.unwrap();
             let relative = relative.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                blob_files(root, &relative, output);
+            let kind = entry.file_type().unwrap();
+            assert!(!kind.is_symlink());
+            if kind.is_dir() {
+                blob_files(root, &relative, output, directories);
             } else {
+                assert!(kind.is_file());
                 output.insert(relative, fs::read(entry.path()).unwrap());
             }
+        }
+    }
+
+    fn control_tree(root: &Path, relative: &Path, output: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+        let path = root.join(relative);
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        if metadata.is_dir() {
+            output.insert(relative.to_path_buf(), None);
+            for entry in fs::read_dir(&path).unwrap() {
+                let entry = entry.unwrap();
+                control_tree(root, &relative.join(entry.file_name()), output);
+            }
+        } else {
+            assert!(metadata.is_file());
+            output.insert(relative.to_path_buf(), Some(fs::read(&path).unwrap()));
         }
     }
 
@@ -516,12 +549,27 @@ mod tests {
         let backup = service.export_project(project_id).unwrap();
         let root = service.store().lock().blob_root().to_path_buf();
         let mut blobs = BTreeMap::new();
-        blob_files(&root, Path::new(""), &mut blobs);
+        let mut directories = BTreeSet::new();
+        blob_files(&root, Path::new(""), &mut blobs, &mut directories);
+        let anchor: Value =
+            serde_json::from_slice(&fs::read(root.join(".motionwright-cas-root-v1.json")).unwrap())
+                .unwrap();
+        let root_id = Uuid::parse_str(anchor["root_id"].as_str().unwrap()).unwrap();
+        let control_root = PathBuf::from(anchor["control"].as_str().unwrap());
+        let parent = fs::canonicalize(root.parent().unwrap()).unwrap();
+        assert_eq!(
+            control_root,
+            parent.join(format!(".motionwright-cas-{root_id}"))
+        );
+        let mut control = BTreeMap::new();
+        control_tree(&control_root, Path::new(""), &mut control);
         Snapshot {
             project: backup.project,
             events: serde_json::to_value(backup.events).unwrap(),
             payload_sha256: backup.payload_sha256,
             blobs,
+            directories,
+            control,
         }
     }
 
@@ -1082,6 +1130,7 @@ mod tests {
     #[test]
     fn lost_ack_recovery_after_later_revisions_and_reopen_never_reimports_or_rewinds_head() {
         let (files, service, project, grants) = fixture();
+        let initial = snapshot(&service, project.id);
         let asset_path = files.directory.path().join("  original direction.txt");
         let voice_path = files.directory.path().join("  original narration  .wav");
         fs::write(
@@ -1116,10 +1165,18 @@ mod tests {
         ] {
             head = advance(&service, &head, title);
         }
+        let before_removal = snapshot(&service, project.id);
+        let mut expected_blobs = before_removal.blobs.clone();
+        let blob_root = service.store().lock().blob_root().to_path_buf();
         let mut removed_blobs = Vec::new();
         for imported in &voice.project.assets {
             if let Some(digest) = &imported.content_sha256 {
                 let blob = service.store().lock().verified_blob_path(digest).unwrap();
+                let relative = blob.strip_prefix(&blob_root).unwrap();
+                let expected_bytes = expected_blobs
+                    .remove(relative)
+                    .expect("imported media must occur in the complete CAS snapshot");
+                assert_eq!(fs::read(&blob).unwrap(), expected_bytes);
                 fs::remove_file(&blob).unwrap();
                 removed_blobs.push(blob);
             }
@@ -1129,6 +1186,9 @@ mod tests {
         drop(service);
         let reopened = StudioService::open(&files.database).unwrap();
         let before = snapshot(&reopened, project.id);
+        assert_eq!(before.blobs, expected_blobs);
+        assert_eq!(before.directories, before_removal.directories);
+        assert_eq!(before.control, before_removal.control);
         for _ in 0..3 {
             let asset_result = recover_file_import(
                 &reopened,
@@ -1156,7 +1216,7 @@ mod tests {
         assert!(!asset_path.exists());
         assert!(!voice_path.exists());
         assert!(removed_blobs.iter().all(|path| !path.exists()));
-        assert!(before.blobs.is_empty());
+        assert_eq!(before.blobs, initial.blobs);
     }
 
     #[test]
@@ -1275,6 +1335,10 @@ mod tests {
     #[test]
     fn undecodable_voice_and_active_svg_fail_real_service_without_published_content() {
         let (files, service, project, grants) = fixture();
+        // This fixture checks complete custody during rejection, including
+        // private staging; first creation of that directory is tested separately.
+        let staging = service.store().lock().blob_root().join(".staging");
+        fs::create_dir(&staging).unwrap();
         let before = snapshot(&service, project.id);
         let cases = [
             (

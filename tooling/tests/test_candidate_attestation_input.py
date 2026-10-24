@@ -254,6 +254,173 @@ class CandidateAttestationInputs(unittest.TestCase):
         ):
             self.report()
 
+    def cargo_receipts(self):
+        """Exercise the real producer/capture APIs with inert build inputs."""
+        def encoded(value):
+            return (json.dumps(value, sort_keys=True, indent=2,
+                               ensure_ascii=True) + "\n").encode()
+
+        tree = git(self.root, "rev-parse", self.sha + "^{tree}")
+        component = ("cargo:path:apps/desktop/src-tauri/Cargo.toml"
+                     "#motionwright-desktop@0.1.0")
+        for platform in verify.PLATFORMS:
+            arch = "aarch64" if platform == "macos" else "x86_64"
+            target = package.CARGO_TARGETS[(platform, arch)]
+            folder = self.root / "target" / "attestation-inputs" / platform
+            folder.mkdir(parents=True)
+            binary = folder / "motionwright-desktop"
+            binary.write_bytes(b"INERT CAPTURED BUILD INPUT\n" + bytes(range(128)))
+            identity = {
+                "path": target + "/release/motionwright-desktop",
+                "bytes": binary.stat().st_size,
+                "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            }
+            index = folder / "cargo-index.json"
+            index.write_bytes(encoded({
+                "schema": "motionwright.cargo-build-notices/1",
+                "source": self.sha, "source_tree": tree,
+                "target": target, "root_package": "motionwright-desktop",
+                "components": [{"component_id": component,
+                                "name": "motionwright-desktop"}],
+                "artifact_identities": [identity],
+                "artifact_identities_sha256":
+                    hashlib.sha256(encoded([identity])).hexdigest(),
+                "root_binary_observations": [{
+                    "package_id": component, "package": "motionwright-desktop",
+                    "target": target, "name": "motionwright-desktop",
+                    "unit_id": "3" * 64, **identity,
+                }],
+                "coverage": {"full_package_inventory": "NOT_VERIFIED"},
+            }))
+            legacy = json.loads(self.receipt(platform).read_text())
+            artifacts = [
+                next((self.download / platform).rglob(row["filename"]))
+                for row in legacy["artifacts"]
+            ]
+            receipt = package.make_receipt(
+                self.root, self.sha, platform, arch, artifacts,
+                cargo_index=index, cargo_binary=binary,
+                require_cargo_binding=True,
+            )
+            self.assertEqual(
+                receipt["claims"]["package_contents_verification"],
+                "SEPARATE_EXTRACTION_GATE",
+            )
+            self.receipt(platform).write_text(json.dumps(receipt), encoding="utf8")
+
+    def assert_receipt_change_refused(self, platform, change, code):
+        path = self.receipt(platform)
+        original = path.read_text()
+        try:
+            self.update(platform, change)
+            with self.assertRaisesRegex(verify.AttestationInputError,
+                                        "^" + code + "$"):
+                self.report()
+        finally:
+            path.write_text(original, encoding="utf8")
+
+    def test_real_cargo_producer_preserves_legacy_unsigned_subjects(self):
+        legacy = self.report()
+        self.cargo_receipts()
+        try:
+            report = self.report()
+        except verify.AttestationInputError as exc:
+            self.fail("real producer receipt rejected: " + str(exc))
+        self.assertEqual(report, legacy)
+
+    def test_cargo_claim_and_artifact_binding_cannot_be_partial(self):
+        self.cargo_receipts()
+        cases = [
+            ("claim_only", "windows",
+             lambda row: row["artifacts"][0].pop("cargo_build")),
+            ("binding_only", "windows",
+             lambda row: row["claims"].pop("package_contents_verification")),
+            ("mixed_linux_rows", "linux",
+             lambda row: row["artifacts"][1].pop("cargo_build")),
+        ]
+        for name, platform, change in cases:
+            with self.subTest(case=name):
+                self.assert_receipt_change_refused(
+                    platform, change, "attest_bundle_metadata_invalid")
+
+    def test_cargo_binding_requires_exact_fields_source_and_target(self):
+        self.cargo_receipts()
+        for field in ("index_sha256", "source_tree", "target",
+                      "root_package", "binary_target"):
+            with self.subTest(missing=field):
+                self.assert_receipt_change_refused(
+                    "windows",
+                    lambda row, field=field:
+                        row["artifacts"][0]["cargo_build"].pop(field),
+                    "attest_cargo_build_invalid",
+                )
+        replacements = [
+            ("index_sha256", "not-a-digest"),
+            ("index_sha256", False),
+            ("source_tree", "f" * 40),
+            ("target", "aarch64-apple-darwin"),
+            ("root_package", "foreign"),
+            ("binary_target", "foreign"),
+        ]
+        for field, value in replacements:
+            with self.subTest(field=field, value=value):
+                self.assert_receipt_change_refused(
+                    "windows",
+                    lambda row, field=field, value=value:
+                        row["artifacts"][0]["cargo_build"].update({field: value}),
+                    "attest_cargo_build_invalid",
+                )
+        for name, change in (
+            ("extra_field", lambda row:
+                row["artifacts"][0]["cargo_build"].update(extra="not-admitted")),
+            ("not_object", lambda row:
+                row["artifacts"][0].update(cargo_build=None)),
+            ("unsupported_arch", lambda row:
+                row["candidate"].update(arch="universal")),
+        ):
+            with self.subTest(case=name):
+                self.assert_receipt_change_refused(
+                    "windows", change, "attest_cargo_build_invalid")
+
+    def test_linux_packages_cannot_mix_cargo_bindings(self):
+        self.cargo_receipts()
+        self.assert_receipt_change_refused(
+            "linux",
+            lambda row: row["artifacts"][1]["cargo_build"].update(
+                index_sha256="0" * 64),
+            "attest_cargo_build_mismatch",
+        )
+
+    def test_cargo_receipts_cannot_upgrade_unsigned_or_acceptance_claims(self):
+        self.cargo_receipts()
+        for field, value in (
+            ("published", True),
+            ("published", 0),
+            ("distribution_signature", "SIGNED"),
+            ("notarization", "VERIFIED"),
+            ("human_install_acceptance", "PASS"),
+            ("runtime_renderer_acceptance", "PASS"),
+            ("package_contents_verification", "VERIFIED"),
+            ("unexpected_authority", "APPROVED"),
+        ):
+            with self.subTest(field=field, value=value):
+                self.assert_receipt_change_refused(
+                    "windows",
+                    lambda row, field=field, value=value:
+                        row["claims"].update({field: value}),
+                    "attest_release_claims_not_unsigned",
+                )
+
+    def test_cargo_receipts_still_require_downloaded_package_digest(self):
+        self.cargo_receipts()
+        binary = next((self.download / "windows").rglob("*-setup.exe"))
+        binary.write_bytes(binary.read_bytes() + b"tampered")
+        with self.assertRaisesRegex(
+            verify.AttestationInputError, "^attest_candidate_digest_mismatch$"
+        ):
+            self.report()
+
+
 
 if __name__ == "__main__":
     unittest.main()

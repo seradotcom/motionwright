@@ -1,3 +1,6 @@
+import type { NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse } from "./types";
+import { savedOriginalMixAuditionRequest } from "./audioRecipeContract";
+import { readNativeAvAudioQcResponse, readNativeAudioQcReceiptInventoryResponse } from "./nativeAvAudioQc";
 import { claimFields, claimRaw, parseClaimRaw } from "./claimSourceDraft";
 export { nativePaidGenerationJournal, nativePaidGenerationPreflight, nativePaidGenerationReservePreflight } from "./generationJournalApi";
 export {nativeNarrationSourceSnapshot,nativeNarrationReplacementImpact} from "./narrationReviewApi";
@@ -45,6 +48,7 @@ import type {
   MultiSegmentReadinessReport,
   MltAvMasterEvidence,
   NativeMultisegmentAvMasterEvidence,
+  NativeAvAudioQcResponse,
   MasterExportReceipt,
   PortableMediaVerification,
   OtioExportResult,
@@ -64,7 +68,7 @@ import type {
   WorkflowActionResult,
   WorkflowOverview,
 } from "./types";
-import { rationalSeconds } from "./types";
+import { applyGeneralSceneTiming } from "./sceneTimingAuthority";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 let browserState = structuredClone(fixtureBootstrap);
@@ -964,6 +968,27 @@ export async function readVerifiedNativeAvReview(
   return bytes;
 }
 
+/** Reopen numeric audio QC for the same opaque master token. This command has
+ * no render/effect grant, caller-selected analysis path, proof or retry. */
+export async function readNativeAvAudioQc(
+  project: Project,
+  exportToken: string,
+  expectedMasterSha256: string | null = null,
+): Promise<NativeAvAudioQcResponse> {
+  if (!isTauri()) return { kind: "unavailable", reason: "unsupported_platform" };
+  try {
+    const value = await invoke<unknown>("read_native_av_audio_qc", {
+      request: { project_id: project.id, generation: project.generation,
+        revision: project.revision, export_token: exportToken },
+    });
+    return readNativeAvAudioQcResponse(value, expectedMasterSha256);
+  } catch {
+    // Native failures can contain private context. Public typed reasons are
+    // returned above; transport/protocol failures have a fixed safe message.
+    throw new Error("The original audio QC could not be read. No render or measurement was requested.");
+  }
+}
+
 /** Fetch one source-verified PNG. This cannot read an arbitrary disk path.
  * The token comes only from a completed desktop Semwright production result.
  */
@@ -1199,6 +1224,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
         exclusions: change.exclusions,
       };
       break;
+    case "edit_narrative":
+    case "add_narrative_beat":
+      throw new Error("Editorial decisions require the real desktop StudioService CAS; browser demonstrations cannot approve text or retain a service timing proposal.");
     case "set_narrative_premise":
       assertUnlocked(next, projectResource(next), ["content"]);
       next.narrative.premise = change.premise;
@@ -1220,20 +1248,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       });
       break;
     }
-    case "move_scene": {
-      assertUnlocked(next, sceneResource(change.scene_id), ["content", "timing"]);
-      const from = next.scenes.findIndex((scene) => scene.id === change.scene_id);
-      if (from >= 0 && change.to_index >= 0 && change.to_index < next.scenes.length) {
-        const [scene] = next.scenes.splice(from, 1);
-        next.scenes.splice(change.to_index, 0, scene);
-        let cursor = 0;
-        next.scenes.forEach((entry) => {
-          entry.start = { num: String(cursor), den: "1" };
-          cursor += Number(entry.duration.num) / Number(entry.duration.den);
-        });
-      }
+    case "move_scene":
+      applyGeneralSceneTiming(next, change);
       break;
-    }
     case "update_scene_objective": {
       assertUnlocked(next, sceneResource(change.scene_id), ["content"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
@@ -1275,34 +1292,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       applyMusicCutToProject(next,proposal);
       break;
     }
-    case "set_scene_duration": {
-      assertUnlocked(next, sceneResource(change.scene_id), ["timing"]);
-      const scene = next.scenes.find((entry) => entry.id === change.scene_id);
-      if (!scene) throw new Error("resource not found: scene:" + change.scene_id);
-      const duration = Number(change.duration.num) / Number(change.duration.den);
-      if (!Number.isFinite(duration) || duration <= 0 || duration > 86_400) {
-        throw new Error("scene duration is out of bounds");
-      }
-      if (scene.nodes.some((node) => node.keyframes.some((keyframe) =>
-        Number(keyframe.at.num) / Number(keyframe.at.den) >= duration
-      ))) {
-        throw new Error("scene duration would strand an authored keyframe");
-      }
-      if (scene.beats.some((beat) => {
-        const start = Number(beat.start.num) / Number(beat.start.den);
-        const beatDuration = Number(beat.duration.num) / Number(beat.duration.den);
-        return !Number.isFinite(start + beatDuration) || start + beatDuration > duration;
-      })) {
-        throw new Error("scene duration would strand an authored beat");
-      }
-      scene.duration = structuredClone(change.duration);
-      let cursor = 0;
-      next.scenes.forEach((entry) => {
-        entry.start = rationalSeconds(cursor);
-        cursor += Number(entry.duration.num) / Number(entry.duration.den);
-      });
+    case "set_scene_duration":
+      applyGeneralSceneTiming(next, change);
       break;
-    }
     case "upsert_scene_beat": {
       assertUnlocked(next, sceneResource(change.scene_id), ["content", "timing"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
@@ -2180,15 +2172,12 @@ export async function nativeOriginalMixAudition(
   if (!profile || !recipe?.original_mix) throw new Error("Save an enabled original mix recipe for this profile before auditioning.");
   validateDeliveryRecipe(project, profile.id, recipe);
   const mix = recipe.original_mix;
-  if (Object.keys(mix).some(key => mix[key as keyof typeof mix] !== options[key as keyof typeof mix])) {
-    throw new Error("The audition options differ from the saved original mix recipe. Save or refresh its inputs before retrying.");
-  }
   if (profile.voice_track_id && profile.voice_track_id !== project.audio.active_voice_track_id) {
     throw new Error("The profile voice differs from the active measured voice; this original mix cannot realize that combination.");
   }
-  if ((project.audio.sfx_cues?.length ?? 0) > 0) throw new Error("This original mix cannot apply the saved semantic SFX cue schedule; those cues must not be silently omitted.");
-  if(!options.owner_attests_preview_rights||
-      ![options.music_asset_id,options.sfx_asset_id].every(assetId=>
+  if(!options.owner_attests_preview_rights||typeof options.music_asset_id!=="string"||
+      (options.sfx_asset_id!==null&&typeof options.sfx_asset_id!=="string")||
+      ![options.music_asset_id,options.sfx_asset_id].filter((id):id is string=>id!==null).every(assetId=>
         project.assets.some(asset=>asset.id===assetId&&asset.media_type.startsWith('audio/')&&
           /^[a-f0-9]{64}$/.test(asset.content_sha256??'')))||
       options.music_asset_id===options.sfx_asset_id||
@@ -2200,10 +2189,8 @@ export async function nativeOriginalMixAudition(
         Number.isInteger(value)&&value>=1&&value<=48000)){
     throw new Error('Original mixing needs saved source-bound assets, explicit preview-use rights confirmation and bounded sample gains.');
   }
-  const result=await invoke<Uint8Array|ArrayBuffer|number[]>('native_original_mix_audition',{request:{
-    project_id:project.id,generation:project.generation,revision:project.revision,
-    deliverable_profile_id:profile.id,...structuredClone(mix),owner_attests_preview_rights:true
-  }});
+  const request = savedOriginalMixAuditionRequest(project, options, mix);
+  const result=await invoke<Uint8Array|ArrayBuffer|number[]>('native_original_mix_audition',{request});
   const bytes=result instanceof Uint8Array?result:
     result instanceof ArrayBuffer?new Uint8Array(result):
     Array.isArray(result)?Uint8Array.from(result):null;
@@ -2220,4 +2207,41 @@ export async function nativeOriginalMixAudition(
      view.getUint32(40,true)!==bytes.byteLength-44)
     throw new Error("Native source mixer returned a malformed or mismatched stereo PCM payload.");
   return bytes;
+}
+
+/** One bounded, read-only inventory of durable references; no media or proof cache. */
+export async function readNativeAudioQcReceiptInventory(
+  project: Project, deliverableId: string,
+): Promise<NativeAudioQcReceiptInventoryResponse> {
+  if (!isTauri()) return { kind: "unavailable", reason: "unsupported_platform" };
+  try {
+    return readNativeAudioQcReceiptInventoryResponse(await invoke<unknown>("native_av_audio_qc_receipt_inventory", {
+      request: { project_id: project.id, generation: project.generation,
+        revision: project.revision, deliverable_id: deliverableId },
+    }), project, deliverableId);
+  } catch {
+    throw new Error("Saved audio measurement references could not be read. No production was requested.");
+  }
+}
+
+/** Exact durable selection. The existing native proof reader owns all admission. */
+export async function readNativeAudioQcReceipt(
+  project: Project, deliverableId: string, hint: NativeAudioQcReceiptHint,
+): Promise<NativeAvAudioQcResponse> {
+  if (!isTauri()) return { kind: "unavailable", reason: "unsupported_platform" };
+  try {
+    const result = readNativeAvAudioQcResponse(await invoke<unknown>("recover_native_av_audio_qc", {
+      request: { project_id: project.id, generation: project.generation,
+        revision: project.revision, deliverable_id: deliverableId,
+        decoded_measurement_receipt_id: hint.decoded_measurement_receipt_id,
+        expected_master_sha256: hint.master_sha256 },
+    }), hint.master_sha256);
+    if (result.kind === "report"
+      && result.report.qc.measurement_receipt_id !== hint.decoded_measurement_receipt_id) {
+      throw new Error("Receipt identity differs");
+    }
+    return result;
+  } catch {
+    throw new Error("The original audio QC could not be read. No render or measurement was requested.");
+  }
 }

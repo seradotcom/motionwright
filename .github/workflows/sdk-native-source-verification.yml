@@ -16,10 +16,10 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Frozen SDK source pair and affected Linux contracts
+        description: Frozen SDK source verification or baseline-only diagnostic observations
         type: choice
         required: true
-        options: [sdk_native_source]
+        options: [sdk_native_source, sdk_native_baseline_diagnostic]
         default: sdk_native_source
 
 permissions:
@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   sdk-native-source-g0:
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'sdk_native_source')
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'sdk_native_source' || inputs.verification_scope == 'sdk_native_baseline_diagnostic'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -69,7 +69,7 @@ jobs:
           retention-days: 14
 
   sdk-native-source:
-    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'sdk_native_source'
+    if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'sdk_native_source' || inputs.verification_scope == 'sdk_native_baseline_diagnostic')
     needs: sdk-native-source-g0
     runs-on: ubuntu-24.04
     timeout-minutes: 150
@@ -78,7 +78,7 @@ jobs:
       cancel-in-progress: false
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      MW_SDK_SCOPE: sdk_native_source
+      MW_SDK_SCOPE: ${{ inputs.verification_scope }}
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -103,15 +103,16 @@ jobs:
           toolchain: 1.98.1
           components: clippy
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: inputs.verification_scope == 'sdk_native_source'
         with:
           node-version: '22.22.0'
-      - name: Observe exact RED and GREEN sources and affected contracts
+      - name: Observe the selected frozen SDK source scope
         working-directory: gate
         shell: bash
         run: |
           set -euo pipefail
           python -B tooling/ci_sdk_native_source.py --gate "$GITHUB_WORKSPACE/gate" \
-            --sdk "$GITHUB_WORKSPACE/sdk" \
+            --sdk "$GITHUB_WORKSPACE/sdk" --scope "$MW_SDK_SCOPE" \
             --output "$RUNNER_TEMP/sdk-native-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Retain original commands, binaries, sources and admission receipt
         if: always()

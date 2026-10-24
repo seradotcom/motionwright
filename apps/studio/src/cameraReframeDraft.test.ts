@@ -512,3 +512,60 @@ describe("Camera confirmed checkpoint publication",()=>{
   expect(loadCameraCopy(local,session,sent.scope)?.draft.fields.duration_frames).toBe("1e");
  });
 });
+
+
+describe("Camera v2 recovered source identity",()=>{
+  function savedV2(){
+    const {project,scene,camera}=setup();scene.renderer="manim-community";
+    camera.component_version=2;camera.end_center_x=1000;camera.end_center_y=544;camera.duration_frames=24;
+    project.production_design=emptyProductionDesign();
+    project.production_design.camera_reframes=[structuredClone(camera)];
+    return {project,scene,camera,draft:createCameraDraft(project,scene,camera)};
+  }
+  it("retains saved v2 after recovery and editing instead of downgrading its pair",()=>{
+    const {project,scene,camera,draft}=savedV2(),writer=uuid(501);
+    const original=JSON.stringify({schema:"motionwright.camera-recovery/1",
+      writerId:writer,scope:draft.scope,draft});
+    const recovered=decodeCameraCopy(original,cameraScope(project,scene),writer);
+    const edited=editCameraDraft(recovered,"end_center_x","1012");
+    expect(cameraDraftValue(edited)).toEqual({...camera,end_center_x:1012});
+    expect(recovered.base).toEqual(camera);
+    expect(JSON.stringify({schema:"motionwright.camera-recovery/1",
+      writerId:writer,scope:draft.scope,draft})).toBe(original);
+  });
+  it("keeps legacy new drafts v1 rather than inferring a component version from the scene",()=>{
+    const {project,scene,camera}=savedV2();
+    project.production_design!.camera_reframes=[];
+    expect(cameraDraftValue(createCameraDraft(project,scene,{...camera,component_version:1}))
+      .component_version).toBe(1);
+  });
+  it("rejects malformed or foreign base versions instead of adopting them into author values",()=>{
+    const {draft}=savedV2(),writer=uuid(502);
+    for(const mutate of [
+      (value:CameraReframe)=>{value.id=uuid(503);},
+      (value:CameraReframe)=>{value.scene_id=uuid(504);},
+      (value:CameraReframe)=>{value.component_version=3;},
+      (value:CameraReframe)=>{value.duration_frames=1.5;},
+      (value:CameraReframe)=>{delete (value as Partial<CameraReframe>).start_center_x;},
+      (value:CameraReframe)=>{(value as unknown as Record<string,unknown>).renderer="manim-community";},
+    ]){
+      const changed=structuredClone(draft);mutate(changed.base!);
+      expect(()=>cameraDraftValue(changed)).toThrow();
+      const raw=JSON.stringify({schema:"motionwright.camera-recovery/1",writerId:writer,scope:draft.scope,draft:changed});
+      expect(()=>decodeCameraCopy(raw,draft.scope,writer)).toThrow();
+      expect(changed.base).not.toEqual(draft.base);
+    }
+  });
+  it("preserves v2 and later incomplete input across the original response",()=>{
+    const {draft,project,scene}=savedV2();
+    const edited=editCameraDraft(draft,"end_center_x","1012");
+    const sent=armCameraDraft(edited,project,scene,"upsert",cameraDraftValue(edited),uuid(505));
+    const later=editCameraDraft(sent,"duration_frames","1e");
+    const committed=structuredClone(project);committed.revision++;
+    committed.production_design!.camera_reframes=[structuredClone(sent.awaiting!.source!)];
+    const ack=acknowledgeCameraDraft(later,uuid(505),committed,committed.scenes[0]);
+    expect(ack.base?.component_version).toBe(2);expect(ack.fields.duration_frames).toBe("1e");
+    expect(()=>cameraDraftValue(ack)).toThrow(/complete finite/);
+    expect(cameraDraftValue(editCameraDraft(ack,"duration_frames","30")).component_version).toBe(2);
+  });
+});

@@ -5,24 +5,69 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "SOURCE_LOCK.json"
       - "crates/domain/**"
       - "crates/storage/**"
       - "crates/service/**"
       - "crates/native/**"
+      - "crates/manim-profile/**"
+      - "crates/hyperframes-profile/**"
+      - "crates/driver-hyperframes/**"
+      - "native/hyperframes/**"
+      - "tooling/hyperframes/**"
+      - "tooling/native_hyperframes*.py"
+      - "tooling/tests/test_native_hyperframes*.py"
+      - "tooling/native_evidence_projection.py"
+      - "tooling/tests/test_native_evidence_projection.py"
+      - "tooling/ci_private_evidence.py"
+      - "tooling/native_av_failure_guard.py"
+      - "tooling/mlt_official_runtime_intake.py"
+      - "tooling/ci_test_runner.py"
+      - "tooling/requirements/mlt-g2-custody.txt"
       - ".github/workflows/native-production.yml"
   push:
     branches: ["main", "feat/**"]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "SOURCE_LOCK.json"
       - "crates/domain/**"
       - "crates/storage/**"
       - "crates/service/**"
       - "crates/native/**"
+      - "crates/manim-profile/**"
+      - "crates/hyperframes-profile/**"
+      - "crates/driver-hyperframes/**"
+      - "native/hyperframes/**"
+      - "tooling/hyperframes/**"
+      - "tooling/native_hyperframes*.py"
+      - "tooling/tests/test_native_hyperframes*.py"
+      - "tooling/native_evidence_projection.py"
+      - "tooling/tests/test_native_evidence_projection.py"
+      - "tooling/ci_private_evidence.py"
+      - "tooling/native_av_failure_guard.py"
+      - "tooling/mlt_official_runtime_intake.py"
+      - "tooling/ci_test_runner.py"
+      - "tooling/requirements/mlt-g2-custody.txt"
       - ".github/workflows/native-production.yml"
   workflow_dispatch:
+    inputs:
+      native_scenario:
+        description: Run the existing contracts or one original HyperFrames scenario
+        type: choice
+        options: [contracts, hyperframes]
+        default: contracts
+        required: true
+      evidence_recipient_spki:
+        description: Approved RSA-3072 public SPKI DER in base64 for selected originals
+        type: string
+        required: false
+      evidence_recipient_sha256:
+        description: SHA256 of the approved public SPKI DER bytes
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -32,6 +77,75 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+      - name: HyperFrames source G0 (126 boundary, 11 intake, 17 owner and 54 Node contracts)
+        id: hf_source_g0
+        if: github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$RUNNER_OS" = Linux
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          g0="$RUNNER_TEMP/hyperframes-source-g0-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$g0"
+          python3 -m venv "$g0/venv"
+          "$g0/venv/bin/python" -B -E -s -m pip install \
+            --disable-pip-version-check --no-input --require-hashes --only-binary=:all: \
+            -r tooling/requirements/mlt-g2-custody.txt
+          "$g0/venv/bin/python" -B -E -s tooling/ci_test_runner.py \
+            --pattern test_native_hyperframes.py \
+            --pattern test_native_hyperframes_actions.py \
+            --pattern test_native_hyperframes_runtime_intake.py \
+            --pattern test_native_evidence_projection.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$g0/caller.json"
+          "$g0/venv/bin/python" -B -E -s tooling/ci_test_runner.py \
+            --test-directory tooling/hyperframes --pattern test_owner_provision.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$g0/owner.json"
+          node --test --test-reporter=tap \
+            native/hyperframes/tests/adapter-contract.test.mjs \
+            tooling/hyperframes/prepare-runtime.test.mjs 2>&1 | tee "$g0/node.tap"
+          "$g0/venv/bin/python" -B -E -s - "$g0" <<'PY'
+          import json, os, re, sys
+          from pathlib import Path
+          sys.path.insert(0, "tooling")
+          from ci_test_runner import source_state
+          root = Path(sys.argv[1])
+          for filename, counts in (
+              ("caller.json", [42, 32, 11, 52]), ("owner.json", [17])):
+              value = json.loads((root / filename).read_bytes())
+              assert value["status"] == "PASS" and value["exit_code"] == 0
+              assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+              assert len(value["steps"]) == len(counts)
+              for step, count in zip(value["steps"], counts, strict=True):
+                  actual = step["counts"]
+                  assert step["status"] == "PASS"
+                  assert actual["tests_run"] == actual["passed"] == count
+                  assert not any(actual[key] for key in (
+                      "failures", "errors", "skipped", "expected_failures", "unexpected_successes"))
+          text = (root / "node.tap").read_text(encoding="utf-8")
+          for label, expected in (("tests",54),("pass",54),("fail",0),("cancelled",0),("skipped",0),("todo",0)):
+              values = re.findall(r"(?m)^# " + label + r" ([0-9]+)$", text)
+              assert values == [str(expected)], (label, values)
+          source_state(Path.cwd(), os.environ["GITHUB_SHA"])
+          print(json.dumps({"source_sha": os.environ["GITHUB_SHA"],
+                            "python_passed": 154, "node_passed": 54, "skipped": 0}))
+          PY
+      - name: Retain HyperFrames source G0 originals
+        if: ${{ always() && steps.hf_source_g0.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}/*.json
+            ${{ runner.temp }}/hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            ${{ runner.temp }}/hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}/node.tap
+          if-no-files-found: error
+          retention-days: 14
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
@@ -45,5 +159,392 @@ jobs:
         run: cargo test --locked -p motionwright-native production::tests --all-targets
       - name: Original terminal receipt custody
         run: cargo test --locked -p motionwright-native --lib production::receipt_custody::tests -- --nocapture
-      - name: Native production clippy
-        run: cargo clippy --locked -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+      - name: Compile and test HyperFrames source targets without provisioning a runtime
+        id: hf_source_g1
+        if: github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          g1_logs="$RUNNER_TEMP/hyperframes-source-g1"
+          mkdir -m 700 "$g1_logs"
+          run_contract() {
+            label="$1"
+            expected="$2"
+            shift 2
+            set +e
+            "$@" 2>&1 | tee "$g1_logs/$label.log"
+            contract_statuses=("${PIPESTATUS[@]}")
+            set -e
+            if [ "${#contract_statuses[@]}" -ne 2 ]; then
+              printf '%s\n' "Unexpected source/capture pipeline width" >&2
+              return 2
+            fi
+            contract_exit="${contract_statuses[0]}"
+            capture_exit="${contract_statuses[1]}"
+            python3 - "$g1_logs/$label.log" "$expected" "$label" "$contract_exit" "$capture_exit" <<'PY'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          path, expected_count, label, exit_code = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+          capture_exit = int(sys.argv[5])
+          required_by_label = {'profile': ['tests::native_html_is_deterministic_and_has_no_user_code_or_network_dependency', 'tests::signed_layer_order_is_preserved_inside_an_explicit_stacking_context', 'tests::malformed_or_unrepresentable_source_never_produces_native_html', 'tests::source_binding_and_edit_change_fingerprint_without_hiding_original_source'], 'driver': ['driver::tests::no_host_context_cannot_start_or_replay_native_mutation', 'driver::tests::missing_grants_and_malformed_descriptor_refuse_before_execution', 'store::tests::native_source_roundtrip_preserves_original_and_refuses_unmanaged_html_changes', 'store::tests::missing_or_unpinned_dependency_is_read_only_rejection', 'store::tests::secret_and_traversal_paths_are_rejected_before_dependency_reads'], 'direct-consumer': ['linux::tests::original_compiled_request_is_admitted_without_a_host', 'linux::tests::changed_source_inventory_is_rejected_before_a_host', 'linux::tests::wrong_phase_attempt_is_rejected_before_a_host', 'linux::tests::request_cannot_inject_an_unreviewed_execution_option'], 'native-projection': ['hyperframes::tests::typed_hyperframes_source_keeps_canvas_identity_and_does_not_dispatch', 'hyperframes::tests::unsupported_blend_camera_and_subpixel_source_refuse_before_native_dispatch'], 'native-example': ['tests::original_project_contains_exact_native_timing_and_editable_nodes', 'tests::source_edit_keeps_original_id_and_does_not_replay']}
+          required = required_by_label[label]
+          assert len(required) == len(set(required)) == expected_count
+          raw = path.read_bytes()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace").replace("\r\n", "\n"))
+          actual = re.findall(r"(?m)^test (\S+) \.\.\. (ok|FAILED|ignored)$", text)
+          rows = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
+          complete = (exit_code == 0 and capture_exit == 0 and head == os.environ["GITHUB_SHA"] and not dirty
+                      and len(actual) == len(required) and sorted(actual) == sorted((name, "ok") for name in required)
+                      and len(rows) == 1 and rows[0][:5] == ("ok", str(expected_count), "0", "0", "0"))
+          receipt = {"schema": "motionwright.native.closed-source-roster/1", "source_sha": head, "tree_sha": tree,
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                     "job": os.environ["GITHUB_JOB"], "label": label, "required": sorted(required),
+                     "observed": actual, "terminal_rows": rows, "exit_code": exit_code, "capture_exit_code": capture_exit,
+                     "log": {"file": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+                     "stream_representation": "Original process stdout/stderr merged by shell",
+                     "status": "PASS" if complete else "FAIL", "native_execution": False,
+                     "formal_acceptance": False}
+          with path.with_suffix(".receipt.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          print(json.dumps({"label": label, "status": receipt["status"], "source_sha": head,
+                            "required_count": expected_count, "observed_count": len(actual), "exit_code": exit_code}))
+          if not complete:
+              raise SystemExit("Exact source roster omitted, renamed, duplicated, skipped, failed or source changed")
+          PY
+          }
+          run_contract profile 4 cargo test --locked -p motionwright-hyperframes-profile --lib
+          run_contract driver 5 cargo test --locked -p motionwright-driver-hyperframes --lib
+          run_contract direct-consumer 4 cargo test --locked -p motionwright-driver-hyperframes \
+            --example native-hyperframes-direct-reference -- --nocapture
+          run_contract native-projection 2 cargo test --locked -p motionwright-native \
+            --lib hyperframes -- --nocapture
+          run_contract native-example 2 cargo test --locked -p motionwright-native \
+            --example native-hyperframes-e2e -- --nocapture
+          cargo build --locked -p motionwright-driver-hyperframes \
+            --bin semwright-hyperframes-driver --example native-hyperframes-direct-reference
+          cargo build --locked -p motionwright-native --example native-hyperframes-e2e
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code --quiet
+      - name: Retain exact HyperFrames source G1 originals
+        if: ${{ always() && steps.hf_source_g1.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-source-g1-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hyperframes-source-g1/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Native production and HyperFrames source clippy
+        run: cargo clippy --locked -p motionwright-storage -p motionwright-service -p motionwright-native -p motionwright-hyperframes-profile -p motionwright-driver-hyperframes --all-targets -- -D warnings
+
+  hyperframes-native:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_scenario == 'hyperframes'
+    needs: production-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    concurrency:
+      group: native-hyperframes-original
+      cancel-in-progress: false
+    env:
+      HF_ROOT: /tmp/motionwright-hf-${{ github.run_id }}-${{ github.run_attempt }}
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+      PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+      PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+
+      - name: Reserve one original Linux namespace and custody environment
+        id: setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_OS" = Linux
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test ! -e "$HF_ROOT"
+          mkdir -m 700 "$HF_ROOT"
+          mkdir -m 700 "$HF_ROOT/public" "$HF_ROOT/g0" "$HF_ROOT/g1" "$HF_ROOT/bin"
+          python3 -m venv "$HF_ROOT/venv"
+          "$HF_ROOT/venv/bin/python" -m pip install \
+            --disable-pip-version-check --no-input --require-hashes \
+            -r tooling/requirements/mlt-g2-custody.txt
+          "$HF_ROOT/venv/bin/python" -B -E -s - <<'PY'
+          import os, sys
+          sys.path.insert(0, "tooling")
+          import ci_private_evidence as custody
+          import native_hyperframes_actions as actions
+          custody.public_key({
+              "spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
+              "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]})
+          actions.source_bindings(actions.context())
+          PY
+
+      - name: Source-bound HyperFrames caller and owner G0
+        id: g0_python
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$HF_ROOT/venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_hyperframes.py \
+            --pattern test_native_hyperframes_actions.py \
+            --pattern test_native_hyperframes_runtime_intake.py \
+            --pattern test_native_evidence_projection.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$HF_ROOT/g0/caller.json"
+          "$HF_ROOT/venv/bin/python" -B tooling/ci_test_runner.py \
+            --test-directory tooling/hyperframes --pattern test_owner_provision.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$HF_ROOT/g0/owner.json"
+          "$HF_ROOT/venv/bin/python" -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["HF_ROOT"]) / "g0"
+          for filename, counts in (
+              ("caller.json", [42, 32, 11, 52]), ("owner.json", [17])):
+              value = json.loads((root / filename).read_bytes())
+              assert value["status"] == "PASS" and value["exit_code"] == 0
+              assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+              assert len(value["steps"]) == len(counts)
+              for step, count in zip(value["steps"], counts, strict=True):
+                  actual = step["counts"]
+                  assert step["status"] == "PASS"
+                  assert actual["tests_run"] == actual["passed"] == count
+                  assert not any(actual[key] for key in (
+                      "failures", "errors", "skipped", "expected_failures", "unexpected_successes"))
+          PY
+
+      - name: Original adapter and offline finalizer G0
+        id: g0_node
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test --test-reporter=tap \
+            native/hyperframes/tests/adapter-contract.test.mjs \
+            tooling/hyperframes/prepare-runtime.test.mjs > "$HF_ROOT/g0/node.tap" 2>&1
+          "$HF_ROOT/venv/bin/python" -B - <<'PY'
+          import os, re
+          from pathlib import Path
+          text = (Path(os.environ["HF_ROOT"]) / "g0/node.tap").read_text()
+          for label, expected in (("tests",54),("pass",54),("fail",0),("cancelled",0),("skipped",0),("todo",0)):
+              values = re.findall(r"(?m)^# " + label + r" ([0-9]+)$", text)
+              assert values == [str(expected)], (label, values)
+          PY
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: 54d3459a051adbce4cae9f60c0dea8f60c824be6
+          path: _semwright
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: |
+            . -> target
+            _semwright -> target
+
+      - name: Existing canonical Host sandbox and build dependencies
+        id: sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C _semwright rev-parse HEAD)" = 54d3459a051adbce4cae9f60c0dea8f60c824be6
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh "$HF_ROOT/sandbox-profile.txt"
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang ffmpeg
+
+      - name: Source-bound Rust gates and original executables
+        id: g1
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_test() {
+            label="$1"
+            expected="$2"
+            shift 2
+            set +e
+            "$@" 2>&1 | tee "$HF_ROOT/g1/$label.log"
+            contract_statuses=("${PIPESTATUS[@]}")
+            set -e
+            if [ "${#contract_statuses[@]}" -ne 2 ]; then
+              printf '%s\n' "Unexpected source/capture pipeline width" >&2
+              return 2
+            fi
+            contract_exit="${contract_statuses[0]}"
+            capture_exit="${contract_statuses[1]}"
+            "$HF_ROOT/venv/bin/python" -B - "$HF_ROOT/g1/$label.log" "$expected" "$label" "$contract_exit" "$capture_exit" <<'PY'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          path, expected_count, label, exit_code = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+          capture_exit = int(sys.argv[5])
+          required_by_label = {'profile': ['tests::native_html_is_deterministic_and_has_no_user_code_or_network_dependency', 'tests::signed_layer_order_is_preserved_inside_an_explicit_stacking_context', 'tests::malformed_or_unrepresentable_source_never_produces_native_html', 'tests::source_binding_and_edit_change_fingerprint_without_hiding_original_source'], 'driver': ['driver::tests::no_host_context_cannot_start_or_replay_native_mutation', 'driver::tests::missing_grants_and_malformed_descriptor_refuse_before_execution', 'store::tests::native_source_roundtrip_preserves_original_and_refuses_unmanaged_html_changes', 'store::tests::missing_or_unpinned_dependency_is_read_only_rejection', 'store::tests::secret_and_traversal_paths_are_rejected_before_dependency_reads'], 'direct-consumer': ['linux::tests::original_compiled_request_is_admitted_without_a_host', 'linux::tests::changed_source_inventory_is_rejected_before_a_host', 'linux::tests::wrong_phase_attempt_is_rejected_before_a_host', 'linux::tests::request_cannot_inject_an_unreviewed_execution_option'], 'native-projection': ['hyperframes::tests::typed_hyperframes_source_keeps_canvas_identity_and_does_not_dispatch', 'hyperframes::tests::unsupported_blend_camera_and_subpixel_source_refuse_before_native_dispatch'], 'native-example': ['tests::original_project_contains_exact_native_timing_and_editable_nodes', 'tests::source_edit_keeps_original_id_and_does_not_replay']}
+          required = required_by_label[label]
+          assert len(required) == len(set(required)) == expected_count
+          raw = path.read_bytes()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace").replace("\r\n", "\n"))
+          actual = re.findall(r"(?m)^test (\S+) \.\.\. (ok|FAILED|ignored)$", text)
+          rows = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
+          complete = (exit_code == 0 and capture_exit == 0 and head == os.environ["GITHUB_SHA"] and not dirty
+                      and len(actual) == len(required) and sorted(actual) == sorted((name, "ok") for name in required)
+                      and len(rows) == 1 and rows[0][:5] == ("ok", str(expected_count), "0", "0", "0"))
+          receipt = {"schema": "motionwright.native.closed-source-roster/1", "source_sha": head, "tree_sha": tree,
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                     "job": os.environ["GITHUB_JOB"], "label": label, "required": sorted(required),
+                     "observed": actual, "terminal_rows": rows, "exit_code": exit_code, "capture_exit_code": capture_exit,
+                     "log": {"file": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+                     "stream_representation": "Original process stdout/stderr merged by shell",
+                     "status": "PASS" if complete else "FAIL", "native_execution": False,
+                     "formal_acceptance": False}
+          with path.with_suffix(".receipt.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          print(json.dumps({"label": label, "status": receipt["status"], "source_sha": head,
+                            "required_count": expected_count, "observed_count": len(actual), "exit_code": exit_code}))
+          if not complete:
+              raise SystemExit("Exact source roster omitted, renamed, duplicated, skipped, failed or source changed")
+          PY
+          }
+          run_test profile 4 cargo test --locked -p motionwright-hyperframes-profile --lib
+          run_test driver 5 cargo test --locked -p motionwright-driver-hyperframes --lib
+          run_test direct-consumer 4 cargo test --locked -p motionwright-driver-hyperframes \
+            --example native-hyperframes-direct-reference -- --nocapture
+          run_test native-projection 2 cargo test --locked -p motionwright-native --lib hyperframes -- --nocapture
+          run_test native-example 2 cargo test --locked -p motionwright-native --example native-hyperframes-e2e -- --nocapture
+          cargo clippy --locked -p motionwright-driver-hyperframes \
+            -p motionwright-hyperframes-profile -p motionwright-native --all-targets -- -D warnings \
+            > "$HF_ROOT/g1/clippy.log" 2>&1
+          cargo build --locked -p motionwright-driver-hyperframes \
+            --bin semwright-hyperframes-driver --example native-hyperframes-direct-reference \
+            > "$HF_ROOT/g1/build-driver.log" 2>&1
+          cargo build --locked -p motionwright-native --example native-hyperframes-e2e \
+            > "$HF_ROOT/g1/build-native.log" 2>&1
+
+      - name: Build exact Semwright daemon, CLI and sandbox
+        id: g1_sdk
+        working-directory: _semwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins \
+            > "$HF_ROOT/g1/build-sdk.log" 2>&1
+          cargo build --locked -p semwright-plugin-host --bin semwright-sandbox \
+            > "$HF_ROOT/g1/build-sandbox.log" 2>&1
+
+      - name: Bind the actual seven binaries outside the checkout
+        id: binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 700 target/debug/examples/native-hyperframes-e2e "$HF_ROOT/bin/mw-hf"
+          install -m 700 target/debug/examples/native-hyperframes-direct-reference "$HF_ROOT/bin/direct-hf"
+          install -m 700 target/debug/semwright-hyperframes-driver "$HF_ROOT/bin/driver-hf"
+          install -m 700 "$(readlink -f "$(command -v node)")" "$HF_ROOT/bin/node"
+          install -m 700 _semwright/target/debug/semwright "$HF_ROOT/bin/semwright"
+          install -m 700 _semwright/target/debug/semwrightd "$HF_ROOT/bin/semwrightd"
+          install -m 700 _semwright/target/debug/semwright-sandbox "$HF_ROOT/bin/semwright-sandbox"
+
+      - name: One public distribution intake and existing offline finalizer
+        id: intake
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$HF_ROOT/venv/bin/python" -B tooling/native_hyperframes_runtime_intake.py \
+            --runtime "$HF_ROOT/runtime" --evidence "$HF_ROOT/intake" \
+            --node "$HF_ROOT/bin/node" \
+            --ffmpeg "$(readlink -f "$(command -v ffmpeg)")" \
+            --ffprobe "$(readlink -f "$(command -v ffprobe)")"
+
+      - name: Original direct and mediated jobs, edit, fresh reopen and selected originals
+        id: native
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$HF_ROOT/venv/bin/python" -B tooling/native_hyperframes_actions.py \
+            --owner "$HF_ROOT/owner" --runtime "$HF_ROOT/runtime" --intake "$HF_ROOT/intake" \
+            --sealed "$HF_ROOT/public/selected-originals.sealed" \
+            --public-result "$HF_ROOT/public/actions-result.json" \
+            --mw "$HF_ROOT/bin/mw-hf" --direct "$HF_ROOT/bin/direct-hf" \
+            --driver "$HF_ROOT/bin/driver-hf" --node "$HF_ROOT/bin/node" \
+            --sem-cli "$HF_ROOT/bin/semwright" --daemon "$HF_ROOT/bin/semwrightd" \
+            --sandbox-helper "$HF_ROOT/bin/semwright-sandbox"
+
+      - name: Record closed gate outcomes
+        if: always()
+        shell: bash
+        env:
+          GATE_SETUP: ${{ steps.setup.outcome }}
+          GATE_G0_PYTHON: ${{ steps.g0_python.outcome }}
+          GATE_G0_NODE: ${{ steps.g0_node.outcome }}
+          GATE_SANDBOX: ${{ steps.sandbox.outcome }}
+          GATE_G1: ${{ steps.g1.outcome }}
+          GATE_G1_SDK: ${{ steps.g1_sdk.outcome }}
+          GATE_BINARIES: ${{ steps.binaries.outcome }}
+          GATE_INTAKE: ${{ steps.intake.outcome }}
+          GATE_NATIVE: ${{ steps.native.outcome }}
+        run: |
+          set -euo pipefail
+          test -d "$HF_ROOT/public" || exit 0
+          python3 -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = {
+              "schema": "motionwright.hyperframes.actions-gates/1",
+              "source_sha": os.environ["GITHUB_SHA"],
+              "semwright_sha": "54d3459a051adbce4cae9f60c0dea8f60c824be6",
+              "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "gates": {key: os.environ.get("GATE_" + key.upper(), "") or "NOT_RUN"
+                        for key in ("setup", "g0_python", "g0_node", "sandbox", "g1", "g1_sdk", "binaries", "intake", "native")},
+              "automatic_retry": False, "formal_acceptance": False,
+              "human_acceptance": False, "release_authorized": False}
+          target = Path(os.environ["HF_ROOT"]) / "public/gates.json"
+          with target.open("x") as output:
+              json.dump(value, output, sort_keys=True)
+              output.write("\n")
+          PY
+
+      - name: Retain first-party G0 and Rust gate originals
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-gates-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.HF_ROOT }}/g0/
+            ${{ env.HF_ROOT }}/g1/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Retain sealed selected originals and closed public results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.HF_ROOT }}/public/selected-originals.sealed
+            ${{ env.HF_ROOT }}/public/actions-result.json
+            ${{ env.HF_ROOT }}/public/gates.json
+          if-no-files-found: warn
+          retention-days: 14

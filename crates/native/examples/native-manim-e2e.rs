@@ -1,10 +1,15 @@
 use motionwright_domain::{
-    BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RendererKind, RevisionStamp,
+    BlendMode, CanvasNode, Change, CoordinateSpace, FontRight, NodeStyle, OutputColorSpace,
+    OutputContainer, RationalTime, RendererKind, RevisionStamp, RightsStatus, VideoCodec,
+    VisualToken,
 };
 use motionwright_manim_profile::ManimRenderProfile;
-use motionwright_native::production::{ProductionConnection, ProductionCoordinator};
+use motionwright_native::production::{
+    ManimRuntimeVersionState, ProductionConnection, ProductionCoordinator,
+};
 use motionwright_service::StudioService;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs::OpenOptions,
@@ -13,9 +18,12 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "native_manim_editable/source_cycle.rs"]
+mod editable_cycle;
+
 fn usage() -> ! {
     eprintln!(
-        "usage: native-manim-e2e <seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
+        "usage: native-manim-e2e <seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON [REQUEST_ID] | realize-bundle DATABASE CONNECTION EVIDENCE_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | source-cycle-edit DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT REQUEST_ID | source-cycle-readback DATABASE EDIT_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
     );
     std::process::exit(2);
 }
@@ -54,9 +62,9 @@ fn node(fixture: NodeFixture<'_>) -> CanvasNode {
             fill: Some(fixture.fill.into()),
             stroke: None,
             stroke_width: 0.0,
-            font_family: (fixture.kind == "text").then(|| "Sans".into()),
+            font_family: (fixture.kind == "text").then(|| "Montserrat".into()),
             font_size: (fixture.kind == "text").then_some(42.0),
-            font_weight: (fixture.kind == "text").then_some(600),
+            font_weight: (fixture.kind == "text").then_some(700),
             line_height: (fixture.kind == "text").then_some(1.0),
             blend_mode: BlendMode::Normal,
         },
@@ -64,6 +72,25 @@ fn node(fixture: NodeFixture<'_>) -> CanvasNode {
         property_locks: BTreeSet::new(),
         keyframes: vec![],
     }
+}
+
+const EDITABLE_FONT: &[u8] =
+    include_bytes!("../../manim-profile/tests/fixtures/Montserrat-variable.ttf");
+const EDITABLE_FONT_LICENSE: &[u8] =
+    include_bytes!("../../manim-profile/tests/fixtures/Montserrat-OFL.txt");
+const EDITABLE_FONT_ORIGIN: &[u8] =
+    include_bytes!("../../manim-profile/tests/fixtures/Montserrat-source.json");
+const EDITABLE_FONT_SHA256: &str =
+    "0f7b311b2f3279e4eef9b2f968bcdbab6e28f4daeb1f049f4f278a902bcd82f7";
+
+fn retain_seed_fixture(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    if std::fs::read(path)? != bytes {
+        return Err("licensed font fixture changed during exclusive retention".into());
+    }
+    Ok(())
 }
 
 fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -99,6 +126,69 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
         )?
         .project;
 
+    let mut project = with_renderer;
+    if hex::encode(Sha256::digest(EDITABLE_FONT)) != EDITABLE_FONT_SHA256
+        || hex::encode(Sha256::digest(EDITABLE_FONT_LICENSE))
+            != "8b7141c03fa4f8d44e6345d5d4931709290f0f67875e452e95ac1fd3a027802e"
+        || hex::encode(Sha256::digest(EDITABLE_FONT_ORIGIN))
+            != "2656ac500e19cee1a35c1293985c33741c9f1e030b458bdff967a4a02d2f8ab0"
+    {
+        return Err("pinned Montserrat font, OFL or origin identity changed".into());
+    }
+    let font_path = database.with_extension("Montserrat-variable.ttf");
+    retain_seed_fixture(&font_path, EDITABLE_FONT)?;
+    retain_seed_fixture(
+        &database.with_extension("Montserrat-OFL.txt"),
+        EDITABLE_FONT_LICENSE,
+    )?;
+    retain_seed_fixture(
+        &database.with_extension("Montserrat-source.json"),
+        EDITABLE_FONT_ORIGIN,
+    )?;
+    project = service
+        .import_asset_file(
+            project.id,
+            &RevisionStamp::from(&project),
+            "native-manim-seed-font",
+            &font_path,
+            "Pinned Montserrat variable".into(),
+            "font/ttf".into(),
+        )?
+        .project;
+    let font_asset_id = project
+        .assets
+        .iter()
+        .find(|asset| {
+            asset.name == "Pinned Montserrat variable"
+                && asset.content_sha256.as_deref() == Some(EDITABLE_FONT_SHA256)
+                && asset.media_type == "font/ttf"
+        })
+        .ok_or("licensed native font was not retained in Project/CAS")?
+        .id;
+    let mut language = project.visual_language.clone();
+    language
+        .palette
+        .retain(|row| !row.name.eq_ignore_ascii_case("background"));
+    language.palette.push(VisualToken {
+        name: "background".into(),
+        value: "#153047".into(),
+    });
+    language.fonts.push(FontRight {
+        family: "Montserrat".into(),
+        source: format!("asset:{font_asset_id}"),
+        rights_status: RightsStatus::Cleared,
+    });
+    project = service
+        .apply(
+            project.id,
+            &RevisionStamp::from(&project),
+            "native-manim-seed-licensed-font",
+            &Change::SetVisualLanguage {
+                visual_language: language,
+            },
+        )?
+        .project;
+
     let fixtures = [
         node(NodeFixture {
             kind: "rectangle",
@@ -125,7 +215,6 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             fill: "#FFFFFF",
         }),
     ];
-    let mut project = with_renderer;
     for (index, fixture) in fixtures.into_iter().enumerate() {
         project = service
             .apply(
@@ -140,6 +229,44 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .project;
     }
 
+    let mut output = project
+        .deliverables
+        .first()
+        .ok_or("seed project has no saved deliverable")?
+        .clone();
+    output.width = 640;
+    output.height = 360;
+    output.frame_rate = RationalTime::new(12, 1)?;
+    output.container = OutputContainer::Mp4;
+    output.video_codec = VideoCodec::H264;
+    output.color_space = OutputColorSpace::Rec709;
+    output.captions = false;
+    output.burn_in_captions = false;
+    output.included_scene_ids = vec![scene_id];
+    let deliverable_id = output.id;
+    project = service
+        .apply(
+            project.id,
+            &RevisionStamp::from(&project),
+            "native-manim-seed-deliverable",
+            &Change::UpsertDeliverable { profile: output },
+        )?
+        .project;
+    let prepared =
+        motionwright_native::manim_editable_projection::prepare_saved_manim_editable_source(
+            &service,
+            project.id,
+            &RevisionStamp::from(&project),
+            scene_id,
+            deliverable_id,
+        )?;
+    if prepared.plan.clock.frame_count != 24
+        || prepared.plan.fonts.len() != 1
+        || prepared.plan.fonts[0].sha256 != EDITABLE_FONT_SHA256
+    {
+        return Err("modern seed failed the actual editable-source admission".into());
+    }
+
     println!(
         "{}",
         serde_json::to_string(&json!({
@@ -148,7 +275,14 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             "generation": project.generation,
             "revision": project.revision,
             "scene_id": scene_id,
-            "primitive_count": 3
+            "primitive_count": 3,
+            "deliverable_id": deliverable_id,
+            "font_asset_id": font_asset_id,
+            "font_sha256": EDITABLE_FONT_SHA256,
+            "font_license_sha256": hex::encode(Sha256::digest(EDITABLE_FONT_LICENSE)),
+            "plan_sha256": prepared.closure.plan_sha256,
+            "frame_count": prepared.plan.clock.frame_count,
+            "native_execution_performed": false
         }))?
     );
     Ok(())
@@ -158,7 +292,21 @@ async fn realize(
     database: &Path,
     connection_path: &Path,
     evidence_path: &Path,
+    request_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    realize_with_bundle(database, connection_path, evidence_path, request_id, None).await
+}
+
+async fn realize_with_bundle(
+    database: &Path,
+    connection_path: &Path,
+    evidence_path: &Path,
+    request_id: &str,
+    input: Option<motionwright_native::manim_editable_projection::OriginalEditableBundleInput>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !evidence_path.parent().is_some_and(Path::is_dir) || evidence_path.exists() {
+        return Err("editable evidence requires an existing parent and unused destination".into());
+    }
     let service = StudioService::open(database)?;
     let projects = service.projects(2)?;
     if projects.len() != 1 {
@@ -172,139 +320,266 @@ async fn realize(
     if scene.renderer != RendererKind::ManimCommunity {
         return Err("seeded scene is not owned by the Manim Community renderer".into());
     }
-
+    let start_id = format!("{request_id}:start");
+    if service
+        .latest_production_receipt(project.id, &start_id)?
+        .is_some()
+    {
+        return Err("editable attempt already exists; inspect its original outcome".into());
+    }
     let connection = ProductionConnection::load(connection_path)?;
     if connection.resource != project.resource_key() {
         return Err("owner-provisioned connection is not bound to the seeded project".into());
     }
-    let coordinator = ProductionCoordinator::new(service, connection)?;
     let expected = RevisionStamp::from(&project);
     let profile = ManimRenderProfile {
         width: 640,
         height: 360,
         frame_rate: 12,
     };
-
-    let result = match coordinator
-        .realize_manim_scene(
+    let deliverable_id =
+        motionwright_native::manim_static_projection::select_saved_manim_deliverable_for_profile(
+            &project, &expected, scene.id, &profile,
+        )?;
+    let prepared =
+        motionwright_native::manim_editable_projection::prepare_saved_manim_editable_source(
+            &service,
             project.id,
             &expected,
-            "native-manim-real-driver-host",
             scene.id,
-            profile,
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            let diagnostic_path =
-                evidence_path.with_file_name("motionwright-manim-diagnostic.json");
-            let receipts = coordinator.receipts(project.id, 256).unwrap_or_default();
-            let diagnostic = json!({
-                "native_manim_e2e": "FAIL",
-                "project_id": project.id,
-                "generation": project.generation,
-                "revision": project.revision,
-                "scene_id": scene.id,
-                "error": {
-                    "code": format!("{:?}", error.code),
-                    "message": &error.message,
-                    "outcome_known": error.outcome_known,
-                    "candidates": &error.candidates,
-                },
-                "receipts": receipts,
-            });
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&diagnostic_path)?;
-            file.write_all(&serde_json::to_vec_pretty(&diagnostic)?)?;
-            file.write_all(b"\n")?;
-            file.sync_all()?;
-            eprintln!("{}", serde_json::to_string(&diagnostic)?);
-            return Err(error.into());
+            deliverable_id,
+        )?;
+    let coordinator = ProductionCoordinator::new(service, connection)?;
+    let runtime_observation = coordinator
+        .observe_manim_runtime_version(project.id, &expected)
+        .await;
+    let runtime_probe_evidence = match &runtime_observation {
+        Ok(observation) => json!({
+            "schema": "motionwright-manim-runtime-probe-e2e/1",
+            "project_id": project.id,
+            "generation": project.generation,
+            "revision": project.revision,
+            "observation": observation,
+            "error": null,
+            "render_started": false,
+        }),
+        Err(error) => json!({
+            "schema": "motionwright-manim-runtime-probe-e2e/1",
+            "project_id": project.id,
+            "generation": project.generation,
+            "revision": project.revision,
+            "observation": null,
+            "error": {
+                "code": format!("{:?}", error.code),
+                "message": &error.message,
+                "outcome_known": error.outcome_known,
+            },
+            "render_started": false,
+        }),
+    };
+    let runtime_probe_path =
+        evidence_path.with_file_name("motionwright-manim-runtime-observation.json");
+    retain_runtime_probe_to(
+        &runtime_probe_path,
+        &runtime_probe_evidence,
+        runtime_observation.as_ref().err().cloned(),
+        write_camera_evidence,
+        &mut std::io::stderr().lock(),
+    )?;
+    let runtime_observation = runtime_observation?;
+    if runtime_observation.state() != ManimRuntimeVersionState::ObservedCompatible {
+        return Err("native Manim runtime version was not observed as compatible; see the original runtime observation".into());
+    }
+
+    let attempted = match &input {
+        Some(input) => {
+            coordinator
+                .reopen_manim_editable_scene(
+                    project.id,
+                    &expected,
+                    request_id,
+                    scene.id,
+                    deliverable_id,
+                    input.clone(),
+                )
+                .await
+        }
+        None => {
+            coordinator
+                .realize_manim_scene(project.id, &expected, request_id, scene.id, profile)
+                .await
         }
     };
-
-    if result.get("renderer").and_then(|value| value.as_str()) != Some("manim-community")
-        || result.get("native_driver").and_then(|value| value.as_str())
-            != Some("driver:manim-community")
-        || result
-            .get("runtime_contract")
-            .and_then(|value| value.as_str())
-            != Some("Manim Community 0.21.0")
-        || result
-            .get("project_revision")
-            .and_then(|value| value.as_u64())
-            != Some(project.revision)
-        || result.get("scene_id") != Some(&json!(scene.id))
-    {
-        return Err("native Manim realization lost Motionwright revision/runtime identity".into());
-    }
-
-    let artifact = result
-        .get("artifact")
-        .ok_or("native Manim realization returned no verified artifact")?;
-    let relative = artifact
-        .get("relative_path")
-        .and_then(|value| value.as_str())
-        .ok_or("verified Manim artifact has no relative path")?;
-    let sha256 = artifact
-        .get("sha256")
-        .and_then(|value| value.as_str())
-        .ok_or("verified Manim artifact has no digest")?;
-    let bytes = artifact
-        .get("bytes")
-        .and_then(|value| value.as_u64())
-        .ok_or("verified Manim artifact has no size")?;
-    if !relative.ends_with(".mp4") || sha256.len() != 64 || bytes == 0 || bytes > 512 * 1024 * 1024
-    {
-        return Err("verified Manim artifact metadata is outside certified bounds".into());
-    }
-
-    let receipts = coordinator.receipts(project.id, 256)?;
-    let completed_commands: BTreeSet<_> = receipts
-        .iter()
-        .filter(|receipt| receipt.stage == "completed")
-        .map(|receipt| receipt.command.as_str())
-        .collect();
-    for required in [
-        "driver.manim-community.render.start",
-        "driver.manim-community.render.status",
-        "driver.manim-community.render.result",
-    ] {
-        if !completed_commands.contains(required) {
-            return Err(format!("native Manim receipt ledger is missing {required}").into());
-        }
-    }
-
-    let parent = evidence_path
-        .parent()
-        .ok_or("Manim evidence destination has no parent")?;
-    if !parent.is_dir() {
-        return Err("Manim evidence destination parent must already exist".into());
-    }
-    let evidence = json!({
-        "native_manim_e2e": "PASS",
-        "project_id": project.id,
-        "resource": project.resource_key(),
-        "generation": project.generation,
-        "revision": project.revision,
-        "scene_id": scene.id,
-        "profile": profile,
-        "result": result,
-        "receipt_count": receipts.len(),
-        "completed_commands": completed_commands,
+    let receipt_result = coordinator.receipts(project.id, 256);
+    let mut evidence = json!({
+        "runtime_observation": &runtime_observation,
+        "project_id": project.id, "resource": project.resource_key(),
+        "generation": project.generation, "revision": project.revision,
+        "scene_id": scene.id, "deliverable_id": deliverable_id, "request_id": request_id,
+        "profile": profile, "recent_receipts": receipt_result.as_ref().ok(),
+        "receipt_read_error": receipt_result.as_ref().err(), "receipt_window_limit": 256,
+        "decoded_frames_verified": false, "human_acceptance": false,
+        "native_bundle_reopen_verified": false, "requested_original_source_bundle": input,
     });
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(evidence_path)?;
-    file.write_all(&serde_json::to_vec_pretty(&evidence)?)?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-
-    println!("{}", serde_json::to_string(&evidence)?);
+    let result = match attempted {
+        Ok(result) => result,
+        Err(error) => {
+            return Err(retain_native_error_to(
+                evidence_path,
+                &mut evidence,
+                error,
+                None,
+                &mut std::io::stderr().lock(),
+                "native_manim_e2e",
+            )
+            .into());
+        }
+    };
+    let receipts = match receipt_result {
+        Ok(receipts) => receipts,
+        Err(error) => {
+            return Err(retain_native_error_to(
+                evidence_path,
+                &mut evidence,
+                error,
+                Some(result),
+                &mut std::io::stderr().lock(),
+                "native_manim_e2e",
+            )
+            .into());
+        }
+    };
+    drop(coordinator);
+    finish_native_evidence(
+        evidence_path,
+        &mut evidence,
+        result,
+        |evidence| {
+            let result = &evidence["result"];
+            if result.get("renderer").and_then(|v| v.as_str()) != Some("manim-community")
+                || result.get("native_driver").and_then(|v| v.as_str())
+                    != Some("driver:manim-community")
+                || result.get("runtime_contract").and_then(|v| v.as_str())
+                    != Some("Manim Community 0.21.0")
+                || result.get("project_revision").and_then(|v| v.as_u64()) != Some(project.revision)
+                || result.get("scene_id") != Some(&json!(scene.id))
+                || result.get("plan_sha256").and_then(|v| v.as_str())
+                    != Some(prepared.closure.plan_sha256.as_str())
+            {
+                return Err("native editable result lost canonical source/runtime identity".into());
+            }
+            let artifact = result
+                .get("artifact")
+                .ok_or("native editable artifact absent")?;
+            let relative = artifact
+                .get("relative_path")
+                .and_then(|v| v.as_str())
+                .ok_or("native editable artifact path absent")?;
+            let digest = artifact
+                .get("sha256")
+                .and_then(|v| v.as_str())
+                .ok_or("native editable artifact digest absent")?;
+            let bytes = artifact
+                .get("bytes")
+                .and_then(|v| v.as_u64())
+                .ok_or("native editable artifact length absent")?;
+            if !relative.ends_with(".mp4")
+                || digest.len() != 64
+                || bytes == 0
+                || bytes > 512 * 1024 * 1024
+            {
+                return Err("native editable artifact exceeds the admitted bounds".into());
+            }
+            let source = artifact
+                .get("editable_source")
+                .ok_or("native editable source not verified")?;
+            if artifact.get("editable_source_custody_error").is_some()
+                || source
+                    .get("native_object_getters_verified")
+                    .and_then(|v| v.as_bool())
+                    != Some(true)
+                || source.get("observed_object_count").and_then(|v| v.as_u64())
+                    != Some(prepared.plan.nodes.len() as u64)
+                || source.get("observed_font_count").and_then(|v| v.as_u64())
+                    != Some(prepared.plan.fonts.len() as u64)
+                || source.pointer("/source/closure") != Some(&json!(prepared.closure))
+            {
+                return Err("native editable source/font/getter custody is incomplete".into());
+            }
+            if let Some(input) = &input {
+                if artifact
+                    .get("editable_input_source_custody_error")
+                    .is_some()
+                    || artifact.pointer("/editable_input_source/input") != Some(&json!(input))
+                    || source.pointer("/source/sha256") != Some(&json!(input.sha256))
+                    || source.pointer("/source/bytes") != Some(&json!(input.bytes))
+                {
+                    return Err(
+                        "independent original-bundle open lost byte-original input custody".into(),
+                    );
+                }
+            } else if artifact.get("editable_input_source").is_some() {
+                return Err("generated render unexpectedly reported a bundle input".into());
+            }
+            let reopened = StudioService::open(database)?;
+            if reopened.project(project.id)? != project {
+                return Err("saved editable project changed during native realization".into());
+            }
+            let start = reopened
+                .latest_production_receipt(project.id, &start_id)?
+                .ok_or("original editable start receipt was not durable")?;
+            let terminal = reopened
+                .latest_production_receipt(project.id, &format!("{request_id}:result"))?
+                .ok_or("original editable result receipt was not durable")?;
+            if start.command != "driver.manim-community.editable.render.start"
+                || terminal.command != "driver.manim-community.render.result"
+                || start.stage != "completed"
+                || terminal.stage != "completed"
+                || start.generation != project.generation
+                || terminal.generation != project.generation
+                || start.revision != project.revision
+                || terminal.revision != project.revision
+                || result.pointer("/result/receipt") != Some(&json!(terminal))
+            {
+                return Err("editable start/result lost durable command or stamp identity".into());
+            }
+            let completed_commands: BTreeSet<_> = receipts
+                .iter()
+                .filter(|receipt| receipt.stage == "completed")
+                .map(|receipt| receipt.command.as_str())
+                .collect();
+            for required in [
+                "driver.manim-community.editable.render.start",
+                "driver.manim-community.render.status",
+                "driver.manim-community.render.result",
+            ] {
+                if !completed_commands.contains(required) {
+                    return Err(
+                        format!("native editable receipt ledger is missing {required}").into(),
+                    );
+                }
+            }
+            evidence["original_start_receipt"] = json!(start);
+            evidence["original_result_receipt"] = json!(terminal);
+            evidence["receipt_count"] = json!(receipts.len());
+            evidence["completed_commands"] = json!(completed_commands);
+            evidence["font_fixture_origin"] = serde_json::from_slice(EDITABLE_FONT_ORIGIN)?;
+            evidence["font_fixture_license_sha256"] =
+                json!(hex::encode(Sha256::digest(EDITABLE_FONT_LICENSE)));
+            Ok(())
+        },
+        write_camera_evidence,
+        "native_manim_e2e",
+    )?;
+    if let Err(error) = writeln!(&mut std::io::stdout().lock(), "{evidence}") {
+        let _ = writeln!(
+            &mut std::io::stderr().lock(),
+            "{}",
+            json!({
+                "editable_stdout_error": error.to_string(), "evidence_retained": true,
+            })
+        );
+    }
     Ok(())
 }
 
@@ -356,19 +631,62 @@ fn retain_camera_diagnostic_to(
     }
 }
 
-fn retain_camera_error_to(
+// The seven-field probe sidecar is separate from the render terminal writer.
+// Retention failures may block a successful probe, but never replace an error
+// already returned by the original doctor invocation.
+fn retain_runtime_probe_to(
+    probe_path: &Path,
+    probe: &serde_json::Value,
+    original_error: Option<semwright_native_sdk::Error>,
+    publish: impl FnOnce(&Path, &serde_json::Value) -> Result<(), Box<dyn std::error::Error>>,
+    stderr: &mut impl Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let publication = publish(probe_path, probe);
+    if let Some(original_error) = original_error {
+        // Secondary custody fields belong only to the diagnostic. The sidecar
+        // remains exactly the existing seven-field observation contract.
+        let mut diagnostic = probe.clone();
+        if let Err(custody_error) = publication {
+            diagnostic["custody_error"] = json!({
+                "stage": "runtime_probe_evidence_write",
+                "message": custody_error.to_string(),
+            });
+        }
+        return Err(retain_native_error_to(
+            probe_path,
+            &mut diagnostic,
+            original_error,
+            None,
+            stderr,
+            "native_manim_runtime_probe",
+        )
+        .into());
+    }
+    if let Err(custody_error) = publication {
+        let mut diagnostic = probe.clone();
+        diagnostic["native_manim_runtime_probe"] = json!("UNVERIFIED");
+        diagnostic["failure_stage"] = json!("runtime_probe_evidence_write");
+        diagnostic["custody_error"] = json!({"message": custody_error.to_string()});
+        retain_camera_diagnostic_to(probe_path, &diagnostic, stderr);
+        return Err(custody_error);
+    }
+    Ok(())
+}
+
+fn retain_native_error_to(
     evidence_path: &Path,
     evidence: &mut serde_json::Value,
     original_error: semwright_native_sdk::Error,
     completed_result: Option<serde_json::Value>,
     stderr: &mut impl Write,
+    status_key: &str,
 ) -> semwright_native_sdk::Error {
     if let Some(result) = completed_result {
-        evidence["native_manim_camera_dispatch"] = json!("UNVERIFIED");
+        evidence[status_key] = json!("UNVERIFIED");
         evidence["failure_stage"] = json!("receipt_read");
         evidence["result"] = result;
     } else {
-        evidence["native_manim_camera_dispatch"] = json!(if original_error.outcome_known {
+        evidence[status_key] = json!(if original_error.outcome_known {
             "FAIL"
         } else {
             "UNKNOWN"
@@ -378,6 +696,23 @@ fn retain_camera_error_to(
     evidence["error"] = json!(&original_error);
     retain_camera_diagnostic_to(evidence_path, evidence, stderr);
     original_error
+}
+
+fn retain_camera_error_to(
+    evidence_path: &Path,
+    evidence: &mut serde_json::Value,
+    original_error: semwright_native_sdk::Error,
+    completed_result: Option<serde_json::Value>,
+    stderr: &mut impl Write,
+) -> semwright_native_sdk::Error {
+    retain_native_error_to(
+        evidence_path,
+        evidence,
+        original_error,
+        completed_result,
+        stderr,
+        "native_manim_camera_dispatch",
+    )
 }
 
 fn retain_camera_error(
@@ -435,17 +770,18 @@ fn verify_camera_custody(
     Ok(())
 }
 
-fn finish_camera_evidence(
+fn finish_native_evidence(
     evidence_path: &Path,
     evidence: &mut serde_json::Value,
     completed_result: serde_json::Value,
     verify: impl FnOnce(&mut serde_json::Value) -> Result<(), Box<dyn std::error::Error>>,
     publish: impl FnOnce(&Path, &serde_json::Value) -> Result<(), Box<dyn std::error::Error>>,
+    status_key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Retain the native return value before any reopen, verification or write.
     // This function never dispatches a replacement native job.
     evidence["result"] = completed_result;
-    evidence["native_manim_camera_dispatch"] = json!("UNVERIFIED");
+    evidence[status_key] = json!("UNVERIFIED");
     evidence["failure_stage"] = json!("post_dispatch_verification");
     if let Err(error) = verify(evidence) {
         evidence["custody_error"] = json!({"message": error.to_string()});
@@ -456,7 +792,7 @@ fn finish_camera_evidence(
     if let Some(object) = publication.as_object_mut() {
         object.remove("failure_stage");
     }
-    publication["native_manim_camera_dispatch"] = json!("PASS");
+    publication[status_key] = json!("PASS");
     if let Err(error) = publish(evidence_path, &publication) {
         evidence["failure_stage"] = json!("evidence_write");
         evidence["custody_error"] = json!({"message": error.to_string()});
@@ -465,6 +801,23 @@ fn finish_camera_evidence(
     }
     *evidence = publication;
     Ok(())
+}
+
+fn finish_camera_evidence(
+    evidence_path: &Path,
+    evidence: &mut serde_json::Value,
+    completed_result: serde_json::Value,
+    verify: impl FnOnce(&mut serde_json::Value) -> Result<(), Box<dyn std::error::Error>>,
+    publish: impl FnOnce(&Path, &serde_json::Value) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    finish_native_evidence(
+        evidence_path,
+        evidence,
+        completed_result,
+        verify,
+        publish,
+        "native_manim_camera_dispatch",
+    )
 }
 
 async fn realize_camera(
@@ -577,10 +930,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let database = path_arg(&mut args);
             let connection = path_arg(&mut args);
             let evidence = path_arg(&mut args);
+            let request_id = args
+                .next()
+                .map(|value| value.into_string().unwrap_or_else(|_| usage()))
+                .unwrap_or_else(|| "native-manim-real-driver-host".into());
             if args.next().is_some() {
                 usage();
             }
-            realize(&database, &connection, &evidence).await
+            realize(&database, &connection, &evidence, &request_id).await
+        }
+        "realize-bundle" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            let input_path = path_arg(&mut args);
+            let request = text_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            let input = editable_cycle::input_descriptor(&input_path)?;
+            realize_with_bundle(&database, &connection, &evidence, &request, Some(input)).await
+        }
+        "source-cycle-edit" => {
+            let database = path_arg(&mut args);
+            let original_native = path_arg(&mut args);
+            let output_root = path_arg(&mut args);
+            let report = path_arg(&mut args);
+            let request = text_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            let result =
+                editable_cycle::edit(&database, &original_native, &output_root, &report, &request)?;
+            println!("{}", serde_json::to_string(&result)?);
+            Ok(())
+        }
+        "source-cycle-readback" => {
+            let database = path_arg(&mut args);
+            let edit_report = path_arg(&mut args);
+            let current_native = path_arg(&mut args);
+            let output_root = path_arg(&mut args);
+            let report = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            let result = editable_cycle::readback(
+                &database,
+                &edit_report,
+                &current_native,
+                &output_root,
+                &report,
+            )?;
+            println!("{}", serde_json::to_string(&result)?);
+            Ok(())
         }
         "realize-camera" => {
             let database = path_arg(&mut args);
@@ -910,5 +1312,334 @@ mod camera_custody_tests {
             std::fs::read(&evidence_path).unwrap(),
             b"{partial-private-evidence"
         );
+    }
+}
+
+#[cfg(test)]
+mod editable_seed_and_custody_tests {
+    use super::*;
+
+    #[test]
+    fn modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs() {
+        let temporary = tempfile::tempdir().unwrap();
+        let database = temporary.path().join("editable.sqlite3");
+        seed(&database).unwrap();
+        let service = StudioService::open(&database).unwrap();
+        let projects = service.projects(2).unwrap();
+        assert_eq!(projects.len(), 1);
+        let project = projects[0].clone();
+        let scene = &project.scenes[0];
+        assert_eq!(scene.renderer, RendererKind::ManimCommunity);
+        let requested = ManimRenderProfile {
+            width: 640,
+            height: 360,
+            frame_rate: 12,
+        };
+        let expected = RevisionStamp::from(&project);
+        let deliverable_id = motionwright_native::manim_static_projection::select_saved_manim_deliverable_for_profile(
+            &project, &expected, scene.id, &requested,
+        ).unwrap();
+        let package =
+            motionwright_native::manim_editable_projection::prepare_saved_manim_editable_source(
+                &service,
+                project.id,
+                &expected,
+                scene.id,
+                deliverable_id,
+            )
+            .unwrap();
+        assert_eq!(package.plan.render_profile, requested);
+        assert_eq!(package.plan.clock.frame_count, 24);
+        assert_eq!(package.plan.fonts.len(), 1);
+        assert_eq!(package.plan.fonts[0].sha256, EDITABLE_FONT_SHA256);
+        assert_eq!(package.plan.background.color, "#153047");
+        let title = package
+            .plan
+            .nodes
+            .iter()
+            .find_map(|node| node.typography.as_ref())
+            .unwrap();
+        assert_eq!(title.text, "x² + y² = r²");
+        assert_eq!(title.weight, 700);
+        let actual_font = service
+            .verified_brand_font(project.id, &expected, "Montserrat")
+            .unwrap();
+        assert_eq!(actual_font.bytes, EDITABLE_FONT);
+        assert_eq!(actual_font.source.sha256, EDITABLE_FONT_SHA256);
+        assert_eq!(
+            std::fs::read(database.with_extension("Montserrat-OFL.txt")).unwrap(),
+            EDITABLE_FONT_LICENSE
+        );
+        assert_eq!(
+            std::fs::read(database.with_extension("Montserrat-source.json")).unwrap(),
+            EDITABLE_FONT_ORIGIN
+        );
+        assert!(
+            service
+                .production_receipts(project.id, 256)
+                .unwrap()
+                .is_empty()
+        );
+        drop(service);
+        assert!(seed(&database).is_err());
+        let reopened = StudioService::open(&database).unwrap();
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+        assert!(
+            reopened
+                .production_receipts(project.id, 256)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let unknown_path = temporary.path().join("unknown.json");
+        let original = semwright_native_sdk::Error::new(
+            semwright_native_sdk::ErrorCode::Timeout,
+            "one original editable invocation has unknown outcome",
+        )
+        .uncertain()
+        .recipe_progress(1, "driver.manim-community.editable.render.start");
+        let serialized = serde_json::to_value(&original).unwrap();
+        let mut evidence = json!({"request_id":"original-editable", "human_acceptance":false});
+        let returned = retain_native_error_to(
+            &unknown_path,
+            &mut evidence,
+            original,
+            None,
+            &mut Vec::new(),
+            "native_manim_e2e",
+        );
+        assert_eq!(serde_json::to_value(returned).unwrap(), serialized);
+        assert_eq!(evidence["native_manim_e2e"], "UNKNOWN");
+        assert_eq!(evidence["error"], serialized);
+        let retained: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(unknown_path.with_extension("diagnostic.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(retained, evidence);
+        assert!(!unknown_path.exists());
+
+        let complete_path = temporary.path().join("complete.json");
+        let known = json!({"job_ref":"original-native-job","result":{"opaque":[2,3,5]}});
+        let mut evidence = json!({"request_id":"original-complete", "human_acceptance":false});
+        let failure = finish_native_evidence(
+            &complete_path,
+            &mut evidence,
+            known.clone(),
+            |_| Err("source custody changed after acknowledged native completion".into()),
+            |_, _| panic!("failed custody must not publish PASS"),
+            "native_manim_e2e",
+        )
+        .unwrap_err();
+        assert!(!failure.to_string().is_empty());
+        assert_eq!(evidence["native_manim_e2e"], "UNVERIFIED");
+        assert_eq!(evidence["result"], known);
+        let retained: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(complete_path.with_extension("diagnostic.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(retained, evidence);
+        assert!(!complete_path.exists());
+    }
+}
+
+#[cfg(test)]
+mod runtime_probe_custody_tests {
+    use super::*;
+
+    fn original_probe_error() -> semwright_native_sdk::Error {
+        semwright_native_sdk::Error::new(
+            semwright_native_sdk::ErrorCode::Timeout,
+            "original doctor transport outcome",
+        )
+        .uncertain()
+        .recipe_progress(1, "driver.manim-community.doctor")
+    }
+
+    fn probe_evidence(error: Option<&semwright_native_sdk::Error>) -> serde_json::Value {
+        json!({
+            "schema": "motionwright-manim-runtime-probe-e2e/1",
+            "project_id": Uuid::nil(),
+            "generation": Uuid::nil(),
+            "revision": 0,
+            "observation": if error.is_none() {
+                json!({"source_control_only": true})
+            } else {
+                serde_json::Value::Null
+            },
+            "error": error,
+            "render_started": false,
+        })
+    }
+
+    struct ClosedDiagnosticStream;
+
+    impl Write for ClosedDiagnosticStream {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "closed diagnostic stream",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "closed diagnostic stream",
+            ))
+        }
+    }
+
+    #[test]
+    fn original_probe_error_survives_sidecar_collision_and_secondary_custody_failures() {
+        let temporary = tempfile::tempdir().unwrap();
+        let sidecar = temporary
+            .path()
+            .join("motionwright-manim-runtime-observation.json");
+        let diagnostic = sidecar.with_extension("diagnostic.json");
+        std::fs::write(&sidecar, b"prior probe sidecar").unwrap();
+        std::fs::write(&diagnostic, b"prior probe diagnostic").unwrap();
+        let original = original_probe_error();
+        let expected_error = serde_json::to_value(&original).unwrap();
+        let probe = probe_evidence(Some(&original));
+        let before = probe.clone();
+        let publications = std::cell::Cell::new(0);
+        let returned = retain_runtime_probe_to(
+            &sidecar,
+            &probe,
+            Some(original),
+            |path, value| {
+                publications.set(publications.get() + 1);
+                write_camera_evidence(path, value)
+            },
+            &mut ClosedDiagnosticStream,
+        )
+        .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(
+                returned
+                    .downcast_ref::<semwright_native_sdk::Error>()
+                    .unwrap()
+            )
+            .unwrap(),
+            expected_error,
+        );
+        assert_eq!(publications.get(), 1);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"prior probe sidecar");
+        assert_eq!(
+            std::fs::read(&diagnostic).unwrap(),
+            b"prior probe diagnostic"
+        );
+        assert_eq!(probe, before);
+        assert_eq!(probe.as_object().unwrap().len(), 7);
+        assert!(!temporary.path().join("native-result.json").exists());
+    }
+
+    #[test]
+    fn original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic() {
+        let temporary = tempfile::tempdir().unwrap();
+        let sidecar = temporary
+            .path()
+            .join("motionwright-manim-runtime-observation.json");
+        let original = original_probe_error();
+        let expected_error = serde_json::to_value(&original).unwrap();
+        let probe = probe_evidence(Some(&original));
+        let returned = retain_runtime_probe_to(
+            &sidecar,
+            &probe,
+            Some(original),
+            |path, _| {
+                let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+                file.write_all(b"{partial-probe-sidecar")?;
+                Err(std::io::Error::other("injected probe sync failure").into())
+            },
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(
+                returned
+                    .downcast_ref::<semwright_native_sdk::Error>()
+                    .unwrap()
+            )
+            .unwrap(),
+            expected_error,
+        );
+        let diagnostic: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(sidecar.with_extension("diagnostic.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(diagnostic["error"], expected_error);
+        assert_eq!(diagnostic["native_manim_runtime_probe"], "UNKNOWN");
+        assert_eq!(diagnostic["render_started"], false);
+        assert_eq!(
+            diagnostic["custody_error"]["stage"],
+            "runtime_probe_evidence_write"
+        );
+        assert_eq!(
+            diagnostic["custody_error"]["message"],
+            "injected probe sync failure"
+        );
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"{partial-probe-sidecar");
+        assert_eq!(probe.as_object().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let sidecar = temporary
+            .path()
+            .join("motionwright-manim-runtime-observation.json");
+        std::fs::write(&sidecar, b"existing probe sidecar").unwrap();
+        let probe = probe_evidence(None);
+        let returned = retain_runtime_probe_to(
+            &sidecar,
+            &probe,
+            None,
+            write_camera_evidence,
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            returned.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::AlreadyExists,
+        );
+        let diagnostic: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(sidecar.with_extension("diagnostic.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(diagnostic["observation"], probe["observation"]);
+        assert_eq!(diagnostic["native_manim_runtime_probe"], "UNVERIFIED");
+        assert_eq!(diagnostic["failure_stage"], "runtime_probe_evidence_write");
+        assert_eq!(diagnostic["render_started"], false);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"existing probe sidecar");
+        assert!(!temporary.path().join("native-result.json").exists());
+    }
+
+    #[test]
+    fn successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication() {
+        let temporary = tempfile::tempdir().unwrap();
+        let sidecar = temporary
+            .path()
+            .join("motionwright-manim-runtime-observation.json");
+        let probe = probe_evidence(None);
+        retain_runtime_probe_to(
+            &sidecar,
+            &probe,
+            None,
+            write_camera_evidence,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let retained: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(retained, probe);
+        assert_eq!(retained.as_object().unwrap().len(), 7);
+        assert_eq!(retained["error"], serde_json::Value::Null);
+        assert_eq!(retained["render_started"], false);
+        assert!(!sidecar.with_extension("diagnostic.json").exists());
+        assert!(!temporary.path().join("native-result.json").exists());
     }
 }

@@ -3,7 +3,7 @@ name: Verification Plan (shadow)
 on:
   pull_request:
   push:
-    branches: [main, 'verify/release-scope-*']
+    branches: [main, 'feat/**', 'verify/release-scope-*']
   workflow_dispatch:
     inputs:
       base_sha:
@@ -16,6 +16,11 @@ on:
         type: boolean
         required: false
         default: true
+      studio_security:
+        description: Run the installed locked Vite security probe in the existing Linux G0 job
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -49,6 +54,8 @@ jobs:
           python tooling/ci_test_runner.py --repo . \
             --test-directory tooling/tests \
             --pattern test_ci_impact_plan.py \
+            --pattern test_ci_job_plan.py \
+            --pattern test_ci_linux_first_use.py \
             --pattern test_release_scope_plan.py \
             --pattern test_conformance_policy.py \
             --pattern test_conformance_currency_impact.py \
@@ -62,6 +69,7 @@ jobs:
             --report "$RUNNER_TEMP/verification/g0-receipt.json" \
             --require-complete
       - name: Compute full-source shadow selection without dispatching jobs
+        id: shadow_plan
         shell: python
         run: |
           import hashlib
@@ -125,6 +133,12 @@ jobs:
           if result.returncode:
               raise SystemExit(result.returncode)
           plan = json.loads((destination / "impact-plan.json").read_text())
+          plan_id = plan.get("plan_id")
+          if (not isinstance(plan_id, str) or len(plan_id) != 64
+                  or any(character not in "0123456789abcdef" for character in plan_id)):
+              raise SystemExit("Shadow plan identity is missing or invalid")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("plan_id=" + plan_id + "\n")
           summary = (
               "## Shadow verification selection\n\n"
               f"Source: `{plan['source']['checkout_sha']}`\n\n"
@@ -147,6 +161,25 @@ jobs:
               )
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
               output.write(summary)
+      - name: Set up Node for requested Studio security probe
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.studio_security }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Install locked Studio dependencies for requested security probe
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.studio_security }}
+        working-directory: apps/studio
+        run: npm ci --no-audit --no-fund
+      - name: Execute requested G0 installed Vite editor security
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.studio_security }}
+        env:
+          CI_PLAN_ID: ${{ steps.shadow_plan.outputs.plan_id }}
+        run: >-
+          python3 -I -B tooling/ci_job_plan.py studio-security
+          --repo "$GITHUB_WORKSPACE" --plan-id "$CI_PLAN_ID"
+          --output "$RUNNER_TEMP/verification/studio-security"
       - name: Preserve original planning and guardrail evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

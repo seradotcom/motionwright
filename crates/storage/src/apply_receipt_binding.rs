@@ -479,10 +479,10 @@ impl ColumnShape {
 
 /// Read-only, before WAL and again under the existing schema writer lock.
 pub(super) fn validate_schema(conn: &Connection, version: u32) -> Result<()> {
-    if version > BINDING_SCHEMA_VERSION {
+    if version > super::STORAGE_SCHEMA_VERSION {
         return Err(layout_error("unsupported apply binding schema version"));
     }
-    let ddl = if version == BINDING_SCHEMA_VERSION {
+    let ddl = if version >= BINDING_SCHEMA_VERSION {
         Some(read_receipts_ddl(conn)?)
     } else {
         None
@@ -535,7 +535,7 @@ pub(super) fn validate_schema(conn: &Connection, version: u32) -> Result<()> {
 /// IMMEDIATE transaction. The caller stamps user_version after every DDL succeeds.
 pub(super) fn migrate_schema(tx: &rusqlite::Transaction<'_>, version: u32) -> Result<()> {
     validate_schema(tx, version)?;
-    if version == BINDING_SCHEMA_VERSION {
+    if version >= BINDING_SCHEMA_VERSION {
         return Ok(());
     }
     tx.execute(

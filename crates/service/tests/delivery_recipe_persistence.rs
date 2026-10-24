@@ -142,6 +142,7 @@ fn recipe(fixture: &Fixture) -> DeliveryRecipe {
                 }),
             })
             .collect(),
+        audio_targets: None,
         original_mix: Some(OriginalMixRecipe {
             music_asset_id: Some(fixture.music),
             sfx_asset_id: Some(fixture.sfx),
@@ -149,6 +150,9 @@ fn recipe(fixture: &Fixture) -> DeliveryRecipe {
             duck_attenuation_db: 8.0,
             duck_attack_samples: 960,
             duck_release_samples: 4_800,
+            voice_envelope: Default::default(),
+            music_envelope: Default::default(),
+            sfx_envelope: Default::default(),
         }),
     }
 }
@@ -581,6 +585,17 @@ fn real_bundle_preserves_recipes_and_cas_and_rotates_generation_before_old_autho
     let b = f.project.deliverables[1].id;
     let mut second = recipe(&f);
     second.original_mix.as_mut().unwrap().sfx_gain_db = -3.0;
+    second.original_mix.as_mut().unwrap().voice_envelope = OriginalMixBusEnvelope {
+        muted: false,
+        fade_in_samples: 4,
+        fade_out_samples: 12,
+    };
+    second.original_mix.as_mut().unwrap().music_envelope.muted = true;
+    second.original_mix.as_mut().unwrap().sfx_envelope = OriginalMixBusEnvelope {
+        muted: false,
+        fade_in_samples: 24_000,
+        fade_out_samples: 12_000,
+    };
     let mut p = apply(
         &f.service,
         &f.project,
@@ -823,4 +838,353 @@ fn consumed_voice_and_transcript_windows_invalidate_only_the_selected_mix() {
     assert!(variant_dependency_fingerprint(&p, b).is_ok());
     p = apply(&f.service, &p, "remove-original-mix", change(a, None));
     assert!(variant_dependency_fingerprint(&p, a).is_ok());
+}
+
+#[test]
+fn bus_envelopes_persist_and_invalid_fade_or_cut_never_changes_sqlite_journal() {
+    let f = fixture();
+    let profile_id = f.project.deliverables[0].id;
+    let mut intent = recipe(&f);
+    let mix = intent.original_mix.as_mut().unwrap();
+    mix.music_envelope = OriginalMixBusEnvelope {
+        muted: true,
+        fade_in_samples: 96_000,
+        fade_out_samples: 96_000,
+    };
+    let p = apply(
+        &f.service,
+        &f.project,
+        "save-envelope",
+        change(profile_id, Some(intent.clone())),
+    );
+    let backup = f.service.export_project(p.id).unwrap();
+    let db = f.folder.path().join("studio.sqlite3");
+    drop(f.service);
+    let service = StudioService::open(&db).unwrap();
+    assert_eq!(service.project(p.id).unwrap(), p);
+    assert_eq!(
+        service
+            .project(p.id)
+            .unwrap()
+            .production_design
+            .delivery_recipes[&profile_id],
+        intent
+    );
+    let mut invalid = intent.clone();
+    invalid
+        .original_mix
+        .as_mut()
+        .unwrap()
+        .music_envelope
+        .fade_out_samples += 1;
+    let mut short_cut = p.deliverables[0].clone();
+    short_cut.included_scene_ids = vec![p.scenes[0].id];
+    for (key, request) in [
+        (
+            "reject-overlapping-envelope",
+            change(profile_id, Some(invalid)),
+        ),
+        (
+            "reject-shorter-profile",
+            Change::UpsertDeliverable { profile: short_cut },
+        ),
+        (
+            "reject-shorter-scene",
+            Change::SetSceneDuration {
+                scene_id: p.scenes[1].id,
+                duration: RationalTime::new(1, 1).unwrap(),
+            },
+        ),
+    ] {
+        assert!(service.apply(p.id, &p.stamp(), key, &request).is_err());
+        assert_unchanged(&service, &backup);
+    }
+    drop(service);
+    let final_read = StudioService::open(&db).unwrap();
+    assert_unchanged(&final_read, &backup);
+}
+
+#[test]
+fn target_only_recipe_reopens_with_full_history_and_bundle_generation_without_mix_assets() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("targets.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let initial = service
+        .create_project("Synthetic target-only durable intent")
+        .unwrap();
+    let profile = initial.deliverables[0].id;
+    let targets = DeliveryAudioTargets {
+        target_lufs: Some(-23.0),
+        target_true_peak_dbtp: Some(-1.0),
+    };
+    let intent = DeliveryRecipe {
+        audio_targets: Some(targets),
+        ..Default::default()
+    };
+    let saved = apply(
+        &service,
+        &initial,
+        "save-target-only",
+        change(profile, Some(intent.clone())),
+    );
+    let cleared = apply(&service, &saved, "clear-target-only", change(profile, None));
+    let current = apply(
+        &service,
+        &cleared,
+        "inverse-target-only",
+        change(profile, Some(intent.clone())),
+    );
+    assert!(current.assets.is_empty());
+    assert!(current.audio.voice_tracks.is_empty());
+    assert_eq!(current.audio, initial.audio);
+    let history = service.history(current.id, 0, 256).unwrap();
+    let before = service.export_project(current.id).unwrap();
+    let invalid = DeliveryRecipe {
+        audio_targets: Some(DeliveryAudioTargets {
+            target_lufs: Some(-23.0001),
+            target_true_peak_dbtp: None,
+        }),
+        ..Default::default()
+    };
+    assert!(
+        service
+            .apply(
+                current.id,
+                &current.stamp(),
+                "invalid-target",
+                &change(profile, Some(invalid))
+            )
+            .is_err()
+    );
+    assert_unchanged(&service, &before);
+    let bundle = folder.path().join("targets-bundle");
+    service.export_project_bundle(current.id, &bundle).unwrap();
+    drop(service);
+    let reopened = StudioService::open(&path).unwrap();
+    assert_eq!(reopened.project(current.id).unwrap(), current);
+    assert_eq!(reopened.history(current.id, 0, 256).unwrap(), history);
+    let destination = tempfile::tempdir().unwrap();
+    let restored = StudioService::open(destination.path().join("restored.sqlite3")).unwrap();
+    let imported = restored.import_project_bundle(&bundle).unwrap();
+    assert_ne!(imported.generation, current.generation);
+    assert_eq!(
+        imported.production_design.delivery_recipes[&profile],
+        intent
+    );
+    assert_eq!(restored.history(imported.id, 0, 256).unwrap(), history);
+    assert!(matches!(
+        restored.apply(
+            imported.id,
+            &current.stamp(),
+            "old-target-authority",
+            &change(profile, None)
+        ),
+        Err(StorageError::GenerationConflict)
+    ));
+}
+
+#[test]
+fn targets_only_branch_restore_rejects_legacy_reader_without_modifying_sqlite_or_cas() {
+    // This freezes the pre-extension recipe/1 reader shape, not an assertion
+    // that a historical application binary was launched by this Rust test.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct PreviousDeliveryRecipeV1 {
+        schema: DeliveryRecipeSchema,
+        scene_intents: Vec<DeliverySceneIntent>,
+        original_mix: Option<OriginalMixRecipe>,
+    }
+    let legacy: PreviousDeliveryRecipeV1 =
+        serde_json::from_value(serde_json::to_value(DeliveryRecipe::default()).unwrap()).unwrap();
+    assert_eq!(legacy.schema, DeliveryRecipeSchema::V1);
+    assert!(legacy.scene_intents.is_empty());
+    assert!(legacy.original_mix.is_none());
+
+    let folder = tempfile::tempdir().unwrap();
+    let database = folder.path().join("target-reader.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let initial = service
+        .create_project("Synthetic target-only branch reader boundary")
+        .unwrap();
+    let mut project = apply(
+        &service,
+        &initial,
+        "source-scene",
+        Change::AddScene {
+            name: "Original voice source".into(),
+            objective: "Durable target-only intent".into(),
+            duration_seconds: 1,
+        },
+    );
+    let voice_path = folder.path().join("original-voice.wav");
+    let original_wav = wav(13);
+    fs::write(&voice_path, &original_wav).unwrap();
+    project = service
+        .import_voice_file(
+            project.id,
+            &project.stamp(),
+            "original-voice",
+            &voice_path,
+            VoiceImportMetadata {
+                name: "original-voice.wav".into(),
+                label: "Synthetic PCM custody, no speech claim".into(),
+                media_type: "audio/wav".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    fs::remove_file(&voice_path).unwrap();
+    assert_eq!(project.assets.len(), 1);
+    let voice = project.audio.voice_tracks[0].clone();
+    let profile = project.deliverables[0].id;
+    let original = DeliveryRecipe {
+        audio_targets: Some(DeliveryAudioTargets {
+            target_lufs: Some(-23.0),
+            target_true_peak_dbtp: Some(-1.0),
+        }),
+        ..Default::default()
+    };
+    project = apply(
+        &service,
+        &project,
+        "targets-main",
+        change(profile, Some(original.clone())),
+    );
+    let main = project.active_branch;
+    project = apply(
+        &service,
+        &project,
+        "targets-branch",
+        Change::CreateBranch {
+            name: "Alternate target intent".into(),
+        },
+    );
+    let branch = project
+        .branches
+        .iter()
+        .find(|branch| branch.name == "Alternate target intent")
+        .unwrap()
+        .id;
+    project = apply(
+        &service,
+        &project,
+        "targets-checkout-branch",
+        Change::CheckoutBranch { branch_id: branch },
+    );
+    let alternate = DeliveryRecipe {
+        audio_targets: Some(DeliveryAudioTargets {
+            target_lufs: None,
+            target_true_peak_dbtp: Some(-2.0),
+        }),
+        ..Default::default()
+    };
+    project = apply(
+        &service,
+        &project,
+        "targets-alternate",
+        change(profile, Some(alternate.clone())),
+    );
+    project = apply(
+        &service,
+        &project,
+        "targets-checkout-main",
+        Change::CheckoutBranch { branch_id: main },
+    );
+    assert_eq!(
+        project.production_design.delivery_recipes[&profile],
+        original
+    );
+    assert_eq!(project.audio.voice_tracks[0], voice);
+    assert!(
+        project.production_design.delivery_recipes[&profile]
+            .original_mix
+            .is_none()
+    );
+    let bundle = folder.path().join("target-reader-bundle");
+    service.export_project_bundle(project.id, &bundle).unwrap();
+    let before = service.export_project(project.id).unwrap();
+    drop(service);
+
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+    let designs = std::iter::once(&project.production_design).chain(
+        project.branch_workspaces.iter().flat_map(|workspace| {
+            [
+                &workspace.base_state.production_design,
+                &workspace.current_state.production_design,
+            ]
+        }),
+    );
+    let mut rejected = 0;
+    for design in designs {
+        for recipe in design.delivery_recipes.values() {
+            if recipe.audio_targets.is_some() {
+                let raw = serde_json::to_string(recipe).unwrap();
+                let error = serde_json::from_str::<PreviousDeliveryRecipeV1>(&raw).unwrap_err();
+                assert!(error.to_string().contains("audio_targets"));
+                assert_eq!(
+                    serde_json::from_str::<DeliveryRecipe>(&raw).unwrap(),
+                    *recipe
+                );
+                rejected += 1;
+            }
+        }
+    }
+    assert!(rejected >= 3); // active state plus retained branch base/current.
+    assert_unchanged(&reopened, &before);
+    assert_eq!(
+        reopened
+            .store()
+            .lock()
+            .read_blob(&voice.source_sha256, 256 * 1024)
+            .unwrap(),
+        original_wav
+    );
+    drop(reopened);
+    let untouched = StudioService::open(&database).unwrap();
+    assert_unchanged(&untouched, &before);
+    assert_eq!(
+        untouched
+            .store()
+            .lock()
+            .read_blob(&voice.source_sha256, 256 * 1024)
+            .unwrap(),
+        original_wav
+    );
+
+    let destination = tempfile::tempdir().unwrap();
+    let restored = StudioService::open(destination.path().join("restored.sqlite3")).unwrap();
+    let imported = restored.import_project_bundle(&bundle).unwrap();
+    assert_ne!(imported.generation, project.generation);
+    assert_eq!(imported.production_design, project.production_design);
+    assert_eq!(imported.branch_workspaces, project.branch_workspaces);
+    assert_eq!(imported.audio.voice_tracks[0], voice);
+    assert_eq!(
+        restored.history(imported.id, 0, 256).unwrap(),
+        before.events
+    );
+    assert_eq!(
+        restored
+            .store()
+            .lock()
+            .read_blob(&voice.source_sha256, 256 * 1024)
+            .unwrap(),
+        original_wav
+    );
+    let imported_backup = restored.export_project(imported.id).unwrap();
+    let target_raw =
+        serde_json::to_string(&imported.production_design.delivery_recipes[&profile]).unwrap();
+    assert!(serde_json::from_str::<PreviousDeliveryRecipeV1>(&target_raw).is_err());
+    assert_unchanged(&restored, &imported_backup);
+    let branch_restored = apply(
+        &restored,
+        &imported,
+        "targets-restored-branch",
+        Change::CheckoutBranch { branch_id: branch },
+    );
+    assert_eq!(
+        branch_restored.production_design.delivery_recipes[&profile],
+        alternate
+    );
+    assert_eq!(branch_restored.audio.voice_tracks[0], voice);
 }

@@ -489,6 +489,36 @@ pub(crate) fn validate_localized_voice_authority(
     Ok(())
 }
 
+/// The same authored selection used by variants, captions and native Film:
+/// an empty selection means all scenes in project order; otherwise preserve
+/// the exact listed order. This helper never sorts, trims or invents a cut.
+pub(crate) fn scenes_for_profile<'a>(
+    scenes: &'a [crate::Scene],
+    profile: &DeliverableProfile,
+) -> Result<Vec<&'a crate::Scene>> {
+    if profile.included_scene_ids.is_empty() {
+        return Ok(scenes.iter().collect());
+    }
+    let mut seen = HashSet::new();
+    profile
+        .included_scene_ids
+        .iter()
+        .map(|scene_id| {
+            if !seen.insert(*scene_id) {
+                return Err(DomainError::Invalid(
+                    "deliverable cut contains duplicate scene ids".into(),
+                ));
+            }
+            scenes
+                .iter()
+                .find(|scene| scene.id == *scene_id)
+                .ok_or_else(|| {
+                    DomainError::Invalid("deliverable cut references an unknown scene".into())
+                })
+        })
+        .collect()
+}
+
 pub fn transcript_for_profile(
     project: &Project,
     profile: &DeliverableProfile,
@@ -557,14 +587,7 @@ pub fn transcript_for_profile(
 
     let mut output = Vec::new();
     let mut cursor = RationalTime::ZERO;
-    for scene_id in &profile.included_scene_ids {
-        let scene = project
-            .scenes
-            .iter()
-            .find(|scene| scene.id == *scene_id)
-            .ok_or_else(|| {
-                DomainError::Invalid("deliverable cut references an unknown scene".into())
-            })?;
+    for scene in scenes_for_profile(&project.scenes, profile)? {
         let scene_end = scene.start.checked_add(scene.duration).map_err(|_| {
             DomainError::Invalid("scene end overflowed during caption reflow".into())
         })?;
@@ -632,21 +655,7 @@ pub fn variant_dependency_fingerprint(
         ));
     }
 
-    let scenes = if profile.included_scene_ids.is_empty() {
-        project.scenes.iter().collect::<Vec<_>>()
-    } else {
-        profile
-            .included_scene_ids
-            .iter()
-            .map(|scene_id| {
-                project
-                    .scenes
-                    .iter()
-                    .find(|scene| scene.id == *scene_id)
-                    .expect("deliverable context validation ensures scene existence")
-            })
-            .collect::<Vec<_>>()
-    };
+    let scenes = scenes_for_profile(&project.scenes, profile)?;
     let caption_segments = if project.audio.transcript.is_empty() {
         vec![]
     } else {
@@ -771,6 +780,33 @@ pub fn variant_dependency_fingerprint(
             "sfx_source": source_asset(mix.sfx_asset_id),
             "voice_windows": windows,
         });
+    }
+    if !project.audio.sfx_cues.is_empty() {
+        let schedule = project.validated_sfx_schedule_for_profile(profile_id)?;
+        let consumed = schedule
+            .iter()
+            .map(|placement| {
+                let cue = project
+                    .audio
+                    .sfx_cues
+                    .iter()
+                    .find(|cue| cue.id == placement.cue_id)
+                    .expect("validated source placement");
+                serde_json::json!({
+                    "cue": cue,
+                    "placement": placement,
+                    "source": source_asset(Some(cue.source_asset_id)),
+                })
+            })
+            .collect::<Vec<_>>();
+        if !consumed.is_empty() {
+            audio_inputs["semantic_sfx"] = serde_json::Value::Array(consumed);
+        }
+    }
+    if let Some(targets) = recipe.and_then(|recipe| recipe.audio_targets.as_ref()) {
+        audio_inputs["delivery_audio_targets"] = serde_json::to_value(targets).map_err(|_| {
+            DomainError::Invalid("delivery audio target serialization failed".into())
+        })?;
     }
     let audio_inputs_sha256 = digest_json(audio_inputs)?;
     let master_inputs_sha256 = digest_json(serde_json::json!({
@@ -1554,6 +1590,7 @@ mod tests {
             .apply_change(&crate::Change::SetDeliveryRecipe {
                 deliverable_profile_id: profile_id,
                 recipe: Some(crate::DeliveryRecipe {
+                    audio_targets: None,
                     original_mix: Some(crate::OriginalMixRecipe {
                         music_asset_id: None,
                         sfx_asset_id: None,
@@ -1561,6 +1598,9 @@ mod tests {
                         duck_attenuation_db: 8.0,
                         duck_attack_samples: 960,
                         duck_release_samples: 4_800,
+                        voice_envelope: Default::default(),
+                        music_envelope: Default::default(),
+                        sfx_envelope: Default::default(),
                     }),
                     ..Default::default()
                 }),

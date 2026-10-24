@@ -16,15 +16,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import runtime_first_use_audit as audit  # noqa: E402
 def load_tests(loader, tests, pattern):
-    """Extend the *selected* first-use audit suite without duplicating tests.
+    """Include atomic controls in selected discovery and the single dotted suite.
 
-    GitHub's historical targeted discovery selects only this filename. The
-    complete discovery and the dotted two-module invocation already discover
-    the atomic suite independently, so re-exporting its TestCase class at
-    module scope creates duplicates (and breaks dotted imports on Windows).
+    Broad discovery selects the atomic module independently. Its pattern must
+    not append those cases here. Dotted callers must select this composed suite
+    once rather than also naming the atomic module as a separate entry point.
     """
-    if pattern == "test_runtime_first_use_audit.py":
-        from test_runtime_first_use_atomic_receipt import AtomicSupportReceiptTests
+    if pattern in (None, "test_runtime_first_use_audit.py"):
+        if __package__:
+            from .test_runtime_first_use_atomic_receipt import AtomicSupportReceiptTests
+        else:
+            from test_runtime_first_use_atomic_receipt import AtomicSupportReceiptTests
 
         tests.addTests(loader.loadTestsFromTestCase(AtomicSupportReceiptTests))
     return tests

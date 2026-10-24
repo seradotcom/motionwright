@@ -153,18 +153,187 @@ jobs:
       - name: Unprivileged first-use tests through discovery and dotted modules
         shell: python
         run: |
+          import ast
+          import hashlib
+          import json
           import os
           from pathlib import Path
+          import re
           import subprocess
           import sys
 
-          subprocess.run([
-              sys.executable, "-B", str(Path(os.environ["MW_CI_VERIFIER_ROOT"]) / "tooling" / "ci_test_runner.py"),
-              "--repo", ".", "--pattern", "test_runtime_first_use*.py",
-              "--pattern", "test_owner_candidate_provenance.py", "--mode", "both",
-              "--expected-source", os.environ["MW_SOURCE_SHA"],
-              "--report", str(Path(os.environ["RUNNER_TEMP"]) / "first-use-verification" / "first-use.json"),
-          ], check=True)
+          sys.dont_write_bytecode = True
+          root = Path.cwd().resolve(strict=True)
+          sys.path.insert(0, str(root / "tooling"))
+          from source_checkout_observation import source_observation, regular_file
+
+          source = os.environ["MW_SOURCE_SHA"]
+          folder = Path(os.environ["RUNNER_TEMP"]) / "first-use-verification"
+          folder.mkdir(exist_ok=True)
+          verifier = Path(os.environ["MW_CI_VERIFIER_ROOT"]) / "tooling/ci_test_runner.py"
+          verifier_identity = regular_file(verifier)
+          runtime_names = (
+              "test_runtime_first_use_atomic_receipt.py",
+              "test_runtime_first_use_audit.py",
+              "test_runtime_first_use_reparse.py",
+          )
+          found = sorted(path.name for path in (root / "tooling/tests").glob("test_runtime_first_use*.py"))
+          if found != sorted(runtime_names):
+              raise RuntimeError("first_use_wildcard_source_roster_changed")
+          definitions = {
+              "test_runtime_first_use_audit": ("FirstUseAuditTests", 43),
+              "test_runtime_first_use_atomic_receipt": ("AtomicSupportReceiptTests", 9),
+              "test_runtime_first_use_reparse": ("ReparseRejectionTests", 8),
+              "test_owner_candidate_provenance": ("OwnerCandidateProvenanceTests", 26),
+          }
+          paths = (
+              ".github/workflows/runtime-first-use.yml", "tooling/ci_test_runner.py",
+              "tooling/source_checkout_observation.py", "tooling/runtime_first_use_audit.py",
+              "tooling/owner_candidate_provenance.py", "tooling/candidate_attestation_input.py",
+              "tooling/package_receipt.py", "tooling/release_manifest.py", "tooling/v01_release_readiness.py",
+              *(f"tooling/tests/{module}.py" for module in definitions),
+              "Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json",
+          )
+          before = source_observation(root, source, paths)
+          rosters = {}
+          for module, (class_name, count) in definitions.items():
+              tree = ast.parse((root / f"tooling/tests/{module}.py").read_bytes())
+              classes = [node for node in tree.body if isinstance(node, ast.ClassDef)
+                         and any(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
+                                 for method in node.body)]
+              methods = [f"{module}.{node.name}.{method.name}" for node in classes for method in node.body
+                         if isinstance(method, ast.FunctionDef) and method.name.startswith("test_")]
+              all_methods = [node for node in ast.walk(tree)
+                             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                             and node.name.startswith("test_")]
+              if ([node.name for node in classes] != [class_name]
+                      or len(methods) != len(set(methods)) or len(methods) != count or len(all_methods) != count):
+                  raise RuntimeError("first_use_nominal_source_roster_changed:" + module)
+              rosters[module] = sorted(methods)
+          expected_union = sorted(name for values in rosters.values() for name in values)
+          if not len(expected_union) == len(set(expected_union)) == 86:
+              raise RuntimeError("first_use_nominal_union_changed")
+
+          def publish(name, value):
+              with (folder / name).open("x", encoding="utf-8", newline="\n") as stream:
+                  json.dump(value, stream, sort_keys=True, indent=2)
+                  stream.write("\n")
+                  stream.flush()
+                  os.fsync(stream.fileno())
+
+          publish("first-use-source-before.json", {
+              "source": before, "nominal_rosters": rosters,
+              "verifier_sha": os.environ["MW_VERIFIER_SHA"], "verifier": verifier_identity,
+              "scope": "source tests only; runtime publication and provenance fixtures",
+          })
+          patterns = {
+              "discovery": ("test_runtime_first_use*.py", "test_owner_candidate_provenance.py"),
+              "dotted": ("test_runtime_first_use_audit.py", "test_runtime_first_use_reparse.py",
+                         "test_owner_candidate_provenance.py"),
+          }
+          expected_steps = {
+              "discovery": [
+                  ("discovery:test_runtime_first_use*.py",
+                   sorted(name for module in definitions if module.startswith("test_runtime_first_use_")
+                          for name in rosters[module])),
+                  ("discovery:test_owner_candidate_provenance.py", rosters["test_owner_candidate_provenance"]),
+              ],
+              "dotted": [
+                  ("dotted:tooling.tests.test_owner_candidate_provenance", rosters["test_owner_candidate_provenance"]),
+                  ("dotted:tooling.tests.test_runtime_first_use_audit",
+                   sorted(rosters["test_runtime_first_use_audit"] + rosters["test_runtime_first_use_atomic_receipt"])),
+                  ("dotted:tooling.tests.test_runtime_first_use_reparse", rosters["test_runtime_first_use_reparse"]),
+              ],
+          }
+          admitted = {}
+          github = {name: os.environ.get(name, "") for name in (
+              "GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}
+          for mode, chosen in patterns.items():
+              report = folder / ("first-use-" + mode + ".json")
+              command = [sys.executable, "-B", str(verifier), "--repo", "."]
+              for pattern in chosen:
+                  command += ["--pattern", pattern]
+              command += ["--mode", mode, "--expected-source", source, "--report", str(report)]
+              # Existing runner records UNKNOWN and nonzero exits; check=True prevents
+              # starting a later mode after an uncertain/failed mode. There is no retry.
+              subprocess.run(command, check=True)
+              receipt_identity = regular_file(report)
+              receipt = json.loads(report.read_bytes())
+              selected_definitions = set(definitions) if mode == "discovery" else set(definitions) - {
+                  "test_runtime_first_use_atomic_receipt"}
+              if not (
+                  receipt.get("schema") == "motionwright.unittest-execution/1"
+                  and receipt.get("status") in ("PASS", "PASS_WITH_OMISSIONS")
+                  and type(receipt.get("exit_code")) is int and receipt["exit_code"] == 0
+                  and receipt.get("executed_source_sha") == source and receipt.get("tree_sha") == before["tree"]
+                  and receipt.get("github") == github and not receipt.get("source_postcheck_error")
+                  and receipt.get("runner_sha256") == verifier_identity["sha256"]
+                  and receipt.get("test_definition_sha256") == {
+                      f"tooling/tests/{module}.py": before["files"][f"tooling/tests/{module}.py"]["checkout"]["sha256"]
+                      for module in selected_definitions}
+                  and [step.get("entry_point") for step in receipt.get("steps", [])]
+                      == [label for label, _ in expected_steps[mode]]
+              ):
+                  raise RuntimeError("first_use_original_receipt_identity_or_selection_changed")
+              entries, observed_union = [], []
+              for index, (step, (label, expected)) in enumerate(zip(receipt["steps"], expected_steps[mode])):
+                  streams = {}
+                  for stream in ("stdout", "stderr"):
+                      path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
+                      actual = regular_file(path, maximum=8 * 1024 * 1024)
+                      if step.get(stream) != {"file": path.name, "sha256": actual["sha256"]}:
+                          raise RuntimeError("first_use_original_stream_identity_changed")
+                      streams[stream] = {"file": path.name, **actual}
+                  raw = report.with_name(f"{report.stem}-{index:02d}-stderr.log").read_bytes()
+                  text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+                  rows = re.findall(r"(?m)^(test_\w+) \(([^()\n]+)\)(?: \.\.\. .*)?$", text)
+                  names = []
+                  for method, name in rows:
+                      if mode == "dotted":
+                          if not name.startswith("tooling.tests."):
+                              raise RuntimeError("first_use_foreign_dotted_identity")
+                          name = name[len("tooling.tests."):]
+                      identity = name if name.endswith("." + method) else name + "." + method
+                      names.append(identity)
+                  counts = step.get("counts", {})
+                  if not (
+                      sorted(names) == expected and len(names) == len(set(names))
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == len(expected)
+                      and counts.get("terminal_status") == "OK"
+                      and type(step.get("exit_code")) is int and step["exit_code"] == 0
+                      and step.get("status") in ("PASS", "PASS_WITH_OMISSIONS")
+                      and all(type(counts.get(k)) is int and counts[k] == 0 for k in
+                              ("failures", "errors", "unexpected_successes"))
+                      and all(type(counts.get(k)) is int and counts[k] >= 0 for k in
+                              ("passed", "skipped", "expected_failures"))
+                      and counts["passed"] + counts["skipped"] + counts["expected_failures"] == len(expected)
+                  ):
+                      raise RuntimeError("first_use_nominal_omission_duplication_or_failure")
+                  observed_union += names
+                  entries.append({"entry_point": label, "observed_test_ids": sorted(names),
+                                  "counts": counts, "original_streams": streams})
+              if sorted(observed_union) != expected_union or len(observed_union) != len(set(observed_union)):
+                  raise RuntimeError("first_use_family_missing_or_repeated")
+              if regular_file(report) != receipt_identity:
+                  raise RuntimeError("first_use_receipt_changed_after_readback")
+              admitted[mode] = {"receipt": receipt_identity, "entrypoints": entries,
+                                "observed_test_ids": sorted(observed_union)}
+          after = source_observation(root, source, paths)
+          publish("first-use-source-after.json", {"source": after, "nominal_rosters": rosters})
+          if before != after or regular_file(verifier) != verifier_identity:
+              raise RuntimeError("first_use_source_or_verifier_changed")
+          omissions = sum(step["counts"]["skipped"] + step["counts"]["expected_failures"]
+                          for entry in admitted.values() for step in entry["entrypoints"])
+          publish("first-use-entrypoint-readback.json", {
+              "schema": "motionwright.first-use-family-inventory/1",
+              "status": "ACCOUNTED_WITH_OMISSIONS" if omissions else "ACCOUNTED_WITHOUT_OMISSIONS",
+              "source_before": before, "source_after": after, "github": github,
+              "verifier": verifier_identity, "entrypoints": admitted,
+              "nominal_cases_per_mode": len(expected_union), "nominal_invocations": 2 * len(expected_union),
+              "omitted_or_skipped_invocations": omissions,
+              "installer_execution": "NOT_RUN", "runtime_owner_connection": "NOT_RUN",
+              "human_acceptance": "NOT_RUN", "formal_acceptance": False,
+          })
       - name: Retain original unittest source identities, failures and omissions
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

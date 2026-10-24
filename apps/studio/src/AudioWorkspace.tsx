@@ -655,7 +655,7 @@ function AudioWorkspaceEditor({
 
           <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit}/>
           <NativeOriginalMixReview project={project} desktopMode={desktopMode} commit={commitRecipe}/>
-          <SemanticSfxWorkbench project={project} commit={commit} onSeek={onSeek}/>
+          <SemanticSfxWorkbench project={project} commit={commitRecipe} onSeek={onSeek}/>
           <MixEditor project={project} commit={commit}/>
           <AudioRetainedDrafts project={project}/>
         </div>

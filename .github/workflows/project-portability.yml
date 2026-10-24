@@ -13,6 +13,13 @@ on:
       - "docs/architecture.md"
       - "docs/testing.md"
       - ".github/workflows/project-portability.yml"
+      - "tooling/tests/test_project_portability_contracts.py"
+      - "tooling/ci_test_runner.py"
+      - "tooling/tests/test_ci_test_runner.py"
+      - "tooling/ci_foundation_causal.py"
+      - "tooling/ci_storage_apply_recovery.py"
+      - "tooling/*policy.py"
+      - ".gitattributes"
   pull_request:
     paths:
       - "crates/domain/**"
@@ -24,6 +31,13 @@ on:
       - "docs/architecture.md"
       - "docs/testing.md"
       - ".github/workflows/project-portability.yml"
+      - "tooling/tests/test_project_portability_contracts.py"
+      - "tooling/ci_test_runner.py"
+      - "tooling/tests/test_ci_test_runner.py"
+      - "tooling/ci_foundation_causal.py"
+      - "tooling/ci_storage_apply_recovery.py"
+      - "tooling/*policy.py"
+      - ".gitattributes"
   workflow_dispatch:
     inputs:
       verification_scope:
@@ -31,11 +45,27 @@ on:
         required: true
         default: full
         type: choice
-        options: [full, derived_cache, otio_export, project_projection]
+        options: [full, derived_cache, otio_export, project_projection, cas_retention, cas_candidate]
+      os_scope:
+        description: Explicit CAS operating systems; all is valid only for reviewed cas_candidate
+        required: true
+        type: choice
+        options: [windows, macos, both, linux, all]
+        default: both
       product_source_sha:
-        description: Reviewed product commit required for project_projection
+        description: Reviewed product commit for project_projection or legacy cas_retention; empty for cas_candidate
         required: false
         type: string
+      candidate_source_manifest:
+        description: Exact reviewed candidate source-binding JSON; never authority or a prior test result
+        required: false
+        type: string
+        default: ""
+      candidate_manifest_sha256:
+        description: SHA-256 of the exact UTF-8 manifest input bytes; required only for cas_candidate
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -45,8 +75,79 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  g0-source-controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Reject mixed CAS source bindings before selecting native jobs
+        if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'cas_retention' || inputs.verification_scope == 'cas_candidate')
+        shell: python
+        run: |
+          import ast, json, os, re, textwrap
+          from pathlib import Path
+
+          text = Path(".github/workflows/project-portability.yml").read_text(encoding="utf-8")
+          start = text.index("          import hashlib, json, os, re, subprocess, sys, time\n")
+          end = text.index("      - name: Retain source binding and selective test evidence", start)
+          parsed = ast.parse(textwrap.dedent(text[start:end]))
+          required = {"cas_source_binding_mode", "cas_candidate_manifest", "cas_candidate_os_names",
+                      "cas_os_names", "schema_atomicity_cases", "cas_retention_cases"}
+          functions = [node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name in required]
+          if {node.name for node in functions} != required or len(functions) != len(required):
+              raise ValueError("cas-dispatch-preflight-functions-missing-or-duplicated")
+          namespace = {"re": re}
+          exec(compile(ast.Module(body=functions, type_ignores=[]), "cas-source-input-contracts", "exec"), namespace)
+          folder = Path(os.environ["RUNNER_TEMP"]) / "portability-g0"
+          folder.mkdir(exist_ok=True)
+          event_raw = Path(os.environ["GITHUB_EVENT_PATH"]).read_bytes()
+          with (folder / "cas-input-event.original.json").open("xb") as original:
+              original.write(event_raw)
+          inputs = json.loads(event_raw).get("inputs") or {}
+          mode = namespace["cas_source_binding_mode"](inputs)
+          if mode == "REVIEWED_DIRECT_CHILD_977":
+              namespace["cas_os_names"](inputs.get("os_scope"))
+          else:
+              namespace["cas_candidate_manifest"](inputs["candidate_source_manifest"],
+                  inputs["candidate_manifest_sha256"], os.environ["GITHUB_SHA"], inputs.get("os_scope"))
+          with (folder / "cas-input-preflight.json").open("x", encoding="utf-8", newline="\n") as output:
+              json.dump({"schema": "motionwright.cas-input-preflight/1", "status": "VALIDATED_INPUT_ONLY",
+                  "source_sha": os.environ["GITHUB_SHA"], "binding_mode": mode,
+                  "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "job": os.environ["GITHUB_JOB"],
+                  "product_execution": "NOT_RUN", "manifest_is_authority": False}, output, sort_keys=True)
+              output.write("\n")
+      - name: Enforce G0 policies and closed portability selectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/source_policy.py
+          python -B tooling/acceptance_policy.py
+          python -B tooling/creative_status_policy.py
+          python -B tooling/public_surface_policy.py
+          python -B tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --expected-source "$GITHUB_SHA" --test-directory tooling/tests \
+            --pattern test_project_portability_contracts.py \
+            --mode both --require-complete --timeout 180 \
+            --report "$RUNNER_TEMP/portability-g0/receipt.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: portability-G0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/portability-g0/
+          if-no-files-found: error
+          retention-days: 14
+
   storage-contracts:
-    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export' && inputs.verification_scope != 'project_projection') }}
+    needs: g0-source-controls
+    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export' && inputs.verification_scope != 'project_projection' && inputs.verification_scope != 'cas_retention' && inputs.verification_scope != 'cas_candidate') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,12 +156,6 @@ jobs:
           toolchain: 1.98.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Source policy
-        run: python3 tooling/source_policy.py
-      - name: Closed portability roster regression checks
-        run: |
-          python3 -m unittest discover -s tooling/tests -p test_project_portability_contracts.py -v
-          python3 -m unittest tooling.tests.test_project_portability_contracts -v
       - name: Format
         run: cargo fmt --all -- --check
       - name: Storage and service tests
@@ -69,26 +164,43 @@ jobs:
         run: cargo clippy --locked -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
 
   file-import-platforms:
+    needs: g0-source-controls
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && 'Bounded project projection' || 'File import authority and CAS' }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'cas_retention' || inputs.verification_scope == 'cas_candidate') && 60 || 45 }}
     strategy:
       fail-fast: false
       max-parallel: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'otio_export' && 1 || 3 }}
       matrix:
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'derived_cache' || inputs.verification_scope == 'otio_export') && '["macos-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'cas_candidate' && (inputs.os_scope == 'windows' && '["windows-latest"]' || inputs.os_scope == 'macos' && '["macos-latest"]' || inputs.os_scope == 'both' && '["macos-latest","windows-latest"]' || inputs.os_scope == 'linux' && '["ubuntu-latest"]' || inputs.os_scope == 'all' && '["ubuntu-latest","macos-latest","windows-latest"]' || '[]') || github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'cas_retention' && (inputs.os_scope == 'windows' && '["windows-latest"]' || inputs.os_scope == 'macos' && '["macos-latest"]' || inputs.os_scope == 'both' && '["macos-latest","windows-latest"]' || inputs.os_scope == 'linux' && '["ubuntu-latest"]' || '[]') || github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'derived_cache' || inputs.verification_scope == 'otio_export') && '["macos-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     env:
       CARGO_TERM_COLOR: never
       PYTHONDONTWRITEBYTECODE: '1'
+      MW_CAS_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
+      - name: Prepare byte-exact source for Windows CAS
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'cas_retention'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @('GIT_CONFIG_COUNT=1', 'GIT_CONFIG_KEY_0=core.autocrlf', 'GIT_CONFIG_VALUE_0=false') |
+            Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+      - name: Prepare byte-exact source for Windows CAS candidate
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'cas_candidate'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @('GIT_CONFIG_COUNT=1', 'GIT_CONFIG_KEY_0=core.autocrlf', 'GIT_CONFIG_VALUE_0=false') |
+            Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
       - uses: actions/checkout@v4
         with:
-          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && 2 || 1 }}
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'project_projection' || inputs.verification_scope == 'cas_retention') && 2 || 1 }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
           components: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && 'rustfmt, clippy' || 'rustfmt' }}
       - uses: Swatinem/rust-cache@v2
+        if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'cas_retention' && inputs.verification_scope != 'cas_candidate')
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -210,7 +322,7 @@ jobs:
                   output, re.MULTILINE,
               )
               passed = (
-                  returncode == 0
+                  type(returncode) is int and returncode == 0
                   and len(observed) == len(expected)
                   and dict(observed) == {name: "ok" for name in expected}
                   and len(summary) == 1
@@ -252,13 +364,644 @@ jobs:
                   stage["log_sha256"] = hashlib.sha256(data).hexdigest()
                   checkpoint()
 
+          def schema_atomicity_cases():
+              return {
+                  "failed_schema_upgrade_never_publishes_partial_new_tables_or_version",
+                  "valid_fresh_open_and_reopen_keep_exact_schema_and_no_extra_objects",
+                  "too_new_version_fails_without_rewriting_original_schema",
+                  "production_order_allocation_failure_cannot_publish_a_partial_append_or_claim",
+                  "production_order_backfill_failure_rolls_back_ddl_rows_and_sequence_counter",
+                  "production_order_concurrent_migrations_publish_one_mapping_per_receipt",
+                  "production_order_extension_trigger_failure_rolls_back_every_receipt_effect",
+                  "production_order_migration_preserves_receipts_extension_foreign_keys_and_audit_triggers",
+                  "production_order_missing_mapping_is_never_silently_backfilled_or_hidden",
+                  "production_order_project_mismatch_is_rejected_from_both_scopes",
+                  "production_order_reserved_object_collisions_are_rejected_without_adoption",
+                  "cas_v4_upgrade_preserves_project_receipts_and_sequence_values",
+                  "import_marker_removed_by_late_trigger_rolls_back_project_and_events",
+                  "committed_import_marker_survives_project_deletion_with_foreign_keys_enabled",
+              }
+
+
+          def cas_retention_cases(runner_os):
+              if runner_os not in {"Linux", "macOS", "Windows"}:
+                  raise ValueError("cas-retention-platform")
+              names = {
+                  "real_live_bundle_writer_survives_peer_cas_recovery",
+                  "real_precommit_exit_retains_then_reclaims_only_owned_orphan",
+                  "real_peer_database_adoption_protects_shared_digest",
+                  "real_gc_exit_after_unlink_cannot_delete_republished_digest",
+                  "real_hundred_crash_recover_cycles_do_not_accumulate_cas_or_staging_media",
+                  "real_replaced_live_intent_lock_keeps_unknown_and_preserves_foreign_lock",
+                  "real_unix_fifo_control_entries_reject_without_blocking",
+                  "real_budget_one_reopens_reclaim_orphan_behind_live_capture",
+              }
+              if runner_os == "Windows":
+                  names.remove("real_unix_fifo_control_entries_reject_without_blocking")
+              return {"cas_retention_process_tests::" + name for name in names}
+
+
+          def cas_os_names(selection):
+              choices = {"windows": {"Windows"}, "macos": {"macOS"},
+                         "both": {"Windows", "macOS"}, "linux": {"Linux"}}
+              if selection not in choices:
+                  raise ValueError("cas-retention-os-selection")
+              return choices[selection]
+
+
+          def complete_cas_roster(code, text):
+              if type(code) is not int or code != 0:
+                  raise ValueError("cas-roster-process-failed")
+              text = text.replace("\r\n", "\n")
+              names = re.findall(r"(?m)^([A-Za-z_][A-Za-z_0-9:]*): test$", text)
+              footer = re.findall(r"(?m)^(\d+) tests?, 0 benchmarks?\s*$", text)
+              remainder = re.sub(r"(?m)^[A-Za-z_][A-Za-z_0-9:]*: test\n?", "", text)
+              remainder = re.sub(r"(?m)^\d+ tests?, 0 benchmarks?\s*$", "", remainder)
+              if (not names or len(names) != len(set(names))
+                      or footer != [str(len(names))] or remainder.strip()):
+                  raise ValueError("cas-complete-roster-required")
+              return tuple(names)
+
+
+          def admit_cas_cases(code, text, expected, complete):
+              if len(complete) != len(set(complete)) or not expected <= set(complete):
+                  raise ValueError("cas-selection-not-in-complete-roster")
+              passed, observed, summary = verify_test_output(code, text, expected)
+              not_selected = sorted(set(complete) - expected)
+              if (type(code) is not int or not passed
+                      or int(summary[0][5]) != len(not_selected)):
+                  raise ValueError("cas-selected-result-or-filter-count")
+              return {
+                  "status": "PASS_SELECTED_CASES", "selected_tests": sorted(expected),
+                  "observed_tests": observed, "summary": summary,
+                  "not_selected_tests": not_selected, "not_selected_status": "NOT_SELECTED",
+                  "not_selected_success_credit": 0, "selected_omissions": 0,
+              }
+
+
+          def review_cas_rosters(rosters, expected_process):
+              selected = {name for name in rosters["cas-process"]
+                          if name.startswith("cas_retention_process_tests::")}
+              if (selected != expected_process
+                      or set(rosters["schema-atomicity"]) != schema_atomicity_cases()):
+                  raise ValueError("cas-missing-or-extra-reviewed-cases")
+
+
+          def cas_dependency_paths(tracked):
+              required = {
+                  ".gitattributes", "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json",
+                  "rust-toolchain.toml", "crates/storage/src/lib.rs",
+                  "crates/storage/src/cas_retention.rs",
+                  "crates/storage/src/cas_retention_process_tests.rs",
+                  "crates/storage/src/apply_receipt_binding.rs",
+                  "crates/storage/tests/schema_migration_atomicity.rs",
+                  "tooling/ci_storage_apply_recovery.py", "tooling/ci_foundation_causal.py",
+                  "tooling/ci_test_runner.py",
+              }
+              if len(tracked) != len(set(tracked)) or not required <= set(tracked):
+                  raise ValueError("cas-source-closure-incomplete")
+              return sorted(required | {
+                  path for path in tracked
+                  if path.startswith((".cargo/", "crates/domain/src/", "crates/storage/src/"))
+                  or path == "Cargo.toml" or path.endswith("/Cargo.toml")
+              })
+
+
+          def cas_admit_parent(actual, product, parents, changed):
+              if (not re.fullmatch(r"[0-9a-f]{40}", actual or "")
+                      or not re.fullmatch(r"[0-9a-f]{40}", product or "")
+                      or actual == product or parents != [actual, product]
+                      or changed != [
+                          ".github/workflows/project-portability.yml",
+                          "tooling/tests/test_project_portability_contracts.py",
+                      ]):
+                  raise ValueError("cas-reviewed-two-path-child-required")
+
+
+          def cas_finish_status(report):
+              if report.get("status") == "UNKNOWN_NO_RETRY":
+                  return "UNKNOWN_NO_RETRY"
+              results = report.get("results", [])
+              return ("PASS_SELECTED_SOURCE_G2"
+                      if not report.get("failure")
+                      and report.get("source_postcheck") == "VERIFIED_UNCHANGED"
+                      and report.get("binary_and_tool_postcheck") == "VERIFIED_UNCHANGED"
+                      and len(results) == 2
+                      and {row["suite"] for row in results} == {"cas-process", "schema-atomicity"}
+                      and all(row["status"] == "PASS_SELECTED_CASES" for row in results)
+                      else "FAIL_OR_INCOMPLETE")
+
+
+          def cas_source_postcheck(report, before, snapshot, unknown_types):
+              if report.get("status") == "UNKNOWN_NO_RETRY":
+                  report["source_postcheck"] = "NOT_OBSERVED_AFTER_UNKNOWN"
+                  return
+              try:
+                  report["source_after"] = snapshot()
+                  if report["source_after"] != before:
+                      raise ValueError("cas-source-changed-after-execution")
+                  report["source_postcheck"] = "VERIFIED_UNCHANGED"
+              except unknown_types as error:
+                  report.update(status="UNKNOWN_NO_RETRY", uncertain_command=error.command,
+                                source_postcheck="NOT_OBSERVED_AFTER_UNKNOWN",
+                                failure={"type": type(error).__name__, "message": str(error)})
+              except Exception as error:
+                  report["source_postcheck"] = "REJECTED"
+                  report["source_postcheck_error"] = {"type": type(error).__name__, "message": str(error)}
+
+
+          def cas_candidate_os_names(selection):
+              if type(selection) is not str:
+                  raise ValueError("cas-candidate-os-selection-type")
+              if selection == "all":
+                  return {"Linux", "macOS", "Windows"}
+              return cas_os_names(selection)
+
+
+          def cas_source_binding_mode(inputs):
+              if type(inputs) is not dict:
+                  raise ValueError("cas-inputs-not-object")
+              scope = inputs.get("verification_scope")
+              new_fields = ("candidate_source_manifest", "candidate_manifest_sha256")
+              if scope == "cas_retention":
+                  if any(inputs.get(key) not in (None, "") for key in new_fields):
+                      raise ValueError("cas-legacy-binding-cannot-consume-candidate-manifest")
+                  return "REVIEWED_DIRECT_CHILD_977"
+              if scope == "cas_candidate":
+                  if inputs.get("product_source_sha") not in (None, ""):
+                      raise ValueError("cas-candidate-binding-cannot-consume-legacy-product-pin")
+                  if any(type(inputs.get(key)) is not str or not inputs[key] for key in new_fields):
+                      raise ValueError("cas-candidate-manifest-and-pin-required")
+                  return "REVIEWED_COMPOSED_CANDIDATE"
+              raise ValueError("cas-source-binding-mode-unsupported")
+
+
+          def cas_candidate_manifest(raw, digest, actual, os_scope):
+              import hashlib
+              import json
+              if (type(raw) is not str or not 0 < len(raw.encode("utf-8")) <= 65536
+                      or type(digest) is not str or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                      or hashlib.sha256(raw.encode("utf-8")).hexdigest() != digest
+                      or type(actual) is not str or not re.fullmatch(r"[0-9a-f]{40}", actual)):
+                  raise ValueError("cas-candidate-original-manifest-bytes-or-source-pin")
+              def pairs(items):
+                  result = {}
+                  for key, value in items:
+                      if key in result:
+                          raise ValueError("cas-candidate-duplicate-json-key")
+                      result[key] = value
+                  return result
+              def forbidden_number(value):
+                  raise ValueError("cas-candidate-float-or-nonfinite-json-number")
+              value = json.loads(raw, object_pairs_hook=pairs, parse_float=forbidden_number,
+                                 parse_constant=forbidden_number)
+              fields = {"schema", "repository", "source_sha", "tree_sha", "source_binding", "platforms",
+                        "closure", "locks", "verification_sources", "tool_policy", "rosters"}
+              if (type(value) is not dict or set(value) != fields
+                      or value["schema"] != "motionwright.cas-candidate-source-binding/1"
+                      or value["repository"] != "seradotcom/motionwright"
+                      or value["source_sha"] != actual
+                      or type(value["tree_sha"]) is not str or not re.fullmatch(r"[0-9a-f]{40}", value["tree_sha"])
+                      or value["source_binding"] != "ALL_TRACKED_REGULAR_GIT_BLOBS_AND_EXACT_EXECUTED_BYTES"):
+                  raise ValueError("cas-candidate-manifest-schema-or-exact-source")
+              platforms = value["platforms"]
+              expected = cas_candidate_os_names(os_scope)
+              if (type(platforms) is not list or not platforms or any(type(x) is not str for x in platforms)
+                      or len(platforms) != len(set(platforms)) or set(platforms) != expected
+                      or platforms != [name for name in ("Linux", "macOS", "Windows") if name in expected]):
+                  raise ValueError("cas-candidate-explicit-platform-roster")
+              closure = value["closure"]
+              if (type(closure) is not dict or set(closure) != {
+                      "algorithm", "git_tree_listing_sha256", "executed_file_metadata_sha256", "files", "bytes"}
+                      or closure["algorithm"] != "sha256"
+                      or any(type(closure[key]) is not str or not re.fullmatch(r"[0-9a-f]{64}", closure[key])
+                             for key in ("git_tree_listing_sha256", "executed_file_metadata_sha256"))
+                      or type(closure["files"]) is not int or not 0 < closure["files"] <= 100000
+                      or type(closure["bytes"]) is not int or not 0 <= closure["bytes"] <= 2**63 - 1):
+                  raise ValueError("cas-candidate-closed-source-metadata")
+              required_maps = {
+                  "locks": {"Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml", "apps/studio/package-lock.json"},
+                  "verification_sources": {".github/workflows/project-portability.yml",
+                      "tooling/tests/test_project_portability_contracts.py", "tooling/ci_foundation_causal.py",
+                      "tooling/ci_storage_apply_recovery.py", "tooling/ci_test_runner.py"},
+              }
+              def pin(item):
+                  return (type(item) is dict and set(item) == {"bytes", "sha256"}
+                          and type(item["bytes"]) is int and item["bytes"] >= 0
+                          and type(item["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is not None)
+              for name, paths in required_maps.items():
+                  if type(value[name]) is not dict or set(value[name]) != paths or not all(pin(x) for x in value[name].values()):
+                      raise ValueError("cas-candidate-closed-pin-map:" + name)
+              policy = value["tool_policy"]
+              if (type(policy) is not dict or set(policy) != {"rust_toolchain", "host_triples", "preapproved_binary_pins"}
+                      or policy["rust_toolchain"] != "1.98.1"
+                      or type(policy["host_triples"]) is not dict or set(policy["host_triples"]) != expected
+                      or type(policy["preapproved_binary_pins"]) is not dict
+                      or not set(policy["preapproved_binary_pins"]) <= expected):
+                  raise ValueError("cas-candidate-tool-policy")
+              supported_hosts = {
+                  "Linux": {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"},
+                  "macOS": {"x86_64-apple-darwin", "aarch64-apple-darwin"},
+                  "Windows": {"x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"},
+              }
+              for platform in platforms:
+                  host = policy["host_triples"][platform]
+                  if type(host) is not str or host not in supported_hosts[platform]:
+                      raise ValueError("cas-candidate-tool-host-not-reviewed-for-platform")
+                  if platform in policy["preapproved_binary_pins"]:
+                      pins = policy["preapproved_binary_pins"][platform]
+                      if type(pins) is not dict or set(pins) != {"cargo", "rustc"} or not all(pin(p) and p["bytes"] > 0 for p in pins.values()):
+                          raise ValueError("cas-candidate-preapproved-physical-tool-pins")
+              rosters = value["rosters"]
+              if type(rosters) is not dict or set(rosters) != expected:
+                  raise ValueError("cas-candidate-platform-rosters")
+              for platform in platforms:
+                  expected_rows = {"cas-process": sorted(cas_retention_cases(platform)),
+                                   "schema-atomicity": sorted(schema_atomicity_cases())}
+                  if rosters[platform] != expected_rows:
+                      raise ValueError("cas-candidate-input-cannot-reduce-or-substitute-rosters")
+              return value
+
+
+          def cas_candidate_tree_entries(raw):
+              if type(raw) is not bytes or not raw or not raw.endswith(b"\0") or len(raw) > 16 * 1024 * 1024:
+                  raise ValueError("cas-candidate-full-tree-original-required")
+              rows, folded = {}, set()
+              for entry in raw[:-1].split(b"\0"):
+                  parts = entry.split(b"\t")
+                  if len(parts) != 2:
+                      raise ValueError("cas-candidate-tree-entry-shape")
+                  metadata, name = parts
+                  try:
+                      mode, kind, oid = metadata.decode("ascii", "strict").split(" ")
+                      path = name.decode("utf-8", "strict")
+                  except (ValueError, UnicodeError) as error:
+                      raise ValueError("cas-candidate-tree-entry-encoding") from error
+                  if (mode not in {"100644", "100755"} or kind != "blob" or not re.fullmatch(r"[0-9a-f]{40}", oid)
+                          or not path or path.startswith("/") or any(part in ("", ".", "..", ".git") for part in path.split("/"))
+                          or any(char in path for char in ("\\", ":")) or any(ord(char) < 32 for char in path)
+                          or path in rows or path.casefold() in folded):
+                      raise ValueError("cas-candidate-linked-nonregular-or-duplicate-path")
+                  rows[path] = {"mode": mode, "git_blob_oid": oid}
+                  folded.add(path.casefold())
+              if not rows or len(rows) > 100000:
+                  raise ValueError("cas-candidate-full-tree-roster-bound")
+              return rows
+
+
+          def cas_candidate_source_projection(snapshot, raw_tree):
+              import hashlib
+              import json
+              entries = cas_candidate_tree_entries(raw_tree)
+              files = snapshot.get("files") if type(snapshot) is dict else None
+              if type(files) is not dict or set(files) != set(entries):
+                  raise ValueError("cas-candidate-all-tracked-physical-files-required")
+              physical = []
+              for path in sorted(entries):
+                  row = files[path]
+                  if (type(row) is not dict or row.get("path") != path
+                          or type(row.get("bytes")) is not int or row["bytes"] < 0
+                          or type(row.get("sha256")) is not str or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
+                          or row.get("git_blob_oid") != entries[path]["git_blob_oid"]):
+                      raise ValueError("cas-candidate-executed-byte-and-git-object-identities-differ")
+                  physical.append({"path": path, "bytes": row["bytes"], "sha256": row["sha256"],
+                                   "git_blob_oid": entries[path]["git_blob_oid"]})
+              canonical = json.dumps(physical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+              return {"algorithm": "sha256", "git_tree_listing_sha256": hashlib.sha256(raw_tree).hexdigest(),
+                      "executed_file_metadata_sha256": hashlib.sha256(canonical).hexdigest(),
+                      "files": len(physical), "bytes": sum(row["bytes"] for row in physical)}
+
+
+          def cas_candidate_source_binding(manifest, snapshot, raw_tree):
+              if (snapshot.get("sha") != manifest["source_sha"] or snapshot.get("tree") != manifest["tree_sha"]
+                      or cas_candidate_source_projection(snapshot, raw_tree) != manifest["closure"]):
+                  raise ValueError("cas-candidate-source-sha-tree-or-byte-closure-mismatch")
+              for category in ("locks", "verification_sources"):
+                  for path, expected in manifest[category].items():
+                      observed = snapshot["files"].get(path)
+                      if observed is None or {key: observed.get(key) for key in ("bytes", "sha256")} != expected:
+                          raise ValueError("cas-candidate-reviewed-input-pin-mismatch:" + path)
+              return {"mode": "REVIEWED_COMPOSED_CANDIDATE", "source_sha": manifest["source_sha"],
+                      "tree_sha": manifest["tree_sha"], "closure": manifest["closure"],
+                      "manifest_is_authority": False, "historical_pass_credit": 0}
+
+
+          def cas_candidate_runtime(manifest, inputs, environment, actual_platform):
+              expected = cas_candidate_os_names(inputs.get("os_scope"))
+              if (cas_source_binding_mode(inputs) != "REVIEWED_COMPOSED_CANDIDATE"
+                      or environment.get("GITHUB_ACTIONS") != "true"
+                      or environment.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+                      or environment.get("GITHUB_REPOSITORY") != "seradotcom/motionwright"
+                      or environment.get("GITHUB_SHA") != manifest["source_sha"]
+                      or environment.get("MW_CAS_WORKFLOW_SHA") != manifest["source_sha"]
+                      or environment.get("GITHUB_JOB") != "file-import-platforms"
+                      or environment.get("GITHUB_RUN_ATTEMPT") != "1"
+                      or type(environment.get("GITHUB_RUN_ID")) is not str
+                      or not re.fullmatch(r"[1-9][0-9]*", environment["GITHUB_RUN_ID"])
+                      or type(environment.get("GITHUB_WORKFLOW_REF")) is not str
+                      or not environment["GITHUB_WORKFLOW_REF"].startswith(
+                          "seradotcom/motionwright/.github/workflows/project-portability.yml@")
+                      or type(actual_platform) is not str or actual_platform not in expected or environment.get("RUNNER_OS") != actual_platform
+                      or set(manifest["platforms"]) != expected):
+                  raise ValueError("cas-candidate-exact-first-run-workflow-platform-binding")
+              return {"workflow_source_sha": environment["MW_CAS_WORKFLOW_SHA"],
+                      "run_id": environment["GITHUB_RUN_ID"], "run_attempt": environment["GITHUB_RUN_ATTEMPT"],
+                      "job": environment["GITHUB_JOB"], "runner_os": actual_platform,
+                      "selected_platforms": manifest["platforms"], "other_platform_execution_credit": 0}
+
+
+          def cas_candidate_tool_binding(manifest, actual_platform, tools):
+              if (type(actual_platform) is not str or actual_platform not in manifest["platforms"]
+                      or type(tools) is not dict or set(tools) != {"cargo", "rustc"}):
+                  raise ValueError("cas-candidate-observed-tool-roster")
+              for tool in tools.values():
+                  if (type(tool) is not dict or type(tool.get("bytes")) is not int or tool["bytes"] <= 0
+                          or type(tool.get("sha256")) is not str or not re.fullmatch(r"[0-9a-f]{64}", tool["sha256"])
+                          or type(tool.get("version")) is not str or not 0 < len(tool["version"]) <= 8192):
+                      raise ValueError("cas-candidate-observed-physical-tool-identity")
+              policy = manifest["tool_policy"]
+              cargo_lines = tools["cargo"]["version"].splitlines()
+              rustc_lines = tools["rustc"]["version"].splitlines()
+              if (len(cargo_lines) != 1 or not re.fullmatch(r"cargo 1\.98\.1(?: \([^()\r\n]+\))?", cargo_lines[0])
+                      or not rustc_lines or not re.fullmatch(r"rustc 1\.98\.1(?: \([^()\r\n]+\))?", rustc_lines[0])
+                      or [line for line in rustc_lines if line.startswith("release:")] != ["release: 1.98.1"]
+                      or [line for line in rustc_lines if line.startswith("host:")] != ["host: " + policy["host_triples"][actual_platform]]):
+                  raise ValueError("cas-candidate-tool-release-or-host-policy-mismatch")
+              observed = {name: {key: row[key] for key in ("bytes", "sha256")} for name, row in tools.items()}
+              pins = policy["preapproved_binary_pins"].get(actual_platform)
+              if pins is not None and pins != observed:
+                  raise ValueError("cas-candidate-preapproved-tool-binary-pin-mismatch")
+              return {"rust_toolchain": "1.98.1", "host_triple": policy["host_triples"][actual_platform],
+                      "observed_physical_binary_identities": observed, "preapproved_binary_pins_supplied": pins is not None,
+                      "preapproved_binary_pins": pins, "postcheck_required": "EXISTING_PHYSICAL_IDENTITY_CHECKS_UNCHANGED"}
+
+
+          def cas_candidate_build_environment(environment, manifest, actual_platform, tools):
+              from pathlib import Path
+              cas_candidate_tool_binding(manifest, actual_platform, tools)
+              for name in ("cargo", "rustc"):
+                  path = tools[name].get("absolute_path")
+                  if type(path) is not str or not Path(path).is_absolute():
+                      raise ValueError("cas-candidate-observed-tool-path-not-absolute")
+              required = {
+                  "CARGO": tools["cargo"]["absolute_path"],
+                  "RUSTC": tools["rustc"]["absolute_path"],
+                  "CARGO_BUILD_RUSTC": tools["rustc"]["absolute_path"],
+                  "CARGO_BUILD_TARGET": manifest["tool_policy"]["host_triples"][actual_platform],
+                  "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": "",
+                  "CARGO_BUILD_RUSTC_WRAPPER": "", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": "",
+              }
+              for key, value in required.items():
+                  if key in environment and environment[key] != value:
+                      raise ValueError("cas-candidate-unreviewed-inherited-build-tool:" + key)
+              return {**environment, **required}
+
+
+          def run_cas_retention(actual, event):
+              # Reuse the existing process/stream custody and original binary selector.
+              # This is a bounded selection in this workflow, never a second executor.
+              from pathlib import Path
+              import hashlib
+              import importlib
+              import json
+              import os
+              import sys
+
+              repo = Path.cwd().resolve(strict=True)
+              sys.path.insert(0, str(repo))
+              observer = importlib.import_module("tooling.ci_foundation_causal")
+              custody = importlib.import_module("tooling.ci_storage_apply_recovery")
+              product = "977ba842c363f582a08d12fa3b9b3d83e68d5f6e"
+              product_tree = "d7213767b53d7457df26480719576e364eacc825"
+              inputs = event.get("inputs") or {}
+              candidate = inputs.get("verification_scope") == "cas_candidate"
+              candidate_manifest = None
+              root = (Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+                      / ("cas-retention-" + actual + "-" + os.environ["GITHUB_RUN_ID"]
+                         + "-" + os.environ["GITHUB_RUN_ATTEMPT"]))
+              root.mkdir(exist_ok=False)
+              logs, target, temporary = root / "originals", root / "target", root / "tmp"
+              for path in (logs, target, temporary):
+                  path.mkdir()
+              report = {
+                  "schema": "motionwright.cas-retention-selected/1", "status": "NOT_RUN",
+                  "executed_source_sha": actual, "reviewed_product_source_sha": product,
+                  "reviewed_product_tree_sha": product_tree,
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "job": os.environ["GITHUB_JOB"], "runner_os": os.environ["RUNNER_OS"],
+                  "results": [], "commands": [], "source_postcheck": "NOT_RUN",
+                  "binary_and_tool_postcheck": "NOT_RUN", "automatic_retry": False,
+                  "installed_application": "NOT_RUN", "power_loss": "NOT_RUN",
+                  "native_render": "NOT_RUN", "human_acceptance": False,
+              }
+              if candidate:
+                  report.update(schema="motionwright.cas-candidate-selected/1",
+                      reviewed_product_source_sha=None, reviewed_product_tree_sha=None,
+                      candidate_source_sha=actual, source_binding_mode="REVIEWED_COMPOSED_CANDIDATE",
+                      manifest_is_authority=False, historical_pass_credit=0)
+              before, binaries, tools = None, {}, {}
+              unknown = False
+
+              def command(label, argv, timeout=60):
+                  row = observer.command(
+                      argv, repo, environment, logs, label, timeout, context,
+                      (root, report["commands"]))
+                  return row, observer.original_stream(logs, row, "stdout")
+
+              def check_identities():
+                  for binary in binaries.values():
+                      if custody.fingerprint(Path(binary["absolute_path"]), target) != {
+                              key: binary[key] for key in ("path", "bytes", "sha256", "identity")}:
+                          raise ValueError("cas-original-binary-changed")
+                  for tool in tools.values():
+                      path = Path(tool["absolute_path"])
+                      if custody.fingerprint(path, path.parent) != {
+                              key: tool[key] for key in ("path", "bytes", "sha256", "identity")}:
+                          raise ValueError("cas-original-tool-changed")
+
+              try:
+                  if (Path(observer.__file__).resolve() != repo / "tooling/ci_foundation_causal.py"
+                          or Path(custody.__file__).resolve() != repo / "tooling/ci_storage_apply_recovery.py"):
+                      raise ValueError("cas-observer-origin")
+                  cas_source_binding_mode(inputs)
+                  if (os.environ.get("GITHUB_ACTIONS") != "true"
+                          or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+                          or os.environ.get("GITHUB_REPOSITORY") != "seradotcom/motionwright"
+                          or os.environ["GITHUB_RUN_ATTEMPT"] != "1"
+                          or inputs.get("verification_scope") not in {"cas_retention", "cas_candidate"}
+                          or (not candidate and inputs.get("product_source_sha") != product)
+                          or actual != os.environ["GITHUB_SHA"]):
+                      raise ValueError("cas-explicit-first-exact-source-dispatch")
+                  real_os = {"win32": "Windows", "darwin": "macOS", "linux": "Linux"}.get(sys.platform)
+                  if (real_os != os.environ["RUNNER_OS"]
+                          or real_os not in (cas_candidate_os_names(inputs.get("os_scope"))
+                                             if candidate else cas_os_names(inputs.get("os_scope")))):
+                      raise ValueError("cas-actual-os-differs")
+                  expected_process = cas_retention_cases(real_os)
+                  report["not_applicable"] = (
+                      ["cas_retention_process_tests::real_unix_fifo_control_entries_reject_without_blocking"]
+                      if real_os == "Windows" else [])
+                  if candidate:
+                      manifest_raw = inputs["candidate_source_manifest"].encode("utf-8")
+                      if not 0 < len(manifest_raw) <= 65536:
+                          raise ValueError("cas-candidate-original-manifest-size")
+                      original_manifest = logs / "candidate-source-manifest.original.json"
+                      with original_manifest.open("xb") as stream:
+                          stream.write(manifest_raw)
+                          stream.flush()
+                          os.fsync(stream.fileno())
+                      report["candidate_manifest_original"] = {
+                          "path": "originals/candidate-source-manifest.original.json",
+                          "bytes": len(manifest_raw), "sha256": hashlib.sha256(manifest_raw).hexdigest()}
+                      candidate_manifest = cas_candidate_manifest(
+                          inputs["candidate_source_manifest"], inputs["candidate_manifest_sha256"], actual, inputs.get("os_scope"))
+                      report["candidate_runtime"] = cas_candidate_runtime(candidate_manifest, inputs, os.environ, real_os)
+                      raw_tree = custody.git(repo, "ls-tree", "-r", "-z", actual)
+                      source_paths = sorted(cas_candidate_tree_entries(raw_tree))
+                      before = custody.source_snapshot(repo, actual, source_paths, expected_tree=candidate_manifest["tree_sha"])
+                      report["candidate_source_binding"] = cas_candidate_source_binding(candidate_manifest, before, raw_tree)
+                      custody.write_new(logs / "candidate-tree-and-executed-byte-closure.json", {
+                          "source_sha": actual, "tree_sha": before["tree"],
+                          "git_tree_listing_sha256": hashlib.sha256(raw_tree).hexdigest(),
+                          "git_entries": cas_candidate_tree_entries(raw_tree),
+                          "executed_files": before["files"], "closure": candidate_manifest["closure"]})
+                  else:
+                      parents = custody.git(repo, "rev-list", "--parents", "-n", "1", "HEAD").decode().split()
+                      changed = custody.git(repo, "diff", "--name-only", product, actual).decode().splitlines()
+                      cas_admit_parent(actual, product, parents, changed)
+                      if custody.git(repo, "rev-parse", product + "^{tree}").decode().strip() != product_tree:
+                          raise ValueError("cas-reviewed-product-tree-differs")
+                      tracked = [p.decode() for p in custody.git(
+                          repo, "ls-tree", "-r", "--name-only", "-z", product).split(b"\0") if p]
+                      product_paths = cas_dependency_paths(tracked)
+                      source_paths = sorted(set(product_paths) | set(changed))
+                      before = custody.source_snapshot(repo, actual, source_paths)
+                      for path in product_paths:
+                          if hashlib.sha256(custody.git(repo, "show", product + ":" + path)).hexdigest() != before["files"][path]["sha256"]:
+                              raise ValueError("cas-reviewed-product-input-differs:" + path)
+                      for path, digest in {
+                          "crates/storage/src/cas_retention_process_tests.rs":
+                              "db07c4e7d79b09ec193b548db969e2b00f843d47deb4bceca5634495b45f98d8",
+                          "crates/storage/tests/schema_migration_atomicity.rs":
+                              "7f28f037061deebc376884a0bc64db88fdd7992dcc189ba9376df9f46fee22c3",
+                      }.items():
+                          if before["files"][path]["sha256"] != digest:
+                              raise ValueError("cas-reviewed-test-preimage-changed:" + path)
+                  report["source_before"] = before
+                  report["retained_sources"] = observer.retain_source(repo, before, root)
+                  environment = custody.isolated_build_environment(os.environ)
+                  environment.update(
+                      RUSTUP_TOOLCHAIN="1.98.1", CARGO_BUILD_JOBS="2",
+                      CARGO_TARGET_DIR=str(target), TMPDIR=str(temporary),
+                      TEMP=str(temporary), TMP=str(temporary))
+                  context = {
+                      "gate_source_sha": actual, "product_source_sha": actual if candidate else product,
+                      "run_id": report["run_id"], "run_attempt": report["run_attempt"],
+                      "runner_os": real_os, "selection": inputs["verification_scope"],
+                  }
+                  for name in ("cargo", "rustc"):
+                      row, raw = command(name + "-path", ["rustup", "which", "--toolchain", "1.98.1", name])
+                      if row["exit_code"] != 0:
+                          raise ValueError("cas-toolchain-path")
+                      path = Path(raw.decode().strip())
+                      if not path.is_absolute():
+                          raise ValueError("cas-toolchain-path-not-absolute")
+                      path = path.resolve(strict=True)
+                      tools[name] = {"absolute_path": str(path), **custody.fingerprint(path, path.parent)}
+                      version, text = command(name + "-version", [str(path), "-Vv" if name == "rustc" else "-V"])
+                      if version["exit_code"] != 0 or (name == "rustc" and b"release: 1.98.1\n" not in text):
+                          raise ValueError("cas-toolchain-version")
+                      tools[name]["version"] = text.decode()
+                  report["tools"] = tools
+                  if candidate:
+                      report["candidate_tool_binding"] = cas_candidate_tool_binding(candidate_manifest, real_os, tools)
+                      environment = cas_candidate_build_environment(environment, candidate_manifest, real_os, tools)
+                      report["candidate_tool_binding"]["build_environment"] = {key: environment[key] for key in (
+                          "CARGO", "RUSTC", "CARGO_BUILD_RUSTC", "CARGO_BUILD_TARGET", "RUSTC_WRAPPER",
+                          "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")}
+                  compiled, raw = command("compile-selected", [
+                      tools["cargo"]["absolute_path"], "test", "--locked", "-p", "motionwright-storage",
+                      "--lib", "--test", "schema_migration_atomicity", "--no-run", "--message-format=json",
+                  ], 1200)
+                  specifications = {
+                      "cas-process": {"package": "motionwright-storage", "kind": "lib",
+                                      "name": "motionwright_storage", "source": "crates/storage/src/lib.rs"},
+                      "schema-atomicity": {"package": "motionwright-storage", "kind": "test",
+                                           "name": "schema_migration_atomicity",
+                                           "source": "crates/storage/tests/schema_migration_atomicity.rs"},
+                  }
+                  if custody.source_snapshot(repo, actual, source_paths) != before:
+                      raise ValueError("cas-source-changed-before-binary-sealing")
+                  for name, spec in specifications.items():
+                      binary = observer.select_binary(raw, compiled["exit_code"], repo, target, spec)
+                      binaries[name] = binary
+                      observer.retain_file(Path(binary["absolute_path"]), target, root, "binaries")
+                  report["binaries"] = binaries
+                  report["producer_barrier"] = "ONE_COMPILATION_BEFORE_LISTING_AND_EXECUTION"
+                  rosters = {}
+                  for name, binary in binaries.items():
+                      check_identities()
+                      row, raw = command(name + "-complete-list", [binary["absolute_path"], "--list"])
+                      rosters[name] = complete_cas_roster(row["exit_code"], raw.decode())
+                      check_identities()
+                  report["complete_rosters"] = rosters
+                  expected_by_suite = {
+                      "cas-process": expected_process, "schema-atomicity": schema_atomicity_cases()}
+                  review_cas_rosters(rosters, expected_process)
+                  for name, expected in expected_by_suite.items():
+                      check_identities()
+                      argv = [binaries[name]["absolute_path"]]
+                      if name == "cas-process":
+                          argv.append("cas_retention_process_tests::")
+                      argv += ["--test-threads=1", "--show-output"]
+                      row, raw = command(name + "-selected-cases", argv, 900 if name == "cas-process" else 180)
+                      stderr = observer.original_stream(logs, row, "stderr")
+                      result = admit_cas_cases(row["exit_code"], (raw + b"\n" + stderr).decode(), expected, rosters[name])
+                      report["results"].append({"suite": name, "command": row, **result})
+                      check_identities()
+                  # Reread every sealed original before admitting these selected cases.
+                  for item in report["commands"]:
+                      folder = root / item["folder"]
+                      if custody.fingerprint(folder / Path(item["receipt"]["path"]).name, root) != item["receipt"]:
+                          raise ValueError("cas-original-command-receipt-changed")
+                      for channel in ("stdout", "stderr"):
+                          observer.original_stream(folder, item["command"], channel)
+                  report["binary_and_tool_postcheck"] = "VERIFIED_UNCHANGED"
+              except (observer.UnknownExecution, custody.UnknownObservation) as error:
+                  unknown = True
+                  report.update(status="UNKNOWN_NO_RETRY", uncertain_command=error.command,
+                                failure={"type": type(error).__name__, "message": str(error)})
+              except Exception as error:
+                  report["failure"] = {"type": type(error).__name__, "message": str(error)}
+              finally:
+                  if before is not None:
+                      cas_source_postcheck(
+                          report, before, lambda: custody.source_snapshot(repo, actual, source_paths),
+                          (observer.UnknownExecution, custody.UnknownObservation))
+                  elif unknown:
+                      report["source_postcheck"] = "NOT_OBSERVED_AFTER_UNKNOWN"
+                  report["status"] = cas_finish_status(report)
+                  custody.write_new(root / "receipt.json", report)
+              print(json.dumps({
+                  "source_sha": actual, "reviewed_product_sha": None if candidate else product, "OS": report["runner_os"],
+                  "status": report["status"], "attempt": report["run_attempt"],
+                  "selected_case_count": sum(len(row["selected_tests"]) for row in report["results"]),
+                  "native_render": "NOT_RUN", "human_acceptance": False,
+              }, sort_keys=True), flush=True)
+              if report["status"] != "PASS_SELECTED_SOURCE_G2":
+                  raise SystemExit("cas-retention-selection-not-verified; inspect originals; no retry")
+
           actual = git("rev-parse", "HEAD")
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
           selection = "full"
           if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
               selection = (event.get("inputs") or {}).get("verification_scope", "full")
-          if selection not in {"full", "derived_cache", "otio_export", "project_projection"}:
+          if selection not in {"full", "derived_cache", "otio_export", "project_projection", "cas_retention", "cas_candidate"}:
               raise SystemExit("portability-selection-unsupported")
+          if selection in {"cas_retention", "cas_candidate"}:
+              run_cas_retention(actual, event)
+              raise SystemExit(0)
           projection = selection == "project_projection"
           pr = event.get("pull_request") or {}
           root = Path("verification/file-import-platforms")
@@ -351,19 +1094,7 @@ jobs:
                   'historical_production_observation_and_exact_recovery_claim_keep_distinct_rules',
                   'exact_title_and_column_only_summary_contract_remain_compatible',
               }),
-              ('storage-schema-atomicity', ['-p', 'motionwright-storage', '--test', 'schema_migration_atomicity'], {
-                  'failed_schema_upgrade_never_publishes_partial_new_tables_or_version',
-                  'valid_fresh_open_and_reopen_keep_exact_schema_and_no_extra_objects',
-                  'too_new_version_fails_without_rewriting_original_schema',
-                  'production_order_allocation_failure_cannot_publish_a_partial_append_or_claim',
-                  'production_order_backfill_failure_rolls_back_ddl_rows_and_sequence_counter',
-                  'production_order_concurrent_migrations_publish_one_mapping_per_receipt',
-                  'production_order_extension_trigger_failure_rolls_back_every_receipt_effect',
-                  'production_order_migration_preserves_receipts_extension_foreign_keys_and_audit_triggers',
-                  'production_order_missing_mapping_is_never_silently_backfilled_or_hidden',
-                  'production_order_project_mismatch_is_rejected_from_both_scopes',
-                  'production_order_reserved_object_collisions_are_rejected_without_adoption',
-              }),
+              ('storage-schema-atomicity', ['-p', 'motionwright-storage', '--test', 'schema_migration_atomicity'], schema_atomicity_cases()),
           ])
           cases.extend([
               ('cache-storage-publication', ['-p', 'motionwright-storage', '--lib', 'derived_cache::publication_interleaving_tests::'], {
@@ -592,7 +1323,7 @@ jobs:
           if receipt["status"] != "PASS":
               raise SystemExit("file-import-platform-tests-not-verified")
       - name: Retain source binding and selective test evidence
-        if: always()
+        if: always() && inputs.verification_scope != 'cas_retention' && inputs.verification_scope != 'cas_candidate'
         uses: actions/upload-artifact@v4
         with:
           name: file-import-platform-${{ matrix.os }}-${{ github.sha }}
@@ -605,3 +1336,16 @@ jobs:
           name: otio-export-g0-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/project-portability-g0
           if-no-files-found: error
+
+      - name: Retain complete CAS source, binary and command originals
+        if: always() && github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'cas_retention' || inputs.verification_scope == 'cas_candidate')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cas-retention-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/cas-retention-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/receipt.json
+            ${{ runner.temp }}/cas-retention-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/originals/
+            ${{ runner.temp }}/cas-retention-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/sources/
+            ${{ runner.temp }}/cas-retention-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/binaries/
+          if-no-files-found: error
+          retention-days: 14

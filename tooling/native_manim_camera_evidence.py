@@ -365,7 +365,9 @@ def verified_publication(root, source_sha, semwright_sha, sealed_originals, *, f
 
 class CameraCustody:
     """Retain the one invocation's outcome before later observation or cleanup."""
-    def __init__(self, owner, evidence, seal_path, recipient, context, *, engine=None):
+    def __init__(self, owner, evidence, seal_path, recipient, context, *, engine=None, profile="camera"):
+        require(profile in ("camera", "editable"), "native_custody_profile")
+        self.profile = profile
         self.engine = engine or custody_module()
         self.engine.public_key(recipient)
         self.engine.validate_context(context)
@@ -416,7 +418,7 @@ class CameraCustody:
 
     def __exit__(self, kind, original, traceback):
         terminal = {
-            "schema": "motionwright.manim.camera.original-terminal/1",
+            "schema": f"motionwright.manim.{self.profile}.original-terminal/1",
             "native_example_invoked": self.invoked,
             "original_process_observation": self.native_process,
             "native_result": self.native_result,
@@ -440,7 +442,7 @@ class CameraCustody:
             self.engine.new_bytes(self.seal_path, envelope)
             self.sealed = True
             receipt = {
-                "schema": "motionwright.manim.camera.sealed-custody/1",
+                "schema": f"motionwright.manim.{self.profile}.sealed-custody/1",
                 "status": ("PASS" if complete and not self.secondary_errors else "INCOMPLETE"),
                 "context": self.context,
                 "ciphertext_sha256": sha(envelope), "ciphertext_bytes": len(envelope),
@@ -452,7 +454,7 @@ class CameraCustody:
                 "atomic_sqlite_snapshot_claimed": False,
                 "producer_authenticated_by_encryption": False,
             }
-            self.engine.new_json(self.evidence / "camera-custody.json", receipt)
+            self.engine.new_json(self.evidence / f"{self.profile}-custody.json", receipt)
         except BaseException as error:
             self.secondary("sealed-custody", error)
         if self.secondary_errors or not complete:

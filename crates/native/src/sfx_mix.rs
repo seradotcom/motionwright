@@ -66,9 +66,45 @@ pub fn mix_source_bound_semantic_sfx(
     sources: &[VerifiedSfxWav],
     total_frames: u64,
 ) -> NativeResult<MixedSfxWav> {
-    if !(1..=SFX_MAX_MASTER_FRAMES).contains(&total_frames) {
+    mix_source_bound_semantic_sfx_bounded(
+        project,
+        deliverable_id,
+        sources,
+        total_frames,
+        SFX_MAX_MASTER_FRAMES,
+    )
+}
+
+pub fn mix_source_bound_semantic_sfx_with_budget(
+    project: &Project,
+    deliverable_id: Uuid,
+    sources: &[VerifiedSfxWav],
+    total_frames: u64,
+    budget: motionwright_service::OriginalMixDecodeBudget,
+) -> NativeResult<MixedSfxWav> {
+    let max_frames = match budget {
+        motionwright_service::OriginalMixDecodeBudget::Audition15Seconds => 15 * 30,
+        motionwright_service::OriginalMixDecodeBudget::FullCut180Seconds => 180 * 30,
+    };
+    mix_source_bound_semantic_sfx_bounded(
+        project,
+        deliverable_id,
+        sources,
+        total_frames,
+        max_frames,
+    )
+}
+
+fn mix_source_bound_semantic_sfx_bounded(
+    project: &Project,
+    deliverable_id: Uuid,
+    sources: &[VerifiedSfxWav],
+    total_frames: u64,
+    max_frames: u64,
+) -> NativeResult<MixedSfxWav> {
+    if !(1..=max_frames).contains(&total_frames) {
         return Err(unsupported(
-            "Bounded native SFX mixing supports 1..=900 frames",
+            "Native semantic SFX exceeds its explicit bounded source policy",
         ));
     }
     project
@@ -82,14 +118,21 @@ pub fn mix_source_bound_semantic_sfx(
     if profile.frame_rate.num != 30
         || profile.frame_rate.den != 1
         || profile.audio_sample_rate_hz != 48000
-        || !profile.included_scene_ids.is_empty()
     {
         return Err(unsupported(
-            "SFX only supports 30 fps, 48 kHz and complete original scene order",
+            "SFX only supports 30 fps and 48 kHz without implicit conversion",
+        ));
+    }
+    let expected_frames = project
+        .sfx_cut_frames(deliverable_id)
+        .map_err(|_| unsupported("SFX master cut must use exact 30 fps source times"))?;
+    if total_frames != expected_frames {
+        return Err(unsupported(
+            "SFX master duration differs from the exact selected cut; no implicit padding or trim",
         ));
     }
     let schedule = project
-        .validated_sfx_schedule()
+        .validated_sfx_schedule_for_profile(deliverable_id)
         .map_err(|_| invalid("Invalid source SFX schedule"))?;
     if schedule.is_empty() || schedule.iter().any(|p| p.absolute_end_frame > total_frames) {
         return Err(unsupported(
@@ -105,6 +148,18 @@ pub fn mix_source_bound_semantic_sfx(
                 "Original WAV asset identity or contents differ from imported SHA-256",
             ));
         }
+    }
+    let expected_sources = project
+        .audio
+        .sfx_cues
+        .iter()
+        .filter(|cue| schedule.iter().any(|placement| placement.cue_id == cue.id))
+        .map(|cue| cue.source_asset_id)
+        .collect::<HashSet<_>>();
+    if ids != expected_sources {
+        return Err(invalid(
+            "Verified SFX source inventory differs from the selected authored cues",
+        ));
     }
     let total_samples = usize::try_from(total_frames)
         .ok()

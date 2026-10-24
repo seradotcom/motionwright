@@ -6,9 +6,9 @@
 #![cfg(unix)]
 
 use motionwright_domain::{
-    AlignmentEvidence, AudioCodec, BlendMode, CanvasNode, Change, CoordinateSpace, DeliveryRecipe,
-    NodeStyle, OriginalMixRecipe, OutputColorSpace, OutputContainer, Project, RationalTime,
-    RevisionStamp, TranscriptSegment, VideoCodec,
+    AlignmentEvidence, AudioCodec, BlendMode, CanvasNode, Change, CoordinateSpace,
+    DeliveryAudioTargets, DeliveryRecipe, NodeStyle, OriginalMixRecipe, OutputColorSpace,
+    OutputContainer, Project, RationalTime, RevisionStamp, TranscriptSegment, VideoCodec,
 };
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
@@ -170,9 +170,49 @@ elif command == "driver.mlt-video.av.mux":
         "artifact": artifact(args["output_path"], b"synthetic MP4 contract carrier; not encoded video"),
         "decoded_audio": artifact(args["output_path"] + ".decoded.wav", audio),
     }
+elif command == "driver.audio-analysis.artifact.measure":
+    # Protocol-only closed response. These fixed numbers are not computed
+    # acoustic measurements and must never serve as physical meter evidence.
+    raw = (root / args["file_name"]).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == args["expected_sha256"]
+    assert args["layout"] == "stereo" and raw[0:4] == b"RIFF"
+    frames = (len(raw) - 44) // 4
+    channel = {"peak_millidbfs": -10000, "rms_millidbfs": -20000,
+        "dc_offset": 0.01, "finite_samples": frames,
+        "nonfinite_samples": 0, "out_of_range_samples": 0}
+    data = {
+        "artifact": {"file_name": args["file_name"], "sha256": args["expected_sha256"],
+                     "bytes": len(raw), "format": "wav"},
+        "loudness": {"schema_version": 1, "method": "libebur128", "version": "1.2.6",
+            "frames": frames, "sample_rate": 48000, "channels": 2, "layout": "stereo",
+            "nonfinite_samples": 0, "integrated_lufs_milli": -23000, "momentary_lufs_milli": -23100,
+            "short_term_lufs_milli": None, "loudness_range_milli": None,
+            "true_peak_millidbtp": -9000, "sample_peak_millidbfs": -10000,
+            "true_peak_oversample": 4, "momentary_window_ms": 400, "short_term_window_ms": 3000,
+            "unknown_reason": "one_or_more_windows_have_insufficient_frames"},
+        "pcm_statistics": {"schema_version": 2, "method": "semwright-pcm-statistics-v2",
+            "sample_rate": 48000, "frames": frames, "channels": [channel, channel],
+            "peak_millidbfs": -10000, "rms_millidbfs": -20000,
+            "silence_threshold_millidbfs": -90000, "silence_ranges": [],
+            "silence_ranges_exhaustive": True, "entirely_silent": False,
+            "nonfinite_samples": 0, "out_of_range_samples": 0},
+        "exhaustive": True,
+    }
+    # G0 transport fixture only: configurable observations demonstrate that
+    # source values cannot substitute for final decoded metric evidence.
+    override = home / "synthetic-final-meter-values.json"
+    if args["file_name"].startswith("mw-analysis-decoded-") and override.exists():
+        values = json.loads(override.read_text(encoding="utf-8"))
+        for key in ("integrated_lufs_milli", "true_peak_millidbtp"):
+            if key in values:
+                data["loudness"][key] = values[key]
 else:
     raise AssertionError("Unexpected transport command: " + command)
 execution = json.loads((home / "execution.json").read_text(encoding="utf-8"))
+if command == "driver.audio-analysis.artifact.measure":
+    execution["backend"] = "driver:audio-analysis"
+    execution["provenance"]["provider"] = "driver:audio-analysis"
+    execution["provenance"]["execution_provider"] = "driver:audio-analysis"
 print(json.dumps({"ok": True, "request_id": "synthetic-ack-" + str(number), "command": command,
                   "data": data, "error": None, "execution": execution, "warnings": []}))
 "#;
@@ -242,6 +282,25 @@ struct Fixture {
 
 impl Fixture {
     fn new(route: Route, saved: bool, visual_frames: u32) -> Self {
+        Self::with_semantic_sfx(route, saved, visual_frames, false)
+    }
+
+    fn with_semantic_sfx(
+        route: Route,
+        saved: bool,
+        visual_frames: u32,
+        semantic_sfx: bool,
+    ) -> Self {
+        Self::with_audio_targets(route, saved, visual_frames, semantic_sfx, None)
+    }
+
+    fn with_audio_targets(
+        route: Route,
+        saved: bool,
+        visual_frames: u32,
+        semantic_sfx: bool,
+        targets: Option<DeliveryAudioTargets>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(temp.path()).unwrap();
         permissions(&root, 0o700);
@@ -310,7 +369,10 @@ impl Fixture {
             Change::SetActiveVoiceTrack { track_id: voice_id },
         );
         let mut assets = Vec::new();
-        for (name, level) in [("music", 1_000_i16), ("sfx", 500_i16)] {
+        for (name, level) in [("music", 1_000_i16), ("sfx", 500_i16)]
+            .into_iter()
+            .filter(|_| saved)
+        {
             let path = root.join(format!("{name}.wav"));
             fs::write(&path, wav(level)).unwrap();
             project = service
@@ -377,6 +439,7 @@ impl Fixture {
                 Change::SetDeliveryRecipe {
                     deliverable_profile_id: profile_id,
                     recipe: Some(DeliveryRecipe {
+                        audio_targets: None,
                         original_mix: Some(OriginalMixRecipe {
                             music_asset_id: Some(assets[0]),
                             sfx_asset_id: Some(assets[1]),
@@ -384,9 +447,81 @@ impl Fixture {
                             duck_attenuation_db: 14.0,
                             duck_attack_samples: 2_400,
                             duck_release_samples: 4_800,
+                            voice_envelope: Default::default(),
+                            music_envelope: Default::default(),
+                            sfx_envelope: Default::default(),
                         }),
                         ..Default::default()
                     }),
+                },
+            );
+        }
+        if semantic_sfx {
+            let mut bytes = wav(1_000);
+            let size = 15_u32 * 1_600 * 4;
+            bytes.truncate(44 + size as usize);
+            bytes[4..8].copy_from_slice(&(36 + size).to_le_bytes());
+            bytes[40..44].copy_from_slice(&size.to_le_bytes());
+            let path = root.join("semantic-cue.wav");
+            fs::write(&path, &bytes).unwrap();
+            project = service
+                .import_asset_file(
+                    project.id,
+                    &project.stamp(),
+                    "import-semantic-cue",
+                    &path,
+                    "semantic-cue.wav".into(),
+                    "audio/wav".into(),
+                )
+                .unwrap()
+                .project;
+            let source_asset_id = project
+                .assets
+                .iter()
+                .find(|asset| asset.name == "semantic-cue.wav")
+                .unwrap()
+                .id;
+            let scene_id = project.scenes[0].id;
+            apply(
+                &service,
+                &mut project,
+                "author-semantic-cue",
+                Change::UpsertSemanticSfx {
+                    cue: motionwright_domain::SemanticSfxCue {
+                        schema: motionwright_domain::SFX_CUE_SCHEMA.into(),
+                        id: Uuid::now_v7(),
+                        scene_id,
+                        event: motionwright_domain::SfxEvent::SceneReveal,
+                        anchor: motionwright_domain::SfxAnchor::SceneStart,
+                        offset_frames: 0,
+                        source_asset_id,
+                        source_sha256: digest(&bytes),
+                        source_frames: 15,
+                        gain_milli_db: 0,
+                        attack_frames: 0,
+                        release_frames: 1,
+                        tail_policy: motionwright_domain::SfxTailPolicy::ContinueAcrossCuts,
+                        original_source_attestation:
+                            "Owned synthetic PCM transport fixture, not speech".into(),
+                    },
+                },
+            );
+        }
+        if let Some(targets) = targets {
+            let mut recipe = project
+                .production_design
+                .delivery_recipes
+                .get(&profile_id)
+                .cloned()
+                .unwrap_or_default();
+            recipe.audio_targets = Some(targets);
+            apply(
+                &service,
+                &mut project,
+                "save-qc-targets",
+                Change::SetDeliveryRecipe {
+                    deliverable_profile_id: profile_id,
+                    recipe: Some(recipe),
                 },
             );
         }
@@ -915,4 +1050,402 @@ async fn multisegment_saved_mix_rejects_clock_mismatch_before_provider() {
         CLOCK_REJECTION,
     )
     .await;
+}
+
+#[tokio::test]
+async fn single_semantic_sfx_saved_bus_reaches_mux_and_rejects_voice_only_substitution() {
+    succeeds(
+        &Fixture::with_semantic_sfx(Route::Single, true, 33, true),
+        Route::Single,
+    )
+    .await;
+    let mut changed = Fixture::with_semantic_sfx(Route::Single, true, 33, true);
+    changed.substitute(&wav(2_000));
+    rejects(
+        &changed,
+        Route::Single,
+        ErrorCode::StaleReference,
+        SINGLE_REJECTION,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn multisegment_semantic_sfx_saved_bus_reaches_mux_and_rejects_voice_only_substitution() {
+    succeeds(
+        &Fixture::with_semantic_sfx(Route::Multi, true, 33, true),
+        Route::Multi,
+    )
+    .await;
+    let mut changed = Fixture::with_semantic_sfx(Route::Multi, true, 33, true);
+    changed.substitute(&wav(2_000));
+    rejects(
+        &changed,
+        Route::Multi,
+        ErrorCode::StaleReference,
+        MULTI_REJECTION,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn authored_semantic_sfx_without_a_saved_mix_rejects_before_both_providers() {
+    rejects(
+        &Fixture::with_semantic_sfx(Route::Single, false, 33, true),
+        Route::Single,
+        ErrorCode::Unsupported,
+        "Native master cannot omit authored gain/SFX or claim unmeasured loudness targets",
+    )
+    .await;
+    rejects(&Fixture::with_semantic_sfx(Route::Multi, false, 33, true), Route::Multi,
+        ErrorCode::Unsupported, "Native master cannot omit a saved mix or replace authored semantic SFX with a voice-only WAV").await;
+}
+
+#[tokio::test]
+async fn changed_semantic_cas_source_rejects_before_both_native_providers() {
+    for route in [Route::Single, Route::Multi] {
+        let fixture = Fixture::with_semantic_sfx(route, true, 33, true);
+        let cue = &fixture.project.audio.sfx_cues[0];
+        let path = fixture
+            .service
+            .store()
+            .lock()
+            .verified_blob_path(&cue.source_sha256)
+            .unwrap();
+        fs::write(path, b"changed source; not the admitted WAV").unwrap();
+        rejects(
+            &fixture,
+            route,
+            ErrorCode::StaleReference,
+            "Selected semantic SFX WAV failed current project/CAS verification",
+        )
+        .await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn measured_result(
+    f: &Fixture,
+    route: Route,
+) -> semwright_native_sdk::Result<
+    motionwright_native::production::VerifiedOriginalMixAudioMeasurements,
+> {
+    let coordinator = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    match route {
+        Route::Single => coordinator
+            .assemble_mlt_av_master_with_audio_analysis(
+                f.project.id,
+                &f.project.stamp(),
+                MltAvMasterRequest {
+                    request_id: REQUEST,
+                    deliverable_id: f.project.deliverables[0].id,
+                    motion: &f.rendered,
+                    audio: &f.audio,
+                    sync: None,
+                },
+            )
+            .await
+            .map(|result| result.audio_measurements),
+        Route::Multi => coordinator
+            .assemble_native_mlt_multisegment_av_master_with_audio_analysis(
+                f.project.id,
+                &f.project.stamp(),
+                MltMultisegmentAvMasterRequest {
+                    request_id: REQUEST,
+                    deliverable_id: f.project.deliverables[0].id,
+                    options: &f.options,
+                    rendered: &f.rendered,
+                    visual: f.visual.as_ref().unwrap(),
+                    audio: &f.audio,
+                },
+            )
+            .await
+            .map(|result| result.audio_measurements),
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn measured_succeeds(f: &Fixture, route: Route) {
+    let proof = measured_result(f, route).await.unwrap();
+    assert_eq!(
+        proof.delivery_audio_qc().status(),
+        motionwright_native::production::DeliveryAudioQcStatus::NotRequested
+    );
+    assert_eq!(proof.source().loudness().frames, u64::from(AUDIO_FRAMES));
+    assert_eq!(proof.decoded().loudness().frames, u64::from(AUDIO_FRAMES));
+    let calls = f.calls();
+    let measured: Vec<_> = calls
+        .iter()
+        .filter(|call| call["command"] == "driver.audio-analysis.artifact.measure")
+        .collect();
+    assert_eq!(measured.len(), 2);
+    assert_ne!(
+        measured[0]["args"]["file_name"],
+        measured[1]["args"]["file_name"]
+    );
+    assert_eq!(measured[0]["args"]["expected_sha256"], f.audio.sha256);
+    assert_eq!(measured[1]["args"]["expected_sha256"], f.audio.sha256);
+    let commands: Vec<_> = calls
+        .iter()
+        .map(|call| call["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        commands,
+        match route {
+            Route::Single => vec![
+                "driver.audio-analysis.artifact.measure",
+                "driver.mlt-video.frames.encode",
+                "driver.mlt-video.av.mux",
+                "driver.audio-analysis.artifact.measure"
+            ],
+            Route::Multi => vec![
+                "driver.audio-analysis.artifact.measure",
+                "driver.mlt-video.av.mux",
+                "driver.audio-analysis.artifact.measure"
+            ],
+        }
+    );
+    let mux = calls
+        .iter()
+        .find(|call| call["command"] == "driver.mlt-video.av.mux")
+        .unwrap();
+    assert_eq!(mux["args"]["audio_sha256"], f.audio.sha256);
+    let before = f.service.production_receipts(f.project.id, 100).unwrap();
+    let reopened = StudioService::open(&f.database).unwrap();
+    let current = ProductionCoordinator::new(reopened.clone(), f.connection.clone()).unwrap();
+    proof.verify_current(&current).unwrap();
+    assert_eq!(f.calls(), calls);
+    assert_eq!(
+        reopened.production_receipts(f.project.id, 100).unwrap(),
+        before
+    );
+    assert_eq!(reopened.project(f.project.id).unwrap(), f.project);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn measured_single_saved_semantic_mix_uses_actual_coordinator_two_phase_handoff() {
+    measured_succeeds(
+        &Fixture::with_semantic_sfx(Route::Single, true, 33, true),
+        Route::Single,
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn measured_multisegment_saved_semantic_mix_uses_actual_coordinator_two_phase_handoff() {
+    measured_succeeds(
+        &Fixture::with_semantic_sfx(Route::Multi, true, 33, true),
+        Route::Multi,
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn measured_voice_only_both_coordinators_preserve_original_wav_without_mix_assets() {
+    for route in [Route::Single, Route::Multi] {
+        let fixture = Fixture::new(route, false, 33);
+        assert_eq!(fixture.project.assets.len(), 1);
+        assert!(
+            fixture
+                .project
+                .production_design
+                .delivery_recipes
+                .is_empty()
+        );
+        measured_succeeds(&fixture, route).await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn measured_consumers_reject_substituted_pcm_and_wrong_clock_before_any_provider() {
+    for route in [Route::Single, Route::Multi] {
+        for wrong_clock in [false, true] {
+            let mut fixture = Fixture::new(route, true, if wrong_clock { 66 } else { 33 });
+            if !wrong_clock {
+                fixture.substitute(&wav(2_000));
+            }
+            let before = snapshot(&fixture.connection.output_root);
+            let receipts = fixture
+                .service
+                .production_receipts(fixture.project.id, 100)
+                .unwrap();
+            assert_eq!(
+                measured_result(&fixture, route).await.err().unwrap().code,
+                ErrorCode::StaleReference
+            );
+            assert!(fixture.calls().is_empty());
+            assert_eq!(snapshot(&fixture.connection.output_root), before);
+            assert_eq!(
+                fixture
+                    .service
+                    .production_receipts(fixture.project.id, 100)
+                    .unwrap(),
+                receipts
+            );
+            fixture.assert_source_and_receipts_reopen();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn profile_targets_reject_both_unmeasured_producers_before_dispatch_and_preserve_journal() {
+    for route in [Route::Single, Route::Multi] {
+        for saved in [false, true] {
+            let fixture = Fixture::with_audio_targets(
+                route,
+                saved,
+                33,
+                saved,
+                Some(DeliveryAudioTargets {
+                    target_lufs: Some(-23.0),
+                    target_true_peak_dbtp: Some(-1.0),
+                }),
+            );
+            rejects(&fixture, route, ErrorCode::Unsupported,
+                "Delivery audio targets require the measured native master route and final decoded PCM16 QC").await;
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn targeted_voice_only_and_semantic_mix_both_coordinators_use_final_qc_and_reopen_without_dispatch()
+ {
+    use motionwright_native::production::DeliveryAudioQcStatus;
+    for route in [Route::Single, Route::Multi] {
+        for saved in [false, true] {
+            let targets = DeliveryAudioTargets {
+                target_lufs: Some(-23.0),
+                target_true_peak_dbtp: Some(-1.0),
+            };
+            let fixture =
+                Fixture::with_audio_targets(route, saved, 33, saved, Some(targets.clone()));
+            if !saved {
+                assert_eq!(fixture.project.assets.len(), 1);
+                assert!(
+                    fixture.project.production_design.delivery_recipes
+                        [&fixture.project.deliverables[0].id]
+                        .original_mix
+                        .is_none()
+                );
+            }
+            let proof = measured_result(&fixture, route).await.unwrap();
+            assert_eq!(
+                proof.delivery_audio_qc().status(),
+                DeliveryAudioQcStatus::WithinTargets
+            );
+            assert_eq!(proof.delivery_audio_qc().targets(), Some(&targets));
+            assert_eq!(proof.source().loudness().frames, u64::from(AUDIO_FRAMES));
+            assert_eq!(proof.decoded().loudness().frames, u64::from(AUDIO_FRAMES));
+            let calls = fixture.calls();
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|call| call["command"] == "driver.audio-analysis.artifact.measure")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|call| call["command"] == "driver.mlt-video.av.mux")
+                    .count(),
+                1
+            );
+            let mux = calls
+                .iter()
+                .find(|call| call["command"] == "driver.mlt-video.av.mux")
+                .unwrap();
+            assert_eq!(mux["args"]["audio_sha256"], fixture.audio.sha256);
+            let receipts = fixture
+                .service
+                .production_receipts(fixture.project.id, 100)
+                .unwrap();
+            let reopened = StudioService::open(&fixture.database).unwrap();
+            let current =
+                ProductionCoordinator::new(reopened.clone(), fixture.connection.clone()).unwrap();
+            proof.verify_current(&current).unwrap();
+            assert_eq!(fixture.calls(), calls);
+            assert_eq!(
+                reopened
+                    .production_receipts(fixture.project.id, 100)
+                    .unwrap(),
+                receipts
+            );
+            assert_eq!(
+                reopened.project(fixture.project.id).unwrap(),
+                fixture.project
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn final_qc_outside_or_unavailable_is_preserved_despite_passing_source_measurement() {
+    use motionwright_native::production::DeliveryAudioQcStatus::{OutsideTargets, Unavailable};
+    for route in [Route::Single, Route::Multi] {
+        for (values, expected) in [
+            (
+                json!({"integrated_lufs_milli": -22799, "true_peak_millidbtp": -1000}),
+                OutsideTargets,
+            ),
+            (
+                json!({"integrated_lufs_milli": -23000, "true_peak_millidbtp": -999}),
+                OutsideTargets,
+            ),
+            (
+                json!({"integrated_lufs_milli": null, "true_peak_millidbtp": -1000}),
+                Unavailable,
+            ),
+        ] {
+            let fixture = Fixture::with_audio_targets(
+                route,
+                false,
+                33,
+                false,
+                Some(DeliveryAudioTargets {
+                    target_lufs: Some(-23.0),
+                    target_true_peak_dbtp: Some(-1.0),
+                }),
+            );
+            fs::write(
+                fixture.root.join("synthetic-final-meter-values.json"),
+                serde_json::to_vec(&values).unwrap(),
+            )
+            .unwrap();
+            let proof = measured_result(&fixture, route).await.unwrap();
+            assert_eq!(
+                proof.source().loudness().integrated_lufs_milli,
+                Some(-23_000)
+            );
+            assert_eq!(proof.source().loudness().true_peak_millidbtp, Some(-9_000));
+            assert_eq!(proof.delivery_audio_qc().status(), expected);
+            let calls = fixture.calls();
+            let receipts = fixture
+                .service
+                .production_receipts(fixture.project.id, 100)
+                .unwrap();
+            let reopened = StudioService::open(&fixture.database).unwrap();
+            let coordinator =
+                ProductionCoordinator::new(reopened.clone(), fixture.connection.clone()).unwrap();
+            proof.verify_current(&coordinator).unwrap();
+            assert_eq!(fixture.calls(), calls);
+            assert_eq!(
+                reopened
+                    .production_receipts(fixture.project.id, 100)
+                    .unwrap(),
+                receipts
+            );
+            assert_eq!(
+                reopened.project(fixture.project.id).unwrap(),
+                fixture.project
+            );
+        }
+    }
 }

@@ -86,7 +86,26 @@ fn wav_u32(bytes: &[u8]) -> u32 {
 
 /// Inspect the complete bounded WAV chunk index. Voice metadata is not a
 /// substitute for sample rate/channels/frame count declared by the file.
-fn wave_sample_frames(file: &mut File, file_len: u64) -> NativeResult<u64> {
+fn wave_sample_frames<R: Read + Seek>(file: &mut R, file_len: u64) -> NativeResult<u64> {
+    wave_sample_frames_with_format(file, file_len, false)
+}
+
+/// Reuse the existing complete RIFF index for the actual final decoded file.
+/// This inspects its representation and clock; it is not another decoder/meter.
+pub(crate) fn decoded_pcm16_sample_frames(bytes: &[u8]) -> NativeResult<u64> {
+    if !(44..=MAX_WAV_BYTES).contains(&(bytes.len() as u64)) {
+        return Err(unsupported(
+            "Decoded PCM16 WAV is outside the bounded native file policy",
+        ));
+    }
+    wave_sample_frames_with_format(&mut std::io::Cursor::new(bytes), bytes.len() as u64, true)
+}
+
+fn wave_sample_frames_with_format<R: Read + Seek>(
+    file: &mut R,
+    file_len: u64,
+    require_pcm16: bool,
+) -> NativeResult<u64> {
     file.rewind()
         .map_err(|_| stale("Imported WAV cannot be rewound"))?;
     let mut riff = [0_u8; 12];
@@ -141,14 +160,17 @@ fn wave_sample_frames(file: &mut File, file_len: u64) -> NativeResult<u64> {
             let align = wav_u16(&fmt[12..14]);
             let bits = wav_u16(&fmt[14..16]);
             if !matches!((kind, bits), (1, 16 | 24 | 32) | (3, 32))
+                || (require_pcm16 && (kind != 1 || bits != 16))
                 || channels != 2
                 || hz != 48_000
                 || align != channels * bits / 8
                 || byte_rate != hz * u32::from(align)
             {
-                return Err(unsupported(
-                    "Measured WAV content is not 48 kHz stereo PCM16/24/32 or float32",
-                ));
+                return Err(unsupported(if require_pcm16 {
+                    "Final decoded WAV content is not exact 48 kHz stereo PCM16"
+                } else {
+                    "Measured WAV content is not 48 kHz stereo PCM16/24/32 or float32"
+                }));
             }
             format = Some(align);
         } else if &header[..4] == b"data" {
@@ -429,7 +451,11 @@ fn preflight_audio_source(
         .get(&deliverable_id)
         .and_then(|recipe| recipe.original_mix.as_ref())
         .is_some();
-    if has_saved_mix != saved_mix.is_some() || !project.audio.sfx_cues.is_empty() {
+    let consumes_sfx = !project
+        .validated_sfx_schedule_for_profile(deliverable_id)
+        .map_err(|error| invalid(error.to_string()))?
+        .is_empty();
+    if has_saved_mix != saved_mix.is_some() || (consumes_sfx && saved_mix.is_none()) {
         return Err(unsupported(
             "Native master cannot omit a saved mix or replace authored semantic SFX with a voice-only WAV",
         ));

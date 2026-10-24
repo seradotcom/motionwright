@@ -1,6 +1,6 @@
 """Pure source custody and private editable receiver negative tests, no bpy.
 
-All temporary bytes are created under E:/Projects/motionwright/...
+Temporary bytes use isolated test directories.
 These tests do not claim Blender imported an original GLB or reopened .blend.
 """
 from __future__ import annotations

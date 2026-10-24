@@ -71,6 +71,7 @@ fn fixture(service: &StudioService, folder: &Path) -> (Project, SemanticSfxCue, 
         gain_milli_db: -12000,
         attack_frames: 2,
         release_frames: 8,
+        tail_policy: Default::default(),
         original_source_attestation: "I generated this original test WAV from numeric samples"
             .into(),
     };
@@ -218,5 +219,151 @@ fn stale_or_unowned_sfx_does_not_mutate_project_journal() {
                 &Change::UpsertSemanticSfx { cue }
             )
             .is_err()
+    );
+}
+
+#[test]
+fn opt_in_tail_reopens_with_exact_wav_and_invalid_edits_leave_the_durable_journal_unchanged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("cross-cut-sfx.sqlite3");
+    let service = StudioService::open(&db).unwrap();
+    let (mut project, mut cue, source_bytes) = fixture(&service, tmp.path());
+    for (key, change) in [
+        (
+            "short-source-scene",
+            Change::SetSceneDuration {
+                scene_id: cue.scene_id,
+                duration: motionwright_domain::RationalTime::new(1, 1).unwrap(),
+            },
+        ),
+        (
+            "tail-room",
+            Change::AddScene {
+                name: "Tail continuation".into(),
+                objective: "Complete source, no trim".into(),
+                duration_seconds: 1,
+            },
+        ),
+    ] {
+        project = service
+            .apply(project.id, &project.stamp(), key, &change)
+            .unwrap()
+            .project;
+    }
+    cue.offset_frames = 15;
+    cue.tail_policy = motionwright_domain::SfxTailPolicy::ContinueAcrossCuts;
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "save-cross-cut-tail",
+            &Change::UpsertSemanticSfx { cue: cue.clone() },
+        )
+        .unwrap()
+        .project;
+    let backup = service.export_project(project.id).unwrap();
+    drop(service);
+    let reopened = StudioService::open(&db).unwrap();
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+    assert_eq!(
+        reopened
+            .verified_semantic_sfx_wav(
+                project.id,
+                &project.stamp(),
+                cue.source_asset_id,
+                &cue.source_sha256,
+            )
+            .unwrap(),
+        source_bytes
+    );
+    let schedule = project
+        .validated_sfx_schedule_for_profile(project.deliverables[0].id)
+        .unwrap();
+    assert_eq!(
+        (schedule[0].first_sample, schedule[0].sample_count),
+        (24_000, 48_000)
+    );
+    let mut cut = project.deliverables[0].clone();
+    cut.included_scene_ids = vec![cue.scene_id];
+    for (key, change) in [
+        (
+            "bad-tail-reorder",
+            Change::MoveScene {
+                scene_id: cue.scene_id,
+                to_index: 1,
+            },
+        ),
+        (
+            "bad-tail-retime",
+            Change::SetSceneDuration {
+                scene_id: project.scenes[1].id,
+                duration: motionwright_domain::RationalTime::new(1, 3).unwrap(),
+            },
+        ),
+        ("bad-tail-cut", Change::UpsertDeliverable { profile: cut }),
+        (
+            "bad-tail-remove-source",
+            Change::RemoveAsset {
+                asset_id: cue.source_asset_id,
+            },
+        ),
+    ] {
+        assert!(
+            reopened
+                .apply(project.id, &project.stamp(), key, &change)
+                .is_err()
+        );
+        let after = reopened.export_project(project.id).unwrap();
+        assert_eq!(after.project, backup.project);
+        assert_eq!(after.events, backup.events);
+        assert_eq!(after.payload_sha256, backup.payload_sha256);
+    }
+    drop(reopened);
+    let final_read = StudioService::open(&db).unwrap();
+    assert_eq!(final_read.project(project.id).unwrap(), project);
+    let bundle = tmp.path().join("preserved-tail-bundle");
+    final_read
+        .export_project_bundle(project.id, &bundle)
+        .unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let restored_path = destination.path().join("imported.sqlite3");
+    let restored = StudioService::open(&restored_path).unwrap();
+    restored.inspect_project_bundle(&bundle).unwrap();
+    let imported = restored.import_project_bundle(&bundle).unwrap();
+    assert_ne!(imported.generation, project.generation);
+    assert_eq!(imported.audio.sfx_cues, project.audio.sfx_cues);
+    assert_eq!(imported.assets, project.assets);
+    assert_eq!(
+        restored.history(imported.id, 0, 256).unwrap(),
+        backup.events
+    );
+    assert_eq!(
+        restored
+            .verified_semantic_sfx_wav(
+                imported.id,
+                &imported.stamp(),
+                cue.source_asset_id,
+                &cue.source_sha256,
+            )
+            .unwrap(),
+        source_bytes
+    );
+    assert!(
+        restored
+            .verified_semantic_sfx_wav(
+                imported.id,
+                &project.stamp(),
+                cue.source_asset_id,
+                &cue.source_sha256,
+            )
+            .is_err()
+    );
+    drop(restored);
+    assert_eq!(
+        StudioService::open(&restored_path)
+            .unwrap()
+            .project(imported.id)
+            .unwrap(),
+        imported
     );
 }

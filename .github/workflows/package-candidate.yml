@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Candidate packages, Windows contracts, or isolated NSIS source, compiler and lifecycle checks
+        description: Candidate packages or selected Windows, NSIS, distribution and Linux first-use verification
         required: true
         type: choice
         default: all
@@ -14,8 +14,11 @@ on:
           - windows_contracts
           - windows_installed
           - nsis_source
+          - distribution_source
           - nsis_compile
           - nsis_lifecycle
+          - linux_first_use_source
+          - linux_first_use
   pull_request:
     paths:
       - "apps/desktop/**"
@@ -23,6 +26,13 @@ on:
       - "crates/**"
       - "tooling/package_receipt.py"
       - "tooling/nsis_owned_files.py"
+      - "tooling/distribution_build_record.py"
+      - "tooling/tests/test_distribution_build_record.py"
+      - "tooling/source_lock_admission.py"
+      - "tooling/tests/test_source_lock_admission.py"
+      - "tooling/public_surface_policy.py"
+      - "tooling/tests/test_public_surface_policy.py"
+      - "tooling/v01_release_readiness.py"
       - "tooling/tests/test_nsis_owned_files.py"
       - "tooling/windows_installer_lifecycle.py"
       - "tooling/tests/test_windows_installer_lifecycle.py"
@@ -42,6 +52,12 @@ on:
       - "tooling/windows_cold_start.py"
       - "tooling/windows_first_project_ui.ps1"
       - "tooling/ci_test_runner.py"
+      - "tooling/ci_suites/**"
+      - "tooling/tests/test_ci_nsis_source_selection.py"
+      - "tooling/ci_linux_first_use.py"
+      - "tooling/tests/test_ci_linux_first_use.py"
+      - "tooling/linux_first_use_accessible.py"
+      - "tooling/tests/test_linux_first_use_accessible.py"
       - "tooling/verify_powershell_exit_guard.py"
       - "tooling/tests/test_windows_cold_start.py"
       - "tooling/linux_cold_start.py"
@@ -54,6 +70,7 @@ on:
       - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "SOURCE_LOCK.json"
       - ".github/workflows/package-candidate.yml"
   push:
@@ -64,6 +81,13 @@ on:
       - "crates/**"
       - "tooling/package_receipt.py"
       - "tooling/nsis_owned_files.py"
+      - "tooling/distribution_build_record.py"
+      - "tooling/tests/test_distribution_build_record.py"
+      - "tooling/source_lock_admission.py"
+      - "tooling/tests/test_source_lock_admission.py"
+      - "tooling/public_surface_policy.py"
+      - "tooling/tests/test_public_surface_policy.py"
+      - "tooling/v01_release_readiness.py"
       - "tooling/tests/test_nsis_owned_files.py"
       - "tooling/windows_installer_lifecycle.py"
       - "tooling/tests/test_windows_installer_lifecycle.py"
@@ -83,6 +107,12 @@ on:
       - "tooling/windows_cold_start.py"
       - "tooling/windows_first_project_ui.ps1"
       - "tooling/ci_test_runner.py"
+      - "tooling/ci_suites/**"
+      - "tooling/tests/test_ci_nsis_source_selection.py"
+      - "tooling/ci_linux_first_use.py"
+      - "tooling/tests/test_ci_linux_first_use.py"
+      - "tooling/linux_first_use_accessible.py"
+      - "tooling/tests/test_linux_first_use_accessible.py"
       - "tooling/verify_powershell_exit_guard.py"
       - "tooling/tests/test_windows_cold_start.py"
       - "tooling/linux_cold_start.py"
@@ -95,6 +125,7 @@ on:
       - "tooling/tests/test_candidate_smoke.py"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "SOURCE_LOCK.json"
       - ".github/workflows/package-candidate.yml"
 
@@ -119,83 +150,27 @@ jobs:
           python3 tooling/source_policy.py
           python3 tooling/acceptance_policy.py
           python3 tooling/creative_status_policy.py
+          python3 tooling/public_surface_policy.py
       - name: Candidate receipt and installed-package smoke policy tests
         run: |
           python3 -m unittest tooling/tests/test_package_receipt.py tooling/tests/test_candidate_receipt_source.py tooling/tests/test_candidate_attestation_input.py tooling/tests/test_owner_candidate_provenance.py
           python3 -m unittest tooling/tests/test_candidate_smoke.py tooling/tests/test_windows_cold_start.py tooling/tests/test_linux_cold_start.py tooling/tests/test_linux_gui_readiness.py tooling/tests/test_storage_schema_contract.py tooling/tests/test_source_checkout_observation.py
 
-      - name: Require all seventeen NSIS helper tests on Linux without skips
+      - name: Linux first-use gate control tests in both import modes
+        run: |
+          python3 -B -E -s -m unittest discover -s tooling/tests -p test_ci_linux_first_use.py -v
+          python3 -B -E -s -m unittest tooling.tests.test_ci_linux_first_use -v
+
+      - name: Require closed selected source contracts through both entrypoints on Linux
+        env:
+          SOURCE_CONTRACT_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source' && 'distribution_source' || 'nsis_source' }}
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-          import unittest
-
-          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
-          sys.path.insert(0, str(ROOT / "tooling"))
-          from package_receipt import verified_artifact
-          from release_manifest import _checkout
-
-          SOURCE = os.environ["GITHUB_SHA"]
-          PATHS = ("tooling/nsis_owned_files.py", "tooling/tests/test_nsis_owned_files.py",
-                   "apps/desktop/src-tauri/windows/installer.nsi",
-                   "apps/desktop/src-tauri/windows/uninstall-ownership.nsh")
-          def source():
-              _checkout(ROOT, SOURCE)
-              subprocess.run(["git", "ls-files", "--error-unmatch", "--", *PATHS],
-                             cwd=ROOT, check=True, capture_output=True, timeout=10)
-              files = {}
-              for path in PATHS:
-                  observed, size, digest = verified_artifact(ROOT, ROOT / path)
-                  files[path] = {"bytes": size, "sha256": digest}
-              tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, check=True,
-                                    capture_output=True, text=True).stdout.strip()
-              return {"checkout": SOURCE, "tree": tree, "files": files}
-
-          before = source()
-          runtime = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-linux-source-tests"
-          runtime.mkdir()
-          os.environ["MOTIONWRIGHT_TEST_ROOT"] = str(runtime)
-          suite = unittest.defaultTestLoader.discover("tooling/tests", pattern="test_nsis_owned_files.py")
-          def cases(node):
-              for item in node:
-                  if isinstance(item, unittest.TestSuite):
-                      yield from cases(item)
-                  else:
-                      yield item.id()
-          ids = list(cases(suite))
-          if len(ids) != 17 or len(set(ids)) != 17:
-              raise RuntimeError("expected_exactly_seventeen_distinct_nsis_source_tests")
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          after = source()
-          record = {
-              "schema": "motionwright.nsis-source-tests/1", "platform": sys.platform,
-              "source_before": before, "source_after": after, "test_ids": ids,
-              "tests": result.testsRun, "failures": len(result.failures), "errors": len(result.errors),
-              "skips": [{"id": case.id(), "reason": reason} for case, reason in result.skipped],
-              "unexpected_successes": len(result.unexpectedSuccesses),
-              "expected_failures": len(result.expectedFailures),
-              "nsis_compilation": "NOT_RUN", "installer_execution": "NOT_RUN",
-              "human_install_acceptance": "NOT_RUN",
-          }
-          output = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-linux-source-tests/receipt.json"
-          output.parent.mkdir(exist_ok=True)
-          with output.open("x", encoding="utf-8", newline="\n") as stream:
-              json.dump(record, stream, indent=2, sort_keys=True)
-              stream.write("\n")
-          ok = (sys.platform.startswith("linux") and before == after and result.wasSuccessful()
-                and result.testsRun == 17 and not result.skipped
-                and not result.expectedFailures and not result.unexpectedSuccesses)
-          print("nsis-linux-source-tests=" + ("PASS" if ok else "FAIL") + " required=17 skips=0")
-          raise SystemExit(0 if ok else 1)
-          PY
-      - name: Require forty lifecycle contracts through both existing runner entrypoints
+          python3 -B -E -s -m unittest tooling.tests.test_ci_nsis_source_selection -v
+          python3 -B -E -s -m tooling.ci_suites.nsis_source_selection --scope "$SOURCE_CONTRACT_SCOPE" --repo "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/mw-nsis-linux-source-tests" --expected-source "$GITHUB_SHA"
+      - name: Require sixty-three lifecycle contracts through both existing runner entrypoints
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'
         shell: bash
         run: |
           set -euo pipefail
@@ -232,7 +207,7 @@ jobs:
           classes = [item for item in tree.body if isinstance(item, ast.ClassDef)
                      and any(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
                              for method in item.body)]
-          expected_classes = {"WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 8}
+          expected_classes = {"WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 11}
           require({item.name for item in classes} == set(expected_classes)
                   and len(classes) == len(expected_classes), "lifecycle_contract_class_count")
           methods = [f"{item.name}.{method.name}" for item in classes for method in item.body
@@ -242,14 +217,16 @@ jobs:
                          and item.name.startswith("test_")]
           require(all(sum(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
                           for method in item.body) == expected_classes[item.name] for item in classes)
-                  and len(methods) == len(set(methods)) == len(all_methods) == 60
+                  and len(methods) == len(set(methods)) == len(all_methods) == 63
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
           digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
           entries = ["discovery:test_windows_installer_lifecycle.py",
                      "dotted:tooling.tests.test_windows_installer_lifecycle"]
-          require(receipt.get("status") == "PASS" and receipt.get("exit_code") == 0
+          require(receipt.get("schema") == "motionwright.unittest-execution/1"
+                  and receipt.get("status") == "PASS" and type(receipt.get("exit_code")) is int
+                  and receipt["exit_code"] == 0
                   and receipt.get("require_complete") is True
                   and receipt.get("executed_source_sha") == SOURCE
                   and receipt.get("tree_sha") == before["tree"]
@@ -264,10 +241,11 @@ jobs:
           inventory = {}
           for index, step in enumerate(receipt["steps"]):
               counts = step.get("counts", {})
-              require(step.get("status") == "PASS" and step.get("exit_code") == 0
+              require(step.get("status") == "PASS" and type(step.get("exit_code")) is int
+                      and step["exit_code"] == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 60
-                      and type(counts.get("passed")) is int and counts["passed"] == 60
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 63
+                      and type(counts.get("passed")) is int and counts["passed"] == 63
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -279,7 +257,7 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
               expected = {f"{module}.{method}" for method in methods}
-              require(len(observed) == 60 and set(observed) == expected,
+              require(len(observed) == 63 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -288,27 +266,30 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 60, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 63, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
           PY
       - name: Retain exact lifecycle contract receipts
-        if: always()
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-nsis-lifecycle-contracts-linux
           path: ${{ runner.temp }}/motionwright-nsis-lifecycle-contracts/*
           if-no-files-found: warn
-      - name: Retain the exact Linux NSIS source-test result
+      - name: Retain the exact Linux selected source-test result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: motionwright-nsis-linux-source-tests
-          path: ${{ runner.temp }}/mw-nsis-linux-source-tests/receipt.json
-          if-no-files-found: warn
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source' && 'motionwright-distribution-linux-source-tests' || 'motionwright-nsis-linux-source-tests' }}
+          path: |
+            ${{ runner.temp }}/mw-nsis-linux-source-tests/*.json
+            ${{ runner.temp }}/mw-nsis-linux-source-tests/*.log
+          if-no-files-found: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source' && 'error' || 'warn' }}
 
   nsis-source-windows:
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
     needs: receipt-policy
     runs-on: windows-latest
     timeout-minutes: 10
@@ -321,80 +302,18 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13.16'
-      - name: Require all seventeen NSIS helper tests on Windows without skips
+      - name: Require closed selected source contracts through both entrypoints on Windows
+        env:
+          SOURCE_CONTRACT_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source' && 'distribution_source' || 'nsis_source' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          @'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-          import unittest
-
-          ROOT = Path(os.environ["GITHUB_WORKSPACE"])
-          sys.path.insert(0, str(ROOT / "tooling"))
-          from package_receipt import verified_artifact
-          from release_manifest import _checkout
-
-          SOURCE = os.environ["GITHUB_SHA"]
-          PATHS = ("tooling/nsis_owned_files.py", "tooling/tests/test_nsis_owned_files.py",
-                   "apps/desktop/src-tauri/windows/installer.nsi",
-                   "apps/desktop/src-tauri/windows/uninstall-ownership.nsh")
-          def source():
-              _checkout(ROOT, SOURCE)
-              subprocess.run(["git", "ls-files", "--error-unmatch", "--", *PATHS],
-                             cwd=ROOT, check=True, capture_output=True, timeout=10)
-              files = {}
-              for path in PATHS:
-                  observed, size, digest = verified_artifact(ROOT, ROOT / path)
-                  files[path] = {"bytes": size, "sha256": digest}
-              tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, check=True,
-                                    capture_output=True, text=True).stdout.strip()
-              return {"checkout": SOURCE, "tree": tree, "files": files}
-
-          before = source()
-          runtime = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-windows-source-tests"
-          runtime.mkdir()
-          os.environ["MOTIONWRIGHT_TEST_ROOT"] = str(runtime)
-          suite = unittest.defaultTestLoader.discover("tooling/tests", pattern="test_nsis_owned_files.py")
-          def cases(node):
-              for item in node:
-                  if isinstance(item, unittest.TestSuite):
-                      yield from cases(item)
-                  else:
-                      yield item.id()
-          ids = list(cases(suite))
-          if len(ids) != 17 or len(set(ids)) != 17:
-              raise RuntimeError("expected_exactly_seventeen_distinct_nsis_source_tests")
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          after = source()
-          record = {
-              "schema": "motionwright.nsis-source-tests/1", "platform": sys.platform,
-              "python_version": sys.version,
-              "source_before": before, "source_after": after, "test_ids": ids,
-              "tests": result.testsRun, "failures": len(result.failures), "errors": len(result.errors),
-              "skips": [{"id": case.id(), "reason": reason} for case, reason in result.skipped],
-              "unexpected_successes": len(result.unexpectedSuccesses),
-              "expected_failures": len(result.expectedFailures),
-              "nsis_compilation": "NOT_RUN", "installer_execution": "NOT_RUN",
-              "human_install_acceptance": "NOT_RUN",
-          }
-          output = Path(os.environ["RUNNER_TEMP"]) / "mw-nsis-windows-source-tests/receipt.json"
-          output.parent.mkdir(exist_ok=True)
-          with output.open("x", encoding="utf-8", newline="\n") as stream:
-              json.dump(record, stream, indent=2, sort_keys=True)
-              stream.write("\n")
-          ok = (sys.platform == "win32" and before == after and result.wasSuccessful()
-                and result.testsRun == 17 and not result.skipped
-                and not result.expectedFailures and not result.unexpectedSuccesses)
-          print("nsis-windows-source-tests=" + ("PASS" if ok else "FAIL") + " required=17 skips=0")
-          raise SystemExit(0 if ok else 1)
-          '@ | python -
-          if ($LASTEXITCODE -ne 0) { throw 'The Windows source-bound NSIS gate failed' }
-      - name: Require forty lifecycle contracts through both existing runner entrypoints
+          python -B -E -s -m unittest tooling.tests.test_ci_nsis_source_selection -v
+          if ($LASTEXITCODE -ne 0) { throw 'The source selection guards failed' }
+          python -B -E -s -m tooling.ci_suites.nsis_source_selection --scope "$env:SOURCE_CONTRACT_SCOPE" --repo "$env:GITHUB_WORKSPACE" --output "$env:RUNNER_TEMP/mw-nsis-windows-source-tests" --expected-source "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { throw 'The Windows selected source gate failed' }
+      - name: Require sixty-three lifecycle contracts through both existing runner entrypoints
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -431,7 +350,7 @@ jobs:
           classes = [item for item in tree.body if isinstance(item, ast.ClassDef)
                      and any(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
                              for method in item.body)]
-          expected_classes = {"WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 8}
+          expected_classes = {"WindowsLifecycleTests": 52, "StorageCohortLifecycleTests": 11}
           require({item.name for item in classes} == set(expected_classes)
                   and len(classes) == len(expected_classes), "lifecycle_contract_class_count")
           methods = [f"{item.name}.{method.name}" for item in classes for method in item.body
@@ -441,14 +360,16 @@ jobs:
                          and item.name.startswith("test_")]
           require(all(sum(isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
                           for method in item.body) == expected_classes[item.name] for item in classes)
-                  and len(methods) == len(set(methods)) == len(all_methods) == 60
+                  and len(methods) == len(set(methods)) == len(all_methods) == 63
                   and not any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and item.name == "load_tests" for item in ast.walk(tree)),
                   "lifecycle_contract_inventory_changed")
           digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
           entries = ["discovery:test_windows_installer_lifecycle.py",
                      "dotted:tooling.tests.test_windows_installer_lifecycle"]
-          require(receipt.get("status") == "PASS" and receipt.get("exit_code") == 0
+          require(receipt.get("schema") == "motionwright.unittest-execution/1"
+                  and receipt.get("status") == "PASS" and type(receipt.get("exit_code")) is int
+                  and receipt["exit_code"] == 0
                   and receipt.get("require_complete") is True
                   and receipt.get("executed_source_sha") == SOURCE
                   and receipt.get("tree_sha") == before["tree"]
@@ -463,10 +384,11 @@ jobs:
           inventory = {}
           for index, step in enumerate(receipt["steps"]):
               counts = step.get("counts", {})
-              require(step.get("status") == "PASS" and step.get("exit_code") == 0
+              require(step.get("status") == "PASS" and type(step.get("exit_code")) is int
+                      and step["exit_code"] == 0
                       and counts.get("terminal_status") == "OK"
-                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 60
-                      and type(counts.get("passed")) is int and counts["passed"] == 60
+                      and type(counts.get("tests_run")) is int and counts["tests_run"] == 63
+                      and type(counts.get("passed")) is int and counts["passed"] == 63
                       and all(type(counts.get(key)) is int and counts[key] == 0 for key in
                               ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                       "lifecycle_contract_omission")
@@ -478,7 +400,7 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", raw.replace("\r\n", "\n"))
               module = "test_windows_installer_lifecycle" if index == 0 else "tooling.tests.test_windows_installer_lifecycle"
               expected = {f"{module}.{method}" for method in methods}
-              require(len(observed) == 60 and set(observed) == expected,
+              require(len(observed) == 63 and set(observed) == expected,
                       "lifecycle_contract_original_names")
               inventory[step["entry_point"]] = sorted(observed)
           after = source_observation(ROOT, SOURCE)
@@ -487,29 +409,216 @@ jobs:
               "schema": "motionwright.windows-lifecycle-contracts/1", "platform": sys.platform,
               "source_before": before, "source_after": after, "receipt_sha256": digest(report),
               "github": receipt["github"], "entrypoint_methods": inventory,
-              "unique_controls": 60, "entrypoints": 2, "skipped": 0,
+              "unique_controls": 63, "entrypoints": 2, "skipped": 0,
               "scope": "OFFLINE_CONTRACTS_AND_TEMPORARY_SQLITE_ONLY",
               "PE_native_version_observation": "NOT_RUN", "installer_execution": "NOT_RUN",
               "human_acceptance": "NOT_RUN", "release_published": False})
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'The source-bound NSIS lifecycle gate failed' }
       - name: Retain exact lifecycle contract receipts
-        if: always()
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-nsis-lifecycle-contracts-windows
           path: ${{ runner.temp }}/motionwright-nsis-lifecycle-contracts/*
           if-no-files-found: warn
-      - name: Retain the exact Windows NSIS source-test result
+      - name: Retain the exact Windows selected source-test result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: motionwright-nsis-windows-source-tests
-          path: ${{ runner.temp }}/mw-nsis-windows-source-tests/receipt.json
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source' && 'motionwright-distribution-windows-source-tests' || 'motionwright-nsis-windows-source-tests' }}
+          path: |
+            ${{ runner.temp }}/mw-nsis-windows-source-tests/*.json
+            ${{ runner.temp }}/mw-nsis-windows-source-tests/*.log
+          if-no-files-found: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source' && 'error' || 'warn' }}
+
+  linux-first-use-source:
+    if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'linux_first_use_source' || inputs.verification_scope == 'linux_first_use')
+    needs: receipt-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Exact Linux source roster in discovery and dotted module modes
+        shell: bash
+        env:
+          MW_CI_JOB_TEST_TMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -B -E -s tooling/ci_linux_first_use.py source \
+            --repo "$GITHUB_WORKSPACE" --source "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/linux-first-use-source"
+      - name: Preserve exact source execution originals on every terminal
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-first-use-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/linux-first-use-source/
+          if-no-files-found: error
+          retention-days: 30
+
+  linux-first-use-installed:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_first_use'
+    needs: [receipt-policy, linux-first-use-source]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-first-use-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/linux-first-use-source-admitted
+      - name: Reserve one exact run and source before build or installed effects
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -B -E -s tooling/ci_linux_first_use.py reserve \
+            --repo "$GITHUB_WORKSPACE" --source "$GITHUB_SHA" \
+            --namespace "$RUNNER_TEMP/linux-first-use-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_SHA" \
+            --source-evidence "$RUNNER_TEMP/linux-first-use-source-admitted"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: false
+      - name: Install Linux desktop bundling and system Python AT-SPI prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2 xvfb x11-utils dbus-x11 python3-gi gir1.2-atspi-2.0 at-spi2-core
+      - name: Install locked Studio and Tauri CLI dependencies
+        run: npm --prefix apps/studio ci --no-audit --no-fund
+      - name: Build unsigned Linux candidate bundles
+        run: |
+          cd apps/desktop
+          npm --prefix ../studio exec -- tauri build --bundles deb,appimage
+      - name: Verify actual Linux candidate compiled the reviewed local glib source
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence
+          /usr/bin/python3 -B -E -s tooling/v01_glib_product_admission.py --output ci-evidence/glib-patched-source.json
+          cargo tree --locked -p motionwright-desktop --target x86_64-unknown-linux-gnu -i glib > ci-evidence/glib-compiled-owner-tree.txt
+          grep -F 'vendor/glib-0.18.5' ci-evidence/glib-compiled-owner-tree.txt >/dev/null
+          count="$(find target/release/deps -maxdepth 1 -type f -name 'libglib-*.rlib' | wc -l)"
+          test "$count" -ge 1
+          echo 'v01-glib-product-candidate=LOCAL_BACKPORT_COMPILED linux_installed_gui=NOT_YET_VERIFIED'
+      - name: Record exact Linux candidate artifacts
+        run: |
+          appimage_count="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | wc -l)"
+          deb_count="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' | wc -l)"
+          test "$appimage_count" -eq 1
+          test "$deb_count" -eq 1
+          appimage="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print)"
+          deb="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print)"
+          /usr/bin/python3 -B -E -s tooling/package_receipt.py \
+            --git-sha "$GITHUB_SHA" \
+            --platform linux \
+            --arch x86_64 \
+            --artifact "$appimage" \
+            --artifact "$deb" \
+            --output ci-evidence/linux-candidate.json
+      - name: One accessible first-use attempt and a read-only cold relaunch
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          deb="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          appimage="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          work="$RUNNER_TEMP/linux-first-use-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_SHA"
+          test -f "$work/reservation.json"
+          mkdir "$work/deb" "$work/appimage"
+          dpkg-deb --extract "$deb" "$work/deb"
+          mapfile -t deb_bins < <(find "$work/deb/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
+          mapfile -t deb_desktop < <(find "$work/deb/usr/share/applications" -maxdepth 1 -type f -name '*.desktop')
+          test "${#deb_bins[@]}" -eq 1
+          test "${#deb_desktop[@]}" -eq 1
+          /usr/bin/python3 -B -E -s tooling/candidate_smoke.py \
+            --candidate-receipt ci-evidence/linux-candidate.json \
+            --expected-source-sha "$GITHUB_SHA" \
+            --kind deb --method deb_extract \
+            --artifact "$deb" --installed-binary "${deb_bins[0]}" \
+            --linux-desktop-entry "${deb_desktop[0]}" \
+            --output ci-evidence/linux-deb-smoke.json
+          echo "Debian extracted program and desktop metadata validated"
+          chmod u+x "$appimage"
+          echo "Extracting AppImage to disposable runner directory"
+          if ! (cd "$work/appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null); then
+            echo "::error::AppImage extraction failed (no FUSE or sandbox bypass was attempted)"
+            exit 1
+          fi
+          extracted="$work/appimage/squashfs-root"
+          if ! test -x "$extracted/AppRun"; then
+            echo "::error::AppImage extraction contains no executable AppRun"
+            find "$extracted" -maxdepth 2 -name 'AppRun' -o -name '*.desktop'
+            exit 1
+          fi
+          mapfile -t image_bins < <(find "$extracted/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
+          mapfile -t image_desktop < <(find "$extracted" -maxdepth 1 -name '*.desktop')
+          if [ "${#image_bins[@]}" -ne 1 ]; then
+            echo "::error::Expected one Motionwright binary in extracted AppImage, found ${#image_bins[@]}"
+            find "$extracted/usr/bin" -maxdepth 1 -type f -printf '%f\n'
+            exit 1
+          fi
+          if [ "${#image_desktop[@]}" -ne 1 ]; then
+            echo "::error::Expected one AppImage desktop entry, found ${#image_desktop[@]}"
+            find "$extracted" -maxdepth 1 -name '*.desktop' -printf '%f\n'
+            exit 1
+          fi
+          echo "One accessible creation attempt; second real window has no interaction"
+          xvfb-run -a -s "-screen 0 1440x940x24" \
+            dbus-run-session -- /usr/bin/python3 -B -E -s tooling/ci_linux_first_use.py installed \
+              --repo "$GITHUB_WORKSPACE" --source "$GITHUB_SHA" --namespace "$work" \
+              --app-run "$extracted/AppRun" --binary "${image_bins[0]}" \
+              --artifact "$appimage" --candidate-receipt ci-evidence/linux-candidate.json
+          /usr/bin/python3 -B -E -s tooling/candidate_smoke.py \
+            --candidate-receipt ci-evidence/linux-candidate.json \
+            --expected-source-sha "$GITHUB_SHA" \
+            --kind appimage --method appimage_extract \
+            --artifact "$appimage" --installed-binary "${image_bins[0]}" \
+            --linux-desktop-entry "${image_desktop[0]}" \
+            --linux-gui-probe "$work/window.json" \
+            --output ci-evidence/linux-appimage-smoke.json
+      - name: Preserve original first-use evidence, failure journals and source-bound SQLite
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-first-use-installed-originals-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}/*.json
+            ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}/helper.stdout
+            ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}/helper.stderr
+            ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}/isolated-gui/app-run*.log
+            ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}/isolated-gui/first-use-atspi/
+            ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}/isolated-gui/data/motionwright.sqlite3*
+            ci-evidence/linux-candidate.json
+            ci-evidence/linux-deb-smoke.json
+            ci-evidence/linux-appimage-smoke.json
+            ci-evidence/glib-patched-source.json
+            ci-evidence/glib-compiled-owner-tree.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve exact unsigned package payloads for the installed attempt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-first-use-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: |
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/deb/*.deb
           if-no-files-found: warn
+          retention-days: 30
 
   linux:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
     needs: receipt-policy
     runs-on: ubuntu-24.04
     steps:
@@ -677,7 +786,7 @@ jobs:
           if-no-files-found: error
 
   windows-contracts:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
     runs-on: windows-latest
     timeout-minutes: 10
     env:
@@ -752,11 +861,12 @@ jobs:
           dynamic_loaders = [node for node in ast.walk(source_tree)
                              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and node.name == "load_tests"]
-          if (len(source_methods) != 43 or len(methods) != 43
-                  or len(all_methods) != 43 or dynamic_loaders):
-              raise SystemExit("The reviewed Windows contract requires exactly 43 unique static source methods")
+          if (len(source_methods) != 48 or len(methods) != 48
+                  or len(all_methods) != 48 or dynamic_loaders):
+              raise SystemExit("The reviewed Windows contract requires exactly 48 unique static source methods")
           expected_entries = ["discovery:test_windows_cold_start.py", "dotted:tooling.tests.test_windows_cold_start"]
-          if (receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
+          if (receipt.get("schema") != "motionwright.unittest-execution/1"
+                  or receipt.get("status") != "PASS" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
                   or receipt.get("require_complete") is not True
                   or receipt.get("executed_source_sha") != head or receipt.get("tree_sha") != tree
                   or receipt.get("source_postcheck_error")
@@ -775,11 +885,11 @@ jobs:
               counts = step.get("counts", {})
               if (step.get("status") != "PASS" or type(step.get("exit_code")) is not int or step["exit_code"] != 0
                       or counts.get("terminal_status") != "OK"
-                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 43
-                      or type(counts.get("passed")) is not int or counts["passed"] != 43
+                      or type(counts.get("tests_run")) is not int or counts["tests_run"] != 48
+                      or type(counts.get("passed")) is not int or counts["passed"] != 48
                       or any(type(counts.get(key)) is not int or counts[key] != 0 for key in
                              ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                  raise SystemExit("Windows unit entry point did not complete 43 controls without omissions")
+                  raise SystemExit("Windows unit entry point did not complete 48 controls without omissions")
               for stream in ("stdout", "stderr"):
                   path = report.with_name(f"{report.stem}-{index:02d}-{stream}.log")
                   if step.get(stream) != {"file": path.name, "sha256": digest(path)}:
@@ -789,8 +899,8 @@ jobs:
               observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", parsed_view)
               module = "test_windows_cold_start" if index == 0 else "tooling.tests.test_windows_cold_start"
               expected = {f"{module}.{class_name}.{method}" for method in methods}
-              if len(observed) != 43 or set(observed) != expected:
-                  raise SystemExit("Original verbose output does not contain each of the 43 source controls exactly once")
+              if len(observed) != 48 or set(observed) != expected:
+                  raise SystemExit("Original verbose output does not contain each of the 48 source controls exactly once")
               method_inventory[step["entry_point"]] = sorted(observed)
           source_inputs = {name: digest(root / name) for name in (
               test_path, "tooling/windows_cold_start.py", "tooling/windows_first_project_ui.ps1",
@@ -802,14 +912,14 @@ jobs:
                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                     "receipt_sha256": digest(report), "github": receipt["github"],
                     "source_inputs_sha256": source_inputs, "entrypoint_methods": method_inventory,
-                    "unique_source_controls": 43, "entrypoints": 2, "skipped": 0,
+                    "unique_source_controls": 48, "entrypoints": 2, "skipped": 0,
                     "scope": "Synthetic G1: temporary SQLite/receipt fixtures and mocked native transport",
                     "installed_application_execution": False, "native_ui_execution": False,
                     "formal_acceptance": False, "release_verdict": False}
           with report.with_name("contract-readback.json").open("x", encoding="utf-8", newline="\n") as handle:
               json.dump(result, handle, indent=2, sort_keys=True)
               handle.write("\n")
-          print("windows-unit-contracts=PASS unique=43 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
+          print("windows-unit-contracts=PASS unique=48 entrypoints=2 skipped=0 installed-ui=NOT_RUN")
           '@
           $readbackPath = Join-Path "$proofDir" 'verify-contract-readback.py'
           [System.IO.File]::WriteAllText($readbackPath, $readback, [System.Text.UTF8Encoding]::new($false))
@@ -840,7 +950,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
     needs: [receipt-policy, windows-contracts, nsis-source-windows]
     runs-on: windows-latest
     steps:
@@ -2404,7 +2514,7 @@ jobs:
           if-no-files-found: warn
 
   macos:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')
     needs: receipt-policy
     runs-on: macos-latest
     steps:
