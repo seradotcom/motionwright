@@ -538,6 +538,10 @@ fn real_live_bundle_writer_survives_peer_cas_recovery() {
     }
     const TEST: &str = "real_live_bundle_writer_survives_peer_cas_recovery";
     let fixture = Fixture::new();
+    // Admission must finish before the live writer owns SQLite's writer lock.
+    let mut collector =
+        Store::open_with_managed_blob_root(&fixture.case.database, &fixture.case.blob_root)
+            .unwrap();
     let mut writer = spawn_actor(
         &fixture,
         TEST,
@@ -555,6 +559,26 @@ fn real_live_bundle_writer_survives_peer_cas_recovery() {
         physical_blob(&fixture.case).as_deref(),
         Some(fixture.payload.as_slice())
     );
+    let same_database = collector
+        .recover_cas(CasRetentionPolicy {
+            retention: Duration::ZERO,
+            max_objects: 64,
+        })
+        .unwrap();
+    assert!(same_database.root_managed && !same_database.truncated);
+    assert_eq!(
+        same_database.removed, 0,
+        "same-database GC unlinked a live writer's publication"
+    );
+    assert!(
+        same_database.unresolved >= 1,
+        "live writer was not retained"
+    );
+    assert_eq!(
+        physical_blob(&fixture.case).as_deref(),
+        Some(fixture.payload.as_slice())
+    );
+    writer.assert_alive();
     let while_live = recover(
         &fixture,
         TEST,
@@ -1045,6 +1069,10 @@ fn real_replaced_live_intent_lock_keeps_unknown_and_preserves_foreign_lock() {
     }
     const TEST: &str = "real_replaced_live_intent_lock_keeps_unknown_and_preserves_foreign_lock";
     let fixture = Fixture::new();
+    // Admission must finish before the live writer owns SQLite's writer lock.
+    let mut collector =
+        Store::open_with_managed_blob_root(&fixture.case.database, &fixture.case.blob_root)
+            .unwrap();
     let control = cas_retention::test_metadata_root(&fixture.case.blob_root).unwrap();
     let mut writer = spawn_actor(
         &fixture,
@@ -1088,16 +1116,12 @@ fn real_replaced_live_intent_lock_keeps_unknown_and_preserves_foreign_lock() {
     );
     assert!(fs::read(&lock_path).unwrap().is_empty());
 
-    let while_live = recover(
-        &fixture,
-        TEST,
-        "peer-gc-substituted-lock",
-        ActorOptions {
-            peer: true,
-            ..ActorOptions::default()
-        },
-    );
-    let report = while_live.recovery.as_ref().unwrap();
+    let report = collector
+        .recover_cas(CasRetentionPolicy {
+            retention: Duration::ZERO,
+            max_objects: 64,
+        })
+        .unwrap();
     assert!(report.root_managed && !report.truncated);
     assert_eq!(
         report.removed, 0,
@@ -1107,7 +1131,10 @@ fn real_replaced_live_intent_lock_keeps_unknown_and_preserves_foreign_lock() {
         report.unresolved >= 1,
         "lock identity mismatch was not kept UNKNOWN"
     );
-    assert_eq!(while_live.blob.as_deref(), Some(fixture.payload.as_slice()));
+    assert_eq!(
+        physical_blob(&fixture.case).as_deref(),
+        Some(fixture.payload.as_slice())
+    );
     assert_eq!(
         fs::read(&catalog_path).unwrap(),
         catalog_before,
