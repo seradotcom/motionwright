@@ -300,6 +300,7 @@ pub(super) fn run_derived_exit_checkpoint(base: &Path, blob_root: &Path, mode: &
     let stderr_path = base.join(format!("{token}.stderr"));
     let child = test_binary_command("cas_retention::derived::tests::derived_journal_actor")
         .env("MOTIONWRIGHT_TEST_DERIVED_BASE", base)
+        .env_remove("MOTIONWRIGHT_TEST_DERIVED_EXPECT_SUCCESS")
         .env("MOTIONWRIGHT_TEST_DERIVED_MODE", mode)
         .env(CHILD_MODE, "derived")
         .env(TARGET_ROOT, blob_root)
@@ -1627,6 +1628,7 @@ pub(super) fn run_derived_completed(base: &Path, blob_root: &Path, mode: &str) {
     let stderr_path = base.join(format!("{token}.stderr"));
     let child = test_binary_command("cas_retention::derived::tests::derived_journal_actor")
         .env("MOTIONWRIGHT_TEST_DERIVED_BASE", base)
+        .env("MOTIONWRIGHT_TEST_DERIVED_EXPECT_SUCCESS", "1")
         .env("MOTIONWRIGHT_TEST_DERIVED_MODE", mode)
         .env(CHILD_MODE, "derived")
         .env(TARGET_ROOT, blob_root)
@@ -1661,6 +1663,7 @@ pub(super) fn with_paused_derived_checkpoint(
     let stderr = base.join(format!("{token}.stderr"));
     let mut child = test_binary_command("cas_retention::derived::tests::derived_journal_actor")
         .env("MOTIONWRIGHT_TEST_DERIVED_BASE", base)
+        .env("MOTIONWRIGHT_TEST_DERIVED_EXPECT_SUCCESS", "1")
         .env("MOTIONWRIGHT_TEST_DERIVED_MODE", mode)
         .env(CHILD_MODE, "derived")
         .env(TARGET_ROOT, blob_root)

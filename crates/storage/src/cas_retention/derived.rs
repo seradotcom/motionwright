@@ -1375,6 +1375,9 @@ mod tests {
             }
             _ => panic!("unexpected derived subprocess mode"),
         }
+        if std::env::var("MOTIONWRIGHT_TEST_DERIVED_EXPECT_SUCCESS").as_deref() == Ok("1") {
+            return;
+        }
         panic!("derived subprocess did not reach its exact cut");
     }
 
