@@ -671,7 +671,10 @@ impl Project {
         if self.schema_version == LEGACY_PROJECT_SCHEMA_VERSION {
             let empty = ProductionDesign::default();
             if self.narrative.editing.is_some()
-                || self.branch_workspaces.iter().any(|workspace| workspace.base_state.narrative.editing.is_some() || workspace.current_state.narrative.editing.is_some())
+                || self.branch_workspaces.iter().any(|workspace| {
+                    workspace.base_state.narrative.editing.is_some()
+                        || workspace.current_state.narrative.editing.is_some()
+                })
                 || !self.paid_generation.is_empty()
                 || self.production_design != empty
                 || self.branch_workspaces.iter().any(|workspace| {
@@ -1077,7 +1080,8 @@ impl Project {
         // Preserve the existing domain guards inside the original implementation.
         // This outer transaction also protects editorial metadata through branch
         // checkout/merge and existing SceneBeat changes.
-        if self.narrative.editing.is_some() || !self.narrative.protected_sections.is_empty()
+        if self.narrative.editing.is_some()
+            || !self.narrative.protected_sections.is_empty()
             || matches!(change, Change::EditNarrative { .. })
         {
             let mut candidate = self.clone();
@@ -1425,7 +1429,9 @@ impl Project {
             } => {
                 self.update_claim_source(*claim_id, expected, replacement)?;
             }
-            Change::EditNarrative { expected, edit } => self.apply_narrative_edit(expected, edit)?,
+            Change::EditNarrative { expected, edit } => {
+                self.apply_narrative_edit(expected, edit)?
+            }
             Change::SetNarrativePremise { premise } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 self.narrative.premise = premise.clone();

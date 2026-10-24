@@ -110,7 +110,9 @@ impl Narrative {
         for section in &self.protected_sections {
             section.validate()?;
         }
-        if let Some(editing) = &self.editing { editing.validate(&self.beats)?; }
+        if let Some(editing) = &self.editing {
+            editing.validate(&self.beats)?;
+        }
         Ok(())
     }
 }
