@@ -275,7 +275,7 @@ export function readGraphRecoverySource(storage: Pick<GraphStorage, "getItem">, 
     const raw = storage.getItem(graphCopyKey(scope, pointer));
     if (observed.rawObserved && raw !== observed.raw) error("The earlier Graph recovery bytes changed. Retry cannot adopt a replacement source.");
     observed.raw = raw; observed.rawObserved = true;
-    if (raw === null) error("The earlier Graph recovery copy is missing.");
+    if (raw === null) return error("The earlier Graph recovery copy is missing.");
     draft = decodeGraphCopy(raw, scope, pointer).draft;
   }
   assertGraphRecoverySource(storage, pointers, scope, observed);
@@ -313,7 +313,7 @@ export function recoverGraphRead(current: GraphDraft, recovered: GraphDraft, edi
       return prior ? target.flatMap(item => item.id !== head ? [clone(item)] : next === undefined ? [] : [next])
         : next === undefined ? clone(target) : [...clone(target), next];
     }
-    if (!graphRecord(source) || !Object.hasOwn(source, head)) error("The explicit Graph recovery field is no longer available.");
+    if (!graphRecord(source) || !Object.hasOwn(source, head)) return error("The explicit Graph recovery field is no longer available.");
     if (!graphRecord(target) || ("kind" in target && "kind" in source && target.kind !== source.kind)) return clone(source);
     return { ...clone(target), [head]: overlay(target[head], source[head], rest) };
   };
