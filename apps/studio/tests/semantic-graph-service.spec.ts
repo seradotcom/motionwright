@@ -23,9 +23,8 @@ async function arrange(service: ScopedChangeService) {
   const scene = project.scenes.find(item => !before.has(item.id)); if (!scene) throw new Error("The actual add_scene operation did not retain a new identity.");
   project = await service.apply(project, { type: "set_scene_renderer", scene_id: scene.id, renderer: "manim-community" });
   const profile = project.deliverables[0]; if (!profile) throw new Error("The actual Project has no Deliverable profile.");
-  const recipe: DeliveryRecipe & { font_selection: { primary_family: string; mono_family: string } } = {
+  const recipe: DeliveryRecipe = {
     schema: "motionwright.delivery-recipe/1", scene_intents: [], original_mix: null,
-    font_selection: { primary_family: "Instrument Sans Variable", mono_family: "IBM Plex Mono" },
   };
   project = await service.apply(project, { type: "set_delivery_recipe", deliverable_profile_id: profile.id, recipe });
   return { project, sceneId: scene.id, profileId: profile.id };
