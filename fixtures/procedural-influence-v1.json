@@ -1,0 +1,298 @@
+{
+  "schema": "motionwright.procedural-influence-golden/1",
+  "identity": "00000000-0000-4000-8000-000000000095",
+  "arithmetic": "Sample unmodulated doubled center; quadratic squared-distance weight; signed division toward zero; center invariant; exact halves permitted.",
+  "provenance": "Expected geometry manually derived from grid centers and rational arithmetic before implementation tests. Legacy wires are filled only from archived unchanged6a executions.",
+  "legacy": {
+    "typescript": {
+      "source": "3520e207b14d4fc53f5c4c3a75dcfb3f50642e8d",
+      "product_base": "6a58102911323316544dba9a9c9e5f222f9d580b",
+      "language": "TypeScript",
+      "wire": {
+        "config_wire": "{\"seed\":41,\"count\":12,\"columns\":4,\"distribution\":\"scatter\",\"shape\":\"square\",\"origin_x\":180,\"origin_y\":170,\"area_width\":900,\"area_height\":560,\"size\":32,\"opacity_percent\":100,\"fill\":\"#A5C8DF\",\"reveal_step_frames\":0,\"reveal_duration_frames\":12}",
+        "nodes_wire": "[{\"id\":\"1b1d1609-6443-84ef-ae30-15b66241f589\",\"name\":\"ProceduralField / item 000\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":200,\"y\":211,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"47e4e8df-db4c-81f2-8118-f1e2da44e052\",\"name\":\"ProceduralField / item 001\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":440,\"y\":302,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"a3817505-7ebb-86ee-80d6-32ce39769598\",\"name\":\"ProceduralField / item 002\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":792,\"y\":193,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"5245f958-c1b6-8502-85b5-cd7b8846bbd9\",\"name\":\"ProceduralField / item 003\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":993,\"y\":189,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"259c4e93-8f61-8334-a6d4-87d45bcefc86\",\"name\":\"ProceduralField / item 004\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":343,\"y\":474,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"032d0f53-1517-8305-a25b-e28778e0f63d\",\"name\":\"ProceduralField / item 005\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":594,\"y\":371,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"7703339d-882a-8daa-92be-34d08c43d0ed\",\"name\":\"ProceduralField / item 006\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":798,\"y\":462,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"645cc652-491b-89f9-9606-a114be0d86e8\",\"name\":\"ProceduralField / item 007\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":1023,\"y\":420,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"754112ab-e490-89c3-a134-92df3f66a658\",\"name\":\"ProceduralField / item 008\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":349,\"y\":642,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"a160327e-0b48-8de4-965f-c9bfd1bf1643\",\"name\":\"ProceduralField / item 009\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":449,\"y\":678,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"d78faadf-c202-871a-bd35-1e1c67c296c9\",\"name\":\"ProceduralField / item 010\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":652,\"y\":650,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"3bea5c37-80c3-819f-8bf9-b6d8a54f88c2\",\"name\":\"ProceduralField / item 011\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":862,\"y\":660,\"width\":32,\"height\":32,\"rotation_deg\":0,\"opacity\":1,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]}]"
+      },
+      "capture_sha256": "0f1909074f8e1363c66d2ef9bd2345e19433e3b87e9ea150edbb34ac1124c407",
+      "capture_method": "Actual unchanged6a realizer capture from the causal TypeScript control"
+    },
+    "rust": {
+      "source": "6a58102911323316544dba9a9c9e5f222f9d580b",
+      "product_base": "6a58102911323316544dba9a9c9e5f222f9d580b",
+      "language": "Rust",
+      "wire": {
+        "config_wire": "{\"seed\":41,\"count\":12,\"columns\":4,\"distribution\":\"scatter\",\"shape\":\"square\",\"origin_x\":180,\"origin_y\":170,\"area_width\":900,\"area_height\":560,\"size\":32,\"opacity_percent\":100,\"fill\":\"#A5C8DF\",\"reveal_step_frames\":0,\"reveal_duration_frames\":12}",
+        "nodes_wire": "[{\"id\":\"1b1d1609-6443-84ef-ae30-15b66241f589\",\"name\":\"ProceduralField / item 000\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":200.0,\"y\":211.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"47e4e8df-db4c-81f2-8118-f1e2da44e052\",\"name\":\"ProceduralField / item 001\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":440.0,\"y\":302.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"a3817505-7ebb-86ee-80d6-32ce39769598\",\"name\":\"ProceduralField / item 002\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":792.0,\"y\":193.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"5245f958-c1b6-8502-85b5-cd7b8846bbd9\",\"name\":\"ProceduralField / item 003\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":993.0,\"y\":189.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"259c4e93-8f61-8334-a6d4-87d45bcefc86\",\"name\":\"ProceduralField / item 004\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":343.0,\"y\":474.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"032d0f53-1517-8305-a25b-e28778e0f63d\",\"name\":\"ProceduralField / item 005\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":594.0,\"y\":371.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"7703339d-882a-8daa-92be-34d08c43d0ed\",\"name\":\"ProceduralField / item 006\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":798.0,\"y\":462.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"645cc652-491b-89f9-9606-a114be0d86e8\",\"name\":\"ProceduralField / item 007\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":1023.0,\"y\":420.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"754112ab-e490-89c3-a134-92df3f66a658\",\"name\":\"ProceduralField / item 008\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":349.0,\"y\":642.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"a160327e-0b48-8de4-965f-c9bfd1bf1643\",\"name\":\"ProceduralField / item 009\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":449.0,\"y\":678.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"d78faadf-c202-871a-bd35-1e1c67c296c9\",\"name\":\"ProceduralField / item 010\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":652.0,\"y\":650.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]},{\"id\":\"3bea5c37-80c3-819f-8bf9-b6d8a54f88c2\",\"name\":\"ProceduralField / item 011\",\"kind\":\"rectangle\",\"parent_id\":null,\"x\":862.0,\"y\":660.0,\"width\":32.0,\"height\":32.0,\"rotation_deg\":0.0,\"opacity\":1.0,\"text\":null,\"coordinate_space\":\"project_pixels\",\"z_index\":-32,\"style\":{\"fill\":\"#A5C8DF\",\"stroke\":null,\"stroke_width\":0.0,\"font_family\":null,\"font_size\":null,\"font_weight\":null,\"line_height\":null,\"blend_mode\":\"normal\"},\"relations\":[],\"property_locks\":[],\"keyframes\":[]}]"
+      },
+      "capture_sha256": "20e826255af9514d0c7b37965e5ffe62c92a3620fc8e4baf94f5e4f3a0a7fb02",
+      "capture_method": "Exact substrings of original typed Project document_json from closed SQLite; no parse/reserialize of the captured config or nodes."
+    }
+  },
+  "cases": [
+    {
+      "name": "center and unaffected outside objects",
+      "config": {
+        "seed": 41,
+        "count": 3,
+        "columns": 3,
+        "distribution": "grid",
+        "shape": "square",
+        "origin_x": 300,
+        "origin_y": 300,
+        "area_width": 600,
+        "area_height": 200,
+        "size": 32,
+        "opacity_percent": 100,
+        "fill": "#A5C8DF",
+        "reveal_step_frames": 0,
+        "reveal_duration_frames": 12,
+        "influence": {
+          "center_x": 600,
+          "center_y": 400,
+          "radius": 150,
+          "target_size": 64
+        }
+      },
+      "expected": [
+        [
+          384,
+          384,
+          32
+        ],
+        [
+          568,
+          368,
+          64
+        ],
+        [
+          784,
+          384,
+          32
+        ]
+      ]
+    },
+    {
+      "name": "half-radius gives three-quarter influence",
+      "config": {
+        "seed": 41,
+        "count": 1,
+        "columns": 1,
+        "distribution": "grid",
+        "shape": "square",
+        "origin_x": 500,
+        "origin_y": 300,
+        "area_width": 200,
+        "area_height": 200,
+        "size": 32,
+        "opacity_percent": 100,
+        "fill": "#A5C8DF",
+        "reveal_step_frames": 0,
+        "reveal_duration_frames": 12,
+        "influence": {
+          "center_x": 700,
+          "center_y": 400,
+          "radius": 200,
+          "target_size": 64
+        }
+      },
+      "expected": [
+        [
+          572,
+          372,
+          56
+        ]
+      ]
+    },
+    {
+      "name": "odd base center with negative signed rounding",
+      "config": {
+        "seed": 41,
+        "count": 1,
+        "columns": 1,
+        "distribution": "grid",
+        "shape": "square",
+        "origin_x": 500,
+        "origin_y": 300,
+        "area_width": 200,
+        "area_height": 200,
+        "size": 33,
+        "opacity_percent": 100,
+        "fill": "#A5C8DF",
+        "reveal_step_frames": 0,
+        "reveal_duration_frames": 12,
+        "influence": {
+          "center_x": 600,
+          "center_y": 400,
+          "radius": 1,
+          "target_size": 4
+        }
+      },
+      "expected": [
+        [
+          590,
+          390,
+          19
+        ]
+      ]
+    },
+    {
+      "name": "exact radius is unchanged",
+      "config": {
+        "seed": 41,
+        "count": 1,
+        "columns": 1,
+        "distribution": "grid",
+        "shape": "square",
+        "origin_x": 500,
+        "origin_y": 300,
+        "area_width": 200,
+        "area_height": 200,
+        "size": 32,
+        "opacity_percent": 100,
+        "fill": "#A5C8DF",
+        "reveal_step_frames": 0,
+        "reveal_duration_frames": 12,
+        "influence": {
+          "center_x": 601,
+          "center_y": 400,
+          "radius": 1,
+          "target_size": 64
+        }
+      },
+      "expected": [
+        [
+          584,
+          384,
+          32
+        ]
+      ]
+    },
+    {
+      "name": "negative fractional delta truncates toward base",
+      "config": {
+        "seed": 41,
+        "count": 1,
+        "columns": 1,
+        "distribution": "grid",
+        "shape": "square",
+        "origin_x": 500,
+        "origin_y": 300,
+        "area_width": 200,
+        "area_height": 200,
+        "size": 32,
+        "opacity_percent": 100,
+        "fill": "#A5C8DF",
+        "reveal_step_frames": 0,
+        "reveal_duration_frames": 12,
+        "influence": {
+          "center_x": 601,
+          "center_y": 400,
+          "radius": 3,
+          "target_size": 4
+        }
+      },
+      "expected": [
+        [
+          596,
+          396,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "positive fractional delta produces exact half coordinates",
+      "config": {
+        "seed": 41,
+        "count": 1,
+        "columns": 1,
+        "distribution": "grid",
+        "shape": "square",
+        "origin_x": 500,
+        "origin_y": 300,
+        "area_width": 200,
+        "area_height": 200,
+        "size": 32,
+        "opacity_percent": 100,
+        "fill": "#A5C8DF",
+        "reveal_step_frames": 0,
+        "reveal_duration_frames": 12,
+        "influence": {
+          "center_x": 601,
+          "center_y": 400,
+          "radius": 3,
+          "target_size": 63
+        }
+      },
+      "expected": [
+        [
+          570.5,
+          370.5,
+          59
+        ]
+      ]
+    },
+    {
+      "name": "maximum radius remains bounded",
+      "config": {
+        "seed": 41,
+        "count": 1,
+        "columns": 1,
+        "distribution": "grid",
+        "shape": "square",
+        "origin_x": 500,
+        "origin_y": 300,
+        "area_width": 200,
+        "area_height": 200,
+        "size": 32,
+        "opacity_percent": 100,
+        "fill": "#A5C8DF",
+        "reveal_step_frames": 0,
+        "reveal_duration_frames": 12,
+        "influence": {
+          "center_x": 500,
+          "center_y": 300,
+          "radius": 1920,
+          "target_size": 128
+        }
+      },
+      "expected": [
+        [
+          536.5,
+          336.5,
+          127
+        ]
+      ]
+    },
+    {
+      "name": "outside circle remains unchanged",
+      "config": {
+        "seed": 41,
+        "count": 1,
+        "columns": 1,
+        "distribution": "grid",
+        "shape": "square",
+        "origin_x": 500,
+        "origin_y": 300,
+        "area_width": 200,
+        "area_height": 200,
+        "size": 32,
+        "opacity_percent": 100,
+        "fill": "#A5C8DF",
+        "reveal_step_frames": 0,
+        "reveal_duration_frames": 12,
+        "influence": {
+          "center_x": 700,
+          "center_y": 500,
+          "radius": 100,
+          "target_size": 128
+        }
+      },
+      "expected": [
+        [
+          584,
+          384,
+          32
+        ]
+      ]
+    }
+  ]
+}

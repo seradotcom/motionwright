@@ -4,7 +4,9 @@ import type { CanvasNode, Change, Project, Scene } from "./types";
 import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
-import { realizeProceduralField } from "./proceduralField";
+import { applyProceduralChange, defaultProceduralConfig } from "./proceduralField";
+import { defaultProceduralInfluenceRaw } from "./proceduralInfluence";
+import ProceduralInfluenceControls from "./ProceduralInfluenceControls";
 import type { ProceduralConfig } from "./proceduralField";
 import { proceduralConfig, workbenchScope } from "./creativeWorkbenchDraft";
 import type { ProceduralRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
@@ -37,15 +39,28 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
   const [previewError,setPreviewError]=useState<string|null>(null);
   const [previewLoading,setPreviewLoading]=useState(false);
   const [previewTime,setPreviewTime]=useState(2);
+  const [reviewMode,setReviewMode]=useState<"saved"|"draft">("draft");
+  let influenceDefaults=defaultProceduralInfluenceRaw(stored?.config??defaultProceduralConfig());
+  try {
+    const {influence:ignored,...base}=draft; void ignored;
+    influenceDefaults=defaultProceduralInfluenceRaw(proceduralConfig(base));
+  } catch { /* Invalid base text remains visible and is reported by preparation. */ }
   useEffect(()=>{
     let active=true;setPreviewLoading(true);setPreviewError(null);
-    Promise.resolve().then(()=>realizeProceduralField(stored?.id??previewIdentity,proceduralConfig(draft))).then(items=>{
+    Promise.resolve().then(async()=>{
+      if(!scene) throw new Error("Choose a working scene to review this field.");
+      const candidate=structuredClone(project);
+      await applyProceduralChange(candidate,{type:"upsert_procedural_field",instance_id:stored?.id??previewIdentity,
+        scene_id:scene.id,config:proceduralConfig(draft)});
+      return candidate.scenes.find(value=>value.id===scene.id)!.nodes;
+    }).then(items=>{
       if(active){setNodes(items);setPreviewLoading(false);}
     }).catch(e=>{
       if(active){setNodes([]);setPreviewError(e instanceof Error?e.message:String(e));setPreviewLoading(false);}
     });
     return()=>{active=false;};
-  },[draft,stored?.id]);
+  },[draft,project,scene,stored?.id]);
+  const visibleNodes=reviewMode==="saved"?(scene?.nodes??[]):nodes;
   const previewMax=scene?Math.max(0,seconds(scene.duration)-1/30):6;
   const renderedTime=Math.min(previewTime,previewMax);
   const update=async()=>{ if(scene&&!editor.blocked&&!previewError&&!previewLoading) await editor.send("save"); };
@@ -87,6 +102,8 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
           onChange={e=>setDraft(v=>({...v,[key]:e.target.value}))}/>
       </label>)}
     </div>
+    <ProceduralInfluenceControls value={draft.influence} defaults={influenceDefaults}
+      onChange={influence=>setDraft(value=>({...value,influence}))}/>
     {previewError && <p className="production-error" role="alert">{previewError}</p>}
     <div className="production-button-row">
       <button className="primary-button" disabled={!scene || editor.blocked || previewLoading || !!previewError}
@@ -101,14 +118,19 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
       Native exports require the normal verified render/evidence path.</p>
     <section className="production-approval" aria-label="Procedural editorial preview">
       <h3>Live editorial study · 1920 × 1080</h3>
+      <div className="production-button-row" role="group" aria-label="Procedural preview source">
+        <button className="secondary-button" aria-pressed={reviewMode==="saved"} onClick={()=>setReviewMode("saved")}>Saved</button>
+        <button className="secondary-button" aria-pressed={reviewMode==="draft"} onClick={()=>setReviewMode("draft")}>Draft</button>
+      </div>
+      <p className="production-help">{reviewMode==="saved"?"Saved project objects, including individual edits.":"Current draft applied to the saved objects, preserving compatible individual edits."}</p>
       <label className="production-field"><span>Editorial playhead · {renderedTime.toFixed(2)} s</span>
         <input aria-label="Procedural preview playhead" type="range" min={0} max={previewMax}
           step={1/30} value={renderedTime} onChange={e=>setPreviewTime(Number(e.target.value))}/>
       </label>
-      {previewLoading?<p role="status">Evaluating bounded procedural preview…</p>
-       :previewError?<p role="status">No preview until the field constraints are valid.</p>
-       :<CompositionStudy nodes={nodes} width={1920} height={1080} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
-          label={`Procedural editorial preview, ${draft.distribution} distribution, ${nodes.length} editable objects`}/>}
+      {reviewMode==="draft"&&previewLoading?<p role="status">Evaluating bounded procedural preview…</p>
+       :reviewMode==="draft"&&previewError?<p role="status">No draft preview until the field constraints are valid. Saved objects remain available.</p>
+       :<CompositionStudy nodes={visibleNodes} width={1920} height={1080} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+          label={`Procedural editorial preview, ${reviewMode}, ${visibleNodes.length} editable objects`}/>}
       <p className="mono">{draft.count} authored objects · seed {draft.seed} ·
         {stored?` attached field ${stored.id.slice(0,8)}…`:" not yet attached"} · no native render receipt</p>
     </section>

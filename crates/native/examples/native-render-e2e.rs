@@ -2177,6 +2177,7 @@ fn seed_procedural(
         fill: "#A5C8DF".into(),
         reveal_step_frames: if animated { 6 } else { 0 },
         reveal_duration_frames: 18,
+        influence: None,
     };
     let project = service
         .apply(

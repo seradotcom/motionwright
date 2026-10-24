@@ -2,6 +2,8 @@
 import type { CanvasNode, Project } from "./types";
 import { mergeComponentNodes, sameValue } from "./creativeProduction";
 import type { ProductionDesign } from "./creativeProduction";
+import type { ProceduralInfluence } from "./proceduralInfluence";
+import { proceduralGeneratorVersion, proceduralInfluencedGeometry, validateProceduralInfluence } from "./proceduralInfluence";
 
 export type FieldDistribution = "grid" | "staggered" | "scatter" | "radial" | "spiral";
 export type ProceduralShape = "square" | "circle";
@@ -12,6 +14,8 @@ export interface ProceduralConfig {
   origin_x: number; origin_y: number; area_width: number; area_height: number;
   size: number; opacity_percent: number; fill: string;
   reveal_step_frames: number; reveal_duration_frames: number;
+  /** Absent preserves the legacy version-1 generated output and serialized wire. */
+  influence?: ProceduralInfluence;
 }
 export interface ProceduralFieldInstance {
   id: string; scene_id: string; generator_version: number;
@@ -44,6 +48,7 @@ export function validateProceduralConfig(input:ProceduralConfig):void {
   }
   if(c.origin_x+c.area_width>1920 || c.origin_y+c.area_height>1080)
     throw new Error("Procedural field exceeds 1920x1080 authored stage.");
+  validateProceduralInfluence(c);
   const columns=Math.min(c.columns,c.count), rows=Math.ceil(c.count/columns);
   if(c.distribution==="radial" || c.distribution==="spiral"){
     if(c.area_width<c.size*2 || c.area_height<c.size*2)
@@ -120,12 +125,15 @@ export async function realizeProceduralField(id:string,input:ProceduralConfig):P
       }
       x=c.origin_x+col*cellW+dx;y=c.origin_y+row*cellH+dy;
     }
+    const geometry=proceduralInfluencedGeometry(x,y,c);
+    x=geometry.x;y=geometry.y;
+    const size=geometry.size;
     nodes.push({
       id:await proceduralNodeId(id,index),
       name:`ProceduralField / item ${String(index).padStart(3,"0")}`,
       kind:c.shape==="circle"?"circle":"rectangle",parent_id:null,
       x,y,
-      width:c.size,height:c.size,rotation_deg:0,opacity:c.opacity_percent/100,text:null,
+      width:size,height:size,rotation_deg:0,opacity:c.opacity_percent/100,text:null,
       coordinate_space:"project_pixels",z_index:-32,
       style:{fill:c.fill,stroke:null,stroke_width:0,font_family:null,font_size:null,font_weight:null,line_height:null,blend_mode:"normal"},
       relations:[],property_locks:[],keyframes: c.reveal_step_frames===0?[]:(()=>{
@@ -175,7 +183,7 @@ export async function applyProceduralChange(p:Project,change:ProceduralChange):P
   const baseline=await realizeProceduralField(change.instance_id,config);
   let result=structuredClone(scene.nodes);
   if(existing){
-    if(existing.generator_version!==1 || !sameValue(existing.baseline,await realizeProceduralField(existing.id,existing.config)))
+    if(existing.generator_version!==proceduralGeneratorVersion(existing.config) || !sameValue(existing.baseline,await realizeProceduralField(existing.id,existing.config)))
       throw new Error("Procedural generator version or baseline mismatch.");
     if(existing.scene_id!==scene.id) throw new Error("Procedural field cannot move scenes via update.");
     const overlap=Math.min(existing.baseline.length,baseline.length);
@@ -198,7 +206,7 @@ export async function applyProceduralChange(p:Project,change:ProceduralChange):P
     seen.add(node.id);result.push(node);
   }
   const instance:ProceduralFieldInstance={id:change.instance_id,scene_id:scene.id,
-    generator_version:1,config:structuredClone(config),baseline:structuredClone(baseline)};
+    generator_version:proceduralGeneratorVersion(config),config:structuredClone(config),baseline:structuredClone(baseline)};
   scene.nodes=result;scene.status="draft";
   design.procedural_fields=[...fields.filter(field=>field.id!==change.instance_id),instance];
   p.production_design=design;

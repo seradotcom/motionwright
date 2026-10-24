@@ -48,6 +48,13 @@ pub struct ProceduralConfig {
     pub reveal_step_frames: u8,
     #[serde(default = "default_reveal_duration")]
     pub reveal_duration_frames: u8,
+    /// Missing preserves the version-1 config wire and generated output exactly.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::procedural_influence::deserialize_optional_influence"
+    )]
+    pub influence: Option<ProceduralInfluence>,
 }
 const fn default_reveal_duration() -> u8 {
     12
@@ -69,6 +76,7 @@ impl Default for ProceduralConfig {
             fill: "#A5C8DF".into(),
             reveal_step_frames: 0,
             reveal_duration_frames: default_reveal_duration(),
+            influence: None,
         }
     }
 }
@@ -100,6 +108,9 @@ impl ProceduralConfig {
             return Err(DomainError::Invalid(
                 "procedural field exceeds 1920x1080 authored stage".into(),
             ));
+        }
+        if let Some(influence) = &self.influence {
+            influence.validate(self)?;
         }
         let columns = u32::from(self.columns).min(u32::from(self.count));
         let rows = u32::from(self.count).div_ceil(columns);
@@ -232,6 +243,8 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
                 u32::from(config.origin_y) + row * cell_h + dy,
             )
         };
+        let (x, y, size) =
+            crate::procedural_influence::procedural_influenced_geometry(x, y, config)?;
         let node = CanvasNode {
             id: procedural_node_id(id, index),
             name: format!("ProceduralField / item {index:03}"),
@@ -241,8 +254,8 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
             }
             .into(),
             parent_id: None,
-            x: f64::from(x),
-            y: f64::from(y),
+            x,
+            y,
             width: f64::from(size),
             height: f64::from(size),
             rotation_deg: 0.0,
@@ -268,7 +281,7 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
                 let mut keys = vec![];
                 for property in [MotionProperty::Y, MotionProperty::Opacity] {
                     let value = if property == MotionProperty::Y {
-                        f64::from(y) + 12.0
+                        y + 12.0
                     } else {
                         0.0
                     };
@@ -290,7 +303,7 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
                         at: RationalTime::new(i64::from(end), 30).expect("bounded timeline"),
                         property,
                         value: if property == MotionProperty::Y {
-                            f64::from(y)
+                            y
                         } else {
                             1.0
                         },
@@ -318,7 +331,7 @@ pub struct ProceduralFieldInstance {
 }
 impl ProceduralFieldInstance {
     pub fn validate(&self) -> Result<()> {
-        if self.generator_version != PROCEDURAL_VERSION
+        if self.generator_version != procedural_generator_version(&self.config)
             || self.baseline != realize_procedural_field(self.id, &self.config)?
         {
             return Err(DomainError::Invalid(
@@ -435,7 +448,7 @@ impl Project {
         let instance = ProceduralFieldInstance {
             id,
             scene_id,
-            generator_version: PROCEDURAL_VERSION,
+            generator_version: procedural_generator_version(config),
             config: config.clone(),
             baseline,
         };
