@@ -2181,12 +2181,14 @@ name = "motionwright-native"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "hex",
  "motionwright-domain",
  "motionwright-manim-profile",
  "motionwright-service",
  "motionwright-storage",
  "rusqlite",
+ "semwright-audio-domain",
  "semwright-effect-conformance",
  "semwright-media-time",
  "semwright-motion-authoring",
@@ -3247,6 +3249,19 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 dependencies = [
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "semwright-audio-domain"
+version = "1.0.0"
+source = "git+https://github.com/seradotcom/semwright?rev=54d3459a051adbce4cae9f60c0dea8f60c824be6#54d3459a051adbce4cae9f60c0dea8f60c824be6"
+dependencies = [
+ "hex",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "uuid",
 ]
 
 [[package]]

@@ -37,6 +37,7 @@ mod path_boundary_tests;
 mod receipt_custody;
 mod recovery;
 mod renderer_registry;
+mod voice_alignment;
 pub use blender_original::{
     BlenderOriginalEdit, BlenderOriginalFile, BlenderOriginalJournal, BlenderOriginalPhase,
     BlenderOriginalRequest,
@@ -46,6 +47,7 @@ pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAv
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
 pub use renderer_registry::{RendererRegistryObservation, RendererRegistryState};
+pub use voice_alignment::{QualifiedVoiceAlignment, VoiceAlignmentIntent};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
@@ -2572,7 +2574,6 @@ impl ProductionCoordinator {
                                     completed_receipt: receipt,
                                     #[cfg(test)]
                                     command: command.to_owned(),
-                                    #[cfg(test)]
                                     mutation,
                                     #[cfg(test)]
                                     caller_request_id: request_id.to_owned(),
@@ -2637,7 +2638,6 @@ pub(super) struct AuthenticatedSdkResult {
     completed_receipt: ProductionReceipt,
     #[cfg(test)]
     command: String,
-    #[cfg(test)]
     mutation: bool,
     #[cfg(test)]
     caller_request_id: String,
@@ -2714,7 +2714,6 @@ impl ReceiptExecutionOutcome {
         }
     }
 
-    #[cfg(test)]
     fn into_authenticated_result(self) -> Option<Box<AuthenticatedSdkResult>> {
         match self.origin {
             ReceiptExecutionOrigin::ReceiptReplay(_) => None,
@@ -3902,7 +3901,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     }
 
     #[cfg(unix)]
-    fn transport_reply(command: &str) -> Envelope {
+    pub(super) fn transport_reply(command: &str) -> Envelope {
         let authority = expected_authority(command).unwrap();
         Envelope {
             ok: true,
@@ -3933,7 +3932,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     }
 
     #[cfg(unix)]
-    fn fake_transport_connection(
+    pub(super) fn fake_transport_connection(
         temp: &tempfile::TempDir,
         resource: String,
         stdout: &str,

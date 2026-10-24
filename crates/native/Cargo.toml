@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+base64 = "0.23"
+semwright-audio-domain = { git = "https://github.com/seradotcom/semwright", rev = "54d3459a051adbce4cae9f60c0dea8f60c824be6", package = "semwright-audio-domain" }
 motionwright-domain = { path = "../domain" }
 motionwright-storage = { path = "../storage" }
 motionwright-service = { path = "../service" }
