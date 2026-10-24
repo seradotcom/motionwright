@@ -1718,7 +1718,6 @@ impl Store {
         {
             return Err(invalid("database identity changed before recovery"));
         }
-        let now = derived::event_time(&root.root)?;
         let mut report = CasRecoveryReport {
             root_managed: true,
             ..Default::default()
@@ -1743,6 +1742,10 @@ impl Store {
             }
             report.inspected += 1;
             last = Some(candidate.clone());
+            // A prior candidate may have just released the last protection.
+            // Compare retention against this candidate's current observation,
+            // never a timestamp from before that durable release.
+            let now = derived::event_time(&root.root)?;
             let added = match candidate {
                 RecoveryPosition::Capture(id) => {
                     recover_capture_candidate(&root, id, policy, now, &mut report)?
