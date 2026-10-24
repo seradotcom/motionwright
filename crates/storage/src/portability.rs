@@ -698,14 +698,6 @@ pub(super) fn inspect_portable_file(
     transfer_portable_bytes_with_credential_check(input, std::io::sink(), limit, Some(context))
 }
 
-pub(super) fn ensure_secret_free_portable_file(
-    path: &Path,
-    context: &str,
-    limit: u64,
-) -> Result<()> {
-    inspect_portable_file(path, context, limit).map(|_| ())
-}
-
 fn copy_portable_file(source: &Path, target: &Path, limit: u64) -> Result<BlobDescriptor> {
     let input = checked_portable_source(source, "copied portable source", limit)?;
     let mut options = OpenOptions::new();
@@ -2020,7 +2012,7 @@ mod tests {
     }
 
     fn reviewed_text_source(path: &Path, limit: u64) -> Result<()> {
-        ensure_secret_free_portable_file(path, "portable text-like asset", limit)
+        inspect_portable_file(path, "portable text-like asset", limit).map(|_| ())
     }
 
     fn reviewed_copy_source(source: &Path, target: &Path, limit: u64) -> Result<()> {
