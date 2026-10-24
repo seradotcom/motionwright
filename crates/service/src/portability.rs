@@ -27,13 +27,29 @@ impl motionwright_storage::BundleAssetAdmission for SvgBundleAdmission {
                 "portable asset has no declared project alias",
             ));
         }
+        // These are exactly the MIME-dependent branches of the shared
+        // reader: declared SVG, text permitted by the UTF-16/32 sniffer,
+        // and opaque media. Preserve every restriction without reparsing
+        // up to eight MiB once for every equivalent alias in a manifest.
+        let mut validated_classes = [false; 3];
         for alias in aliases {
+            let class = if alias.media_type.eq_ignore_ascii_case("image/svg+xml") {
+                0
+            } else if alias.media_type.starts_with("text/") {
+                1
+            } else {
+                2
+            };
+            if validated_classes[class] {
+                continue;
+            }
             validate_importable_asset_reader(
                 std::io::Cursor::new(prefix),
                 actual_size,
                 &alias.media_type,
                 false,
             )?;
+            validated_classes[class] = true;
         }
         Ok(())
     }
@@ -120,6 +136,34 @@ mod svg_bundle_admission_tests {
                 .validate(bytes, bytes.len() as u64, &[&label_only])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn encoded_text_alias_cannot_exempt_a_restrictive_alias() {
+        let bytes: Vec<_> = "  ordinary encoded text"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let text = alias("text-label", "text/plain");
+        let opaque = alias("opaque-label", "application/octet-stream");
+        let svg = alias("vector-label", "image/svg+xml");
+        assert!(
+            SvgBundleAdmission
+                .validate(&bytes, bytes.len() as u64, &[&text, &text])
+                .is_ok()
+        );
+        for aliases in [
+            [&text, &opaque],
+            [&opaque, &text],
+            [&text, &svg],
+            [&svg, &text],
+        ] {
+            assert!(
+                SvgBundleAdmission
+                    .validate(&bytes, bytes.len() as u64, &aliases)
+                    .is_err()
+            );
+        }
     }
 
     #[test]
