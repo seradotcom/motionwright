@@ -21619,11 +21619,17 @@
       "complete_requirement_acceptance": "NOT_COMPLETED",
       "id": "MW05-E10-03",
       "implementation": "partial",
-      "implemented_scope": "Compact SDK operations and bounded creative observations added",
-      "remaining_scope": "Two complete external-client workflows still need end-to-end validation",
+      "implemented_scope": "Real native Semwright SDK discovery and bounded paginated MotionwrightObserver reads are exercised by two separate owner-local OS processes sharing one existing StudioService SQLite project. A one-shot CLI performs source/revision CAS previews without writes and three explicit owner-local authorized edits via the existing service, rejecting stale revisions/cursors, forged operations, wrong generations and unauthorized writes. Exact source-bound CI acceptance is pending for this integrated tree; public artifacts contain only a bounded redacted status/hash manifest and never the full private owner event journal.",
+      "remaining_scope": "Authenticated external Driver Host write, remote/multi-device clients, worker and Teams permission grants, cross-device synchronization, multi-tenant RBAC, production user-facing agent integration and independent human acceptance remain NOT_COMPLETED. An OS-level owner --owner-edit flag does not grant Host permissions.",
       "source_paths": [
         "crates/native/src/lib.rs",
-        "crates/native/src/production.rs"
+        "crates/native/src/production.rs",
+        "crates/native/examples/local_agent_actor.rs",
+        "tooling/agent-local/two_clients_e2e.py",
+        "tooling/agent-local/public_artifact.py",
+        "tooling/agent-local/test_public_artifact.py",
+        ".github/workflows/v05-agent-two-clients.yml",
+        "docs/creative-production/V05_EXTERNAL_AGENT_LOCAL_CLIENTS.md"
       ],
       "source_record_sha256": "4ea72ed0af2b247eeca96c4fd23bfb2d4d34ec610ca0f873d0f0e70eee15e765",
       "technical_assessment": {
