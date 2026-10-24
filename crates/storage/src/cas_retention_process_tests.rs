@@ -261,6 +261,72 @@ impl Fixture {
     }
 }
 
+fn test_binary_command(exact_test: &str) -> Command {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command.args(["--exact", exact_test, "--nocapture", "--test-threads=1"]);
+    command
+}
+
+fn wait_for_child(child: &mut Child, stderr: &Path) -> ExitStatus {
+    let deadline = Instant::now() + CHILD_TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "CAS subprocess timed out; stderr: {}",
+            fs::read_to_string(stderr).unwrap()
+        );
+        // Poll only process completion, never retention age or readiness.
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+struct ExitChildGuard(Option<Child>);
+
+impl Drop for ExitChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+pub(super) fn run_derived_exit_checkpoint(base: &Path, blob_root: &Path, mode: &str, phase: &str) {
+    let token = Uuid::now_v7();
+    let stdout_path = base.join(format!("{token}.stdout"));
+    let stderr_path = base.join(format!("{token}.stderr"));
+    let child = test_binary_command("cas_retention::derived::tests::derived_journal_actor")
+        .env("MOTIONWRIGHT_TEST_DERIVED_BASE", base)
+        .env("MOTIONWRIGHT_TEST_DERIVED_MODE", mode)
+        .env(CHILD_MODE, "derived")
+        .env(TARGET_ROOT, blob_root)
+        .env(PROJECT, token.to_string())
+        .env(PHASE, phase)
+        .env(ACTION, "exit")
+        .stdin(Stdio::null())
+        .stdout(File::create_new(&stdout_path).unwrap())
+        .stderr(File::create_new(&stderr_path).unwrap())
+        .spawn()
+        .unwrap();
+    let mut guard = ExitChildGuard(Some(child));
+    let status = wait_for_child(guard.0.as_mut().unwrap(), &stderr_path);
+    guard.0.take();
+    let stdout = fs::read_to_string(stdout_path).unwrap();
+    let stderr = fs::read_to_string(stderr_path).unwrap();
+    assert_eq!(
+        status.code(),
+        Some(EXIT_AT_CHECKPOINT),
+        "{stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("CAS_RETENTION_CHECKPOINT:{token}:{phase}")),
+        "{stdout}\n{stderr}"
+    );
+}
+
 #[derive(Default)]
 struct ActorOptions {
     peer: bool,
@@ -290,13 +356,7 @@ fn spawn_actor(
 ) -> Actor {
     let stderr = fixture.config.with_file_name(format!("{label}.stderr"));
     let observation = fixture.config.with_file_name(format!("{label}.json"));
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            &format!("cas_retention_process_tests::{test}"),
-            "--nocapture",
-            "--test-threads=1",
-        ])
+    let mut child = test_binary_command(&format!("cas_retention_process_tests::{test}"))
         .env(CHILD_MODE, mode)
         .env(CASE_PATH, &fixture.config)
         .env(TARGET_ROOT, &fixture.case.blob_root)
@@ -371,19 +431,7 @@ impl Actor {
     }
 
     fn wait(&mut self) -> ExitStatus {
-        let deadline = Instant::now() + CHILD_TIMEOUT;
-        loop {
-            if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
-                return status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "CAS subprocess timed out; stderr: {}",
-                fs::read_to_string(&self.stderr).unwrap()
-            );
-            // Poll only process completion, never retention age or readiness.
-            thread::sleep(Duration::from_millis(25));
-        }
+        wait_for_child(self.child.as_mut().unwrap(), &self.stderr)
     }
 
     fn finish(mut self, expected: i32) -> Option<RetentionObservation> {

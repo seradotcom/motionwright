@@ -989,8 +989,6 @@ pub(crate) fn maintain(blob_root: &Path, policy: CasRetentionPolicy) -> Result<C
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Child, Command, Stdio};
-    use std::time::Instant;
     use tempfile::{TempDir, tempdir};
 
     const SCOPE: &str = "project:derived-custody";
@@ -1229,60 +1227,12 @@ mod tests {
         assert_eq!(fs::read(&second_source).unwrap(), b"other root output");
     }
 
-    struct ChildGuard(Option<Child>);
-
-    impl Drop for ChildGuard {
-        fn drop(&mut self) {
-            if let Some(child) = &mut self.0 {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-
     fn exit_at(fixture: &Fixture, mode: &str, phase: &str) {
-        let token = Uuid::now_v7();
-        let stdout_path = fixture.base.join(format!("{token}.stdout"));
-        let stderr_path = fixture.base.join(format!("{token}.stderr"));
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "cas_retention::derived::tests::derived_journal_actor",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env("MOTIONWRIGHT_TEST_DERIVED_BASE", &fixture.base)
-            .env("MOTIONWRIGHT_TEST_DERIVED_MODE", mode)
-            .env("MOTIONWRIGHT_TEST_CAS_RETENTION_MODE", "derived")
-            .env("MOTIONWRIGHT_TEST_CAS_RETENTION_ROOT", &fixture.blob_root)
-            .env("MOTIONWRIGHT_TEST_CAS_RETENTION_PROJECT", token.to_string())
-            .env("MOTIONWRIGHT_TEST_CAS_RETENTION_PHASE", phase)
-            .env("MOTIONWRIGHT_TEST_CAS_RETENTION_ACTION", "exit")
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(File::create(&stdout_path).unwrap()))
-            .stderr(Stdio::from(File::create(&stderr_path).unwrap()))
-            .spawn()
-            .unwrap();
-        let mut guard = ChildGuard(Some(child));
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let status = loop {
-            if let Some(status) = guard.0.as_mut().unwrap().try_wait().unwrap() {
-                break status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "derived subprocess exceeded its completion budget"
-            );
-            // Poll process completion only; neither age nor readiness uses sleep.
-            std::thread::sleep(Duration::from_millis(25));
-        };
-        guard.0.take();
-        let stdout = fs::read_to_string(stdout_path).unwrap();
-        let stderr = fs::read_to_string(stderr_path).unwrap();
-        assert_eq!(status.code(), Some(87), "{stdout}\n{stderr}");
-        assert!(
-            stdout.contains(&format!("CAS_RETENTION_CHECKPOINT:{token}:{phase}")),
-            "{stdout}\n{stderr}"
+        crate::cas_retention_process_tests::run_derived_exit_checkpoint(
+            &fixture.base,
+            &fixture.blob_root,
+            mode,
+            phase,
         );
     }
 
