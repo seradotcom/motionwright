@@ -1,7 +1,8 @@
-"""Select and admit closed NSIS/source-lock contracts using the existing runner.
+"""Select and admit closed source contracts using the existing runner.
 
-The platform exclusion is limited to two Windows sharing-semantics cases.
-Their Linux NOT_APPLICABLE records never confer Windows execution credit.
+The default retains NSIS/source-lock contracts. Explicit distribution_source
+selects the producer contracts, with only the POSIX FIFO inapplicable on
+Windows. Platform exclusions never confer execution credit.
 """
 from __future__ import annotations
 import argparse
@@ -137,6 +138,72 @@ PREFIX = "MOTIONWRIGHT_NSIS_SELECTION "
 ZERO_COUNTS = ("failures", "errors", "skipped", "expected_failures",
                "unexpected_successes")
 
+DISTRIBUTION_IDS = (
+    'DistributionBuildRecordTests.test_real_cli_is_deterministic_read_only_and_independent_of_cwd',
+    'DistributionBuildRecordTests.test_invalid_source_refuses_before_opening_payload',
+    'DistributionBuildRecordTests.test_cli_argument_errors_are_static_and_help_uses_stderr',
+    'DistributionBuildRecordTests.test_zero_directory_and_bounded_size_refuse_before_open',
+    'DistributionBuildRecordTests.test_real_leaf_and_parent_symlinks_are_rejected',
+    'DistributionBuildRecordTests.test_fifo_substitution_after_lstat_refuses_without_blocking',
+    'DistributionBuildRecordTests.test_cargo_mutation_during_read_produces_no_stdout_record',
+    'DistributionBuildRecordTests.test_real_payload_growth_is_detected_or_prevented_by_windows',
+    'DistributionBuildRecordTests.test_real_payload_truncation_is_detected_or_prevented_by_windows',
+    'DistributionBuildRecordTests.test_same_size_overwrite_with_restored_mtime_is_detected_or_prevented',
+    'DistributionBuildRecordTests.test_real_same_bytes_path_replacement_is_detected_or_prevented',
+    'DistributionBuildRecordTests.test_read_and_final_change_time_errors_close_fd_and_emit_no_json',
+    'DistributionBuildRecordTests.test_interrupt_and_programming_error_remain_visible_and_close_fd',
+    'DistributionBuildRecordTests.test_emitted_bytes_interoperate_with_explicit_synthetic_permission',
+    'DistributionBuildRecordTests.test_observation_does_not_override_negative_or_missing_admission',
+)
+DISTRIBUTION_ROSTERS = {
+    'test_distribution_build_record': (15, DISTRIBUTION_IDS, 'distribution_source_suite'),
+}
+DISTRIBUTION_POSIX_ONLY = frozenset({
+    'DistributionBuildRecordTests.test_fifo_substitution_after_lstat_refuses_without_blocking',
+})
+DISTRIBUTION_SOURCE_PATHS = (
+    '.github/workflows/package-candidate.yml',
+    'tooling/ci_test_runner.py',
+    'tooling/ci_suites/__init__.py',
+    'tooling/ci_suites/nsis_source_selection.py',
+    'tooling/ci_suites/distribution_source_suite.py',
+    'tooling/tests/test_ci_nsis_source_selection.py',
+    'tooling/distribution_build_record.py',
+    'tooling/tests/test_distribution_build_record.py',
+    'tooling/nsis_owned_files.py',
+    'tooling/source_lock_admission.py',
+    'tooling/tests/test_source_lock_admission.py',
+    'tooling/public_surface_policy.py',
+    'tooling/tests/test_public_surface_policy.py',
+    'Cargo.lock',
+    'SOURCE_LOCK.json',
+    'apps/studio/package-lock.json',
+)
+
+def scope_rosters(scope):
+    require(scope in ("nsis_source", "distribution_source"), "unknown source verification scope")
+    return ROSTERS if scope == "nsis_source" else DISTRIBUTION_ROSTERS
+
+def scope_source_paths(scope):
+    scope_rosters(scope)
+    paths = SOURCE_PATHS if scope == "nsis_source" else DISTRIBUTION_SOURCE_PATHS
+    require(len(paths) == len(set(paths)), "duplicate source closure member")
+    return paths
+
+def module_scope(module):
+    if module in ROSTERS:
+        return "nsis_source"
+    require(module in DISTRIBUTION_ROSTERS, "unknown original source-test module")
+    return "distribution_source"
+
+def scope_identities(scope):
+    rosters = scope_rosters(scope)
+    return [(mode, module,
+             "discovery:" + adapter + ".py" if mode == "discovery"
+             else "dotted:tooling.ci_suites." + adapter)
+            for mode in ("discovery", "dotted")
+            for module, (_, _, adapter) in rosters.items()]
+
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -174,12 +241,13 @@ def read_original(path, limit=16 * 1024 * 1024):
             and len(raw) == before.st_size, "original changed during read")
     return raw
 
-def source_snapshot(root, expected_source):
+def source_snapshot(root, expected_source, scope="nsis_source"):
+    paths = scope_source_paths(scope)
     source = source_state(root, expected_source)
-    tracked = git(root, "ls-files", "--error-unmatch", "--", *SOURCE_PATHS).splitlines()
-    require(sorted(tracked) == sorted(SOURCE_PATHS), "source closure is incomplete")
+    tracked = git(root, "ls-files", "--error-unmatch", "--", *paths).splitlines()
+    require(sorted(tracked) == sorted(paths), "source closure is incomplete")
     files = {}
-    for relative in SOURCE_PATHS:
+    for relative in paths:
         raw = read_original(root / relative)
         files[relative] = {"bytes": len(raw), "sha256": digest(raw)}
     require(source_state(root, source["executed_source_sha"]) == source,
@@ -208,22 +276,30 @@ def validate_definition(raw, expected):
             "source method roster differs from closed contract")
 
 def selection_contract(module, mode, platform):
-    require(module in ROSTERS and mode in ("discovery", "dotted")
-            and platform in ("linux", "win32"), "unknown contract or platform")
-    total, names, _ = ROSTERS[module]
+    scope = module_scope(module)
+    rosters = scope_rosters(scope)
+    require(mode in ("discovery", "dotted") and platform in ("linux", "win32"),
+            "unknown contract or platform")
+    total, names, _ = rosters[module]
     require(len(names) == len(set(names)) == total, "closed roster is inconsistent")
     prefix = ("" if mode == "discovery" else "tooling.tests.") + module + "."
-    unavailable = WINDOWS_ONLY if module == "test_nsis_owned_files" and platform == "linux" else frozenset()
+    unavailable = frozenset()
+    reason = "requires real Windows sharing semantics; mandatory Windows gate"
+    if module == "test_nsis_owned_files" and platform == "linux":
+        unavailable = WINDOWS_ONLY
+    elif scope == "distribution_source" and platform == "win32":
+        unavailable = DISTRIBUTION_POSIX_ONLY
+        reason = "requires a real POSIX FIFO; mandatory Linux gate"
     require(unavailable.issubset(names), "unknown platform exclusion")
     return {
-        "schema": "motionwright.nsis-source-selection/1",
+        "schema": ("motionwright.nsis-source-selection/1" if scope == "nsis_source"
+                   else "motionwright.distribution-source-selection/1"),
         "original_module": module, "entry_point": mode, "platform": platform,
         "required_total": total, "required_selected": total - len(unavailable),
         "expected_ids": sorted(prefix + name for name in names),
         "selected_ids": sorted(prefix + name for name in names if name not in unavailable),
-        "not_applicable": [{"id": prefix + name, "status": "NOT_APPLICABLE",
-            "reason": "requires real Windows sharing semantics; mandatory Windows gate"}
-            for name in sorted(unavailable)],
+        "not_applicable": [{"id": prefix + name, "status": "NOT_APPLICABLE", "reason": reason}
+                           for name in sorted(unavailable)],
     }
 
 def cases(suite):
@@ -236,17 +312,20 @@ def cases(suite):
 def select_original_suite(module, adapter_module):
     require(Path.cwd().resolve() == ROOT and sys.platform in ("linux", "win32"),
             "unexpected checkout or platform")
-    before = source_snapshot(ROOT, None)
-    _, _, adapter = ROSTERS[module]
+    scope = module_scope(module)
+    rosters = scope_rosters(scope)
+    before = source_snapshot(ROOT, None, scope)
+    _, _, adapter = rosters[module]
     require(adapter_module in (adapter, "tooling.ci_suites." + adapter),
             "unrecognized adapter entry point")
     mode = "discovery" if adapter_module == adapter else "dotted"
     contract = selection_contract(module, mode, sys.platform)
-    for original, (_, names, _) in ROSTERS.items():
+    # Only this scope's originals are loaded. Dependency fixture modules remain
+    # source-bound, but their unrelated test classes receive no execution credit.
+    for original, (_, names, _) in rosters.items():
         paths = selected_files(ROOT, "tooling/tests", [original + ".py"])
         require(len(paths) == 1, "ambiguous original test file")
         validate_definition(read_original(paths[0]), names)
-    # A fresh loader preserves each original entry point's import behavior.
     loader = unittest.TestLoader()
     suite = (loader.discover(str(ROOT / "tooling/tests"), pattern=module + ".py")
              if mode == "discovery" else
@@ -258,10 +337,10 @@ def select_original_suite(module, adapter_module):
     selected = [case for case in original_cases if case.id() in contract["selected_ids"]]
     require(sorted(case.id() for case in selected) == contract["selected_ids"],
             "selected runtime roster differs")
-    require(source_snapshot(ROOT, before["executed_source_sha"]) == before,
+    require(source_snapshot(ROOT, before["executed_source_sha"], scope) == before,
             "source changed while loading tests")
-    print(PREFIX + json.dumps({**contract, "discovered_ids": sorted(ids),
-                              "source": before}, sort_keys=True), flush=True)
+    print(PREFIX + json.dumps({**contract, "discovered_ids": sorted(ids), "source": before},
+                             sort_keys=True), flush=True)
     return unittest.TestSuite(selected)
 
 def parse_selection(stdout):
@@ -307,21 +386,25 @@ def executed_test_ids(stderr):
     return observed
 
 
-def validate_receipt(root, report, before, after, platform, github):
+def validate_receipt(root, report, before, after, platform, github, scope="nsis_source"):
+    rosters = scope_rosters(scope)
+    paths = scope_source_paths(scope)
+    require(platform in ("linux", "win32"), "unknown receipt platform")
     require(before == after, "source changed during execution")
     require(set(before) == {"executed_source_sha", "tree_sha", "files"}
-            and set(before["files"]) == set(SOURCE_PATHS), "incomplete source observation")
+            and set(before["files"]) == set(paths), "incomplete source observation")
+    require(all(isinstance(row, dict) and set(row) == {"bytes", "sha256"} and type(row.get("bytes")) is int
+                and row["bytes"] >= 0 and isinstance(row.get("sha256"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
+                for row in before["files"].values()), "invalid physical source fingerprint")
     require(all(isinstance(before.get(key), str) and re.fullmatch(r"[0-9a-f]{40}", before[key])
                 for key in ("executed_source_sha", "tree_sha")), "invalid source identity")
     require(set(github) == set(GITHUB_KEYS) and all(isinstance(v, str) and v for v in github.values())
             and github["GITHUB_SHA"] == before["executed_source_sha"], "missing job identity")
     raw_receipt = read_original(report)
     receipt = json.loads(raw_receipt, object_pairs_hook=strict_object)
-    adapter_paths = ["tooling/ci_suites/nsis_source_suite.py", "tooling/ci_suites/source_lock_suite.py"]
-    identities = [("discovery", "test_nsis_owned_files", "discovery:nsis_source_suite.py"),
-                  ("discovery", "test_source_lock_admission", "discovery:source_lock_suite.py"),
-                  ("dotted", "test_nsis_owned_files", "dotted:tooling.ci_suites.nsis_source_suite"),
-                  ("dotted", "test_source_lock_admission", "dotted:tooling.ci_suites.source_lock_suite")]
+    adapter_paths = ["tooling/ci_suites/" + adapter + ".py" for _, _, adapter in rosters.values()]
+    identities = scope_identities(scope)
     require(receipt.get("schema") == "motionwright.unittest-execution/1"
             and receipt.get("status") == "PASS" and type(receipt.get("exit_code")) is int
             and receipt["exit_code"] == 0 and receipt.get("require_complete") is True
@@ -345,7 +428,7 @@ def validate_receipt(root, report, before, after, platform, github):
         contract = selection_contract(module, mode, platform)
         step = receipt["steps"][index]
         count = contract["required_selected"]
-        adapter = ROSTERS[module][2]
+        adapter = rosters[module][2]
         suffix = ["-B", "-E", "-s", "-m", "unittest"]
         suffix += (["discover", "-s", "tooling/ci_suites", "-p", adapter + ".py", "-v"]
                    if mode == "discovery" else ["tooling.ci_suites." + adapter, "-v"])
@@ -376,19 +459,27 @@ def validate_receipt(root, report, before, after, platform, github):
         require(sorted(observed) == contract["selected_ids"], "original executed names differ")
         admitted.append({"entry_point": step["entry_point"], "executed_ids": sorted(observed),
                          "not_applicable": contract["not_applicable"]})
-    return {"schema": "motionwright.nsis-source-admission/1", "status": "PASS",
+    admitted_record = {"schema": ("motionwright.nsis-source-admission/1" if scope == "nsis_source"
+                                   else "motionwright.distribution-source-admission/1"), "status": "PASS",
             "source_before": before, "source_after": after, "platform": platform,
             "github": github, "receipt_sha256": digest(raw_receipt), "entry_points": admitted,
-            "unique_applicable_controls": sum(selection_contract(m, "discovery", platform)["required_selected"] for m in ROSTERS),
+            "unique_applicable_controls": sum(selection_contract(m, "discovery", platform)["required_selected"] for m in rosters),
             "invocations": sum(len(item["executed_ids"]) for item in admitted),
             "nsis_compilation": "NOT_RUN", "installer_execution": "NOT_RUN",
             "human_acceptance": "NOT_RUN", "release_authorized": False}
+    if scope == "distribution_source":
+        admitted_record.update(verification_scope=scope, source_tests_only=True,
+            distribution_authorization="NOT_GRANTED", payload_build_causality="NOT_PROVEN",
+            installed_application="NOT_RUN", signing="NOT_RUN",
+            historical_nsis_source_suites="NOT_SELECTED", historical_nsis_success_credit=0)
+    return admitted_record
 
-def run_source_gate(root, output, expected_source):
+def run_source_gate(root, output, expected_source, scope="nsis_source"):
+    rosters = scope_rosters(scope)
     root = root.resolve(strict=True)
     output = output.resolve()
     require(not output.exists() and not output.is_relative_to(root), "existing or in-checkout output refused")
-    before = source_snapshot(root, expected_source)
+    before = source_snapshot(root, expected_source, scope)
     output.mkdir()
     temporary = output / "temporary"
     temporary.mkdir()
@@ -397,24 +488,25 @@ def run_source_gate(root, output, expected_source):
     report = output / "receipt.json"
     with (output / "source-before.json").open("x", encoding="utf-8") as stream:
         json.dump(before, stream, indent=2, sort_keys=True)
-    code, receipt = run_suite(root, "tooling/ci_suites",
-        ["nsis_source_suite.py", "source_lock_suite.py"], "both", report,
-        expected_source, True, 180)
-    # UNKNOWN retains originals and ends here; it is never retried or read back as success.
+    patterns = [adapter + ".py" for _, _, adapter in rosters.values()]
+    code, receipt = run_suite(root, "tooling/ci_suites", patterns, "both", report,
+                              expected_source, True, 180)
+    # UNKNOWN retains originals and ends here: no additional source query or retry.
     if receipt["status"] == "UNKNOWN":
-        return code or 124
-    after = source_snapshot(root, expected_source)
+        return code if type(code) is int and code != 0 else 124
+    require(type(code) is int, "source runner exit is not an integer")
+    after = source_snapshot(root, expected_source, scope)
     with (output / "source-after.json").open("x", encoding="utf-8") as stream:
         json.dump(after, stream, indent=2, sort_keys=True)
     if code:
         return code
     admitted = validate_receipt(root, report, before, after, sys.platform,
-                               {key: os.environ[key] for key in GITHUB_KEYS})
+                               {key: os.environ[key] for key in GITHUB_KEYS}, scope)
     with (output / "readback.json").open("x", encoding="utf-8") as stream:
         json.dump(admitted, stream, indent=2, sort_keys=True)
         stream.write("\n")
     print(json.dumps({"status": admitted["status"],
-        "source_sha": before["executed_source_sha"],
+        "source_sha": before["executed_source_sha"], "verification_scope": scope,
         "invocations": admitted["invocations"], "platform": sys.platform}))
     return 0
 
@@ -423,11 +515,12 @@ def main(argv=None):
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--expected-source", required=True)
+    parser.add_argument("--scope", choices=("nsis_source", "distribution_source"), default="nsis_source")
     args = parser.parse_args(argv)
     try:
-        return run_source_gate(args.repo, args.output, args.expected_source)
+        return run_source_gate(args.repo, args.output, args.expected_source, args.scope)
     except (ValueError, OSError, SyntaxError) as exc:
-        print("NSIS/source-lock source gate refused: " + str(exc), file=sys.stderr)
+        print("Selected source gate refused: " + str(exc), file=sys.stderr)
         return 2
 
 if __name__ == "__main__":
