@@ -62,12 +62,6 @@ export default function CreativeEvaluatorWorkbench({project,scene,commit,busy,on
   const evaluate=async()=>{
     if(enabled&&latest&&scene)await editor.submit({kind:"evaluate",sceneId:scene.id});
   };
-  // The existing Experiment has its own request-only acknowledgement contract.
-  // Preserve that separate E13 flow and surface rejection without upgrading its
-  // void callback to an admission or changing its current comparison oracles.
-  const experimentCommit=async(change:Change):Promise<void>=>{
-    try{await commit(change);}catch(reason){editor.reportError(reason);}
-  };
   return <div className="production-plan" aria-label="Creative evaluation playbooks">
     <div className="production-section-title">
       <FileCheck2 size={18}/>
@@ -162,6 +156,9 @@ export default function CreativeEvaluatorWorkbench({project,scene,commit,busy,on
           result.outcome==="pass"?"Technical pass":"Technical fail"}: {result.explanation}</li>)}</ul>
     </article>):<p className="production-help">No evaluator reports for this scene.</p>}
     <EvaluatorExperimentWorkbench project={project} scene={scene} selectedEvaluator={latest}
-      busy={busy||editor.working||!!editor.session.draft.pending||!!editor.session.backupError||!!editor.session.failedSource} commit={experimentCommit}/>
+      busy={busy||editor.working}
+      registrationBlocked={!!editor.session.draft.pending||!!editor.session.backupError||!!editor.session.failedSource}
+      pinBaseline={()=>{if(selected&&editor.session.draft.fields.selected?.raw!==selected)editor.edit("selected",selected);}}
+      commit={commit}/>
   </div>;
 }

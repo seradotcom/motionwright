@@ -460,12 +460,10 @@ function stableReceiptContent(before: Project, receipt: Project): void {
     .filter(([key]) => !["evaluator_bundles", "evaluation_reports"].includes(key)));
   if (!sameEvaluatorValue(design(before), design(receipt))) throw new Error("The evaluator receipt changed unrelated production design.");
 }
-export async function assertEvaluatorReceipt(change: EvaluatorChange, pending: EvaluatorPending, value: Project): Promise<void> {
-  const before = fullProject(JSON.parse(pending.sourceProjectJson)), receipt = structuredClone(fullProject(value));
+export async function assertEvaluatorChangeReceipt(change: EvaluatorChange, sourceProject: Project, value: Project): Promise<void> {
+  const before = structuredClone(fullProject(sourceProject)), receipt = structuredClone(fullProject(value));
   if (evaluatorScope(receipt) !== evaluatorScope(before) || receipt.revision !== before.revision + 1
     || !Number.isSafeInteger(receipt.revision)) throw new Error("The original evaluator response has foreign or advanced authority.");
-  if (pending.changeJson !== JSON.stringify(change) || !sameEvaluatorValue(pending.source, evaluatorSource(before)))
-    throw new Error("The evaluator response differs from its retained source/command.");
   assertCommandSource(before, change); stableReceiptContent(before, receipt);
   const oldBundles = before.production_design?.evaluator_bundles ?? [], oldReports = before.production_design?.evaluation_reports ?? [];
   const bundles = receipt.production_design?.evaluator_bundles ?? [], reports = receipt.production_design?.evaluation_reports ?? [];
@@ -486,6 +484,16 @@ export async function assertEvaluatorReceipt(change: EvaluatorChange, pending: E
     evaluator_sha256: await evaluatorDigest(bundle), scene_id: scene.id, source_generation: before.generation,
     source_revision: before.revision, observations, conclusion, creative_approval: "not_assessed" };
   if (!sameEvaluatorValue(added, expected)) throw new Error("The evaluation receipt does not confirm the exact source-bound technical report; human approval remains not assessed.");
+}
+/** Shared read-only receipt validation; neither export grants dispatch authority. */
+export { fullProject as checkedEvaluatorProject };
+export async function assertEvaluatorReceipt(change: EvaluatorChange, pending: EvaluatorPending, value: Project): Promise<void> {
+  const before = fullProject(JSON.parse(pending.sourceProjectJson)), receipt = structuredClone(fullProject(value));
+  if (evaluatorScope(receipt) !== evaluatorScope(before) || receipt.revision !== before.revision + 1
+    || !Number.isSafeInteger(receipt.revision)) throw new Error("The original evaluator response has foreign or advanced authority.");
+  if (pending.changeJson !== JSON.stringify(change) || !sameEvaluatorValue(pending.source, evaluatorSource(before)))
+    throw new Error("The evaluator response differs from its retained source/command.");
+  await assertEvaluatorChangeReceipt(change, before, receipt);
 }
 /** Only the original live callback may consume pending intent. Readbacks/recovery have no live dispatch permission. */
 export async function acknowledgeEvaluatorSubmission(session: EvaluatorSession, id: string, change: EvaluatorChange, value: Project): Promise<void> {
