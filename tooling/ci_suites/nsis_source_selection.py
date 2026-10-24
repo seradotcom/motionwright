@@ -272,6 +272,41 @@ def parse_selection(stdout):
     require(isinstance(record, dict), "selection record must be an object")
     return record
 
+def executed_test_ids(stderr):
+    """Bind every verbose unittest header to one terminal success."""
+    header = re.compile(r"^(test_\w+) \(([^()\n]+)\) \.\.\. (.*)$")
+    failed_status = re.compile(r"(?:FAIL|ERROR|skipped(?: .*)?|expected failure|unexpected success)")
+    observed = []
+    pending = None
+    for line in stderr.splitlines():
+        match = header.fullmatch(line)
+        if match:
+            require(pending is None, "new test before previous terminal status")
+            short, identity, tail = match.groups()
+            require(identity.rsplit(".", 1)[-1] == short,
+                    "test label and identity differ")
+            require(identity not in observed, "duplicate executed identity")
+            require(failed_status.fullmatch(tail) is None,
+                    "non-successful test status")
+            pending = identity
+            if tail == "ok":
+                observed.append(pending)
+                pending = None
+            continue
+        require(failed_status.fullmatch(line) is None, "non-successful test status")
+        if line == "ok":
+            require(pending is not None, "orphan test success")
+            observed.append(pending)
+            pending = None
+            continue
+        if pending is not None:
+            require(not line.startswith(("Ran ", "FAILED", "OK"))
+                    and not re.fullmatch(r"-{5,}", line),
+                    "test has no terminal success before summary")
+    require(pending is None, "unfinished test result")
+    return observed
+
+
 def validate_receipt(root, report, before, after, platform, github):
     require(before == after, "source changed during execution")
     require(set(before) == {"executed_source_sha", "tree_sha", "files"}
@@ -337,7 +372,7 @@ def validate_receipt(root, report, before, after, platform, github):
                             "source": before}, "original selection or source record differs")
         stderr = streams["stderr"].decode("utf-8", "strict").replace("\r\n", "\n").replace("\r", "\n")
         require(parse_unittest_summary(stderr) == expected_counts, "original result summary differs")
-        observed = re.findall(r"(?m)^test_\w+ \(([^()\n]+)\) \.\.\. ok$", stderr)
+        observed = executed_test_ids(stderr)
         require(sorted(observed) == contract["selected_ids"], "original executed names differ")
         admitted.append({"entry_point": step["entry_point"], "executed_ids": sorted(observed),
                          "not_applicable": contract["not_applicable"]})

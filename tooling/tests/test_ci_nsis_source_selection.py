@@ -246,5 +246,65 @@ class OriginalReceiptTests(unittest.TestCase):
         gate.validate_receipt(self.root, self.report, self.before, self.after, self.platform, self.github)
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.base.iterdir() if p.is_file()})
 
+
+    def test_expected_interleaved_diagnostic_keeps_both_original_entrypoint_identities(self):
+        suffix = "DistributionOwnedFilesTests.test_admitted_main_capture_mutation_cannot_publish_an_include"
+        method = suffix.rsplit(".", 1)[1]
+        for platform in ("linux", "win32"):
+            self.make(platform)
+            for index, prefix in ((0, "test_nsis_owned_files."), (2, "tooling.tests.test_nsis_owned_files.")):
+                raw = self.read_log(index, "stderr")
+                original = f"{method} ({prefix}{suffix}) ... ok\n".encode()
+                retained = (f"{method} ({prefix}{suffix}) ... "
+                            "nsis_owned_files: capture changed during capture\nok\n").encode()
+                self.assertEqual(raw.count(original), 1)
+                self.log(index, "stderr", raw.replace(original, retained, 1))
+            admitted = self.admit()
+            self.assertEqual(admitted["invocations"], 152 if platform == "linux" else 156)
+
+    def test_interleaved_diagnostic_cannot_supply_a_missing_foreign_or_failed_result(self):
+        suffix = "DistributionOwnedFilesTests.test_admitted_main_capture_mutation_cannot_publish_an_include"
+        method = suffix.rsplit(".", 1)[1]
+        identity = "test_nsis_owned_files." + suffix
+        original = f"{method} ({identity}) ... ok\n".encode()
+        header = f"{method} ({identity}) ... expected diagnostic\n".encode()
+        controls = (
+            header,
+            header + b"FAIL\n",
+            header + b"ERROR\n",
+            header + b"skipped 'unavailable'\n",
+            header + b"ok\nok\n",
+            header + original,
+            header + b"ok\n" + original,
+            header.replace(identity.encode(), (identity + "_foreign").encode()) + b"ok\n",
+            header.replace(method.encode(), b"test_foreign", 1) + b"ok\n",
+            b"ok\n" + original,
+        )
+        for control in controls:
+            with self.subTest(control=control):
+                self.make("linux")
+                raw = self.read_log(0, "stderr")
+                self.assertEqual(raw.count(original), 1)
+                self.log(0, "stderr", raw.replace(original, control, 1))
+                self.refused()
+
+    def test_real_unittest_stderr_interleaving_is_parsed_without_reexecuting_product(self):
+        import contextlib
+        import io
+        method = "test_admitted_main_capture_mutation_cannot_publish_an_include"
+        for module in ("test_nsis_owned_files", "tooling.tests.test_nsis_owned_files"):
+            stream = io.StringIO()
+            def action(case):
+                print("nsis_owned_files: capture changed during capture", file=sys.stderr)
+            case_type = type("DistributionOwnedFilesTests", (unittest.TestCase,),
+                             {"__module__": module, method: action})
+            with contextlib.redirect_stderr(stream):
+                result = unittest.TextTestRunner(stream=stream, verbosity=2).run(
+                    unittest.TestSuite([case_type(method)]))
+            self.assertTrue(result.wasSuccessful())
+            self.assertEqual(result.testsRun, 1)
+            self.assertEqual(gate.executed_test_ids(stream.getvalue()),
+                             [module + ".DistributionOwnedFilesTests." + method])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
