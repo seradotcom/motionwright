@@ -11,6 +11,8 @@ import {
   releaseIntegrationOutcome,repairIntegrationPointer,resolveIntegrationDraft,retainIntegrationFailure,
   retryRetainedIntegrationIntent,hasInterruptedIntegrationIntent,assertIntegrationReviewOrigins,
   retainReviewedIntegrationIntent,settleIntegrationFailure,writeIntegrationCopy,
+  assertIntegrationRecoverySource,readIntegrationRecoverySource,originalIntegrationRecoveryCopy,readIntegrationCopies,
+  type IntegrationRecoveryObservation,type IntegrationStorage,
   type IntegrationCustody,type IntegrationDraft,type IntegrationSubmission,
 } from "./integrationAuthoringDraft";
 const clone=<T,>(value:T):T=>structuredClone(value);
@@ -419,5 +421,115 @@ describe("non-authoritative integration input salvage",()=>{
     const oversized=editIntegrationField(submission.draft,"extensionSource","x".repeat(65_537));
     const forged=JSON.stringify({schema:"motionwright.integration-recovery/1",scope:oversized.scope,writerId:writer,updatedAt:1,draft:oversized});
     expect(()=>decodeIntegrationCopy(forged,oversized.scope,writer)).toThrow();
+  });
+});
+
+
+describe("integration first observed recovery source",()=>{
+  const observation=():IntegrationRecoveryObservation=>({pointerObserved:false,pointer:null,rawObserved:false,raw:null});
+  function source(){
+    const {value,submission}=prepared();dispatchIntegrationSubmission(submission,submission.draft,value);
+    const storage=new Memory(),pointers=new Memory(),writer=crypto.randomUUID(),raw=copy(submission.draft,writer);
+    const scope=submission.draft.scope,key=integrationCopyKey(scope,writer),pointerKey=integrationPointerKey(scope);
+    storage.setItem(key,raw);pointers.setItem(pointerKey,writer);
+    return {value,submission,storage,pointers,writer,raw,scope,key,pointerKey,observed:observation()};
+  }
+  it("a failed first pointer read recovers the original UNKNOWN only after a successful explicit read",()=>{
+    const x=source();let fail=true;
+    const pointers={getItem:(key:string)=>{if(fail)throw new Error("temporary pointer read");return x.pointers.getItem(key);}};
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,x.storage,pointers)).toThrow(/temporary/);
+    expect(x.observed).toEqual(observation());fail=false;
+    const recovered=readIntegrationRecoverySource(x.scope,x.observed,x.storage,pointers)!;
+    expect(recovered.pending).toEqual(x.submission.draft.pending);
+    expect(x.storage.getItem(x.key)).toBe(x.raw);expect(x.pointers.getItem(x.pointerKey)).toBe(x.writer);
+  });
+  it("a foreign pointer after the first data read failed cannot be adopted by Retry",()=>{
+    const x=source(),unavailable={getItem:(_key:string):string|null=>{throw new Error("temporary data read");}};
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,unavailable,x.pointers)).toThrow(/temporary/);
+    expect(x.observed.pointer).toBe(x.writer);expect(x.observed.rawObserved).toBe(false);
+    const foreign=crypto.randomUUID();x.storage.setItem(integrationCopyKey(x.scope,foreign),copy(ready(x.value),foreign));x.pointers.setItem(x.pointerKey,foreign);
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers)).toThrow(/original Integration recovery pointer changed/);
+    expect(x.observed.pointer).toBe(x.writer);expect(x.observed.rawObserved).toBe(false);
+    expect(x.storage.getItem(x.key)).toBe(x.raw);expect(x.pointers.getItem(x.pointerKey)).toBe(foreign);
+  });
+  it("a listed UNKNOWN is anchored before a later index failure and cannot be replaced under the same writer",()=>{
+    const x=source();let phase:"unavailable"|"listing"|"retry"="unavailable";
+    const storage:IntegrationStorage={get length(){return 2;},key:(index)=>{if(index===1)throw new Error("later index failure");return x.key;},
+      getItem:(key)=>{if(phase==="unavailable")throw new Error("temporary data read");return x.storage.getItem(key);},
+      setItem:(key,value)=>x.storage.setItem(key,value),removeItem:(key)=>x.storage.removeItem(key)};
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,storage,x.pointers)).toThrow(/temporary/);
+    phase="listing";expect(()=>readIntegrationCopies(storage,x.scope,x.observed)).toThrow(/later index/);
+    expect(x.observed.raw).toBe(x.raw);expect(x.observed.rawObserved).toBe(true);
+    const substitute=copy({...x.submission.draft,pending:null},x.writer);x.storage.setItem(x.key,substitute);phase="retry";
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,storage,x.pointers)).toThrow(/original Integration recovery bytes changed/);
+    expect(originalIntegrationRecoveryCopy(x.scope,x.observed)?.raw).toBe(x.raw);
+    expect(originalIntegrationRecoveryCopy(x.scope,x.observed)?.value?.draft.pending).toEqual(x.submission.draft.pending);
+    expect(x.storage.getItem(x.key)).toBe(substitute);
+  });
+  it("a listed null is anchored before continue even when a later index fails",()=>{
+    const x=source();let phase:"unavailable"|"missing"|"retry"="unavailable";
+    const storage:IntegrationStorage={get length(){return 2;},key:(index)=>{if(index===1)throw new Error("later index failure");return x.key;},
+      getItem:(key)=>{if(phase==="unavailable")throw new Error("temporary data read");return phase==="missing"?null:x.storage.getItem(key);},
+      setItem:(key,value)=>x.storage.setItem(key,value),removeItem:(key)=>x.storage.removeItem(key)};
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,storage,x.pointers)).toThrow(/temporary/);
+    phase="missing";expect(()=>readIntegrationCopies(storage,x.scope,x.observed)).toThrow(/later index/);
+    expect(x.observed.rawObserved).toBe(true);expect(x.observed.raw).toBeNull();phase="retry";
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,storage,x.pointers)).toThrow(/original Integration recovery bytes changed/);
+    expect(x.observed.raw).toBeNull();expect(originalIntegrationRecoveryCopy(x.scope,x.observed)).toBeNull();
+    expect(x.storage.getItem(x.key)).toBe(x.raw);
+  });
+  it("corrupt first bytes remain downloadable after a valid same-writer replacement",()=>{
+    const x=source(),corrupt="{damaged original recovery";x.storage.setItem(x.key,corrupt);
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers)).toThrow();
+    expect(x.observed.raw).toBe(corrupt);
+    const substitute=copy({...x.submission.draft,pending:null},x.writer);x.storage.setItem(x.key,substitute);
+    readIntegrationCopies(x.storage,x.scope,x.observed);
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers)).toThrow(/original Integration recovery bytes changed/);
+    expect(originalIntegrationRecoveryCopy(x.scope,x.observed)).toEqual({key:x.key,writerId:x.writer,raw:corrupt,value:null});
+    expect(x.storage.getItem(x.key)).toBe(substitute);expect(x.pointers.getItem(x.pointerKey)).toBe(x.writer);
+  });
+  it("a missing first copy cannot be repaired by substituting a later valid copy",()=>{
+    const x=source();x.storage.removeItem(x.key);
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers)).toThrow(/still missing/);
+    expect(x.observed.rawObserved).toBe(true);expect(x.observed.raw).toBeNull();x.storage.setItem(x.key,x.raw);
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers)).toThrow(/original Integration recovery bytes changed/);
+    expect(x.observed.raw).toBeNull();expect(x.storage.getItem(x.key)).toBe(x.raw);
+  });
+  it("transient reads over unchanged bytes preserve the original UNKNOWN and later blank or returned-to-base input",()=>{
+    const x=source();let fail=true;
+    const storage={getItem:(key:string)=>{if(fail)throw new Error("temporary data read");return x.storage.getItem(key);}};
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,storage,x.pointers)).toThrow(/temporary/);
+    const empty=createIntegrationDraft(x.value);let later=editIntegrationField(empty,"extensionName","typed after failed read");
+    later=editIntegrationField(later,"extensionName",empty.input.extensionName);
+    later=editIntegrationField(later,"extensionVersion","later version");later=editIntegrationField(later,"extensionVersion","");
+    fail=false;const recovered=readIntegrationRecoverySource(x.scope,x.observed,storage,x.pointers)!;
+    const adopted=recoverIntegrationSource(recovered,later,x.value);assertIntegrationRecoverySource(x.scope,x.observed,storage,x.pointers);
+    expect(adopted.pending).toEqual(x.submission.draft.pending);
+    expect(adopted.input.extensionName).toBe(empty.input.extensionName);expect(adopted.input.extensionVersion).toBe("");
+    expect(adopted.input.extensionDigest).toBe(x.submission.draft.input.extensionDigest);
+    expect(integrationUnknown(adopted)).toBe(true);expect(x.storage.getItem(x.key)).toBe(x.raw);
+  });
+  it("source replacement during confirmation retains the first raw observation",()=>{
+    const x=source(),substitute=copy({...x.submission.draft,pending:null},x.writer);let reads=0;
+    const storage={getItem:(key:string)=>{if(key===x.key&&++reads===2)x.storage.setItem(key,substitute);return x.storage.getItem(key);}};
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,storage,x.pointers)).toThrow(/original Integration recovery bytes changed/);
+    expect(x.observed.raw).toBe(x.raw);expect(originalIntegrationRecoveryCopy(x.scope,x.observed)?.raw).toBe(x.raw);
+    expect(x.storage.getItem(x.key)).toBe(substitute);
+  });
+  it("publishing an own successor never excuses a changed original recovery source",()=>{
+    const x=source();readIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers);
+    const own=crypto.randomUUID(),ownRaw=copy(x.submission.draft,own);x.storage.setItem(integrationCopyKey(x.scope,own),ownRaw);x.pointers.setItem(x.pointerKey,own);
+    expect(()=>assertIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers,{writerId:own,raw:ownRaw})).not.toThrow();
+    expect(()=>assertIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers,{writerId:own,raw:ownRaw+" "})).toThrow(/pointer changed/);
+    x.storage.setItem(x.key,copy({...x.submission.draft,pending:null},x.writer));
+    expect(()=>assertIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers,{writerId:own,raw:ownRaw})).toThrow(/original Integration recovery bytes changed/);
+    expect(originalIntegrationRecoveryCopy(x.scope,x.observed)?.raw).toBe(x.raw);expect(x.storage.getItem(integrationCopyKey(x.scope,own))).toBe(ownRaw);
+  });
+  it("an observed empty pointer cannot be replaced during explicit recovery",()=>{
+    const x=source();x.pointers.removeItem(x.pointerKey);
+    expect(readIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers)).toBeNull();
+    expect(x.observed.pointerObserved).toBe(true);expect(x.observed.pointer).toBeNull();x.pointers.setItem(x.pointerKey,x.writer);
+    expect(()=>readIntegrationRecoverySource(x.scope,x.observed,x.storage,x.pointers)).toThrow(/original Integration recovery pointer changed/);
+    expect(x.observed.pointer).toBeNull();expect(x.storage.getItem(x.key)).toBe(x.raw);
   });
 });

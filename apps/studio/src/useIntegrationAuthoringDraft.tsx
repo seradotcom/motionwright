@@ -3,43 +3,47 @@ import { bootstrap, projectHistory } from "./api";
 import { sameValue } from "./creativeProduction";
 import type { Change, Project } from "./types";
 import {
-  acknowledgeIntegrationSubmission, assertIntegrationReviewOrigins, INTEGRATION_COPY_PREFIX, integrationConflict, integrationCopyKey, integrationHasWork,
+  acknowledgeIntegrationSubmission, assertIntegrationReviewOrigins, assertIntegrationRecoverySource, readIntegrationRecoverySource, originalIntegrationRecoveryCopy, INTEGRATION_COPY_PREFIX, integrationConflict, integrationCopyKey, integrationHasWork,
   integrationOutcomeMatches, integrationPointerKey, integrationPreparationMatches, integrationScope,
   integrationUnknown, createIntegrationDraft, decodeIntegrationCopy, dispatchIntegrationSubmission, editIntegrationField, editIntegrationFields, integrationSnapshot, encodeIntegrationFile,
   inspectIntegrationOutcome, prepareIntegrationSubmission, readIntegrationCopies, reconcileIntegrationDraft, releaseIntegrationOutcome,
   resolveIntegrationDraft, retainIntegrationFailure, retainReviewedIntegrationIntent, settleIntegrationFailure, writeIntegrationCopy, integrationReviewOrigins, recoverIntegrationSource, repairIntegrationPointer, hasInterruptedIntegrationIntent, retryRetainedIntegrationIntent,
 } from "./integrationAuthoringDraft";
-import type { IntegrationCustody, IntegrationDraft, IntegrationField, IntegrationInput, IntegrationOutcomeReview, IntegrationAction, IntegrationRecoveryEntry } from "./integrationAuthoringDraft";
+import type { IntegrationCustody, IntegrationDraft, IntegrationField, IntegrationInput, IntegrationOutcomeReview, IntegrationAction, IntegrationRecoveryEntry, IntegrationRecoveryObservation } from "./integrationAuthoringDraft";
 
 type IntegrationSession = { draft: IntegrationDraft; custody: IntegrationCustody; preparing: boolean; inFlight: boolean;
   error: string | null; backupError: string | null; recoveryProblem: string | null; notice: string | null;
-  recoveryPointerUnreadable: boolean;
+  recoveryObservation: IntegrationRecoveryObservation | null;
   copies: IntegrationRecoveryEntry[]; limited: boolean; notify?: () => void };
 const sessions = new Map<string, IntegrationSession>();
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 function refreshCopies(session: IntegrationSession) {
-  try { const value = readIntegrationCopies(window.localStorage, session.draft.scope); session.copies = value.entries; session.limited = value.limited; }
+  try { const value = readIntegrationCopies(window.localStorage, session.draft.scope, session.recoveryObservation); session.copies = value.entries; session.limited = value.limited; }
   catch (reason) { session.backupError = message(reason); }
+  finally {
+    // A later listing or same-writer replacement cannot erase the first bytes
+    // seen while reopening. Their existing Download action remains exact.
+    const original = originalIntegrationRecoveryCopy(session.draft.scope, session.recoveryObservation);
+    if (original) session.copies = [original, ...session.copies.filter(copy => copy.key !== original.key)];
+  }
 }
 function getSession(project: Project): IntegrationSession {
   const scope = integrationScope(project), existing = sessions.get(scope); if (existing) return existing;
-  let pointer: string | null = null, recovered: IntegrationDraft | null = null, problem: string | null = null, pointerRead = false;
+  let pointer: string | null = null, recovered: IntegrationDraft | null = null, problem: string | null = null;
+  const observation: IntegrationRecoveryObservation = { pointerObserved: false, pointer: null, rawObserved: false, raw: null };
+  let recoveryObservation: IntegrationRecoveryObservation | null = null;
   try {
     pointer = window.sessionStorage.getItem(integrationPointerKey(scope));
-    pointerRead = true;
+    observation.pointer = pointer; observation.pointerObserved = true;
     const reload = performance.getEntriesByType("navigation").some(value => (value as PerformanceNavigationTiming).type === "reload");
     if (pointer && reload && !window.opener) {
-      const raw = window.localStorage.getItem(integrationCopyKey(scope, pointer));
-      if (raw === null) throw new Error("The earlier Integration recovery copy is missing. Its pointer was kept.");
-      recovered = decodeIntegrationCopy(raw, scope, pointer).draft;
-      if (window.localStorage.getItem(integrationCopyKey(scope, pointer)) !== raw || window.sessionStorage.getItem(integrationPointerKey(scope)) !== pointer)
-        throw new Error("The earlier Integration source changed while this document reopened. Its observed inputs stay separate.");
-      assertIntegrationReviewOrigins(window.localStorage, recovered);
+      recoveryObservation = observation;
+      recovered = readIntegrationRecoverySource(scope, observation, window.localStorage, window.sessionStorage);
     }
-  } catch (reason) { problem = message(reason); }
+  } catch (reason) { problem = message(reason); recoveryObservation = observation; }
   const session: IntegrationSession = { draft: recovered ? reconcileIntegrationDraft(recovered, project) : createIntegrationDraft(project),
     custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: pointer }, preparing: false, inFlight: false,
-    error: null, backupError: problem, recoveryProblem: problem, recoveryPointerUnreadable: !pointerRead,
+    error: null, backupError: problem, recoveryProblem: problem, recoveryObservation,
     notice: recovered ? "Recovered your Integration input. No operation was repeated." : null, copies: [], limited: false };
   sessions.set(scope, session); refreshCopies(session); return session;
 }
@@ -51,7 +55,13 @@ function backup(session: IntegrationSession): boolean {
       const old = decodeIntegrationCopy(session.custody.expectedRaw, session.draft.scope, session.custody.writerId).draft;
       if (!integrationHasWork(old) && !sameValue(old, session.draft)) fork(session);
     }
-    writeIntegrationCopy(window.localStorage, window.sessionStorage, session.draft, session.custody);
+    const original = session.recoveryObservation, custody = session.custody;
+    if (original) assertIntegrationRecoverySource(session.draft.scope, original, window.localStorage, window.sessionStorage,
+      custody.expectedRaw === null ? undefined : { writerId: custody.writerId, raw: custody.expectedRaw });
+    writeIntegrationCopy(window.localStorage, window.sessionStorage, session.draft, custody);
+    if (original) assertIntegrationRecoverySource(session.draft.scope, original, window.localStorage, window.sessionStorage,
+      custody.expectedRaw === null ? undefined : { writerId: custody.writerId, raw: custody.expectedRaw });
+    session.recoveryObservation = null;
     session.backupError = null; refreshCopies(session); return session.backupError === null;
   } catch (reason) {
     session.backupError = message(reason) + " Current input remains in this editor. Saving requires a verified recovery copy and pointer.";
@@ -96,7 +106,7 @@ export function useIntegrationAuthoringDraft(project: Project, commit: (change: 
     }catch(reason){session.error=message(reason);session.notify?.();}
   }
   async function send(action: IntegrationAction, targetId: string | null = null) {
-    if (externalBusy || session.preparing || session.inFlight || session.backupError || integrationUnknown(session.draft)) return;
+    if (externalBusy || session.preparing || session.inFlight || session.backupError || session.recoveryProblem || integrationUnknown(session.draft)) return;
     const source = structuredClone(session.draft), sourceProject = structuredClone(current.current), started = epoch.current, id = crypto.randomUUID();
     session.preparing = true; session.error = null; session.notice = null; session.notify?.();
     let prepared: Awaited<ReturnType<typeof prepareIntegrationSubmission>>;
@@ -144,23 +154,16 @@ export function useIntegrationAuthoringDraft(project: Project, commit: (change: 
         replace(session,retained.draft,false);setReview(null);refreshCopies(session);session.notify?.();return;
       }
       if (session.recoveryProblem) {
-        const pointer = window.sessionStorage.getItem(integrationPointerKey(session.draft.scope));
-        if (!session.recoveryPointerUnreadable && pointer !== session.custody.expectedPointer) throw new Error("The earlier Integration recovery pointer changed. Review its exact copies first.");
-        if (pointer) {
-          const raw = window.localStorage.getItem(integrationCopyKey(session.draft.scope, pointer));
-          if (raw === null) throw new Error("The earlier Integration copy remains missing.");
-          const recovered = decodeIntegrationCopy(raw, session.draft.scope, pointer).draft;
-          // Failed recovery can conceal an UNKNOWN. Carry it forward without
-          // overwriting any input typed while the read was unavailable.
-          assertIntegrationReviewOrigins(window.localStorage, recovered);
-          const adopted = recoverIntegrationSource(recovered, session.draft, current.current);
-          if (window.localStorage.getItem(integrationCopyKey(session.draft.scope, pointer)) !== raw
-            || window.sessionStorage.getItem(integrationPointerKey(session.draft.scope)) !== pointer
-            || window.localStorage.getItem(integrationCopyKey(session.draft.scope, pointer)) !== raw) throw new Error("The earlier Integration source changed during Retry.");
-          session.draft = adopted;
-        }
-        if (window.sessionStorage.getItem(integrationPointerKey(session.draft.scope)) !== pointer) throw new Error("The earlier Integration pointer changed during Retry.");
-        session.custody.expectedPointer = pointer; session.recoveryPointerUnreadable = false; session.recoveryProblem = null;
+        const observed = session.recoveryObservation;
+        if (!observed) throw new Error("The original Integration recovery observation is unavailable. No different copy was adopted.");
+        const recovered = readIntegrationRecoverySource(session.draft.scope, observed, window.localStorage, window.sessionStorage);
+        // A failed read can conceal an UNKNOWN. Keep its exact operation and
+        // overlay only fields actually authored later, including empty text.
+        const adopted = recovered ? recoverIntegrationSource(recovered, session.draft, current.current) : session.draft;
+        assertIntegrationRecoverySource(session.draft.scope, observed, window.localStorage, window.sessionStorage);
+        session.draft = adopted;
+        session.custody.expectedPointer = observed.pointer; session.recoveryProblem = null;
+        epoch.current++; setReview(null);
       }
       repairIntegrationPointer(window.localStorage, window.sessionStorage, session.draft, session.custody);
       backup(session); session.notify?.();
@@ -228,6 +231,7 @@ export function useIntegrationAuthoringDraft(project: Project, commit: (change: 
     if(hasInterruptedIntegrationIntent(session.custody)){session.error="Retry the interrupted local Integration publication before discarding its retained copies.";session.notify?.();return;}
     try {
       const pointerKey = integrationPointerKey(session.draft.scope), pointsHere = window.sessionStorage.getItem(pointerKey) === copy.writerId;
+      if (session.recoveryObservation?.pointer === copy.writerId) throw new Error("The original Integration recovery observation remains required. Download its exact bytes before resolving that source; it cannot be discarded during recovery.");
       if (integrationReviewOrigins(session.draft).has(copy.writerId)) throw new Error("This UNKNOWN copy is a retained Integration review origin. Discard cannot erase that publication condition.");
       if (pointsHere && session.recoveryProblem) throw new Error("The earlier Integration source may contain an UNKNOWN operation. Its exact bytes remain preserved until that source can be read and reviewed.");
       if (pointsHere && !session.recoveryProblem && !backup(session)) return;
@@ -243,7 +247,7 @@ export function useIntegrationAuthoringDraft(project: Project, commit: (change: 
       && integrationPreparationMatches(token.draft, token.source, session.draft, current.current);
   }
   return { project, session, draft: session.draft, busy, conflict, review, reviewing, edit, editMany, loadFields, send, choose, retry, freshCopy, readOutcome, continueEditing, download, restore, discard, authorToken, tokenCurrent,
-    blocked: busy || !!session.backupError || conflict || integrationUnknown(session.draft), hasInput: session.draft.touched.length > 0 };
+    blocked: busy || !!session.backupError || !!session.recoveryProblem || conflict || integrationUnknown(session.draft), hasInput: session.draft.touched.length > 0 };
 }
 
 type IntegrationEditor=ReturnType<typeof useIntegrationAuthoringDraft>;
@@ -300,7 +304,7 @@ export function IntegrationRecoveryFeedback({editor}:{editor:IntegrationEditor})
           <button type="button" className="button secondary compact" onClick={()=>editor.download(copy)}>Download copy {copy.writerId.slice(0,8)}</button>
           <button type="button" className="button secondary compact" disabled={editor.busy||integrationUnknown(draft)||!copy.value}
             onClick={()=>editor.restore(copy)}>Restore copy {copy.writerId.slice(0,8)}</button>
-          <button type="button" className="button secondary compact" disabled={editor.busy||copy.writerId===session.custody.writerId}
+          <button type="button" className="button secondary compact" disabled={editor.busy||copy.writerId===session.custody.writerId||copy.writerId===session.recoveryObservation?.pointer}
             onClick={()=>editor.discard(copy)}>Discard copy {copy.writerId.slice(0,8)}</button>
         </article>)}
       </details>

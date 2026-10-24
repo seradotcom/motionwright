@@ -319,14 +319,16 @@ test("foreign revision and unreadable recovery keep authored input separate with
     await expect(page.getByLabel("Extension digest",{exact:true})).toHaveValue("1e");
     await expect(button(page,"Register versioned descriptor")).toBeDisabled();
     expect(await service.project(source.id)).toEqual(latest);
+    const beforeRecovery=await service.observeStoredProject(latest);
+    const peerMutationCount=mutations(peer).length,peerGrantCount=grants(peer).length;
     const retained=await page.evaluate(()=>{
       const pointer=Object.keys(sessionStorage).find(key=>key.startsWith("motionwright.integration-writer.v1:"));
       if(!pointer)throw new Error("Missing exact integration pointer");
       const writer=sessionStorage.getItem(pointer)!;
       const key=Object.keys(localStorage).find(key=>key.startsWith("motionwright.integration-recovery.v1:")&&key.endsWith(":"+writer));
       if(!key)throw new Error("Missing exact integration data");
-      const raw=localStorage.getItem(key)!;localStorage.setItem(key,"{damaged original recovery");
-      return {key,raw,pointer,writer};
+      const raw=localStorage.getItem(key)!,corrupt="{damaged original recovery";localStorage.setItem(key,corrupt);
+      return {key,raw,pointer,writer,corrupt};
     });
     await page.reload();await open(page,true);await expect(recovery(page).getByRole("alert").first()).toBeVisible();
     await page.getByLabel("Extension display name",{exact:true}).fill("Later name while recovery was unreadable");
@@ -334,17 +336,134 @@ test("foreign revision and unreadable recovery keep authored input separate with
     expect(mutations(service)).toHaveLength(arranged);expect(grants(service)).toHaveLength(grantCount);
     await page.evaluate(({key,raw})=>localStorage.setItem(key,raw),retained);
     await button(page,"Retry integration recovery").click();
+    // Replacing corruption is not a read retry: the first observed bytes must
+    // remain the source. The original implementation silently adopted raw here.
+    await expect(recovery(page).getByRole("alert").filter({hasText:"original Integration recovery bytes changed"}),
+      "INTEGRATION_CORRUPT_SAME_WRITER_REPLACEMENT_REFUSED").toBeVisible();
     await expect(page.getByLabel("Extension display name",{exact:true})).toHaveValue("Later name while recovery was unreadable");
-    await expect(page.getByLabel("Extension digest",{exact:true})).toHaveValue("1e");
-    await expect(page.getByLabel("Extension source",{exact:true})).toHaveValue(extension.source);
-    await expect(page.getByRole("region",{name:"Integration source conflict",exact:true})).toBeVisible();
-    expect(await service.project(source.id)).toEqual(latest);
+    await expect(page.getByLabel("Extension digest",{exact:true})).toHaveValue("");
+    await expect(page.getByLabel("Extension source",{exact:true})).toHaveValue("");
+    await expect(button(page,"Register versioned descriptor")).toBeDisabled();
+    await recovery(page).getByText(/^Local integration copies \(/).click();
+    const downloaded=page.waitForEvent("download");await button(page,"Download copy "+retained.writer.slice(0,8)).click();
+    const downloadedPath=await (await downloaded).path();expect(downloadedPath).not.toBeNull();
+    const originalDownload=JSON.parse(await readFile(downloadedPath!,"utf8"));
+    expect(originalDownload).toEqual({schema:"motionwright.local-input-copy/1",storage_key:retained.key,raw:retained.corrupt});
+    await expect(button(page,"Discard copy "+retained.writer.slice(0,8))).toBeDisabled();
     expect(await page.evaluate(({key})=>localStorage.getItem(key),retained)).toBe(retained.raw);
     expect(mutations(service)).toHaveLength(arranged);expect(grants(service)).toHaveLength(grantCount);
+    expect(mutations(peer)).toHaveLength(peerMutationCount);expect(grants(peer)).toHaveLength(peerGrantCount);
+    const afterRecovery=await service.observeStoredProject(latest);
+    expect(afterRecovery.project).toEqual(beforeRecovery.project);expect(afterRecovery.journal).toEqual(beforeRecovery.journal);
     const evidence=info.outputPath("integration-peer-and-recovery.json");
     await writeFile(evidence,JSON.stringify({source,peerProject:latest,peerTranscript:peer.transcript,
-      originalCopy:retained,uiProjectMutations:0,uiEffectGrants:0,excludes:["remote product import","native renderer admission","human approval"]},null,2));
+      originalCopy:retained,originalDownload,beforeRecovery,afterRecovery,
+      uiProjectMutations:0,uiEffectGrants:0,excludes:["remote product import","native renderer admission","human approval"]},null,2));
     await info.attach("integration-peer-and-recovery",{path:evidence,contentType:"application/json"});
     await page.screenshot({path:info.outputPath("integration-peer-preserved.png"),fullPage:true});
   }catch(error){primaryFailure=error;throw error;}finally{await finish(service,page,info,projectId,primaryFailure,peer?[peer]:[]);}
+});
+
+
+test("a real UNKNOWN survives transient first read and refuses later same-writer replacement without replay",async({page},info)=>{
+  const service=await ScopedChangeService.create({databasePath:info.outputPath("store","integration.sqlite3"),desktopInvokeFixture:true});
+  let projectId:string|undefined,primaryFailure:unknown;
+  try{
+    const source=(await service.fixtureBootstrap()).project;projectId=source.id;
+    await service.attachFixturePage(page,source.id);await page.goto("/");await open(page,true);
+    const arranged=mutations(service).length;
+    await fillDescriptor(page,"Descriptor actually committed before recovery read failure");
+    await responseGate(page,"upsert_extension","lose");await button(page,"Register versioned descriptor").click();await reached(page);
+    await expect(unknown(page)).toBeVisible();
+    const committed=await service.project(source.id),beforeRecovery=await service.observeStoredProject(committed);
+    expect(committed.revision).toBe(source.revision+1);
+    expect(committed.extensions.some(value=>value.name==="Descriptor actually committed before recovery read failure")).toBe(true);
+    const mutationCount=mutations(service).length,grantCount=grants(service).length;
+    expect(mutationCount).toBe(arranged+1);
+    await page.getByLabel("External resource ID",{exact:true}).fill("Independent binding authored before reload");
+    const ownCopy=async()=>page.evaluate(()=>{
+      const pointer=Object.keys(sessionStorage).find(key=>key.startsWith("motionwright.integration-writer.v1:"));
+      if(!pointer)throw new Error("Missing exact Integration pointer");
+      const writer=sessionStorage.getItem(pointer)!;
+      const key=Object.keys(localStorage).find(key=>key.startsWith("motionwright.integration-recovery.v1:")&&key.endsWith(":"+writer));
+      if(!key)throw new Error("Missing exact Integration recovery copy");
+      const raw=localStorage.getItem(key)!;return {pointer,writer,key,raw,copy:JSON.parse(raw)};
+    });
+    const original=await ownCopy();
+    expect(original.copy.draft.pending?.outcome).toBe("UNKNOWN");
+    const pending=structuredClone(original.copy.draft.pending);
+    expect(pending.change.type).toBe("upsert_extension");
+    expect(committed.extensions.find(value=>value.id===pending.change.extension.id)).toEqual(pending.change.extension);
+    expect(beforeRecovery.journal.at(-1)?.change).toEqual(pending.change);
+    // The original submission and pending bytes are produced by the actual
+    // service send above. This fault affects one local read, never the service.
+    await page.addInitScript(()=>{
+      const marker="motionwright.integration-test-first-read",key=sessionStorage.getItem(marker);
+      if(!key)return;sessionStorage.removeItem(marker);
+      const get=Storage.prototype.getItem;let failed=false;
+      Storage.prototype.getItem=function(name){
+        if(this===localStorage&&name===key&&!failed){failed=true;throw new Error("Initial Integration copy read temporarily unavailable");}
+        return get.call(this,name);
+      };
+    });
+    await page.evaluate(key=>sessionStorage.setItem("motionwright.integration-test-first-read",key),original.key);
+    await page.reload();await open(page,true);
+    await expect(recovery(page).getByRole("alert").first()).toBeVisible();
+    await page.getByLabel("Extension display name",{exact:true}).fill("Later words after failed read");
+    await page.getByLabel("Extension display name",{exact:true}).fill("Reviewed optional package");
+    await page.getByLabel("Extension version",{exact:true}).fill("later version");
+    await page.getByLabel("Extension version",{exact:true}).fill("");
+    await expect(button(page,"Register versioned descriptor")).toBeDisabled();
+    // Positive retry uses the same exact original bytes. A later blank and a
+    // return to the new editor's base are both authored input, not defaults.
+    await button(page,"Retry integration recovery").click();await expect(unknown(page)).toBeVisible();
+    await expect(page.getByLabel("Extension display name",{exact:true})).toHaveValue("Reviewed optional package");
+    await expect(page.getByLabel("Extension version",{exact:true})).toHaveValue("");
+    await expect(page.getByLabel("External resource ID",{exact:true})).toHaveValue("Independent binding authored before reload");
+    await expect(button(page,"Register versioned descriptor")).toBeDisabled();
+    const recovered=await ownCopy();expect(recovered.copy.draft.pending).toEqual(pending);
+    expect(await page.evaluate(key=>localStorage.getItem(key),original.key)).toBe(original.raw);
+    await button(page,"Brief").click();await open(page,true);await expect(unknown(page)).toBeVisible();
+    await expect(page.getByLabel("Extension version",{exact:true})).toHaveValue("");
+    await button(page,"Read saved integration outcome").click();
+    await expect(button(page,"Keep integration input and continue separately")).toBeVisible();
+    expect((await ownCopy()).copy.draft.pending).toEqual(pending);
+    expect(mutations(service)).toHaveLength(mutationCount);expect(grants(service)).toHaveLength(grantCount);
+    // A second first-read failure observes the real UNKNOWN in its subsequent
+    // listing. Replacing that same writer by a valid copy without pending must
+    // not turn the failed read into permission to lose the original attempt.
+    const beforeReplacement=await ownCopy();
+    await page.evaluate(key=>sessionStorage.setItem("motionwright.integration-test-first-read",key),beforeReplacement.key);
+    await page.reload();await open(page,true);
+    await expect(recovery(page).getByRole("alert").first()).toBeVisible();
+    await page.getByLabel("Extension display name",{exact:true}).fill("Later input after second failed read");
+    const replacement=await page.evaluate(({key,raw})=>{
+      const value=JSON.parse(raw);value.draft.pending=null;
+      const next=JSON.stringify(value);localStorage.setItem(key,next);return next;
+    },beforeReplacement);
+    await button(page,"Retry integration recovery").click();
+    await expect(recovery(page).getByRole("alert").filter({hasText:"original Integration recovery bytes changed"}),
+      "INTEGRATION_FIRST_READ_SAME_WRITER_UNKNOWN_REPLACEMENT_REFUSED").toBeVisible();
+    await expect(page.getByLabel("Extension display name",{exact:true})).toHaveValue("Later input after second failed read");
+    await expect(button(page,"Register versioned descriptor")).toBeDisabled();
+    await recovery(page).getByText(/^Local integration copies \(/).click();
+    const downloaded=page.waitForEvent("download");await button(page,"Download copy "+beforeReplacement.writer.slice(0,8)).click();
+    const downloadedPath=await (await downloaded).path();expect(downloadedPath).not.toBeNull();
+    const originalDownload=JSON.parse(await readFile(downloadedPath!,"utf8"));
+    expect(originalDownload).toEqual({schema:"motionwright.local-input-copy/1",storage_key:beforeReplacement.key,raw:beforeReplacement.raw});
+    expect(JSON.parse(originalDownload.raw).draft.pending).toEqual(pending);
+    await expect(button(page,"Discard copy "+beforeReplacement.writer.slice(0,8))).toBeDisabled();
+    expect(await page.evaluate(key=>localStorage.getItem(key),beforeReplacement.key)).toBe(replacement);
+    const afterRecovery=await service.observeStoredProject(committed);
+    expect(afterRecovery.project).toEqual(beforeRecovery.project);expect(afterRecovery.journal).toEqual(beforeRecovery.journal);
+    expect(mutations(service)).toHaveLength(mutationCount);expect(grants(service)).toHaveLength(grantCount);
+    await service.close();await service.start();
+    expect(await service.project(source.id)).toEqual(committed);expect(await service.history(source.id,0)).toEqual(beforeRecovery.journal);
+    const evidence=info.outputPath("integration-first-read-source-custody.json");
+    await writeFile(evidence,JSON.stringify({original,recovered,beforeReplacement,replacement,originalDownload,pending,
+      beforeRecovery,afterRecovery,mutationCount,grantCount,additionalProjectMutations:0,additionalEffectGrants:0,
+      sameStoreRestart:"Separate from the independent copied-store finalizer",nativeRender:false,installedTauri:false},null,2));
+    await info.attach("integration-first-read-source-custody",{path:evidence,contentType:"application/json"});
+    await page.screenshot({path:info.outputPath("integration-first-read-source-preserved.png"),fullPage:true});
+  }catch(error){primaryFailure=error;throw error;}finally{await finish(service,page,info,projectId,primaryFailure);}
 });

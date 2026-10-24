@@ -281,6 +281,11 @@ export interface IntegrationCustody {
 }
 export interface IntegrationCopy { schema: "motionwright.integration-recovery/1"; scope: string; writerId: string; updatedAt: number; draft: IntegrationDraft }
 export interface IntegrationRecoveryEntry { key: string; writerId: string; raw: string; value: IntegrationCopy | null }
+/** First successful local observations survive read failures and later replacements.
+ * They are byte custody only; reading a copy never grants dispatch or ACK authority. */
+export interface IntegrationRecoveryObservation {
+  pointerObserved: boolean; pointer: string | null; rawObserved: boolean; raw: string | null;
+}
 function inputShape(value:unknown):value is IntegrationInput {
   if(!record(value)||!exact(value,INTEGRATION_FIELDS))return false;
   return INTEGRATION_FIELDS.every(field=>field==="extensionPermissions"
@@ -418,13 +423,59 @@ export function encodeIntegrationFile(draft: IntegrationDraft): string {
   return JSON.stringify({schema:"motionwright.integration-input-salvage/1",exportedAt:Date.now(),
     authority:"author_input_only",draft:clone(draft)},null,2);
 }
-export function readIntegrationCopies(storage: IntegrationStorage, scope: string): { entries: IntegrationRecoveryEntry[]; limited: boolean } {
+export function assertIntegrationRecoverySource(scope: string, observation: IntegrationRecoveryObservation,
+  storage: Pick<Storage, "getItem">, pointers: Pick<Storage, "getItem">, own?: { writerId: string; raw: string }): void {
+  if (!observation.pointerObserved) throw new Error("Read the original Integration recovery pointer before making a new copy.");
+  if (observation.pointer !== null) {
+    if (!observation.rawObserved || observation.raw === null) throw new Error("The original Integration recovery copy is still missing.");
+    if (storage.getItem(integrationCopyKey(scope, observation.pointer)) !== observation.raw)
+      throw new Error("The original Integration recovery bytes changed. The first observation remains retained.");
+    const draft = decodeIntegrationCopy(observation.raw, scope, observation.pointer).draft;
+    assertIntegrationReviewOrigins(storage, draft);
+  }
+  const pointer = pointers.getItem(integrationPointerKey(scope));
+  if (pointer !== observation.pointer && !(own && pointer === own.writerId && storage.getItem(integrationCopyKey(scope, own.writerId)) === own.raw))
+    throw new Error("The original Integration recovery pointer changed. No different copy was adopted.");
+  if (observation.pointer !== null && storage.getItem(integrationCopyKey(scope, observation.pointer)) !== observation.raw)
+    throw new Error("The original Integration recovery bytes changed during confirmation. The first observation remains retained.");
+}
+export function readIntegrationRecoverySource(scope: string, observation: IntegrationRecoveryObservation,
+  storage: Pick<Storage, "getItem">, pointers: Pick<Storage, "getItem">): IntegrationDraft | null {
+  const pointer = pointers.getItem(integrationPointerKey(scope));
+  if (observation.pointerObserved && pointer !== observation.pointer)
+    throw new Error("The original Integration recovery pointer changed. No different copy was adopted.");
+  if (!observation.pointerObserved) { observation.pointer = pointer; observation.pointerObserved = true; }
+  if (pointer === null) { assertIntegrationRecoverySource(scope, observation, storage, pointers); return null; }
+  const raw = storage.getItem(integrationCopyKey(scope, pointer));
+  if (observation.rawObserved && raw !== observation.raw)
+    throw new Error("The original Integration recovery bytes changed. The first observation remains retained.");
+  if (!observation.rawObserved) { observation.raw = raw; observation.rawObserved = true; }
+  if (raw === null) throw new Error("The original Integration recovery copy is still missing.");
+  const recovered = decodeIntegrationCopy(raw, scope, pointer).draft;
+  assertIntegrationRecoverySource(scope, observation, storage, pointers);
+  return recovered;
+}
+export function originalIntegrationRecoveryCopy(scope: string,
+  observation: IntegrationRecoveryObservation | null): IntegrationRecoveryEntry | null {
+  if (!observation?.pointerObserved || observation.pointer === null || !observation.rawObserved || observation.raw === null) return null;
+  let value: IntegrationCopy | null = null;
+  try { value = decodeIntegrationCopy(observation.raw, scope, observation.pointer); } catch { /* Original unreadable bytes remain downloadable. */ }
+  return { key: integrationCopyKey(scope, observation.pointer), writerId: observation.pointer, raw: observation.raw, value };
+}
+export function readIntegrationCopies(storage: IntegrationStorage, scope: string,
+  observation?: IntegrationRecoveryObservation | null): { entries: IntegrationRecoveryEntry[]; limited: boolean } {
   if (storage.length > 4096) throw new Error("The local Integration recovery index exceeds its inspection bound.");
   const prefix = INTEGRATION_COPY_PREFIX + encodeURIComponent(scope) + ":", entries: IntegrationRecoveryEntry[] = []; let limited = false;
   for (let i = 0; i < storage.length; i++) {
     const key = storage.key(i); if (!key?.startsWith(prefix)) continue;
     if (entries.length >= INTEGRATION_MAX_COPIES) { limited = true; continue; }
-    const raw = storage.getItem(key); if (raw === null) continue;
+    const raw = storage.getItem(key);
+    // Anchor the pointed source before a later key/read can fail, including an
+    // observed absence. Retry cannot adopt newer bytes under that same writer.
+    if (observation?.pointerObserved && observation.pointer !== null && !observation.rawObserved && key === integrationCopyKey(scope, observation.pointer)) {
+      observation.raw = raw; observation.rawObserved = true;
+    }
+    if (raw === null) continue;
     const writerId = key.slice(prefix.length); let value: IntegrationCopy | null = null;
     try { value = decodeIntegrationCopy(raw, scope, writerId); } catch { /* Preserve exact unreadable bytes. */ }
     entries.push({ key, writerId, raw, value });
