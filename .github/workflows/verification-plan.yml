@@ -3,7 +3,7 @@ name: Verification Plan (shadow)
 on:
   pull_request:
   push:
-    branches: [main, 'verify/release-scope-*']
+    branches: [main, 'feat/**', 'verify/release-scope-*']
   workflow_dispatch:
     inputs:
       base_sha:
