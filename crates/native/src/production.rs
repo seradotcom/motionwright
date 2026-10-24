@@ -2487,12 +2487,11 @@ impl ProductionCoordinator {
                 && let Some(result) = prior.payload.get("result")
             {
                 return Ok(ReceiptExecutionOutcome {
-                    legacy_value: json!({
+                    origin: ReceiptExecutionOrigin::ReceiptReplay(json!({
                         "replayed": true,
                         "result": result,
                         "receipt": prior
-                    }),
-                    origin: ReceiptExecutionOrigin::ReceiptReplay,
+                    })),
                 });
             }
             let error = Error::new(
@@ -2538,7 +2537,9 @@ impl ProductionCoordinator {
 
         match self.client.execute(command, args, mutation).await {
             Ok(result) => {
+                #[cfg(test)]
                 let observed_sdk_value = result.value.clone();
+                #[cfg(test)]
                 let observed_broker_request_id = json!(&result.request_id);
                 // Retain the exact Broker result and identifier before the
                 // fallible append. The attempted stage is not a durable receipt.
@@ -2562,29 +2563,27 @@ impl ProductionCoordinator {
                 {
                     Ok(receipt) => {
                         custody.confirmed();
-                        {
-                            let observed_completed_receipt = receipt.clone();
-                            let observed_legacy_value = json!({
-                                "replayed": false,
-                                "result": receipt.payload["result"],
-                                "receipt": receipt
-                            });
-                            Ok(ReceiptExecutionOutcome {
-                                legacy_value: observed_legacy_value,
-                                origin: ReceiptExecutionOrigin::FreshAuthenticated(
-                                    AuthenticatedSdkResult {
-                                        command: command.to_owned(),
-                                        mutation,
-                                        caller_request_id: request_id.to_owned(),
-                                        project_id,
-                                        expected_stamp: json!(expected),
-                                        result_value: observed_sdk_value,
-                                        broker_request_id: observed_broker_request_id,
-                                        completed_receipt: observed_completed_receipt,
-                                    },
-                                ),
-                            })
-                        }
+                        Ok(ReceiptExecutionOutcome {
+                            origin: ReceiptExecutionOrigin::FreshAuthenticated(Box::new(
+                                AuthenticatedSdkResult {
+                                    completed_receipt: receipt,
+                                    #[cfg(test)]
+                                    command: command.to_owned(),
+                                    #[cfg(test)]
+                                    mutation,
+                                    #[cfg(test)]
+                                    caller_request_id: request_id.to_owned(),
+                                    #[cfg(test)]
+                                    project_id,
+                                    #[cfg(test)]
+                                    expected_stamp: json!(expected),
+                                    #[cfg(test)]
+                                    result_value: observed_sdk_value,
+                                    #[cfg(test)]
+                                    broker_request_id: observed_broker_request_id,
+                                },
+                            )),
+                        })
                     }
                     Err(storage_error) => {
                         custody.failed(storage_error);
@@ -2630,66 +2629,93 @@ impl ProductionCoordinator {
     }
 }
 
-// Private dispatch provenance. This alone does not qualify alignment.
-// Stored JSON cannot construct or deserialize an authenticated result.
+// Private dispatch provenance. Stored JSON cannot construct an observed result.
 pub(super) struct AuthenticatedSdkResult {
-    command: String,
-    mutation: bool,
-    caller_request_id: String,
-    project_id: Uuid,
-    expected_stamp: Value,
-    result_value: Value,
-    broker_request_id: Value,
     completed_receipt: ProductionReceipt,
+    #[cfg(test)]
+    command: String,
+    #[cfg(test)]
+    mutation: bool,
+    #[cfg(test)]
+    caller_request_id: String,
+    #[cfg(test)]
+    project_id: Uuid,
+    #[cfg(test)]
+    expected_stamp: Value,
+    #[cfg(test)]
+    result_value: Value,
+    #[cfg(test)]
+    broker_request_id: Value,
 }
 
 impl AuthenticatedSdkResult {
-    pub(super) fn command(&self) -> &str {
+    fn legacy_value(&self) -> Value {
+        json!({
+            "replayed": false,
+            "result": &self.completed_receipt.payload["result"],
+            "receipt": &self.completed_receipt,
+        })
+    }
+}
+
+#[cfg(test)]
+impl AuthenticatedSdkResult {
+    fn command(&self) -> &str {
         &self.command
     }
-    pub(super) fn is_mutation(&self) -> bool {
+    fn is_mutation(&self) -> bool {
         self.mutation
     }
-    pub(super) fn caller_request_id(&self) -> &str {
+    fn caller_request_id(&self) -> &str {
         &self.caller_request_id
     }
-    pub(super) fn project_id(&self) -> Uuid {
+    fn project_id(&self) -> Uuid {
         self.project_id
     }
-    pub(super) fn expected_stamp(&self) -> &Value {
+    fn expected_stamp(&self) -> &Value {
         &self.expected_stamp
     }
-    pub(super) fn result_value(&self) -> &Value {
+    fn result_value(&self) -> &Value {
         &self.result_value
     }
-    pub(super) fn broker_request_id(&self) -> &Value {
+    fn broker_request_id(&self) -> &Value {
         &self.broker_request_id
     }
-    pub(super) fn completed_receipt(&self) -> &ProductionReceipt {
+    fn completed_receipt(&self) -> &ProductionReceipt {
         &self.completed_receipt
     }
 }
 
 enum ReceiptExecutionOrigin {
-    ReceiptReplay,
-    FreshAuthenticated(AuthenticatedSdkResult),
+    ReceiptReplay(Value),
+    FreshAuthenticated(Box<AuthenticatedSdkResult>),
 }
 
 struct ReceiptExecutionOutcome {
-    legacy_value: Value,
     origin: ReceiptExecutionOrigin,
 }
 
 impl ReceiptExecutionOutcome {
     fn into_legacy_value(self) -> Value {
-        self.legacy_value
+        match self.origin {
+            ReceiptExecutionOrigin::ReceiptReplay(value) => value,
+            ReceiptExecutionOrigin::FreshAuthenticated(observed) => observed.legacy_value(),
+        }
     }
 
-    // The fixed-command native caller consumes value and origin together.
-    fn into_authenticated_result(self) -> Option<AuthenticatedSdkResult> {
+    #[cfg(test)]
+    fn legacy_value(&self) -> Value {
+        match &self.origin {
+            ReceiptExecutionOrigin::ReceiptReplay(value) => value.clone(),
+            ReceiptExecutionOrigin::FreshAuthenticated(observed) => observed.legacy_value(),
+        }
+    }
+
+    #[cfg(test)]
+    fn into_authenticated_result(self) -> Option<Box<AuthenticatedSdkResult>> {
         match self.origin {
-            ReceiptExecutionOrigin::ReceiptReplay => None,
-            ReceiptExecutionOrigin::FreshAuthenticated(result) => Some(result),
+            ReceiptExecutionOrigin::ReceiptReplay(_) => None,
+            ReceiptExecutionOrigin::FreshAuthenticated(observed) => Some(observed),
         }
     }
 }
@@ -5206,10 +5232,10 @@ os._exit(0)
             )
             .await
             .unwrap();
-        assert_eq!(outcome.legacy_value["replayed"], json!(true));
-        assert_eq!(outcome.legacy_value["result"], forged.payload["result"]);
+        assert_eq!(outcome.legacy_value()["replayed"], json!(true));
+        assert_eq!(outcome.legacy_value()["result"], forged.payload["result"]);
         assert_eq!(
-            outcome.legacy_value["receipt"],
+            outcome.legacy_value()["receipt"],
             serde_json::to_value(&forged).unwrap()
         );
         assert!(outcome.into_authenticated_result().is_none());
@@ -5246,7 +5272,7 @@ os._exit(0)
             )
             .await
             .unwrap();
-        let legacy = outcome.legacy_value.clone();
+        let legacy = outcome.legacy_value();
         assert_eq!(legacy["replayed"], json!(false));
         let observed = outcome
             .into_authenticated_result()
@@ -5299,9 +5325,9 @@ os._exit(0)
             )
             .await
             .unwrap();
-        assert_eq!(replay.legacy_value["replayed"], json!(true));
-        assert_eq!(replay.legacy_value["result"], legacy["result"]);
-        assert_eq!(replay.legacy_value["receipt"], legacy["receipt"]);
+        assert_eq!(replay.legacy_value()["replayed"], json!(true));
+        assert_eq!(replay.legacy_value()["result"], legacy["result"]);
+        assert_eq!(replay.legacy_value()["receipt"], legacy["receipt"]);
         assert!(replay.into_authenticated_result().is_none());
         assert_eq!(
             coordinator
@@ -5336,7 +5362,7 @@ os._exit(0)
             )
             .await
             .unwrap();
-        let legacy = outcome.legacy_value.clone();
+        let legacy = outcome.legacy_value();
         let observed = outcome
             .into_authenticated_result()
             .expect("initial transport result is observed");
@@ -5362,9 +5388,9 @@ os._exit(0)
             )
             .await
             .unwrap();
-        assert_eq!(replay.legacy_value["replayed"], json!(true));
-        assert_eq!(replay.legacy_value["result"], legacy["result"]);
-        assert_eq!(replay.legacy_value["receipt"], legacy["receipt"]);
+        assert_eq!(replay.legacy_value()["replayed"], json!(true));
+        assert_eq!(replay.legacy_value()["result"], legacy["result"]);
+        assert_eq!(replay.legacy_value()["receipt"], legacy["receipt"]);
         assert!(replay.into_authenticated_result().is_none());
         assert_eq!(
             recovered
