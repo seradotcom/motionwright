@@ -207,14 +207,27 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.98.1
-      - uses: Swatinem/rust-cache@v2
       - name: Source and acceptance policy
         run: |
           python3 tooling/source_policy.py
           python3 tooling/acceptance_policy.py
+          python3 tooling/creative_status_policy.py
+          python3 tooling/public_surface_policy.py
+      - name: Verify ACC007 supervisor source controls without inference
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/acc007-cold-g0/tmp"
+          export TMPDIR="$RUNNER_TEMP/acc007-cold-g0/tmp"
+          python3 -B tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --expected-source "$GITHUB_SHA" --test-directory tooling/tests \
+            --pattern test_ci_acc007_cold.py --mode both --require-complete \
+            --timeout 180 --report "$RUNNER_TEMP/acc007-cold-g0/g0.json"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
       - name: Build bounded-memory waveform benchmark
         run: |
           mkdir -p verification/waveform
@@ -277,6 +290,14 @@ jobs:
         with:
           name: waveform-performance-evidence
           path: verification/waveform
+          if-no-files-found: error
+
+      - name: Retain ACC007 source controls
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acc007-cold-source-controls
+          path: ${{ runner.temp }}/acc007-cold-g0
           if-no-files-found: error
 
   responsiveness-service:
