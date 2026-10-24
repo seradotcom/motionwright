@@ -8,6 +8,7 @@ import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { emptyProductionDesign, realizeProductHero, sameValue } from "./creativeProduction";
+import ComponentRevisionReview, { useComponentRevisionReview } from "./ComponentRevisionReview";
 import { bootstrap, projectHistory } from "./api";
 import {
   acknowledgeProductionDraft, assertProductionOrigins, cleanProductionPlan, createProductionDraft, decodeProductionCopy, editProductionDraft,
@@ -355,6 +356,7 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
   const instance = project.production_design?.heroes.find(hero => hero.scene_id === scene?.id);
   const editor = useProductionEditor(project, { kind: "hero", sceneId: scene?.id ?? null }, commitCamera, busy);
   const draft = (editor.draft.input as Extract<ProductionInput, { kind: "hero" }>).config;
+  const revisionReview = useComponentRevisionReview(project, scene?.id ?? null, instance?.id ?? null, draft, editor.draft.sequence);
   const setDraft = (config: HeroConfig) => editor.edit({ kind: "hero", config });
   const familyName = draft.layout === "split_explanation" ? "SplitExplanation" :
     draft.layout === "metric_evidence" ? "MetricEvidence" :
@@ -381,7 +383,7 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
   const localTime = scene ? Math.max(0,Math.min(seconds(scene.duration),playhead-seconds(scene.start))) : 2;
   const background = project.visual_language.palette.find(t => ["surface","background"].includes(t.name.toLowerCase()))?.value ?? "#0F1216";
   const locked = project.locks.some(lock => ["project:"+project.id,"scene:"+scene?.id].includes(lock.resource) && ["content","position","style","timing","renderer"].includes(lock.kind));
-  const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !editor.blocked && !error && !previewLoading && !locked;
+  const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !editor.blocked && !error && !previewLoading && !locked && (!instance || revisionReview.ready);
   return <div className="production-split">
     <section className="production-inspector" aria-label={`${familyName} controls`}>
       <div className="production-section-title"><Layers size={16}/><div><h2>{familyName}</h2><p>Editable first-party composition · v1</p></div></div>
@@ -427,6 +429,9 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
         <button className="secondary-button" disabled={!scene} onClick={() => onSeek(seconds(scene!.start)+Math.min(2,seconds(scene!.duration)-1/30))}>Settled</button></div>
       <div className="production-evidence-note"><strong>{aspect.width} × {aspect.height} · project revision {project.revision}</strong>
         <p>This parameter study does not replace custom edits on scene objects. Use Canvas to inspect those overrides. This preview audits composition and timing intent. Use the native frame stage and Deliver for authoritative renderer frames and export verification. The editorial viewer uses a system fallback when the required font is not installed. Glyph metrics, clipping and creative approval are separate checks.</p></div>
+      {instance && <ComponentRevisionReview review={revisionReview} renderScene={(reviewNodes, label) =>
+        <div className="production-preview-mat"><CompositionStudy nodes={reviewNodes} width={1920} height={1080}
+          time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} label={label}/></div>}/>}
     </section>
     {expanded && scene && <ExpandedStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} duration={seconds(scene.duration)} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} onSeek={time=>onSeek(seconds(scene.start)+time)} onClose={()=>setExpanded(false)}/>}
   </div>;
