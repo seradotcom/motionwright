@@ -2136,7 +2136,7 @@ export default function App() {
       case "Workflows":
         return <WorkflowWorkspace project={project} />;
       case "Integrations":
-        return <IntegrationsWorkspace project={project} nativeSdk={boot.native_sdk} commit={commit} />;
+        return <IntegrationsWorkspace project={project} nativeSdk={boot.native_sdk} commit={commitCamera} />;
       case "Alternatives":
         return <RichAlternativesView project={project} scene={selectedScene} commit={commit} />;
       case "Changes":
