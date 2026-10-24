@@ -37,6 +37,7 @@ mod path_boundary_tests;
 mod receipt_custody;
 mod recovery;
 mod renderer_registry;
+mod renderer_versions;
 pub use blender_original::{
     BlenderOriginalEdit, BlenderOriginalFile, BlenderOriginalJournal, BlenderOriginalPhase,
     BlenderOriginalRequest,
@@ -46,6 +47,7 @@ pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAv
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
 pub use renderer_registry::{RendererRegistryObservation, RendererRegistryState};
+pub use renderer_versions::{ManimRuntimeVersionObservation, ManimRuntimeVersionState};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
@@ -126,6 +128,7 @@ const BLENDER_COMMANDS: &[&str] = &[
 ];
 
 const MANIM_COMMANDS: &[&str] = &[
+    "driver.manim-community.doctor",
     "driver.manim-community.render.start",
     "driver.manim-community.camera.render.start",
     "driver.manim-community.render.status",
@@ -835,7 +838,9 @@ impl ProductionClient {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
-        let budget_secs = if command.starts_with("driver.mlt-video.")
+        let budget_secs = if command == "driver.manim-community.doctor" {
+            DEFAULT_DEADLINE_SECS
+        } else if command.starts_with("driver.mlt-video.")
             || command.starts_with("driver.blender.")
             || command.starts_with("driver.manim-community.")
         {
@@ -5590,5 +5595,143 @@ os._exit(0)
                 "case: {case}"
             );
         }
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manim_runtime_version_transport_preserves_observation_and_project() {
+        for (version, expected_state, unavailable) in [
+            (
+                Some("0.21.0"),
+                ManimRuntimeVersionState::ObservedCompatible,
+                false,
+            ),
+            (
+                Some("0.20.1"),
+                ManimRuntimeVersionState::ObservedIncompatible,
+                false,
+            ),
+            (None, ManimRuntimeVersionState::PackageNotFound, false),
+            (None, ManimRuntimeVersionState::NotObserved, true),
+        ] {
+            let (service, project, temp) = fixture_service();
+            let mut envelope = transport_reply("driver.manim-community.doctor");
+            let mut data = renderer_versions::manim_runtime_test_data(version);
+            if unavailable {
+                data["runtime_probe"]["state"] = json!("not_observed");
+                data["runtime_probe"]["source"] = json!("none");
+                data["runtime_probe"]["reason_code"] = json!("host_probe_failed");
+            }
+            envelope.data = Some(data);
+            let output = serde_json::to_string(&envelope).unwrap();
+            let (connection, counter) =
+                fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let observation = coordinator
+                .observe_manim_runtime_version(project.id, &project.stamp())
+                .await
+                .unwrap();
+            assert_eq!(observation.state(), expected_state);
+            assert_eq!(observation.observed_version(), version);
+            assert_eq!(
+                observation.version_compatible(),
+                version.map(|value| value == "0.21.0")
+            );
+            assert_eq!(observation.provider_generation(), 17);
+            assert_eq!(
+                observation.broker_request_id(),
+                "transport-fixture-original"
+            );
+            assert!(observation.matches_scope(&project.stamp()));
+            let evidence = serde_json::to_value(&observation).unwrap();
+            assert_eq!(evidence["observation_scope"], "declared_runtime");
+            assert_eq!(evidence["render_performed"], false);
+            assert_eq!(evidence["scene_mutation_performed"], false);
+            assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert!(
+                service
+                    .production_receipts(project.id, 10)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manim_runtime_version_transport_rejects_foreign_or_unbound_observations() {
+        let mut base = transport_reply("driver.manim-community.doctor");
+        base.data = Some(renderer_versions::manim_runtime_test_data(Some("0.21.0")));
+        let base = serde_json::to_value(base).unwrap();
+        for (pointer, replacement) in [
+            ("/execution/provenance/provider", json!("driver:blender")),
+            ("/execution/provenance/source", json!(SourceKind::Builtin)),
+            ("/execution/provenance/provider_generation", Value::Null),
+            ("/execution/provenance/descriptor_sha256", json!("invalid")),
+            ("/execution/dry_run", json!(true)),
+            ("/data/runtime_probe/compatible", json!(false)),
+        ] {
+            let (service, project, temp) = fixture_service();
+            let mut envelope = base.clone();
+            *envelope.pointer_mut(pointer).unwrap() = replacement;
+            let output = serde_json::to_string(&envelope).unwrap();
+            let (connection, counter) =
+                fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            assert!(
+                coordinator
+                    .observe_manim_runtime_version(project.id, &project.stamp(),)
+                    .await
+                    .is_err(),
+                "{pointer}"
+            );
+            assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert!(
+                service
+                    .production_receipts(project.id, 10)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manim_runtime_version_scope_and_transport_error_never_claim_absence() {
+        let (service, project, temp) = fixture_service();
+        let original = Error::new(ErrorCode::NotFound, "original provider lookup failure");
+        let mut envelope = transport_reply("driver.manim-community.doctor");
+        envelope.ok = false;
+        envelope.data = None;
+        envelope.error = Some(original.clone());
+        let output = serde_json::to_string(&envelope).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 19);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let mut stale = project.stamp();
+        stale.revision += 1;
+        let error = coordinator
+            .observe_manim_runtime_version(project.id, &stale)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference);
+        assert!(!counter.exists());
+        let error = coordinator
+            .observe_manim_runtime_version(project.id, &project.stamp())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(service.project(project.id).unwrap(), project);
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

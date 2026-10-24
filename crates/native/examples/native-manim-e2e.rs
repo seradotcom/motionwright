@@ -2,7 +2,9 @@ use motionwright_domain::{
     BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RendererKind, RevisionStamp,
 };
 use motionwright_manim_profile::ManimRenderProfile;
-use motionwright_native::production::{ProductionConnection, ProductionCoordinator};
+use motionwright_native::production::{
+    ManimRuntimeVersionState, ProductionConnection, ProductionCoordinator,
+};
 use motionwright_service::StudioService;
 use serde_json::json;
 use std::{
@@ -179,6 +181,47 @@ async fn realize(
     }
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let expected = RevisionStamp::from(&project);
+    let runtime_observation = coordinator
+        .observe_manim_runtime_version(project.id, &expected)
+        .await;
+    let runtime_probe_evidence = match &runtime_observation {
+        Ok(observation) => json!({
+            "schema": "motionwright-manim-runtime-probe-e2e/1",
+            "project_id": project.id,
+            "generation": project.generation,
+            "revision": project.revision,
+            "observation": observation,
+            "error": null,
+            "render_started": false,
+        }),
+        Err(error) => json!({
+            "schema": "motionwright-manim-runtime-probe-e2e/1",
+            "project_id": project.id,
+            "generation": project.generation,
+            "revision": project.revision,
+            "observation": null,
+            "error": {
+                "code": format!("{:?}", error.code),
+                "message": &error.message,
+                "outcome_known": error.outcome_known,
+            },
+            "render_started": false,
+        }),
+    };
+    let runtime_probe_path =
+        evidence_path.with_file_name("motionwright-manim-runtime-observation.json");
+    let mut runtime_probe_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&runtime_probe_path)?;
+    runtime_probe_file.write_all(&serde_json::to_vec_pretty(&runtime_probe_evidence)?)?;
+    runtime_probe_file.write_all(b"\n")?;
+    runtime_probe_file.sync_all()?;
+    let runtime_observation = runtime_observation?;
+    if runtime_observation.state() != ManimRuntimeVersionState::ObservedCompatible {
+        return Err("native Manim runtime version was not observed as compatible; see the original runtime observation".into());
+    }
+
     let profile = ManimRenderProfile {
         width: 640,
         height: 360,
@@ -202,6 +245,7 @@ async fn realize(
             let receipts = coordinator.receipts(project.id, 256).unwrap_or_default();
             let diagnostic = json!({
                 "native_manim_e2e": "FAIL",
+                "runtime_observation": &runtime_observation,
                 "project_id": project.id,
                 "generation": project.generation,
                 "revision": project.revision,
@@ -286,6 +330,7 @@ async fn realize(
     }
     let evidence = json!({
         "native_manim_e2e": "PASS",
+                "runtime_observation": &runtime_observation,
         "project_id": project.id,
         "resource": project.resource_key(),
         "generation": project.generation,
