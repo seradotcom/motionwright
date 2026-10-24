@@ -28,6 +28,7 @@ mod production_design;
 mod render_tail_impact;
 mod semantic_sfx;
 mod stage_capture;
+mod voice_alignment;
 pub use brand_campaign::*;
 pub use brand_governance::*;
 pub use camera_reframe::*;
@@ -58,6 +59,8 @@ pub use production_design::*;
 pub use render_tail_impact::*;
 pub use semantic_sfx::*;
 pub use stage_capture::*;
+
+pub use voice_alignment::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -1074,6 +1077,7 @@ impl Project {
                 | Change::UpsertDeliverable { .. }
                 | Change::RemoveAsset { .. }
                 | Change::RemoveDeliverable { .. }
+                | Change::ApplyVoiceAlignment { .. }
                 | Change::ImportMeasuredVoice { .. }
                 | Change::AddVoiceTrack { .. }
                 | Change::SetActiveVoiceTrack { .. }
@@ -1120,6 +1124,7 @@ impl Project {
                 change,
                 Change::CheckoutBranch { .. }
                     | Change::MergeBranch { .. }
+                    | Change::ApplyVoiceAlignment { .. }
                     | Change::ImportMeasuredVoice { .. }
                     | Change::AddVoiceTrack { .. }
                     | Change::SetActiveVoiceTrack { .. }
@@ -2359,6 +2364,9 @@ impl Project {
                     return Err(DomainError::NotFound(format!("deliverable:{profile_id}")));
                 }
             }
+            Change::ApplyVoiceAlignment { application } => {
+                self.apply_voice_alignment_in_place(application)?;
+            }
             Change::ImportMeasuredVoice { asset, track } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
                 asset.validate()?;
@@ -3010,6 +3018,9 @@ pub enum Change {
     },
     RemoveDeliverable {
         profile_id: Uuid,
+    },
+    ApplyVoiceAlignment {
+        application: VoiceAlignmentApplication,
     },
     ImportMeasuredVoice {
         asset: Asset,

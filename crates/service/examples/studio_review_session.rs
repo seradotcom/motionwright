@@ -479,7 +479,9 @@ impl Session {
                     request.request_id.trim(),
                 )?;
                 let trusted_audio_evidence = match &request.change {
-                    Change::ImportMeasuredVoice { .. } | Change::AddVoiceTrack { .. } => true,
+                    Change::ApplyVoiceAlignment { .. }
+                    | Change::ImportMeasuredVoice { .. }
+                    | Change::AddVoiceTrack { .. } => true,
                     Change::AddTranscriptSegment { segment }
                     | Change::UpsertTranscriptSegment { segment } => {
                         matches!(segment.alignment, AlignmentEvidence::Measured { .. })

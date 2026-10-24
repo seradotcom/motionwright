@@ -35,7 +35,10 @@ pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };
 pub use portability::{BundleAssetAdmission, BundleFingerprint, InspectedProjectBundle};
-pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
+pub use production::{
+    ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
+    voice_alignment_receipt_sha256_v1,
+};
 pub use project_creation::{ProjectCreationIntent, ProjectCreationOutcome};
 pub use project_projection::{
     MAX_NODE_PAGE_ITEMS, MAX_PROJECTION_RESPONSE_BYTES, MAX_SCENE_PAGE_ITEMS, NodePage,
@@ -1370,6 +1373,10 @@ impl Store {
             });
         }
 
+        if let Change::ApplyVoiceAlignment { application } = change {
+            production::verify_voice_alignment_receipt(&tx, &project, application)?;
+        }
+
         // Only a new mutation inspects source bytes. Replaying a committed
         // receipt neither reimports nor proves continued asset availability.
         let required_blob = match change {
@@ -1441,6 +1448,11 @@ impl Store {
             DomainError::Invalid("project revision exceeds SQLite integer range".into())
         })?;
         project.apply_change(change)?;
+        if let Change::ApplyVoiceAlignment { application } = change {
+            // The qualified source must still exist with its exact CAS bytes.
+            // No media decoder or worker runs inside this transaction.
+            read_verified_blob_from_root(&blob_root, &application.source_sha256, 8 * 1024 * 1024)?;
+        }
         project.commit_revision(result_revision, change)?;
         let project_json = serde_json::to_string(&project)?;
         let changed = tx.execute(
