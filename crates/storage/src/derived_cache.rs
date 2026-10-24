@@ -116,7 +116,7 @@ impl Store {
             dirs.push(data.clone());
         }
         dirs.push(data.join(&scope_sha256[..2]));
-        dirs.push(data.join(scope_sha256));
+        dirs.push(data.join(&scope_sha256[..2]).join(scope_sha256));
         for directory in dirs {
             if create {
                 create_checked_blob_directory(&directory)?;
