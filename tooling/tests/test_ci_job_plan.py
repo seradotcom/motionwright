@@ -334,5 +334,112 @@ class GitSourceBoundary(unittest.TestCase):
         self.assertFalse((self.root / "absent").exists())
 
 
+class ClosedInputProcessTests(unittest.TestCase):
+    """Exercise the actual pinned provider and job CLI in disposable Git fixtures."""
+
+    setUp = GitSourceBoundary.setUp
+    git = GitSourceBoundary.git
+    commit = GitSourceBoundary.commit
+    invoke = GitSourceBoundary.invoke
+
+    def prepare_reviewed_fixture(self):
+        import ast
+
+        for relative, raw in {
+            "CONTRIBUTING.md": b"Synthetic contribution prose.\n",
+            "tooling/conformance_history_guard.py": b"VALUE = 1\n",
+            ".github/workflows/verification-plan.yml": b"name: Required G0 fixture\n",
+            ".github/workflows/history-archive-conformance.yml": b"name: History source fixture\n",
+            ".github/workflows/security-delivery.yml": b"name: Broad discovery fixture\n",
+        }.items():
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        self.git("add", ".")
+        self.git("commit", "-qm", "reviewable synthetic consumers")
+        provider_path = self.repo / ci.PROVIDER
+        raw = provider_path.read_text()
+        scope = {"__file__": str(provider_path), "__name__": "synthetic_provider_fixture"}
+        exec(compile(raw, str(provider_path), "exec"), scope)
+        review = copy.deepcopy(scope["REVIEWED_NONPRODUCT_INPUTS"])
+        excluded = scope["NONPRODUCT_DOCUMENTS"] | scope["NONPRODUCT_PLANNERS"] | {scope["NONPRODUCT_HISTORY"]}
+        inventory = []
+        for row in self.git("ls-tree", "-r", "HEAD").splitlines():
+            metadata, name = row.split("\t", 1)
+            mode, _, oid = metadata.split()
+            if name not in excluded:
+                inventory.append([name, [mode, oid]])
+        review["consumer_inventory_sha256"] = hashlib.sha256(ci.canonical(sorted(inventory))).hexdigest()
+        review["python_asts"][scope["NONPRODUCT_HISTORY"]] = scope["nonproduct_python_ast"](b"VALUE = 1\n")
+        node = next(node for node in ast.parse(raw).body if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "REVIEWED_NONPRODUCT_INPUTS"
+                            for target in node.targets))
+        lines = raw.splitlines(keepends=True)
+        lines[node.lineno - 1:node.end_lineno] = ["REVIEWED_NONPRODUCT_INPUTS = " + repr(review) + "\n"]
+        provider_path.write_text("".join(lines))
+        pinned = hashlib.sha256(provider_path.read_bytes()).hexdigest()
+        planner = self.repo / ci.SELF
+        replacement, count = ci.re.subn(r'REVIEWED_PROVIDER_SHA256 = "[0-9a-f]{64}"',
+                                       'REVIEWED_PROVIDER_SHA256 = "' + pinned + '"', planner.read_text())
+        self.assertEqual(count, 1)
+        planner.write_text(replacement)
+        self.git("add", ".")
+        self.git("commit", "-qm", "bind synthetic review and provider pin")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def feature_plan(self, base, head):
+        process, path, output = self.invoke(
+            observed=execution(head, event="push", ref="refs/heads/feat/input-fixture"),
+            event={"before": base, "after": head})
+        self.assertEqual(process.returncode, 0, process.stderr.decode())
+        return json.loads(path.read_bytes()), output.read_text()
+
+    def test_actual_source_bound_exclusions_are_not_executed_product_passes(self):
+        self.prepare_reviewed_fixture()
+        head = self.commit("README.md", b"Only reviewed root prose changed.\n", "prose")
+        plan, outputs = self.feature_plan(self.base, head)
+        self.assertEqual(plan["neutral_review_status"], "closed-nonproduct-input-review-applied")
+        self.assertTrue(all(plan["jobs"][job]["selected"] for job in ci.ALWAYS))
+        self.assertTrue(all(not plan["jobs"][job]["selected"] for job in ci.SELECTABLE))
+        self.assertIn("rust_tests=false\n", outputs)
+        self.assertIn("studio_tests=false\n", outputs)
+        self.assertIn("browser_acceptance=false\n", outputs)
+        self.assertEqual(plan["source"]["checkout_sha"], head)
+        self.assertIs(plan["test_case_results_admitted"], False)
+        self.assertIs(plan["release_verdict"], False)
+
+    def test_actual_history_comment_excludes_product_but_keeps_source_consumers(self):
+        self.prepare_reviewed_fixture()
+        head = self.commit("tooling/conformance_history_guard.py", b"# Explanation only.\nVALUE = 1\n", "comment")
+        plan, _ = self.feature_plan(self.base, head)
+        self.assertTrue(all(not plan["jobs"][job]["selected"] for job in ci.SELECTABLE))
+        self.assertEqual(plan["nonproduct_input_review"]["source_consumers"],
+                         [".github/workflows/history-archive-conformance.yml", ".github/workflows/security-delivery.yml"])
+
+    def test_actual_helper_logic_or_new_consumer_never_reuses_review_as_exclusion(self):
+        self.prepare_reviewed_fixture()
+        for variant in ("logic", "dynamic-consumer-before-base", "main", "candidate"):
+            with self.subTest(variant=variant):
+                self.git("reset", "--hard", self.base)
+                before = self.base
+                if variant == "logic":
+                    head = self.commit("tooling/conformance_history_guard.py", b"VALUE = 2\n", "logic change")
+                else:
+                    if variant == "dynamic-consumer-before-base":
+                        before = self.commit("crates/domain/src/lib.rs", b"pub fn new_runtime_input_reader() {}\n", "new consumer")
+                    head = self.commit("README.md", b"Only prose in the final diff.\n", "prose")
+                if variant in ("main", "candidate"):
+                    observed = execution(head, event="push" if variant == "main" else "workflow_dispatch",
+                                         ref="refs/heads/main")
+                    process, path, _ = self.invoke(observed=observed,
+                        event={"before": before, "after": head} if variant == "main" else {})
+                    self.assertEqual(process.returncode, 0, process.stderr.decode())
+                    plan = json.loads(path.read_bytes())
+                else:
+                    plan, _ = self.feature_plan(before, head)
+                self.assertTrue(all(row["selected"] for row in plan["jobs"].values()))
+
+
+
 if __name__ == "__main__":
     unittest.main()

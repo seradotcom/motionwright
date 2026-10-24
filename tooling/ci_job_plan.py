@@ -22,7 +22,7 @@ import types
 WORKFLOW = ".github/workflows/ci.yml"
 SELF = "tooling/ci_job_plan.py"
 PROVIDER = "tooling/ci_impact_plan.py"
-REVIEWED_PROVIDER_SHA256 = "09bb7ed477da7af4b8037206bb93c1cc5003f06f43161f21891061918e588233"
+REVIEWED_PROVIDER_SHA256 = "b90c969aea337ff75209fc297deb56037d1725c05e141f6c428ccfaaef40629b"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 HASH = re.compile(r"[0-9a-f]{64}\Z")
 ZERO = "0" * 40
@@ -252,6 +252,21 @@ def make_plan(repo, event, execution):
             os.environ.clear()
             os.environ.update(original_environment)
         neutral, neutral_reason = reviewed_neutral_paths(repo, impact)
+        review = impact.get("nonproduct_input_review", {})
+        if review.get("status") == "APPLIED":
+            require(review.get("reviewed_paths") == impact["changed_paths"]
+                    and review.get("product_jobs") == list(SELECTABLE)
+                    and review.get("evidence_claim") == "input-independence-only-no-test-or-release-verdict",
+                    "Unsupported nonproduct input proof")
+            views = review.get("source_views", [])
+            require(isinstance(views, list) and bool(views)
+                    and {view.get("source_sha") for view in views}
+                    == {graph["source_sha"] for graph in impact["dependency_graphs"]}
+                    and any(view.get("source_sha") == observed["checkout_sha"]
+                            and view.get("tree_sha") == observed["tree_sha"] for view in views),
+                    "Nonproduct input proof does not cover this source comparison")
+            neutral |= set(review["reviewed_paths"])
+            neutral_reason = "closed-nonproduct-input-review-applied"
     result = {"schema": "motionwright.ci-job-plan/1", "workflow": WORKFLOW,
               "execution_context": execution, "source": observed,
               "event_source": {"base_sha": base, "head_sha": head},
@@ -266,6 +281,7 @@ def make_plan(repo, event, execution):
               "dependency_graphs": impact["dependency_graphs"],
               "affected_package_roots": impact["affected_package_roots"],
               "neutral_review_status": neutral_reason,
+              "nonproduct_input_review": impact.get("nonproduct_input_review", {"status": "NOT_AVAILABLE"}),
               "selection_policy_sha256": digest(canonical({"always": ALWAYS, "selectable": SELECTABLE,
                                                            "neutral_review": NEUTRAL_INPUT_REVIEW})),
               "jobs": select_jobs(impact, execution, neutral),
