@@ -173,10 +173,6 @@ impl Store {
         validate_scope(scope)?;
         validate_kind(kind)?;
         validate_digest(fingerprint_sha256)?;
-        let _ = super::cas_retention::derived::maintain(
-            &self.blob_root,
-            super::CasRetentionPolicy::default(),
-        );
         let managed = super::cas_retention::derived::manifest_root(&self.blob_root)?.is_some();
         let scope_sha256 = digest_text(scope);
         let destination =
@@ -215,7 +211,16 @@ impl Store {
             created_at: Utc::now().to_rfc3339(),
         });
         if managed {
-            return super::cas_retention::derived::publish(self, &staged, &destination, record);
+            let record =
+                super::cas_retention::derived::publish(self, &staged, &destination, record)?;
+            drop(staged);
+            // Rejected input must not trigger unrelated cleanup or change
+            // retained cache metadata. Admission succeeds before maintenance.
+            let _ = super::cas_retention::derived::maintain(
+                &self.blob_root,
+                super::CasRetentionPolicy::default(),
+            );
+            return Ok(record);
         }
         let encoded = serde_json::to_vec_pretty(&record)?;
         if encoded.len() as u64 > MAX_DERIVED_CACHE_MANIFEST_BYTES {
