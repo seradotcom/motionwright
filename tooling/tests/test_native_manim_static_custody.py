@@ -615,5 +615,100 @@ class StaticCustodyTests(unittest.TestCase):
             current.once(lambda: self.fail("unexpected second process"))
 
 
+class TypedStaticOriginalBindingTests(unittest.TestCase):
+    """Real private JSON files; synthetic source values, no native process."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="mw-static-types-", dir=ROOT if os.name == "nt" else None,
+        )
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.seed = {
+            "project_id": "00000000-0000-0000-0000-000000000001",
+            "generation": "00000000-0000-0000-0000-000000000002",
+            "revision": 7,
+            "scene_id": "00000000-0000-0000-0000-000000000003",
+        }
+
+    def fixture(self, revision=7):
+        self.seed["revision"] = revision
+        observed = {
+            "schema": "motionwright-manim-runtime-probe-e2e/1",
+            **{key: self.seed[key] for key in ("project_id", "generation", "revision")},
+            "observation": {"source_unit_fixture_only": True},
+            "error": None, "render_started": False,
+        }
+        native = {
+            "native_manim_e2e": "PASS",
+            **self.seed,
+            "runtime_observation": {"source_unit_fixture_only": True},
+            "source_unit_fixture_only": True,
+        }
+        return native, json.loads(encoded(native)), observed
+
+    def check_originals(self, native, durable, observed, error=None):
+        originals = {NATIVE: encoded(durable), OBSERVATION: encoded(observed)}
+        for name, raw in originals.items():
+            with (self.root / name).open("xb") as stream:
+                stream.write(raw)
+        if error is None:
+            original, hashes = wrapper.checked_static_originals(
+                native, self.seed, self.root,
+            )
+            self.assertEqual(encoded(original), encoded(native))
+            self.assertEqual(hashes, {
+                "native_evidence_sha256": camera.sha(originals[NATIVE]),
+                "runtime_observation_sha256": camera.sha(originals[OBSERVATION]),
+            })
+        else:
+            with self.assertRaisesRegex(camera.CameraEvidenceError, error):
+                wrapper.checked_static_originals(native, self.seed, self.root)
+        self.assertEqual({name: (self.root / name).read_bytes()
+                          for name in originals}, originals)
+
+    def test_valid_integer_seven_retains_original_hashes(self):
+        self.check_originals(*self.fixture(7))
+
+    def test_valid_integer_one_retains_original_hashes(self):
+        self.check_originals(*self.fixture(1))
+
+    def test_observation_float_equal_to_integer_revision_is_rejected(self):
+        native, durable, observed = self.fixture()
+        observed["revision"] = 7.0
+        self.check_originals(native, durable, observed, "runtime_observation_binding")
+
+    def test_durable_float_equal_to_integer_revision_is_rejected(self):
+        native, durable, observed = self.fixture()
+        durable["revision"] = 7.0
+        self.check_originals(native, durable, observed, "stdout_and_durable_evidence_differ")
+
+    def test_nested_runtime_integer_equal_to_boolean_is_rejected(self):
+        native, durable, observed = self.fixture()
+        observed["observation"]["source_unit_fixture_only"] = 1
+        self.check_originals(native, durable, observed, "runtime_observation_binding")
+
+    def test_observation_boolean_equal_to_revision_one_is_rejected(self):
+        native, durable, observed = self.fixture(1)
+        observed["revision"] = True
+        self.check_originals(native, durable, observed, "runtime_observation_binding")
+
+    def test_observation_different_integer_revision_is_rejected(self):
+        native, durable, observed = self.fixture()
+        observed["revision"] = 8
+        self.check_originals(native, durable, observed, "runtime_observation_binding")
+
+    def test_durable_different_integer_revision_is_rejected(self):
+        native, durable, observed = self.fixture()
+        durable["revision"] = 8
+        self.check_originals(native, durable, observed, "stdout_and_durable_evidence_differ")
+
+    def test_agreeing_float_seed_revision_is_not_an_integer_revision(self):
+        self.check_originals(*self.fixture(7.0), error="static_native_source_binding")
+
+    def test_agreeing_boolean_seed_revision_is_not_revision_one(self):
+        self.check_originals(*self.fixture(True), error="static_native_source_binding")
+
+
 if __name__ == "__main__":
     unittest.main()

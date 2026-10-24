@@ -336,12 +336,24 @@ def camera_options(args, *, camera=True):
 def checked_static_originals(native, seeded, evidence):
     """Bind retained pre-render observation to the original successful Rust result."""
     from native_manim_camera_evidence import object_bytes, read, require, sha
+
+    def same_json(left, right):
+        # Python equality aliases JSON true/1 and 7/7.0, even inside objects.
+        # Compare finite JSON values without erasing their parsed scalar types.
+        try:
+            options = dict(sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=True, allow_nan=False)
+            return json.dumps(left, **options) == json.dumps(right, **options)
+        except (TypeError, ValueError):
+            return False
+
     native_raw = read(evidence / "motionwright-manim-evidence.json")
     original = object_bytes(native_raw)
-    require(original == native, "static_stdout_and_durable_evidence_differ")
-    require(original.get("native_manim_e2e") == "PASS"
+    require(same_json(original, native), "static_stdout_and_durable_evidence_differ")
+    require(type(seeded.get("revision")) is int and seeded["revision"] >= 1
+            and original.get("native_manim_e2e") == "PASS"
             and all(key in seeded and seeded[key] is not None
-                    and original.get(key) == seeded[key]
+                    and same_json(original.get(key), seeded[key])
                     for key in ("project_id", "generation", "revision", "scene_id")),
             "static_native_source_binding")
     observation_raw = read(evidence / "motionwright-manim-runtime-observation.json")
@@ -351,12 +363,12 @@ def checked_static_originals(native, seeded, evidence):
                 "observation", "error", "render_started",
             }
             and observed["schema"] == "motionwright-manim-runtime-probe-e2e/1"
-            and all(observed[key] == seeded.get(key)
+            and all(same_json(observed[key], seeded.get(key))
                     for key in ("project_id", "generation", "revision"))
             and observed["error"] is None
             and observed["render_started"] is False
             and type(observed["observation"]) is dict
-            and observed["observation"] == original.get("runtime_observation"),
+            and same_json(observed["observation"], original.get("runtime_observation")),
             "static_original_runtime_observation_binding")
     return original, {
         "native_evidence_sha256": sha(native_raw),
