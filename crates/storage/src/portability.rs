@@ -196,9 +196,17 @@ impl Store {
         // Fingerprinting and parsing consume the same capture, never a reload.
         let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
         self.validate_bundle_with_admission(source, &manifest, admission)?;
-        self.import_validated_bundle(source, &manifest, admission)
+        let fingerprint = BundleFingerprint::of_manifest_bytes(&bytes);
+        self.import_validated_bundle_bound(
+            source,
+            &manifest,
+            admission,
+            fingerprint.as_str(),
+            || {},
+        )
     }
 
+    #[cfg(test)]
     fn import_validated_bundle(
         &mut self,
         source: &Path,
@@ -208,8 +216,9 @@ impl Store {
         self.import_validated_bundle_after_check(source, manifest, admission, || {})
     }
 
-    // The seam lets a test drive a second SQLite writer exactly after the
-    // final destination inspection, at the CAS publication boundary.
+    // Private test seams bind the exact manifest object supplied by the test.
+    // Product callers above bind the original single manifest-byte capture.
+    #[cfg(test)]
     fn import_validated_bundle_after_check(
         &mut self,
         source: &Path,
@@ -217,30 +226,61 @@ impl Store {
         admission: &impl BundleAssetAdmission,
         after_check: impl FnOnce(),
     ) -> Result<Project> {
-        // Capture and validate every member before publishing even the first
-        // member. A path can change after the earlier inspection.
+        let fingerprint = BundleFingerprint::of_manifest_bytes(&serde_json::to_vec(manifest)?);
+        self.import_validated_bundle_bound(
+            source,
+            manifest,
+            admission,
+            fingerprint.as_str(),
+            after_check,
+        )
+    }
+
+    fn import_validated_bundle_bound(
+        &mut self,
+        source: &Path,
+        manifest: &ProjectBundleManifest,
+        admission: &impl BundleAssetAdmission,
+        source_fingerprint: &str,
+        after_check: impl FnOnce(),
+    ) -> Result<Project> {
+        // Validate every private capture before any publication. Recovery is
+        // product maintenance, never a side effect of read-only inspection.
         let staged = self.capture_bundle_blobs(source, manifest, admission)?;
-        // Reject pre-existing destination collisions across the entire
-        // captured set BEFORE publishing its first content-addressed member.
-        // Never delete a foreign or pre-existing blob on failure.
         self.preflight_bundle_blob_destinations(&staged)?;
-        // The final project-ID check and the CAS publication share the same
-        // IMMEDIATE SQLite writer transaction. A peer cannot insert the same
-        // project ID after the check but before the project/journal commit.
-        // This serializes database writers; it does NOT make CAS and SQLite
-        // crash-atomic if publication or commit is interrupted.
-        self.import_project_with_publication(&manifest.backup, |blob_root| {
-            after_check();
-            for captured in &staged {
-                file_import::publish_file_import_under_root(blob_root, captured)?;
+        let _ = self.recover_cas(CasRetentionPolicy::default());
+        let intent = self.begin_bundle_import(&manifest.backup, &staged, source_fingerprint)?;
+        let result =
+            self.import_project_with_publication(&manifest.backup, intent.as_ref(), |blob_root| {
+                after_check();
+                for captured in &staged {
+                    if let Some(intent) = &intent {
+                        intent.publish(captured)?;
+                    } else {
+                        file_import::publish_file_import_under_root(blob_root, captured)?;
+                    }
+                    #[cfg(test)]
+                    crate::apply_crash_tests::bundle_checkpoint(
+                        manifest.backup.project.id,
+                        "after_member_publication",
+                    );
+                }
                 #[cfg(test)]
-                crate::apply_crash_tests::bundle_checkpoint(
-                    manifest.backup.project.id,
-                    "after_member_publication",
-                );
-            }
-            Ok(())
-        })
+                if intent.is_some() {
+                    crate::cas_retention_process_tests::checkpoint(
+                        blob_root,
+                        "import_after_publication",
+                    );
+                }
+                Ok(())
+            });
+        if result.is_ok()
+            && let Some(intent) = intent
+        {
+            // Commit is authoritative even if control finalization fails.
+            let _ = intent.finish_committed();
+        }
+        result
     }
 
     fn preflight_bundle_blob_destinations(&self, staged: &[StagedFileImport]) -> Result<()> {
@@ -268,7 +308,7 @@ impl Store {
         let mut staged = Vec::with_capacity(manifest.blobs.len());
         for blob in &manifest.blobs {
             let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
-            let captured = self.stage_file_import_with_limit(&path, blob.size_bytes)?;
+            let captured = self.stage_bundle_file_import_with_limit(&path, blob.size_bytes)?;
             if captured.descriptor().sha256 != blob.sha256
                 || captured.descriptor().size_bytes != blob.size_bytes
             {
@@ -514,7 +554,7 @@ impl Store {
 
 /// Publish the complete sibling directory only if its destination is still free.
 /// Unsupported filesystem operations are errors; there is no replacing fallback.
-fn publish_bundle_directory(staging: &Path, destination: &Path) -> Result<()> {
+pub(super) fn publish_bundle_directory(staging: &Path, destination: &Path) -> Result<()> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let result = {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
@@ -1288,11 +1328,38 @@ mod tests {
         }
     }
 
+    fn cas_control_bytes(store: &Store) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        fn visit(path: &Path, relative: PathBuf, result: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            assert!(!metadata.file_type().is_symlink());
+            if metadata.is_dir() {
+                result.push((relative.clone(), None));
+                let mut entries = fs::read_dir(path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap())
+                    .collect::<Vec<_>>();
+                entries.sort_by_key(|entry| entry.file_name());
+                for entry in entries {
+                    visit(&entry.path(), relative.join(entry.file_name()), result);
+                }
+            } else {
+                assert!(metadata.is_file());
+                result.push((relative, Some(fs::read(path).unwrap())));
+            }
+        }
+        let mut result = Vec::new();
+        visit(store.blob_root(), PathBuf::from("cas"), &mut result);
+        let control = crate::cas_retention::test_metadata_root(store.blob_root()).unwrap();
+        visit(&control, PathBuf::from("control"), &mut result);
+        result
+    }
+
     #[test]
     fn bundle_inspection_is_readonly_and_hashes_the_same_manifest_bytes() {
         let directory = tempfile::tempdir().unwrap();
         let (bundle, manifest) = bundle_fixture(directory.path());
         let target = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+        let cas_before = cas_control_bytes(&target);
         let before = snapshot(&target);
         let changes = target.conn.total_changes();
         target.conn.execute_batch("PRAGMA query_only=ON").unwrap();
@@ -1319,7 +1386,7 @@ mod tests {
         assert_eq!(snapshot(&target), before);
         assert_eq!(target.conn.total_changes(), changes);
         assert_eq!(fs::read(bundle.join("manifest.json")).unwrap(), bytes);
-        assert!(fs::read_dir(target.blob_root()).unwrap().next().is_none());
+        assert_eq!(cas_control_bytes(&target), cas_before);
     }
 
     #[test]
@@ -1777,6 +1844,7 @@ mod tests {
             .set_len(MAX_BUNDLE_MANIFEST_BYTES + 1)
             .unwrap();
         let mut target = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+        let cas_before = cas_control_bytes(&target);
         let expected = BundleFingerprint::from_sha256("0".repeat(64)).unwrap();
         assert!(matches!(
             target.inspect_project_bundle_with_fingerprint(&bundle),
@@ -1787,7 +1855,7 @@ mod tests {
             Err(StorageError::BlobTooLarge { .. })
         ));
         assert!(target.list_projects(10).unwrap().is_empty());
-        assert!(fs::read_dir(target.blob_root()).unwrap().next().is_none());
+        assert_eq!(cas_control_bytes(&target), cas_before);
     }
 
     #[test]

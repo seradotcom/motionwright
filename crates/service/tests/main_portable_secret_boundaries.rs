@@ -2,7 +2,11 @@ use motionwright_domain::{Asset, Change, Project};
 use motionwright_service::StudioService;
 use motionwright_storage::{ProjectBackup, ProjectEvent, StorageError};
 use sha2::{Digest, Sha256};
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 // Constructed canaries exercise the existing credential patterns. None are
 // credentials; negative result messages must not echo the matching bytes.
@@ -49,11 +53,57 @@ fn rehash(backup: &mut ProjectBackup) {
     ));
 }
 
-fn assert_empty_destination(service: &StudioService) {
+type DestinationStorageSnapshot = Vec<(PathBuf, Option<Vec<u8>>)>;
+
+fn destination_storage_snapshot(service: &StudioService) -> DestinationStorageSnapshot {
+    fn visit(path: &Path, relative: PathBuf, result: &mut DestinationStorageSnapshot) {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        if metadata.is_dir() {
+            result.push((relative.clone(), None));
+            let mut entries = fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                visit(&entry.path(), relative.join(entry.file_name()), result);
+            }
+        } else {
+            assert!(metadata.is_file());
+            result.push((relative, Some(fs::read(path).unwrap())));
+        }
+    }
+    let shared = service.store();
+    let store = shared.lock();
+    let root = store.blob_root();
+    let anchor: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join(".motionwright-cas-root-v1.json")).unwrap())
+            .unwrap();
+    let control = PathBuf::from(
+        anchor
+            .get("control")
+            .and_then(serde_json::Value::as_str)
+            .unwrap(),
+    );
+    let parent = fs::canonicalize(root.parent().unwrap()).unwrap();
+    assert_eq!(control.parent(), Some(parent.as_path()));
+    assert!(
+        control
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".motionwright-cas-")
+    );
+    let mut result = Vec::new();
+    visit(root, PathBuf::from("cas"), &mut result);
+    visit(&control, PathBuf::from("control"), &mut result);
+    result
+}
+
+fn assert_empty_destination(service: &StudioService, before: &DestinationStorageSnapshot) {
     assert!(service.projects(100).unwrap().is_empty());
-    let store = service.store();
-    let store = store.lock();
-    assert!(fs::read_dir(store.blob_root()).unwrap().next().is_none());
+    assert_eq!(&destination_storage_snapshot(service), before);
 }
 
 fn add_asset(
@@ -220,11 +270,12 @@ fn json_backup_import_rejects_sensitive_metadata_before_any_project_write() {
         let encoded = serde_json::to_vec(&backup).unwrap();
         let decoded: ProjectBackup = serde_json::from_slice(&encoded).unwrap();
         let destination = service(temp.path(), "destination");
+        let destination_before = destination_storage_snapshot(&destination);
 
         rejected(destination.inspect_import(&decoded), &marker);
         rejected(destination.import_project(&decoded), &marker);
 
-        assert_empty_destination(&destination);
+        assert_empty_destination(&destination, &destination_before);
         assert_eq!(source.project(project.id).unwrap(), project);
     }
 }
@@ -316,13 +367,14 @@ fn bundle_inspection_and_import_scan_actual_members_before_cas_publication() {
         let encoded = serde_json::to_vec_pretty(&manifest).unwrap();
         fs::write(bundle.join("manifest.json"), &encoded).unwrap();
         let destination = service(temp.path(), "destination");
+        let destination_before = destination_storage_snapshot(&destination);
 
         // Observe import before asserting the inspection result, so the RED
         // run also exposes an ordinary CAS prefix published before late refusal.
         let inspected = destination.inspect_project_bundle(&bundle);
         let imported = destination.import_project_bundle(&bundle);
         rejected(imported, &marker);
-        assert_empty_destination(&destination);
+        assert_empty_destination(&destination, &destination_before);
         rejected(inspected, &marker);
         assert_eq!(fs::read(bundle.join("manifest.json")).unwrap(), encoded);
         assert_eq!(fs::read(&member).unwrap(), bytes);
@@ -609,9 +661,10 @@ fn bundle_metadata_keeps_its_existing_budget_on_export_inspect_and_import() {
     assert_eq!(producer.project(imported.id).unwrap(), imported);
 
     let destination = service(temp.path(), "destination");
+    let destination_before = destination_storage_snapshot(&destination);
     rejected_bundle_budget(destination.inspect_project_bundle(&bundle));
     rejected_bundle_budget(destination.import_project_bundle(&bundle));
-    assert_empty_destination(&destination);
+    assert_empty_destination(&destination, &destination_before);
     assert_eq!(
         hex::encode(Sha256::digest(
             fs::read(bundle.join("manifest.json")).unwrap(),
@@ -659,12 +712,13 @@ fn complete_bundle_metadata_is_rejected_before_project_or_blob_publication() {
         }
         fs::write(bundle.join("manifest.json"), encoded.as_bytes()).unwrap();
         let destination = service(temp.path(), "destination");
+        let destination_before = destination_storage_snapshot(&destination);
         let inspected = destination.inspect_project_bundle(&bundle);
         let imported = destination.import_project_bundle(&bundle);
 
         // A bad metadata field must never create even the project row or the
         // earlier ordinary CAS member, irrespective of where it is serialized.
-        assert_empty_destination(&destination);
+        assert_empty_destination(&destination, &destination_before);
         rejected(imported, &marker);
         rejected(inspected, &marker);
         assert_eq!(
