@@ -95,7 +95,7 @@ REVIEWED_NONPRODUCT_INPUTS = {
     "status": "REVIEWED_CLOSED_INPUTS",
     "documents": ["CONTRIBUTING.md", "README.md"],
     "python_asts": {"tooling/conformance_history_guard.py": "db86256231cacb883a0a1fb908b81992a298c1706162def90de71cd5c1f6df35"},
-    "consumer_inventory_sha256": "760c867768ba58bae2e7cb78a17f8fdc297085d407affefd2821d6ba91b42722",
+    "consumer_inventory_sha256": "85a1948d4cd703582dcf939c14ac06566c2de7988f071499270121f923ad8b94",
     "unresolved_consumers": [],
 }
 

@@ -22,7 +22,7 @@ import types
 WORKFLOW = ".github/workflows/ci.yml"
 SELF = "tooling/ci_job_plan.py"
 PROVIDER = "tooling/ci_impact_plan.py"
-REVIEWED_PROVIDER_SHA256 = "b90c969aea337ff75209fc297deb56037d1725c05e141f6c428ccfaaef40629b"
+REVIEWED_PROVIDER_SHA256 = "0dc439bee9598efa1dc7da8d3a6da69a8d105077879affd14648a911b90ebe54"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 HASH = re.compile(r"[0-9a-f]{64}\Z")
 ZERO = "0" * 40
@@ -356,6 +356,175 @@ def write_new(path, value, repo):
     require(read(path) == raw, "Evidence readback differs")
 
 
+# These are the existing probe's thirteen controls, not replacement assertions.
+# The probe still evaluates the actual locked Vite bundle with intercepted effects.
+STUDIO_SECURITY_PROBE = "tooling/vite_editor_security_probe.mjs"
+STUDIO_SECURITY_NAMES = (
+    "ordinary_path", "spaces_keep_quoting", "ampersand_keeps_escaping",
+    "caret_keeps_escaping", "line_column_keep_editor_arguments",
+    "percent_environment_token_rejected", "percent_commandline_token_rejected",
+    "synthetic_carriage_return_rejected", "synthetic_line_feed_rejected",
+    "windows_parent_component_normalized_after_position",
+    "wsl_plus_filename_is_positional", "wsl_minus_filename_is_positional",
+    "missing_file_has_no_effect",
+)
+STUDIO_SECURITY_FILES = (STUDIO_SECURITY_PROBE, "apps/studio/package.json",
+                         "apps/studio/package-lock.json")
+STUDIO_VITE_PACKAGE = "apps/studio/node_modules/vite/package.json"
+STUDIO_VITE_BUNDLE = "apps/studio/node_modules/vite/dist/node/chunks/config.js"
+STUDIO_SECURITY_SHADOW_WORKFLOW = ".github/workflows/verification-plan.yml"
+
+
+def studio_security_workflow(execution, emitter, inputs=None):
+    """The required CI job, or an explicit manual probe in the existing G0 job."""
+    if emitter == "studio":
+        workflow = WORKFLOW
+    else:
+        require(emitter == "plan-and-contracts" and execution["GITHUB_EVENT_NAME"] == "workflow_dispatch",
+                "Studio security requires its mandatory CI job or explicit manual G0 entrypoint")
+        flag = inputs.get("studio_security") if isinstance(inputs, dict) else None
+        require(flag is True or type(flag) is str and flag == "true",
+                "Studio security manual input must be explicitly true")
+        workflow = STUDIO_SECURITY_SHADOW_WORKFLOW
+    expected = execution["GITHUB_REPOSITORY"] + "/" + workflow + "@"
+    require(execution["GITHUB_WORKFLOW_REF"].startswith(expected)
+            and len(execution["GITHUB_WORKFLOW_REF"]) > len(expected),
+            "Studio security was invoked by an unreviewed workflow")
+    return workflow
+
+
+def studio_security_inputs(repo, execution):
+    """Bind the unchanged probe and npm source to Git, plus actual installed inputs."""
+    files = {}
+    for relative in (*STUDIO_SECURITY_FILES, STUDIO_VITE_PACKAGE, STUDIO_VITE_BUNDLE):
+        raw = read(Path(repo) / relative)
+        if relative in STUDIO_SECURITY_FILES:
+            require(raw == blob(repo, execution["GITHUB_SHA"], relative),
+                    "Studio security source differs from Git: " + relative)
+        files[relative] = {"bytes": len(raw), "sha256": digest(raw)}
+    lock = strict_json(read(Path(repo) / "apps/studio/package-lock.json"))
+    installed = strict_json(read(Path(repo) / STUDIO_VITE_PACKAGE))
+    version = lock["packages"]["node_modules/vite"]["version"]
+    require(isinstance(version, str) and bool(version)
+            and installed.get("name") == "vite" and installed.get("version") == version,
+            "Installed Vite differs from the source lock")
+    return {"files": files, "locked_vite_version": version,
+            "bundle": str((Path(repo) / STUDIO_VITE_BUNDLE).resolve(strict=True))}
+
+
+def admit_studio_security_report(stdout, report_raw, inputs, execution):
+    """Admit only the original installed-bundle report and its exact nominal roster."""
+    require(stdout == report_raw, "Probe stdout and original report differ")
+    report = strict_json(report_raw.decode("utf-8", "strict"))
+    require(report.get("schema") == "motionwright.vite-editor-admission/1",
+            "Unknown Studio security report schema")
+    for field, expected in {
+        "source_sha_from_ci_environment": execution["GITHUB_SHA"],
+        "ci_run_id": execution["GITHUB_RUN_ID"],
+        "ci_run_attempt": execution["GITHUB_RUN_ATTEMPT"],
+        "probe_sha256": inputs["files"][STUDIO_SECURITY_PROBE]["sha256"],
+        "studio_package_sha256": inputs["files"]["apps/studio/package.json"]["sha256"],
+        "studio_lock_sha256": inputs["files"]["apps/studio/package-lock.json"]["sha256"],
+        "bundle_sha256": inputs["files"][STUDIO_VITE_BUNDLE]["sha256"],
+        "locked_vite_version": inputs["locked_vite_version"],
+        "installed_vite_version": inputs["locked_vite_version"],
+        "bundle": inputs["bundle"],
+        "bundle_mode": "installed_locked_dependency",
+        "actual_host_platform": sys.platform,
+        "simulated_platforms": ["win32", "linux-wsl"],
+        "status": "PASS",
+    }.items():
+        require(report.get(field) == expected, "Studio security report differs: " + field)
+    for field, expected in (("passed", len(STUDIO_SECURITY_NAMES)), ("failed", 0),
+                            ("actual_os_processes_started", 0)):
+        require(type(report.get(field)) is int and report[field] == expected,
+                "Studio security count differs: " + field)
+    rows = report.get("results")
+    require(isinstance(rows, list) and len(rows) == len(STUDIO_SECURITY_NAMES),
+            "Studio security controls are missing or duplicated")
+    require(all(isinstance(row, dict) and set(row) == {"name", "status", "observation"}
+                and row.get("status") == "PASS" and isinstance(row.get("observation"), dict)
+                for row in rows), "Studio security has omitted, failed or malformed controls")
+    require([row["name"] for row in rows] == list(STUDIO_SECURITY_NAMES),
+            "Studio security executed names differ")
+    require(isinstance(report.get("module_regions_sha256"), str)
+            and HASH.fullmatch(report["module_regions_sha256"]), "Unbound probe module regions")
+    return {"status": "PASS", "executed_names": [row["name"] for row in rows],
+            "controls": len(rows), "scope": "installed-bundle-with-intercepted-effects"}
+
+
+def studio_security(repo, output, execution, plan_id):
+    """Run one required G0 probe; preserve partial originals and never retry UNKNOWN."""
+    from datetime import datetime, timezone
+
+    emitter = os.environ.get("GITHUB_JOB")
+    event_raw = (read(os.environ["GITHUB_EVENT_PATH"]) if emitter == "plan-and-contracts" else None)
+    inputs = strict_json(event_raw).get("inputs") if event_raw is not None else None
+    invoked_workflow = studio_security_workflow(execution, emitter, inputs)
+    require(plan_id and HASH.fullmatch(plan_id), "Missing original planning job identity")
+    repo, output = Path(repo).resolve(strict=True), Path(output).absolute()
+    require(not output.exists() and not output.is_symlink(),
+            "Studio security output already exists; do not replay an uncertain operation")
+    before, inputs_before = source(repo, execution), studio_security_inputs(repo, execution)
+    invoked_source = blob(repo, execution["GITHUB_SHA"], invoked_workflow)
+    require(read(repo / invoked_workflow) == invoked_source, "Invoking workflow differs from Git")
+    started = datetime.now(timezone.utc).isoformat()
+    command = ["node", str(repo / STUDIO_SECURITY_PROBE), "--report", str(output / "probe.json")]
+    record = {"schema": "motionwright.ci-studio-security/1", "status": "STARTED",
+              "execution_context": execution, "emitter_job": emitter, "plan_id": plan_id,
+              "invoking_workflow": {"path": invoked_workflow, "sha256": digest(invoked_source)},
+              "manual_event_sha256": digest(event_raw) if event_raw is not None else None,
+              "source_before": before, "inputs_before": inputs_before,
+              "command": command, "cwd": str(repo), "timeout_seconds": 60,
+              "started_at_utc": started,
+              "scope": "G0 component security; intercepted effects, not installed application execution",
+              "formal_acceptance": False, "release_verdict": False}
+    write_new(output / "started.json", record, repo)
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() not in ("NODE_OPTIONS", "NODE_PATH")}
+    environment.update(execution)
+    state, exit_code, process_exit_code, errors = "FAIL", 1, None, []
+    with (output / "stdout.log").open("xb") as stdout, (output / "stderr.log").open("xb") as stderr:
+        try:
+            process = subprocess.run(command, cwd=repo, env=environment, stdin=subprocess.DEVNULL,
+                                     stdout=stdout, stderr=stderr, timeout=60, check=False)
+            process_exit_code = process.returncode
+            if process.returncode != 0:
+                errors.append("Probe returned nonzero: " + str(process.returncode))
+        except subprocess.TimeoutExpired:
+            state, exit_code = "UNKNOWN", 124
+            errors.append("Direct probe process timed out; preserve originals; no automatic retry")
+        except OSError as error:
+            state, exit_code = "NOT_RUN", 2
+            errors.append("Probe could not start: " + str(error))
+    originals = {}
+    for name in ("stdout.log", "stderr.log", "probe.json"):
+        path = output / name
+        if not path.exists():
+            originals[name] = None
+        else:
+            raw = read(path)
+            originals[name] = {"bytes": len(raw), "sha256": digest(raw)}
+    record.update(originals=originals, process_exit_code=process_exit_code)
+    try:
+        after, inputs_after = source(repo, execution), studio_security_inputs(repo, execution)
+        record.update(source_after=after, inputs_after=inputs_after)
+        require(after == before and inputs_after == inputs_before,
+                "Studio security source or installed inputs changed during execution")
+        if process_exit_code == 0:
+            record["admission"] = admit_studio_security_report(
+                read(output / "stdout.log"), read(output / "probe.json"), inputs_before, execution)
+            state, exit_code = "PASS", 0
+    except (PlanError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        errors.append(str(error))
+        if state not in ("UNKNOWN", "NOT_RUN"):
+            state, exit_code = "FAIL", 1
+    record.update(status=state, exit_code=exit_code, errors=errors,
+                  finished_at_utc=datetime.now(timezone.utc).isoformat())
+    write_new(output / "receipt.json", record, repo)
+    return record
+
+
 def github_outputs(path, values):
     for key, value in values.items():
         require(re.fullmatch(r"[a-z][a-z0-9_]*", key) and isinstance(value, str)
@@ -366,7 +535,7 @@ def github_outputs(path, values):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("plan", "observe", "aggregate"))
+    parser.add_argument("operation", choices=("plan", "observe", "aggregate", "studio-security"))
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--event-path", type=Path)
     parser.add_argument("--output", type=Path)
@@ -393,6 +562,9 @@ def main(argv=None):
         outputs.update(plan_id=args.plan_id, run_id=execution["GITHUB_RUN_ID"],
                        run_attempt=execution["GITHUB_RUN_ATTEMPT"], emitter_job=emitter)
         github_outputs(args.github_output, outputs)
+    elif args.operation == "studio-security":
+        require(args.output, "Missing Studio security originals directory")
+        result = studio_security(args.repo, args.output, execution, args.plan_id)
     else:
         require(args.plan and args.output, "Missing retained plan or aggregate output")
         result = aggregate(strict_json(read(args.plan)), strict_json(os.environ["CI_NEEDS_JSON"]),
@@ -400,6 +572,8 @@ def main(argv=None):
         write_new(args.output, result, args.repo)
     print(json.dumps({"scope": WORKFLOW, "status": result.get("status", "SOURCE_OR_SELECTION_RECORDED"),
                       "test_case_results_admitted": False}))
+    if args.operation == "studio-security":
+        return result["exit_code"]
     return 1 if result.get("status") == "FAIL" else 0
 
 

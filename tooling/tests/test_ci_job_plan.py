@@ -441,5 +441,335 @@ class ClosedInputProcessTests(unittest.TestCase):
 
 
 
+class StudioSecurityG0(unittest.TestCase):
+    """Synthetic admission/process custody controls, never installed Vite execution."""
+
+    def inputs(self):
+        return {"files": {path: {"bytes": 17, "sha256": format(index + 1, "064x")}
+                          for index, path in enumerate((*ci.STUDIO_SECURITY_FILES,
+                                                       ci.STUDIO_VITE_PACKAGE, ci.STUDIO_VITE_BUNDLE))},
+                "locked_vite_version": "0.0.0-synthetic",
+                "bundle": str(Path.cwd() / "synthetic-bundle.js")}
+
+    def report(self):
+        inputs = self.inputs()
+        return {"schema": "motionwright.vite-editor-admission/1",
+                "source_sha_from_ci_environment": execution()["GITHUB_SHA"],
+                "ci_run_id": "11", "ci_run_attempt": "1",
+                "probe_sha256": inputs["files"][ci.STUDIO_SECURITY_PROBE]["sha256"],
+                "studio_package_sha256": inputs["files"]["apps/studio/package.json"]["sha256"],
+                "studio_lock_sha256": inputs["files"]["apps/studio/package-lock.json"]["sha256"],
+                "bundle_sha256": inputs["files"][ci.STUDIO_VITE_BUNDLE]["sha256"],
+                "module_regions_sha256": "f" * 64,
+                "locked_vite_version": inputs["locked_vite_version"],
+                "installed_vite_version": inputs["locked_vite_version"],
+                "bundle": inputs["bundle"], "bundle_mode": "installed_locked_dependency",
+                "actual_host_platform": sys.platform, "simulated_platforms": ["win32", "linux-wsl"],
+                "actual_os_processes_started": 0, "status": "PASS", "passed": 13, "failed": 0,
+                "results": [{"name": name, "status": "PASS", "observation": {}}
+                            for name in ci.STUDIO_SECURITY_NAMES]}
+
+    def admit(self, report, *, stdout=None):
+        raw = json.dumps(report).encode()
+        return ci.admit_studio_security_report(raw if stdout is None else stdout,
+                                               raw, self.inputs(), execution())
+
+    def assert_required_workflow(self, raw):
+        def job(name):
+            match = ci.re.search(r"^  " + name + r":\n(.*?)(?=^  [a-z][a-z-]*:\n|\Z)",
+                                 raw, ci.re.M | ci.re.S)
+            self.assertIsNotNone(match, name)
+            return match.group(1)
+        studio, rust_core, units = job("studio"), job("rust-core"), job("studio-tests")
+        self.assertIn("studio", ci.ALWAYS)
+        self.assertIn("rust-core", ci.ALWAYS)
+        self.assertNotRegex(studio, r"(?m)^    if:")
+        self.assertNotRegex(rust_core, r"(?m)^    if:")
+        self.assertIn("cargo fmt --all -- --check", rust_core)
+        self.assertIn("cargo clippy --locked", rust_core)
+        self.assertIn("--all-targets -- -D warnings", rust_core)
+        self.assertIn("run: npm test", units)
+        step = "      - name: G0 installed Vite editor security\n"
+        upload = "      - name: Retain G0 editor security originals\n"
+        self.assertEqual(studio.count(step), 1)
+        self.assertEqual(studio.count(upload), 1)
+        self.assertLess(studio.index("run: npm ci --no-audit --no-fund"), studio.index(step))
+        self.assertLess(studio.index(step), studio.index(upload))
+        self.assertLess(studio.index(upload), studio.index("run: npm run build"))
+        body = studio.split(step, 1)[1].split("      - ", 1)[0]
+        self.assertNotRegex(body, r"(?m)^        (if|continue-on-error):")
+        self.assertIn("        working-directory: .\n", body)
+        self.assertIn("python3 -I -B tooling/ci_job_plan.py studio-security", body)
+        self.assertIn('--repo "$GITHUB_WORKSPACE" --plan-id "$CI_PLAN_ID"', body)
+        self.assertIn('--output "$RUNNER_TEMP/g0-studio-security"', body)
+        self.assertIn("CI_PLAN_ID: ${{ needs.plan.outputs.plan_id }}", body)
+        retention = studio.split(upload, 1)[1].split("      - ", 1)[0]
+        self.assertIn("        if: always()\n", retention)
+        self.assertIn("uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", retention)
+        self.assertIn("name: g0-studio-security-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}", retention)
+        self.assertIn("path: ${{ runner.temp }}/g0-studio-security", retention)
+        self.assertIn("if-no-files-found: error", retention)
+        self.assertNotIn("continue-on-error:", retention)
+
+    def test_actual_workflow_keeps_format_lint_typecheck_and_security_in_required_jobs(self):
+        self.assert_required_workflow((TOOLING.parent / ci.WORKFLOW).read_text(encoding="utf-8"))
+
+    def test_manual_entrypoint_requires_exact_workflow_owner_event_and_explicit_true(self):
+        observed = execution(event="workflow_dispatch", ref="refs/heads/feat/manual-probe")
+        observed["GITHUB_WORKFLOW_REF"] = (observed["GITHUB_REPOSITORY"] + "/"
+            + ci.STUDIO_SECURITY_SHADOW_WORKFLOW + "@" + observed["GITHUB_REF"])
+        for flag in (True, "true"):
+            self.assertEqual(ci.studio_security_workflow(observed, "plan-and-contracts",
+                {"studio_security": flag}), ci.STUDIO_SECURITY_SHADOW_WORKFLOW)
+        for flag in (None, False, 0, 1, "false", "TRUE", "1", [], {}):
+            with self.subTest(flag=flag):
+                with self.assertRaises(ci.PlanError):
+                    ci.studio_security_workflow(observed, "plan-and-contracts", {"studio_security": flag})
+        for event in ("push", "pull_request"):
+            with self.subTest(event=event), self.assertRaises(ci.PlanError):
+                ci.studio_security_workflow(dict(observed, GITHUB_EVENT_NAME=event),
+                                             "plan-and-contracts", {"studio_security": True})
+        for emitter in ("studio-tests", "windows-manifest-contracts", "g0-complete", None):
+            with self.subTest(emitter=emitter), self.assertRaises(ci.PlanError):
+                ci.studio_security_workflow(observed, emitter, {"studio_security": True})
+        with self.assertRaises(ci.PlanError):
+            ci.studio_security_workflow(execution(event="workflow_dispatch"),
+                                       "plan-and-contracts", {"studio_security": True})
+        self.assertEqual(ci.studio_security_workflow(execution(), "studio", {"studio_security": False}),
+                         ci.WORKFLOW)
+
+    def test_actual_manual_workflow_selects_probe_after_clean_planning_without_product_jobs(self):
+        from types import SimpleNamespace
+
+        text = (TOOLING.parent / ci.STUDIO_SECURITY_SHADOW_WORKFLOW).read_text(encoding="utf-8")
+        self.assertIn("      studio_security:\n", text)
+        field = text.split("      studio_security:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("        type: boolean\n", field)
+        self.assertIn("        default: false\n", field)
+        self.assertEqual(ci.re.findall(r"(?m)^  ([a-z][a-z0-9-]*):$", text.split("jobs:\n", 1)[1]),
+                         ["plan-and-contracts", "windows-manifest-contracts", "g0-complete"])
+        planning = text.index("      - name: Compute full-source shadow selection without dispatching jobs\n")
+        setup = text.index("      - name: Set up Node for requested Studio security probe\n")
+        install = text.index("      - name: Install locked Studio dependencies for requested security probe\n")
+        probe = text.index("      - name: Execute requested G0 installed Vite editor security\n")
+        upload = text.index("      - name: Preserve original planning and guardrail evidence\n")
+        self.assertLess(planning, setup)
+        self.assertLess(setup, install)
+        self.assertLess(install, probe)
+        self.assertLess(probe, upload)
+        steps = text[setup:upload]
+        conditions = ci.re.findall(r"(?m)^        if: \$\{\{ (.+) \}\}$", steps)
+        self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch' && inputs.studio_security"] * 3)
+        for event in ("push", "pull_request", "workflow_dispatch"):
+            for flag in (False, True):
+                for condition in conditions:
+                    observed = eval(condition.replace("&&", " and "), {"__builtins__": {},
+                        "github": SimpleNamespace(event_name=event),
+                        "inputs": SimpleNamespace(studio_security=flag)})
+                    self.assertIs(observed, event == "workflow_dispatch" and flag)
+        self.assertIn("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020", steps)
+        self.assertIn('          node-version: "22"\n', steps)
+        self.assertIn("cache-dependency-path: apps/studio/package-lock.json", steps)
+        self.assertIn("working-directory: apps/studio", steps)
+        self.assertIn("run: npm ci --no-audit --no-fund", steps)
+        self.assertIn("python3 -I -B tooling/ci_job_plan.py studio-security", steps)
+        self.assertIn("CI_PLAN_ID: ${{ steps.shadow_plan.outputs.plan_id }}", steps)
+        self.assertIn('--output "$RUNNER_TEMP/verification/studio-security"', steps)
+        for forbidden in ("npm test", "npm run build", "cargo "):
+            self.assertNotIn(forbidden, steps)
+        self.assertIn("        id: shadow_plan\n", text[planning:setup])
+        self.assertIn('with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:', text[planning:setup])
+        retained = text[upload:text.index("  windows-manifest-contracts:\n")]
+        self.assertIn("if: always()", retained)
+        self.assertIn("path: ${{ runner.temp }}/verification", retained)
+        final = text[text.index("  g0-complete:\n"):]
+        self.assertIn("needs: [plan-and-contracts, windows-manifest-contracts]", final)
+        self.assertIn("if: always()", final)
+        self.assertIn('if any(result != "success" for result in results.values()):', final)
+
+    def test_workflow_guard_rejects_conditional_probe_lost_originals_and_skipped_lint(self):
+        raw = (TOOLING.parent / ci.WORKFLOW).read_text(encoding="utf-8")
+        mutations = (
+            ("  studio:\n", "  studio:\n    if: false\n"),
+            ("  rust-core:\n", "  rust-core:\n    if: false\n"),
+            ("cargo fmt --all -- --check", "cargo fmt --all"),
+            ("--all-targets -- -D warnings", "--all-targets"),
+            ("      - name: G0 installed Vite editor security\n",
+             "      - name: G0 installed Vite editor security\n        if: false\n"),
+            ("      - name: G0 installed Vite editor security\n",
+             "      - name: G0 installed Vite editor security\n        continue-on-error: true\n"),
+            ("      - name: Retain G0 editor security originals\n        if: always()",
+             "      - name: Retain G0 editor security originals\n        if: success()"),
+            ('--output "$RUNNER_TEMP/g0-studio-security"', '--output "inside-checkout"'),
+            ("path: ${{ runner.temp }}/g0-studio-security", "path: absent-originals"),
+            ("name: g0-studio-security-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}",
+             "name: unbound-security-result"),
+        )
+        for before, after in mutations:
+            with self.subTest(before=before):
+                self.assertIn(before, raw)
+                with self.assertRaises(AssertionError):
+                    self.assert_required_workflow(raw.replace(before, after, 1))
+
+    def test_exact_existing_thirteen_controls_are_admitted_with_bound_installed_inputs(self):
+        result = self.admit(self.report())
+        self.assertEqual(result["controls"], 13)
+        self.assertEqual(result["executed_names"], list(ci.STUDIO_SECURITY_NAMES))
+        self.assertEqual(result["scope"], "installed-bundle-with-intercepted-effects")
+
+    def test_counts_alone_wrong_names_duplicate_missing_skip_and_unknown_never_pass(self):
+        for mutation in ("wrong-name", "duplicate", "missing", "extra", "skip", "unknown", "failed",
+                         "counts-only", "boolean-count", "undeclared-result-field"):
+            with self.subTest(mutation=mutation):
+                report = self.report()
+                if mutation == "wrong-name":
+                    report["results"][0]["name"] = "some_other_control"
+                elif mutation == "duplicate":
+                    report["results"][1] = copy.deepcopy(report["results"][0])
+                elif mutation == "missing":
+                    report["results"].pop()
+                elif mutation == "extra":
+                    report["results"].append(copy.deepcopy(report["results"][0]))
+                elif mutation in ("skip", "unknown", "failed"):
+                    report["results"][0]["status"] = mutation.upper()
+                elif mutation == "counts-only":
+                    del report["results"]
+                elif mutation == "boolean-count":
+                    report["failed"] = False
+                else:
+                    report["results"][0]["reason"] = "was not actually executed"
+                with self.assertRaises(ci.PlanError):
+                    self.admit(report)
+
+    def test_foreign_source_run_attempt_bundle_hash_or_external_fixture_is_not_admitted(self):
+        for field, value in (("source_sha_from_ci_environment", "e" * 40), ("ci_run_id", "12"),
+                             ("ci_run_attempt", "2"), ("probe_sha256", "e" * 64),
+                             ("studio_package_sha256", "e" * 64), ("studio_lock_sha256", "e" * 64),
+                             ("bundle_sha256", "e" * 64), ("bundle", "different-bundle.js"),
+                             ("installed_vite_version", "different"),
+                             ("bundle_mode", "external_bundle_fixture"),
+                             ("actual_os_processes_started", 1), ("status", "UNKNOWN")):
+            with self.subTest(field=field):
+                report = self.report()
+                report[field] = value
+                with self.assertRaises(ci.PlanError):
+                    self.admit(report)
+        with self.assertRaises(ci.PlanError):
+            self.admit(self.report(), stdout=b"different original stdout")
+        raw = json.dumps(self.report()).encode()
+        with self.assertRaises(ci.PlanError):
+            ci.admit_studio_security_report(raw[:-1] + b',"status":"PASS"}',
+                raw[:-1] + b',"status":"PASS"}', self.inputs(), execution())
+
+    def capture(self, variant="pass", *, manual=False):
+        from unittest import mock
+
+        temp = tempfile.TemporaryDirectory(prefix="ci-studio-security-", dir=os.environ.get("MW_CI_JOB_TEST_TMP"))
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        repo = root / "repo"
+        repo.mkdir()
+        observed = execution()
+        workflow = ci.STUDIO_SECURITY_SHADOW_WORKFLOW if manual else ci.WORKFLOW
+        emitter = "plan-and-contracts" if manual else "studio"
+        if manual:
+            observed = execution(event="workflow_dispatch", ref="refs/heads/feat/manual-probe")
+            observed["GITHUB_WORKFLOW_REF"] = observed["GITHUB_REPOSITORY"] + "/" + workflow + "@" + observed["GITHUB_REF"]
+        workflow_file = repo / workflow
+        workflow_file.parent.mkdir(parents=True)
+        workflow_file.write_bytes(b"synthetic invoking workflow\n")
+        event_path = root / "event.json"
+        event_path.write_bytes(b'{"inputs":{"studio_security":"true"}}\n')
+        output = root / "originals"
+        before, after = source_observation(), source_observation()
+        inputs_before, inputs_after = self.inputs(), self.inputs()
+        if variant == "source-changed":
+            after["tree_sha"] = "e" * 40
+        if variant == "installed-changed":
+            inputs_after["files"][ci.STUDIO_VITE_BUNDLE]["sha256"] = "e" * 64
+
+        def fake_process(command, **kwargs):
+            self.assertEqual(command, ["node", str(repo / ci.STUDIO_SECURITY_PROBE),
+                                       "--report", str(output / "probe.json")])
+            self.assertNotIn("--bundle", command)
+            self.assertEqual(kwargs["timeout"], 60)
+            self.assertEqual(kwargs["cwd"], repo)
+            self.assertNotIn("NODE_OPTIONS", kwargs["env"])
+            self.assertNotIn("NODE_PATH", kwargs["env"])
+            self.assertEqual(kwargs["env"]["GITHUB_SHA"], execution()["GITHUB_SHA"])
+            if variant == "timeout":
+                kwargs["stdout"].write(b'{"partial":')
+                kwargs["stderr"].write(b"original timeout stderr\n")
+                raise subprocess.TimeoutExpired(command, 60)
+            if variant == "spawn-failure":
+                raise FileNotFoundError("synthetic missing node")
+            raw = json.dumps(self.report()).encode() + b"\n"
+            kwargs["stdout"].write(raw)
+            kwargs["stderr"].write(b"original diagnostic stderr\n")
+            if variant != "missing-report":
+                (output / "probe.json").write_bytes(raw)
+            return subprocess.CompletedProcess(command, 1 if variant == "nonzero" else 0)
+
+        with mock.patch.dict(os.environ, {"GITHUB_JOB": emitter, "NODE_OPTIONS": "--require untrusted",
+                                          "NODE_PATH": "untrusted", "GITHUB_EVENT_PATH": str(event_path)}), \
+                mock.patch.object(ci, "source", side_effect=[before, after]), \
+                mock.patch.object(ci, "studio_security_inputs", side_effect=[inputs_before, inputs_after]), \
+                mock.patch.object(ci, "blob", return_value=workflow_file.read_bytes()), \
+                mock.patch.object(ci.subprocess, "run", side_effect=fake_process) as process:
+            result = ci.studio_security(repo, output, observed, "f" * 64)
+            process.assert_called_once()
+            with self.assertRaises(ci.PlanError):
+                ci.studio_security(repo, output, observed, "f" * 64)
+            process.assert_called_once()
+        retained = json.loads((output / "receipt.json").read_bytes())
+        self.assertEqual(result, retained)
+        self.assertEqual(retained["source_before"], before)
+        self.assertEqual(retained["execution_context"], observed)
+        self.assertEqual(retained["emitter_job"], emitter)
+        self.assertEqual(retained["invoking_workflow"],
+                         {"path": workflow, "sha256": hashlib.sha256(workflow_file.read_bytes()).hexdigest()})
+        self.assertEqual(retained["manual_event_sha256"],
+                         hashlib.sha256(event_path.read_bytes()).hexdigest() if manual else None)
+        self.assertEqual(retained["plan_id"], "f" * 64)
+        for name, identity in retained["originals"].items():
+            if identity is None:
+                self.assertFalse((output / name).exists())
+            else:
+                raw = (output / name).read_bytes()
+                self.assertEqual(identity, {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+        self.assertIs(retained["formal_acceptance"], False)
+        self.assertIs(retained["release_verdict"], False)
+        return result
+
+    def test_required_probe_captures_originals_identity_and_exact_command_once(self):
+        result = self.capture()
+        self.assertEqual((result["status"], result["exit_code"], result["process_exit_code"]), ("PASS", 0, 0))
+        self.assertEqual(result["admission"]["controls"], 13)
+        self.assertEqual(result["source_before"], result["source_after"])
+        self.assertEqual(result["inputs_before"], result["inputs_after"])
+
+    def test_manual_probe_captures_invoking_workflow_and_explicit_original_input(self):
+        result = self.capture(manual=True)
+        self.assertEqual((result["status"], result["exit_code"]), ("PASS", 0))
+        self.assertEqual(result["emitter_job"], "plan-and-contracts")
+        self.assertEqual(result["admission"]["controls"], 13)
+
+    def test_timeout_retains_partial_originals_as_unknown_without_replay(self):
+        result = self.capture("timeout")
+        self.assertEqual((result["status"], result["exit_code"]), ("UNKNOWN", 124))
+        self.assertIsNone(result["process_exit_code"])
+        self.assertIsNone(result["originals"]["probe.json"])
+        self.assertNotIn("admission", result)
+
+    def test_nonzero_missing_report_changed_source_and_installed_bundle_fail_closed(self):
+        for variant in ("nonzero", "missing-report", "source-changed", "installed-changed", "spawn-failure"):
+            with self.subTest(variant=variant):
+                result = self.capture(variant)
+                self.assertEqual(result["status"], "NOT_RUN" if variant == "spawn-failure" else "FAIL")
+                self.assertNotEqual(result["exit_code"], 0)
+                self.assertNotIn("admission", result)
+
+
+
 if __name__ == "__main__":
     unittest.main()
