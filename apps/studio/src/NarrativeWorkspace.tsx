@@ -70,7 +70,11 @@ function getSession(project: Project, target: NarrativeTarget): Session {
   let recovered: NarrativeDraft | null = null, backupError: string | null = null;
   const recoveryObservation = emptyNarrativeRecoveryObservation();
   try {
-    recovered = readNarrativeRecoverySource(window.localStorage, window.sessionStorage, scope, recoveryObservation);
+    // Observe this tab's real pointer before acquiring local storage. An
+    // observed empty pointer is different from an unreadable recovery source.
+    recovered = readNarrativeRecoverySource(
+      { getItem: key => window.localStorage.getItem(key) },
+      { getItem: key => window.sessionStorage.getItem(key) }, scope, recoveryObservation);
   } catch (reason) { backupError = reason instanceof Error ? reason.message : String(reason); }
   const session: Session = {
     draft: recovered ? reconcileNarrativeDraft(recovered, project) : createNarrativeDraft(project, target),

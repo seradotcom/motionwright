@@ -21,7 +21,17 @@ const transport: EditorialOutcomeTransport = { readProject: async id => {
 function getSession(project: Project): Live {
   const scope = narrativeEditingScope(project), previous = liveEditors.get(scope);
   if (previous) return previous;
-  const opened = openEditorialSession(project, window.localStorage, window.sessionStorage);
+  // Browser storage getters can throw before any Storage method runs.
+  // Defer access until the recovery reader's protected first observation.
+  const opened = openEditorialSession(project, {
+    get length() { return window.localStorage.length; },
+    key: index => window.localStorage.key(index),
+    getItem: key => window.localStorage.getItem(key),
+    setItem: (key, value) => window.localStorage.setItem(key, value),
+  }, {
+    getItem: key => window.sessionStorage.getItem(key),
+    setItem: (key, value) => window.sessionStorage.setItem(key, value),
+  });
   const session: Live = { ...opened, inFlight: false, error: null,
     backupError: opened.failedSource ? "This tab's original editorial recovery is unreadable or missing. It may contain an UNKNOWN operation. Retry that exact copy." : null,
     notice: editorialHasInput(opened.draft) || opened.draft.pending ? "Recovered author input. A saved-project observation is not an acknowledgement." : null };
