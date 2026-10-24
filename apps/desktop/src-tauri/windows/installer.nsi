@@ -104,7 +104,13 @@ ManifestDPIAwareness PerMonitorV2
 ; Capture each application payload in the fresh Tauri NSIS output directory.
 ; Its File instruction consumes only that capture. The include and capture helper never replace existing outputs.
 !macro MWINST_CAPTURE Symbol Source
+  !if "${Symbol}" == "MW_MAIN"
+  ; Source consistency alone is not distribution admission.
+  ; A missing or inapplicable caller-pinned disposition stops before capture.
+  !execute `"python.exe" "${MWOWN_BUILD_HELPER}" --prepare-distribution --arch "${ARCH}" --source "${Source}" --capture "${__FILEDIR__}\mw-owned-${Symbol}.bin" --include "${__FILEDIR__}\mw-owned-${Symbol}.nsh" --symbol "${Symbol}"` = 0
+  !else
   !execute `"python.exe" "${MWOWN_BUILD_HELPER}" --source "${Source}" --capture "${__FILEDIR__}\mw-owned-${Symbol}.bin" --include "${__FILEDIR__}\mw-owned-${Symbol}.nsh" --symbol "${Symbol}"` = 0
+  !endif
   !include "${__FILEDIR__}\mw-owned-${Symbol}.nsh"
 !macroend
 !insertmacro MWINST_CAPTURE MW_MAIN "${MAINBINARYSRCPATH}"

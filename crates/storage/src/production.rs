@@ -183,6 +183,53 @@ fn request_history(
     )
 }
 
+/// SHA-256 of serde_json::to_vec of the actual committed ProductionReceipt.
+/// Version 1 includes every field in its declared Rust serialization order,
+/// including the complete payload and created_at string. Native callers use
+/// this same function after append succeeds; a tentative or reconstructed
+/// receipt is not an observation. This digest grants no native authority.
+pub fn voice_alignment_receipt_sha256_v1(receipt: &ProductionReceipt) -> Result<String> {
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(receipt)?)))
+}
+
+pub(crate) fn verify_voice_alignment_receipt(
+    conn: &rusqlite::Connection,
+    project: &Project,
+    application: &motionwright_domain::VoiceAlignmentApplication,
+) -> Result<()> {
+    super::validate_production_receipt_order_integrity(conn, Some(project.id))?;
+    let reference = &application.receipt;
+    let history = request_history(conn, project.id, &reference.request_id)?;
+    let invalid = || {
+        StorageError::Domain(DomainError::Invalid(
+            "voice alignment requires its exact current completed production observation".into(),
+        ))
+    };
+    let observed = history.last().ok_or_else(invalid)?;
+    if observed.id != reference.id
+        || observed.project_id != project.id
+        || observed.generation != project.generation
+        || observed.revision != project.revision
+        || observed.request_id != reference.request_id
+        || observed.request_sha256 != reference.request_sha256
+        || observed.command != reference.command
+        || observed.stage != "completed"
+        || history.iter().any(|prior| {
+            prior.generation != observed.generation
+                || prior.revision != observed.revision
+                || prior.request_sha256 != observed.request_sha256
+                || prior.command != observed.command
+        })
+        || voice_alignment_receipt_sha256_v1(observed)? != reference.receipt_sha256
+    {
+        return Err(invalid());
+    }
+    // Matching a command string is an integrity check only. The private
+    // qualified native caller owns the admitted alignment command allowlist;
+    // no generic adapter may use this reference to construct authority.
+    Ok(())
+}
+
 fn is_recovery_command(command: &str) -> bool {
     matches!(
         command,

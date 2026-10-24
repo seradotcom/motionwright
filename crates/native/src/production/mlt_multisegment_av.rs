@@ -10,7 +10,7 @@ use crate::{
         preflight_multi_segment_saved_mix,
     },
     mlt_edit_plan::mlt_native_video_recipe,
-    original_mix::prepare_saved_original_mix,
+    original_mix::prepare_saved_original_mix_with_budget,
 };
 
 /// Caller-owned, typed and non-deserializable; never accept a filesystem
@@ -50,18 +50,21 @@ fn sha256_literal(value: &str) -> bool {
 }
 
 /// Trust only closed, source-derived export identity and clock.
-struct MuxExpected<'a> {
-    frames: u64,
-    width: u32,
-    height: u32,
-    fps_num: u32,
-    fps_den: u32,
-    source_video: &'a str,
-    source_audio: &'a str,
-    output_path: &'a str,
+pub(super) struct MuxExpected<'a> {
+    pub(super) frames: u64,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) fps_num: u32,
+    pub(super) fps_den: u32,
+    pub(super) source_video: &'a str,
+    pub(super) source_audio: &'a str,
+    pub(super) output_path: &'a str,
 }
 
-fn verify_exact_native_mux(response: &Value, expected: &MuxExpected<'_>) -> NativeResult<()> {
+pub(super) fn verify_exact_native_mux(
+    response: &Value,
+    expected: &MuxExpected<'_>,
+) -> NativeResult<()> {
     let media = response
         .get("media")
         .ok_or_else(|| backend("Native multisegment mux has no actual video/audio measurement"))?;
@@ -194,6 +197,37 @@ fn verify_exact_native_mux(response: &Value, expected: &MuxExpected<'_>) -> Nati
     Ok(())
 }
 
+/// Both AV routes must compare actual bytes as well as the provider digest.
+/// This checks existing owner-root output; it does not decode or render media.
+pub(super) fn verify_mux_artifact_file(
+    output_root: &std::path::Path,
+    artifact: &Value,
+) -> NativeResult<()> {
+    if artifact.get("root").and_then(Value::as_str) != Some("output") {
+        return Err(backend(
+            "Native mux artifact is outside the owner output root",
+        ));
+    }
+    let relative = required_string(artifact, "/path", "Native mux artifact path is missing")?;
+    let sha256 = required_string(artifact, "/sha256", "Native mux artifact digest is missing")?;
+    let bytes = artifact
+        .get("bytes")
+        .and_then(Value::as_u64)
+        .filter(|n| (1..=MLT_MASTER_MAX_BYTES).contains(n))
+        .ok_or_else(|| backend("Native mux artifact byte count is missing"))?;
+    let path = verify_output_artifact(output_root, &relative, &sha256, MLT_MASTER_MAX_BYTES)?;
+    if fs::metadata(path)
+        .map_err(|_| backend("Native mux artifact became inaccessible"))?
+        .len()
+        != bytes
+    {
+        return Err(backend(
+            "Native mux artifact actual byte count differs from its receipt",
+        ));
+    }
+    Ok(())
+}
+
 impl ProductionCoordinator {
     /// Finalize ONLY the existing verified no-audio MLT semantic cut against
     /// a project-selected measured voice WAV. This never assembles/shadows
@@ -203,6 +237,17 @@ impl ProductionCoordinator {
         project_id: Uuid,
         expected: &RevisionStamp,
         request: MltMultisegmentAvMasterRequest<'_>,
+    ) -> NativeResult<MltMultisegmentAvMasterEvidence> {
+        self.assemble_native_mlt_multisegment_av_master_checked(project_id, expected, request, None)
+            .await
+    }
+
+    pub(super) async fn assemble_native_mlt_multisegment_av_master_checked(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request: MltMultisegmentAvMasterRequest<'_>,
+        measured_source: Option<&super::audio_analysis::VerifiedAudioMeasurement>,
     ) -> NativeResult<MltMultisegmentAvMasterEvidence> {
         let MltMultisegmentAvMasterRequest {
             request_id,
@@ -233,6 +278,14 @@ impl ProductionCoordinator {
                 "Native multisegment AV project or Broker owner root is stale",
             ));
         }
+        super::audio_analysis::admit_profile_audio_targets(
+            self,
+            &project,
+            deliverable_id,
+            request_id,
+            super::audio_analysis::AudioAnalysisLane::Multisegment,
+            measured_source,
+        )?;
         let checked = preflight_multi_segment_mlt(
             &project,
             deliverable_id,
@@ -304,8 +357,14 @@ impl ProductionCoordinator {
             .is_some()
         {
             Some(
-                prepare_saved_original_mix(&self.service, project_id, expected, deliverable_id)
-                    .map_err(|error| Error::new(ErrorCode::Unsupported, error.to_string()))?,
+                prepare_saved_original_mix_with_budget(
+                    &self.service,
+                    project_id,
+                    expected,
+                    deliverable_id,
+                    motionwright_service::OriginalMixDecodeBudget::FullCut180Seconds,
+                )
+                .map_err(crate::original_mix::MixError::into_native)?,
             )
         } else {
             None

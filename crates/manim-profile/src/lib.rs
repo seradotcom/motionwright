@@ -3,6 +3,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 // Camera source is admitted only by its typed closed profile and the original Host.
+pub mod editable_scene;
 pub mod planar_camera;
 
 pub const SCENE_CLASS: &str = "MotionwrightScene";
@@ -1362,3 +1363,6 @@ mod tests {
         }
     }
 }
+
+/// Complete decoded-video data validation; source authority remains with the original Host job.
+pub mod video_observation;

@@ -16,6 +16,9 @@ use uuid::Uuid;
 mod apply_crash_tests;
 mod apply_receipt_binding;
 mod capture_evidence;
+mod cas_retention;
+#[cfg(test)]
+mod cas_retention_process_tests;
 mod derived_cache;
 mod file_import;
 mod identity_evidence;
@@ -29,13 +32,17 @@ pub use apply_receipt_binding::{
     APPLY_REQUEST_ENCODING_V1, ApplyReceiptInvalid, ApplyReceiptObservation,
     MAX_APPLY_BINDING_BYTES, VerifiedApplyReceiptV1,
 };
+pub use cas_retention::{CasBlobLease, CasRecoveryReport, CasRetentionPolicy};
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
 pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
 pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };
-pub use portability::{BundleFingerprint, InspectedProjectBundle};
-pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
+pub use portability::{BundleAssetAdmission, BundleFingerprint, InspectedProjectBundle};
+pub use production::{
+    ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
+    voice_alignment_receipt_sha256_v1,
+};
 pub use project_creation::{ProjectCreationIntent, ProjectCreationOutcome};
 pub use project_projection::{
     MAX_NODE_PAGE_ITEMS, MAX_PROJECTION_RESPONSE_BYTES, MAX_SCENE_PAGE_ITEMS, NodePage,
@@ -94,7 +101,7 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 4;
+pub const STORAGE_SCHEMA_VERSION: u32 = 5;
 pub const PROJECT_BACKUP_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
@@ -648,7 +655,8 @@ fn validate_existing_project_store_layout(conn: &Connection, version: u32) -> Re
         }
     }
     validate_production_receipt_order_layout(conn, version)?;
-    apply_receipt_binding::validate_schema(conn, version)
+    apply_receipt_binding::validate_schema(conn, version)?;
+    cas_retention::validate_schema(conn, version)
 }
 
 /// A SQLite schema is not proof that the caller owns the path to it.
@@ -722,6 +730,8 @@ pub struct Store {
     conn: Connection,
     path: PathBuf,
     blob_root: PathBuf,
+    cas_store_id: Uuid,
+    cas_database_id: String,
 }
 
 impl Store {
@@ -729,6 +739,21 @@ impl Store {
         let path = path.as_ref().to_path_buf();
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         Self::open_with_blob_root(&path, parent.join("blobs"))
+    }
+
+    /// Open a new managed root or reopen an already admitted root.
+    /// Existing unadmitted roots remain conservative and cannot be promoted.
+    pub fn open_with_managed_blob_root(
+        path: impl AsRef<Path>,
+        blob_root: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let store = Self::open_with_blob_root(path, blob_root)?;
+        if cas_retention::discover(&store.blob_root)?.is_none() {
+            return Err(StorageError::InvalidBackup(
+                "existing CAS root is not admitted for retention".into(),
+            ));
+        }
+        Ok(store)
     }
 
     pub fn open_with_blob_root(
@@ -898,21 +923,30 @@ impl Store {
         )?;
         migrate_production_receipt_order(&schema_tx, locked_schema)?;
         apply_receipt_binding::migrate_schema(&schema_tx, locked_schema)?;
+        cas_retention::migrate_schema(&schema_tx, locked_schema)?;
         if locked_schema < STORAGE_SCHEMA_VERSION {
             schema_tx.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }
         schema_tx.commit()?;
-        fs::create_dir_all(&blob_root)?;
+        cas_retention::prepare_blob_root(&blob_root, false)?;
         ensure_regular_directory(&blob_root, "content-addressed storage root")?;
+        let cas_store_id = cas_retention::load_store_id(&conn)?;
+        let cas_database_id = cas_retention::database_identity(&path)?;
         let store = Self {
             conn,
             path,
             blob_root,
+            cas_store_id,
+            cas_database_id,
         };
         // Recover a bounded number of obsolete derived manifests after an
         // interrupted edit. Tombstones and misses remain authoritative even
         // if filesystem cleanup encounters an unsafe or inaccessible file.
         let _ = store.drain_render_window_evictions(64);
+        // Bounded recovery of this database's proxy admissions and filesystem
+        // custody. SQLite is never queried while holding the catalog gate.
+        let _ =
+            cas_retention::derived::proxy::maintain_store(&store, CasRetentionPolicy::default());
         Ok(store)
     }
 
@@ -920,6 +954,8 @@ impl Store {
         &self.path
     }
 
+    /// Configuration introspection only; this path does not grant a blob lease.
+    /// Use verified_blob_path or lease_blob before handing media to a consumer.
     pub fn blob_root(&self) -> &Path {
         &self.blob_root
     }
@@ -932,6 +968,7 @@ impl Store {
     }
 
     pub fn verified_blob_path(&self, digest: &str) -> Result<PathBuf> {
+        cas_retention::pin_digests(&self.blob_root, [digest])?;
         self.verify_blob(digest)?;
         self.blob_path(digest)
     }
@@ -977,6 +1014,19 @@ impl Store {
         &self,
         source: &Path,
         manifest: &ProjectBundleManifest,
+    ) -> Result<BundleImportPlan> {
+        self.validate_bundle_with_admission(
+            source,
+            manifest,
+            &portability::StructuralBundleAdmission,
+        )
+    }
+
+    fn validate_bundle_with_admission(
+        &self,
+        source: &Path,
+        manifest: &ProjectBundleManifest,
+        admission: &impl BundleAssetAdmission,
     ) -> Result<BundleImportPlan> {
         if manifest.format_version != PROJECT_BUNDLE_FORMAT_VERSION {
             return Err(StorageError::InvalidBackup(format!(
@@ -1029,13 +1079,18 @@ impl Store {
             }
             // MIME is caller-supplied metadata. Check the actual member bytes
             // in the same bounded pass that establishes their digest.
-            let descriptor =
-                portability::inspect_portable_file(&path, "portable asset", blob.size_bytes)?;
+            let (descriptor, prefix) = portability::inspect_portable_file_with_prefix(
+                &path,
+                "portable asset",
+                blob.size_bytes,
+                admission.prefix_limit(),
+            )?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob failed digest or size verification".into(),
                 ));
             }
+            portability::admit_bundle_blob(admission, &prefix, &descriptor, manifest)?;
         }
         if observed != expected {
             return Err(StorageError::InvalidBackup(
@@ -1068,6 +1123,7 @@ impl Store {
     pub fn create_project(&mut self, project: &Project) -> Result<()> {
         project.validate()?;
         let json = serde_json::to_string(project)?;
+        cas_retention::pin_project(&self.blob_root, project)?;
         self.conn.execute(
             "INSERT INTO projects(id,generation,revision,title,document_json,updated_at)
              VALUES(?1,?2,?3,?4,?5,?6)",
@@ -1233,7 +1289,7 @@ impl Store {
     }
 
     pub fn import_project(&mut self, backup: &ProjectBackup) -> Result<Project> {
-        self.import_project_with_publication(backup, |_| Ok(()))
+        self.import_project_with_publication(backup, None, |_| Ok(()))
     }
 
     // Hold SQLite's IMMEDIATE writer lock from the destination-ID check
@@ -1243,6 +1299,7 @@ impl Store {
     fn import_project_with_publication(
         &mut self,
         backup: &ProjectBackup,
+        intent: Option<&cas_retention::ImportIntent>,
         publish_captured_blobs: impl FnOnce(&Path) -> Result<()>,
     ) -> Result<Project> {
         self.inspect_import(backup)?;
@@ -1251,6 +1308,9 @@ impl Store {
         project.updated_at = chrono::Utc::now();
         project.validate()?;
         let project_json = serde_json::to_string(&project)?;
+        if intent.is_none() {
+            cas_retention::pin_project(&self.blob_root, &project)?;
+        }
 
         let tx = self
             .conn
@@ -1295,7 +1355,16 @@ impl Store {
         // A rejected project or journal write cannot orphan CAS. The writer
         // lock remains held through captured publication and SQLite commit.
         publish_captured_blobs(&self.blob_root)?;
+        if let Some(intent) = intent {
+            intent.record_commit(&tx, &project)?;
+        }
+        #[cfg(test)]
+        if intent.is_some() {
+            crate::cas_retention_process_tests::checkpoint(&self.blob_root, "import_before_commit");
+        }
         tx.commit()?;
+        #[cfg(test)]
+        crate::apply_crash_tests::bundle_checkpoint(project.id, "after_bundle_commit");
         Ok(project)
     }
 
@@ -1350,15 +1419,24 @@ impl Store {
             });
         }
 
+        if let Change::ApplyVoiceAlignment { application } = change {
+            production::verify_voice_alignment_receipt(&tx, &project, application)?;
+        }
+
         // Only a new mutation inspects source bytes. Replaying a committed
         // receipt neither reimports nor proves continued asset availability.
         let required_blob = match change {
-            Change::AddAsset { asset } | Change::ImportMeasuredVoice { asset, .. } => {
+            Change::AddAsset { asset }
+            | Change::ImportMeasuredVoice { asset, .. }
+            | Change::ImportNativeCapsuleSource { asset, .. } => {
                 match asset.content_sha256.as_deref() {
-                    Some(digest) => Some((
-                        digest.to_owned(),
-                        checked_existing_blob_path_from_root(&blob_root, digest)?,
-                    )),
+                    Some(digest) => {
+                        cas_retention::pin_digests(&blob_root, [digest])?;
+                        Some((
+                            digest.to_owned(),
+                            checked_existing_blob_path_from_root(&blob_root, digest)?,
+                        ))
+                    }
                     None => None,
                 }
             }
@@ -1421,7 +1499,13 @@ impl Store {
             DomainError::Invalid("project revision exceeds SQLite integer range".into())
         })?;
         project.apply_change(change)?;
+        if let Change::ApplyVoiceAlignment { application } = change {
+            // The qualified source must still exist with its exact CAS bytes.
+            // No media decoder or worker runs inside this transaction.
+            read_verified_blob_from_root(&blob_root, &application.source_sha256, 8 * 1024 * 1024)?;
+        }
         project.commit_revision(result_revision, change)?;
+        cas_retention::pin_project(&blob_root, &project)?;
         let project_json = serde_json::to_string(&project)?;
         let changed = tx.execute(
             "UPDATE projects

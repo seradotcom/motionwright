@@ -29,6 +29,8 @@ from ci_private_evidence import (
 )
 import native_mlt_g2_observation as g2
 import native_mlt_runtime_admission as admission
+import native_mlt_evidence_selection as selected
+import native_evidence_projection as selected_core
 
 DISPATCH_SCHEMA = "motionwright.native.mlt-g2-dispatch/1"
 SOURCE_DISPATCH_SCHEMA = "motionwright.native.mlt-g2-dispatch/2"
@@ -152,27 +154,19 @@ def source_guard(repo, current, *, scenario="repaired-g2"):
                                         "-c", "core.fsmonitor=false", *argv], env=env, timeout=20)
     require(git("rev-parse", "HEAD").decode().strip() == current["source_sha"], "source_HEAD_changed")
     require(not git("diff", "--name-only", "HEAD", "--"), "tracked_source_changed")
-    selected = [
-        "SOURCE_LOCK.json", ".github/workflows/native-mlt-sequence-e2e.yml",
-        "tooling/ci_private_evidence.py", "tooling/requirements/mlt-g2-custody.txt",
-        "tooling/native_mlt_g2_custody.py", "tooling/native_mlt_g2_observation.py",
-        "tooling/native_mlt_sequence_e2e.py", "tooling/native_mlt_runtime_admission.py",
-        "tooling/native_mlt_loaded_module.py", "tooling/mlt_official_runtime_intake.py",
-        "tooling/native_mlt_ci_pcm_envelope.py", "tooling/native_pcm_source_fidelity.py",
-        "crates/native/examples/native-mlt-sequence-e2e.rs", REPAIR_GENERATOR,
-    ]
-    if scenario == FILM_SCOPE:
-        selected += [
-            "tooling/native_film180_original_g2.py", "tooling/native_film180_media_readback.py",
-            "tooling/native_av_failure_guard.py", "crates/native/examples/native-film180-e2e.rs",
-        ]
+    selected_paths = (selected.FILM_SOURCE_PATHS if scenario == FILM_SCOPE
+                      else selected.SOURCE_PATHS)
     result = {}
-    for path in selected:
+    for path in selected_paths:
         raw = git("show", current["source_sha"] + ":" + path)
         require(regular(repo / path)[0] == raw, "source_blob_changed")
         result[path] = sha(raw)
     lock = strict(regular(repo / "SOURCE_LOCK.json", MAX_JSON)[0])
     require(lock["dependencies"]["semwright"]["revision"] == current["semwright_sha"], "source_lock_changed")
+    # The same anchored physical-file versus committed-blob check protects the
+    # collector before admission/native effects and again during /2 sealing.
+    selected_core.verify_source_bindings(repo, current["source_sha"],
+        [{"path": path, "sha256": digest} for path, digest in sorted(result.items())])
     return {"context": current, "tree": git("rev-parse", "HEAD^{tree}").decode().strip(), "files": result}
 
 
@@ -342,7 +336,9 @@ def reconstruct_sources(raw, repo, directory):
         "repaired_c_source": {"sha256": sha(repaired), "bytes": len(repaired),
                               "origin": "DETERMINISTIC_SOURCE_RECONSTRUCTION"},
         "generator_path": REPAIR_GENERATOR, "generator_sha256": sha(generator),
-        "compiler_artifact_contains_sources": False, "compiled_binary_rebuilt": False,
+        "source_files_selected_from_compiler_artifact": False,
+        "compiler_artifact_source_inventory": "NOT_INSPECTED_BY_RECONSTRUCTION",
+        "compiled_binary_rebuilt": False,
         "module_installed": False, "native_execution": "NOT_RUN",
     })
 
@@ -605,6 +601,25 @@ def projection(current, final, exit_code, job_status, encrypted, recipient, *,
     return result
 
 
+
+def selected_projection(current, final, exit_code, job_status, encrypted, recipient, manifest, *,
+                        producer_started=False, source_unchanged=False, intake_verified=False,
+                        scenario="repaired-g2"):
+    complete = manifest.get("required_layers_complete") is True
+    value = projection(current, final, exit_code, job_status, encrypted, recipient,
+        producer_started=producer_started, source_unchanged=source_unchanged,
+        selected_originals_complete=complete and intake_verified, scenario=scenario)
+    value.pop("selected_originals_complete")
+    value.update(schema=("motionwright.native.film180-g2-public/2" if scenario == FILM_SCOPE
+                         else "motionwright.native.mlt-g2-public/2"),
+        custody_scope="explicit-source-bound-selected-layers/2",
+        selected_layers_complete=complete, selected_intake_verified=intake_verified,
+        selected_manifest_sha256=sha(selected_core.canonical(manifest)),
+        full_original_json_claimed=False, atomic_sqlite_snapshot_claimed=False,
+        upload_authorization="NOT_GRANTED_BY_COLLECTOR")
+    selected.validate_public_v2(value)
+    return value
+
 def seal(env, job_status):
     require(sys.platform == "linux" and os.geteuid() != 0, "seal_requires_normal_runner")
     control, _, session = names(env)
@@ -651,13 +666,19 @@ def seal(env, job_status):
         custody_valid = False
         final = None
         retain_error("terminal-contract-error", error)
-    roots = {name: control / name for name in ("records", "intake", "handoff", "logs")}
-    roots.update(observation=session,
-                 contracts=runner_root(env) / ("mw-mlt-g2-contracts-" + current["run_id"] + "-1"))
-    if env.get("MW_MLT_SCOPE", "repaired-g2") != FILM_SCOPE:
-        roots["producer"] = repo / "verification/native-mlt-sequence-e2e"
-    else:
-        roots["film-contracts"] = runner_root(env) / ("mw-film180-contracts-" + current["run_id"] + "-1")
+    roots = {"source": repo, "control": control}
+    # These two exact source-gate receipts predate any native session. Preserve
+    # missing required roles without probing or enumerating neighboring files.
+    suffix = current["run_id"] + "-1"
+    contract_roots = [("contracts", "mw-mlt-g2-contracts-" + suffix)]
+    if env.get("MW_MLT_SCOPE", "repaired-g2") == FILM_SCOPE:
+        contract_roots.append(("film-contracts", "mw-film180-contracts-" + suffix))
+    for label, basename in contract_roots:
+        path = runner_root(env) / basename
+        if path.is_dir():
+            roots[label] = path
+    if session.is_dir():
+        roots["observation"] = session
     owner_marker = session / "owner-workspace.json"
     try:
         if owner_marker.exists():
@@ -682,12 +703,31 @@ def seal(env, job_status):
     except Exception as error:
         custody_valid = False
         retain_error("owner-identity-error", error)
-    raw, captured = gather_snapshot(roots, preserve_partial=True)
+    scenario = env.get("MW_MLT_SCOPE", "repaired-g2")
+    source_before = strict(regular(control / "records/source-before.json", MAX_JSON)[0])
+    bindings = [{"path": path, "sha256": digest}
+                for path, digest in sorted(source_before["files"].items())]
+    if scenario == FILM_SCOPE:
+        from native_film180_evidence_selection import FilmSelection
+        collector = FilmSelection(roots=roots, current=current, source_bindings=bindings)
+    else:
+        collector = selected.Selection(roots=roots, current=current, scenario=scenario,
+            source_bindings=bindings, role_contract=selected.mlt_contract(),
+            json_policies=selected.policies(scenario))
+    raw, manifest = collector.capture()
+    intake_verified = False
+    if manifest["required_layers_complete"] and custody_valid:
+        try:
+            selected.verify_decrypted_selection(raw, current=current, scenario=scenario)
+            intake_verified = True
+        except Exception:
+            # Already captured originals remain sealed. An independent closure
+            # failure cannot be repaired by a second capture or native replay.
+            intake_verified = False
     encrypted = encrypt_snapshot(raw, dispatch["recipient"], current)
-    public = projection(current, final, exit_code, job_status, encrypted, dispatch["recipient"],
-                        producer_started=started, source_unchanged=source_unchanged,
-                        selected_originals_complete=captured and custody_valid,
-                        scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
+    public = selected_projection(current, final, exit_code, job_status, encrypted, dispatch["recipient"],
+                        manifest, producer_started=started, source_unchanged=source_unchanged,
+                        intake_verified=intake_verified, scenario=scenario)
     output = control / "public"
     require(not any(output.iterdir()), "public_output_preexists")
     new_bytes(output / "sealed-originals.bin", encrypted)

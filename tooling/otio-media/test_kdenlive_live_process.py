@@ -297,6 +297,61 @@ class KdenliveNativeProcessControls(unittest.TestCase):
         ):
             compare_distinct_native_sessions(first, later)
 
+
+    def test_edited_project_reopen_requires_explicit_reopen_to_reopen_phase_contract(self):
+        edited = self.stage_receipt(phase="reopen", pid=23, start=1450)
+        edited["saved_native_project_path"] = "/ci/edited-output.kdenlive"
+        edited["saved_native_project_sha256"] = "12" * 32
+        final = self.stage_receipt(phase="reopen", pid=34, start=1600)
+        final.update(saved_native_project_path="/ci/edited-output.kdenlive",
+                     saved_native_project_sha256="12" * 32,
+                     reopen_input_project_path="/ci/edited-output.kdenlive",
+                     reopen_input_project_sha256="12" * 32)
+        final["process_arguments"]["native_project_path_checked"] = (
+            "/ci/edited-output.kdenlive")
+        with self.assertRaises(NativeKdenliveProcessRejected):
+            compare_distinct_native_sessions(edited, final)
+        result = compare_distinct_native_sessions(
+            edited, final, expected_first_phase="reopen")
+        self.assertEqual(result["reopen_input_project_path"],
+                         edited["saved_native_project_path"])
+        self.assertEqual(result["reopen_input_project_sha256"], "12" * 32)
+        self.assertEqual(edited["phase"], "reopen")
+        self.assertEqual(final["phase"], "reopen")
+        self.assertFalse(result["human_acceptance"])
+
+    def test_reopen_chain_rejects_unsupported_or_mismatched_requested_phases(self):
+        edited = self.stage_receipt(phase="reopen", pid=23, start=1450)
+        final = self.stage_receipt(phase="reopen", pid=34, start=1600)
+        for expected in ("import", "edited", "", None):
+            with self.subTest(expected=expected):
+                with self.assertRaises(NativeKdenliveProcessRejected):
+                    compare_distinct_native_sessions(
+                        edited, final, expected_first_phase=expected)
+        edited["phase"] = "import"
+        with self.assertRaises(NativeKdenliveProcessRejected):
+            compare_distinct_native_sessions(edited, final, expected_first_phase="reopen")
+
+    def test_explicit_reopen_chain_preserves_path_hash_and_process_identity_checks(self):
+        for field, invalid in (
+            ("reopen_input_project_path", "/ci/unrelated.kdenlive"),
+            ("reopen_input_project_sha256", "12" * 32),
+            ("kernel_starttime_ticks", 1400),
+            ("source_original_OTIO_sha256", "12" * 32),
+            ("actual_executable_sha256", "12" * 32),
+        ):
+            with self.subTest(field=field):
+                edited = self.stage_receipt(phase="reopen", pid=23, start=1450)
+                final = self.stage_receipt(phase="reopen", pid=34, start=1600)
+                final[field] = invalid
+                with self.assertRaises(NativeKdenliveProcessRejected):
+                    compare_distinct_native_sessions(
+                        edited, final, expected_first_phase="reopen")
+        edited = self.stage_receipt(phase="reopen", pid=23, start=1450)
+        final = self.stage_receipt(phase="reopen", pid=23, start=1450)
+        with self.assertRaises(NativeKdenliveProcessRejected):
+            compare_distinct_native_sessions(edited, final, expected_first_phase="reopen")
+
     def test_physical_G2_never_runs_on_windows_or_without_approval(self):
         with mock.patch.object(sys, "platform", "win32"), mock.patch.dict(
             os.environ, {"MOTIONWRIGHT_APPROVED_KDENLIVE_G2_SOURCE": "0"}

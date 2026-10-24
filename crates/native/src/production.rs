@@ -28,7 +28,12 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod audio_analysis;
 mod blender_original;
+mod blender_render;
+mod brand_fonts;
+mod hyperframes;
+pub use hyperframes::HyperframesSourceEvidence;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
@@ -36,14 +41,30 @@ mod mlt_timeline;
 mod path_boundary_tests;
 mod receipt_custody;
 mod recovery;
+mod renderer_registry;
+mod renderer_versions;
+mod voice_alignment;
+pub use audio_analysis::{
+    AudioAnalysisLane, AudioQcReceiptHint, AudioQcReceiptInventory, DeliveryAudioQcStatus,
+    MeasuredMltAvMasterEvidence, MeasuredMltMultisegmentAvMasterEvidence, VerifiedAudioMeasurement,
+    VerifiedDeliveryAudioQc, VerifiedDeliveryAudioQcReport, VerifiedOriginalMixAudioMeasurements,
+};
 pub use blender_original::{
     BlenderOriginalEdit, BlenderOriginalFile, BlenderOriginalJournal, BlenderOriginalPhase,
     BlenderOriginalRequest,
+};
+pub use blender_render::{
+    BLENDER_LIT_REQUIRED_ADDITIONS, BlenderLitArtifact, BlenderLitProjectProjection,
+    BlenderLitSource, BlenderLitStillJournal, BlenderLitStillPhase, BlenderLitStillPlan,
+    BlenderLitStillRequest, build_blender_lit_still_plan,
 };
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
+pub use renderer_registry::{RendererRegistryObservation, RendererRegistryState};
+pub use renderer_versions::{ManimRuntimeVersionObservation, ManimRuntimeVersionState};
+pub use voice_alignment::{QualifiedVoiceAlignment, VoiceAlignmentIntent};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
@@ -66,7 +87,24 @@ const MANIM_RENDER_POLL_INTERVAL_MS: u64 = 1_000;
 const MLT_SYNC_MIN_WINDOW_US: u64 = 10_000;
 const MLT_SYNC_MAX_WINDOW_US: u64 = 500_000;
 
+const HYPERFRAMES_COMMANDS: &[&str] = &[
+    "driver.hyperframes.doctor",
+    "driver.hyperframes.project.inspect",
+    "driver.hyperframes.project.plan",
+    "driver.hyperframes.project.apply",
+    "driver.hyperframes.render.start",
+    "driver.hyperframes.render.status",
+    "driver.hyperframes.render.result",
+];
+const HYPERFRAMES_MUTATING_COMMANDS: &[&str] = &[
+    "driver.hyperframes.project.apply",
+    "driver.hyperframes.render.start",
+];
+
 const MOTION_CANVAS_COMMANDS: &[&str] = &[
+    "driver.motion-canvas.project.create",
+    "driver.motion-canvas.asset.import",
+    "driver.motion-canvas.asset.list",
     "driver.motion-canvas.composition.inspect",
     "driver.motion-canvas.composition.plan",
     "driver.motion-canvas.composition.apply",
@@ -75,6 +113,11 @@ const MOTION_CANVAS_COMMANDS: &[&str] = &[
     "driver.motion-canvas.render.status",
     "driver.motion-canvas.render.cancel",
     "driver.motion-canvas.render.result",
+];
+
+const AUDIO_ANALYSIS_COMMANDS: &[&str] = &[
+    "driver.audio-analysis.doctor",
+    "driver.audio-analysis.artifact.measure",
 ];
 
 const MLT_COMMANDS: &[&str] = &[
@@ -121,10 +164,19 @@ const BLENDER_COMMANDS: &[&str] = &[
     "driver.blender.semantic.property.set",
     "driver.blender.file.save",
     "driver.blender.file.open",
+    "driver.blender.composition.inspect",
+    "driver.blender.composition.plan",
+    "driver.blender.composition.apply",
+    "driver.blender.composition.verify",
+    "driver.blender.render.settings",
+    "driver.blender.render",
 ];
 
 const MANIM_COMMANDS: &[&str] = &[
+    "driver.manim-community.doctor",
     "driver.manim-community.render.start",
+    "driver.manim-community.static.render.start",
+    "driver.manim-community.editable.render.start",
     "driver.manim-community.camera.render.start",
     "driver.manim-community.render.status",
     "driver.manim-community.render.cancel",
@@ -513,9 +565,21 @@ struct ExpectedAuthority {
 }
 
 fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
-    if MOTION_CANVAS_COMMANDS.contains(&command) {
+    if HYPERFRAMES_COMMANDS.contains(&command) {
+        Some(ExpectedAuthority {
+            provider: "driver:hyperframes",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
+    } else if MOTION_CANVAS_COMMANDS.contains(&command) {
         Some(ExpectedAuthority {
             provider: "driver:motion-canvas",
+            source: SourceKind::Driver,
+            provider_generation_required: true,
+        })
+    } else if AUDIO_ANALYSIS_COMMANDS.contains(&command) {
+        Some(ExpectedAuthority {
+            provider: "driver:audio-analysis",
             source: SourceKind::Driver,
             provider_generation_required: true,
         })
@@ -539,6 +603,7 @@ fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
         })
     } else if WORKFLOW_READ_COMMANDS.contains(&command)
         || WORKFLOW_ACTION_COMMANDS.contains(&command)
+        || command == "doctor"
     {
         Some(ExpectedAuthority {
             provider: "semwright-core",
@@ -802,7 +867,9 @@ impl ProductionClient {
         let expected = expected_authority(command).ok_or_else(|| {
             Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
         })?;
-        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
+        let mutation = mutation
+            || WORKFLOW_MUTATING_COMMANDS.contains(&command)
+            || HYPERFRAMES_MUTATING_COMMANDS.contains(&command);
         self.connection.validate()?;
         let encoded = serde_json::to_vec(&args)
             .map_err(|_| invalid("Production command arguments are malformed"))?;
@@ -832,7 +899,10 @@ impl ProductionClient {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
-        let budget_secs = if command.starts_with("driver.mlt-video.")
+        let budget_secs = if command == "driver.manim-community.doctor" {
+            DEFAULT_DEADLINE_SECS
+        } else if command.starts_with("driver.hyperframes.")
+            || command.starts_with("driver.mlt-video.")
             || command.starts_with("driver.blender.")
             || command.starts_with("driver.manim-community.")
         {
@@ -1200,6 +1270,7 @@ struct PreparedManimRender {
     plan_sha256: String,
     profile: ManimRenderProfile,
     requires_camera_getters: bool,
+    source_bundle: Option<crate::manim_editable_projection::OriginalEditableBundleInput>,
 }
 
 fn validate_manim_request_id(request_id: &str) -> NativeResult<()> {
@@ -1251,6 +1322,7 @@ pub struct ProductionCoordinator {
     service: StudioService,
     client: ProductionClient,
     receipt_custody: receipt_custody::ReceiptCustody,
+    brand_font_media_root: Option<PathBuf>,
     #[cfg(test)]
     before_dispatch_admission: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
@@ -1271,6 +1343,7 @@ impl ProductionCoordinator {
             service,
             client: ProductionClient::new(connection)?,
             receipt_custody: custody.inner.clone(),
+            brand_font_media_root: None,
             #[cfg(test)]
             before_dispatch_admission: None,
         })
@@ -1333,6 +1406,8 @@ impl ProductionCoordinator {
             let prefix = format!("{request_id}:motion:{index}");
             let film = serde_json::to_value(&segment.film)
                 .map_err(|_| invalid("Canonical Film could not be encoded"))?;
+            self.prepare_motion_fonts(project_id, expected, &prefix, &segment.film)
+                .await?;
 
             let planned = self
                 .execute(
@@ -1569,6 +1644,17 @@ impl ProductionCoordinator {
         expected: &RevisionStamp,
         request: MltAvMasterRequest<'_>,
     ) -> NativeResult<MltAvMasterEvidence> {
+        self.assemble_mlt_av_master_checked(project_id, expected, request, None)
+            .await
+    }
+
+    pub(super) async fn assemble_mlt_av_master_checked(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request: MltAvMasterRequest<'_>,
+        measured_source: Option<&audio_analysis::VerifiedAudioMeasurement>,
+    ) -> NativeResult<MltAvMasterEvidence> {
         let MltAvMasterRequest {
             request_id,
             deliverable_id,
@@ -1593,6 +1679,14 @@ impl ProductionCoordinator {
                 "Motionwright project changed since MLT audiovisual production was prepared",
             ));
         }
+        audio_analysis::admit_profile_audio_targets(
+            self,
+            &project,
+            deliverable_id,
+            request_id,
+            audio_analysis::AudioAnalysisLane::SingleSegment,
+            measured_source,
+        )?;
         if motion.project_resource != project.resource_key()
             || motion.generation != project.generation
             || motion.revision != project.revision
@@ -1680,7 +1774,11 @@ impl ProductionCoordinator {
             .get(&deliverable_id)
             .and_then(|recipe| recipe.original_mix.as_ref())
             .is_some();
-        if !project.audio.sfx_cues.is_empty()
+        let consumes_sfx = !project
+            .validated_sfx_schedule_for_profile(deliverable_id)
+            .map_err(|error| invalid(error.to_string()))?
+            .is_empty();
+        if (!has_saved_mix && consumes_sfx)
             || project.audio.mix.target_lufs.is_some()
             || project.audio.mix.target_true_peak_dbfs.is_some()
             || (!has_saved_mix && project.audio.mix.voice_gain_db != 0.0)
@@ -1691,13 +1789,14 @@ impl ProductionCoordinator {
             ));
         }
         if has_saved_mix {
-            let mix = crate::original_mix::prepare_saved_original_mix(
+            let mix = crate::original_mix::prepare_saved_original_mix_with_budget(
                 &self.service,
                 project_id,
                 expected,
                 deliverable_id,
+                motionwright_service::OriginalMixDecodeBudget::FullCut180Seconds,
             )
-            .map_err(|error| Error::new(ErrorCode::Unsupported, error.to_string()))?;
+            .map_err(crate::original_mix::MixError::into_native)?;
             let audio_clock =
                 u128::from(mix.plan().sample_frames) * u128::from(motion.frame_rate.num);
             let video_clock =
@@ -1797,17 +1896,19 @@ impl ProductionCoordinator {
             )
             .await?;
         let master = response_data(&muxed)?.clone();
-        if master.get("profile").and_then(Value::as_str) != Some("h264-aac-mp4")
-            || master.get("frame_count").and_then(Value::as_u64) != Some(segment.frame_count)
-            || master.get("sample_rate").and_then(Value::as_u64) != Some(48_000)
-            || master.get("channels").and_then(Value::as_u64) != Some(2)
-            || master.pointer("/media/video").and_then(Value::as_bool) != Some(true)
-            || master.pointer("/media/audio").and_then(Value::as_bool) != Some(true)
-        {
-            return Err(backend(
-                "MLT audiovisual mux did not return the certified H.264/AAC master profile",
-            ));
-        }
+        mlt_multisegment_av::verify_exact_native_mux(
+            &master,
+            &mlt_multisegment_av::MuxExpected {
+                frames: segment.frame_count,
+                width: deliverable.width,
+                height: deliverable.height,
+                fps_num: motion.frame_rate.num,
+                fps_den: motion.frame_rate.den,
+                source_video: &mezzanine_sha256,
+                source_audio: &audio.sha256,
+                output_path: &master_path,
+            },
+        )?;
         let master_artifact_path = required_string(
             &master,
             "/artifact/path",
@@ -1818,28 +1919,14 @@ impl ProductionCoordinator {
             "/artifact/sha256",
             "MLT audiovisual mux returned no master digest",
         )?;
-        verify_output_artifact(
-            &self.client.connection().output_root,
-            &master_artifact_path,
-            &master_sha256,
-            MLT_MASTER_MAX_BYTES,
-        )?;
-        let decoded_audio_path = required_string(
-            &master,
-            "/decoded_audio/path",
-            "MLT audiovisual mux returned no decoded-audio artifact",
-        )?;
-        let decoded_audio_sha256 = required_string(
-            &master,
-            "/decoded_audio/sha256",
-            "MLT audiovisual mux returned no decoded-audio digest",
-        )?;
-        verify_output_artifact(
-            &self.client.connection().output_root,
-            &decoded_audio_path,
-            &decoded_audio_sha256,
-            MLT_MASTER_MAX_BYTES,
-        )?;
+        for key in ["artifact", "decoded_audio"] {
+            mlt_multisegment_av::verify_mux_artifact_file(
+                &self.client.connection().output_root,
+                master
+                    .get(key)
+                    .ok_or_else(|| backend("MLT mux artifact evidence is missing"))?,
+            )?;
+        }
 
         let sync_evidence = if let Some(spec) = sync {
             if !(MLT_SYNC_MIN_WINDOW_US..=MLT_SYNC_MAX_WINDOW_US).contains(&spec.window_us)
@@ -2115,6 +2202,61 @@ impl ProductionCoordinator {
         profile
             .validate()
             .map_err(|error| invalid(format!("Manim render profile is invalid: {error}")))?;
+        let project = self.service.project(project_id).map_err(storage_error)?;
+        let deliverable_id =
+            crate::manim_static_projection::select_saved_manim_deliverable_for_profile(
+                &project, expected, scene_id, &profile,
+            )?;
+        if project
+            .production_design
+            .camera_reframes
+            .iter()
+            .any(|row| row.scene_id == scene_id)
+        {
+            return self
+                .realize_manim_camera_scene(
+                    project_id,
+                    expected,
+                    request_id,
+                    scene_id,
+                    deliverable_id,
+                )
+                .await;
+        }
+        if crate::manim_editable_projection::requires_editable_profile(
+            &project,
+            scene_id,
+            deliverable_id,
+        ) {
+            return self
+                .realize_manim_editable_scene(
+                    project_id,
+                    expected,
+                    request_id,
+                    scene_id,
+                    deliverable_id,
+                )
+                .await;
+        }
+        self.realize_manim_static_scene(project_id, expected, request_id, scene_id, deliverable_id)
+            .await
+    }
+
+    /// Explicit compatibility projection for the V1 wire contract. This route
+    /// has no canonical clock or editable-source proof and is not the default
+    /// Project realization entrypoint. Callers must select it by name.
+    pub async fn realize_legacy_manim_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        profile: ManimRenderProfile,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        profile
+            .validate()
+            .map_err(|error| invalid(format!("Manim render profile is invalid: {error}")))?;
 
         let project = self.service.project(project_id).map_err(storage_error)?;
         if expected.resource != project.resource_key()
@@ -2150,6 +2292,124 @@ impl ProductionCoordinator {
                 plan_sha256,
                 profile,
                 requires_camera_getters: false,
+                source_bundle: None,
+            },
+        )
+        .await
+    }
+
+    /// Explicit static V2 production from the current canonical snapshot.
+    /// The legacy command remains a separate compatibility route; a duration,
+    /// source package or native getter proof is never invented for a V1 request.
+    pub async fn realize_manim_static_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        deliverable_id: Uuid,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        let source = crate::manim_static_projection::prepare_saved_manim_static_source(
+            &self.service,
+            project_id,
+            expected,
+            scene_id,
+            deliverable_id,
+        )?;
+        self.realize_prepared_manim_scene(
+            project_id,
+            expected,
+            request_id,
+            scene_id,
+            PreparedManimRender {
+                start_command: "driver.manim-community.static.render.start",
+                plan_value: serde_json::to_value(&source.plan)
+                    .map_err(|_| invalid("Static Manim source cannot be encoded"))?,
+                plan_sha256: source.closure.plan_sha256,
+                profile: source.plan.render_profile,
+                requires_camera_getters: false,
+                source_bundle: None,
+            },
+        )
+        .await
+    }
+
+    /// Plain native text/font/style source with the original canonical identity,
+    /// private Asset/CAS bytes and the same sealed Driver SDK job lifecycle.
+    pub async fn realize_manim_editable_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        deliverable_id: Uuid,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        let source = crate::manim_editable_projection::prepare_saved_manim_editable_source(
+            &self.service,
+            project_id,
+            expected,
+            scene_id,
+            deliverable_id,
+        )?;
+        crate::manim_editable_projection::stage_font_inputs(
+            &self.client.connection().output_root,
+            &source,
+        )?;
+        self.realize_prepared_manim_scene(
+            project_id,
+            expected,
+            request_id,
+            scene_id,
+            PreparedManimRender {
+                start_command: "driver.manim-community.editable.render.start",
+                plan_value: serde_json::to_value(&source.plan)
+                    .map_err(|_| invalid("Editable source cannot be encoded"))?,
+                plan_sha256: source.closure.plan_sha256,
+                profile: source.plan.render_profile,
+                requires_camera_getters: false,
+                source_bundle: None,
+            },
+        )
+        .await
+    }
+
+    /// Open an exported closed source through the same admitted Driver Host.
+    /// Inspection cannot grant execution; execute() retains the normal current
+    /// project stamp, request ledger, provider generation and unknown outcome.
+    pub async fn reopen_manim_editable_scene(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        scene_id: Uuid,
+        deliverable_id: Uuid,
+        input: crate::manim_editable_projection::OriginalEditableBundleInput,
+    ) -> NativeResult<Value> {
+        validate_manim_request_id(request_id)?;
+        let source = crate::manim_editable_projection::prepare_saved_manim_editable_bundle_input(
+            &self.service,
+            project_id,
+            expected,
+            scene_id,
+            deliverable_id,
+            &self.client.connection().output_root,
+            &input,
+        )?;
+        self.realize_prepared_manim_scene(
+            project_id,
+            expected,
+            request_id,
+            scene_id,
+            PreparedManimRender {
+                start_command: "driver.manim-community.editable.render.start",
+                plan_value: serde_json::to_value(&source.plan)
+                    .map_err(|_| invalid("Original editable plan cannot be encoded"))?,
+                plan_sha256: source.closure.plan_sha256,
+                profile: source.plan.render_profile,
+                requires_camera_getters: false,
+                source_bundle: Some(input),
             },
         )
         .await
@@ -2188,6 +2448,7 @@ impl ProductionCoordinator {
                 plan_sha256: compiled.trusted_compiler.plan_sha256,
                 profile: compiled.prepared.source.render_profile,
                 requires_camera_getters: true,
+                source_bundle: None,
             },
         )
         .await
@@ -2207,15 +2468,21 @@ impl ProductionCoordinator {
             plan_sha256,
             profile,
             requires_camera_getters,
+            source_bundle,
         } = prepared;
 
+        let mut start_args = json!({"plan": plan_value, "profile": profile});
+        if let Some(input) = &source_bundle {
+            start_args["source_bundle"] = serde_json::to_value(input)
+                .map_err(|_| invalid("Original editable input cannot be encoded"))?;
+        }
         let started = self
             .execute(
                 project_id,
                 expected,
                 &format!("{request_id}:start"),
                 start_command,
-                json!({"plan": plan_value, "profile": profile}),
+                start_args,
                 true,
             )
             .await?;
@@ -2400,6 +2667,65 @@ impl ProductionCoordinator {
                 }
             }
         }
+        if start_command == "driver.manim-community.static.render.start" {
+            let source_check = serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Original static Manim plan cannot be reopened"))
+                .and_then(|plan: motionwright_manim_profile::ManimScenePlanV2| {
+                    crate::manim_static_projection::verify_rendered_manim_static_source(
+                        &self.client.connection().output_root,
+                        &relative_path,
+                        &plan,
+                        &artifact,
+                    )
+                });
+            match source_check {
+                Ok(source) => verified_artifact["static_source"] = source,
+                Err(error) => {
+                    verified_artifact["static_source_custody_error"] =
+                        json!({"message": error.to_string()})
+                }
+            }
+        }
+        if start_command == "driver.manim-community.editable.render.start" {
+            let check = serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Original editable plan cannot be reopened"))
+                .and_then(|plan: motionwright_manim_profile::editable_scene::Plan| {
+                    crate::manim_editable_projection::verify_rendered_manim_editable_source(
+                        &self.client.connection().output_root,
+                        &relative_path,
+                        &plan,
+                        &artifact,
+                    )
+                });
+            match check {
+                Ok(source) => verified_artifact["editable_source"] = source,
+                Err(error) => {
+                    verified_artifact["editable_source_custody_error"] =
+                        json!({"message":error.to_string()})
+                }
+            }
+        }
+
+        if let Some(input) = &source_bundle {
+            let check = serde_json::from_value(plan_value.clone())
+                .map_err(|_| invalid("Original editable input plan cannot be reopened"))
+                .and_then(|plan: motionwright_manim_profile::editable_scene::Plan| {
+                    crate::manim_editable_projection::verify_rendered_manim_editable_bundle_input(
+                        &self.client.connection().output_root,
+                        &plan,
+                        input,
+                        &artifact,
+                    )
+                });
+            match check {
+                Ok(observed) => verified_artifact["editable_input_source"] = observed,
+                Err(error) => {
+                    verified_artifact["editable_input_source_custody_error"] =
+                        json!({"message":error.to_string()});
+                }
+            }
+        }
+
         Ok(json!({
             "renderer": "manim-community",
             "native_driver": "driver:manim-community",
@@ -2423,7 +2749,81 @@ impl ProductionCoordinator {
         args: Value,
         mutation: bool,
     ) -> NativeResult<Value> {
-        let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
+        self.execute_with_receipt_origin(project_id, expected, request_id, command, args, mutation)
+            .await
+            .map(ReceiptExecutionOutcome::into_legacy_value)
+    }
+
+    async fn execute_with_receipt_origin(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        command: &str,
+        args: Value,
+        mutation: bool,
+    ) -> NativeResult<ReceiptExecutionOutcome> {
+        self.execute_with_receipt_origin_context(
+            project_id,
+            expected,
+            request_id,
+            (command, mutation),
+            args,
+            None,
+        )
+        .await
+    }
+
+    async fn execute_with_receipt_context(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        operation: (&str, bool),
+        args: Value,
+        receipt_context: Option<audio_analysis::AudioReceiptContext>,
+    ) -> NativeResult<Value> {
+        self.execute_with_receipt_origin_context(
+            project_id,
+            expected,
+            request_id,
+            operation,
+            args,
+            receipt_context,
+        )
+        .await
+        .map(ReceiptExecutionOutcome::into_legacy_value)
+    }
+
+    // One dispatch/custody body for all production. Audio contributes only
+    // closed private metadata to the same existing receipt payloads.
+    async fn execute_with_receipt_origin_context(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        operation: (&str, bool),
+        args: Value,
+        receipt_context: Option<audio_analysis::AudioReceiptContext>,
+    ) -> NativeResult<ReceiptExecutionOutcome> {
+        let (command, mutation) = operation;
+        let mutation = mutation
+            || WORKFLOW_MUTATING_COMMANDS.contains(&command)
+            || HYPERFRAMES_MUTATING_COMMANDS.contains(&command);
+        if receipt_context.is_some()
+            && (command != "driver.audio-analysis.artifact.measure" || mutation)
+        {
+            return Err(invalid(
+                "Private audio receipt context requires the read-only meter",
+            ));
+        }
+        let receipt_context = receipt_context.map(|context| context.payload());
+        let with_context = |mut payload: Value| {
+            if let Some(context) = &receipt_context {
+                payload["audio_reopen"] = context.clone();
+            }
+            payload
+        };
         let project = self.service.project(project_id).map_err(storage_error)?;
         if expected.resource != project.resource_key()
             || expected.generation != project.generation
@@ -2470,13 +2870,26 @@ impl ProductionCoordinator {
                 ));
             }
             if prior.stage == "completed"
+                && let Some(recorded) = prior.payload.get("audio_reopen")
+                && receipt_context
+                    .as_ref()
+                    .is_some_and(|context| context != recorded)
+            {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "Production request has different original audio selector metadata",
+                ));
+            }
+            if prior.stage == "completed"
                 && let Some(result) = prior.payload.get("result")
             {
-                return Ok(json!({
-                    "replayed": true,
-                    "result": result,
-                    "receipt": prior
-                }));
+                return Ok(ReceiptExecutionOutcome {
+                    origin: ReceiptExecutionOrigin::ReceiptReplay(json!({
+                        "replayed": true,
+                        "result": result,
+                        "receipt": prior
+                    })),
+                });
             }
             let error = Error::new(
                 ErrorCode::Conflict,
@@ -2511,16 +2924,20 @@ impl ProductionCoordinator {
                 request_sha256: digest.clone(),
                 command: command.into(),
                 stage: "dispatching".into(),
-                payload: json!({
+                payload: with_context(json!({
                     "mutation": mutation,
                     "connection": self.client.connection().identity()?,
                     "job_ref": job_ref.clone()
-                }),
+                })),
             })
             .map_err(storage_error)?;
 
         match self.client.execute(command, args, mutation).await {
             Ok(result) => {
+                #[cfg(test)]
+                let observed_sdk_value = result.value.clone();
+                #[cfg(test)]
+                let observed_broker_request_id = json!(&result.request_id);
                 // Retain the exact Broker result and identifier before the
                 // fallible append. The attempted stage is not a durable receipt.
                 custody.observe(ProductionReceiptInput {
@@ -2531,11 +2948,11 @@ impl ProductionCoordinator {
                     request_sha256: digest,
                     command: command.into(),
                     stage: "completed".into(),
-                    payload: json!({
+                    payload: with_context(json!({
                         "result": result.value,
                         "broker_request_id": result.request_id,
                         "job_ref": job_ref
-                    }),
+                    })),
                 });
                 match self
                     .service
@@ -2543,11 +2960,26 @@ impl ProductionCoordinator {
                 {
                     Ok(receipt) => {
                         custody.confirmed();
-                        Ok(json!({
-                            "replayed": false,
-                            "result": receipt.payload["result"],
-                            "receipt": receipt
-                        }))
+                        Ok(ReceiptExecutionOutcome {
+                            origin: ReceiptExecutionOrigin::FreshAuthenticated(Box::new(
+                                AuthenticatedSdkResult {
+                                    completed_receipt: receipt,
+                                    #[cfg(test)]
+                                    command: command.to_owned(),
+                                    mutation,
+                                    #[cfg(test)]
+                                    caller_request_id: request_id.to_owned(),
+                                    #[cfg(test)]
+                                    project_id,
+                                    #[cfg(test)]
+                                    expected_stamp: json!(expected),
+                                    #[cfg(test)]
+                                    result_value: observed_sdk_value,
+                                    #[cfg(test)]
+                                    broker_request_id: observed_broker_request_id,
+                                },
+                            )),
+                        })
                     }
                     Err(storage_error) => {
                         custody.failed(storage_error);
@@ -2572,11 +3004,11 @@ impl ProductionCoordinator {
                     request_sha256: digest,
                     command: command.into(),
                     stage: stage.into(),
-                    payload: json!({
+                    payload: with_context(json!({
                         "error": &error,
                         "mutation": mutation,
                         "job_ref": job_ref
-                    }),
+                    })),
                 });
                 match self
                     .service
@@ -2589,6 +3021,95 @@ impl ProductionCoordinator {
                 // native error or change its certainty.
                 Err(error)
             }
+        }
+    }
+}
+
+// Private dispatch provenance. Stored JSON cannot construct an observed result.
+pub(super) struct AuthenticatedSdkResult {
+    completed_receipt: ProductionReceipt,
+    #[cfg(test)]
+    command: String,
+    mutation: bool,
+    #[cfg(test)]
+    caller_request_id: String,
+    #[cfg(test)]
+    project_id: Uuid,
+    #[cfg(test)]
+    expected_stamp: Value,
+    #[cfg(test)]
+    result_value: Value,
+    #[cfg(test)]
+    broker_request_id: Value,
+}
+
+impl AuthenticatedSdkResult {
+    fn legacy_value(&self) -> Value {
+        json!({
+            "replayed": false,
+            "result": &self.completed_receipt.payload["result"],
+            "receipt": &self.completed_receipt,
+        })
+    }
+}
+
+#[cfg(test)]
+impl AuthenticatedSdkResult {
+    fn command(&self) -> &str {
+        &self.command
+    }
+    fn is_mutation(&self) -> bool {
+        self.mutation
+    }
+    fn caller_request_id(&self) -> &str {
+        &self.caller_request_id
+    }
+    fn project_id(&self) -> Uuid {
+        self.project_id
+    }
+    fn expected_stamp(&self) -> &Value {
+        &self.expected_stamp
+    }
+    fn result_value(&self) -> &Value {
+        &self.result_value
+    }
+    fn broker_request_id(&self) -> &Value {
+        &self.broker_request_id
+    }
+    fn completed_receipt(&self) -> &ProductionReceipt {
+        &self.completed_receipt
+    }
+}
+
+enum ReceiptExecutionOrigin {
+    ReceiptReplay(Value),
+    FreshAuthenticated(Box<AuthenticatedSdkResult>),
+}
+
+struct ReceiptExecutionOutcome {
+    origin: ReceiptExecutionOrigin,
+}
+
+impl ReceiptExecutionOutcome {
+    fn into_legacy_value(self) -> Value {
+        match self.origin {
+            ReceiptExecutionOrigin::ReceiptReplay(value) => value,
+            ReceiptExecutionOrigin::FreshAuthenticated(observed) => observed.legacy_value(),
+        }
+    }
+
+    #[cfg(test)]
+    fn legacy_value(&self) -> Value {
+        match &self.origin {
+            ReceiptExecutionOrigin::ReceiptReplay(value) => value.clone(),
+            ReceiptExecutionOrigin::FreshAuthenticated(observed) => observed.legacy_value(),
+        }
+    }
+
+    fn into_authenticated_result(self) -> Option<Box<AuthenticatedSdkResult>> {
+        match self.origin {
+            ReceiptExecutionOrigin::ReceiptReplay(_) => None,
+            ReceiptExecutionOrigin::FreshAuthenticated(observed) => Some(observed),
         }
     }
 }
@@ -3319,6 +3840,129 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn fractional_rate_conversion_is_refused_before_dispatch_and_exact_rate_runs() {
+        use std::sync::atomic::Ordering;
+
+        let rate = Rate::new(30_000, 1_001).unwrap();
+        let (service, initial, temp) = fixture_service();
+        let project = motion_canvas_fixture(&service, initial);
+        let scene_id = project.scenes[0].id;
+        let mut profile = project.deliverables[0].clone();
+        let deliverable_id = profile.id;
+        profile.frame_rate = motionwright_domain::RationalTime::new(30_000, 1_001).unwrap();
+        let project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "rate-fixture-profile",
+                &Change::UpsertDeliverable { profile },
+            )
+            .unwrap()
+            .project;
+        let project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "rate-fixture-duration",
+                &Change::SetSceneDuration {
+                    scene_id,
+                    duration: rate.at(60).unwrap(),
+                },
+            )
+            .unwrap()
+            .project;
+        let original = project.clone();
+        let expected = RevisionStamp::from(&project);
+        let connection = fake_render_connection(&temp, project.resource_key());
+        let output_root = connection.output_root.clone();
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let mut options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: "Instrument Sans Variable".into(),
+            mono_font_family: "IBM Plex Mono".into(),
+            scene_intents: vec![crate::film::SceneFilmIntent {
+                scene_id,
+                role: NarrativeRole::Mechanism,
+                archetype: Archetype::Statement,
+            }],
+        };
+
+        // This exercises the actual application caller and Store with a
+        // fractional saved rate and a different, valid integral output rate.
+        let error = coordinator
+            .render_motion_canvas_segments(
+                project.id,
+                &expected,
+                "rate-conversion-refused",
+                deliverable_id,
+                &options,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.outcome_known);
+        assert!(error.message.contains("saved_deliverable_rate=30000/1001"));
+        assert!(error.message.contains("requested_output_rate=30/1"));
+        assert!(
+            error
+                .message
+                .contains("policy=preserve-saved-frame-rate-v1")
+        );
+        assert!(
+            error
+                .message
+                .contains("no rounding or retiming was applied")
+        );
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+        assert!(coordinator.receipts(project.id, 100).unwrap().is_empty());
+        assert!(fs::read_dir(&output_root).unwrap().next().is_none());
+        assert_eq!(service.project(project.id).unwrap(), original);
+
+        // The positive uses the same caller and transport fixture, with an
+        // exactly representable duration. It is coordinator G1, not a render.
+        options.frame_rate = rate;
+        let segments = build_motion_canvas_segments(&project, deliverable_id, &options).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].frame_count, 60);
+        assert_eq!(
+            segments[0].global_start,
+            motionwright_domain::RationalTime::ZERO
+        );
+        assert_eq!(segments[0].duration, rate.at(60).unwrap());
+        assert_eq!(
+            segments[0]
+                .duration
+                .checked_sub(rate.at(60).unwrap())
+                .unwrap(),
+            motionwright_domain::RationalTime::ZERO,
+        );
+        let rendered = coordinator
+            .render_motion_canvas_segments(
+                project.id,
+                &expected,
+                "rate-identity-exact",
+                deliverable_id,
+                &options,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rendered.frame_rate, rate);
+        assert_eq!(rendered.segments.len(), 1);
+        assert_eq!(rendered.segments[0].frame_count, 60);
+        assert_eq!(rendered.segments[0].artifact["frame_count"], 60);
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 6);
+        let receipts = coordinator.receipts(project.id, 100).unwrap();
+        assert_eq!(receipts.len(), 12);
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| receipt.request_id.starts_with("rate-identity-exact:"))
+        );
+        assert_eq!(service.project(project.id).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn motion_canvas_production_is_revision_bound_rendered_and_natively_verified() {
         let (service, initial, temp) = fixture_service();
         let project = motion_canvas_fixture(&service, initial);
@@ -3734,6 +4378,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
                                     frame_rate: 30,
                                 },
                                 requires_camera_getters: start_command.contains(".camera."),
+                                source_bundle: None,
                             },
                         )
                         .await
@@ -3772,7 +4417,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     }
 
     #[cfg(unix)]
-    fn transport_reply(command: &str) -> Envelope {
+    pub(super) fn transport_reply(command: &str) -> Envelope {
         let authority = expected_authority(command).unwrap();
         Envelope {
             ok: true,
@@ -3803,7 +4448,7 @@ printf '{"ok":true,"request_id":"broker-render-request","command":"%s","data":%s
     }
 
     #[cfg(unix)]
-    fn fake_transport_connection(
+    pub(super) fn fake_transport_connection(
         temp: &tempfile::TempDir,
         resource: String,
         stdout: &str,
@@ -5055,6 +5700,548 @@ os._exit(0)
         assert_eq!(
             reopened.production_receipts(project.id, 10).unwrap(),
             receipts
+        );
+    }
+
+    // These tests exercise the native dispatcher with its existing Unix transport fixture.
+    // They do not claim physical alignment execution or application of alignment changes.
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn receipt_origin_generic_completed_cannot_mint_authenticated_result() {
+        let (service, project, temp) = fixture_service();
+        let command = "driver.motion-canvas.composition.inspect";
+        let request_id = "origin-forged-generic-completed";
+        let args = json!({"transport_fixture_only": true});
+        let output = serde_json::to_string(&transport_reply(command)).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+        let forged_result = serde_json::to_value(transport_reply(command)).unwrap();
+        let forged = service
+            .append_production_receipt(ProductionReceiptInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: request_id.into(),
+                request_sha256: request_digest(command, &args).unwrap(),
+                command: command.into(),
+                stage: "completed".into(),
+                payload: json!({
+                    "result": forged_result,
+                    "broker_request_id": "transport-fixture-original",
+                    "job_ref": null,
+                    "mutation": false,
+                    "connection": connection.identity().unwrap(),
+                    "backend_authority": true,
+                    "native_execution_attested": true
+                }),
+            })
+            .unwrap();
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let counter_before = std::fs::read(&counter).ok();
+        let outcome = coordinator
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.legacy_value()["replayed"], json!(true));
+        assert_eq!(outcome.legacy_value()["result"], forged.payload["result"]);
+        assert_eq!(
+            outcome.legacy_value()["receipt"],
+            serde_json::to_value(&forged).unwrap()
+        );
+        assert!(outcome.into_authenticated_result().is_none());
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(std::fs::read(&counter).ok(), counter_before);
+        assert_eq!(service.project(project.id).unwrap(), project);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn receipt_origin_fresh_retains_sdk_result_and_committed_receipt() {
+        let (service, project, temp) = fixture_service();
+        let command = "driver.motion-canvas.composition.inspect";
+        let request_id = "origin-authenticated-first";
+        let args = json!({"transport_fixture_only": true});
+        let output = serde_json::to_string(&transport_reply(command)).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let outcome = coordinator
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args.clone(),
+                false,
+            )
+            .await
+            .unwrap();
+        let legacy = outcome.legacy_value();
+        assert_eq!(legacy["replayed"], json!(false));
+        let observed = outcome
+            .into_authenticated_result()
+            .expect("actual SDK success must retain its origin");
+        assert_eq!(observed.command(), command);
+        assert!(!observed.is_mutation());
+        assert_eq!(observed.caller_request_id(), request_id);
+        assert_eq!(observed.project_id(), project.id);
+        assert_eq!(observed.expected_stamp(), &json!(project.stamp()));
+        assert_eq!(observed.result_value(), &legacy["result"]);
+        assert_eq!(
+            observed.broker_request_id(),
+            &json!("transport-fixture-original")
+        );
+        assert_ne!(observed.broker_request_id(), &json!(request_id));
+        let completed = observed.completed_receipt();
+        assert_eq!(completed.project_id, project.id);
+        assert_eq!(completed.generation, project.generation);
+        assert_eq!(completed.revision, project.revision);
+        assert_eq!(completed.request_id, request_id);
+        assert_eq!(completed.command, command);
+        assert_eq!(completed.stage, "completed");
+        assert_eq!(
+            completed.request_sha256,
+            request_digest(command, &args).unwrap()
+        );
+        assert_eq!(&completed.payload["result"], observed.result_value());
+        assert_eq!(
+            &completed.payload["broker_request_id"],
+            observed.broker_request_id()
+        );
+        assert_eq!(serde_json::to_value(completed).unwrap(), legacy["receipt"]);
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        let replay = coordinator
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.legacy_value()["replayed"], json!(true));
+        assert_eq!(replay.legacy_value()["result"], legacy["result"]);
+        assert_eq!(replay.legacy_value()["receipt"], legacy["receipt"]);
+        assert!(replay.into_authenticated_result().is_none());
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(service.project(project.id).unwrap(), project);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn receipt_origin_restart_replay_cannot_reconstruct_authentication() {
+        let (service, project, temp) = fixture_service();
+        let command = "driver.motion-canvas.composition.inspect";
+        let request_id = "origin-before-restart";
+        let args = json!({"transport_fixture_only": true});
+        let output = serde_json::to_string(&transport_reply(command)).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+        let outcome = coordinator
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args.clone(),
+                false,
+            )
+            .await
+            .unwrap();
+        let legacy = outcome.legacy_value();
+        let observed = outcome
+            .into_authenticated_result()
+            .expect("initial transport result is observed");
+        assert_eq!(
+            serde_json::to_value(observed.completed_receipt()).unwrap(),
+            legacy["receipt"]
+        );
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        drop(observed);
+        drop(coordinator);
+        drop(service);
+
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        let recovered = ProductionCoordinator::new(reopened.clone(), connection).unwrap();
+        let replay = recovered
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.legacy_value()["replayed"], json!(true));
+        assert_eq!(replay.legacy_value()["result"], legacy["result"]);
+        assert_eq!(replay.legacy_value()["receipt"], legacy["receipt"]);
+        assert!(replay.into_authenticated_result().is_none());
+        assert_eq!(
+            recovered
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+    }
+
+    #[test]
+    fn renderer_registry_uses_only_the_fixed_builtin_doctor_authority() {
+        let authority = expected_authority("doctor").unwrap();
+        assert_eq!(authority.provider, "semwright-core");
+        assert_eq!(authority.source, SourceKind::Builtin);
+        assert!(!authority.provider_generation_required);
+        for command in [
+            "doctor.extra",
+            "doctor arbitrary",
+            "driver.doctor",
+            "capabilities.list",
+        ] {
+            assert!(expected_authority(command).is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_registry_transport_preserves_evidence_without_native_readiness() {
+        let (service, project, temp) = fixture_service();
+        let before = serde_json::to_value(&project).unwrap();
+        let mut reply = transport_reply("doctor");
+        reply.data = Some(super::renderer_registry::registry_test_data(vec![
+            super::renderer_registry::registry_test_provider("driver:blender", true),
+            super::renderer_registry::registry_test_provider("driver:manim-community", false),
+        ]));
+        let stdout = serde_json::to_string(&reply).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &stdout, "", 0);
+        let client = ProductionClient::new(connection).unwrap();
+        let stamp = motionwright_domain::RevisionStamp {
+            resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+        };
+        let registry = client.discover_renderer_registry(&stamp).await.unwrap();
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(registry.broker_request_id(), "transport-fixture-original");
+        assert_eq!(registry.catalog_revision(), 9);
+        assert_eq!(registry.provider_version_for("blender"), Some("0.1.0"));
+        let baseline = crate::creative_doctor::inspect_creative_runtime(
+            &project,
+            "synthetic-source-pin",
+            crate::creative_doctor::CliEvidence::VersionCompatible,
+            true,
+        );
+        let report = crate::creative_doctor::inspect_creative_runtime_with_registry(
+            &project,
+            "synthetic-source-pin",
+            crate::creative_doctor::CliEvidence::VersionCompatible,
+            true,
+            registry,
+        )
+        .unwrap();
+        assert!(report.broker_dispatch_performed);
+        assert!(!report.ready_for_native_production);
+        assert!(!report.install_performed);
+        assert!(!report.authorizing_grant_created);
+        assert!(
+            report
+                .renderers
+                .iter()
+                .all(|renderer| !renderer.provider_verified)
+        );
+        assert_eq!(
+            report
+                .renderers
+                .iter()
+                .map(|renderer| renderer.state)
+                .collect::<Vec<_>>(),
+            baseline
+                .renderers
+                .iter()
+                .map(|renderer| renderer.state)
+                .collect::<Vec<_>>(),
+        );
+        let connected = report
+            .checks
+            .iter()
+            .find(|check| check.id == "renderer_registry_blender")
+            .unwrap();
+        assert_eq!(connected.status, "validated");
+        assert!(connected.detail.contains("present_connected"));
+        assert!(connected.detail.contains("provider_identity_version=0.1.0"));
+        let missing = report
+            .checks
+            .iter()
+            .find(|check| check.id == "renderer_registry_motion_canvas")
+            .unwrap();
+        assert!(missing.detail.contains("not_registered_current_broker"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .filter(|check| check.id.starts_with("native_runtime_"))
+                .all(|check| check.status == "not_tested")
+        );
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .filter(|check| check.id.starts_with("native_runtime_"))
+                .count(),
+            4
+        );
+        assert_eq!(
+            serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_registry_foreign_resource_is_rejected_before_cli_dispatch() {
+        let (_service, project, temp) = fixture_service();
+        let stdout = serde_json::to_string(&transport_reply("doctor")).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &stdout, "", 0);
+        let client = ProductionClient::new(connection).unwrap();
+        let stamp = motionwright_domain::RevisionStamp {
+            resource: format!("{}-other", project.resource_key()),
+            generation: project.generation,
+            revision: project.revision,
+        };
+        let error = client.discover_renderer_registry(&stamp).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::PolicyDenied);
+        assert!(!counter.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_registry_failed_authentication_or_data_never_proves_absence() {
+        for case in [
+            "provider",
+            "source",
+            "missing_provenance",
+            "fake",
+            "incomplete_registry",
+        ] {
+            let (service, project, temp) = fixture_service();
+            let before = serde_json::to_value(&project).unwrap();
+            let mut reply = transport_reply("doctor");
+            reply.data = Some(super::renderer_registry::registry_test_data(vec![]));
+            match case {
+                "provider" => {
+                    reply.execution.provenance.as_mut().unwrap().provider = "driver:blender".into()
+                }
+                "source" => {
+                    reply.execution.provenance.as_mut().unwrap().source = SourceKind::Driver
+                }
+                "missing_provenance" => reply.execution.provenance = None,
+                "fake" => reply.data.as_mut().unwrap()["fake"] = serde_json::json!(true),
+                "incomplete_registry" => {
+                    reply.data.as_mut().unwrap()["providers"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("providers");
+                }
+                _ => unreachable!(),
+            }
+            let stdout = serde_json::to_string(&reply).unwrap();
+            let (connection, counter) =
+                fake_transport_connection(&temp, project.resource_key(), &stdout, "", 0);
+            let client = ProductionClient::new(connection).unwrap();
+            let stamp = motionwright_domain::RevisionStamp {
+                resource: project.resource_key(),
+                generation: project.generation,
+                revision: project.revision,
+            };
+            assert!(
+                client.discover_renderer_registry(&stamp).await.is_err(),
+                "case: {case}"
+            );
+            assert_eq!(
+                std::fs::read(&counter).unwrap(),
+                b"invoked\n",
+                "case: {case}"
+            );
+            assert_eq!(
+                serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+                before,
+                "case: {case}"
+            );
+        }
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manim_runtime_version_transport_preserves_observation_and_project() {
+        for (version, expected_state, unavailable) in [
+            (
+                Some("0.21.0"),
+                ManimRuntimeVersionState::ObservedCompatible,
+                false,
+            ),
+            (
+                Some("0.20.1"),
+                ManimRuntimeVersionState::ObservedIncompatible,
+                false,
+            ),
+            (None, ManimRuntimeVersionState::PackageNotFound, false),
+            (None, ManimRuntimeVersionState::NotObserved, true),
+        ] {
+            let (service, project, temp) = fixture_service();
+            let mut envelope = transport_reply("driver.manim-community.doctor");
+            let mut data = renderer_versions::manim_runtime_test_data(version);
+            if unavailable {
+                data["runtime_probe"]["state"] = json!("not_observed");
+                data["runtime_probe"]["source"] = json!("none");
+                data["runtime_probe"]["reason_code"] = json!("host_probe_failed");
+            }
+            envelope.data = Some(data);
+            let output = serde_json::to_string(&envelope).unwrap();
+            let (connection, counter) =
+                fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let observation = coordinator
+                .observe_manim_runtime_version(project.id, &project.stamp())
+                .await
+                .unwrap();
+            assert_eq!(observation.state(), expected_state);
+            assert_eq!(observation.observed_version(), version);
+            assert_eq!(
+                observation.version_compatible(),
+                version.map(|value| value == "0.21.0")
+            );
+            assert_eq!(observation.provider_generation(), 17);
+            assert_eq!(
+                observation.broker_request_id(),
+                "transport-fixture-original"
+            );
+            assert!(observation.matches_scope(&project.stamp()));
+            let evidence = serde_json::to_value(&observation).unwrap();
+            assert_eq!(evidence["observation_scope"], "declared_runtime");
+            assert_eq!(evidence["render_performed"], false);
+            assert_eq!(evidence["scene_mutation_performed"], false);
+            assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert!(
+                service
+                    .production_receipts(project.id, 10)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manim_runtime_version_transport_rejects_foreign_or_unbound_observations() {
+        let mut base = transport_reply("driver.manim-community.doctor");
+        base.data = Some(renderer_versions::manim_runtime_test_data(Some("0.21.0")));
+        let base = serde_json::to_value(base).unwrap();
+        for (pointer, replacement) in [
+            ("/execution/provenance/provider", json!("driver:blender")),
+            ("/execution/provenance/source", json!(SourceKind::Builtin)),
+            ("/execution/provenance/provider_generation", Value::Null),
+            ("/execution/provenance/descriptor_sha256", json!("invalid")),
+            ("/execution/dry_run", json!(true)),
+            ("/data/runtime_probe/compatible", json!(false)),
+        ] {
+            let (service, project, temp) = fixture_service();
+            let mut envelope = base.clone();
+            *envelope.pointer_mut(pointer).unwrap() = replacement;
+            let output = serde_json::to_string(&envelope).unwrap();
+            let (connection, counter) =
+                fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            assert!(
+                coordinator
+                    .observe_manim_runtime_version(project.id, &project.stamp(),)
+                    .await
+                    .is_err(),
+                "{pointer}"
+            );
+            assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+            assert_eq!(service.project(project.id).unwrap(), project);
+            assert!(
+                service
+                    .production_receipts(project.id, 10)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manim_runtime_version_scope_and_transport_error_never_claim_absence() {
+        let (service, project, temp) = fixture_service();
+        let original = Error::new(ErrorCode::NotFound, "original provider lookup failure");
+        let mut envelope = transport_reply("driver.manim-community.doctor");
+        envelope.ok = false;
+        envelope.data = None;
+        envelope.error = Some(original.clone());
+        let output = serde_json::to_string(&envelope).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 19);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let mut stale = project.stamp();
+        stale.revision += 1;
+        let error = coordinator
+            .observe_manim_runtime_version(project.id, &stale)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference);
+        assert!(!counter.exists());
+        let error = coordinator
+            .observe_manim_runtime_version(project.id, &project.stamp())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+        assert_eq!(fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(service.project(project.id).unwrap(), project);
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
         );
     }
 }

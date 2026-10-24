@@ -370,6 +370,9 @@ impl Session {
 
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "semantic_graph_authoring_context" => encoded(
+                project_projection::semantic_graph_context(&self.service, request(args)?)?,
+            ),
             "export_caption_sidecar" => encoded(caption_export::export_caption_sidecar(
                 &self.service,
                 &self.grants,
@@ -479,7 +482,9 @@ impl Session {
                     request.request_id.trim(),
                 )?;
                 let trusted_audio_evidence = match &request.change {
-                    Change::ImportMeasuredVoice { .. } | Change::AddVoiceTrack { .. } => true,
+                    Change::ApplyVoiceAlignment { .. }
+                    | Change::ImportMeasuredVoice { .. }
+                    | Change::AddVoiceTrack { .. } => true,
                     Change::AddTranscriptSegment { segment }
                     | Change::UpsertTranscriptSegment { segment } => {
                         matches!(segment.alignment, AlignmentEvidence::Measured { .. })

@@ -37,6 +37,7 @@ fn cue(scene: Uuid, asset: &Asset) -> SemanticSfxCue {
         gain_milli_db: -12000,
         attack_frames: 3,
         release_frames: 8,
+        tail_policy: Default::default(),
         original_source_attestation: "I authored this original WAV for the test scene".into(),
     }
 }
@@ -247,4 +248,225 @@ fn sfx_anchor_wire_accepts_only_exact_variant_fields() {
     let duplicate_beat =
         format!(r#"{{"kind":"beat_start","beat_id":"{beat_id}","beat_id":"{beat_id}"}}"#);
     assert!(serde_json::from_str::<SfxAnchor>(&duplicate_beat).is_err());
+}
+
+fn cross_cut_fixture() -> (Project, SemanticSfxCue) {
+    let (mut project, scene, asset) = fixture();
+    project
+        .apply_change(&Change::SetSceneDuration {
+            scene_id: scene,
+            duration: RationalTime::new(1, 1).unwrap(),
+        })
+        .unwrap();
+    for name in ["Tail continuation", "Final room"] {
+        project
+            .apply_change(&Change::AddScene {
+                name: name.into(),
+                objective: "Preserve the full authored tail".into(),
+                duration_seconds: 1,
+            })
+            .unwrap();
+    }
+    let mut source = cue(scene, &asset);
+    source.offset_frames = 15;
+    source.tail_policy = SfxTailPolicy::ContinueAcrossCuts;
+    (project, source)
+}
+
+#[test]
+fn tail_is_opt_in_and_onset_and_final_project_bound_remain_exact() {
+    let (mut project, source) = cross_cut_fixture();
+    let mut legacy = source.clone();
+    legacy.tail_policy = SfxTailPolicy::WithinScene;
+    assert!(legacy.validate_in(&project).is_err());
+    let placement = source.validate_in(&project).unwrap();
+    assert_eq!(
+        (placement.absolute_start_frame, placement.absolute_end_frame),
+        (15, 45)
+    );
+    assert_eq!(
+        (placement.first_sample, placement.sample_count),
+        (24_000, 48_000)
+    );
+    let old_json = serde_json::to_value(&legacy).unwrap();
+    assert!(old_json.get("tail_policy").is_none());
+    assert_eq!(
+        serde_json::from_value::<SemanticSfxCue>(old_json).unwrap(),
+        legacy
+    );
+    let encoded = serde_json::to_value(&source).unwrap();
+    assert_eq!(encoded["tail_policy"], "continue_across_cuts");
+    for value in [
+        serde_json::json!(true),
+        serde_json::json!("trim"),
+        serde_json::Value::Null,
+    ] {
+        let mut invalid = encoded.clone();
+        invalid["tail_policy"] = value;
+        assert!(serde_json::from_value::<SemanticSfxCue>(invalid).is_err());
+    }
+    let mut outside = source.clone();
+    outside.offset_frames = 30;
+    assert!(outside.validate_in(&project).is_err()); // onset is not inside [0,30)
+    project.scenes.truncate(1);
+    assert!(source.validate_in(&project).is_err()); // full 45-frame tail does not fit
+}
+
+#[test]
+fn profile_schedule_uses_authored_selection_order_and_only_omits_excluded_scene_cues() {
+    let (mut project, source) = cross_cut_fixture();
+    project
+        .apply_change(&Change::UpsertSemanticSfx {
+            cue: source.clone(),
+        })
+        .unwrap();
+    let profile_id = project.deliverables[0].id;
+    let mut profile = project.deliverables[0].clone();
+    let ids = project
+        .scenes
+        .iter()
+        .map(|scene| scene.id)
+        .collect::<Vec<_>>();
+    profile.included_scene_ids = vec![ids[1], ids[0], ids[2]];
+    project
+        .apply_change(&Change::UpsertDeliverable {
+            profile: profile.clone(),
+        })
+        .unwrap();
+    let schedule = project
+        .validated_sfx_schedule_for_profile(profile_id)
+        .unwrap();
+    assert_eq!(schedule.len(), 1);
+    assert_eq!(
+        (
+            schedule[0].absolute_start_frame,
+            schedule[0].absolute_end_frame
+        ),
+        (45, 75)
+    );
+    assert_eq!(
+        (schedule[0].first_sample, schedule[0].sample_count),
+        (72_000, 48_000)
+    );
+    assert_eq!(project.sfx_cut_frames(profile_id).unwrap(), 90);
+    assert_eq!(project.audio.sfx_cues, vec![source.clone()]);
+    profile.included_scene_ids = vec![ids[1], ids[2]];
+    project
+        .apply_change(&Change::UpsertDeliverable { profile })
+        .unwrap();
+    assert!(
+        project
+            .validated_sfx_schedule_for_profile(profile_id)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(project.audio.sfx_cues, vec![source]);
+}
+
+#[test]
+fn invalid_tail_cut_retime_reorder_beat_removal_and_asset_removal_are_atomic() {
+    let (mut project, mut source) = cross_cut_fixture();
+    let beat = Beat {
+        id: Uuid::new_v4(),
+        label: "Tail onset".into(),
+        objective: "Explicit onset".into(),
+        start: RationalTime::new(1, 2).unwrap(),
+        duration: RationalTime::new(1, 4).unwrap(),
+    };
+    project
+        .apply_change(&Change::UpsertSceneBeat {
+            scene_id: source.scene_id,
+            beat: beat.clone(),
+        })
+        .unwrap();
+    source.source_frames = 75; // The full tail ends at the 90-frame project boundary.
+    source.anchor = SfxAnchor::BeatStart { beat_id: beat.id };
+    source.offset_frames = 0;
+    project
+        .apply_change(&Change::UpsertSemanticSfx {
+            cue: source.clone(),
+        })
+        .unwrap();
+    let mut profile = project.deliverables[0].clone();
+    profile.included_scene_ids = vec![source.scene_id];
+    let before = project.clone();
+    for change in [
+        Change::MoveScene {
+            scene_id: source.scene_id,
+            to_index: 2,
+        },
+        Change::SetSceneDuration {
+            scene_id: project.scenes[1].id,
+            duration: RationalTime::new(1, 2).unwrap(),
+        },
+        Change::UpsertDeliverable { profile },
+        Change::RemoveSceneBeat {
+            scene_id: source.scene_id,
+            beat_id: beat.id,
+        },
+        Change::RemoveAsset {
+            asset_id: source.source_asset_id,
+        },
+    ] {
+        assert!(
+            project.apply_change(&change).is_err(),
+            "accepted invalid change: {change:?}"
+        );
+        assert_eq!(project, before);
+    }
+    let mut invalid = source;
+    invalid.source_sha256 = "f".repeat(64);
+    assert!(
+        project
+            .apply_change(&Change::UpsertSemanticSfx { cue: invalid })
+            .is_err()
+    );
+    assert_eq!(project, before);
+}
+
+#[test]
+fn tail_and_position_changes_are_bound_into_the_consuming_profile_audio_fingerprint() {
+    let (mut project, source) = cross_cut_fixture();
+    project
+        .apply_change(&Change::UpsertSemanticSfx {
+            cue: source.clone(),
+        })
+        .unwrap();
+    let profile_id = project.deliverables[0].id;
+    let before = variant_dependency_fingerprint(&project, profile_id).unwrap();
+    let mut quieter = source.clone();
+    quieter.gain_milli_db -= 1000;
+    project
+        .apply_change(&Change::UpsertSemanticSfx { cue: quieter })
+        .unwrap();
+    let after = variant_dependency_fingerprint(&project, profile_id).unwrap();
+    assert_eq!(before.frame_inputs_sha256, after.frame_inputs_sha256);
+    assert_ne!(before.audio_inputs_sha256, after.audio_inputs_sha256);
+    let mut profile = project.deliverables[0].clone();
+    profile.included_scene_ids = vec![project.scenes[1].id];
+    project
+        .apply_change(&Change::UpsertDeliverable { profile })
+        .unwrap();
+    let excluded = variant_dependency_fingerprint(&project, profile_id).unwrap();
+    project
+        .apply_change(&Change::UpsertSemanticSfx { cue: source })
+        .unwrap();
+    assert_eq!(
+        variant_dependency_fingerprint(&project, profile_id).unwrap(),
+        excluded
+    );
+}
+
+#[test]
+fn a_stored_output_format_is_not_native_realization_authority() {
+    let (mut project, source) = cross_cut_fixture();
+    project
+        .apply_change(&Change::UpsertSemanticSfx { cue: source })
+        .unwrap();
+    let mut profile = project.deliverables[0].clone();
+    profile.frame_rate = RationalTime::new(24, 1).unwrap();
+    project
+        .apply_change(&Change::UpsertDeliverable { profile })
+        .unwrap();
+    project.validate().unwrap(); // native SFX admission separately returns Unsupported
 }

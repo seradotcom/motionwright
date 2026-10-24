@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/google/fonts",
+  "pin": "47d54ca1ebb14fd864695f1d39dc734f39017c33",
+  "directory": "ofl/montserrat",
+  "kind": "external-fixture-OFL-not-user-project-brand",
+  "files": [
+    {
+      "path": "Montserrat[wght].ttf",
+      "bytes": 744936,
+      "sha256": "0f7b311b2f3279e4eef9b2f968bcdbab6e28f4daeb1f049f4f278a902bcd82f7"
+    },
+    {
+      "path": "OFL.txt",
+      "bytes": 4400,
+      "sha256": "8b7141c03fa4f8d44e6345d5d4931709290f0f67875e452e95ac1fd3a027802e"
+    },
+    {
+      "path": "METADATA.pb",
+      "bytes": 6727,
+      "sha256": "c48dbcaee013b8f6a33e7e6a79191adbf098a36839367d9750598594ff664e5f"
+    }
+  ]
+}

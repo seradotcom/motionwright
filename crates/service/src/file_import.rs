@@ -2,7 +2,7 @@
 use super::{
     MAX_SVG_IMPORT_BYTES, StudioService, audio, invalid_import, validate_importable_asset,
 };
-use motionwright_domain::{Asset, Change, RevisionStamp, VoiceTrack};
+use motionwright_domain::{Asset, Change, NativeCapsuleSourceSpec, RevisionStamp, VoiceTrack};
 use motionwright_storage::{ApplyOutcome, FileImportIntent, Result, StorageError};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -38,6 +38,27 @@ fn hash_source_once(source: &Path, max_bytes: u64) -> Result<String> {
 }
 
 impl StudioService {
+    /// Import immutable source and bind its capsule in one canonical revision.
+    ///
+    /// This imports authored data only. It does not execute a renderer, carry
+    /// source fidelity evidence forward, or grant a provider operation.
+    pub fn import_native_capsule_source_file(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        source: impl AsRef<Path>,
+        spec: NativeCapsuleSourceSpec,
+    ) -> Result<ApplyOutcome> {
+        self.import_file_with_identity(
+            project_id,
+            expected,
+            request_id,
+            source.as_ref(),
+            FileImportIntent::NativeCapsuleSource { spec },
+        )
+    }
+
     /// Read the original committed result; no original source, CAS or native IO.
     ///
     /// A missing result is an observation, not permission to repeat an UNKNOWN
@@ -105,8 +126,9 @@ impl StudioService {
             .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
         let max_bytes = match &intent {
             FileImportIntent::Asset { media_type, .. }
-                if media_type.eq_ignore_ascii_case("image/svg+xml") || svg_extension =>
-            {
+            | FileImportIntent::NativeCapsuleSource {
+                spec: NativeCapsuleSourceSpec { media_type, .. },
+            } if media_type.eq_ignore_ascii_case("image/svg+xml") || svg_extension => {
                 MAX_SVG_IMPORT_BYTES.min(self.import_limits.source_bytes())
             }
             _ => self.import_limits.source_bytes(),
@@ -118,6 +140,24 @@ impl StudioService {
         let source_sha256 = staged.descriptor().sha256.clone();
         let immutable_path = staged.path();
         let change = match &intent {
+            FileImportIntent::NativeCapsuleSource { spec } => {
+                validate_importable_asset(immutable_path, &spec.media_type, svg_extension)?;
+                let asset = Asset {
+                    id: stable_import_id(
+                        project_id,
+                        expected.generation,
+                        request_id,
+                        "native-capsule-source",
+                        "asset",
+                    )?,
+                    name: spec.name.clone(),
+                    media_type: spec.media_type.clone(),
+                    content_sha256: Some(source_sha256.clone()),
+                    source_revision: Some("native-capsule-source-import".into()),
+                };
+                let capsule = spec.bind_asset(&asset)?;
+                Change::ImportNativeCapsuleSource { asset, capsule }
+            }
             FileImportIntent::Asset { name, media_type } => {
                 validate_importable_asset(immutable_path, media_type, svg_extension)?;
                 Change::AddAsset {
@@ -188,6 +228,14 @@ impl StudioService {
                     return Err(StorageError::RequestReuse);
                 }
                 return Ok(recorded.outcome);
+            }
+            if matches!(&change, Change::ImportNativeCapsuleSource { .. }) {
+                // Reject invalid capsule metadata and locked/missing scenes
+                // before immutable publication. Store.apply still performs the
+                // authoritative generation/revision check in its transaction.
+                let mut candidate = store.load_project(project_id)?;
+                candidate.apply_change(&change)?;
+                candidate.validate()?;
             }
             store.publish_file_import(&staged)?;
             drop(staged);

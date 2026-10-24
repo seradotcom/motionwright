@@ -1,7 +1,15 @@
 use motionwright_domain::{Asset, Change, Project, RevisionStamp};
-use motionwright_storage::{StorageError, Store};
+use motionwright_storage::{
+    ApplyOutcome, ProjectBackup, ProjectBundleManifest, StorageError, Store,
+};
 use sha2::{Digest, Sha256};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Child, Command, ExitStatus, Stdio},
+    time::{Duration, Instant},
+};
 use uuid::Uuid;
 
 type StorageResult<T> = std::result::Result<T, StorageError>;
@@ -313,6 +321,7 @@ fn service_fixture_bundle(
     (bundle, project, originals)
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct OperationalBackupFixture {
     bundle: std::path::PathBuf,
     project: Project,
@@ -321,6 +330,13 @@ struct OperationalBackupFixture {
     alternate_branch: Uuid,
     alternate_scenes: Vec<motionwright_domain::Scene>,
     events: Vec<motionwright_storage::ProjectEvent>,
+    backup: ProjectBackup,
+    manifest: ProjectBundleManifest,
+    manifest_bytes: Vec<u8>,
+    fingerprint: BundleFingerprint,
+    committed_base: RevisionStamp,
+    committed_change: Change,
+    committed_outcome: ApplyOutcome,
 }
 
 fn apply_portable_change(
@@ -419,14 +435,25 @@ fn operational_backup_fixture(root: &Path) -> OperationalBackupFixture {
         "Alternate closing before opening"
     );
     let alternate_scenes = project.scenes.clone();
-    project = apply_portable_change(
-        &source,
-        &project,
-        "return-to-main",
-        Change::CheckoutBranch {
-            branch_id: main_branch,
-        },
-    );
+    let committed_base = project.stamp();
+    let committed_change = Change::CheckoutBranch {
+        branch_id: main_branch,
+    };
+    let committed_outcome = source
+        .apply(
+            project.id,
+            &committed_base,
+            "return-to-main",
+            &committed_change,
+        )
+        .unwrap();
+    assert!(!committed_outcome.replayed);
+    assert_eq!(committed_outcome.previous_revision, project.revision);
+    assert_eq!(committed_outcome.project.id, project.id);
+    assert_eq!(committed_outcome.project.generation, project.generation);
+    assert_eq!(committed_outcome.project.revision, project.revision + 1);
+    assert_eq!(committed_outcome.request_id, "return-to-main");
+    project = committed_outcome.project.clone();
     assert_eq!(project.active_branch, main_branch);
     assert_eq!(project.scenes, main_scenes);
     assert_eq!(project.assets, initial.assets);
@@ -458,13 +485,15 @@ fn operational_backup_fixture(root: &Path) -> OperationalBackupFixture {
     assert_eq!(manifest.backup.payload_sha256, backup.payload_sha256);
     // Inspection checks destination admission, so it needs an empty store.
     let inspector = StudioService::open(root.join("export-inspection/state.sqlite3")).unwrap();
+    let inspected = inspector
+        .inspect_project_bundle_with_fingerprint(&bundle)
+        .unwrap();
+    assert_eq!(inspected.plan.blob_count, sources.len());
+    let fingerprint = inspected.fingerprint;
+    let manifest_bytes = fs::read(bundle.join("manifest.json")).unwrap();
     assert_eq!(
-        inspector
-            .inspect_project_bundle_with_fingerprint(&bundle)
-            .unwrap()
-            .plan
-            .blob_count,
-        sources.len()
+        serde_json::from_slice::<ProjectBundleManifest>(&manifest_bytes).unwrap(),
+        manifest
     );
     drop(inspector);
     let source_files = {
@@ -498,13 +527,561 @@ fn operational_backup_fixture(root: &Path) -> OperationalBackupFixture {
         main_branch,
         alternate_branch,
         alternate_scenes,
-        events: backup.events,
+        events: backup.events.clone(),
+        backup,
+        manifest,
+        manifest_bytes,
+        fingerprint,
+        committed_base,
+        committed_change,
+        committed_outcome,
     }
+}
+
+const PORTABILITY_TEST: &str =
+    "service_inspected_bundle_transfers_real_cas_and_reopens_without_operational_receipts";
+const PORTABILITY_PHASE_ENV: &str = "MOTIONWRIGHT_TEST_PORTABILITY_PHASE";
+const PORTABILITY_ROOT_ENV: &str = "MOTIONWRIGHT_TEST_PORTABILITY_ROOT";
+const PORTABILITY_NONCE_ENV: &str = "MOTIONWRIGHT_TEST_PORTABILITY_NONCE";
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PortabilityCheckpoint {
+    schema: String,
+    nonce: Uuid,
+    fixture: OperationalBackupFixture,
+}
+
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct PortabilityPhaseReceipt {
+    schema: String,
+    selector: String,
+    nonce: Uuid,
+    phase: String,
+    checkpoint_sha256: String,
+    manifest_sha256: String,
+}
+
+fn write_portability_json_new(path: &Path, value: &impl serde::Serialize) {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .unwrap();
+    file.write_all(&serde_json::to_vec_pretty(value).unwrap())
+        .unwrap();
+    file.sync_all().unwrap();
+}
+
+fn read_portability_checkpoint(root: &Path, nonce: Uuid) -> PortabilityCheckpoint {
+    let checkpoint: PortabilityCheckpoint =
+        serde_json::from_slice(&fs::read(root.join("checkpoint.json")).unwrap()).unwrap();
+    assert_eq!(
+        checkpoint.schema,
+        "motionwright.test.portability-checkpoint/1"
+    );
+    assert_eq!(checkpoint.nonce, nonce);
+    assert_eq!(checkpoint.fixture.bundle, root.join("portable"));
+    assert_eq!(checkpoint.fixture.project.scenes.len(), 2);
+    assert_eq!(checkpoint.fixture.sources.len(), 2);
+    assert_eq!(checkpoint.fixture.project.branches.len(), 2);
+    checkpoint
+}
+
+fn portability_phase_receipt(root: &Path, nonce: Uuid, phase: &str) -> PortabilityPhaseReceipt {
+    let checkpoint = read_portability_checkpoint(root, nonce);
+    PortabilityPhaseReceipt {
+        schema: "motionwright.test.portability-phase/1".into(),
+        selector: PORTABILITY_TEST.into(),
+        nonce,
+        phase: phase.into(),
+        checkpoint_sha256: hex::encode(Sha256::digest(
+            fs::read(root.join("checkpoint.json")).unwrap(),
+        )),
+        manifest_sha256: hex::encode(Sha256::digest(&checkpoint.fixture.manifest_bytes)),
+    }
+}
+
+fn assert_original_portability_bundle(fixture: &OperationalBackupFixture) {
+    let bytes = fs::read(fixture.bundle.join("manifest.json")).unwrap();
+    assert_eq!(bytes, fixture.manifest_bytes);
+    assert_eq!(
+        serde_json::from_slice::<ProjectBundleManifest>(&bytes).unwrap(),
+        fixture.manifest
+    );
+    assert_eq!(
+        fixture_fingerprint(&fixture.bundle),
+        fixture.fingerprint.as_str()
+    );
+    assert_eq!(fixture.manifest.blobs.len(), 2);
+    for (digest, original) in &fixture.sources {
+        let member = fixture
+            .manifest
+            .blobs
+            .iter()
+            .find(|member| &member.sha256 == digest)
+            .unwrap();
+        let member_bytes = fs::read(fixture.bundle.join(&member.relative_path)).unwrap();
+        assert_eq!(member.size_bytes, original.len() as u64);
+        assert_eq!(member_bytes, *original);
+        assert_eq!(hex::encode(Sha256::digest(&member_bytes)), *digest);
+    }
+}
+
+fn assert_same_portability_snapshot(actual: &ProjectBackup, retained: &ProjectBackup) {
+    // This read takes a new exported_at; all persisted content must be identical.
+    let mut expected = retained.clone();
+    expected.exported_at = actual.exported_at.clone();
+    assert_eq!(*actual, expected);
+}
+
+fn assert_reopened_committed_source(root: &Path, fixture: &OperationalBackupFixture) {
+    let source = StudioService::open(root.join("source/state.sqlite3")).unwrap();
+    assert_eq!(source.project(fixture.project.id).unwrap(), fixture.project);
+    let before = source
+        .export_project_at(fixture.project.id, &fixture.project.stamp())
+        .unwrap();
+    assert_same_portability_snapshot(&before, &fixture.backup);
+    assert_eq!(before.events, fixture.events);
+    {
+        let shared = source.store();
+        let store = shared.lock();
+        for (index, (digest, _)) in fixture.sources.iter().enumerate() {
+            assert!(!root.join(format!("source-{index}.bin")).exists());
+            assert!(
+                !store
+                    .blob_root()
+                    .join("sha256")
+                    .join(&digest[..2])
+                    .join(digest)
+                    .exists()
+            );
+            assert!(store.read_blob(digest, 4096).is_err());
+        }
+    }
+
+    // Only an outcome received as COMMITTED before process exit is replayed.
+    // A missing phase receipt or an unknown child outcome never reaches here.
+    assert!(!fixture.committed_outcome.replayed);
+    assert_eq!(fixture.committed_outcome.request_id, "return-to-main");
+    assert_eq!(fixture.committed_outcome.project, fixture.project);
+    assert_eq!(
+        fixture.committed_outcome.previous_revision,
+        fixture.committed_base.revision
+    );
+    assert_eq!(
+        fixture.committed_change,
+        Change::CheckoutBranch {
+            branch_id: fixture.main_branch
+        }
+    );
+    let replay = source
+        .apply(
+            fixture.project.id,
+            &fixture.committed_base,
+            &fixture.committed_outcome.request_id,
+            &fixture.committed_change,
+        )
+        .unwrap();
+    let mut expected = fixture.committed_outcome.clone();
+    expected.replayed = true;
+    assert_eq!(replay, expected);
+    assert_eq!(source.project(fixture.project.id).unwrap(), fixture.project);
+    let after = source
+        .export_project_at(fixture.project.id, &fixture.project.stamp())
+        .unwrap();
+    assert_same_portability_snapshot(&after, &before);
+    assert_eq!(after.events, fixture.events);
+}
+
+struct PortabilityEvidence {
+    root: PathBuf,
+    temporary: Option<tempfile::TempDir>,
+    complete: bool,
+}
+
+impl PortabilityEvidence {
+    fn new(nonce: Uuid) -> Self {
+        let (base, temporary) = match std::env::var_os(
+            "MOTIONWRIGHT_TEST_PORTABILITY_EVIDENCE_ROOT",
+        ) {
+            Some(path) => {
+                let base = PathBuf::from(path);
+                assert!(base.is_absolute(), "evidence root must be absolute");
+                assert!(base.is_dir(), "evidence root must already be a directory");
+                let base = base.canonicalize().unwrap();
+                for ancestor in base.ancestors() {
+                    match fs::symlink_metadata(ancestor.join(".git")) {
+                        Ok(git) => {
+                            assert!(
+                                git.is_dir()
+                                    && base.starts_with(ancestor.join("knowledge/runtime")),
+                                "evidence must be outside checkouts or inside their private knowledge/runtime"
+                            );
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => panic!("cannot inspect evidence ancestor: {error}"),
+                    }
+                }
+                (base, None)
+            }
+            None => {
+                let temporary = tempfile::tempdir().unwrap();
+                (temporary.path().to_path_buf(), Some(temporary))
+            }
+        };
+        let root = base.canonicalize().unwrap().join(format!("acc003-{nonce}"));
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(root.join("tmp")).unwrap();
+        Self {
+            root,
+            temporary,
+            complete: false,
+        }
+    }
+}
+
+impl Drop for PortabilityEvidence {
+    fn drop(&mut self) {
+        if !self.complete {
+            if let Some(temporary) = self.temporary.take() {
+                let _ = temporary.keep();
+            }
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "ACC003 evidence retained after failure: {}",
+                self.root.display()
+            );
+        }
+    }
+}
+
+struct PortabilityChild {
+    child: Option<Child>,
+    root: PathBuf,
+    nonce: Uuid,
+    phase: String,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
+    status_path: PathBuf,
+    completion_path: PathBuf,
+    executable: Option<String>,
+    process_id: Option<u32>,
+    spawned: bool,
+    exit_status: Option<ExitStatus>,
+    timed_out: bool,
+    cleanup_attempted: bool,
+    cleanup_timed_out: bool,
+    phase_passed: bool,
+    stage: &'static str,
+    errors: Vec<String>,
+    status_write_attempted: bool,
+    status_write_error: Option<String>,
+}
+
+impl PortabilityChild {
+    fn new(root: &Path, nonce: Uuid, phase: &str) -> Self {
+        // Custody exists before log creation, current_exe, or spawn can fail.
+        Self {
+            child: None,
+            root: root.to_path_buf(),
+            nonce,
+            phase: phase.into(),
+            stdout_path: root.join(format!("{phase}.stdout.log")),
+            stderr_path: root.join(format!("{phase}.stderr.log")),
+            status_path: root.join(format!("{phase}.status.json")),
+            completion_path: root.join(format!("{phase}.completed.json")),
+            executable: None,
+            process_id: None,
+            spawned: false,
+            exit_status: None,
+            timed_out: false,
+            cleanup_attempted: false,
+            cleanup_timed_out: false,
+            phase_passed: false,
+            stage: "prepare",
+            errors: Vec::new(),
+            status_write_attempted: false,
+            status_write_error: None,
+        }
+    }
+
+    fn error(&mut self, stage: &str, error: impl std::fmt::Display) -> String {
+        let error = format!("{stage}: {error}");
+        self.errors.push(error.clone());
+        error
+    }
+
+    fn observed_exit(&mut self, status: ExitStatus) {
+        // try_wait has reaped this exact child; no PID comparison is an oracle.
+        self.exit_status = Some(status);
+        drop(self.child.take());
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        self.stage = "stdout";
+        let stdout = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.stdout_path)
+            .map_err(|error| self.error("stdout", error))?;
+        self.stage = "stderr";
+        let stderr = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.stderr_path)
+            .map_err(|error| self.error("stderr", error))?;
+        self.stage = "current_exe";
+        let executable =
+            std::env::current_exe().map_err(|error| self.error("current_exe", error))?;
+        self.executable = Some(executable.display().to_string());
+        self.stage = "spawn";
+        self.child = Some(
+            Command::new(&executable)
+                .args([
+                    "--exact",
+                    PORTABILITY_TEST,
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .current_dir(&self.root)
+                .env(PORTABILITY_PHASE_ENV, &self.phase)
+                .env(PORTABILITY_ROOT_ENV, &self.root)
+                .env(PORTABILITY_NONCE_ENV, self.nonce.to_string())
+                .env("TEMP", self.root.join("tmp"))
+                .env("TMP", self.root.join("tmp"))
+                .env("TMPDIR", self.root.join("tmp"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn()
+                .map_err(|error| self.error("spawn", error))?,
+        );
+        self.spawned = true;
+        self.process_id = self.child.as_ref().map(Child::id);
+        self.stage = "try_wait";
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let poll = self.child.as_mut().expect("owned spawned child").try_wait();
+            match poll {
+                Ok(Some(status)) => {
+                    let success = status.success();
+                    self.observed_exit(status);
+                    return if success {
+                        Ok(())
+                    } else {
+                        Err(self.error("child exit", format!("{status:?}")))
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => return Err(self.error("try_wait", error)),
+            }
+            if Instant::now() >= deadline {
+                self.timed_out = true;
+                return Err(self.error("deadline", "child did not exit within 30 seconds"));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn cleanup_bounded(&mut self) {
+        if self.cleanup_attempted || self.child.is_none() {
+            return;
+        }
+        self.cleanup_attempted = true;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        // An exit may have raced the error/deadline. Never signal an unrelated PID.
+        match self.child.as_mut().unwrap().try_wait() {
+            Ok(Some(status)) => {
+                self.observed_exit(status);
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.error("cleanup initial try_wait", error);
+            }
+        }
+        if let Err(error) = self.child.as_mut().unwrap().kill() {
+            self.error("cleanup kill", error);
+        }
+        loop {
+            if Instant::now() >= deadline {
+                self.cleanup_timed_out = true;
+                self.error("cleanup deadline", "child outcome remains UNKNOWN");
+                return;
+            }
+            match self.child.as_mut().unwrap().try_wait() {
+                Ok(Some(status)) => {
+                    self.observed_exit(status);
+                    return;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                Err(error) => {
+                    self.error("cleanup try_wait", error);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn publish_status_once(&mut self) -> Result<(), String> {
+        if self.status_write_attempted {
+            return self.status_write_error.clone().map_or(Ok(()), Err);
+        }
+        // Set this before opening. A partial write is evidence, never overwritten
+        // or retried from Drop, including after a write/sync failure.
+        self.status_write_attempted = true;
+        let state = if self.exit_status.is_some() {
+            "EXITED"
+        } else if self.spawned {
+            "UNKNOWN"
+        } else {
+            "NOT_STARTED"
+        };
+        let value = serde_json::json!({
+            "schema": "motionwright.test.portability-child-status/2",
+            "selector": PORTABILITY_TEST,
+            "nonce": self.nonce,
+            "phase": self.phase,
+            "stage": self.stage,
+            "root": self.root.display().to_string(),
+            "stdout_path": self.stdout_path.display().to_string(),
+            "stderr_path": self.stderr_path.display().to_string(),
+            "status_path": self.status_path.display().to_string(),
+            "completion_receipt_path": self.completion_path.display().to_string(),
+            "executable": self.executable,
+            "process_id_diagnostic_only": self.process_id,
+            "process_state": state,
+            "exit_status": self.exit_status.as_ref().map(|status| format!("{status:?}")),
+            "exit_code": self.exit_status.as_ref().and_then(ExitStatus::code),
+            "success": self.exit_status.as_ref().is_some_and(ExitStatus::success),
+            "timed_out": self.timed_out,
+            "cleanup_attempted": self.cleanup_attempted,
+            "cleanup_timed_out": self.cleanup_timed_out,
+            "completion_receipt_verified": self.phase_passed,
+            "errors": self.errors,
+        });
+        let published = (|| {
+            let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&self.status_path)
+                .map_err(|error| error.to_string())?;
+            file.write_all(&bytes).map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())?;
+            Ok::<(), String>(())
+        })();
+        if let Err(error) = &published {
+            self.status_write_error = Some(error.clone());
+        }
+        published
+    }
+
+    fn finalize(&mut self) -> Result<(), String> {
+        self.cleanup_bounded();
+        self.publish_status_once()
+    }
+}
+
+impl Drop for PortabilityChild {
+    fn drop(&mut self) {
+        if self.status_write_attempted {
+            return;
+        }
+        if std::thread::panicking() {
+            self.error("unwind", format!("phase interrupted at {}", self.stage));
+        } else if !self.phase_passed && self.errors.is_empty() {
+            self.error("guard", "phase ended without a verified completion receipt");
+        }
+        // Never call blocking wait. Failed cleanup remains UNKNOWN and the
+        // parent's evidence guard retains all files instead of removing TempDir.
+        if let Err(error) = self.finalize() {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "ACC003 could not publish status at {}: {error}; evidence retained at {}",
+                self.status_path.display(),
+                self.root.display()
+            );
+        }
+    }
+}
+
+fn run_portability_phase(root: &Path, nonce: Uuid, phase: &str) {
+    let mut child = PortabilityChild::new(root, nonce, phase);
+    let executed = child.execute();
+    if executed.is_ok() {
+        child.stage = "completion receipt";
+        let receipt: PortabilityPhaseReceipt = serde_json::from_slice(
+            &fs::read(&child.completion_path)
+                .expect("exit 0 alone cannot prove that the selected test ran"),
+        )
+        .unwrap();
+        assert_eq!(receipt, portability_phase_receipt(root, nonce, phase));
+        child.phase_passed = true;
+    }
+    let published = child.finalize();
+    if let Err(error) = executed {
+        panic!(
+            "ACC003 phase {phase} failed: {error}; status={published:?}; stdout={}; stderr={}",
+            fs::read_to_string(&child.stdout_path).unwrap_or_else(|error| error.to_string()),
+            fs::read_to_string(&child.stderr_path).unwrap_or_else(|error| error.to_string()),
+        );
+    }
+    published.expect("status publication must succeed before the next phase");
+    assert!(child.phase_passed);
 }
 
 #[test]
 fn service_inspected_bundle_transfers_real_cas_and_reopens_without_operational_receipts() {
-    let directory = tempfile::tempdir().unwrap();
+    if let Some(phase) = std::env::var_os(PORTABILITY_PHASE_ENV) {
+        let phase = phase.to_str().expect("phase must be UTF-8");
+        assert!(matches!(phase, "prepare" | "continue"));
+        let root = PathBuf::from(std::env::var_os(PORTABILITY_ROOT_ENV).unwrap());
+        assert!(root.is_absolute());
+        let nonce = Uuid::parse_str(&std::env::var(PORTABILITY_NONCE_ENV).unwrap()).unwrap();
+        assert!(!nonce.is_nil());
+        match phase {
+            "prepare" => {
+                let fixture = operational_backup_fixture(&root);
+                assert_original_portability_bundle(&fixture);
+                write_portability_json_new(
+                    &root.join("checkpoint.json"),
+                    &PortabilityCheckpoint {
+                        schema: "motionwright.test.portability-checkpoint/1".into(),
+                        nonce,
+                        fixture,
+                    },
+                );
+            }
+            "continue" => {
+                let checkpoint = read_portability_checkpoint(&root, nonce);
+                let prepared: PortabilityPhaseReceipt =
+                    serde_json::from_slice(&fs::read(root.join("prepare.completed.json")).unwrap())
+                        .unwrap();
+                assert_eq!(prepared, portability_phase_receipt(&root, nonce, "prepare"));
+                assert_original_portability_bundle(&checkpoint.fixture);
+                continue_operational_backup(&root, checkpoint.fixture.clone());
+                assert_original_portability_bundle(&checkpoint.fixture);
+            }
+            _ => unreachable!(),
+        }
+        // This is the final action, after every assertion and every Store drop.
+        write_portability_json_new(
+            &root.join(format!("{phase}.completed.json")),
+            &portability_phase_receipt(&root, nonce, phase),
+        );
+        return;
+    }
+
+    let nonce = Uuid::now_v7();
+    let mut evidence = PortabilityEvidence::new(nonce);
+    run_portability_phase(&evidence.root, nonce, "prepare");
+    run_portability_phase(&evidence.root, nonce, "continue");
+    evidence.complete = true;
+}
+
+fn continue_operational_backup(root: &Path, fixture: OperationalBackupFixture) {
+    assert_reopened_committed_source(root, &fixture);
     let OperationalBackupFixture {
         bundle,
         project: original,
@@ -513,8 +1090,9 @@ fn service_inspected_bundle_transfers_real_cas_and_reopens_without_operational_r
         alternate_branch,
         alternate_scenes,
         events,
-    } = operational_backup_fixture(directory.path());
-    let target_path = directory.path().join("target/state.sqlite3");
+        ..
+    } = fixture;
+    let target_path = root.join("target/state.sqlite3");
     let target = StudioService::open(&target_path).unwrap();
     let inspected = target
         .inspect_project_bundle_with_fingerprint(&bundle)

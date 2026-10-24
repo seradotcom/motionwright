@@ -301,12 +301,18 @@ def native_owner_workspace(g2=None):
 
 
 def main(g2=None):
+    global EVIDENCE
     exact_inputs()
     if g2 is not None:
         observed = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
         if observed != GITHUB_SHA:
             raise AssertionError("G2 checkout must equal the exact executing source")
-    EVIDENCE.mkdir(parents=True, exist_ok=False)
+    if g2 is not None:
+        # Private /2 roots must not overlap the executing source checkout.
+        # The existing producer writes its originals once in the retained G2
+        # session; ordinary workflow output keeps its established location.
+        EVIDENCE = g2.evidence_dir / "producer"
+    EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=False)
 
     with native_owner_workspace(g2) as raw:
         root = Path(raw).resolve()
@@ -853,7 +859,24 @@ def main(g2=None):
                     raise AssertionError("MLT native decoded PCM audit is missing or changed")
                 # The actual MP4, not the receipt or source WAV, must retain
                 # the authored, distinct 400/600 Hz left/right test signals.
-                decoded_content = inspect_native_master_decoded_content(master, ffmpeg, env, mode=MODE, g2=g2)
+                try:
+                    decoded_content = inspect_native_master_decoded_content(master, ffmpeg, env, mode=MODE, g2=g2)
+                finally:
+                    if g2 is not None:
+                        try:
+                            from native_aac_clock_custody import retain_clock_diagnostic
+                            clock_capture = retain_clock_diagnostic(
+                                evidence_dir=g2.evidence_dir, phase="original", scenario="repaired-g2",
+                                master=master, master_sha256=result["master_artifact_sha256"],
+                                ffprobe=Path(ffprobe).resolve(strict=True), env=env,
+                                source_document=EVIDENCE / "native-multisegment-timeline-evidence.json",
+                                original_wav=g2.evidence_dir / "original-source.wav",
+                                packets=g2.evidence_dir / "original-master-packets.json",
+                                decoded_pcm=g2.evidence_dir / "original-master-decoded.s16le")
+                            if clock_capture["state"] != "CAPTURED":
+                                g2.secondary("original_clock_custody_incomplete")
+                        except Exception:
+                            g2.secondary("original_clock_custody_failed")
                 write_private_json(EVIDENCE / "decoded-stereo-content-proof.json", decoded_content)
                 retained_source = retain_native_master_source(
                     paths["output"], EVIDENCE, av_receipt, MODE,
@@ -953,7 +976,7 @@ def main(g2=None):
         "native_mlt_multisegment_e2e": "PASS",
         "motionwright_sha": GITHUB_SHA,
         "semwright_sha": PIN,
-        "evidence": str(EVIDENCE.relative_to(ROOT)),
+        "evidence": str(EVIDENCE.relative_to(ROOT)) if g2 is None else "private-g2-producer",
     }
     if g2 is None:
         print(json.dumps(summary, sort_keys=True))

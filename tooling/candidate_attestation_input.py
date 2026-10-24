@@ -16,8 +16,9 @@ import re
 import stat
 import sys
 
-from package_receipt import classify, verified_artifact
+from package_receipt import CARGO_TARGETS, classify, verified_artifact
 from release_manifest import ManifestError, _checkout, _strict_object, _stable_read
+from v01_release_readiness import _git_read
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "motionwright.v01-candidate-attestation-input/1"
@@ -52,6 +53,14 @@ UNSIGNED_CLAIMS = {
     "notarization": "NOT_CLAIMED",
     "human_install_acceptance": "NOT_RUN",
     "runtime_renderer_acceptance": "SEPARATE_GATE",
+}
+
+CARGO_UNSIGNED_CLAIMS = {
+    **UNSIGNED_CLAIMS,
+    "package_contents_verification": "SEPARATE_EXTRACTION_GATE",
+}
+CARGO_BUILD_FIELDS = {
+    "index_sha256", "source_tree", "target", "root_package", "binary_target",
 }
 
 
@@ -115,6 +124,12 @@ def verify_candidates(root: Path, exact_sha: str,
          "attest_source_sha_invalid")
     try:
         _checkout(root, exact_sha)
+        source_tree = _git_read(
+            root, "attest_source_tree_unverified", "rev-parse", "--verify",
+            exact_sha + "^{tree}",
+        )
+        need(SHA40.fullmatch(source_tree) is not None,
+             "attest_source_tree_invalid")
         locked = json.loads(_stable_read(root, "SOURCE_LOCK.json"),
                             object_pairs_hook=_strict_object)
         pinned = locked["dependencies"]["semwright"]["revision"]
@@ -151,8 +166,16 @@ def verify_candidates(root: Path, exact_sha: str,
              and isinstance(candidate["arch"], str)
              and bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", candidate["arch"])),
              "attest_candidate_source_mismatch")
-        need(receipt.get("claims") == UNSIGNED_CLAIMS,
+        claims = receipt.get("claims")
+        cargo_bound = claims == CARGO_UNSIGNED_CLAIMS
+        need(isinstance(claims, dict) and claims.get("published") is False
+             and (claims == UNSIGNED_CLAIMS or cargo_bound),
              "attest_release_claims_not_unsigned")
+        # Each platform receipt uses one complete closed shape.
+        artifact_fields = {"filename", "bundle_kind", "bytes", "sha256"}
+        if cargo_bound:
+            artifact_fields.add("cargo_build")
+        receipt_binding = None
         listed = receipt.get("artifacts")
         need(isinstance(listed, list)
              and len(listed) == len(EXPECTED_KINDS[platform]),
@@ -162,8 +185,24 @@ def verify_candidates(root: Path, exact_sha: str,
         allowed_paths: set[Path] = set()
         for row in listed:
             need(isinstance(row, dict)
-                 and set(row) == {"filename", "bundle_kind", "bytes", "sha256"},
+                 and set(row) == artifact_fields,
                  "attest_bundle_metadata_invalid")
+            if cargo_bound:
+                binding = row["cargo_build"]
+                target = CARGO_TARGETS.get((platform, candidate["arch"]))
+                need(isinstance(binding, dict)
+                     and set(binding) == CARGO_BUILD_FIELDS
+                     and isinstance(binding["index_sha256"], str)
+                     and SHA64.fullmatch(binding["index_sha256"]) is not None
+                     and binding["source_tree"] == source_tree
+                     and target is not None and binding["target"] == target
+                     and binding["root_package"] == "motionwright-desktop"
+                     and binding["binary_target"] == "motionwright-desktop",
+                     "attest_cargo_build_invalid")
+                if receipt_binding is None:
+                    receipt_binding = binding
+                need(binding == receipt_binding,
+                     "attest_cargo_build_mismatch")
             filename = row.get("filename")
             need(isinstance(filename, str)
                  and BASENAME.fullmatch(filename) is not None

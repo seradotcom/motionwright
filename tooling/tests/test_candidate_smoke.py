@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import plistlib
 import struct
@@ -50,6 +51,22 @@ class CandidateSmokeTests(unittest.TestCase):
         lock = json.loads((ROOT / "SOURCE_LOCK.json").read_text())
         self.semwright = lock["dependencies"]["semwright"]["revision"]
 
+    def installed_path(self, kind: str) -> Path:
+        relative = {
+            "deb": "extracted/usr/bin/motionwright-desktop",
+            "appimage": "squashfs-root/usr/bin/motionwright-desktop",
+            "nsis": "installed/Motionwright.exe",
+            "dmg": "Motionwright.app/Contents/MacOS/Motionwright",
+        }[kind]
+        binary = self.folder / relative
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        resource_root = mod.notice_resource_directory(binary, kind)
+        for source, target in mod.NOTICE_FILES:
+            destination = resource_root / target
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((ROOT / source).read_bytes())
+        return binary
+
     def receipt(self, kind: str, payload: bytes, arch: str) -> tuple[Path, Path]:
         platform = mod.METHODS[kind][0]
         artifact = self.folder / {
@@ -84,7 +101,7 @@ class CandidateSmokeTests(unittest.TestCase):
 
     def test_valid_debian_extract_with_matching_desktop_entry(self):
         receipt, artifact = self.receipt("deb", b"fake-debian-candidate", "x86_64")
-        binary = self.folder / "motionwright-desktop"
+        binary = self.installed_path("deb")
         binary.write_bytes(elf_binary())
         entry = self.folder / "com.seradotcom.motionwright.desktop"
         entry.write_text("[Desktop Entry]\nName=Motionwright\nType=Application\nExec=motionwright-desktop\n")
@@ -99,7 +116,7 @@ class CandidateSmokeTests(unittest.TestCase):
 
     def test_appimage_gui_claim_requires_real_window_evidence(self):
         receipt, artifact = self.receipt("appimage", b"fake-appimage-candidate", "x86_64")
-        binary = self.folder / "motionwright-desktop"
+        binary = self.installed_path("appimage")
         binary.write_bytes(elf_binary())
         entry = self.folder / "app.desktop"
         entry.write_text("[Desktop Entry]\nName=Motionwright\nType=Application\nExec=motionwright-desktop\n")
@@ -131,7 +148,12 @@ class CandidateSmokeTests(unittest.TestCase):
             "[Desktop Entry]\nName=Motionwright\nType=Application\nExec=motionwright-desktop\n"
         )
         entry = root / "Motionwright.desktop"
-        entry.symlink_to("usr/share/applications/Motionwright.desktop")
+        try:
+            entry.symlink_to("usr/share/applications/Motionwright.desktop")
+        except OSError as error:
+            if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows token cannot create file symlinks")
+            raise
         data = mod.verify_linux_desktop_entry(
             entry, executable, allow_internal_link=True
         )
@@ -148,7 +170,7 @@ class CandidateSmokeTests(unittest.TestCase):
 
     def test_windows_silent_current_user_installer_candidate(self):
         receipt, artifact = self.receipt("nsis", b"fake-windows-installer", "x86_64")
-        executable = self.folder / "Motionwright.exe"
+        executable = self.installed_path("nsis")
         executable.write_bytes(pe_binary())
         data = mod.build_receipt(
             candidate_receipt=receipt, artifact=artifact, installed_binary=executable,
@@ -158,7 +180,7 @@ class CandidateSmokeTests(unittest.TestCase):
 
     def test_macos_readonly_dmg_copy_checks_bundle_identifier_and_machine(self):
         receipt, artifact = self.receipt("dmg", b"fake-dmg-installer", "arm64")
-        executable = self.folder / "Motionwright"
+        executable = self.installed_path("dmg")
         executable.write_bytes(macho_binary())
         info = self.folder / "Info.plist"
         with info.open("wb") as out:
@@ -220,7 +242,12 @@ class CandidateSmokeTests(unittest.TestCase):
         binary = self.folder / "source.exe"
         binary.write_bytes(pe_binary())
         symlink = self.folder / "Motionwright.exe"
-        symlink.symlink_to(binary)
+        try:
+            symlink.symlink_to(binary)
+        except OSError as error:
+            if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows token cannot create file symlinks")
+            raise
         with self.assertRaisesRegex(mod.CandidateError, "non-symlink"):
             mod.build_receipt(
                 candidate_receipt=receipt, artifact=artifact, installed_binary=symlink,

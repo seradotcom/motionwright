@@ -291,11 +291,24 @@ fn manifest_path(dir: &TempDir, key: &RenderWindowCacheKey) -> std::path::PathBu
         key.source_window.end,
     );
     let hash = hex::encode(Sha256::digest(scope.as_bytes()));
-    dir.path()
-        .join("derived-cache")
-        .join("sha256")
-        .join(&hash[..2])
-        .join(hash)
+    let root = dir.path().join("derived-cache").join("sha256");
+    let namespaces = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("managed-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        namespaces.len(),
+        1,
+        "fixture must have exactly one managed root namespace"
+    );
+    assert!(fs::symlink_metadata(&namespaces[0]).unwrap().is_dir());
+    namespaces[0].join(&hash[..2]).join(hash)
 }
 
 #[test]

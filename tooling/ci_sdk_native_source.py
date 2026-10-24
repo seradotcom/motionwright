@@ -43,6 +43,9 @@ GATE_FILES = (WORKFLOW, HELPER, TEST, *GATE_PINS,
               "tooling/ci_test_runner.py", "Cargo.toml", "Cargo.lock", "SOURCE_LOCK.json")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 require = custody.require
+SOURCE_SCOPE = "sdk_native_source"
+DIAGNOSTIC_SCOPE = "sdk_native_baseline_diagnostic"
+SCOPES = (SOURCE_SCOPE, DIAGNOSTIC_SCOPE)
 
 FROZEN = {'b4be734d84cb1546f30928a69b7d094d37f6db16': {'.gitattributes': '78eb00c800c448e3305c394dffb1a2bcffce39a9a10978e462769537941a3fab',
                                               'Cargo.lock': 'ed67a971ee483aa2fd8eca71e8ff25e565f03fd98b4a4e1a90b97bd7696a30d4',
@@ -231,8 +234,6 @@ MANDATORY_MODULES = (
      "bdcd4dad442cc94d31c429e567f35a0cbee0de9941d85c1b7ee6f8cb06737a0f"),
 )
 FAILURE_SITES = {
-    "color::png_completion_tests::png_completion_rejects_missing_iend":
-        ("color", 1320, "assert!(", ["source rejected=", "decoded rejected=", "rejected=false"]),
     "color::png_completion_tests::png_completion_rejects_corrupt_iend_crc":
         ("color", 1320, "assert!(", ["source rejected=", "decoded rejected=", "rejected=false"]),
     "color::png_completion_tests::png_completion_rejects_bytes_after_iend":
@@ -244,8 +245,9 @@ FAILURE_SITES = {
         ("runtime", 2557, 'assert_eq!(result.unwrap_err().code, "Timeout");',
          ["called `Result::unwrap_err()` on an `Ok` value"]),
     "runtime::native_closure_tests::output_probe_cannot_complete_past_the_shared_deadline":
-        ("runtime", 2605, 'result.err().expect("shared deadline must expire").code,',
-         ["shared deadline must expire"]),
+        ("runtime", 2610, "assert!(",
+         ["the media probe completed after the shared deadline",
+          "crates/driver-mlt-video/src/runtime.rs:2610:9:"]),
     "jobs::native_staging_closure_tests::replaced_staged_media_is_rejected_with_identical_xml":
         ("jobs", 1346, 'assert_eq!(error.code, "StaleReference");',
          ["assertion `left == right` failed", 'left: "BackendFailed"', 'right: "StaleReference"']),
@@ -290,13 +292,20 @@ def integration_compile_argv(cargo):
             *selected, "--no-run", "--message-format=json"]
 
 
-def execution_context(environment, runtime_platform=None):
+def execution_roles(scope):
+    require(scope in SCOPES, "unknown SDK observation scope")
+    return (("baseline", RED),) if scope == DIAGNOSTIC_SCOPE else (
+        ("baseline", RED), ("repair", GREEN))
+
+
+def execution_context(environment, runtime_platform=None, *, scope=SOURCE_SCOPE):
+    execution_roles(scope)
     runtime_platform = sys.platform if runtime_platform is None else runtime_platform
     require(runtime_platform == "linux" and environment.get("RUNNER_OS") == "Linux"
             and environment.get("RUNNER_ARCH") == "X64", "requires Linux x64")
     require(environment.get("GITHUB_ACTIONS") == "true"
             and environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and environment.get("MW_SDK_SCOPE") == "sdk_native_source",
+            and environment.get("MW_SDK_SCOPE") == scope,
             "explicit source-only dispatch required")
     require(environment.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
             and environment.get("GITHUB_JOB") == "sdk-native-source",
@@ -364,7 +373,7 @@ def causal_pair():
     failures = {name: {"source": "crates/driver-mlt-video/src/" + row[0] + ".rs",
                        "line": row[1], "markers": row[3]}
                 for name, row in FAILURE_SITES.items()}
-    require(len(CAUSAL_CASES) == 11 and len(failures) == 7
+    require(len(CAUSAL_CASES) == 11 and len(failures) == 6
             and set(failures) <= set(CAUSAL_CASES), "causal inventory changed")
     return {"id": "sdk-native-source", "failures": failures,
             "baseline": {"sha": RED, "tree": TREES[RED], "targets": {"mlt": list(CAUSAL_CASES)}},
@@ -401,7 +410,7 @@ def cargo_rows(raw, code):
     return rows
 
 
-def select_binaries(raw, code, repo, target, specs, *, testing):
+def select_binary_paths(raw, code, repo, target, specs, *, testing):
     rows = cargo_rows(raw, code)
     expected = {(s["name"], s["kind"]): s for s in specs}
     require(len(expected) == len(specs), "duplicate target contract")
@@ -424,11 +433,20 @@ def select_binaries(raw, code, repo, target, specs, *, testing):
         require(selected["package"] != MLT or "test-tools" in row.get("features", []),
                 "test-tools compilation is absent")
         path = Path(row["executable"]).absolute()
-        identity = custody.fingerprint(path, target)
-        require(identity["bytes"] > 0, "empty compiled binary")
-        found[key] = {"absolute_path": str(path), **identity}
+        require(path.is_relative_to(target), "compiled binary escaped owned target")
+        found[key] = str(path)
     require(set(found) == set(expected), "missing compiled target")
     return {s["name"]: found[(s["name"], s["kind"])] for s in specs}
+
+
+def select_binaries(raw, code, repo, target, specs, *, testing):
+    paths = select_binary_paths(raw, code, repo, target, specs, testing=testing)
+    result = {}
+    for name, selected in paths.items():
+        identity = custody.fingerprint(Path(selected), target)
+        require(identity["bytes"] > 0, "empty compiled binary")
+        result[name] = {"absolute_path": selected, **identity}
+    return result
 
 
 def roster(raw, code, selected, required=()):
@@ -436,7 +454,10 @@ def roster(raw, code, selected, required=()):
     text = raw.decode().replace("\r\n", "\n")
     names = tuple(re.findall(r"(?m)^([A-Za-z_][A-Za-z_0-9:]*): test$", text))
     if not names:
-        require(selected["allow_empty"] and re.fullmatch(r"\s*0 tests, 0 benchmarks\s*", text),
+        require(selected["allow_empty"]
+                and not required
+                and not selected.get("closed_roster")
+                and (raw == b"" or re.fullmatch(r"\s*0 tests, 0 benchmarks\s*", text)),
                 "selected target has no enumerated tests")
         return {"all": (), "selected": (), "not_selected": (), "not_selected_credit": "NONE"}
     expected = selected.get("closed_roster", names)
@@ -535,7 +556,195 @@ def verify_commands(evidence, observations):
             observer.original_stream(folder, obs["command"], channel)
 
 
-def run(gate, sdk, output):
+
+def diagnostic_observation(pair, name, raw, row, binary, after, listed, context):
+    """Observe a terminal baseline case; never revise or grant G1 acceptance."""
+    require(context.get("role") == "baseline"
+            and context.get("product_source_sha") == RED, "diagnostic requires the frozen baseline")
+    require(tuple(listed["selected"]) == CAUSAL_CASES
+            and len(listed["all"]) == len(set(listed["all"]))
+            and set(CAUSAL_CASES) <= set(listed["all"]), "diagnostic roster changed")
+    require(row["observation"] == "DIRECT_PROCESS_EXIT_OBSERVED"
+            and row["log_custody"] == "VERIFIED_SNAPSHOT", "diagnostic custody incomplete")
+    require(row["argv"] == observer.case_argv(binary, pair, "baseline", name)
+            and row["context"] == context and binary == after,
+            "diagnostic command, source context or binary changed")
+    require(type(row["exit_code"]) is int, "terminal diagnostic exit is not an integer")
+    text = custody.ANSI.sub("", raw.decode("utf-8").replace("\r\n", "\n"))
+    case_rows = re.findall(r"(?m)^test (.+) \.\.\. (ok|FAILED|ignored)\s*$", text)
+    summaries = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; "
+                           r"(\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+    panics = re.findall(r"(?m)^thread '([^']+)'(?: \(\d+\))? panicked at ([^\n]+):\s*$", text)
+    observed = "NONCONFORMING_TEST_RESULT"
+    for code, state, outcome, counts in (
+        (0, "ok", "OBSERVED_LIBTEST_PASS", (1, 0, 0, 0, len(listed["all"]) - 1)),
+        (101, "FAILED", "OBSERVED_LIBTEST_FAILURE", (0, 1, 0, 0, len(listed["all"]) - 1)),
+    ):
+        named_panic = len(panics) == 1 and panics[0][0] == name
+        if (row["exit_code"] == code and case_rows == [(name, state)]
+                and len(summaries) == 1 and summaries[0][0] == state
+                and tuple(map(int, summaries[0][1:])) == counts
+                and (named_panic if code == 101 else not panics)):
+            observed = outcome
+    expected = pair["failures"].get(name)
+    comparison = {"matched": False, "error": None}
+    try:
+        admitted = observer.admit_case(pair, "baseline", name, raw, row,
+                                       binary, after, listed, context)
+        comparison.update(matched=True, observed_status=admitted["status"])
+    except custody.VerificationError as error:
+        comparison["error"] = str(error)
+    return {
+        "name": name, "status": "DIAGNOSTIC_OBSERVATION_NOT_ACCEPTANCE",
+        "outcome": observed, "context": context, "command": row,
+        "binary_sha256": binary["sha256"], "exit_code": row["exit_code"],
+        "case_rows": case_rows, "summaries": summaries, "panics": panics,
+        "frozen_expected_exit": 101 if expected is not None else 0,
+        "frozen_expected_assertion": expected,
+        "frozen_marker_observations": [
+            {"marker": marker, "present": marker in text}
+            for marker in (expected["markers"] if expected else ())
+        ],
+        "frozen_g1_comparison": comparison, "g1_acceptance": False,
+        "combined_original_stream_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def diagnostic_cases(binary, listed, pair, work, target, env, logs, context,
+                     results, dependencies, command):
+    require(not results and tuple(listed["selected"]) == CAUSAL_CASES,
+            "diagnostic must begin with the exact unobserved eleven-case roster")
+    for number, name in enumerate(CAUSAL_CASES):
+        verify_binaries({"selected": binary, **dependencies}, target)
+        row = command(observer.case_argv(binary, pair, "baseline", name), work,
+                      env, logs, "diagnostic-" + str(number), 180, context)
+        after = {"absolute_path": binary["absolute_path"],
+                 **custody.fingerprint(Path(binary["absolute_path"]), target)}
+        raw = (observer.original_stream(logs, row, "stdout") + b"\n"
+               + observer.original_stream(logs, row, "stderr"))
+        results.append(diagnostic_observation(pair, name, raw, row, binary,
+                                              after, listed, context))
+        verify_binaries(dependencies, target)
+
+
+def diagnostic_complete(result):
+    observed = result.get("results", [])
+    require([row["name"] for row in observed] == list(CAUSAL_CASES),
+            "diagnostic observations are incomplete, repeated or foreign")
+    require(all(row["status"] == "DIAGNOSTIC_OBSERVATION_NOT_ACCEPTANCE"
+                and row["outcome"] in ("OBSERVED_LIBTEST_PASS", "OBSERVED_LIBTEST_FAILURE")
+                and row["g1_acceptance"] is False for row in observed),
+            "a signal, setup failure or incomplete libtest result cannot complete the diagnostic")
+    require(result.get("source_before") == result.get("source_after")
+            and result.get("source_before"), "diagnostic source custody changed")
+    require(result.get("clippy") == "NOT_SELECTED"
+            and result.get("supplemental") == {} and "runtime" not in result,
+            "diagnostic executed an unselected source suite")
+    return {
+        "status": "DIAGNOSTIC_NOT_ACCEPTANCE", "cases": 11,
+        "observed_pass": sum(row["outcome"] == "OBSERVED_LIBTEST_PASS" for row in observed),
+        "observed_failure": sum(row["outcome"] == "OBSERVED_LIBTEST_FAILURE" for row in observed),
+        "frozen_g1_expectation_matches": sum(row["frozen_g1_comparison"]["matched"] for row in observed),
+        "g1_acceptance": False, "green": "NOT_RUN", "supplemental": "NOT_RUN",
+        "physical_render": "NOT_RUN", "ignored_selected_cases": 0,
+    }
+
+
+class ProducerBarrier:
+    """Keep selected compilation and observation in separate, one-way phases."""
+
+    def __init__(self, command, cargo):
+        self.delegate = command
+        self.cargo = cargo
+        self.phase = "PREPARING"
+
+    def __call__(self, argv, *args):
+        producer = argv[0] == self.cargo
+        observation = ("--list" in argv or "--exact" in argv
+                       or ("--test" in argv and not producer))
+        require(self.phase != "SEALING", "command attempted during producer sealing")
+        require(not producer or self.phase == "PREPARING", "producer attempted after sealing")
+        require(not observation or self.phase == "OBSERVING", "observation before producer barrier")
+        return self.delegate(argv, *args)
+
+    def begin_sealing(self):
+        require(self.phase == "PREPARING", "producer closure cannot be resealed")
+        self.phase = "SEALING"
+
+    def begin_observation(self):
+        require(self.phase == "SEALING", "producer closure is not sealed")
+        self.phase = "OBSERVING"
+
+
+def prepare_compiled_role(role, cargo, work, env, logs, ctx, target, command):
+    require(role in ("baseline", "repair"), "unknown compilation role")
+    unit_specs = MLT_TESTS if role == "repair" else MLT_TESTS[:1]
+    unit_argv = [cargo, "test", "--locked", "-p", MLT, "--features", "test-tools", "--lib"]
+    if role == "repair":
+        unit_argv.append("--bins")
+    plans = [
+        ("test-tools", "test-tools-build",
+         [cargo, "build", "--locked", "-p", MLT, "--features", "test-tools", "--bins", "--message-format=json"],
+         MLT_TESTS[1:], False),
+        ("mlt-tests", "mlt-test-compile", [*unit_argv, "--no-run", "--message-format=json"],
+         unit_specs, True),
+    ]
+    if role == "repair":
+        plans.extend([
+            ("mlt-integrations", "mlt-integration-compile", integration_compile_argv(cargo), MLT_INTEGRATIONS, True),
+            ("video-domain", "video-domain-compile",
+             [cargo, "test", "--locked", "-p", VIDEO, "--lib", "--tests", "--no-run", "--message-format=json"],
+             VIDEO_TESTS, True),
+            ("motion-canvas", "motion-canvas-compile",
+             [cargo, "test", "--locked", "-p", MC, "--lib", "--no-run", "--message-format=json"],
+             MC_TESTS, True),
+            ("materializer", "materialize-compile",
+             [cargo, "build", "--locked", "-p", MC, "--example", "materialize", "--message-format=json"],
+             (MATERIALIZE,), False),
+        ])
+    prepared = {"collections": {}, "steps": [], "clippy": "NOT_SELECTED"}
+    for name, label, argv, specs, testing in plans:
+        row = command(argv, work, env, logs, label, 1800, ctx)
+        raw = observer.original_stream(logs, row, "stdout")
+        select_binary_paths(raw, row["exit_code"], work, target, specs, testing=testing)
+        prepared["steps"].append(label)
+        prepared["collections"][name] = {"label": label, "command": row, "specs": specs, "testing": testing}
+        if name == "mlt-integrations":
+            # These are the final normal MLT producers emitted for the integrations.
+            select_binary_paths(raw, row["exit_code"], work, target, MLT_TESTS[1:], testing=False)
+            prepared["collections"]["test-tools"] = {
+                "label": label, "command": row, "specs": MLT_TESTS[1:], "testing": False}
+    if role == "repair":
+        row = command([cargo, "clippy", "--locked", "-p", MLT, "-p", MC, "-p", VIDEO,
+                       "--all-targets", "--features", MLT + "/test-tools", "--", "-D", "warnings"],
+                      work, env, logs, "strict-clippy", 1800, ctx)
+        require(type(row["exit_code"]) is int and row["exit_code"] == 0,
+                "source command failed: strict-clippy")
+        prepared["steps"].append("strict-clippy")
+        prepared["clippy"] = "PASS"
+    return prepared
+
+
+def seal_compiled_role(prepared, work, target, logs, evidence, barrier):
+    require(barrier.phase == "SEALING" and "sealed" not in prepared,
+            "producer closure cannot be resealed")
+    sealed = {}
+    for name, producer in prepared["collections"].items():
+        row = producer["command"]
+        raw = observer.original_stream(logs, row, "stdout")
+        selected = select_binaries(raw, row["exit_code"], work, target,
+                                   producer["specs"], testing=producer["testing"])
+        for binary in selected.values():
+            observer.retain_file(Path(binary["absolute_path"]), target, evidence, "binaries")
+        sealed[name] = selected
+    for collection in sealed.values():
+        verify_binaries(collection, target)
+    prepared["sealed"] = sealed
+    return sealed
+
+
+def run(gate, sdk, output, *, scope=SOURCE_SCOPE):
+    roles = execution_roles(scope)
     gate, sdk, output = gate.absolute(), sdk.absolute(), output.absolute()
     require(not output.exists() and not output.is_relative_to(gate)
             and not output.is_relative_to(sdk), "fresh external run root required")
@@ -543,7 +752,8 @@ def run(gate, sdk, output):
     evidence = output / "evidence"
     evidence.mkdir()
     report = {"schema": "motionwright.sdk-native-source/1", "at_utc": custody.now(),
-              "status": "INCOMPLETE", "roles": {}, "new_native_operations": 0,
+              "status": "INCOMPLETE", "verification_scope": scope,
+              "roles": {}, "new_native_operations": 0,
               "physical_render": "NOT_RUN", "pixel_acceptance": False, "human_acceptance": False}
     observations = []
     def command(argv, cwd, env, logs, label, timeout, ctx):
@@ -552,13 +762,6 @@ def run(gate, sdk, output):
         row = command(argv, cwd, env, logs, label, timeout, ctx)
         require(row["exit_code"] == 0, "source command failed: " + label)
         return row
-    def compile_target(argv, work, env, logs, label, ctx, target, specs, testing):
-        row = command(argv, work, env, logs, label, 1800, ctx)
-        binaries = select_binaries(observer.original_stream(logs, row, "stdout"),
-                                   row["exit_code"], work, target, specs, testing=testing)
-        for binary in binaries.values():
-            observer.retain_file(Path(binary["absolute_path"]), target, evidence, "binaries")
-        return binaries
     def enumerate_binary(binary, selected, work, env, logs, label, ctx, required=()):
         row = command([binary["absolute_path"], "--list", "--format", "terse"],
                       work, env, logs, label, 45, ctx)
@@ -579,7 +782,7 @@ def run(gate, sdk, output):
             if dependencies:
                 verify_binaries(dependencies, target)
     try:
-        context = execution_context(os.environ)
+        context = execution_context(os.environ, scope=scope)
         report["context"] = context
         require(Path(observer.__file__).resolve() == gate / "tooling/ci_foundation_causal.py"
                 and Path(custody.__file__).resolve() == gate / "tooling/ci_storage_apply_recovery.py",
@@ -599,7 +802,10 @@ def run(gate, sdk, output):
         tools = observer.tools_identity(gate, evidence, tool_env, context, (evidence, observations))
         report["tools"] = tools
         cargo = tools["cargo"]["absolute_path"]
-        for role, source in (("baseline", RED), ("repair", GREEN)):
+        command = ProducerBarrier(command, cargo)
+        prepared_roles = {}
+        # Complete every selected producer before any role enumerates or executes.
+        for role, source in roles:
             work, target, tmp = (output / (role + "-" + suffix) for suffix in ("checkout", "target", "tmp"))
             logs = evidence / (role + "-originals")
             for path in (target, tmp, logs):
@@ -617,18 +823,40 @@ def run(gate, sdk, output):
                       "retained_sources": observer.retain_source(work, before, evidence),
                       "clippy": "NOT_SELECTED", "supplemental": {}}
             report["roles"][role] = result
-            built = compile_target([cargo, "build", "--locked", "-p", MLT, "--features", "test-tools",
-                                    "--bins", "--message-format=json"],
-                                   work, env, logs, "test-tools-build", ctx, target, MLT_TESTS[1:], False)
-            result["binaries"]["test-tools"] = built
-            specs = MLT_TESTS if role == "repair" else MLT_TESTS[:1]
-            argv = [cargo, "test", "--locked", "-p", MLT, "--features", "test-tools", "--lib"]
+            compiled = prepare_compiled_role(role, cargo, work, env, logs, ctx, target, command)
+            runtime = (prepare_runtime(work, before, output, evidence, logs, env, ctx, command, require_command)
+                       if role == "repair" else None)
+            prepared_roles[role] = {"work": work, "target": target, "logs": logs, "env": env,
+                                    "ctx": ctx, "paths": paths, "before": before,
+                                    "compiled": compiled, "runtime": runtime}
+            result["compiled_producer_steps"] = compiled["steps"]
+            result["clippy"] = compiled["clippy"]
+        for role, source in roles:
+            ready = prepared_roles[role]
+            require(custody.source_snapshot(ready["work"], source, ready["paths"], TREES[source])
+                    == ready["before"], "source changed before producer sealing")
+        command.begin_sealing()
+        for role, source in roles:
+            ready = prepared_roles[role]
+            sealed = seal_compiled_role(ready["compiled"], ready["work"], ready["target"],
+                                        ready["logs"], evidence, command)
+            report["roles"][role]["binaries"] = {
+                name: sealed[name] for name in ("test-tools", "mlt-tests")}
             if role == "repair":
-                argv.append("--bins")
-            binaries = compile_target([*argv, "--no-run", "--message-format=json"],
-                                      work, env, logs, "mlt-test-compile", ctx, target, specs, True)
-            result["binaries"]["mlt-tests"] = binaries
-            verify_binaries(built, target)
+                report["roles"][role]["binaries"]["materializer"] = sealed["materializer"]
+        command.begin_observation()
+        report["producer_barrier"] = {
+            "status": "SEALED_BEFORE_FIRST_OBSERVATION", "roles": [role for role, _ in roles],
+            "steps": {role: ready["compiled"]["steps"] for role, ready in prepared_roles.items()}}
+        for role, source in roles:
+            ready = prepared_roles[role]
+            work, target, logs = ready["work"], ready["target"], ready["logs"]
+            env, ctx, paths, before = ready["env"], ready["ctx"], ready["paths"], ready["before"]
+            result = report["roles"][role]
+            sealed = ready["compiled"]["sealed"]
+            built, binaries = sealed["test-tools"], sealed["mlt-tests"]
+            for collection in sealed.values():
+                verify_binaries(collection, target)
             lib = binaries["semwright_mlt_video"]
             full = enumerate_binary(lib, MLT_TESTS[0], work, env, logs, "mlt-list", ctx, CAUSAL_CASES)
             selected_spec = {**MLT_TESTS[0], "prefixes": (
@@ -638,8 +866,18 @@ def run(gate, sdk, output):
             selected = observer.selected_roster(observer.original_stream(logs, list_row, "stdout"),
                                                 list_row["exit_code"], selected_spec, CAUSAL_CASES, role)
             result["rosters"]["causal"] = selected
-            cases(lib, CAUSAL_CASES, selected, pair, role, work, target, env, logs,
-                  "causal", ctx, result["results"])
+            if scope == DIAGNOSTIC_SCOPE:
+                result["fixture_binaries"] = built
+                fixture_paths = [p for p, _, _ in MANDATORY_MODULES] + [
+                    "crates/driver-mlt-video/src/bin/fake_melt.rs",
+                    "crates/driver-mlt-video/src/bin/fake_ffprobe.rs"]
+                result["retained_fixture_sources"] = {
+                    p: result["retained_sources"][p] for p in fixture_paths}
+                diagnostic_cases(lib, selected, pair, work, target, env, logs, ctx,
+                                 result["results"], built, command)
+            else:
+                cases(lib, CAUSAL_CASES, selected, pair, role, work, target, env, logs,
+                      "causal", ctx, result["results"])
             verify_binaries(built, target)
             if role == "repair":
                 def green_suite(label, selected_specs, selected_binaries, skip=(), dependencies=None):
@@ -665,27 +903,16 @@ def run(gate, sdk, output):
                             "supplemental source selection incomplete")
                     suite["status"] = "PASS_COMPLETE_COMPILED_ROSTER"
                 green_suite("mlt", MLT_TESTS, binaries, CAUSAL_CASES)
-                integrations = compile_target(integration_compile_argv(cargo), work, env, logs,
-                                              "mlt-integration-compile", ctx, target,
-                                              MLT_INTEGRATIONS, True)
                 verify_binaries(built, target)
-                green_suite("mlt-integrations", MLT_INTEGRATIONS, integrations, dependencies=built)
-                domain = compile_target([cargo, "test", "--locked", "-p", VIDEO, "--lib", "--tests",
-                                         "--no-run", "--message-format=json"],
-                                        work, env, logs, "video-domain-compile", ctx, target, VIDEO_TESTS, True)
-                green_suite("video-domain", VIDEO_TESTS, domain)
-                canvas = compile_target([cargo, "test", "--locked", "-p", MC, "--lib", "--no-run",
-                                         "--message-format=json"],
-                                        work, env, logs, "motion-canvas-compile", ctx, target, MC_TESTS, True)
-                green_suite("motion-canvas", MC_TESTS, canvas)
-                require_command([cargo, "clippy", "--locked", "-p", MLT, "-p", MC, "-p", VIDEO,
-                                 "--all-targets", "--features", MLT + "/test-tools", "--", "-D", "warnings"],
-                                work, env, logs, "strict-clippy", 1800, ctx)
-                result["clippy"] = "PASS"
-                result["runtime"] = run_runtime(work, before, output, evidence, logs, env, ctx,
-                                                target, cargo, command, require_command, compile_target)
+                green_suite("mlt-integrations", MLT_INTEGRATIONS, sealed["mlt-integrations"], dependencies=built)
+                green_suite("video-domain", VIDEO_TESTS, sealed["video-domain"])
+                green_suite("motion-canvas", MC_TESTS, sealed["motion-canvas"])
+                result["runtime"] = run_runtime(ready["runtime"], before, output, evidence, logs, env, ctx,
+                                                target, command, require_command,
+                                                sealed["materializer"]["materialize"])
             result["source_after"] = custody.source_snapshot(work, source, paths, TREES[source])
-            result["admission"] = observer.role_complete(pair, role, result)
+            result["admission"] = (diagnostic_complete(result) if scope == DIAGNOSTIC_SCOPE
+                                   else observer.role_complete(pair, role, result))
             for collection in result["binaries"].values():
                 verify_binaries(collection, target)
             for suite in result["supplemental"].values():
@@ -697,8 +924,16 @@ def run(gate, sdk, output):
             require(custody.fingerprint(path, path.parent) ==
                     {k: tool[k] for k in ("path", "bytes", "sha256", "identity")}, "toolchain identity changed")
         verify_commands(evidence, observations)
-        report.update(status="PASS_SOURCE_G1", baseline_expected_failures=7, baseline_controls_passed=4,
-                      causal_green_passed=11, ignored_selected_cases=0, omitted_selected_cases=0)
+        if scope == DIAGNOSTIC_SCOPE:
+            require(tuple(report["roles"]) == ("baseline",), "diagnostic executed another role")
+            report.update(status="DIAGNOSTIC_NOT_ACCEPTANCE", g1_acceptance=False,
+                          diagnostic=report["roles"]["baseline"]["admission"],
+                          green="NOT_RUN", supplemental="NOT_RUN",
+                          ignored_selected_cases=0, omitted_selected_cases=0)
+        else:
+            report.update(status="PASS_SOURCE_G1", baseline_expected_failures=len(pair["failures"]),
+                          baseline_controls_passed=len(CAUSAL_CASES) - len(pair["failures"]),
+                          causal_green_passed=len(CAUSAL_CASES), ignored_selected_cases=0, omitted_selected_cases=0)
     except (observer.UnknownExecution, custody.UnknownObservation) as error:
         report.update(status="UNKNOWN_NO_RETRY", error=str(error), uncertain_command=error.command)
     except Exception as error:
@@ -709,8 +944,7 @@ def run(gate, sdk, output):
     return report
 
 
-def run_runtime(work, source, output, evidence, logs, env, ctx, target, cargo,
-                command, require_command, compile_target):
+def prepare_runtime(work, source, output, evidence, logs, env, ctx, command, require_command):
     root = output / "runtime-source"
     copied = copy_source_tree(work, source, root)
     runtime = root / RUNTIME
@@ -733,6 +967,28 @@ def run_runtime(work, source, output, evidence, logs, env, ctx, target, cargo,
                     runtime, node_env, logs, "npm-ci-locked", 600, ctx)
     dependency_before = dependency_inventory(runtime / "node_modules")
     custody.write_new(evidence / "node-dependencies-before.json", dependency_before)
+    tsc = runtime / "node_modules/typescript/lib/tsc.js"
+    return {"root": root, "runtime": runtime, "copied": copied, "tool_ids": tool_ids,
+            "node": node, "node_env": node_env, "dependency_before": dependency_before,
+            "tsc": tsc, "tsc_before": custody.fingerprint(tsc, runtime / "node_modules")}
+
+
+def run_runtime(prepared, source, output, evidence, logs, env, ctx, target,
+                command, require_command, materialize):
+    root, runtime = prepared["root"], prepared["runtime"]
+    node, node_env = prepared["node"], prepared["node_env"]
+    copied, tool_ids = prepared["copied"], prepared["tool_ids"]
+    dependency_before = prepared["dependency_before"]
+    tsc, tsc_before = prepared["tsc"], prepared["tsc_before"]
+    require(dependency_inventory(runtime / "node_modules") == dependency_before,
+            "runtime dependency bytes changed before observation")
+    require(custody.fingerprint(tsc, runtime / "node_modules") == tsc_before,
+            "TypeScript compiler changed before observation")
+    for identity in tool_ids.values():
+        path = Path(identity["absolute_path"])
+        require(custody.fingerprint(path, path.parent) ==
+                {k: identity[k] for k in ("path", "bytes", "sha256", "identity")},
+                "Node/npm identity changed before observation")
     cases_seen = {}
     for index, (name, expected) in enumerate(NODE_CASES.items()):
         path = runtime / "tests" / name
@@ -745,16 +1001,12 @@ def run_runtime(work, source, output, evidence, logs, env, ctx, target, cargo,
                      observer.original_stream(logs, coverage, "stdout").decode().splitlines() if x.strip()]
     require(len(coverage_rows) == 3 and all(x.get("status") == "complete" for x in coverage_rows),
             "three runtime semantic coverage projections required")
-    materialize = compile_target([cargo, "build", "--locked", "-p", MC, "--example", "materialize",
-                                  "--message-format=json"], work, env, logs, "materialize-compile", ctx,
-                                 target, (MATERIALIZE,), False)["materialize"]
     generated = {}
-    tsc = runtime / "node_modules/typescript/lib/tsc.js"
-    tsc_before = custody.fingerprint(tsc, runtime / "node_modules")
     for name in FIXTURES:
         destination = output / ("typecheck-" + name)
         require(not destination.exists(), "typecheck destination must be new")
         fixture = root / ("fixtures/motion-canvas/" + name + "/semwright-motion.json")
+        verify_binaries({"materializer": materialize}, target)
         require_command([materialize["absolute_path"], str(fixture), str(destination)],
                         root, env, logs, "materialize-" + name, 120, ctx)
         paths = sorted(p for p in destination.rglob("*") if p.is_file())
@@ -809,10 +1061,12 @@ def main(argv=None):
     parser.add_argument("--gate", type=Path, required=True)
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--scope", choices=SCOPES, default=SOURCE_SCOPE)
     args = parser.parse_args(argv)
-    report = run(args.gate, args.sdk, args.output)
+    report = run(args.gate, args.sdk, args.output, scope=args.scope)
     print(json.dumps({"status": report["status"], "receipt": str(args.output / "evidence/receipt.json")}))
-    return 0 if report["status"] == "PASS_SOURCE_G1" else 2
+    expected = "DIAGNOSTIC_NOT_ACCEPTANCE" if args.scope == DIAGNOSTIC_SCOPE else "PASS_SOURCE_G1"
+    return 0 if report["status"] == expected else 2
 
 
 if __name__ == "__main__":

@@ -116,6 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             gain_milli_db: -16000,
             attack_frames: 3,
             release_frames: 10,
+            tail_policy: Default::default(),
             original_source_attestation:
                 "I generated this original synthetic stereo tone from explicit numeric samples"
                     .into(),

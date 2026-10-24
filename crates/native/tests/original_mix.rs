@@ -1,6 +1,7 @@
 use motionwright_domain as domain;
 use motionwright_native::original_mix::{
-    OriginalMixPlan, PcmStemReceipt, VoiceActivityWindow, render_original_source_mix, write_mix_wav,
+    OriginalMixPlan, OriginalSfxSource, PcmStemReceipt, VoiceActivityWindow,
+    render_original_source_mix, write_mix_wav,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -88,7 +89,7 @@ fn fixture() -> (domain::Project, OriginalMixPlan, [Vec<u8>; 3]) {
         sample_frames: n as u64,
         measured_voice: stem(0),
         original_music: stem(1),
-        original_sfx: stem(2),
+        original_sfx: stem(2).into(),
         voice_gain_db: 0.0,
         music_gain_db: -12.0,
         sfx_gain_db: -8.0,
@@ -103,6 +104,9 @@ fn fixture() -> (domain::Project, OriginalMixPlan, [Vec<u8>; 3]) {
         source_classification: "ORIGINAL_LICENSED_SOURCE_REQUIRED_NOT_SPEECH_VERIFIED".into(),
         owner_mixing_approval_authenticated: false,
         is_mastered: false,
+        voice_envelope: Default::default(),
+        music_envelope: Default::default(),
+        sfx_envelope: Default::default(),
     };
     (p, plan, sources)
 }
@@ -215,10 +219,13 @@ fn short_voice_releases_from_the_reached_gain_without_a_pcm_discontinuity() {
 fn short_voice_envelopes_do_not_attenuate_voice_or_sfx_buses() {
     let (mut project, mut plan, _) = fixture();
     let sources = [pcm(2_000, 96_000), pcm(0, 96_000), pcm(-1_000, 96_000)];
+    let OriginalSfxSource::Imported(sfx_receipt) = &mut plan.original_sfx else {
+        panic!("This PCM-bus fixture must retain its imported SFX source");
+    };
     for (index, stem) in [
         &mut plan.measured_voice,
         &mut plan.original_music,
-        &mut plan.original_sfx,
+        sfx_receipt,
     ]
     .into_iter()
     .enumerate()
@@ -371,13 +378,17 @@ fn persisted_mix_recipe_rejects_an_unsaved_duck_or_source_override() {
     project.production_design.delivery_recipes.insert(
         plan.deliverable_profile_id,
         domain::DeliveryRecipe {
+            audio_targets: None,
             original_mix: Some(domain::OriginalMixRecipe {
                 music_asset_id: Some(plan.original_music.asset_id),
-                sfx_asset_id: Some(plan.original_sfx.asset_id),
+                sfx_asset_id: plan.original_sfx.imported_asset_id(),
                 sfx_gain_db: plan.sfx_gain_db,
                 duck_attenuation_db: plan.duck_attenuation_db,
                 duck_attack_samples: plan.duck_attack_samples,
                 duck_release_samples: plan.duck_release_samples,
+                voice_envelope: Default::default(),
+                music_envelope: Default::default(),
+                sfx_envelope: Default::default(),
             }),
             ..Default::default()
         },

@@ -13,6 +13,14 @@ import unittest
 from unittest import mock
 
 SCRIPT = Path(__file__).absolute().parents[1] / "nsis_owned_files.py"
+sys.path.insert(0, str(SCRIPT.parent))
+sys.path.insert(0, str(Path(__file__).absolute().parent))
+
+from source_lock_admission import distribution_source_context
+from test_source_lock_admission import (
+    distribution_fixture_snapshot, write_distribution_fixture,
+)
+
 SPEC = importlib.util.spec_from_file_location("nsis_owned_files_tested", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 owned = importlib.util.module_from_spec(SPEC)
@@ -645,6 +653,657 @@ class PredecessorProfileTests(unittest.TestCase):
             self.assertIn("cannot be mixed", refused.stderr)
             self.assertEqual(include.read_bytes(), before)
             self.assert_inputs_unchanged(root, data)
+
+
+
+
+class PublicationIntegrityTests(unittest.TestCase):
+    """Exercise the real owned files at the capture/publication boundary."""
+
+    def temporary(self):
+        return tempfile.TemporaryDirectory(dir=RUNTIME_ROOT, prefix="mw-nsis-publication-")
+
+    def fixture(self, directory):
+        root = Path(directory)
+        source, capture, include = (root / name for name in (
+            "source.bin", "capture.bin", "capture.nsh"))
+        data = b"Isolated non-executable NSIS integrity fixture.\n" + bytes(range(256)) * 16
+        source.write_bytes(data)
+        return root, source, capture, include, data, source.lstat()
+
+    def assert_source_unchanged(self, source, data, initial):
+        self.assertEqual(source.read_bytes(), data)
+        final = source.lstat()
+        # Reads may update access time. All stable identity/content fields stay bound.
+        for field in ("st_dev", "st_ino", "st_size", "st_mode", "st_nlink",
+                      "st_mtime_ns", "st_ctime_ns", "st_birthtime_ns", "st_birthtime"):
+            self.assertEqual(getattr(final, field, None), getattr(initial, field, None), field)
+
+    def mutate_retaining_size_and_mtime(self, path):
+        before = path.lstat()
+        original = path.read_bytes()
+        self.assertTrue(original)
+        with path.open("r+b") as writer:
+            writer.seek(len(original) - 1)
+            self.assertEqual(writer.write(bytes([original[-1] ^ 0x80])), 1)
+            writer.flush()
+            os.fsync(writer.fileno())
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = path.lstat()
+        changed = path.read_bytes()
+        self.assertEqual((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
+                         (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns))
+        self.assertEqual(changed, original[:-1] + bytes([original[-1] ^ 0x80]))
+        if os.name == "nt":
+            self.assertEqual(owned._signature(before), owned._signature(after))
+        return {"before": hashlib.sha256(original).hexdigest(),
+                "after": hashlib.sha256(changed).hexdigest(),
+                "same_identity_size_mtime": True,
+                "stat_signature_equal": owned._signature(before) == owned._signature(after)}
+
+    def test_changed_capture_with_restored_mtime_is_rejected_before_publication(self):
+        with self.temporary() as directory:
+            root, source, capture, include, data, initial = self.fixture(directory)
+            real_capture, real_link = owned._capture, os.link
+            witness = {}
+            publication_calls = []
+
+            def capture_then_change(*args, **kwargs):
+                result = real_capture(*args, **kwargs)
+                witness.update(self.mutate_retaining_size_and_mtime(capture))
+                self.assertEqual(result[0], witness["before"])
+                return result
+
+            def observed_link(*args, **kwargs):
+                publication_calls.append(str(args[1]))
+                return real_link(*args, **kwargs)
+
+            rejected = None
+            with mock.patch.object(owned, "_capture", side_effect=capture_then_change), \
+                    mock.patch.object(owned.os, "link", side_effect=observed_link):
+                try:
+                    owned.capture_owned_file(source, capture, include, "MW_RUNTIME")
+                except owned.CaptureError as error:
+                    rejected = error
+            self.assertTrue(witness)
+            self.assert_source_unchanged(source, data, initial)
+            self.assertEqual(hashlib.sha256(capture.read_bytes()).hexdigest(), witness["after"])
+            print("NSIS_CAPTURE_INTEGRITY_WITNESS " + json.dumps({
+                **witness, "include_exists": include.exists(),
+                "publication_calls": publication_calls,
+                "rejection": str(rejected) if rejected is not None else None}, sort_keys=True))
+            if rejected is None:
+                self.assertTrue(include.exists())
+                self.assertIn(witness["before"], include.read_text(encoding="utf-8-sig"))
+                self.fail("NSIS_CAPTURE_MUTATION_PUBLISHED: include binds bytes preceding real mutation")
+            self.assertRegex(str(rejected), r"capture.*(changed|differs|integrity|bytes)")
+            self.assertFalse(include.exists())
+            self.assertEqual(publication_calls, [])
+
+    def test_changed_pending_with_restored_mtime_is_rejected_before_publication(self):
+        with self.temporary() as directory:
+            root, source, capture, include, data, initial = self.fixture(directory)
+            real_same, real_link = owned._require_same_object, os.link
+            witness, publication_calls = {}, []
+
+            def inspect_then_change(observed, original, label):
+                real_same(observed, original, label)
+                if label == "pending include" and not witness:
+                    pending, = root.glob(".mw-nsis-include-*.pending")
+                    witness.update(self.mutate_retaining_size_and_mtime(pending))
+
+            def observed_link(*args, **kwargs):
+                publication_calls.append(str(args[1]))
+                return real_link(*args, **kwargs)
+
+            rejected = None
+            with mock.patch.object(owned, "_require_same_object", side_effect=inspect_then_change), \
+                    mock.patch.object(owned.os, "link", side_effect=observed_link):
+                try:
+                    owned.capture_owned_file(source, capture, include, "MW_RUNTIME")
+                except owned.CaptureError as error:
+                    rejected = error
+            self.assertTrue(witness)
+            self.assert_source_unchanged(source, data, initial)
+            self.assertEqual(capture.read_bytes(), data)
+            print("NSIS_PENDING_INTEGRITY_WITNESS " + json.dumps({
+                **witness, "include_exists": include.exists(),
+                "publication_calls": publication_calls,
+                "rejection": str(rejected) if rejected is not None else None}, sort_keys=True))
+            if rejected is None:
+                self.assertTrue(include.exists())
+                self.assertEqual(hashlib.sha256(include.read_bytes()).hexdigest(), witness["after"])
+                self.fail("NSIS_PENDING_MUTATION_PUBLISHED: changed include bytes became authoritative")
+            self.assertRegex(str(rejected), r"pending include.*(changed|differs|integrity|bytes)")
+            self.assertFalse(include.exists())
+            self.assertEqual(publication_calls, [])
+
+    @unittest.skipUnless(os.name == "nt", "requires real Windows sharing semantics")
+    def test_windows_guards_block_writes_and_capture_deletion_through_publication(self):
+        with self.temporary() as directory:
+            root, source, capture, include, data, initial = self.fixture(directory)
+            alias = root / "capture-alias.bin"
+            real_capture, real_link = owned._capture, os.link
+            attempts = {}
+
+            def capture_with_alias(*args, **kwargs):
+                result = real_capture(*args, **kwargs)
+                real_link(capture, alias, follow_symlinks=False)
+                return result
+
+            def probe_then_link(src, dst, **kwargs):
+                for label, path in (("capture", capture), ("alias", alias), ("pending", Path(src))):
+                    try:
+                        with path.open("r+b") as writer:
+                            first = writer.read(1)
+                            writer.seek(0)
+                            writer.write(bytes([first[0] ^ 0x80]))
+                            writer.flush()
+                            os.fsync(writer.fileno())
+                    except PermissionError:
+                        attempts[label] = "WRITE_DENIED"
+                    else:
+                        attempts[label] = "WRITE_ALLOWED"
+                try:
+                    capture.unlink()
+                except PermissionError:
+                    attempts["capture_delete"] = "DELETE_DENIED"
+                else:
+                    attempts["capture_delete"] = "DELETE_ALLOWED"
+                return real_link(src, dst, **kwargs)
+
+            with mock.patch.object(owned, "_capture", side_effect=capture_with_alias), \
+                    mock.patch.object(owned.os, "link", side_effect=probe_then_link):
+                owned.capture_owned_file(source, capture, include, "MW_RUNTIME")
+            self.assert_source_unchanged(source, data, initial)
+            print("NSIS_PUBLICATION_GUARD_WITNESS " + json.dumps(attempts, sort_keys=True))
+            self.assertEqual(attempts, {"capture": "WRITE_DENIED", "alias": "WRITE_DENIED",
+                                       "pending": "WRITE_DENIED", "capture_delete": "DELETE_DENIED"},
+                             "NSIS_PUBLICATION_WRITERS_ALLOWED")
+            self.assertEqual(capture.read_bytes(), data)
+            self.assertIn(hashlib.sha256(data).hexdigest(), include.read_text(encoding="utf-8-sig"))
+            # Both guards must have closed before control returns.
+            with capture.open("r+b"), include.open("r+b"):
+                pass
+            alias.unlink()
+
+    @unittest.skipUnless(os.name == "nt", "requires real Windows sharing semantics")
+    def test_windows_preexisting_capture_writer_is_rejected_before_publication(self):
+        with self.temporary() as directory:
+            root, source, capture, include, data, initial = self.fixture(directory)
+            real_capture = owned._capture
+            writers = []
+
+            def capture_with_writer(*args, **kwargs):
+                result = real_capture(*args, **kwargs)
+                writers.append(capture.open("r+b"))
+                return result
+
+            rejected = None
+            try:
+                with mock.patch.object(owned, "_capture", side_effect=capture_with_writer):
+                    try:
+                        owned.capture_owned_file(source, capture, include, "MW_RUNTIME")
+                    except owned.CaptureError as error:
+                        rejected = error
+            finally:
+                for writer in writers:
+                    writer.close()
+            self.assertEqual(len(writers), 1)
+            self.assert_source_unchanged(source, data, initial)
+            if rejected is None:
+                self.assertTrue(include.exists())
+                self.fail("NSIS_CAPTURE_WITH_WRITER_PUBLISHED: writer coexisted with publication")
+            self.assertRegex(str(rejected), r"capture.*publication")
+            self.assertFalse(include.exists())
+            with capture.open("r+b"):
+                pass
+
+    def test_publication_failure_releases_handles_and_retains_owned_files(self):
+        with self.temporary() as directory:
+            root, source, capture, include, data, initial = self.fixture(directory)
+            with mock.patch.object(owned.os, "link", side_effect=OSError("forced publication failure")):
+                with self.assertRaisesRegex(OSError, "forced publication failure"):
+                    owned.capture_owned_file(source, capture, include, "MW_RUNTIME")
+            self.assertFalse(include.exists())
+            self.assertEqual(capture.read_bytes(), data)
+            self.assert_source_unchanged(source, data, initial)
+            pending, = root.glob(".mw-nsis-include-*.pending")
+            for path in (capture, pending):
+                with path.open("r+b"):
+                    pass
+                moved = path.with_name(path.name + ".retained")
+                path.rename(moved)
+                self.assertTrue(moved.exists())
+
+    def test_empty_capture_publishes_the_exact_empty_digest(self):
+        with self.temporary() as directory:
+            root = Path(directory)
+            source, capture, include = (root / name for name in ("source", "capture", "include"))
+            source.write_bytes(b"")
+            result = owned.capture_owned_file(source, capture, include, "MW_EMPTY")
+            self.assertEqual(capture.read_bytes(), b"")
+            self.assertEqual(result["size"], 0)
+            self.assertEqual(result["sha256"], hashlib.sha256(b"").hexdigest())
+            self.assertIn(result["sha256"], include.read_text(encoding="utf-8-sig"))
+
+
+    def test_changed_predecessor_capture_is_rejected_before_publication(self):
+        with self.temporary() as directory:
+            root = Path(directory)
+            fixtures = PredecessorProfileTests(
+                "test_profile_binds_all_physical_inputs_and_emits_only_declared_ownership")
+            manifest, include, document, environment, arguments, data = fixtures.fixture(root)
+            original_manifest = manifest.read_bytes()
+            target = include.parent / "mw-predecessor-file-0000.capture.bin"
+            real_capture, real_link = owned._capture, os.link
+            witness, publications = {}, []
+
+            def capture_then_change(source, capture):
+                result = real_capture(source, capture)
+                if capture == target:
+                    witness.update(self.mutate_retaining_size_and_mtime(capture))
+                    self.assertEqual(result[0], witness["before"])
+                return result
+
+            def observed_link(*args, **kwargs):
+                publications.append(str(args[1]))
+                return real_link(*args, **kwargs)
+
+            rejected = None
+            with mock.patch.object(owned, "_capture", side_effect=capture_then_change), \
+                    mock.patch.object(owned.os, "link", side_effect=observed_link):
+                try:
+                    owned.emit_predecessor_include(include, environment=environment, **arguments)
+                except owned.CaptureError as error:
+                    rejected = error
+            self.assertTrue(witness)
+            fixtures.assert_inputs_unchanged(root, data)
+            self.assertEqual(manifest.read_bytes(), original_manifest)
+            self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), witness["after"])
+            print("NSIS_PREDECESSOR_INTEGRITY_WITNESS " + json.dumps({
+                **witness, "include_exists": include.exists(), "publication_calls": publications,
+                "rejection": str(rejected) if rejected is not None else None}, sort_keys=True))
+            if rejected is None:
+                self.assertTrue(include.exists())
+                self.assertIn(document["files"][0]["sha256"], include.read_text(encoding="utf-8-sig"))
+                self.fail("NSIS_PREDECESSOR_MUTATION_PUBLISHED: owned capture no longer matches its pin")
+            self.assertRegex(str(rejected), r"predecessor capture.*(changed|differs|bytes)")
+            self.assertFalse(include.exists())
+            self.assertEqual(publications, [])
+
+    def test_capture_replacement_or_size_change_never_publishes(self):
+        for mode in ("replace", "grow", "truncate"):
+            with self.subTest(mode=mode), self.temporary() as directory:
+                root, source, capture, include, data, initial = self.fixture(directory)
+                real_capture = owned._capture
+                injected = []
+
+                def capture_then_change(*args, **kwargs):
+                    result = real_capture(*args, **kwargs)
+                    if mode == "replace":
+                        capture.rename(root / "captured-original.bin")
+                        capture.write_bytes(data)
+                    elif mode == "grow":
+                        with capture.open("ab") as writer:
+                            writer.write(b"X")
+                    else:
+                        with capture.open("r+b") as writer:
+                            writer.truncate(len(data) - 1)
+                    injected.append(mode)
+                    return result
+
+                with mock.patch.object(owned, "_capture", side_effect=capture_then_change):
+                    with self.assertRaisesRegex(owned.CaptureError, "capture"):
+                        owned.capture_owned_file(source, capture, include, "MW_RUNTIME")
+                self.assertEqual(injected, [mode])
+                self.assertFalse(include.exists())
+                self.assert_source_unchanged(source, data, initial)
+
+
+
+class DistributionOwnedFilesTests(unittest.TestCase):
+    """Synthetic contract fixtures; no actual distribution permission is issued."""
+
+    def temporary(self):
+        return tempfile.TemporaryDirectory(dir=RUNTIME_ROOT, prefix="mw-nsis-distribution-")
+
+    def fixture(self, directory, *, status="unresolved"):
+        root = Path(directory).resolve(strict=True) / "consumer"
+        fixture = write_distribution_fixture(root, status=status)
+        tooling = root / "tooling"
+        tooling.mkdir()
+        # The real CLI derives its source root from its own script, never cwd.
+        for source in (SCRIPT, SCRIPT.with_name("source_lock_admission.py")):
+            (tooling / source.name).write_bytes(source.read_bytes())
+        working = root / "unrelated-cwd"
+        working.mkdir()
+        (working / "SOURCE_LOCK.json").write_bytes(b"not the authoritative source root\n")
+        temporary = root / "tmp"
+        temporary.mkdir()
+        source = root / "main.bin"
+        source.write_bytes(fixture["payload_bytes"])
+        environment = dict(os.environ)
+        for name in (
+            "MW_NSIS_DISTRIBUTION_ADMISSION", "MW_NSIS_DISTRIBUTION_ADMISSION_SHA256",
+            "MW_NSIS_PREDECESSOR_MANIFEST", "MW_NSIS_PREDECESSOR_MANIFEST_SHA256",
+        ):
+            environment.pop(name, None)
+        environment.update({
+            "MW_NSIS_DISTRIBUTION_ADMISSION": fixture["record_path"],
+            "MW_NSIS_DISTRIBUTION_ADMISSION_SHA256": fixture["record_sha256"],
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "TEMP": str(temporary), "TMP": str(temporary), "TMPDIR": str(temporary),
+        })
+        return {
+            **fixture, "root": root, "source": source, "cwd": working,
+            "script": tooling / SCRIPT.name, "environment": environment,
+        }
+
+    def cli(self, fixture, *, mode=True, arch="x64", symbol="MW_MAIN",
+            environment=None, stem="selected", extra=()):
+        root = fixture["root"]
+        capture = root / (stem + ".capture.bin")
+        include = root / (stem + ".nsh")
+        command = [
+            sys.executable, "-B", str(fixture["script"]),
+            "--source", str(fixture["source"]), "--capture", str(capture),
+            "--include", str(include), "--symbol", symbol,
+        ]
+        if mode:
+            command.append("--prepare-distribution")
+        if arch is not None:
+            command.extend(["--arch", arch])
+        command.extend(extra)
+        result = subprocess.run(
+            command, cwd=fixture["cwd"],
+            env=fixture["environment"] if environment is None else environment,
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        return result, capture, include
+
+    def test_real_cli_negative_refuses_before_outputs_and_independent_custody_continues(self):
+        for status in ("unresolved", "prohibited"):
+            with self.subTest(status=status), self.temporary() as directory:
+                fixture = self.fixture(directory, status=status)
+                root = fixture["root"]
+                context = distribution_source_context(root)
+                self.assertEqual(context, fixture["document"]["source"])
+                before = distribution_fixture_snapshot(root)
+                refused, capture, include = self.cli(fixture)
+                self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+                self.assertIn("distribution_admission_" + status, refused.stderr)
+                self.assertFalse(capture.exists())
+                self.assertFalse(include.exists())
+                self.assertEqual(distribution_fixture_snapshot(root), before)
+                self.assertEqual(distribution_source_context(root), context)
+
+                # This is unrelated custody of fixture bytes, not a disposition.
+                continued, capture, include = self.cli(
+                    fixture, mode=False, arch=None, symbol="MW_RUNTIME", stem="custody",
+                )
+                self.assertEqual(continued.returncode, 0, continued.stderr)
+                self.assertEqual(capture.read_bytes(), fixture["payload_bytes"])
+                self.assertIn("!define MW_RUNTIME_SHA256", include.read_text(encoding="utf-8-sig"))
+                self.assertEqual(distribution_source_context(root), context)
+                self.assertEqual(fixture["source"].read_bytes(), fixture["payload_bytes"])
+
+    def test_real_cli_synthetic_permitted_control_binds_bytes_not_actual_rights(self):
+        with self.temporary() as directory:
+            fixture = self.fixture(directory, status="permitted")
+            result, capture, include = self.cli(fixture)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(capture.read_bytes(), fixture["payload_bytes"])
+            digest = hashlib.sha256(fixture["payload_bytes"]).hexdigest()
+            text = include.read_text(encoding="utf-8-sig")
+            self.assertIn(f'!define MW_MAIN_SHA256 "{digest}"', text)
+            self.assertIn(f'!define MW_MAIN_SIZE {len(fixture["payload_bytes"])}', text)
+            self.assertEqual(
+                distribution_source_context(fixture["root"]),
+                fixture["document"]["source"],
+            )
+
+    def test_real_cli_main_mode_and_pinned_context_are_required_without_fallback(self):
+        for case in (
+            "no_mode", "no_arch", "other_symbol", "mixed_modes",
+            "no_record", "no_pin", "wrong_pin", "other_arch",
+        ):
+            with self.subTest(case=case), self.temporary() as directory:
+                fixture = self.fixture(directory, status="permitted")
+                arguments = {}
+                environment = dict(fixture["environment"])
+                code = None
+                if case == "no_mode":
+                    arguments.update(mode=False, arch=None)
+                    code = "distribution_admission_mode_required"
+                elif case == "no_arch":
+                    arguments["arch"] = None
+                    code = "distribution_admission_main_and_arch_required"
+                elif case == "other_symbol":
+                    arguments["symbol"] = "MW_RUNTIME"
+                    code = "distribution_admission_main_and_arch_required"
+                elif case == "mixed_modes":
+                    arguments["extra"] = ("--emit-predecessor",)
+                elif case == "no_record":
+                    environment.pop("MW_NSIS_DISTRIBUTION_ADMISSION")
+                    code = "distribution_admission_missing"
+                elif case == "no_pin":
+                    environment.pop("MW_NSIS_DISTRIBUTION_ADMISSION_SHA256")
+                    code = "distribution_admission_missing"
+                elif case == "wrong_pin":
+                    environment["MW_NSIS_DISTRIBUTION_ADMISSION_SHA256"] = "0" * 64
+                    code = "distribution_admission_record_hash_mismatch"
+                else:
+                    arguments["arch"] = "arm64"
+                    code = "distribution_admission_scope_mismatch"
+                before = distribution_fixture_snapshot(fixture["root"])
+                result, capture, include = self.cli(
+                    fixture, environment=environment, **arguments,
+                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                if code is not None:
+                    self.assertIn(code, result.stderr)
+                self.assertFalse(capture.exists())
+                self.assertFalse(include.exists())
+                self.assertEqual(distribution_fixture_snapshot(fixture["root"]), before)
+
+    def test_expected_payload_mismatch_refuses_before_any_capture_or_include(self):
+        for mismatch in ("size", "digest", "boolean_size"):
+            with self.subTest(mismatch=mismatch), self.temporary() as directory:
+                root = Path(directory).resolve(strict=True)
+                source, capture, include = (
+                    root / "source.bin", root / "capture.bin", root / "capture.nsh",
+                )
+                data = b"exact synthetic payload"
+                source.write_bytes(data)
+                expected = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                if mismatch == "size":
+                    expected["bytes"] += 1
+                elif mismatch == "digest":
+                    expected["sha256"] = "0" * 64
+                else:
+                    expected["bytes"] = True
+                before = distribution_fixture_snapshot(root)
+                with self.assertRaises(owned.CaptureError) as failure:
+                    owned.capture_owned_file(
+                        source, capture, include, "MW_MAIN", expected_payload=expected,
+                    )
+                self.assertIn("distribution_admission_payload_", str(failure.exception))
+                self.assertFalse(capture.exists())
+                self.assertFalse(include.exists())
+                self.assertEqual(distribution_fixture_snapshot(root), before)
+
+    def test_expected_payload_is_read_on_one_retained_descriptor_before_output_creation(self):
+        with self.temporary() as directory:
+            root = Path(directory).resolve(strict=True)
+            source, capture, include = (
+                root / "source.bin", root / "capture.bin", root / "capture.nsh",
+            )
+            data = bytes(range(256)) * 19
+            source.write_bytes(data)
+            expected = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            real_open, real_read = os.open, os.read
+            source_descriptors = []
+            pre_capture_bytes = bytearray()
+            capture_observed = False
+
+            def observe_open(path, flags, *args, **kwargs):
+                nonlocal capture_observed
+                observed = Path(path)
+                # The later POSIX publication guard reopens capture for reading.
+                # Only output creation must observe the retained, rewound source.
+                if observed == capture and flags & os.O_CREAT:
+                    self.assertTrue(flags & os.O_EXCL)
+                    self.assertEqual(flags & (os.O_WRONLY | os.O_RDWR), os.O_WRONLY)
+                    self.assertEqual(len(source_descriptors), 1)
+                    self.assertEqual(bytes(pre_capture_bytes), data)
+                    self.assertEqual(
+                        os.lseek(source_descriptors[0], 0, os.SEEK_CUR), 0,
+                        "the retained input descriptor must be rewound before capture",
+                    )
+                    self.assertFalse(capture_observed)
+                    capture_observed = True
+                fd = real_open(path, flags, *args, **kwargs)
+                if observed == source:
+                    source_descriptors.append(fd)
+                return fd
+
+            def observe_read(fd, size):
+                block = real_read(fd, size)
+                if source_descriptors and fd == source_descriptors[0] and not capture_observed:
+                    pre_capture_bytes.extend(block)
+                return block
+
+            with (
+                mock.patch.object(owned.os, "open", side_effect=observe_open),
+                mock.patch.object(owned.os, "read", side_effect=observe_read),
+            ):
+                result = owned.capture_owned_file(
+                    source, capture, include, "MW_MAIN", expected_payload=expected,
+                )
+            self.assertTrue(capture_observed)
+            self.assertEqual(len(source_descriptors), 1)
+            self.assertEqual(capture.read_bytes(), data)
+            self.assertEqual(result["sha256"], expected["sha256"])
+            self.assertTrue(include.is_file())
+
+    def test_actual_source_mutation_after_prehash_cannot_publish_an_include(self):
+        with self.temporary() as directory:
+            root = Path(directory).resolve(strict=True)
+            source, capture, include = (
+                root / "source.bin", root / "capture.bin", root / "capture.nsh",
+            )
+            data = b"A" * 4096
+            substituted = b"B" * len(data)
+            source.write_bytes(data)
+            expected = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            real_open = os.open
+            changed = False
+
+            def change_before_capture_open(path, flags, *args, **kwargs):
+                nonlocal changed
+                if Path(path) == capture:
+                    self.assertFalse(changed)
+                    # The real prehash has completed. Modify the same source file.
+                    with source.open("r+b") as writer:
+                        writer.write(substituted)
+                        writer.flush()
+                        os.fsync(writer.fileno())
+                    changed = True
+                return real_open(path, flags, *args, **kwargs)
+
+            with mock.patch.object(owned.os, "open", side_effect=change_before_capture_open):
+                with self.assertRaises(owned.CaptureError) as failure:
+                    owned.capture_owned_file(
+                        source, capture, include, "MW_MAIN", expected_payload=expected,
+                    )
+            self.assertTrue(changed)
+            self.assertEqual(str(failure.exception), "distribution_admission_payload_changed")
+            self.assertEqual(source.read_bytes(), substituted)
+            self.assertEqual(capture.read_bytes(), substituted)
+            self.assertFalse(include.exists())
+            self.assertFalse(list(root.glob(".mw-nsis-include-*.pending")))
+
+    def test_actual_template_selects_required_main_mode_without_environment_interpolation(self):
+        template = (
+            SCRIPT.parent.parent / "apps/desktop/src-tauri/windows/installer.nsi"
+        ).read_text(encoding="utf-8")
+        marker = "!macro MWINST_CAPTURE Symbol Source"
+        self.assertEqual(template.count(marker), 1)
+        macro = template.split(marker, 1)[1].split("!macroend", 1)[0]
+        main, ordinary = macro.split("!else", 1)
+        self.assertIn('!if "${Symbol}" == "MW_MAIN"', main)
+        main_commands = [
+            line.strip() for line in main.splitlines() if line.strip().startswith("!execute ")
+        ]
+        ordinary_commands = [
+            line.strip() for line in ordinary.splitlines() if line.strip().startswith("!execute ")
+        ]
+        self.assertEqual(len(main_commands), 1)
+        self.assertEqual(len(ordinary_commands), 1)
+        self.assertIn('--prepare-distribution --arch "${ARCH}"', main_commands[0])
+        self.assertIn('--source "${Source}"', main_commands[0])
+        self.assertTrue(main_commands[0].endswith("= 0"))
+        self.assertNotIn("--prepare-distribution", ordinary_commands[0])
+        self.assertIn('!insertmacro MWINST_CAPTURE MW_MAIN "${MAINBINARYSRCPATH}"', template)
+        for command in main_commands + ordinary_commands:
+            self.assertNotIn("MW_NSIS_DISTRIBUTION_ADMISSION", command)
+        self.assertLess(macro.index("!execute "), macro.index("!include "))
+
+
+
+    def test_admitted_main_capture_mutation_cannot_publish_an_include(self):
+        with self.temporary() as directory:
+            fixture = self.fixture(directory, status="permitted")
+            root, source = fixture["root"], fixture["source"]
+            capture, include = root / "admitted.capture.bin", root / "admitted.nsh"
+            context = distribution_source_context(root)
+            source_bytes = source.read_bytes()
+            spec = importlib.util.spec_from_file_location(
+                "nsis_admitted_capture_boundary_test", fixture["script"],
+            )
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            isolated = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(isolated)
+            real_capture, real_link = isolated._capture, isolated.os.link
+            witness, publications = {}, []
+            probe = PublicationIntegrityTests(
+                "test_empty_capture_publishes_the_exact_empty_digest",
+            )
+
+            def capture_admitted_then_change(source_path, capture_path, expected_payload=None):
+                self.assertEqual(expected_payload, fixture["document"]["payload"])
+                result = real_capture(source_path, capture_path, expected_payload)
+                self.assertEqual(result[:2], (
+                    hashlib.sha256(source_bytes).hexdigest(), len(source_bytes),
+                ))
+                witness.update(probe.mutate_retaining_size_and_mtime(capture_path))
+                return result
+
+            def observed_link(*args, **kwargs):
+                publications.append(str(args[1]))
+                return real_link(*args, **kwargs)
+
+            with (
+                mock.patch.dict(os.environ, fixture["environment"], clear=True),
+                mock.patch.object(isolated, "_capture", side_effect=capture_admitted_then_change),
+                mock.patch.object(isolated.os, "link", side_effect=observed_link),
+            ):
+                result = isolated.main([
+                    "--prepare-distribution", "--arch", "x64",
+                    "--source", str(source), "--capture", str(capture),
+                    "--include", str(include), "--symbol", "MW_MAIN",
+                ])
+            self.assertTrue(witness, "admitted bytes must reach the real capture first")
+            self.assertEqual(result, 2, "NSIS_ADMITTED_CAPTURE_MUTATION_PUBLISHED")
+            self.assertEqual(publications, [])
+            self.assertFalse(include.exists())
+            self.assertEqual(source.read_bytes(), source_bytes)
+            self.assertEqual(hashlib.sha256(capture.read_bytes()).hexdigest(), witness["after"])
+            self.assertEqual(distribution_source_context(root), context)
+            self.assertFalse(list(root.glob(".mw-nsis-include-*.pending")))
+            print("NSIS_ADMITTED_CAPTURE_INTEGRITY_WITNESS " + json.dumps(witness, sort_keys=True))
 
 
 if __name__ == "__main__":

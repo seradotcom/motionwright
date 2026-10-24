@@ -15,10 +15,13 @@ export interface ProductionPending {
   input: ProductionInput; value: ProductionValue; nodesBefore: CanvasNode[] | null;
   outcome: "UNKNOWN" | "NOT_SENT"; diagnostic?: string;
 }
+export interface ProductionOrigin { key: string; raw: string }
 export interface ProductionDraft {
   schema: "motionwright.production-draft/1"; scope: string; target: ProductionTarget;
   baseRevision: number; base: ProductionValue; input: ProductionInput;
   sequence: number; intent: boolean; pending: ProductionPending | null;
+  /** Exact retained comparisons, never grants or permission to replay. Older v1 copies may omit this field. */
+  origins?: ProductionOrigin[];
 }
 export const PRODUCTION_RECOVERY_PREFIX = "motionwright.production-recovery.v1:";
 export const PRODUCTION_POINTER_PREFIX = "motionwright.production-writer.v1:";
@@ -26,6 +29,7 @@ export const MAX_PRODUCTION_COPY_BYTES = 1024 * 1024;
 export const MAX_PRODUCTION_RECOVERY_BYTES = 4 * 1024 * 1024;
 export const MAX_PRODUCTION_COPIES = 64;
 export const MAX_PRODUCTION_HISTORY = 2048;
+export const MAX_PRODUCTION_ORIGINS = 16;
 export const productionScope = (project: Project, target: ProductionTarget) => JSON.stringify([
   project.id, project.generation, project.active_branch, target.kind, target.kind === "hero" ? target.sceneId : null,
 ]);
@@ -68,11 +72,51 @@ function checkScope(draft: ProductionDraft, project: Project) {
 }
 export function createProductionDraft(project: Project, target: ProductionTarget): ProductionDraft {
   return { schema: "motionwright.production-draft/1", scope: productionScope(project, target), target: clone(target),
-    baseRevision: project.revision, base: productionValue(project, target), input: inputFromSaved(project, target), sequence: 0, intent: false, pending: null };
+    baseRevision: project.revision, base: productionValue(project, target), input: inputFromSaved(project, target), sequence: 0, intent: false, pending: null, origins: [] };
 }
 export function editProductionDraft(draft: ProductionDraft, input: ProductionInput): ProductionDraft {
   if (input.kind !== draft.target.kind) throw new Error("Production input cannot cross editor targets.");
+  if (!integer(draft.sequence) || draft.sequence === Number.MAX_SAFE_INTEGER)
+    throw new Error("The Production edit sequence cannot advance safely. Download the current input before continuing.");
   return { ...draft, input: clone(input), sequence: draft.sequence + 1, intent: true };
+}
+export interface ProductionPointerObservation { observed: boolean; expectedPointer: string | null }
+export function readProductionRecoveryPointer(storage: Pick<Storage, "getItem">, scope: string,
+  prior: ProductionPointerObservation): ProductionPointerObservation {
+  const identity: unknown = JSON.parse(scope);
+  if (!Array.isArray(identity) || identity.length !== 5 || identity.slice(0, 3).some(value => typeof value !== "string" || !value)
+    || !["hero", "plan"].includes(identity[3]) || (identity[3] === "plan" ? identity[4] !== null : identity[4] !== null && (typeof identity[4] !== "string" || !identity[4])))
+    throw new Error("The Production recovery owner is invalid.");
+  const pointer = storage.getItem(productionPointerKey(scope));
+  if (prior.observed && pointer !== prior.expectedPointer) throw new Error("The earlier Production recovery pointer changed.");
+  return { observed: true, expectedPointer: pointer };
+}
+const productionAttempt = (pending: ProductionPending) => ({ id: pending.id, revision: pending.revision, sequence: pending.sequence,
+  operation: pending.operation, input: pending.input, value: pending.value, nodesBefore: pending.nodesBefore });
+/** Reading again cannot manufacture an edit or replace an edit made while recovery was blocked. */
+export function recoverProductionAfterReadFailure(recovered: ProductionDraft, current: ProductionDraft,
+  editedWhileBlocked: boolean, project: Project): ProductionDraft {
+  checkScope(recovered, project); checkScope(current, project);
+  if (recovered.scope !== current.scope) throw new Error("The recovered Production input belongs to another editor target.");
+  if (current.pending && (!recovered.pending || !sameValue(productionAttempt(current.pending), productionAttempt(recovered.pending))))
+    throw new Error("The current and recovered Production attempts differ.");
+  if (![current.sequence, recovered.sequence].every(integer)) throw new Error("The recovered Production edit sequence is invalid.");
+  const maximum = Math.max(current.sequence, recovered.sequence);
+  if (editedWhileBlocked && maximum === Number.MAX_SAFE_INTEGER) throw new Error("The Production edit sequence cannot advance safely.");
+  const origins = new Map<string, ProductionOrigin>();
+  for (const origin of [...(recovered.origins ?? []), ...(current.origins ?? [])]) {
+    const earlier = origins.get(origin.key);
+    if (earlier && earlier.raw !== origin.raw) throw new Error("A retained Production origin has conflicting bytes.");
+    origins.set(origin.key, clone(origin));
+  }
+  if (origins.size > MAX_PRODUCTION_ORIGINS) throw new Error("The Production recovery origin limit was reached. Download the retained input.");
+  return reconcileProductionDraft({ ...recovered,
+    input: clone(editedWhileBlocked ? current.input : recovered.input),
+    intent: editedWhileBlocked ? true : recovered.intent,
+    sequence: editedWhileBlocked ? maximum + 1 : recovered.sequence,
+    pending: recovered.pending ? { ...clone(recovered.pending), outcome: "UNKNOWN" } : null,
+    origins: [...origins.values()],
+  }, project);
 }
 /** Changes observed through props never consume an original pending request. */
 export function reconcileProductionDraft(draft: ProductionDraft, project: Project): ProductionDraft {
@@ -267,8 +311,8 @@ function valueShape(value: unknown, kind: ProductionTarget["kind"]): boolean {
       && typeof value.approval.reviewer === "string" && typeof value.approval.note === "string"
       && typeof value.approval.content_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.approval.content_sha256)));
 }
-function cleanDraft(value: unknown, scope: string): ProductionDraft {
-  if (!record(value) || !exact(value, ["schema", "scope", "target", "baseRevision", "base", "input", "sequence", "intent", "pending"])
+function cleanDraft(value: unknown, scope: string, originDepth = 0): ProductionDraft {
+  if (!record(value) || !exact(value, ["schema", "scope", "target", "baseRevision", "base", "input", "sequence", "intent", "pending"], ["origins"])
     || value.schema !== "motionwright.production-draft/1" || value.scope !== scope || !record(value.target)
     || !integer(value.baseRevision) || !integer(value.sequence) || typeof value.intent !== "boolean" || !inputShape(value.input))
     throw new Error("This Production recovery has an unsupported shape.");
@@ -296,17 +340,54 @@ function cleanDraft(value: unknown, scope: string): ProductionDraft {
     // A recovered NOT_SENT is never permission to replay or authorize a call.
     pending = { ...clone(sent), outcome: "UNKNOWN" } as unknown as ProductionPending;
   }
+  const originalValues = value.origins === undefined ? [] : value.origins, origins: ProductionOrigin[] = [], keys = new Set<string>();
+  if (!Array.isArray(originalValues) || originalValues.length > MAX_PRODUCTION_ORIGINS
+    || (originalValues.length > 0 && originDepth >= MAX_PRODUCTION_ORIGINS)) throw new Error("The Production recovery origins exceed their bounded limit.");
+  for (const origin of originalValues) {
+    if (!record(origin) || !exact(origin, ["key", "raw"]) || typeof origin.key !== "string" || typeof origin.raw !== "string" || keys.has(origin.key))
+      throw new Error("Unreadable Production recovery origin.");
+    const writerId = origin.key.slice(origin.key.lastIndexOf(":") + 1);
+    if (origin.key !== productionCopyKey(scope, writerId)) throw new Error("A Production recovery origin belongs to another editor.");
+    const original = decodeProductionCopyAtDepth(origin.raw, scope, writerId, originDepth + 1);
+    if (!productionUnconfirmed(original.draft)) throw new Error("A Production recovery origin has no retained unconfirmed attempt.");
+    keys.add(origin.key); origins.push({ key: origin.key, raw: origin.raw });
+  }
   return { schema: "motionwright.production-draft/1", scope, target: clone(target) as ProductionTarget,
     baseRevision: value.baseRevision, base: clone(value.base) as ProductionValue, input: clone(value.input),
-    sequence: value.sequence, intent: value.intent, pending };
+    sequence: value.sequence, intent: value.intent, pending, origins };
 }
 export function decodeProductionCopy(raw: string, scope: string, writerId: string): ProductionCopy {
+  return decodeProductionCopyAtDepth(raw, scope, writerId, 0);
+}
+function decodeProductionCopyAtDepth(raw: string, scope: string, writerId: string, originDepth: number): ProductionCopy {
   if (bytes(raw) > MAX_PRODUCTION_COPY_BYTES) throw new Error("The Production recovery exceeds 1 MiB. Download the complete input before reducing it.");
   const value: unknown = JSON.parse(raw);
   if (!record(value) || !exact(value, ["schema", "scope", "writerId", "updatedAt", "draft"])
     || value.schema !== "motionwright.production-recovery/1" || value.scope !== scope || value.writerId !== writerId || !uuid(writerId) || !integer(value.updatedAt))
     throw new Error("The Production copy is unreadable or belongs to another writer.");
-  return { schema: "motionwright.production-recovery/1", scope, writerId, updatedAt: value.updatedAt, draft: cleanDraft(value.draft, scope) };
+  return { schema: "motionwright.production-recovery/1", scope, writerId, updatedAt: value.updatedAt, draft: cleanDraft(value.draft, scope, originDepth) };
+}
+export function assertProductionOrigins(storage: Pick<Storage, "getItem">, draft: ProductionDraft) {
+  for (const origin of draft.origins ?? []) if (storage.getItem(origin.key) !== origin.raw)
+    throw new Error("An original unconfirmed Production copy changed. Current input remains exportable; another save requires its retained original.");
+}
+export function retainProductionOrigin(draft: ProductionDraft, origin: ProductionOrigin): ProductionDraft {
+  if (!productionUnconfirmed(draft)) return draft;
+  const writerId = origin.key.slice(origin.key.lastIndexOf(":") + 1);
+  if (origin.key !== productionCopyKey(draft.scope, writerId)
+    || !sameValue(decodeProductionCopy(origin.raw, draft.scope, writerId).draft, cleanDraft(draft, draft.scope)))
+    throw new Error("The recovered Production attempt does not match its exact original copy.");
+  const origins = draft.origins ?? [];
+  const previous = origins.find(value => value.key === origin.key);
+  if (previous && previous.raw !== origin.raw) throw new Error("A retained Production origin has conflicting bytes.");
+  // Retain the first bytes of this attempt. Reopening it must not recursively
+  // nest each reload's envelope or exhaust storage without a new author action.
+  if (origins.some(value => {
+    const retained = decodeProductionCopy(value.raw, draft.scope, value.key.slice(value.key.lastIndexOf(":") + 1)).draft.pending;
+    return retained !== null && sameValue(productionAttempt(retained), productionAttempt(draft.pending!));
+  })) return draft;
+  if (origins.length >= MAX_PRODUCTION_ORIGINS) throw new Error("The Production recovery origin limit was reached. Download the retained input.");
+  return { ...draft, origins: [...origins, clone(origin)] };
 }
 export function encodeProductionCopy(copy: ProductionCopy): string {
   const raw = JSON.stringify(copy); decodeProductionCopy(raw, copy.scope, copy.writerId); return raw;
@@ -333,6 +414,7 @@ export function writeProductionCopy(storage: ProductionStorage, session: Pick<St
   draft: ProductionDraft, custody: ProductionCustody): ProductionCustody {
   const key = productionCopyKey(draft.scope, custody.writerId), pointerKey = productionPointerKey(draft.scope);
   const check = () => {
+    assertProductionOrigins(storage, draft);
     const pointer = session.getItem(pointerKey);
     if (pointer !== custody.expectedPointer && pointer !== custody.writerId) throw new Error("Another writer changed this Production recovery pointer. Earlier copies were kept.");
     if (storage.getItem(key) !== custody.expectedRaw) throw new Error("The Production copy changed in another window. Earlier bytes were kept.");
@@ -358,7 +440,8 @@ export function writeProductionCopy(storage: ProductionStorage, session: Pick<St
   session.setItem(pointerKey, custody.writerId);
   if (session.getItem(pointerKey) !== custody.writerId) throw new Error("The Production writer pointer was not confirmed.");
   if (storage.getItem(key) !== raw) throw new Error("The Production copy changed while its writer pointer was published.");
-  custody.expectedPointer = custody.writerId; return custody;
+  custody.expectedPointer = custody.writerId;
+  assertProductionOrigins(storage, draft); return custody;
 }
 export function retainReviewedProductionIntent(storage: ProductionStorage, session: Pick<Storage, "getItem" | "setItem">,
   before: ProductionDraft, next: ProductionDraft, original: ProductionCustody, writerId: string): ProductionCustody {

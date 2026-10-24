@@ -1,16 +1,22 @@
+import NarrativeEditingPanel from "./NarrativeEditingPanel";
 import { Type } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { bootstrap, projectHistory } from "./api";
 import {
   acknowledgeNarrativeDraft, createNarrativeDraft, decodeNarrativeCopy, decodeNarrativeFile, editNarrativeDraft,
   encodeNarrativeFile, importNarrativeFileDraft, inspectNarrativeOutcome, MAX_NARRATIVE_FILE_BYTES,
-  narrativeConflict, narrativeCopyKey, narrativeHasInput, narrativeHasWork,
+  narrativeConflict, narrativeHasInput, narrativeHasWork,
   narrativeLabel, narrativeOutcomeMatches, narrativePointerKey, narrativeScope, narrativeUnconfirmed,
   narrativeValue, NARRATIVE_RECOVERY_PREFIX, prepareNarrativeSubmission, proposedNarrativeValue,
   readNarrativeCopies, reconcileNarrativeDraft, releaseNarrativeOutcome, resolveNarrativeDraft,
   retainNarrativeFailure, retainReviewedNarrativeIntent, writeNarrativeCopy,
 } from "./narrativeDraft";
 import type { NarrativeCustody, NarrativeDraft, NarrativeFile, NarrativeOutcomeReview, NarrativeRecoveryEntry, NarrativeTarget } from "./narrativeDraft";
+import {
+  assertNarrativeRecoverySource, emptyNarrativeRecoveryObservation, originalNarrativeRecoveryEntry,
+  readNarrativeRecoverySource, recoverNarrativeSource, rememberNarrativeRecoveryEntry,
+} from "./narrativeRecovery";
+import type { NarrativeRecoveryObservation } from "./narrativeRecovery";
 import type { Change, Project, Scene } from "./types";
 
 // App supplies the existing original-response coordinator (the same callback
@@ -21,6 +27,9 @@ type Session = {
   custody: NarrativeCustody;
   inFlight: boolean;
   backupError: string | null;
+  recoveryProblem: string | null;
+  recoveryObservation: NarrativeRecoveryObservation;
+  recoveryOriginPending: boolean;
   error: string | null;
   notice: string | null;
   copies: NarrativeRecoveryEntry[];
@@ -42,29 +51,37 @@ function projectBusy(project: Project): boolean {
 }
 function refreshCopies(session: Session) {
   try {
-    const copies = readNarrativeCopies(window.localStorage, session.draft.scope);
+    const copies = readNarrativeCopies(window.localStorage, session.draft.scope, copy => {
+      if (session.recoveryOriginPending) rememberNarrativeRecoveryEntry(session.recoveryObservation, copy);
+    });
     session.copies = copies.entries; session.limited = copies.limited;
   } catch (reason) {
     session.backupError = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    if (session.recoveryOriginPending) {
+      const original = originalNarrativeRecoveryEntry(session.draft.scope, session.recoveryObservation);
+      if (original) session.copies = [original, ...session.copies.filter(copy => copy.key !== original.key)];
+    }
   }
 }
 function getSession(project: Project, target: NarrativeTarget): Session {
   const scope = narrativeScope(project, target), cached = sessions.get(scope);
   if (cached) return cached;
-  let pointer: string | null = null, recovered: NarrativeDraft | null = null, backupError: string | null = null;
+  let recovered: NarrativeDraft | null = null, backupError: string | null = null;
+  const recoveryObservation = emptyNarrativeRecoveryObservation();
   try {
-    pointer = window.sessionStorage.getItem(narrativePointerKey(scope));
-    if (pointer) {
-      const raw = window.localStorage.getItem(narrativeCopyKey(scope, pointer));
-      if (raw === null) throw new Error("This tab's Narrative pointer references a missing recovery copy.");
-      recovered = decodeNarrativeCopy(raw, scope, pointer).draft;
-    }
+    // Observe this tab's real pointer before acquiring local storage. An
+    // observed empty pointer is different from an unreadable recovery source.
+    recovered = readNarrativeRecoverySource(
+      { getItem: key => window.localStorage.getItem(key) },
+      { getItem: key => window.sessionStorage.getItem(key) }, scope, recoveryObservation);
   } catch (reason) { backupError = reason instanceof Error ? reason.message : String(reason); }
   const session: Session = {
     draft: recovered ? reconcileNarrativeDraft(recovered, project) : createNarrativeDraft(project, target),
     // Fork every new page runtime. Cloned tabs must never share an editable key.
-    custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: pointer },
-    inFlight: false, backupError, error: null,
+    custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: recoveryObservation.pointer },
+    inFlight: false, backupError, recoveryProblem: backupError, recoveryObservation,
+    recoveryOriginPending: true, error: null,
     notice: recovered ? "Recovered this tab's Narrative input. Compare it with the saved project before committing." : null,
     copies: [], limited: false,
   };
@@ -76,12 +93,21 @@ function forkWriter(session: Session) {
 }
 function backup(session: Session): boolean {
   try {
+    if (session.recoveryProblem)
+      throw new Error(session.recoveryProblem + " Retry the earlier recovery read before replacing this tab's copy.");
+    if (session.recoveryOriginPending)
+      assertNarrativeRecoverySource(window.localStorage, window.sessionStorage, session.draft.scope,
+        session.recoveryObservation, session.custody);
     const raw = session.custody.expectedRaw;
     if (raw !== null) {
       const previous = decodeNarrativeCopy(raw, session.draft.scope, session.custody.writerId).draft;
       if (!narrativeHasWork(previous) && JSON.stringify(previous) !== JSON.stringify(session.draft)) forkWriter(session);
     }
     writeNarrativeCopy(window.localStorage, window.sessionStorage, session.draft, session.custody);
+    if (session.recoveryOriginPending)
+      assertNarrativeRecoverySource(window.localStorage, window.sessionStorage, session.draft.scope,
+        session.recoveryObservation, session.custody);
+    session.recoveryOriginPending = false;
     session.backupError = null;
     refreshCopies(session);
     return session.backupError === null;
@@ -101,8 +127,11 @@ function replace(session: Session, draft: NarrativeDraft, persist = true) {
 
 export default function NarrativeWorkspace({ project, scene, commit }: Props) {
   const selected = scene && project.scenes.find(candidate => candidate.id === scene.id);
-  if (!selected) return <div className="empty-workspace"><Type size={24} /><strong>Select a scene</strong>
-    <span>Narrative editing is bound to persistent scene identity.</span></div>;
+  if (!selected) return <div className="workspace-scroll narrative-view">
+    <header className="workspace-heading"><div><h2>Narrative</h2><p>Editorial intent is available before selecting or creating a scene.</p></div></header>
+    <NarrativeEditingPanel project={project} commit={commit} />
+    <div className="empty-workspace"><Type size={24} /><strong>Select a scene for its objective</strong></div>
+  </div>;
   const premise: NarrativeTarget = { kind: "premise" };
   const objective: NarrativeTarget = { kind: "objective", sceneId: selected.id };
   return <div className="workspace-scroll narrative-view">
@@ -113,6 +142,7 @@ export default function NarrativeWorkspace({ project, scene, commit }: Props) {
       <NarrativeEditor key={narrativeScope(project, premise)} project={project} target={premise} commit={commit} />
       <NarrativeEditor key={narrativeScope(project, objective)} project={project} target={objective} commit={commit} />
     </div>
+    <NarrativeEditingPanel project={project} commit={commit} />
   </div>;
 }
 
@@ -132,7 +162,7 @@ function NarrativeEditor({ project, target, commit }: Omit<Props, "scene"> & { t
   const saved = narrativeValue(project, target);
   const locked = project.locks.some(lock => lock.kind === "content" && (lock.resource === "project:" + project.id
     || (target.kind === "objective" && lock.resource === "scene:" + target.sceneId)));
-  const blocked = busy || locked || session.backupError !== null || narrativeUnconfirmed(draft) || conflict
+  const blocked = busy || locked || session.backupError !== null || session.recoveryProblem !== null || narrativeUnconfirmed(draft) || conflict
     || proposedNarrativeValue(draft) === saved || (target.kind === "objective" && !draft.raw.trim());
 
   useEffect(() => {
@@ -151,13 +181,16 @@ function NarrativeEditor({ project, target, commit }: Omit<Props, "scene"> & { t
     };
   }, [session]);
   useEffect(() => {
+    // This temporary buffer may contain a later author decision, even when
+    // it equals its old base. Resolve the unread origin before reconciling it.
+    if (session.recoveryProblem) return;
     const next = reconcileNarrativeDraft(session.draft, project);
     if (next !== session.draft) replace(session, next);
   }, [project, session]);
 
   async function save() {
     const current = projectRef.current;
-    if (projectBusy(current) || locked || session.backupError || narrativeUnconfirmed(session.draft)) return;
+    if (projectBusy(current) || locked || session.backupError || session.recoveryProblem || narrativeUnconfirmed(session.draft)) return;
     let change: ReturnType<typeof prepareNarrativeSubmission>["change"];
     const id = crypto.randomUUID();
     try {
@@ -240,6 +273,7 @@ function NarrativeEditor({ project, target, commit }: Omit<Props, "scene"> & { t
   function restore(copy: NarrativeRecoveryEntry) {
     if (busy || narrativeUnconfirmed(session.draft) || !copy.value) return;
     try {
+      if (session.recoveryProblem) throw new Error("Retry the earlier Narrative recovery read before restoring another copy.");
       if (narrativeHasWork(session.draft) && !backup(session)) return;
       const raw = window.localStorage.getItem(copy.key);
       if (raw !== copy.raw) throw new Error("This Narrative copy changed. Read the current recovery list again.");
@@ -253,9 +287,46 @@ function NarrativeEditor({ project, target, commit }: Omit<Props, "scene"> & { t
   function discardCopy(copy: NarrativeRecoveryEntry) {
     if (busy || copy.writerId === session.custody.writerId) return;
     try {
+      if (session.recoveryOriginPending && session.recoveryObservation.pointer === copy.writerId)
+        throw new Error("The earlier Narrative copy may contain an unconfirmed operation. Read and retain it before discarding it.");
       if (window.sessionStorage.getItem(narrativePointerKey(session.draft.scope)) === copy.writerId && !backup(session)) return;
       if (window.localStorage.getItem(copy.key) !== copy.raw) throw new Error("The local Narrative copy changed; review it before discarding.");
-      window.localStorage.removeItem(copy.key); refreshCopies(session); notify(session);
+      window.localStorage.removeItem(copy.key);
+      if (window.localStorage.getItem(copy.key) !== null) throw new Error("The Narrative copy removal was not confirmed. Nothing else was removed.");
+      refreshCopies(session); notify(session);
+    } catch (reason) { session.error = reason instanceof Error ? reason.message : String(reason); notify(session); }
+  }
+  function retryBackup() {
+    if (busy) return;
+    try {
+      if (session.recoveryProblem) {
+        const recovered = readNarrativeRecoverySource(window.localStorage, window.sessionStorage,
+          session.draft.scope, session.recoveryObservation);
+        const next = recoverNarrativeSource(recovered, session.draft, projectRef.current);
+        assertNarrativeRecoverySource(window.localStorage, window.sessionStorage,
+          session.draft.scope, session.recoveryObservation);
+        session.draft = next;
+        session.custody.expectedPointer = session.recoveryObservation.pointer;
+        session.recoveryProblem = null;
+        session.error = null; setReview(null);
+        session.notice = "Read the earlier Narrative copy and kept your later text. No operation was acknowledged or repeated.";
+      }
+      backup(session); notify(session);
+    } catch (reason) {
+      session.backupError = reason instanceof Error ? reason.message : String(reason);
+      refreshCopies(session); notify(session);
+    }
+  }
+  function downloadCopy(copy: NarrativeRecoveryEntry) {
+    try {
+      const raw = JSON.stringify({ schema: "motionwright.local-input-copy/1", storage_key: copy.key, raw: copy.raw }, null, 2);
+      const url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
+      const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = "motionwright-narrative-original-" + Date.now() + ".json";
+      document.body.appendChild(anchor); anchor.click(); anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      session.notice = "Started downloading the exact earlier Narrative bytes. This does not confirm a saved Project or acknowledge its operation.";
+      notify(session);
     } catch (reason) { session.error = reason instanceof Error ? reason.message : String(reason); notify(session); }
   }
   function downloadCurrent() {
@@ -297,6 +368,7 @@ function NarrativeEditor({ project, target, commit }: Omit<Props, "scene"> & { t
     const candidate = session.fileCandidate;
     if (!candidate || projectBusy(projectRef.current) || narrativeUnconfirmed(session.draft)) return;
     try {
+      if (session.recoveryProblem) throw new Error("Retry the earlier Narrative recovery read before using an imported copy.");
       // Validate again before touching local custody. An import never clears an
       // unconfirmed operation and never uses a downloaded file as write authority.
       const imported = importNarrativeFileDraft(candidate.file, projectRef.current);
@@ -348,7 +420,7 @@ function NarrativeEditor({ project, target, commit }: Omit<Props, "scene"> & { t
     {locked && <p role="status">Content is locked. You can keep drafting; saving requires the existing lock to be released.</p>}
     {session.backupError && <section className="production-notice" role="alert" aria-label={label + " backup warning"}>
       <strong>Local recovery needs attention.</strong><p>{session.backupError}</p>
-      <button type="button" className="button compact" onClick={() => { backup(session); notify(session); }}>Retry {short} backup</button></section>}
+      <button type="button" className="button compact" disabled={busy} onClick={retryBackup}>Retry {short} backup</button></section>}
     {draft.pending?.outcome === "NOT_SENT" && <p role="status">This {short} preparation was not sent. Confirm its backup before a separate explicit save.</p>}
     {narrativeUnconfirmed(draft) && draft.pending && <section className="production-notice" role="region" aria-label={"Unconfirmed " + short + " submission"}>
       <strong>Unconfirmed {short} change from r{draft.pending.revision}</strong>
@@ -385,6 +457,8 @@ function NarrativeEditor({ project, target, commit }: Omit<Props, "scene"> & { t
         {copy.value && <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{copy.value.draft.raw.slice(0, 240)}</pre>}
         {copy.value && <button type="button" className="button compact" disabled={busy || narrativeUnconfirmed(draft)}
           aria-label={"Restore " + label + " copy " + (index + 1)} onClick={() => restore(copy)}>Restore copy</button>}
+        <button type="button" className="button compact" aria-label={"Download " + label + " copy " + (index + 1)}
+          onClick={() => downloadCopy(copy)}>Download original copy</button>
         <button type="button" className="button compact" disabled={busy} aria-label={"Discard " + label + " copy " + (index + 1)}
           onClick={() => discardCopy(copy)}>Discard this copy</button>
       </div>)}

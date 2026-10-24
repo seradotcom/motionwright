@@ -3,13 +3,18 @@ use super::{
     ApplyOutcome, Change, Result, RevisionStamp, StorageError, Store, TransactionBehavior,
     validate_digest,
 };
-use motionwright_domain::DomainError;
+use motionwright_domain::{DomainError, NativeCapsuleSourceSpec};
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+use std::fs::OpenOptions;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FileImportIntent {
+    NativeCapsuleSource {
+        spec: NativeCapsuleSourceSpec,
+    },
     Asset {
         name: String,
         media_type: String,
@@ -36,9 +41,10 @@ fn verify_import_binding(
     outcome: &ApplyOutcome,
     intent: &FileImportIntent,
 ) -> Result<String> {
-    let (asset, track) = match change {
-        Change::AddAsset { asset } => (asset, None),
-        Change::ImportMeasuredVoice { asset, track } => (asset, Some(track)),
+    let (asset, track, capsule) = match change {
+        Change::AddAsset { asset } => (asset, None, None),
+        Change::ImportMeasuredVoice { asset, track } => (asset, Some(track), None),
+        Change::ImportNativeCapsuleSource { asset, capsule } => (asset, None, Some(capsule)),
         _ => return Err(StorageError::RequestReuse),
     };
     let mut assets = outcome
@@ -64,7 +70,26 @@ fn verify_import_binding(
             ));
         }
     }
-    let purpose = if track.is_some() {
+    if let Some(capsule) = capsule {
+        let mut capsules = outcome
+            .project
+            .production_design
+            .capsules
+            .iter()
+            .filter(|recorded| recorded.id == capsule.id);
+        if capsules.next() != Some(capsule)
+            || capsules.next().is_some()
+            || capsule.source_asset_id != asset.id
+            || asset.content_sha256.as_deref() != Some(capsule.source_sha256.as_str())
+        {
+            return Err(invalid_receipt(
+                "event native capsule does not match its source asset and recorded outcome",
+            ));
+        }
+    }
+    let purpose = if capsule.is_some() {
+        "native-capsule-source-import"
+    } else if track.is_some() {
         "measured-audio-import"
     } else {
         "local-import"
@@ -84,8 +109,12 @@ fn verify_import_binding(
             "voice track and asset source digests differ",
         ));
     }
-    let matches_intent = match (intent, track) {
-        (FileImportIntent::Asset { name, media_type }, None) => {
+    let matches_intent = match (intent, track, capsule) {
+        (FileImportIntent::NativeCapsuleSource { spec }, None, Some(capsule)) => spec
+            .bind_asset(asset)
+            .as_ref()
+            .is_ok_and(|bound| bound == capsule),
+        (FileImportIntent::Asset { name, media_type }, None, None) => {
             asset.name == *name && asset.media_type == *media_type
         }
         (
@@ -95,6 +124,7 @@ fn verify_import_binding(
                 label,
             },
             Some(track),
+            None,
         ) => asset.name == *name && asset.media_type == *media_type && track.label == *label,
         _ => false,
     };
@@ -169,7 +199,7 @@ use super::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
 };
@@ -333,6 +363,7 @@ pub struct StagedFileImport {
     path: PathBuf,
     descriptor: BlobDescriptor,
     blob_root: PathBuf,
+    pub(super) retention: Option<super::cas_retention::CaptureLease>,
 }
 impl StagedFileImport {
     pub fn path(&self) -> &Path {
@@ -341,10 +372,17 @@ impl StagedFileImport {
     pub fn descriptor(&self) -> &BlobDescriptor {
         &self.descriptor
     }
+    pub(super) fn captured_root(&self) -> &Path {
+        &self.blob_root
+    }
 }
 impl Drop for StagedFileImport {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if let Some(retention) = self.retention.take() {
+            let _ = retention.discard();
+        } else {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 impl Store {
@@ -361,20 +399,43 @@ impl Store {
         source: &Path,
         max_bytes: u64,
     ) -> Result<StagedFileImport> {
+        self.stage_file_import_with_purpose(
+            source,
+            max_bytes,
+            super::cas_retention::CapturePurpose::Legacy,
+        )
+    }
+
+    pub(super) fn stage_bundle_file_import_with_limit(
+        &self,
+        source: &Path,
+        max_bytes: u64,
+    ) -> Result<StagedFileImport> {
+        self.stage_file_import_with_purpose(
+            source,
+            max_bytes,
+            super::cas_retention::CapturePurpose::BundleImport,
+        )
+    }
+
+    pub(super) fn stage_derived_file_import(&self, source: &Path) -> Result<StagedFileImport> {
+        self.stage_file_import_with_purpose(
+            source,
+            u64::MAX,
+            super::cas_retention::CapturePurpose::DerivedCache,
+        )
+    }
+
+    fn stage_file_import_with_purpose(
+        &self,
+        source: &Path,
+        max_bytes: u64,
+        purpose: super::cas_retention::CapturePurpose,
+    ) -> Result<StagedFileImport> {
         ensure_regular_directory(&self.blob_root, "blob root")?;
         let input = open_regular_import_source(source, max_bytes)?;
-        let staging_root = self.blob_root.join(".staging");
-        create_checked_blob_directory(&staging_root)?;
-        let path = staging_root.join(format!("{}.part", Uuid::now_v7().simple()));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        // A create_new collision must never clean up another call's file.
-        let output = options.open(&path)?;
+        let (path, output, retention) =
+            super::cas_retention::begin_capture(&self.blob_root, self.cas_store_id, purpose)?;
         let mut staged = StagedFileImport {
             path,
             descriptor: BlobDescriptor {
@@ -382,6 +443,7 @@ impl Store {
                 size_bytes: 0,
             },
             blob_root: self.blob_root.clone(),
+            retention,
         };
         {
             // Handles close before the outer guard cleans up on any error.
@@ -428,6 +490,9 @@ impl Store {
                 size_bytes,
             };
         }
+        if let Some(retention) = staged.retention.as_mut() {
+            retention.completed(&staged.descriptor)?;
+        }
         Ok(staged)
     }
 
@@ -441,6 +506,13 @@ impl Store {
 /// Callers may hold an SQLite IMMEDIATE transaction that serializes project ID
 /// claims while this filesystem-only step runs.
 pub(super) fn publish_file_import_under_root(
+    blob_root: &Path,
+    staged: &StagedFileImport,
+) -> Result<BlobDescriptor> {
+    super::cas_retention::publish_legacy(blob_root, staged)
+}
+
+pub(super) fn publish_file_import_unmanaged(
     blob_root: &Path,
     staged: &StagedFileImport,
 ) -> Result<BlobDescriptor> {

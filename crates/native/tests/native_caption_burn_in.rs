@@ -312,3 +312,28 @@ fn rejects_oversized_two_line_and_nonprintable_caption_content() {
     p.audio.transcript[0].text = "Bad\tcontrol".into();
     assert!(output(&p).is_err());
 }
+
+#[test]
+fn bundled_primary_font_rechecks_weight_after_real_caption_projection() {
+    let project = fixture();
+    let original = serde_json::to_vec(&project).unwrap();
+    let mut options = opts(&project);
+    options.font_family = MOTION_CANVAS_MONO_FONT_FAMILY.into();
+    let mut no_burn_in = project.clone();
+    no_burn_in.deliverables[0].burn_in_captions = false;
+    let baseline =
+        build_motion_canvas_segments(&no_burn_in, no_burn_in.deliverables[0].id, &options).unwrap();
+    assert!(
+        baseline
+            .iter()
+            .all(|segment| segment.film.cues.cues.is_empty())
+    );
+    let error =
+        build_motion_canvas_segments(&project, project.deliverables[0].id, &options).unwrap_err();
+    assert_eq!(error.code, semwright_native_sdk::ErrorCode::Unsupported);
+    assert!(
+        error.message.contains("Authored bundled font weight"),
+        "The real late caption weight must fail source preflight: {error:?}"
+    );
+    assert_eq!(serde_json::to_vec(&project).unwrap(), original);
+}

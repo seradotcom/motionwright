@@ -1,18 +1,24 @@
 """Offline cryptographic and closed-publication contracts; no renderer is launched."""
 import base64
+from contextlib import ExitStack
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import sys
+import subprocess
 import tarfile
 import tempfile
+import types
 import unittest
 from unittest import mock
 import warnings
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import native_evidence_projection as selection_core
+import native_mlt_evidence_selection as selection
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -390,59 +396,147 @@ class G2CustodyTests(unittest.TestCase):
 
 
     def test_film_source_report_is_sealed_exactly_and_absence_is_recorded(self):
-        original = b'{"fixture":"original Film source report"}\r\n'
+        # Linux uses the production openat reader and real committed Git blobs.
+        # The portable adapter keeps this crypto/selection unit contract usable
+        # on authoring hosts; Linux filesystem security has its own full suite.
+        class PortableFixtureHandles:
+            def __init__(self, roots):
+                self.roots = {name: Path(value) for name, value in roots.items()}
+                self.initial = {name: selection_core.identity(path.stat())
+                                for name, path in self.roots.items()}
+            def close(self): pass
+            def stable_roots(self):
+                return all(selection_core.identity(path.stat()) == self.initial[name]
+                           for name, path in self.roots.items())
+            def stat_member(self, root, parts):
+                path = self.roots[root].joinpath(*parts)
+                info = path.lstat()
+                selection_core.require(custody.stat.S_ISREG(info.st_mode) and info.st_nlink == 1,
+                                       "member-regular-single-link")
+                return selection_core.identity(info)
+            def read(self, root, parts, maximum):
+                path = self.roots[root].joinpath(*parts)
+                raw, _ = custody.regular(path, maximum)
+                return raw, self.stat_member(root, parts)
+        handles = (selection_core.RootHandles if os.name == "posix" and hasattr(os, "O_NOFOLLOW")
+                   else PortableFixtureHandles)
         for present in (True, False):
             with self.subTest(present=present), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve()
-                control = root / "control"
-                control.mkdir()
+                repo = root / "source"; repo.mkdir(mode=0o700)
+                control = root / "control"; control.mkdir(mode=0o700)
                 for name in ("records", "intake", "handoff", "logs", "public"):
-                    (control / name).mkdir()
+                    (control / name).mkdir(mode=0o700)
+                for name in selection.FILM_SOURCE_PATHS:
+                    path = repo / name; path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(("Synthetic source identity fixture: " + name + "\n").encode())
+                runner_source = Path(__file__).resolve().parents[1] / "ci_test_runner.py"
+                (repo / "tooling/ci_test_runner.py").write_bytes(runner_source.read_bytes())
+                test_dir = repo / "tooling/tests"; test_dir.mkdir()
+                for name, passed in (("test_native_mlt_owner_workspace.py", True),
+                                     ("test_native_film180_original_g2.py", False)):
+                    # Explicit miniature fixtures exercise report serialization;
+                    # they are never evidence for the real source-gate roster.
+                    (test_dir / name).write_text("import unittest\n"
+                        "class SourceGateFixture(unittest.TestCase):\n"
+                        "    def test_original_source_gate(self):\n"
+                        "        self.assertTrue(" + repr(passed) + ")\n", encoding="utf-8")
+                git_env = {k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
+                git_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                               GIT_CONFIG_SYSTEM=os.devnull)
+                def git(*args):
+                    return subprocess.check_output(["git", *args], cwd=repo, env=git_env,
+                                                   stderr=subprocess.PIPE)
+                git("init", "--quiet")
+                git("add", ".")
+                git("-c", "user.name=Motionwright Test", "-c", "user.email=fixture@example.invalid",
+                    "-c", "core.hooksPath=" + os.devnull, "commit", "--no-gpg-sign", "--quiet",
+                    "-m", "Synthetic source identity fixture")
+                current = {**CURRENT, "source_sha": git("rev-parse", "HEAD").decode().strip()}
+                files = {name: custody.sha((repo / name).read_bytes()) for name in selection.FILM_SOURCE_PATHS}
+                source = dict(context=current, tree=git("rev-parse", "HEAD^{tree}").decode().strip(), files=files)
                 request = self.dispatch()
-                request["schema"] = custody.FILM_DISPATCH_SCHEMA
+                request.update(schema=custody.FILM_DISPATCH_SCHEMA, motionwright_sha=current["source_sha"])
                 request["compiler"]["source_mode"] = custody.SOURCE_MODE
                 request["compiler"]["members"] = {
                     key: key for key in ("compiled_module", "compiler_receipt_path")}
                 custody.new_json(control / "records/dispatch.json", request)
-                source = {"fixture": "unchanged source"}
                 custody.new_json(control / "records/source-before.json", source)
-                common = root / "mw-mlt-g2-contracts-123-1"
-                common.mkdir()
-                (common / "contracts.json").write_bytes(b'{"fixture":"common source"}\n')
+                common = root / "mw-mlt-g2-contracts-123-1"; common.mkdir(mode=0o700)
                 film = root / "mw-film180-contracts-123-1"
-                if present:
-                    film.mkdir()
-                    (film / "contracts.json").write_bytes(original)
                 env = {
                     "GITHUB_ACTIONS": "true", "CI": "true", "RUNNER_OS": "Linux",
                     "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1",
-                    "GITHUB_SHA": CURRENT["source_sha"], "GITHUB_RUN_ID": CURRENT["run_id"],
-                    "GITHUB_WORKSPACE": str(root), "MW_MLT_SCOPE": custody.FILM_SCOPE,
+                    "GITHUB_SHA": current["source_sha"], "GITHUB_RUN_ID": current["run_id"],
+                    "GITHUB_WORKSPACE": str(repo), "MW_MLT_SCOPE": custody.FILM_SCOPE,
                 }
-                with mock.patch.object(custody.sys, "platform", "linux"), \
-                     mock.patch.object(custody.os, "geteuid", return_value=1001, create=True), \
-                     mock.patch.object(custody, "names", return_value=(
-                         control, root / "installation", root / "absent-native-session")), \
-                     mock.patch.object(custody, "runner_root", return_value=root), \
-                     mock.patch.object(custody, "source_guard", return_value=source):
+                def run_contracts(directory, pattern, code):
+                    process = subprocess.run([sys.executable, "-B", "-E", "-s",
+                        str(repo / "tooling/ci_test_runner.py"), "--repo", str(repo),
+                        "--mode", "dotted", "--require-complete", "--expected-source", current["source_sha"],
+                        "--report", str(directory / "contracts.json"), "--pattern", pattern],
+                        cwd=repo, env={**git_env, **env}, capture_output=True, timeout=30)
+                    self.assertEqual(process.returncode, code, process.stderr.decode("utf-8", "replace"))
+                    return (directory / "contracts.json").read_bytes()
+                common_original = run_contracts(common, "test_native_mlt_owner_workspace.py", 0)
+                self.assertEqual(json.loads(common_original)["status"], "PASS")
+                secret = b"UNLISTED-CONTRACT-NEIGHBOR-NOT-READ"
+                (common / "unlisted.json").write_bytes(secret)
+                original = None
+                if present:
+                    film.mkdir(mode=0o700)
+                    original = run_contracts(film, "test_native_film180_original_g2.py", 1)
+                    self.assertEqual(json.loads(original)["status"], "FAIL")
+                    (film / "unlisted.json").write_bytes(secret)
+                # Limit the simulated non-root runner identity to custody's
+                # platform guard; real reader ownership uses the actual uid.
+                custody_os = types.SimpleNamespace(**vars(os)); custody_os.geteuid = lambda:1001
+                reads = []; real_read = handles.read; real_iterdir = Path.iterdir
+                def record_read(handle, label, parts, maximum):
+                    reads.append((label, "/".join(parts)))
+                    return real_read(handle, label, parts, maximum)
+                def publication_only_iterdir(path):
+                    self.assertEqual(path, control / "public")
+                    return real_iterdir(path)
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(custody.sys, "platform", "linux"))
+                    stack.enter_context(mock.patch.object(custody, "os", custody_os))
+                    stack.enter_context(mock.patch.object(custody, "names", return_value=(
+                        control, root / "installation", root / "absent-native-session")))
+                    stack.enter_context(mock.patch.object(custody, "runner_root", return_value=root))
+                    stack.enter_context(mock.patch.object(custody, "source_guard", return_value=source))
+                    stack.enter_context(mock.patch.object(selection_core, "RootHandles", handles))
+                    stack.enter_context(mock.patch.object(handles, "read", new=record_read))
+                    stack.enter_context(mock.patch.object(Path, "iterdir", new=publication_only_iterdir))
+                    stack.enter_context(mock.patch.object(custody, "gather_snapshot", side_effect=AssertionError("recursive snapshot refused")))
                     result = custody.seal(env, "failure")
                 ciphertext = (control / "public/sealed-originals.bin").read_bytes()
                 raw, context = custody.decrypt_snapshot(ciphertext, self.private)
-                self.assertEqual(context, CURRENT)
+                self.assertEqual(context, current)
+                self.assertNotIn(secret, raw)
+                self.assertTrue(all(path == "contracts.json" for label, path in reads
+                                    if label in ("contracts", "film-contracts")))
                 with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
-                    manifest = json.load(archive.extractfile("snapshot-manifest.json"))
-                    record = manifest["roots"]["film-contracts"]
+                    manifest = json.load(archive.extractfile("selected-evidence-manifest.json"))
+                    row = next(r for r in manifest["members"] if r["role"] == "film-source-contracts")
                     if present:
-                        self.assertEqual(record["status"], "CAPTURED")
-                        self.assertEqual(archive.extractfile("film-contracts/contracts.json").read(), original)
+                        self.assertEqual(row["state"], "INCLUDED")
+                        self.assertEqual(row["kind"], "json-original")
+                        self.assertTrue(row["original_bytes"])
+                        self.assertEqual(archive.extractfile(row["member"]).read(), original)
+                        self.assertEqual(row["retained_sha256"], custody.sha(original))
                     else:
-                        self.assertEqual(record["status"], "ABSENT")
-                        self.assertNotIn("film-contracts/contracts.json", archive.getnames())
-                        self.assertFalse(manifest["selected_originals_complete"])
-                        self.assertFalse(result["selected_originals_complete"])
+                        self.assertEqual(row["state"], "REQUIRED_MISSING")
+                        self.assertNotIn("member", row)
+                        self.assertFalse(manifest["required_layers_complete"])
+                        self.assertFalse(result["selected_layers_complete"])
+                self.assertEqual(result["schema"], "motionwright.native.film180-g2-public/2")
                 self.assertEqual(result["native_terminal"], "NOT_STARTED")
+                self.assertFalse(result["selected_intake_verified"])
                 self.assertFalse(result["source_content_and_live_module_verified"])
                 self.assertFalse(result["physical_AV_master_acceptance"])
+                self.assertFalse(result["human_acceptance"])
+                self.assertFalse(result["release_authorized"])
                 self.assertEqual({p.name for p in (control / "public").iterdir()},
                                  {"sealed-originals.bin", "public-evidence.json"})
 

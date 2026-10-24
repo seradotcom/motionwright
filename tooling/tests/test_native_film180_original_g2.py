@@ -1127,15 +1127,37 @@ class FilmStageOrderingTests(unittest.TestCase):
 
     def test_exact_live_descriptor_and_native_ack_allow_one_original_decode(self):
         callback = self.completed_master_callback()
+        events = []
+        def packet_probe(*args, **kwargs): events.append("packets")
+        def readback(*args, **kwargs):
+            events.append("decode")
+            return {"test_double":True}
+        def clock_capture(*args, **kwargs):
+            events.append("clock")
+            return {"state":"CAPTURED"}
         with mock.patch("native_film180_media_readback.verified_source_readback",
-                        return_value={"test_double":True}) as decode, \
+                        side_effect=readback) as decode, \
              mock.patch.object(runner,"actual_all180_original_RGB_digests",
                                return_value={"source_frame_count":180}), \
              mock.patch.object(runner,"native_png_vs_h264_observations",
-                               return_value={"test_double":True}):
+                               return_value={"test_double":True}), \
+             mock.patch.object(runner,"retain_original_audio_packets", side_effect=packet_probe) as packets, \
+             mock.patch("native_aac_clock_custody.retain_clock_diagnostic", side_effect=clock_capture) as clock, \
+             mock.patch.object(runner.shutil,"which",return_value=sys.executable), \
+             mock.patch.object(runner.subprocess,"run",side_effect=AssertionError("unplanned fixture subprocess")):
             result = self.run_stage(callback)
+        self.assertEqual(events,["packets","decode","clock"])
+        packets.assert_called_once_with(self.attempt,"original",self.original_master,self.original_digest)
+        clock.assert_called_once()
+        self.assertEqual(clock.call_args.kwargs["master"],self.original_master)
+        self.assertEqual(clock.call_args.kwargs["master_sha256"],self.original_digest)
+        self.assertEqual(clock.call_args.kwargs["phase"],"original")
+        self.assertEqual(clock.call_args.kwargs["scenario"],"film180-g2")
+        self.assertEqual(clock.call_args.kwargs["packets"],self.evidence / "original-original-master-packets.json")
+        self.assertEqual(clock.call_args.kwargs["decoded_pcm"],self.evidence / "original-original-master-decoded.s16le")
         decode.assert_called_once()
         self.assertEqual(decode.call_args.args[9],self.original_digest)
+        self.assertTrue(callable(decode.call_args.kwargs["pcm_capture"]))
         self.witness.require_one.assert_called_once_with(self.original_master)
         self.witness.close.assert_called_once()
         proof = json.loads((self.evidence / "original-original-live-MLT-loaded-module.json").read_bytes())
@@ -1144,6 +1166,46 @@ class FilmStageOrderingTests(unittest.TestCase):
         self.assertEqual(result["master_sha"],self.original_digest)
         self.assertEqual(sum(call.args[0]=="original.master" for call in self.calls),1)
         self.assertEqual(self.attempt.native_commands["original.master"],"SUCCESS_REPORTED")
+
+    def assert_readback_error_precedes_clock_error(self, failing_stage):
+        callback = self.completed_master_callback()
+        primary = runner.Film180G2Rejected("synthetic original " + failing_stage + " failure")
+        secondary = OSError("synthetic secondary clock custody failure")
+        events = []
+        def packet_probe(*args, **kwargs):
+            events.append("packets")
+            if failing_stage == "packets": raise primary
+        def readback(*args, **kwargs):
+            events.append("decode")
+            raise primary
+        def clock_capture(*args, **kwargs):
+            events.append("clock")
+            raise secondary
+        with mock.patch("native_film180_media_readback.verified_source_readback", side_effect=readback) as decode, \
+             mock.patch.object(runner,"retain_original_audio_packets", side_effect=packet_probe) as packets, \
+             mock.patch("native_aac_clock_custody.retain_clock_diagnostic", side_effect=clock_capture) as clock, \
+             mock.patch.object(runner.shutil,"which",return_value=sys.executable), \
+             mock.patch.object(runner.subprocess,"run",side_effect=AssertionError("unplanned fixture subprocess")), \
+             self.assertRaises(runner.Film180G2Rejected) as caught:
+            self.run_stage(callback)
+        self.assertIs(caught.exception,primary)
+        self.assertEqual(events,["packets","clock"] if failing_stage == "packets"
+                         else ["packets","decode","clock"])
+        packets.assert_called_once_with(self.attempt,"original",self.original_master,self.original_digest)
+        clock.assert_called_once()
+        if failing_stage == "packets": decode.assert_not_called()
+        else: decode.assert_called_once()
+        self.assertIn("original.clock-custody-failed",self.attempt.secondary_failures)
+        self.witness.require_one.assert_called_once_with(self.original_master)
+        self.witness.close.assert_called_once()
+        self.assertEqual(sum(call.args[0]=="original.master" for call in self.calls),1)
+        self.assertEqual(self.attempt.native_commands["original.master"],"SUCCESS_REPORTED")
+
+    def test_original_packet_failure_remains_primary_when_clock_custody_fails(self):
+        self.assert_readback_error_precedes_clock_error("packets")
+
+    def test_original_decode_failure_still_observes_clock_once_without_replay(self):
+        self.assert_readback_error_precedes_clock_error("decode")
 
 class FilmLiveObserverLifecycleTests(unittest.TestCase):
     def setUp(self):
@@ -1329,6 +1391,188 @@ class FilmLiveObserverLifecycleTests(unittest.TestCase):
         self.witness.close.assert_not_called()
         self.assertIn("original process identity unavailable", json.dumps(self.error_document()))
 
+
+class PacketProbeCustodyTests(unittest.TestCase):
+    """Synthetic one-invocation custody checks; no media or ffprobe is executed."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.master = self.root / "synthetic-master.mp4"
+        self.master.write_bytes(b"SYNTHETIC NON-MEDIA FIXTURE")
+        self.master_sha = hashlib.sha256(self.master.read_bytes()).hexdigest()
+        self.evidence = self.root / "private"
+        self.evidence.mkdir()
+        self.attempt = runner.FilmAttempt({}, self.evidence)
+        self.label = "original.original-packet-probe"
+
+    def invoke(self):
+        return runner.retain_original_audio_packets(
+            self.attempt, "original", self.master, self.master_sha, "fixture-ffprobe"
+        )
+
+    def expected_argv(self):
+        return ["fixture-ffprobe", "-v", "error", "-select_streams", "a:0",
+                "-show_streams", "-show_packets", "-of", "json", str(self.master)]
+
+    def path(self, suffix):
+        return self.evidence / (self.label + suffix)
+
+    def terminal(self):
+        return json.loads(self.path(".terminal.json").read_bytes())
+
+    def assert_no_qualified_packet(self):
+        self.assertFalse((self.evidence / "original-original-packet-capture.json").exists())
+
+    @staticmethod
+    def returned(stdout, stderr=b"", code=2):
+        def invoke(argv, **kwargs):
+            kwargs["stdout"].write(stdout)
+            return subprocess.CompletedProcess(argv, code, stderr=stderr)
+        return invoke
+
+    def test_packet_nonzero_keeps_original_fixture_terminal_without_parse_or_reprobe(self):
+        # Original 39/33-byte fixtures from the retained packet-failure-custody proof.
+        stdout = b"synthetic original partial packet bytes"
+        stderr = b"synthetic original ffprobe stderr"
+        with mock.patch.object(runner.subprocess, "run", side_effect=self.returned(stdout, stderr)) as run:
+            with mock.patch("native_evidence_projection.strict") as strict:
+                with self.assertRaisesRegex(runner.Film180G2Rejected, "bounded_probe") as caught:
+                    self.invoke()
+                self.attempt.retain_error(caught.exception)
+                strict.assert_not_called()
+            with self.assertRaisesRegex(runner.Film180G2Rejected, "replay_refused"):
+                self.invoke()
+            self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.path(".stdout").read_bytes(), stdout)
+        self.assertEqual(self.path(".stderr").read_bytes(), stderr)
+        terminal = self.terminal()
+        self.assertEqual(terminal["exit_code"], 2)
+        self.assertEqual(terminal["argv"], self.expected_argv())
+        self.assertEqual(terminal["stdout_observed_bytes"], 39)
+        self.assertEqual(terminal["stderr_observed_bytes"], 33)
+        self.assertEqual(terminal["stdout_sha256"],
+                         "34b1437c0d4eec3763f5991c79132626bc38066aefe73e842570e9fed1de2127")
+        self.assertEqual(terminal["stderr_sha256"],
+                         "44f6ff1e7bb8d2ef6bf627c34c5544b54174e06ca6043d69971d304ba93e5ea7")
+        self.assertIs(terminal["deadline_exceeded"], False)
+        self.assertIs(terminal["stdout_original_included"], True)
+        self.assertIs(terminal["stderr_original_included"], True)
+        self.assertIs(terminal["terminal_captured_before_json_parse"], True)
+        self.assertIs(terminal["automatic_retry"], False)
+        self.assertEqual(self.master.read_bytes(), b"SYNTHETIC NON-MEDIA FIXTURE")
+        self.assertEqual(self.attempt.native_commands, {})
+        self.assert_no_qualified_packet()
+
+    def test_packet_timeout_keeps_original_fixture_stdout_and_same_exception(self):
+        # Same original binary fixtures as the retained timeout reproduction.
+        stdout = b"synthetic original partial packet bytes"
+        stderr = b"synthetic original ffprobe stderr"
+        failure = subprocess.TimeoutExpired(self.expected_argv(), 60, output=None, stderr=stderr)
+        def invoke(argv, **kwargs):
+            kwargs["stdout"].write(stdout)
+            raise failure
+        with mock.patch.object(runner.subprocess, "run", side_effect=invoke) as run:
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                self.invoke()
+            self.assertIs(caught.exception, failure)
+            self.attempt.retain_error(caught.exception)
+            self.assertIsNone(failure.stdout)
+            self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.path(".stdout").read_bytes(), stdout)
+        self.assertEqual(self.path(".stderr").read_bytes(), stderr)
+        terminal = self.terminal()
+        self.assertIsNone(terminal["exit_code"])
+        self.assertEqual(terminal["argv"], self.expected_argv())
+        self.assertIs(terminal["deadline_exceeded"], True)
+        self.assertEqual(terminal["error_class"], "TimeoutExpired")
+        self.assertEqual(self.master.read_bytes(), b"SYNTHETIC NON-MEDIA FIXTURE")
+        self.assertEqual(self.attempt.native_commands, {})
+        self.assert_no_qualified_packet()
+
+    def test_packet_timeout_is_primary_when_stream_retention_also_fails(self):
+        failure = subprocess.TimeoutExpired(self.expected_argv(), 60, stderr=b"timeout")
+        def invoke(argv, **kwargs):
+            kwargs["stdout"].write(b"timed-out original")
+            raise failure
+        with mock.patch.object(runner.subprocess, "run", side_effect=invoke) as run:
+            with mock.patch.object(runner, "new_bytes", side_effect=OSError("synthetic retention failure")):
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                    self.invoke()
+            self.assertIs(caught.exception, failure)
+            self.assertEqual(run.call_count, 1)
+        terminal = self.terminal()
+        self.assertIs(terminal["stdout_original_included"], False)
+        self.assertIs(terminal["stderr_original_included"], False)
+        self.assertEqual(terminal["custody_failures"], ["stdout-retain", "stderr-retain"])
+        self.assertEqual(self.attempt.secondary_failures, [self.label + ".capture"])
+        self.assert_no_qualified_packet()
+
+    def test_packet_nonzero_is_primary_when_stream_retention_also_fails(self):
+        with mock.patch.object(runner.subprocess, "run", side_effect=self.returned(b"original", b"error")) as run:
+            with mock.patch.object(runner, "new_bytes", side_effect=OSError("synthetic retention failure")):
+                with self.assertRaisesRegex(runner.Film180G2Rejected, "bounded_probe"):
+                    self.invoke()
+            self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.terminal()["exit_code"], 2)
+        self.assertEqual(self.attempt.secondary_failures, [self.label + ".capture"])
+        self.assert_no_qualified_packet()
+
+    def test_packet_terminal_is_durable_before_parser_rejects_zero_exit_original(self):
+        stdout, stderr = b"malformed complete original", b"probe note"
+        failure = ValueError("synthetic parser rejection")
+        def reject(raw):
+            self.assertEqual(raw, stdout)
+            self.assertEqual(self.path(".stdout").read_bytes(), stdout)
+            self.assertEqual(self.path(".stderr").read_bytes(), stderr)
+            self.assertEqual(self.terminal()["exit_code"], 0)
+            raise failure
+        with mock.patch.object(runner.subprocess, "run", side_effect=self.returned(stdout, stderr, 0)) as run:
+            with mock.patch("native_evidence_projection.strict", side_effect=reject) as strict:
+                with self.assertRaises(ValueError) as caught:
+                    self.invoke()
+                self.assertIs(caught.exception, failure)
+                strict.assert_called_once_with(stdout)
+            self.assertEqual(run.call_count, 1)
+        self.assert_no_qualified_packet()
+
+    def test_packet_oversized_stdout_is_omitted_without_a_fake_original_prefix(self):
+        stdout = b"x" * (1024 * 1024 + 1)
+        with mock.patch.object(runner.subprocess, "run", side_effect=self.returned(stdout, b"bounded stderr", 0)) as run:
+            with self.assertRaisesRegex(runner.Film180G2Rejected, "bounded_probe"):
+                self.invoke()
+            self.assertEqual(run.call_count, 1)
+        self.assertFalse(self.path(".stdout").exists())
+        self.assertEqual(self.path(".stderr").read_bytes(), b"bounded stderr")
+        terminal = self.terminal()
+        self.assertEqual(terminal["stdout_observed_bytes"], len(stdout))
+        self.assertIs(terminal["stdout_original_included"], False)
+        self.assertIsNone(terminal["stdout_sha256"])
+        self.assert_no_qualified_packet()
+
+    def test_packet_oversized_stderr_is_omitted_and_prevents_qualification(self):
+        stderr = b"x" * (64 * 1024 + 1)
+        with mock.patch.object(runner.subprocess, "run", side_effect=self.returned(b"{}", stderr, 0)) as run:
+            with self.assertRaisesRegex(runner.Film180G2Rejected, "stderr_bounded_probe"):
+                self.invoke()
+            self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.path(".stdout").read_bytes(), b"{}")
+        self.assertFalse(self.path(".stderr").exists())
+        terminal = self.terminal()
+        self.assertEqual(terminal["stderr_observed_bytes"], len(stderr))
+        self.assertIs(terminal["stderr_original_included"], False)
+        self.assertIsNone(terminal["stderr_sha256"])
+        self.assert_no_qualified_packet()
+
+    def test_packet_boolean_returncode_is_not_a_successful_integer_terminal(self):
+        with mock.patch.object(runner.subprocess, "run", side_effect=self.returned(b"{}", b"", False)) as run:
+            with mock.patch("native_evidence_projection.strict") as strict:
+                with self.assertRaisesRegex(runner.Film180G2Rejected, "bounded_probe"):
+                    self.invoke()
+                strict.assert_not_called()
+            self.assertEqual(run.call_count, 1)
+        self.assertIs(self.terminal()["exit_code"], False)
+        self.assert_no_qualified_packet()
 
 if __name__ == "__main__":
     unittest.main()

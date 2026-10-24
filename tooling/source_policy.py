@@ -159,6 +159,9 @@ for path in iter_source_files(ROOT):
         process_allowlist = {
             "crates/native/src/production.rs",
             "crates/storage/src/apply_crash_tests.rs",
+            "crates/service/tests/project_portability_authority.rs",
+            # Storage recovery child processes are compiled only under cfg(test).
+            "crates/storage/src/cas_retention_process_tests.rs",
             "crates/driver-manim-community/src/bin/runtime_runner.rs",
         }
         if any(token in text for token in process_tokens) and rel not in process_allowlist:

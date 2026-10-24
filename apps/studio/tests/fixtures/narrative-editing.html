@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Editorial authoring component regression — synthetic props</title>
+    <style>
+      body { font: 16px system-ui; margin: 2rem; max-width: 76rem; }
+      label { display: block; margin: .5rem 0; }
+      input, textarea, select { margin-left: .5rem; }
+      textarea { display: block; min-width: 30rem; min-height: 5rem; }
+      fieldset, article { margin: 1rem 0; padding: 1rem; }
+      button { margin: .25rem; }
+      th, td { text-align: left; padding: .4rem; }
+      pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <aside role="note">COMPONENT REGRESSION FIXTURE. The editor and ProjectMutationGate are real. Props, history and replies below are explicitly synthetic scheduling inputs. No StudioService, SQLite, native output or human acceptance is demonstrated here.</aside>
+    <div id="editorial-root"></div>
+    <script type="module" src="./narrative-editing.tsx"></script>
+  </body>
+</html>

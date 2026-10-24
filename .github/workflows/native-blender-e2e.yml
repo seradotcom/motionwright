@@ -9,9 +9,10 @@ name: Native Blender round-trip
         - static-glb
         - source
         - original-scene
+        - lit-still
         default: source
       expected_source_sha:
-        description: Exact Motionwright commit required for an original Scene attempt
+        description: Exact Motionwright commit required for an original Scene or lit-still attempt
         type: string
         required: false
       recovery_recipient:
@@ -23,14 +24,23 @@ name: Native Blender round-trip
     - SOURCE_LOCK.json
     - Cargo.toml
     - Cargo.lock
+    - rust-toolchain.toml
     - crates/domain/**
     - crates/service/**
     - crates/storage/**
     - crates/native/**
+    - crates/manim-profile/**
+    - crates/hyperframes-profile/**
     - tooling/native_blender_e2e.py
+    - tooling/native_blender_lit_still_e2e.py
+    - tooling/native_blender_lit_still_oracle.py
+    - tooling/native_evidence_projection.py
+    - tooling/tests/test_native_blender_lit_still_oracle.py
+    - tooling/tests/test_native_blender_lit_seed_policy.py
     - tooling/native_blender_original_evidence.py
     - tooling/blender_original_scene_contract.py
     - tooling/ci_private_evidence.py
+    - tooling/ci_test_runner.py
     - tooling/mlt_official_runtime_intake.py
     - tooling/native_mlt_loaded_module.py
     - tooling/requirements/mlt-g2-custody.txt
@@ -43,9 +53,9 @@ name: Native Blender round-trip
 permissions:
   contents: read
 concurrency:
-  group: ${{ inputs.verification_scope == 'original-scene' && 'native-blender-original-exclusive' || format('native-blender-roundtrip-{0}-{1}',
+  group: ${{ inputs.verification_scope == 'lit-still' && 'native-blender-lit-exclusive' || inputs.verification_scope == 'original-scene' && 'native-blender-original-exclusive' || format('native-blender-roundtrip-{0}-{1}',
     github.event_name, github.head_ref || github.ref_name) }}
-  cancel-in-progress: ${{ inputs.verification_scope != 'original-scene' }}
+  cancel-in-progress: ${{ inputs.verification_scope != 'original-scene' && inputs.verification_scope != 'lit-still' }}
 defaults:
   run:
     shell: bash
@@ -57,6 +67,7 @@ env:
   SEMWRIGHT_TEST_BLENDER_ROOT: /usr/local/blender-4.5.14-linux-x64
 jobs:
   native-blender-roundtrip:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'lit-still'
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.verification_scope == 'original-scene' && 60 || 45 }}
     steps:
@@ -159,6 +170,95 @@ jobs:
                           "compact_runtime_cases":9, "skipped":0,
                           "native_effects":False}, sort_keys=True))
         PY
+    - name: Verify affected lit producer contracts on source requests
+      id: lit_source
+      if: github.event_name == 'pull_request' || inputs.verification_scope == 'source'
+      run: |
+        set +e
+        "$RUNNER_TEMP/blender-original-venv/bin/python" tooling/ci_test_runner.py \
+          --pattern test_native_blender_lit_still_oracle.py \
+          --pattern test_native_blender_lit_seed_policy.py \
+          --mode both --require-complete --expected-source "$GITHUB_SHA" \
+          --report "$RUNNER_TEMP/blender-lit-source-tests.json" \
+          > "$RUNNER_TEMP/blender-lit-source-console.stdout" 2> "$RUNNER_TEMP/blender-lit-source-console.stderr"
+        source_exit=$?
+        set -e
+        SOURCE_TEST_EXIT="$source_exit" python3 - <<'PY'
+        import json, os
+        from pathlib import Path
+        def require(value, code):
+            if not value:
+                raise ValueError(code)
+
+        def strict(raw):
+            def pairs(items):
+                result = {}
+                for key, value in items:
+                    require(key not in result, "duplicate-json-key")
+                    result[key] = value
+                return result
+            return json.loads(raw, object_pairs_hook=pairs,
+                              parse_constant=lambda _: (_ for _ in ()).throw(ValueError("json-nonfinite")))
+
+        def closed_g0_summary(report, runner_exit, source_sha):
+            """Public PR diagnostic only; original-readback admission stays separate."""
+            entries = {
+                "discovery:test_native_blender_lit_still_oracle.py": 63,
+                "dotted:tooling.tests.test_native_blender_lit_still_oracle": 63,
+                "discovery:test_native_blender_lit_seed_policy.py": 6,
+                "dotted:tooling.tests.test_native_blender_lit_seed_policy": 6,
+            }
+            keys = ("tests_run", "passed", "failures", "errors", "skipped", "expected_failures", "unexpected_successes")
+            safe = []
+            valid = (type(runner_exit) is int and runner_exit == 0 and type(report) is dict
+                     and report.get("status") == "PASS" and type(report.get("exit_code")) is int
+                     and report.get("exit_code") == 0 and report.get("executed_source_sha") == source_sha)
+            rows = report.get("steps", []) if type(report) is dict else []
+            if type(rows) is not list or len(rows) != len(entries):
+                valid = False
+                rows = []
+            for row in rows:
+                counts = row.get("counts", {}) if type(row) is dict else {}
+                if (type(row) is not dict or row.get("entry_point") not in entries
+                        or type(counts) is not dict
+                        or not all(type(counts.get(k)) is int and 0 <= counts[k] <= 10000 for k in keys)):
+                    valid = False
+                    continue
+                safe.append({"entry_point": row["entry_point"], "counts": {k: counts[k] for k in keys}})
+                valid = valid and row.get("status") == "PASS" and type(row.get("exit_code")) is int and row.get("exit_code") == 0
+                count = entries[row["entry_point"]]
+                valid = valid and counts["tests_run"] == count and counts["passed"] == count and all(counts[k] == 0 for k in keys[2:])
+            valid = valid and len(safe) == len(entries) and {r["entry_point"] for r in safe} == set(entries)
+            return {"schema": "motionwright.blender.lit-still-source-summary/2", "source_sha": source_sha,
+                    "status": "PASS" if valid else "FAIL", "entrypoints": safe,
+                    "source_logs_upload_requested": True,
+                    "source_logs_public_retention": "NOT_VERIFIED_BY_THIS_SUMMARY",
+                    "original_evidence_admitted": False,
+                    "formal_acceptance": False}
+        try:
+            path = Path(os.environ["RUNNER_TEMP"]) / "blender-lit-source-tests.json"
+            with path.open("rb") as stream:
+                raw = stream.read(4 * 1024 * 1024 + 1)
+            require(len(raw) <= 4 * 1024 * 1024, "summary-receipt-budget")
+            report = strict(raw)
+        except (ValueError, OSError):
+            report = None
+        summary = closed_g0_summary(report, int(os.environ["SOURCE_TEST_EXIT"]), os.environ["GITHUB_SHA"])
+        output = Path("verification/native-blender-lit-source-public")
+        output.mkdir(parents=True, exist_ok=False)
+        with (output / "source-summary.json").open("x", encoding="utf-8") as handle:
+            json.dump(summary, handle, sort_keys=True)
+            handle.write("\n")
+        print(json.dumps(summary, sort_keys=True))
+        raise SystemExit(0 if summary["status"] == "PASS" else 1)
+        PY
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      if: always() && steps.lit_source.outcome != 'skipped'
+      with:
+        name: motionwright-blender-lit-source-summary-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: verification/native-blender-lit-source-public/source-summary.json
+        if-no-files-found: error
+        retention-days: 14
     - name: Resolve exact Semwright source pin
       id: pin
       run: |
@@ -420,6 +520,216 @@ jobs:
         finally:
             retain()
         PY
+    - name: Require 29 exact lit Rust source cases and compiled example
+      if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'source'
+      run: |
+        python3 - <<'PY'
+        import hashlib, json, os, pathlib, re, shlex, subprocess
+        def require_exact_case(name, output, code):
+            view = output.decode("utf-8", "replace").replace("\r\n", "\n")
+            names = re.findall(r"^test (\S+) \.\.\. ok$", view, re.M)
+            summaries = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;", view, re.M)
+            if code != 0 or names != [name] or summaries != [("1", "0", "0")]:
+                raise ValueError("required Rust case did not execute exactly once without omissions")
+            return {"name": name, "passed": 1, "failed": 0, "ignored": 0}
+        def source_state():
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            if head != os.environ["GITHUB_SHA"]:
+                raise ValueError("Rust test checkout differs from requested source")
+            if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip():
+                raise ValueError("tracked Rust test inputs changed")
+            paths = ["crates/native/src/production/blender_render.rs",
+                     "crates/native/examples/native-blender-lit-still-e2e.rs",
+                     "crates/native/src/production.rs", "crates/native/src/production/receipt_custody.rs",
+                     "crates/native/src/production/blender_original.rs", "crates/native/src/multi_renderer.rs",
+                     "crates/native/examples/native-blender-e2e.rs", "Cargo.lock", "SOURCE_LOCK.json",
+                     ".github/workflows/native-blender-e2e.yml"]
+            return {"sha": head, "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+                    "files": {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}}
+        ROSTER = [
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_plan_preserves_project_geometry_and_full_entity_identities"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_cylinder_retains_the_existing_depth_scale"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_limit_reserves_camera_and_light_without_changing_original_profile"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_plan_does_not_silently_replace_non_normal_blend"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_plan_rejects_transparent_material_without_rewriting_the_source"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_plan_keeps_text_outside_the_closed_mesh_projection"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_source_phases_require_exact_paths_and_valid_measured_bindings"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_create_rejects_an_existing_source_or_requested_edit"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_reopen_requires_the_exact_persisted_edit_identity"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::lit_identity_contracts_do_not_accept_path_or_command_fragments"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::semantic_reference_keeps_the_exact_public_prefix_and_character_bounds"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::descriptor_requires_literal_enum_identifiers_without_aliases_or_fallback"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::descriptor_read_only_and_numeric_bounds_are_not_silently_overridden"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::descriptor_retains_boolean_integer_and_array_types"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::getter_binding_rejects_references_and_properties_from_another_request"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::rna_comparison_does_not_coerce_boolean_integer_or_enum_semantics"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::every_lit_output_is_fixed_and_existing_files_are_never_overwritten"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::native_file_binding_detects_size_and_content_changes"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::png_header_check_is_bounded_and_does_not_attest_decoding"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::snapshot_requires_complete_source_roster_and_actual_native_session"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::native_roster_rejects_foreign_identity_membership_and_untracked_edit"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::light_control_requires_declared_drift_and_actual_zero_energy_readback"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::full_scene_tags_bind_complete_project_revision_and_origin_context"
+          },
+          {
+            "target": "--lib",
+            "name": "production::blender_render::tests::malformed_or_status_only_reports_cannot_replace_canonical_verification"
+          },
+          {
+            "target": "--example native-blender-lit-still-e2e",
+            "name": "tests::fixture_has_exact_roles_source_geometry_and_reopened_project_bytes"
+          },
+          {
+            "target": "--example native-blender-lit-still-e2e",
+            "name": "tests::interrupted_seed_latch_and_existing_database_are_never_replaced"
+          },
+          {
+            "target": "--example native-blender-lit-still-e2e",
+            "name": "tests::unknown_native_terminal_is_preserved_when_later_custody_fails"
+          },
+          {
+            "target": "--example native-blender-lit-still-e2e",
+            "name": "tests::successful_native_terminal_does_not_hide_a_failed_private_publication"
+          },
+          {
+            "target": "--example native-blender-lit-still-e2e",
+            "name": "tests::exclusive_phase_marker_blocks_replay_before_another_native_call"
+          }
+        ]
+        out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "blender-lit-source-rust"
+        out.mkdir(exist_ok=False)
+        before = source_state()
+        receipt = {"schema": "motionwright.blender.lit-source-rust-tests/1", "source_before": before,
+                   "run_id": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                   "required": len(ROSTER), "cases": [], "status": "RUNNING", "native_effects": False}
+        def retain():
+            (out / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        retain()
+        try:
+            if len(ROSTER) != 29 or len({r["name"] for r in ROSTER}) != 29:
+                raise ValueError("required Rust roster differs")
+            build_argv = ["cargo", "build", "--locked", "-p", "motionwright-native",
+                          "--example", "native-blender-lit-still-e2e"]
+            receipt["build"] = {"command": build_argv, "state": "STARTED"}
+            retain()
+            try:
+                built = subprocess.run(build_argv, capture_output=True, timeout=1200)
+                build_stdout, build_stderr, build_code = built.stdout, built.stderr, built.returncode
+            except subprocess.TimeoutExpired as error:
+                build_stdout, build_stderr, build_code = error.stdout or b"", error.stderr or b"", 124
+                receipt["build"]["state"] = "UNKNOWN_NO_RETRY"
+            for label, raw in (("stdout", build_stdout), ("stderr", build_stderr)):
+                name = "build-" + label + ".log"
+                with (out / name).open("xb") as handle:
+                    handle.write(raw)
+                receipt["build"][label] = {"name": name, "bytes": len(raw),
+                                           "sha256": hashlib.sha256(raw).hexdigest()}
+            receipt["build"]["exit_code"] = build_code
+            retain()
+            if build_code != 0:
+                raise ValueError("required lit example build did not complete successfully")
+            receipt["build"]["state"] = "PASS"
+            retain()
+            for index, row in enumerate(ROSTER):
+                argv = ["cargo", "test", "--locked", "-p", "motionwright-native"] + shlex.split(row["target"]) + [row["name"], "--", "--exact", "--nocapture"]
+                entry = {"name": row["name"], "command": argv, "state": "STARTED"}
+                receipt["cases"].append(entry)
+                retain()
+                try:
+                    process = subprocess.run(argv, capture_output=True, timeout=1200)
+                    stdout, stderr, code = process.stdout, process.stderr, process.returncode
+                except subprocess.TimeoutExpired as error:
+                    stdout, stderr, code = error.stdout or b"", error.stderr or b"", 124
+                    entry["state"] = "UNKNOWN_NO_RETRY"
+                for label, raw in (("stdout", stdout), ("stderr", stderr)):
+                    name = f"{index:02d}-{label}.log"
+                    with (out / name).open("xb") as handle:
+                        handle.write(raw)
+                    entry[label] = {"name": name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+                entry["exit_code"] = code
+                retain()
+                entry.update(require_exact_case(row["name"], stdout, code))
+                entry["state"] = "PASS"
+                retain()
+            receipt["source_after"] = source_state()
+            if receipt["source_after"] != before:
+                raise ValueError("Rust source changed during verification")
+            receipt["status"] = "PASS"
+        except Exception as error:
+            receipt["status"] = "FAIL"
+            receipt["error"] = str(error)
+            raise
+        finally:
+            retain()
+        PY
     - name: Install verified Blender and sandbox dependencies
       env:
         BLENDER_URL: https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
@@ -538,5 +848,793 @@ jobs:
           ${{ runner.temp }}/blender-original-source-tests.json
           ${{ runner.temp }}/blender-original-source-tests-*.log
           ${{ runner.temp }}/blender-required-rust
+          ${{ runner.temp }}/blender-lit-source-rust
+          ${{ runner.temp }}/blender-lit-source-tests.json
+          ${{ runner.temp }}/blender-lit-source-tests-*.log
+          ${{ runner.temp }}/blender-lit-source-console.*
         if-no-files-found: warn
+        retention-days: 14
+
+  # Register this composed producer profile in the release verification catalogue.
+  # A selector is not evidence: this job's original G0/G1/G2 results
+  # must be admitted on the exact candidate source/run/attempt separately.
+  native-blender-lit-still:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'lit-still'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      VERIFICATION_SCOPE: ${{ inputs.verification_scope }}
+      EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+      MOTIONWRIGHT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+      RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Reject implicit source, unsupported scope and native retries
+      run: |
+        python3 - <<'PY'
+        import os, re
+        if (os.environ['GITHUB_EVENT_NAME'] != 'workflow_dispatch'
+            or os.environ['VERIFICATION_SCOPE'] != 'lit-still'
+            or os.environ['GITHUB_RUN_ATTEMPT'] != '1'
+            or re.fullmatch(r'[0-9a-f]{40}', os.environ['EXPECTED_SOURCE']) is None
+            or os.environ['EXPECTED_SOURCE'] != os.environ['GITHUB_SHA']):
+            raise SystemExit('Explicit first attempt on the exact composed source required')
+        PY
+    - name: Resolve exact Semwright source pin
+      id: lit_pin
+      run: |
+        python3 - <<'PY'
+        import json, os, re
+        from pathlib import Path
+        sha = json.loads(Path('SOURCE_LOCK.json').read_bytes())['dependencies']['semwright']['revision']
+        if type(sha) is not str or re.fullmatch(r'[0-9a-f]{40}', sha) is None:
+            raise SystemExit('Invalid Semwright source pin')
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+            out.write('sha=' + sha + '\n')
+        PY
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      with:
+        toolchain: 1.98.1
+    - name: Prepare existing locked custody environment
+      run: |
+        python3 -m venv "$RUNNER_TEMP/blender-lit-venv"
+        "$RUNNER_TEMP/blender-lit-venv/bin/python" -m pip install \
+          --disable-pip-version-check --no-input --no-cache-dir --only-binary=:all: \
+          --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+        "$RUNNER_TEMP/blender-lit-venv/bin/python" -m pip check
+    - name: Materialize workflow-owned bounded lit wiring
+      run: |
+        set -C
+        cat > "$RUNNER_TEMP/blender-lit-wiring.py" <<'PY'
+        """Workflow-owned bounded wiring; embedded verbatim in native-blender-e2e.yml.
+
+        This is not a second evidence collector.  Native production and selection belong
+        to the existing producer; ciphertext uses the existing ci_private_evidence API.
+        """
+        import ast
+        import hashlib
+        import io
+        import json
+        import os
+        from pathlib import Path
+        import re
+        import stat
+        import subprocess
+        import sys
+        import tarfile
+
+
+        MAX_TAR = 256 * 1024 * 1024
+        MAX_JSON = 4 * 1024 * 1024
+        SOURCE_PATHS = (
+            "SOURCE_LOCK.json", "Cargo.toml", "Cargo.lock", "crates/native/Cargo.toml",
+            "crates/native/examples/native-blender-lit-still-e2e.rs",
+            "crates/native/examples/native-blender-e2e.rs",
+            "crates/native/src/production.rs", "crates/native/src/production/blender_render.rs",
+            "crates/native/src/production/blender_original.rs", "crates/native/src/multi_renderer.rs",
+            "tooling/native_blender_e2e.py", "tooling/native_blender_original_evidence.py",
+            "tooling/blender_original_scene_contract.py", "tooling/native_blender_lit_still_e2e.py",
+            "tooling/native_blender_lit_still_oracle.py", "tooling/native_mlt_loaded_module.py",
+            "tooling/mlt_official_runtime_intake.py", "tooling/ci_private_evidence.py",
+            "tooling/native_evidence_projection.py", "tooling/ci_test_runner.py",
+            "tooling/tests/test_native_blender_lit_still_oracle.py",
+            "tooling/tests/test_native_blender_lit_seed_policy.py",
+            "tooling/requirements/mlt-g2-custody.txt", ".github/workflows/native-blender-e2e.yml",
+        )
+        CALLER_CASES = (
+            "fixture_has_exact_roles_source_geometry_and_reopened_project_bytes",
+            "interrupted_seed_latch_and_existing_database_are_never_replaced",
+            "unknown_native_terminal_is_preserved_when_later_custody_fails",
+            "successful_native_terminal_does_not_hide_a_failed_private_publication",
+            "exclusive_phase_marker_blocks_replay_before_another_native_call",
+        )
+        ADAPTER_CASES = (
+            "lit_plan_preserves_project_geometry_and_full_entity_identities",
+            "lit_cylinder_retains_the_existing_depth_scale",
+            "lit_limit_reserves_camera_and_light_without_changing_original_profile",
+            "lit_plan_does_not_silently_replace_non_normal_blend",
+            "lit_plan_rejects_transparent_material_without_rewriting_the_source",
+            "lit_plan_keeps_text_outside_the_closed_mesh_projection",
+            "lit_source_phases_require_exact_paths_and_valid_measured_bindings",
+            "lit_create_rejects_an_existing_source_or_requested_edit",
+            "lit_reopen_requires_the_exact_persisted_edit_identity",
+            "lit_identity_contracts_do_not_accept_path_or_command_fragments",
+            "semantic_reference_keeps_the_exact_public_prefix_and_character_bounds",
+            "descriptor_requires_literal_enum_identifiers_without_aliases_or_fallback",
+            "descriptor_read_only_and_numeric_bounds_are_not_silently_overridden",
+            "descriptor_retains_boolean_integer_and_array_types",
+            "getter_binding_rejects_references_and_properties_from_another_request",
+            "rna_comparison_does_not_coerce_boolean_integer_or_enum_semantics",
+            "every_lit_output_is_fixed_and_existing_files_are_never_overwritten",
+            "native_file_binding_detects_size_and_content_changes",
+            "png_header_check_is_bounded_and_does_not_attest_decoding",
+            "snapshot_requires_complete_source_roster_and_actual_native_session",
+            "native_roster_rejects_foreign_identity_membership_and_untracked_edit",
+            "light_control_requires_declared_drift_and_actual_zero_energy_readback",
+            "full_scene_tags_bind_complete_project_revision_and_origin_context",
+            "malformed_or_status_only_reports_cannot_replace_canonical_verification",
+        )
+        ROSTER = [("--lib", "production::blender_render::tests::" + x) for x in ADAPTER_CASES]
+        ROSTER += [("--example", "tests::" + x) for x in CALLER_CASES]
+        BUILD_COMMANDS = (
+            ("cargo", "clippy", "--locked", "-p", "motionwright-native", "--lib",
+             "--example", "native-blender-lit-still-e2e", "--", "-D", "warnings"),
+            ("cargo", "build", "--locked", "-p", "motionwright-native",
+             "--example", "native-blender-lit-still-e2e"),
+            ("cargo", "build", "--locked", "-p", "motionwright-native",
+             "--example", "native-blender-e2e"),
+        )
+
+
+        def require(value, code):
+            if not value:
+                raise ValueError(code)
+
+
+        def sha(raw):
+            return hashlib.sha256(raw).hexdigest()
+
+
+        def strict(raw):
+            def pairs(items):
+                result = {}
+                for key, value in items:
+                    require(key not in result, "duplicate-json-key")
+                    result[key] = value
+                return result
+            return json.loads(raw, object_pairs_hook=pairs,
+                              parse_constant=lambda _: (_ for _ in ()).throw(ValueError("json-nonfinite")))
+
+
+        def canonical(value):
+            return (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n").encode()
+
+
+        def identity(value):
+            return (value.st_dev, value.st_ino, value.st_mode, value.st_nlink,
+                    value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+        def read_regular(path, cap, *, allow_hardlinks=False):
+            path = Path(path)
+            for item in (path, *path.parents):
+                require(not item.is_symlink(), "symlink-input")
+            before = path.lstat()
+            require(stat.S_ISREG(before.st_mode) and (before.st_nlink >= 1 if allow_hardlinks else before.st_nlink == 1)
+                    and 0 <= before.st_size <= cap, "regular-input-budget")
+            with path.open("rb") as handle:
+                opened = os.fstat(handle.fileno())
+                require(identity(before) == identity(opened), "opened-input-changed")
+                raw = handle.read(cap + 1)
+                require(identity(opened) == identity(os.fstat(handle.fileno())), "read-input-changed")
+            require(identity(before) == identity(path.lstat()) and len(raw) == before.st_size,
+                    "path-input-changed")
+            return raw
+
+
+        def write_new(path, raw):
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw)
+
+
+        def file_binding(path, cap=MAX_TAR):
+            raw = read_regular(path, cap)
+            return {"bytes": len(raw), "sha256": sha(raw)}
+
+
+        def binary_binding(path):
+            # Cargo may hardlink its named output to the hashed build artifact.  This
+            # exception applies only to the compiled caller, never source/evidence.
+            before = Path(path).lstat()
+            raw = read_regular(path, MAX_TAR, allow_hardlinks=True)
+            require(identity(before) == identity(Path(path).lstat()) and raw.startswith(b"\x7fELF"),
+                    "compiled-binary-identity")
+            return {"bytes": len(raw), "sha256": sha(raw), "links": before.st_nlink,
+                    "device": before.st_dev, "inode": before.st_ino}
+
+
+        def same_context(value, expected):
+            require(type(value) is dict and value == expected, "foreign-context")
+
+
+        def requested_context(env):
+            require(env.get("GITHUB_ACTIONS") == "true" and env.get("CI") == "true"
+                    and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                    and env.get("VERIFICATION_SCOPE") == "lit-still"
+                    and env.get("RUNNER_OS") == "Linux", "explicit-linux-scope-required")
+            require(env.get("GITHUB_RUN_ATTEMPT") == "1", "native-rerun-refused")
+            source = env.get("GITHUB_SHA", "")
+            sdk = env.get("EXACT_SEMWRIGHT_SHA", "")
+            run_id = env.get("GITHUB_RUN_ID", "")
+            require(re.fullmatch(r"[0-9a-f]{40}", source) is not None
+                    and source == env.get("EXPECTED_SOURCE"), "source-request-mismatch")
+            require(re.fullmatch(r"[0-9a-f]{40}", sdk) is not None, "sdk-source-missing")
+            require(re.fullmatch(r"[1-9][0-9]{0,19}", run_id) is not None, "run-identity")
+            return {"source_sha": source, "semwright_sha": sdk, "run_id": run_id, "run_attempt": "1"}
+
+
+        def recipient_from(env, crypto):
+            raw = env.get("RECOVERY_RECIPIENT", "")
+            require(type(raw) is str and 0 < len(raw.encode()) <= 4096, "recipient-budget")
+            value = strict(raw)
+            crypto.public_key(value)
+            return value
+
+
+        def source_state(root, context):
+            def git(*args):
+                return subprocess.check_output(["git", "-C", str(root), *args])
+            require(git("rev-parse", "HEAD").decode().strip() == context["source_sha"], "checkout-mismatch")
+            require(not git("status", "--porcelain", "--untracked-files=no").strip(), "tracked-source-dirty")
+            files = {}
+            for relative in SOURCE_PATHS:
+                raw = read_regular(root / relative, MAX_JSON)
+                require(raw == git("show", context["source_sha"] + ":" + relative), "source-byte-mismatch")
+                files[relative] = {"bytes": len(raw), "sha256": sha(raw)}
+            return {"sha": context["source_sha"], "tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
+                    "files": files}
+
+
+        def test_roster(raw, expected_count):
+            tree = ast.parse(raw.decode("utf-8"))
+            names = [n.name for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")]
+            require(expected_count in (63, 6) and len(names) == expected_count
+                    and len(set(names)) == expected_count, "typed-python-roster-changed")
+            return set(names)
+
+
+        def validate_g0(report, logs, expected, names):
+            require(type(report) is dict and report.get("status") == "PASS"
+                    and type(report.get("exit_code")) is int and report.get("exit_code") == 0
+                    and report.get("executed_source_sha") == expected["source_sha"], "g0-source-or-terminal")
+            expected_entries = {
+                "discovery:test_native_blender_lit_still_oracle.py": 63,
+                "dotted:tooling.tests.test_native_blender_lit_still_oracle": 63,
+                "discovery:test_native_blender_lit_seed_policy.py": 6,
+                "dotted:tooling.tests.test_native_blender_lit_seed_policy": 6,
+            }
+            require(type(names) is dict and set(names) == set(expected_entries)
+                    and all(type(names[entry]) is set and len(names[entry]) == count
+                            for entry, count in expected_entries.items()), "g0-source-rosters")
+            steps = report.get("steps")
+            require(type(steps) is list and len(steps) == len(expected_entries)
+                    and {x.get("entry_point") for x in steps if type(x) is dict} == set(expected_entries),
+                    "g0-entrypoints")
+            for step in steps:
+                entry = step["entry_point"]
+                count = expected_entries[entry]
+                counts = step.get("counts", {})
+                require(type(counts) is dict and step.get("status") == "PASS"
+                        and type(step.get("exit_code")) is int and step.get("exit_code") == 0
+                        and type(counts.get("tests_run")) is int and counts["tests_run"] == count
+                        and type(counts.get("passed")) is int and counts["passed"] == count
+                        and all(type(counts.get(k)) is int and counts.get(k) == 0 for k in
+                                ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
+                        "g0-omitted-or-failed")
+                for stream in ("stdout", "stderr"):
+                    ref = step.get(stream, {})
+                    name = ref.get("file")
+                    require(type(name) is str and Path(name).name == name and name in logs,
+                            "g0-log-missing")
+                    require(sha(logs[name]) == ref.get("sha256"), "g0-log-digest")
+                view = logs[step["stderr"]["file"]].decode("utf-8", "strict").replace("\r\n", "\n")
+                observed = re.findall(r"^(test_\w+) \([^\n]+\) \.\.\. ok$", view, re.M)
+                require(len(observed) == count and set(observed) == names[entry], "g0-original-roster")
+
+
+        def closed_g0_summary(report, runner_exit, source_sha):
+            """Public PR diagnostic only; original-readback admission stays separate."""
+            entries = {
+                "discovery:test_native_blender_lit_still_oracle.py": 63,
+                "dotted:tooling.tests.test_native_blender_lit_still_oracle": 63,
+                "discovery:test_native_blender_lit_seed_policy.py": 6,
+                "dotted:tooling.tests.test_native_blender_lit_seed_policy": 6,
+            }
+            keys = ("tests_run", "passed", "failures", "errors", "skipped", "expected_failures", "unexpected_successes")
+            safe = []
+            valid = (type(runner_exit) is int and runner_exit == 0 and type(report) is dict
+                     and report.get("status") == "PASS" and type(report.get("exit_code")) is int
+                     and report.get("exit_code") == 0 and report.get("executed_source_sha") == source_sha)
+            rows = report.get("steps", []) if type(report) is dict else []
+            if type(rows) is not list or len(rows) != len(entries):
+                valid = False
+                rows = []
+            for row in rows:
+                counts = row.get("counts", {}) if type(row) is dict else {}
+                if (type(row) is not dict or row.get("entry_point") not in entries
+                        or type(counts) is not dict
+                        or not all(type(counts.get(k)) is int and 0 <= counts[k] <= 10000 for k in keys)):
+                    valid = False
+                    continue
+                safe.append({"entry_point": row["entry_point"], "counts": {k: counts[k] for k in keys}})
+                valid = valid and row.get("status") == "PASS" and type(row.get("exit_code")) is int and row.get("exit_code") == 0
+                count = entries[row["entry_point"]]
+                valid = valid and counts["tests_run"] == count and counts["passed"] == count and all(counts[k] == 0 for k in keys[2:])
+            valid = valid and len(safe) == len(entries) and {r["entry_point"] for r in safe} == set(entries)
+            return {"schema": "motionwright.blender.lit-still-source-summary/2", "source_sha": source_sha,
+                    "status": "PASS" if valid else "FAIL", "entrypoints": safe,
+                    "source_logs_upload_requested": True,
+                    "source_logs_public_retention": "NOT_VERIFIED_BY_THIS_SUMMARY",
+                    "original_evidence_admitted": False,
+                    "formal_acceptance": False}
+
+
+        def require_case(name, raw, code):
+            text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+            require(type(code) is int and code == 0 and re.findall(r"^test (\S+) \.\.\. ok$", text, re.M) == [name]
+                    and re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;",
+                                   text, re.M) == [("1", "0", "0")], "g1-case-omitted-or-failed")
+
+
+        def case_command(target, name):
+            selected = ["--lib"] if target == "--lib" else ["--example", "native-blender-lit-still-e2e"]
+            return ["cargo", "test", "--locked", "-p", "motionwright-native", *selected,
+                    name, "--", "--exact", "--nocapture"]
+
+
+        def validate_g1(value, expected, source, binary, logs):
+            require(type(value) is dict, "g1-object")
+            same_context(value.get("context"), expected)
+            require(value.get("status") == "PASS" and value.get("source_before") == source
+                    and value.get("source_after") == source and value.get("binary") == binary,
+                    "g1-source-build-binding")
+            rows = value.get("commands")
+            commands = [list(x) for x in BUILD_COMMANDS] + [case_command(t, n) for t, n in ROSTER]
+            require(type(rows) is list and len(rows) == len(commands), "g1-command-roster")
+            for index, (row, command) in enumerate(zip(rows, commands)):
+                require(type(row) is dict and row.get("command") == command
+                        and type(row.get("exit_code")) is int and row.get("exit_code") == 0
+                        and row.get("status") == "PASS", "g1-command-terminal")
+                for stream in ("stdout", "stderr"):
+                    ref = row.get(stream, {})
+                    name = ref.get("file")
+                    require(name in logs and file_reference(logs[name]) == ref, "g1-original-log-binding")
+                if index >= len(BUILD_COMMANDS):
+                    require_case(ROSTER[index - len(BUILD_COMMANDS)][1], logs[row["stdout"]["file"]][1], 0)
+
+
+        def file_reference(item):
+            name, raw = item
+            return {"file": name, "bytes": len(raw), "sha256": sha(raw)}
+
+
+        def unknown_in(value):
+            pending = [value]
+            count = 0
+            while pending:
+                count += 1
+                if count > 16384:
+                    return True
+                item = pending.pop()
+                if isinstance(item, dict):
+                    if item.get("outcome_known") is False:
+                        return True
+                    pending.extend(item.values())
+                elif isinstance(item, list):
+                    pending.extend(item)
+                elif type(item) is str and (item.upper() in {"UNKNOWN", "UNKNOWN_NO_RETRY", "OUTCOME_UNKNOWN",
+                                                             "DISPATCHING", "PROCESS_TIMEOUT", "PROCESS_CALL_ERROR", "ATTEMPTED"}
+                                            or item.upper().startswith("UNKNOWN_")):
+                    return True
+            return False
+
+
+        def classify_native(exit_code, producer, selection_complete, source_stable, execution_state="COMPLETED"):
+            if execution_state == "NOT_RUN":
+                return "NOT_RUN"
+            if execution_state not in {"COMPLETED", "FAILED_NO_RETRY"} or type(producer) is not dict or unknown_in(producer):
+                return "UNKNOWN_NO_RETRY"
+            if (execution_state == "COMPLETED" and type(exit_code) is int and exit_code == 0 and producer.get("state") == "PHYSICAL_ORACLES_OBSERVED"
+                    and selection_complete is True and source_stable is True):
+                return "PHYSICAL_ORACLES_OBSERVED"
+            return "INCOMPLETE"
+
+
+        def verify_outer_selection(snapshot, captured):
+            # This checks the existing collector's output, not another native capture.
+            require(type(snapshot) is bytes and 0 < len(snapshot) <= 512 * 1024 * 1024 + 4096 * 4096,
+                    "outer-snapshot-budget")
+            with tarfile.open(fileobj=io.BytesIO(snapshot), mode="r:") as archive:
+                members = archive.getmembers()
+                names = [m.name for m in members]
+                require(len(members) <= 4097 and len(names) == len(set(names))
+                        and len(names) == len({n.casefold() for n in names}), "outer-snapshot-members")
+                require(all(m.isreg() and not m.pax_headers and 0 <= m.size <= MAX_TAR
+                            and not m.name.startswith("/") and ".." not in m.name.split("/")
+                            for m in members), "outer-snapshot-member-kind")
+                require("snapshot-manifest.json" in names, "outer-manifest-missing")
+                info = archive.getmember("snapshot-manifest.json")
+                require(info.size <= MAX_JSON, "outer-manifest-budget")
+                manifest = strict(archive.extractfile(info).read(MAX_JSON + 1))
+                require(type(manifest) is dict and manifest.get("schema") == "motionwright.ci.private-snapshot/1"
+                        and manifest.get("selected_originals_complete") is True
+                        and manifest.get("complete_owner_state_claimed") is False, "outer-snapshot-incomplete")
+                for name, raw in captured.items():
+                    member = archive.getmember("a-selected/" + name)
+                    require(member.size == len(raw), "retained-selected-size")
+                    retained = archive.extractfile(member).read(len(raw) + 1)
+                    require(retained == raw, "retained-selected-bytes")
+            return True
+
+
+        def public_summary(context, status, complete, stable, sealed, fingerprint):
+            require(status in {"PHYSICAL_ORACLES_OBSERVED", "UNKNOWN_NO_RETRY", "INCOMPLETE", "NOT_RUN"}, "public-state")
+            require(type(complete) is bool and type(stable) is bool, "public-flags")
+            return {"schema": "motionwright.blender.lit-still-public/1", "context": context,
+                    "status": status, "selected_evidence_complete": complete, "source_stable": stable,
+                    "private_evidence": {"file": "private-evidence.mwseal", "bytes": len(sealed), "sha256": sha(sealed)},
+                    "recipient_spki_sha256": fingerprint, "automatic_retry": False,
+                    "original_native_terminal_replaced": False, "raw_owner_uploaded": False,
+                    "raw_manifest_uploaded": False, "formal_acceptance": False,
+                    "human_acceptance": False, "release_authorized": False}
+
+
+        def main(mode):
+            root = Path(os.environ["GITHUB_WORKSPACE"])
+            temp = Path(os.environ["RUNNER_TEMP"])
+            control = temp / "blender-lit-control"
+            context = requested_context(os.environ)
+            sys.path.insert(0, str(root / "tooling"))
+            # A later product-source mismatch keeps the native result non-admissible;
+            # unchanged pinned crypto can still retain the original selected bytes.
+            source = None
+            try:
+                source = source_state(root, context)
+            except (ValueError, OSError, subprocess.CalledProcessError):
+                if mode != "seal":
+                    raise
+            crypto_raw = read_regular(root / "tooling/ci_private_evidence.py", MAX_JSON)
+            require(crypto_raw == subprocess.check_output(["git", "-C", str(root), "show",
+                     context["source_sha"] + ":tooling/ci_private_evidence.py"]), "crypto-source-changed")
+            import ci_private_evidence as crypto
+            recipient = recipient_from(os.environ, crypto)
+            crypto.validate_context(context)
+            if mode == "preflight":
+                require(sys.platform == "linux" and os.geteuid() != 0, "unprivileged-linux-required")
+                control.mkdir(mode=0o700, exist_ok=False)
+                (temp / "blender-lit-g0").mkdir(mode=0o700, exist_ok=False)
+                write_new(control / "preflight.json", canonical({"context": context, "source": source,
+                          "recipient_spki_sha256": recipient["sha256"]}))
+                return 0
+            preflight = strict(read_regular(control / "preflight.json", MAX_JSON))
+            same_context(preflight.get("context"), context)
+            require((mode == "seal" or preflight.get("source") == source)
+                    and preflight.get("recipient_spki_sha256") == recipient["sha256"],
+                    "preflight-source-or-recipient-changed")
+            if mode == "g1":
+                report_path = temp / "blender-lit-g0/receipt.json"
+                report = strict(read_regular(report_path, MAX_JSON))
+                logs = {}
+                for step in report.get("steps", []):
+                    for stream in ("stdout", "stderr"):
+                        name = step.get(stream, {}).get("file", "")
+                        require(name and Path(name).name == name, "g0-log-path")
+                        logs[name] = read_regular(report_path.with_name(name), MAX_JSON)
+                names = {}
+                for filename, count in (("test_native_blender_lit_still_oracle.py", 63),
+                                        ("test_native_blender_lit_seed_policy.py", 6)):
+                    roster = test_roster(read_regular(root / "tooling/tests" / filename, MAX_JSON), count)
+                    names["discovery:" + filename] = roster
+                    names["dotted:tooling.tests." + filename[:-3]] = roster
+                validate_g0(report, logs, context, names)
+                out = temp / "blender-lit-g1"
+                out.mkdir(exist_ok=False)
+                receipt = {"schema": "motionwright.blender.lit-still-g1/1", "context": context,
+                           "source_before": source, "status": "RUNNING", "commands": [], "native_effects": False,
+                           "g0_original_report": file_binding(report_path, MAX_JSON)}
+                def retain():
+                    (out / "receipt.json").write_bytes(canonical(receipt))
+                retain()
+                commands = [list(x) for x in BUILD_COMMANDS] + [case_command(t, n) for t, n in ROSTER]
+                try:
+                    require(len(ROSTER) == 29 and len({x[1] for x in ROSTER}) == 29, "g1-roster-changed")
+                    receipt["rustc"] = subprocess.check_output(["rustc", "--version"], text=True).strip()
+                    require(receipt["rustc"].startswith("rustc 1.98.1 "), "unexpected-rust-toolchain")
+                    for index, argv in enumerate(commands):
+                        row = {"command": argv, "status": "STARTED"}
+                        receipt["commands"].append(row)
+                        retain()
+                        try:
+                            result = subprocess.run(argv, cwd=root, capture_output=True, timeout=1200)
+                            stdout, stderr, code = result.stdout, result.stderr, result.returncode
+                        except subprocess.TimeoutExpired as error:
+                            stdout, stderr, code = error.stdout or b"", error.stderr or b"", 124
+                            row["status"] = "UNKNOWN_NO_RETRY"
+                        for label, raw in (("stdout", stdout), ("stderr", stderr)):
+                            name = f"{index:02d}-{label}.log"
+                            write_new(out / name, raw)
+                            row[label] = file_reference((name, raw))
+                        row["exit_code"] = code
+                        retain()
+                        require(code == 0, "g1-command-failed")
+                        if index >= len(BUILD_COMMANDS):
+                            require_case(ROSTER[index - len(BUILD_COMMANDS)][1], stdout, code)
+                        row["status"] = "PASS"
+                        retain()
+                    receipt["source_after"] = source_state(root, context)
+                    require(receipt["source_after"] == source, "g1-source-changed")
+                    receipt["binary"] = binary_binding(root / "target/debug/examples/native-blender-lit-still-e2e")
+                    receipt["status"] = "PASS"
+                except BaseException as error:
+                    receipt["status"] = "FAIL"
+                    receipt["error_type"] = type(error).__name__
+                    raise
+                finally:
+                    retain()
+                return 0
+            if mode == "native":
+                out = temp / "blender-lit-g1"
+                receipt = strict(read_regular(out / "receipt.json", MAX_JSON))
+                logs = {}
+                for row in receipt.get("commands", []):
+                    for stream in ("stdout", "stderr"):
+                        name = row.get(stream, {}).get("file", "")
+                        require(name and Path(name).name == name, "g1-log-path")
+                        logs[name] = (name, read_regular(out / name, 16 * MAX_JSON))
+                binary = binary_binding(root / "target/debug/examples/native-blender-lit-still-e2e")
+                validate_g1(receipt, context, source, binary, logs)
+                require(file_binding(temp / "blender-lit-g0/receipt.json", MAX_JSON)
+                        == receipt.get("g0_original_report"), "g0-report-changed-before-native")
+                owner = temp / ("mw-lit-" + context["run_id"])
+                require(not owner.exists() and not owner.is_symlink(), "native-owner-already-exists")
+                write_new(control / "attempt-intent.json", canonical({"context": context,
+                          "source": source, "binary": binary, "automatic_retry": False}))
+                execution = {"context": context, "state": "UNKNOWN_NO_RETRY", "exit_code": None}
+                try:
+                    with (control / "producer.stdout").open("xb") as stdout, (control / "producer.stderr").open("xb") as stderr:
+                        result = subprocess.run([sys.executable, str(root / "tooling/native_blender_lit_still_e2e.py")],
+                                                cwd=root, stdout=stdout, stderr=stderr, timeout=1800)
+                    execution["exit_code"] = result.returncode
+                    execution["state"] = "COMPLETED" if result.returncode == 0 else "FAILED_NO_RETRY"
+                except BaseException as error:
+                    execution["error_type"] = type(error).__name__
+                finally:
+                    write_new(control / "execution.json", canonical(execution))
+                return 0 if execution["exit_code"] == 0 else 1
+            if mode == "seal":
+                owner = temp / ("mw-lit-" + context["run_id"])
+                intent_present = (control / "attempt-intent.json").exists()
+                attempt_intent = None
+                try:
+                    attempt_intent = strict(read_regular(control / "attempt-intent.json", MAX_JSON))
+                    same_context(attempt_intent.get("context"), context)
+                    require(set(attempt_intent) == {"context", "source", "binary", "automatic_retry"}
+                            and attempt_intent.get("source") == preflight.get("source")
+                            and attempt_intent.get("automatic_retry") is False, "attempt-intent-binding")
+                except (OSError, ValueError, TypeError, AttributeError):
+                    attempt_intent = None
+                no_native_start = (os.environ.get("NATIVE_STEP_OUTCOME") == "skipped" and not intent_present
+                                   and not owner.exists() and not (control / "execution.json").exists())
+                attempted = not no_native_start
+                retained = temp / "blender-lit-selected-custody"
+                retained.mkdir(mode=0o700, exist_ok=False)
+                captured, observations = {}, []
+                # Copy only already-produced fixed selection/custody files, never owner
+                # roots, SQLite, .blend/PNG/RGBA or a second native observation.
+                for name, cap in (("selected-evidence.tar", MAX_TAR),
+                                  ("selected-evidence-manifest.json", MAX_JSON),
+                                  ("selection-terminal.json", MAX_JSON),
+                                  ("selection-intent.json", MAX_JSON),
+                                  ("producer-record.json", MAX_JSON)):
+                    try:
+                        raw = read_regular(owner / name, cap)
+                        write_new(retained / name, raw)
+                        require(read_regular(retained / name, cap) == raw, "selected-copy-readback")
+                        captured[name] = raw
+                        observations.append({"file": name, "state": "CAPTURED", "bytes": len(raw), "sha256": sha(raw)})
+                    except (OSError, ValueError) as error:
+                        observations.append({"file": name, "state": "UNAVAILABLE", "error_type": type(error).__name__})
+                write_new(retained / "selection-custody-observation.json", canonical({
+                    "context": context, "files": observations, "native_recapture": False,
+                    "missing_selected_tar_is_not_synthesized": True, "automatic_retry": False}))
+                copy_complete = len(captured) == 5 and all(row["state"] == "CAPTURED" for row in observations)
+                complete = False
+                producer = None
+                execution = None
+                try:
+                    producer = strict(captured["producer-record.json"])
+                    same_context(producer.get("context"), context)
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    producer = None
+                try:
+                    execution = strict(read_regular(control / "execution.json", MAX_JSON))
+                    same_context(execution.get("context"), context)
+                except (OSError, ValueError, TypeError, AttributeError):
+                    execution = None
+                try:
+                    require(copy_complete and type(attempt_intent) is dict, "selected-copy-or-intent-incomplete")
+                    selection_intent = strict(captured["selection-intent.json"])
+                    require(type(selection_intent) is dict and set(selection_intent) == {
+                            "schema", "context", "automatic_retry", "native_effects"}
+                            and selection_intent.get("schema") == "motionwright.blender.lit-still-selection-intent/1"
+                            and selection_intent.get("automatic_retry") is False
+                            and type(selection_intent.get("native_effects")) is int
+                            and selection_intent.get("native_effects") == 0, "selection-intent-contract")
+                    same_context(selection_intent.get("context"), context)
+                    require(type(producer) is dict and type(attempt_intent.get("binary")) is dict
+                            and producer.get("caller_binary") == {k: attempt_intent["binary"].get(k)
+                                                                   for k in ("bytes", "sha256")}, "native-binary-binding")
+                    tar = captured["selected-evidence.tar"]
+                    terminal = strict(captured["selection-terminal.json"])
+                    require(type(terminal) is dict and terminal.get("schema") ==
+                            "motionwright.blender.lit-still-selection-terminal/1", "selection-terminal-schema")
+                    selected = terminal.get("selection")
+                    require(type(selected) is dict and terminal.get("error") is None
+                            and selected.get("tar", {}).get("sha256") == sha(tar)
+                            and selected.get("tar", {}).get("bytes") == len(tar)
+                            and selected.get("tar", {}).get("relative_path") == "selected-evidence.tar",
+                            "selected-original-binding")
+                    manifest_raw = captured["selected-evidence-manifest.json"]
+                    require(selected.get("manifest", {}).get("sha256") == sha(manifest_raw)
+                            and selected.get("manifest", {}).get("bytes") == len(manifest_raw)
+                            and selected.get("manifest", {}).get("relative_path") == "selected-evidence-manifest.json",
+                            "selected-manifest-binding")
+                    require(source is not None and source == preflight.get("source"), "source-changed-after-native")
+                    import native_blender_lit_still_e2e as lit
+                    import native_evidence_projection as selection
+                    policies, roles, _ = lit.selection_contract()
+                    selected_context = {**context, "scenario": "blender-lit-still"}
+                    manifest = selection.inspect_selected_tar(tar, expected_context=selected_context,
+                                role_contract=roles, policies=policies)
+                    require(manifest == strict(manifest_raw), "original-manifest-mismatch")
+                    complete = lit.validate_lit_manifest(manifest, selected_context)["complete"] is True
+                    terminal_rows = [row for row in manifest["members"] if row["relative_path"] == "producer-record.json"]
+                    require(len(terminal_rows) == 1 and terminal_rows[0]["expected_sha256"]
+                            == sha(captured["producer-record.json"]), "producer-terminal-binding")
+                except Exception:
+                    complete = False
+                try:
+                    stable = source is not None and source_state(root, context) == source == preflight.get("source")
+                except (ValueError, OSError, subprocess.CalledProcessError):
+                    stable = False
+                status = classify_native(execution.get("exit_code") if type(execution) is dict else None,
+                                         producer, complete, stable,
+                                         "NOT_RUN" if no_native_start else "UNKNOWN_NO_RETRY" if attempt_intent is None else
+                                         execution.get("state") if type(execution) is dict else "UNKNOWN_NO_RETRY")
+                # Existing bounded private-snapshot collector retains source/build and
+                # control originals plus the immutable selected bytes above.  Prioritize
+                # selected custody under the existing total budget.  Partial never PASSes.
+                snapshot, custody_complete = crypto.gather_snapshot({
+                    "a-selected": retained, "control": control,
+                    "g-zero": temp / "blender-lit-g0", "g-one": temp / "blender-lit-g1"}, preserve_partial=True)
+                try:
+                    retained_exact = verify_outer_selection(snapshot, captured)
+                except (ValueError, KeyError, OSError, tarfile.TarError):
+                    retained_exact = False
+                custody_complete = custody_complete is True and retained_exact and copy_complete
+                if not custody_complete and status == "PHYSICAL_ORACLES_OBSERVED":
+                    status = "INCOMPLETE"
+                sealed = crypto.encrypt_snapshot(snapshot, recipient, context)
+                stage = root / "verification/native-blender-lit-still-staged"
+                stage.mkdir(parents=True, exist_ok=False)
+                write_new(stage / "private-evidence.mwseal", sealed)
+                public = public_summary(context, status, complete, stable, sealed, recipient["sha256"])
+                public.update({"private_plaintext_format": "motionwright.ci.private-snapshot/1",
+                               "nested_selected_tar": "a-selected/selected-evidence.tar",
+                               "selected_tar_present": "selected-evidence.tar" in captured,
+                               "custody_snapshot_complete": custody_complete,
+                               "native_attempted": attempted, "attempt_intent_present": intent_present,
+                               "no_native_start_observed": no_native_start})
+                write_new(stage / "public-evidence.json", canonical(public))
+                with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+                    output.write("sealed=true\n")
+                return 0 if status == "PHYSICAL_ORACLES_OBSERVED" else 1
+            raise ValueError("unknown-fixed-workflow-mode")
+
+
+        if __name__ == "__main__":
+            require(len(sys.argv) == 2 and sys.argv[1] in {"preflight", "g1", "native", "seal"}, "fixed-mode-required")
+            raise SystemExit(main(sys.argv[1]))
+        PY
+    - name: Bind composed source and validate encryption recipient before native effects
+      id: lit_preflight
+      env:
+        EXACT_SEMWRIGHT_SHA: ${{ steps.lit_pin.outputs.sha }}
+      run: |
+        "$RUNNER_TEMP/blender-lit-venv/bin/python" "$RUNNER_TEMP/blender-lit-wiring.py" preflight
+    - name: G0 source policy, format and closed lit producer contracts
+      run: |
+        {
+          python3 tooling/source_policy.py
+          cargo fmt --all -- --check
+          "$RUNNER_TEMP/blender-lit-venv/bin/python" tooling/ci_test_runner.py \
+            --pattern test_native_blender_lit_still_oracle.py \
+            --pattern test_native_blender_lit_seed_policy.py \
+            --mode both --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/blender-lit-g0/receipt.json"
+        } > "$RUNNER_TEMP/blender-lit-g0/console.stdout" 2> "$RUNNER_TEMP/blender-lit-g0/console.stderr"
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      with:
+        key: motionwright-native-blender-lit-1.98.1
+        cache-on-failure: true
+    - name: G1 compile exact composed caller and require all 29 real Rust cases
+      id: lit_g1
+      env:
+        EXACT_SEMWRIGHT_SHA: ${{ steps.lit_pin.outputs.sha }}
+      run: |
+        "$RUNNER_TEMP/blender-lit-venv/bin/python" "$RUNNER_TEMP/blender-lit-wiring.py" g1
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: seradotcom/semwright
+        ref: ${{ steps.lit_pin.outputs.sha }}
+        path: _semwright
+        persist-credentials: false
+    - name: Verify checked out SDK identity
+      env:
+        EXACT_SEMWRIGHT_SHA: ${{ steps.lit_pin.outputs.sha }}
+      run: test "$(git -C _semwright rev-parse HEAD)" = "$EXACT_SEMWRIGHT_SHA"
+    - name: Install verified Blender and decoded-media dependencies
+      env:
+        BLENDER_URL: https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
+        BLENDER_SHA256: 9ba871ff2ecd36526b77432745980b7e6664ecd0c7ca11c48849073dcfe06da3
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y \
+          bubblewrap fontconfig xz-utils libpipewire-0.3-dev pkg-config clang ffmpeg
+        curl --fail --location --retry 3 --output "$RUNNER_TEMP/blender-lit.tar.xz" "$BLENDER_URL"
+        echo "$BLENDER_SHA256  $RUNNER_TEMP/blender-lit.tar.xz" | sha256sum --check -
+        sudo tar -xJf "$RUNNER_TEMP/blender-lit.tar.xz" -C /usr/local
+        test "$("$SEMWRIGHT_TEST_BLENDER_ROOT/blender" --version | head -1)" = "Blender 4.5.14 LTS"
+        ffmpeg -version
+        bwrap --version
+    - name: Configure disposable-runner Driver Host sandbox
+      run: |
+        bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
+          "$RUNNER_TEMP/blender-lit-sandbox-profile.txt"
+    - name: Build exact SDK Broker, sandbox and Blender provider
+      working-directory: _semwright
+      run: |
+        cargo build --locked -p semwright-daemon -p semwright-cli --bins
+        cargo build --locked -p semwright-plugin-host --bin semwright-sandbox \
+          -p semwright-driver-blender --bin semwright-blender-driver \
+          --bin semwright-blender-session-runner
+    - name: G2 one explicit lit create-edit-reopen-light-control attempt
+      id: lit_native
+      if: success() && steps.lit_g1.outcome == 'success'
+      env:
+        EXACT_SEMWRIGHT_SHA: ${{ steps.lit_pin.outputs.sha }}
+        SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+        SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+      run: |
+        "$RUNNER_TEMP/blender-lit-venv/bin/python" "$RUNNER_TEMP/blender-lit-wiring.py" native
+    - name: Seal already-selected private originals and retain UNKNOWN as failure
+      id: lit_seal
+      if: always() && steps.lit_preflight.outcome == 'success'
+      env:
+        NATIVE_STEP_OUTCOME: ${{ steps.lit_native.outcome }}
+        EXACT_SEMWRIGHT_SHA: ${{ steps.lit_pin.outputs.sha }}
+      run: |
+        "$RUNNER_TEMP/blender-lit-venv/bin/python" "$RUNNER_TEMP/blender-lit-wiring.py" seal
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      if: always() && steps.lit_seal.outputs.sealed == 'true'
+      with:
+        name: motionwright-blender-lit-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          verification/native-blender-lit-still-staged/public-evidence.json
+          verification/native-blender-lit-still-staged/private-evidence.mwseal
+        if-no-files-found: error
         retention-days: 14

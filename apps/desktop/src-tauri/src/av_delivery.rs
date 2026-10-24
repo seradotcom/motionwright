@@ -1,8 +1,12 @@
-use motionwright_domain::Project;
+use motionwright_domain::{Project, RevisionStamp};
 use motionwright_native::production::{
-    MltAvMasterEvidence, MltMultisegmentAvMasterEvidence, read_verified_production_artifact,
-    verified_native_media_path,
+    AudioAnalysisLane, MltAvMasterEvidence, MltMultisegmentAvMasterEvidence,
+    ProductionConnection, ProductionCoordinator, ProductionReceiptCustody,
+    VerifiedDeliveryAudioQcReport, VerifiedOriginalMixAudioMeasurements,
+    read_verified_production_artifact, verified_native_media_path,
 };
+use motionwright_service::StudioService;
+use semwright_native_sdk::{Error as NativeError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -43,6 +47,238 @@ pub struct MasterReviewRequest {
     pub export_token: Uuid,
 }
 
+/// Public QC is always re-derived by the native proof reader. It is never a
+/// cache, export permission, or a WebView-authored measurement/provenance object.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NativeAvAudioQcResponse {
+    Report {
+        report: Box<VerifiedDeliveryAudioQcReport>,
+    },
+    NotRequested,
+    Unavailable {
+        reason: AudioQcUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioQcUnavailableReason {
+    SessionUnavailable,
+    SourceChanged,
+    ConnectionUnavailable,
+    ArtifactChanged,
+    MeasurementUnavailable,
+    UnresolvedReceipt,
+    UnsupportedPlatform,
+}
+
+impl NativeAvAudioQcResponse {
+    pub fn unavailable(reason: AudioQcUnavailableReason) -> Self {
+        Self::Unavailable { reason }
+    }
+
+    /// Only the existing opaque native proof can produce a report. The public
+    /// projection is inspected for its parent hash; the typed report itself is
+    /// returned unchanged. No private receipt payload, path or selector crosses IPC.
+    pub fn from_measurements(
+        measurements: &VerifiedOriginalMixAudioMeasurements,
+        coordinator: &ProductionCoordinator,
+        expected_master_sha256: Option<&str>,
+    ) -> Self {
+        let Some(expected) = expected_master_sha256.filter(|digest| valid_sha256(digest)) else {
+            return Self::unavailable(AudioQcUnavailableReason::ArtifactChanged);
+        };
+        let report = match measurements.delivery_audio_qc_report(coordinator) {
+            Ok(report) => report,
+            Err(error) => return Self::unavailable(audio_qc_error_reason(&error)),
+        };
+        let public = match serde_json::to_value(&report) {
+            Ok(value) => value,
+            Err(_) => return Self::unavailable(AudioQcUnavailableReason::MeasurementUnavailable),
+        };
+        if public.get("schema").and_then(serde_json::Value::as_str)
+            != Some("motionwright.delivery-audio-qc-report/2")
+            || public
+                .get("master_artifact_sha256")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected)
+        {
+            return Self::unavailable(AudioQcUnavailableReason::ArtifactChanged);
+        }
+        Self::Report {
+            report: Box::new(report),
+        }
+    }
+}
+
+fn audio_qc_error_reason(error: &NativeError) -> AudioQcUnavailableReason {
+    match &error.code {
+        // Missing/inconsistent/UNKNOWN original receipts all remain unresolved;
+        // this is not a claim that every Conflict was a dispatched UNKNOWN.
+        ErrorCode::Conflict => AudioQcUnavailableReason::UnresolvedReceipt,
+        ErrorCode::StaleReference => AudioQcUnavailableReason::SourceChanged,
+        _ => AudioQcUnavailableReason::MeasurementUnavailable,
+    }
+}
+
+pub fn audio_targets_requested(project: &Project, deliverable_id: Uuid) -> bool {
+    project
+        .production_design
+        .delivery_recipes
+        .get(&deliverable_id)
+        .is_some_and(|recipe| recipe.audio_targets.is_some())
+}
+
+/// Preflight before RenderLocal consumption, staging, or multisegment visual
+/// production. A targeted profile must never fall back to an unmeasured mux.
+pub fn require_audio_qc_host(targeted: bool) -> Result<(), &'static str> {
+    if targeted && !cfg!(target_os = "linux") {
+        return Err("Saved audio targets require the supported Linux native meter; no master production was started.");
+    }
+    Ok(())
+}
+
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioQcInventoryRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub deliverable_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioQcRecoveryRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub deliverable_id: Uuid,
+    pub decoded_measurement_receipt_id: Uuid,
+    pub expected_master_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NativeAvAudioQcInventoryResponse {
+    Inventory {
+        inventory: motionwright_native::production::AudioQcReceiptInventory,
+    },
+    Unavailable {
+        reason: AudioQcUnavailableReason,
+    },
+}
+
+fn with_audio_connection<T>(
+    project: &Project,
+    service: StudioService,
+    connection_path: Option<&Path>,
+    custody: &ProductionReceiptCustody,
+    read: impl FnOnce(&ProductionCoordinator) -> T,
+) -> Result<T, AudioQcUnavailableReason> {
+    let path = connection_path.ok_or(AudioQcUnavailableReason::ConnectionUnavailable)?;
+    let connection = ProductionConnection::load(path)
+        .map_err(|_| AudioQcUnavailableReason::ConnectionUnavailable)?;
+    if connection.resource != project.resource_key() {
+        return Err(AudioQcUnavailableReason::ConnectionUnavailable);
+    }
+    let identity = connection
+        .identity()
+        .map_err(|_| AudioQcUnavailableReason::ConnectionUnavailable)?;
+    let coordinator = ProductionCoordinator::with_receipt_custody(service, connection, custody)
+        .map_err(|_| AudioQcUnavailableReason::ConnectionUnavailable)?;
+    let result = read(&coordinator);
+    let current = ProductionConnection::load(path)
+        .map_err(|_| AudioQcUnavailableReason::ConnectionUnavailable)?;
+    if current.identity().ok().as_deref() != Some(identity.as_str()) {
+        return Err(AudioQcUnavailableReason::ConnectionUnavailable);
+    }
+    Ok(result)
+}
+
+pub fn read_audio_qc_inventory(
+    project: &Project,
+    deliverable_id: Uuid,
+    service: StudioService,
+    connection_path: Option<&Path>,
+    custody: &ProductionReceiptCustody,
+) -> NativeAvAudioQcInventoryResponse {
+    let result = with_audio_connection(project, service, connection_path, custody, |coordinator| {
+        coordinator
+            .original_mix_audio_qc_receipt_inventory(project.id, &project.stamp(), deliverable_id)
+            .map_err(|error| audio_qc_error_reason(&error))
+    })
+    .and_then(|result| result);
+    match result {
+        Ok(inventory) => NativeAvAudioQcInventoryResponse::Inventory { inventory },
+        Err(reason) => NativeAvAudioQcInventoryResponse::Unavailable { reason },
+    }
+}
+
+pub fn recover_audio_qc(
+    project: &Project,
+    request: &AudioQcRecoveryRequest,
+    service: StudioService,
+    connection_path: Option<&Path>,
+    custody: &ProductionReceiptCustody,
+) -> NativeAvAudioQcResponse {
+    if project.id != request.project_id
+        || project.generation != request.generation
+        || project.revision != request.revision
+        || !valid_sha256(&request.expected_master_sha256)
+    {
+        return NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::SourceChanged);
+    }
+    if !cfg!(target_os = "linux") {
+        return NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::UnsupportedPlatform);
+    }
+    with_audio_connection(project, service, connection_path, custody, |coordinator| {
+        match coordinator.recover_original_mix_audio_measurements_from_receipt(
+            project.id,
+            &project.stamp(),
+            request.decoded_measurement_receipt_id,
+            request.deliverable_id,
+            &request.expected_master_sha256,
+        ) {
+            Ok(proof) => NativeAvAudioQcResponse::from_measurements(
+                &proof,
+                coordinator,
+                Some(&request.expected_master_sha256),
+            ),
+            Err(error) => NativeAvAudioQcResponse::unavailable(audio_qc_error_reason(&error)),
+        }
+    })
+    .unwrap_or_else(NativeAvAudioQcResponse::unavailable)
+}
+
+/// Trusted original caller identity, not the native measurement namespace.
+/// Deliberately not serializable/deserializable and never accepted over IPC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AudioAnalysisSelector {
+    request_id: String,
+    lane: AudioAnalysisLane,
+    connection_identity: String,
+}
+
+impl AudioAnalysisSelector {
+    fn new(request_id: &str, lane: AudioAnalysisLane, connection_identity: &str) -> Option<Self> {
+        if request_id.trim().is_empty()
+            || request_id.len() > 96
+            || request_id.chars().any(char::is_control)
+            || !valid_sha256(connection_identity)
+        {
+            return None;
+        }
+        Some(Self {
+            request_id: request_id.to_owned(),
+            lane,
+            connection_identity: connection_identity.to_owned(),
+        })
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct MasterExportReceipt {
     pub destination: String,
@@ -71,6 +307,8 @@ struct DeliveryHandle {
     /// A captioned master without *device-local decoded pixel verification*
     /// can be previewed from the owner root, NEVER exported as verified.
     review_only: bool,
+    /// Session recovery hint only; every read must reopen the durable proof.
+    audio_analysis: Option<AudioAnalysisSelector>,
 }
 
 #[derive(Clone, Default)]
@@ -106,6 +344,30 @@ impl NativeMasterDeliveryRegistry {
     /// Only the trusted post-coordinator path can mint an export token. The
     /// WebView can never supply master artifact paths, hashes or provenance.
     pub fn register(&self, owner_root: &Path, master: &MltAvMasterEvidence) -> Option<Uuid> {
+        self.register_single(owner_root, master, None)
+    }
+
+    pub fn register_measured(
+        &self,
+        owner_root: &Path,
+        master: &MltAvMasterEvidence,
+        original_request_id: &str,
+        connection_identity: &str,
+    ) -> Option<Uuid> {
+        let selector = AudioAnalysisSelector::new(
+            original_request_id,
+            AudioAnalysisLane::SingleSegment,
+            connection_identity,
+        )?;
+        self.register_single(owner_root, master, Some(selector))
+    }
+
+    fn register_single(
+        &self,
+        owner_root: &Path,
+        master: &MltAvMasterEvidence,
+        audio_analysis: Option<AudioAnalysisSelector>,
+    ) -> Option<Uuid> {
         if master.master.get("profile")?.as_str()? != "h264-aac-mp4"
             || master.frame_count == 0
             || master.frame_count > 36_000
@@ -135,6 +397,7 @@ impl NativeMasterDeliveryRegistry {
             relative_path: relative_path.to_owned(),
             sha256: sha256.to_owned(),
             review_only: false,
+            audio_analysis,
         };
         let mut entries = self.entries.lock().ok()?;
         if entries.len() >= MAX_DELIVERY_HANDLES {
@@ -154,6 +417,30 @@ impl NativeMasterDeliveryRegistry {
         &self,
         owner_root: &Path,
         evidence: &MltMultisegmentAvMasterEvidence,
+    ) -> Option<Uuid> {
+        self.register_multiple(owner_root, evidence, None)
+    }
+
+    pub fn register_measured_multisegment(
+        &self,
+        owner_root: &Path,
+        evidence: &MltMultisegmentAvMasterEvidence,
+        original_request_id: &str,
+        connection_identity: &str,
+    ) -> Option<Uuid> {
+        let selector = AudioAnalysisSelector::new(
+            original_request_id,
+            AudioAnalysisLane::Multisegment,
+            connection_identity,
+        )?;
+        self.register_multiple(owner_root, evidence, Some(selector))
+    }
+
+    fn register_multiple(
+        &self,
+        owner_root: &Path,
+        evidence: &MltMultisegmentAvMasterEvidence,
+        audio_analysis: Option<AudioAnalysisSelector>,
     ) -> Option<Uuid> {
         let review_only = multisegment_review_only(
             &evidence.evidence_scope,
@@ -212,6 +499,7 @@ impl NativeMasterDeliveryRegistry {
             relative_path: path.to_owned(),
             sha256: sha256.to_owned(),
             review_only,
+            audio_analysis,
         };
         let mut entries = self.entries.lock().ok()?;
         if entries.len() >= MAX_DELIVERY_HANDLES {
@@ -257,6 +545,7 @@ impl NativeMasterDeliveryRegistry {
             frame_rate_den: entry.frame_rate_den,
             frame_count: entry.frame_count,
             review_only: entry.review_only,
+            audio_analysis: entry.audio_analysis,
         })
     }
 }
@@ -273,6 +562,7 @@ pub struct DeliverySource {
     frame_rate_den: u32,
     frame_count: u64,
     review_only: bool,
+    audio_analysis: Option<AudioAnalysisSelector>,
 }
 
 fn validated_destination(value: &str) -> Result<PathBuf, String> {
@@ -321,6 +611,118 @@ fn validated_destination(value: &str) -> Result<PathBuf, String> {
 }
 
 impl DeliverySource {
+    fn audio_qc_source(
+        &self,
+        project: &Project,
+    ) -> Result<Option<&AudioAnalysisSelector>, AudioQcUnavailableReason> {
+        if self.project_id != project.id
+            || self.generation != project.generation
+            || self.revision != project.revision
+            || !project
+                .deliverables
+                .iter()
+                .any(|profile| profile.id == self.deliverable_id)
+        {
+            return Err(AudioQcUnavailableReason::SourceChanged);
+        }
+        verified_native_media_path(
+            &self.owner_root,
+            &self.relative_path,
+            &self.sha256,
+            MAX_MASTER_BYTES,
+        )
+        .map_err(|_| AudioQcUnavailableReason::ArtifactChanged)?;
+        match (
+            audio_targets_requested(project, self.deliverable_id),
+            self.audio_analysis.as_ref(),
+        ) {
+            (false, None) => Ok(None),
+            (true, Some(selector)) => Ok(Some(selector)),
+            (true, None) => Err(AudioQcUnavailableReason::MeasurementUnavailable),
+            (false, Some(_)) => Err(AudioQcUnavailableReason::SourceChanged),
+        }
+    }
+
+    fn audio_connection_matches(
+        &self,
+        connection: &ProductionConnection,
+        selector: &AudioAnalysisSelector,
+    ) -> bool {
+        connection.resource == format!("project:{}", self.project_id)
+            && connection.output_root == self.owner_root
+            && connection.identity().ok().as_deref() == Some(selector.connection_identity.as_str())
+    }
+
+    /// A session handle selects an existing completed chain. This reader has
+    /// no effect-grant input and does not dispatch: it cannot render, measure,
+    /// append a receipt, retry an UNKNOWN, or mint a replacement handle.
+    /// Process-restart lookup remains a separate bounded native contract.
+    pub fn read_audio_qc(
+        &self,
+        project: &Project,
+        service: StudioService,
+        connection_path: Option<&Path>,
+        custody: &ProductionReceiptCustody,
+    ) -> NativeAvAudioQcResponse {
+        let selector = match self.audio_qc_source(project) {
+            Ok(Some(selector)) => selector,
+            Ok(None) => return NativeAvAudioQcResponse::NotRequested,
+            Err(reason) => return NativeAvAudioQcResponse::unavailable(reason),
+        };
+        if !cfg!(target_os = "linux") {
+            return NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::UnsupportedPlatform,
+            );
+        }
+        let Some(connection_path) = connection_path else {
+            return NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::ConnectionUnavailable,
+            );
+        };
+        let connection = match ProductionConnection::load(connection_path) {
+            Ok(connection) if self.audio_connection_matches(&connection, selector) => connection,
+            _ => {
+                return NativeAvAudioQcResponse::unavailable(
+                    AudioQcUnavailableReason::ConnectionUnavailable,
+                );
+            }
+        };
+        let coordinator =
+            match ProductionCoordinator::with_receipt_custody(service, connection, custody) {
+                Ok(coordinator) => coordinator,
+                Err(_) => {
+                    return NativeAvAudioQcResponse::unavailable(
+                        AudioQcUnavailableReason::ConnectionUnavailable,
+                    );
+                }
+            };
+        let expected = RevisionStamp {
+            resource: project.resource_key(),
+            generation: self.generation,
+            revision: self.revision,
+        };
+        let proof = match coordinator.reopen_original_mix_audio_measurements(
+            self.project_id,
+            &expected,
+            &selector.request_id,
+            self.deliverable_id,
+            selector.lane,
+        ) {
+            Ok(proof) => proof,
+            Err(error) => return NativeAvAudioQcResponse::unavailable(audio_qc_error_reason(&error)),
+        };
+        let report =
+            NativeAvAudioQcResponse::from_measurements(&proof, &coordinator, Some(&self.sha256));
+        // The selected connection file must still name the original owner and
+        // runtime identity. A changed file is not a new read authority.
+        match ProductionConnection::load(connection_path) {
+            Ok(connection) if self.audio_connection_matches(&connection, selector) => report,
+            _ => NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::ConnectionUnavailable,
+            ),
+        }
+    }
+
     /// Explicitly refuse a delivery grant for a master whose native caption
     /// source is verified but whose *actual decoded master pixels* are not.
     pub fn export_allowed(&self) -> bool {
@@ -590,6 +992,186 @@ mod tests {
         Project::new("Native AV delivery fixture").unwrap()
     }
 
+    // These are registry/read-boundary contract cases using explicit synthetic
+    // bytes. They do not manufacture a meter report or native/media acceptance.
+    #[test]
+    fn measured_selector_retains_original_identity_across_registry_clone_only() {
+        let owner = tempfile::tempdir().unwrap();
+        let project = project();
+        let bytes = b"\0\0\0\x18ftypisom\0\0\0\0selector-fixture";
+        let evidence = artifact_for(&project, bytes);
+        let registry = NativeMasterDeliveryRegistry::default();
+        let request_id = format!("mwav-{}", "1".repeat(64));
+        let identity = "2".repeat(64);
+        let token = registry.register_measured(owner.path(), &evidence, &request_id, &identity).unwrap();
+        let restored_view = registry.clone();
+        let source = restored_view.resolve(&project, token).unwrap();
+        let selector = source.audio_analysis.as_ref().unwrap();
+        assert_eq!(selector.request_id, request_id);
+        assert_eq!(selector.lane, AudioAnalysisLane::SingleSegment);
+        assert_eq!(selector.connection_identity, identity);
+        assert!(source.export_allowed());
+        assert!(NativeMasterDeliveryRegistry::default().resolve(&project, token).is_err(),
+            "a fresh app registry cannot invent restart recovery");
+        assert!(restored_view.resolve(&project, Uuid::new_v4()).is_err());
+        for _ in 0..MAX_DELIVERY_HANDLES {
+            registry.register(owner.path(), &evidence).unwrap();
+        }
+        assert!(restored_view.resolve(&project, token).is_err(), "evicted token is not reusable");
+    }
+
+    #[test]
+    fn measured_selector_rejects_invalid_private_identity_without_minting_a_handle() {
+        let owner = tempfile::tempdir().unwrap();
+        let project = project();
+        let evidence = artifact_for(&project, b"synthetic");
+        let registry = NativeMasterDeliveryRegistry::default();
+        for request in ["".to_owned(), " ".to_owned(), "x\ny".to_owned(), "x".repeat(97)] {
+            assert!(registry.register_measured(owner.path(), &evidence, &request, &"a".repeat(64)).is_none());
+        }
+        for identity in ["".to_owned(), "a".repeat(63), "A".repeat(64), "g".repeat(64)] {
+            assert!(registry.register_measured(owner.path(), &evidence, "original-caller", &identity).is_none());
+        }
+        assert!(registry.entries.lock().unwrap().is_empty());
+        let exact = " original-caller ";
+        let token = registry.register_measured(owner.path(), &evidence, exact, &"b".repeat(64)).unwrap();
+        assert_eq!(registry.resolve(&project, token).unwrap().audio_analysis.unwrap().request_id, exact,
+            "do not trim or replace the original caller with an ma namespace");
+    }
+
+    #[test]
+    fn qc_read_preflight_preserves_not_requested_and_refuses_missing_or_stale_measurements() {
+        let owner = tempfile::tempdir().unwrap();
+        let mut project = project();
+        let bytes = b"\0\0\0\x18ftypisom\0\0\0\0read-contract";
+        let path = owner.path().join("signed-master.mp4");
+        fs::write(&path, bytes).unwrap();
+        let registry = NativeMasterDeliveryRegistry::default();
+        let evidence = artifact_for(&project, bytes);
+        let legacy = registry.register(owner.path(), &evidence).unwrap();
+        let source = registry.resolve(&project, legacy).unwrap();
+        assert!(source.audio_qc_source(&project).unwrap().is_none());
+        project.production_design.delivery_recipes.entry(project.deliverables[0].id).or_default().audio_targets =
+            Some(serde_json::from_value(json!({"target_lufs": -23.0, "target_true_peak_dbtp": null})).unwrap());
+        assert_eq!(source.audio_qc_source(&project), Err(AudioQcUnavailableReason::MeasurementUnavailable));
+        let measured = registry.register_measured(owner.path(), &evidence, "original-caller", &"c".repeat(64)).unwrap();
+        let source = registry.resolve(&project, measured).unwrap();
+        assert_eq!(source.audio_qc_source(&project).unwrap().unwrap().request_id, "original-caller");
+        let saved_project = project.clone();
+        project.revision += 1;
+        assert_eq!(source.audio_qc_source(&project), Err(AudioQcUnavailableReason::SourceChanged));
+        project = saved_project.clone();
+        project.generation = Uuid::new_v4();
+        assert_eq!(source.audio_qc_source(&project), Err(AudioQcUnavailableReason::SourceChanged));
+        project = saved_project.clone();
+        project.deliverables.clear();
+        assert_eq!(source.audio_qc_source(&project), Err(AudioQcUnavailableReason::SourceChanged));
+        project = saved_project;
+        project.production_design.delivery_recipes.clear();
+        assert_eq!(source.audio_qc_source(&project), Err(AudioQcUnavailableReason::SourceChanged));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::write(&path, b"changed canonical master").unwrap();
+        assert_eq!(source.audio_qc_source(&project), Err(AudioQcUnavailableReason::ArtifactChanged));
+        assert_eq!(fs::read(&path).unwrap(), b"changed canonical master",
+            "read failure must not restore or overwrite owner bytes");
+    }
+
+    #[test]
+    fn qc_connection_selector_rejects_owner_or_connection_substitution() {
+        let owner = tempfile::tempdir().unwrap();
+        let project = project();
+        // Identity-only policy fixture. No connection validation, executable or
+        // native dispatcher is run by this contract test.
+        let mut connection = ProductionConnection {
+            schema: "motionwright-semwright-connection/1".into(),
+            executable: owner.path().join("not-executed"),
+            executable_sha256: "a".repeat(64),
+            socket: owner.path().join("not-connected"),
+            session_file: owner.path().join("not-opened"),
+            output_root: owner.path().to_path_buf(),
+            resource: project.resource_key(),
+        };
+        let identity = connection.identity().unwrap();
+        let registry = NativeMasterDeliveryRegistry::default();
+        let token = registry.register_measured(owner.path(), &artifact_for(&project, b"fixture"), "original", &identity).unwrap();
+        let source = registry.resolve(&project, token).unwrap();
+        let selector = source.audio_analysis.as_ref().unwrap();
+        assert!(source.audio_connection_matches(&connection, selector));
+        connection.session_file = owner.path().join("different-session");
+        assert!(!source.audio_connection_matches(&connection, selector));
+        connection.session_file = owner.path().join("not-opened");
+        connection.output_root = owner.path().join("other-root");
+        assert!(!source.audio_connection_matches(&connection, selector));
+        connection.output_root = owner.path().to_path_buf();
+        connection.resource = format!("project:{}", Uuid::new_v4());
+        assert!(!source.audio_connection_matches(&connection, selector));
+    }
+
+    #[test]
+    fn qc_read_request_rejects_private_authority_and_public_errors_remain_closed() {
+        let project = project();
+        let request = json!({"project_id":project.id,"generation":project.generation,"revision":project.revision,"export_token":Uuid::new_v4()});
+        assert!(serde_json::from_value::<MasterReviewRequest>(request.clone()).is_ok());
+        for key in ["request_id", "lane", "connection_identity", "owner_root", "master_sha256", "audio_measurements", "audio_qc"] {
+            let mut forged = request.clone();
+            forged[key] = json!("caller-injected");
+            assert!(serde_json::from_value::<MasterReviewRequest>(forged).is_err(), "{key}");
+        }
+        let private_error = NativeError::new(ErrorCode::Conflict, "private/path request-and-receipt-detail");
+        let reason = audio_qc_error_reason(&private_error);
+        assert_eq!(reason, AudioQcUnavailableReason::UnresolvedReceipt);
+        assert_eq!(serde_json::to_value(NativeAvAudioQcResponse::unavailable(reason)).unwrap(),
+            json!({"kind":"unavailable","reason":"unresolved_receipt"}));
+        assert_eq!(serde_json::to_value(NativeAvAudioQcResponse::NotRequested).unwrap(), json!({"kind":"not_requested"}));
+        assert_eq!(audio_qc_error_reason(&NativeError::new(ErrorCode::StaleReference, "private")), AudioQcUnavailableReason::SourceChanged);
+        assert_eq!(audio_qc_error_reason(&NativeError::new(ErrorCode::BackendFailed, "private")), AudioQcUnavailableReason::MeasurementUnavailable);
+    }
+
+
+    #[test]
+    fn durable_audio_requests_refuse_private_context_and_keep_scope_exact() {
+        let project = project();
+        let inventory = json!({"project_id":project.id,"generation":project.generation,
+            "revision":project.revision,"deliverable_id":project.deliverables[0].id});
+        assert!(serde_json::from_value::<AudioQcInventoryRequest>(inventory.clone()).is_ok());
+        let mut recovery = inventory.clone();
+        recovery["decoded_measurement_receipt_id"] = json!(Uuid::new_v4());
+        recovery["expected_master_sha256"] = json!("a".repeat(64));
+        assert!(serde_json::from_value::<AudioQcRecoveryRequest>(recovery.clone()).is_ok());
+        for field in [
+            "caller_request_id",
+            "lane",
+            "connection_identity",
+            "owner_root",
+            "effect_grant",
+            "audio_reopen",
+            "proof",
+            "export_token",
+        ] {
+            let mut value = inventory.clone();
+            value[field] = json!("private");
+            assert!(
+                serde_json::from_value::<AudioQcInventoryRequest>(value).is_err(),
+                "{field}"
+            );
+            let mut value = recovery.clone();
+            value[field] = json!("private");
+            assert!(
+                serde_json::from_value::<AudioQcRecoveryRequest>(value).is_err(),
+                "{field}"
+            );
+        }
+        recovery["revision"] = json!(false);
+        assert!(serde_json::from_value::<AudioQcRecoveryRequest>(recovery).is_err());
+        let wire = NativeAvAudioQcInventoryResponse::Unavailable {
+            reason: AudioQcUnavailableReason::UnresolvedReceipt,
+        };
+        assert_eq!(
+            serde_json::to_value(wire).unwrap(),
+            json!({"kind":"unavailable","reason":"unresolved_receipt"})
+        );
+    }
+
     #[test]
     fn original_multisegment_master_can_export_but_captioned_master_never_inherits_the_grant() {
         assert_eq!(
@@ -647,6 +1229,7 @@ mod tests {
             frame_rate_den: 1,
             frame_count: 33,
             review_only: true,
+            audio_analysis: None,
         };
         assert!(!source.export_allowed());
         assert_eq!(source.review_bytes().unwrap(), media);
