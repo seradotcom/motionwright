@@ -1,4 +1,6 @@
+import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
+import type { ProductionDraft } from "../src/productionDesignDraft";
 import type { ProductionFixtureRequest } from "./fixtures/production-design-authority";
 
 // Actual Production UI and canonical browser/coordinator paths. Controlled
@@ -171,46 +173,107 @@ test("a silent Production copy removal reports unconfirmed discard and keeps the
   expect(await requests(page)).toHaveLength(1);
 });
 
-test("an unreadable own Production copy stays warned while typing; an explicit new copy preserves both buffers", async ({ page }) => {
+test("an unreadable Production source blocks new custody while original bytes and later input remain downloadable", async ({ page }, info) => {
   const initial = await page.evaluate(() => window.__PRODUCTION_AUTHORITY__.project());
   await headline(page).fill("An earlier recoverable line");
-  const corruptKey = await page.evaluate(project => {
+  const corrupt = "{unreadable author copy", later = "  New author input remains  ";
+  const original = await page.evaluate(({ project, corrupt }) => {
     const scope = JSON.stringify([project.id, project.generation, project.active_branch, "hero", project.scenes[0].id]);
-    const writer = sessionStorage.getItem("motionwright.production-writer.v1:" + encodeURIComponent(scope));
+    const pointer = "motionwright.production-writer.v1:" + encodeURIComponent(scope), writer = sessionStorage.getItem(pointer);
     if (!writer) throw new Error("Missing own Production pointer.");
     const key = "motionwright.production-recovery.v1:" + encodeURIComponent(scope) + ":" + writer;
-    localStorage.setItem(key, "{unreadable author copy"); return key;
-  }, initial);
+    localStorage.setItem(key, corrupt); return { key, pointer, writer };
+  }, { project: initial, corrupt });
   await page.reload();
   const warning = page.getByRole("alert", { name: "Component backup warning", exact: true }); await expect(warning).toBeVisible();
-  await headline(page).fill("New author input remains"); await expect(warning).toBeVisible();
+  await headline(page).fill(later); await expect(warning).toBeVisible();
   await expect(button(page, "Add to scene")).toBeDisabled(); expect(await requests(page)).toEqual([]);
-  expect(await page.evaluate(key => localStorage.getItem(key), corruptKey)).toBe("{unreadable author copy");
   await button(page, "Retry Component backup").click(); await expect(warning).toBeVisible();
-  await button(page, "Keep Component input in a new copy").click(); await expect(warning).toHaveCount(0);
-  await expect(button(page, "Add to scene")).toBeEnabled();
-  expect(await page.evaluate(key => localStorage.getItem(key), corruptKey)).toBe("{unreadable author copy");
-  await page.reload(); await expect(headline(page)).toHaveValue("New author input remains");
+  await expect(button(page, "Keep Component input in a new copy")).toBeDisabled();
+  await plan(page); await component(page); await expect(headline(page)).toHaveValue(later);
+  await page.evaluate(() => window.__PRODUCTION_AUTHORITY__.unmount()); await page.evaluate(() => window.__PRODUCTION_AUTHORITY__.mount());
+  await expect(headline(page)).toHaveValue(later); await expect(warning).toBeVisible();
+  const copies = page.getByRole("region", { name: "Component recovery copies", exact: true });
+  await copies.locator("summary").first().click();
+  await expect(button(page, "Discard Component copy 1")).toBeDisabled();
+  await expect(button(page, "Restore Component copy 1")).toHaveCount(0);
+  const originalDownload = page.waitForEvent("download"); await button(page, "Download Component copy 1").click();
+  const originalPath = await (await originalDownload).path();
+  if (!originalPath) throw new Error("The corrupt original bytes did not produce a download.");
+  const originalBytes = await readFile(originalPath); expect(originalBytes.equals(Buffer.from(corrupt, "utf8"))).toBe(true);
+  const currentDownload = page.waitForEvent("download"); await button(page, "Download Component draft").click();
+  const currentPath = await (await currentDownload).path();
+  if (!currentPath) throw new Error("The later authored input did not produce a download.");
+  const currentBytes = await readFile(currentPath), current = JSON.parse(currentBytes.toString("utf8"));
+  expect(current.schema).toBe("motionwright.production-file/1"); expect(current.draft.input.config.headline).toBe(later);
+  expect(current.draft.intent).toBe(true); expect(current).not.toHaveProperty("effect_grant"); expect(current.draft).not.toHaveProperty("effect_grant");
+  expect(await page.evaluate(key => localStorage.getItem(key), original.key)).toBe(corrupt);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), original.pointer)).toBe(original.writer);
+  await expect(button(page, "Add to scene")).toBeDisabled(); await expect(warning).toBeVisible();
   expect(await requests(page)).toEqual([]); expect(await page.evaluate(() => window.__PRODUCTION_AUTHORITY__.project())).toEqual(initial);
+  await info.attach("unreadable-production-original", { body: originalBytes, contentType: "application/json" });
+  await info.attach("later-production-author-input", { body: currentBytes, contentType: "application/json" });
 });
 
-test("retrying a readable Production recovery retains its UNKNOWN alongside newer author input", async ({ page }) => {
+test("retrying a failed Production copy read retains original UNKNOWN and later cleared input without replacing bytes", async ({ page }) => {
   const initial = await page.evaluate(() => window.__PRODUCTION_AUTHORITY__.project()); await plan(page);
   await concept(page).fill("Original uncertain plan input"); await submit(page, "Save production plan");
   const earlier = await page.evaluate(project => {
     const scope = JSON.stringify([project.id, project.generation, project.active_branch, "plan", null]);
-    const writer = sessionStorage.getItem("motionwright.production-writer.v1:" + encodeURIComponent(scope));
+    const pointer = "motionwright.production-writer.v1:" + encodeURIComponent(scope), writer = sessionStorage.getItem(pointer);
     if (!writer) throw new Error("Missing own Production pointer.");
     const key = "motionwright.production-recovery.v1:" + encodeURIComponent(scope) + ":" + writer, raw = localStorage.getItem(key);
     if (!raw) throw new Error("Missing pending Production copy.");
-    localStorage.setItem(key, "{temporarily unreadable"); return { key, raw };
+    return { key, raw, pointer, writer, draft: (JSON.parse(raw) as { draft: ProductionDraft }).draft };
   }, initial);
+  expect(earlier.draft.pending?.outcome).toBe("UNKNOWN");
+  const marker = "motionwright.test.production-preservation-copy-read:" + crypto.randomUUID();
+  // A read failure does not replace the original bytes. The marker keeps the
+  // one-shot fault from firing again after successful recovery and reload.
+  await page.addInitScript(({ key, marker }) => {
+    const original = Storage.prototype.getItem;
+    if (original.call(sessionStorage, marker) === "fired") return;
+    let armed = true;
+    Storage.prototype.getItem = function(name) {
+      if (armed && this === localStorage && name === key) {
+        armed = false; sessionStorage.setItem(marker, "fired");
+        throw new Error("Injected first Production copy read failure.");
+      }
+      return original.call(this, name);
+    };
+    window.__PRODUCTION_RESTORE_STORAGE__ = () => { Storage.prototype.getItem = original; };
+  }, { key: earlier.key, marker });
   await page.reload(); await plan(page);
-  await expect(page.getByRole("alert", { name: "Production plan backup warning", exact: true })).toBeVisible();
+  const warning = page.getByRole("alert", { name: "Production plan backup warning", exact: true });
+  await expect(warning).toContainText("Injected first Production copy read failure");
+  expect(await page.evaluate(key => sessionStorage.getItem(key), marker)).toBe("fired");
+  expect(await page.evaluate(key => localStorage.getItem(key), earlier.key)).toBe(earlier.raw);
   await concept(page).fill("Newer input during the recovery problem");
-  await page.evaluate(({ key, raw }) => localStorage.setItem(key, raw), earlier);
+  await component(page); await plan(page); await expect(concept(page)).toHaveValue("Newer input during the recovery problem");
+  await concept(page).fill("");
+  await expect(button(page, "Keep Production plan input in a new copy")).toBeDisabled();
+  await expect(button(page, "Save production plan")).toBeDisabled();
+  await page.evaluate(() => window.__PRODUCTION_RESTORE_STORAGE__?.());
   await button(page, "Retry Production plan backup").click();
-  await expect(concept(page)).toHaveValue("Newer input during the recovery problem");
+  await expect(warning).toHaveCount(0); await expect(concept(page)).toHaveValue("");
+  await expect(page.getByRole("region", { name: "Unconfirmed Production plan", exact: true })).toBeVisible();
+  await expect(button(page, "Save production plan")).toBeDisabled();
+  const recovered = await page.evaluate(({ pointer, scope }) => {
+    const writer = sessionStorage.getItem(pointer);
+    if (!writer) throw new Error("Recovery did not publish a verified pointer.");
+    const key = "motionwright.production-recovery.v1:" + encodeURIComponent(scope) + ":" + writer, raw = localStorage.getItem(key);
+    if (!raw) throw new Error("Recovery did not retain its new copy.");
+    return { writer, draft: (JSON.parse(raw) as { draft: ProductionDraft }).draft };
+  }, { pointer: earlier.pointer, scope: earlier.draft.scope });
+  expect(recovered.writer).not.toBe(earlier.writer); expect(recovered.draft.pending).toEqual(earlier.draft.pending);
+  expect(recovered.draft.sequence).toBeGreaterThan(earlier.draft.sequence);
+  expect(recovered.draft.input.kind).toBe("plan");
+  if (recovered.draft.input.kind !== "plan") throw new Error("Recovery changed the Production input kind.");
+  expect(recovered.draft.input.plan.concept).toBe("");
+  expect(await page.evaluate(key => localStorage.getItem(key), earlier.key)).toBe(earlier.raw);
+  expect(await requests(page)).toEqual([]); expect(await page.evaluate(() => window.__PRODUCTION_AUTHORITY__.project())).toEqual(initial);
+  // Reload is asserted only after the new recovery copy was verified.
+  await page.reload(); await plan(page); await expect(concept(page)).toHaveValue("");
   await expect(page.getByRole("region", { name: "Unconfirmed Production plan", exact: true })).toBeVisible();
   await expect(button(page, "Save production plan")).toBeDisabled();
   expect(await page.evaluate(key => localStorage.getItem(key), earlier.key)).toBe(earlier.raw);

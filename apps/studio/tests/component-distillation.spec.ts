@@ -11,7 +11,7 @@ test("Distillation requires genuine source variations and negative evidence befo
   await expect(page.getByLabel("Distillation source A")).toBeVisible();
   await expect(page.getByLabel("Distillation negative scene")).toBeVisible();
   await page.getByLabel("Distillation label").fill("Proposed original editable panel");
-  await page.getByLabel("Distillation author").fill("Original designer");
+  await page.getByLabel("Distillation author", { exact: true }).fill("Original designer");
   await page.getByLabel("Distillation rights").fill("The original roles belong to this project.");
   await page.getByLabel("Distillation requirements").fill("Two varied source scenes");
   await expect(page.getByRole("button",{name:"Propose original component"})).toBeDisabled();
