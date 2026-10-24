@@ -53,6 +53,41 @@ pub struct InspectedProjectBundle {
     pub fingerprint: BundleFingerprint,
 }
 
+/// Product content admission over the exact bytes that storage has hashed.
+/// The prefix is bounded, immutable, and from that same complete credential
+/// scan. Every asset alias comes from the captured manifest. Implementations
+/// must use actual_size to distinguish a bounded prefix from a complete file.
+/// This is an input policy, never an authorization grant or retry permission.
+pub trait BundleAssetAdmission {
+    fn prefix_limit(&self) -> usize;
+
+    fn validate(
+        &self,
+        prefix: &[u8],
+        actual_size: u64,
+        aliases: &[&motionwright_domain::Asset],
+    ) -> Result<()>;
+}
+
+// The legacy Store APIs enforce storage structure, digests and credentials.
+// Product entry points must explicitly supply their content admission policy.
+pub(super) struct StructuralBundleAdmission;
+
+impl BundleAssetAdmission for StructuralBundleAdmission {
+    fn prefix_limit(&self) -> usize {
+        0
+    }
+
+    fn validate(
+        &self,
+        _prefix: &[u8],
+        _actual_size: u64,
+        _aliases: &[&motionwright_domain::Asset],
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
 impl Store {
     /// Read the authorized document and its journal in one SQLite snapshot.
     pub fn export_project_at(
@@ -79,12 +114,51 @@ impl Store {
         &self,
         source: impl AsRef<Path>,
     ) -> Result<InspectedProjectBundle> {
+        self.inspect_project_bundle_with_fingerprint_and_admission(
+            source,
+            &StructuralBundleAdmission,
+        )
+    }
+
+    /// Inspect without staging files, applying content policy to each member.
+    pub fn inspect_project_bundle_with_admission(
+        &self,
+        source: impl AsRef<Path>,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<BundleImportPlan> {
+        self.inspect_project_bundle_with_fingerprint_and_admission(source, admission)
+            .map(|inspected| inspected.plan)
+    }
+
+    pub fn inspect_project_bundle_with_fingerprint_and_admission(
+        &self,
+        source: impl AsRef<Path>,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<InspectedProjectBundle> {
         let source = source.as_ref();
         let bytes = read_bundle_manifest_bytes(source)?;
         let fingerprint = BundleFingerprint::of_manifest_bytes(&bytes);
         let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
-        let plan = self.validate_bundle(source, &manifest)?;
+        let plan = self.validate_bundle_with_admission(source, &manifest, admission)?;
         Ok(InspectedProjectBundle { plan, fingerprint })
+    }
+
+    /// Revalidate all private captures before publishing any member.
+    pub fn import_project_bundle_with_admission(
+        &mut self,
+        source: impl AsRef<Path>,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<Project> {
+        self.import_bundle_capture_with_admission(source.as_ref(), None, admission)
+    }
+
+    pub fn import_project_bundle_inspected_with_admission(
+        &mut self,
+        source: impl AsRef<Path>,
+        expected: &BundleFingerprint,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<Project> {
+        self.import_bundle_capture_with_admission(source.as_ref(), Some(expected), admission)
     }
 
     /// Compare the original inspection before staging or publishing any bytes.
@@ -102,6 +176,15 @@ impl Store {
         source: &Path,
         expected: Option<&BundleFingerprint>,
     ) -> Result<Project> {
+        self.import_bundle_capture_with_admission(source, expected, &StructuralBundleAdmission)
+    }
+
+    fn import_bundle_capture_with_admission(
+        &mut self,
+        source: &Path,
+        expected: Option<&BundleFingerprint>,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<Project> {
         let bytes = read_bundle_manifest_bytes(source)?;
         if let Some(expected) = expected
             && BundleFingerprint::of_manifest_bytes(&bytes) != *expected
@@ -112,16 +195,17 @@ impl Store {
         }
         // Fingerprinting and parsing consume the same capture, never a reload.
         let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
-        self.validate_bundle(source, &manifest)?;
-        self.import_validated_bundle(source, &manifest)
+        self.validate_bundle_with_admission(source, &manifest, admission)?;
+        self.import_validated_bundle(source, &manifest, admission)
     }
 
     fn import_validated_bundle(
         &mut self,
         source: &Path,
         manifest: &ProjectBundleManifest,
+        admission: &impl BundleAssetAdmission,
     ) -> Result<Project> {
-        self.import_validated_bundle_after_check(source, manifest, || {})
+        self.import_validated_bundle_after_check(source, manifest, admission, || {})
     }
 
     // The seam lets a test drive a second SQLite writer exactly after the
@@ -130,11 +214,12 @@ impl Store {
         &mut self,
         source: &Path,
         manifest: &ProjectBundleManifest,
+        admission: &impl BundleAssetAdmission,
         after_check: impl FnOnce(),
     ) -> Result<Project> {
         // Capture and validate every member before publishing even the first
         // member. A path can change after the earlier inspection.
-        let staged = self.capture_bundle_blobs(source, manifest)?;
+        let staged = self.capture_bundle_blobs(source, manifest, admission)?;
         // Reject pre-existing destination collisions across the entire
         // captured set BEFORE publishing its first content-addressed member.
         // Never delete a foreign or pre-existing blob on failure.
@@ -173,6 +258,7 @@ impl Store {
         &self,
         source: &Path,
         manifest: &ProjectBundleManifest,
+        admission: &impl BundleAssetAdmission,
     ) -> Result<Vec<StagedFileImport>> {
         let mut staged = Vec::with_capacity(manifest.blobs.len());
         for blob in &manifest.blobs {
@@ -185,11 +271,20 @@ impl Store {
                     "captured blob differs from bundle manifest".into(),
                 ));
             }
-            ensure_secret_free_portable_file(
+            // Rehash and inspect the same retained stream from this private
+            // capture. A prior source-path inspection cannot authorize it.
+            let (descriptor, prefix) = inspect_portable_file_with_prefix(
                 captured.path(),
                 "captured portable asset",
                 blob.size_bytes,
+                admission.prefix_limit(),
             )?;
+            if descriptor != *captured.descriptor() {
+                return Err(StorageError::InvalidBackup(
+                    "captured blob changed during content admission".into(),
+                ));
+            }
+            admit_bundle_blob(admission, &prefix, &descriptor, manifest)?;
             staged.push(captured);
         }
         Ok(staged)
@@ -524,6 +619,63 @@ fn transfer_portable_bytes_with_credential_check(
     })
 }
 
+// Retain only the content-policy prefix while acknowledging every write.
+// The complete stream still establishes the digest, byte budget and secrets.
+struct PortablePrefix {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for PortablePrefix {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let retained = bytes.len().min(self.limit.saturating_sub(self.bytes.len()));
+        self.bytes.extend_from_slice(&bytes[..retained]);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) fn inspect_portable_file_with_prefix(
+    path: &Path,
+    context: &str,
+    limit: u64,
+    prefix_limit: usize,
+) -> Result<(BlobDescriptor, Vec<u8>)> {
+    if prefix_limit as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+        return Err(StorageError::InvalidBackup(
+            "portable content admission prefix exceeds its memory budget".into(),
+        ));
+    }
+    // Retain a regular non-reparse handle; do not follow a replacement leaf.
+    let input = file_import::open_regular_import_source(path, limit)?;
+    let mut prefix = PortablePrefix {
+        bytes: Vec::with_capacity(limit.min(prefix_limit as u64) as usize),
+        limit: prefix_limit,
+    };
+    let descriptor =
+        transfer_portable_bytes_with_credential_check(input, &mut prefix, limit, Some(context))?;
+    Ok((descriptor, prefix.bytes))
+}
+
+pub(super) fn admit_bundle_blob(
+    admission: &impl BundleAssetAdmission,
+    prefix: &[u8],
+    descriptor: &BlobDescriptor,
+    manifest: &ProjectBundleManifest,
+) -> Result<()> {
+    let aliases: Vec<_> = manifest
+        .backup
+        .project
+        .assets
+        .iter()
+        .filter(|asset| asset.content_sha256.as_deref() == Some(descriptor.sha256.as_str()))
+        .collect();
+    admission.validate(prefix, descriptor.size_bytes, &aliases)
+}
+
 fn checked_portable_source(path: &Path, context: &str, limit: u64) -> Result<File> {
     let size = ensure_regular_file(path, context)?.len();
     if size > limit {
@@ -605,6 +757,151 @@ mod tests {
     use super::*;
     use motionwright_domain::Asset;
     use rusqlite::types::Value;
+
+    #[test]
+    fn portable_prefix_does_not_truncate_hash_or_byte_count() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.bin");
+        fs::write(&input, b"abc").unwrap();
+        let (descriptor, prefix) =
+            inspect_portable_file_with_prefix(&input, "prefix test", 3, 1).unwrap();
+        assert_eq!(prefix, b"a");
+        assert_eq!(descriptor.size_bytes, 3);
+        assert_eq!(descriptor.sha256, hex::encode(Sha256::digest(b"abc")));
+        let mut split = PortablePrefix {
+            bytes: Vec::new(),
+            limit: 1,
+        };
+        assert_eq!(split.write(b"a").unwrap(), 1);
+        assert_eq!(split.write(b"bc").unwrap(), 2);
+        assert_eq!(split.bytes, b"a");
+    }
+
+    #[test]
+    fn portable_prefix_still_rejects_credentials_beyond_retained_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.bin");
+        let mut bytes = vec![0xff; 128 * 1024 - 2];
+        bytes.extend_from_slice(PRIVATE_KEY_MARKER);
+        fs::write(&input, &bytes).unwrap();
+        assert!(matches!(
+            inspect_portable_file_with_prefix(&input, "prefix test", bytes.len() as u64, 1),
+            Err(StorageError::InvalidBackup(_))
+        ));
+    }
+
+    #[test]
+    fn final_private_capture_policy_refusal_publishes_no_bundle_member() {
+        struct RefuseFourth(std::cell::Cell<usize>);
+        impl BundleAssetAdmission for RefuseFourth {
+            fn prefix_limit(&self) -> usize {
+                64
+            }
+            fn validate(&self, prefix: &[u8], size: u64, aliases: &[&Asset]) -> Result<()> {
+                assert_eq!(prefix.len() as u64, size);
+                assert_eq!(aliases.len(), 1);
+                let next = self.0.get() + 1;
+                self.0.set(next);
+                if next == 4 {
+                    Err(StorageError::InvalidBackup(
+                        "private capture policy refusal".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let (bundle, manifest) = bundle_fixture(directory.path());
+        let mut target = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+        target.create_named_project("Existing sentinel").unwrap();
+        let before = snapshot(&target);
+        let admission = RefuseFourth(std::cell::Cell::new(0));
+        assert!(matches!(
+            target.import_project_bundle_with_admission(&bundle, &admission),
+            Err(StorageError::InvalidBackup(message)) if message == "private capture policy refusal"
+        ));
+        assert_eq!(
+            admission.0.get(),
+            4,
+            "source and every private capture must be checked"
+        );
+        assert_eq!(snapshot(&target), before);
+        for blob in &manifest.blobs {
+            assert!(matches!(
+                target.read_blob(&blob.sha256, 4096),
+                Err(StorageError::BlobMissing { .. })
+            ));
+        }
+        assert!(
+            fs::read_dir(target.blob_root().join(".staging"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bundle_policy_and_publication_use_capture_after_original_replacement() {
+        struct ReplaceAfterCapture {
+            calls: std::cell::Cell<usize>,
+            bundle: PathBuf,
+        }
+        impl BundleAssetAdmission for ReplaceAfterCapture {
+            fn prefix_limit(&self) -> usize {
+                64
+            }
+            fn validate(&self, prefix: &[u8], size: u64, aliases: &[&Asset]) -> Result<()> {
+                assert_eq!(prefix.len() as u64, size);
+                let digest = aliases[0].content_sha256.as_ref().unwrap();
+                assert_eq!(&hex::encode(Sha256::digest(prefix)), digest);
+                let next = self.calls.get() + 1;
+                self.calls.set(next);
+                if next == 3 {
+                    fs::write(
+                        self.bundle.join(blob_relative_path(digest)?),
+                        b"changed original",
+                    )?;
+                }
+                Ok(())
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let (bundle, manifest) = bundle_fixture(directory.path());
+        let expected: Vec<_> = manifest
+            .blobs
+            .iter()
+            .map(|blob| {
+                (
+                    blob.sha256.clone(),
+                    fs::read(bundle.join(&blob.relative_path)).unwrap(),
+                )
+            })
+            .collect();
+        let mut target = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+        let admission = ReplaceAfterCapture {
+            calls: std::cell::Cell::new(0),
+            bundle: bundle.clone(),
+        };
+        let imported = target
+            .import_project_bundle_with_admission(&bundle, &admission)
+            .unwrap();
+        assert_eq!(admission.calls.get(), 4);
+        assert_eq!(imported.assets, manifest.backup.project.assets);
+        for (digest, bytes) in expected {
+            assert_eq!(target.read_blob(&digest, 4096).unwrap(), bytes);
+        }
+        assert_eq!(
+            fs::read(bundle.join(&manifest.blobs[0].relative_path)).unwrap(),
+            b"changed original"
+        );
+        assert!(
+            fs::read_dir(target.blob_root().join(".staging"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
 
     fn snapshot(store: &Store) -> Vec<Vec<Vec<Value>>> {
         [
@@ -1177,7 +1474,8 @@ mod tests {
         drop(peer);
 
         let before = snapshot(&target);
-        let rejected = target.import_validated_bundle(&bundle, &manifest);
+        let rejected =
+            target.import_validated_bundle(&bundle, &manifest, &StructuralBundleAdmission);
         assert!(
             matches!(rejected, Err(StorageError::ProjectExists)),
             "second connection's valid project ID collision was not rejected"
@@ -1231,9 +1529,14 @@ mod tests {
         // project-ID check and the first CAS publication. Merely rechecking
         // the ID in a SELECT cannot protect this interval.
         let mut other_writer = None;
-        let result = target.import_validated_bundle_after_check(&bundle, &manifest, || {
-            other_writer = Some(peer.create_project(&competitor));
-        });
+        let result = target.import_validated_bundle_after_check(
+            &bundle,
+            &manifest,
+            &StructuralBundleAdmission,
+            || {
+                other_writer = Some(peer.create_project(&competitor));
+            },
+        );
         let other_writer = other_writer.expect("boundary hook did not execute");
         assert!(
             matches!(
@@ -1413,7 +1716,7 @@ mod tests {
         assert_ne!(changed_digest, last.sha256);
         fs::write(bundle.join(&last.relative_path), changed).unwrap();
         assert!(matches!(
-            target.import_validated_bundle(&bundle, &manifest),
+            target.import_validated_bundle(&bundle, &manifest, &StructuralBundleAdmission),
             Err(StorageError::InvalidBackup(_))
         ));
         assert_eq!(snapshot(&target), before);
@@ -1445,7 +1748,9 @@ mod tests {
                 )
             })
             .collect();
-        let captures = target.capture_bundle_blobs(&bundle, &manifest).unwrap();
+        let captures = target
+            .capture_bundle_blobs(&bundle, &manifest, &StructuralBundleAdmission)
+            .unwrap();
         fs::remove_dir_all(&bundle).unwrap();
         for capture in &captures {
             target.publish_file_import(capture).unwrap();
@@ -1544,7 +1849,8 @@ mod tests {
             let changed = vec![b'X'; changed_len as usize];
             let changed_digest = hex::encode(Sha256::digest(&changed));
             fs::write(bundle.join(&member.relative_path), changed).unwrap();
-            let result = target.import_validated_bundle(&bundle, &manifest);
+            let result =
+                target.import_validated_bundle(&bundle, &manifest, &StructuralBundleAdmission);
             if growing {
                 assert!(matches!(
                     result, Err(StorageError::BlobTooLarge { size, limit })

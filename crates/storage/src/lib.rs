@@ -34,7 +34,7 @@ pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
 pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };
-pub use portability::{BundleFingerprint, InspectedProjectBundle};
+pub use portability::{BundleAssetAdmission, BundleFingerprint, InspectedProjectBundle};
 pub use production::{ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark};
 pub use project_creation::{ProjectCreationIntent, ProjectCreationOutcome};
 pub use project_projection::{
@@ -978,6 +978,19 @@ impl Store {
         source: &Path,
         manifest: &ProjectBundleManifest,
     ) -> Result<BundleImportPlan> {
+        self.validate_bundle_with_admission(
+            source,
+            manifest,
+            &portability::StructuralBundleAdmission,
+        )
+    }
+
+    fn validate_bundle_with_admission(
+        &self,
+        source: &Path,
+        manifest: &ProjectBundleManifest,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<BundleImportPlan> {
         if manifest.format_version != PROJECT_BUNDLE_FORMAT_VERSION {
             return Err(StorageError::InvalidBackup(format!(
                 "unsupported bundle format version {}",
@@ -1029,13 +1042,18 @@ impl Store {
             }
             // MIME is caller-supplied metadata. Check the actual member bytes
             // in the same bounded pass that establishes their digest.
-            let descriptor =
-                portability::inspect_portable_file(&path, "portable asset", blob.size_bytes)?;
+            let (descriptor, prefix) = portability::inspect_portable_file_with_prefix(
+                &path,
+                "portable asset",
+                blob.size_bytes,
+                admission.prefix_limit(),
+            )?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob failed digest or size verification".into(),
                 ));
             }
+            portability::admit_bundle_blob(admission, &prefix, &descriptor, manifest)?;
         }
         if observed != expected {
             return Err(StorageError::InvalidBackup(
