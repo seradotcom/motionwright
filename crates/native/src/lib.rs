@@ -5146,8 +5146,7 @@ mod qualified_audio_boundary_tests {
         assert!(matches!(decoded, Change::UpsertTranscriptSegment { .. }));
         let args = json!({"segment": segment_wire("measured")});
         let error = change_from_args(OperationKind::UpsertTranscriptSegment, &args)
-            .err()
-            .expect("measured alignment must not enter through the generic parser");
+            .expect_err("measured alignment must not enter through the generic parser");
         assert!(
             error.to_string().contains(
                 "measured transcript alignment is reserved for a qualified alignment boundary"
@@ -5174,8 +5173,7 @@ mod qualified_audio_boundary_tests {
             assert!(matches!(decoded, Change::UpsertAudioCue { .. }));
             let args = json!({"cue": cue_wire(evidence)});
             let error = change_from_args(OperationKind::UpsertAudioCue, &args)
-                .err()
-                .expect("qualified cue evidence must not enter through the generic parser");
+                .expect_err("qualified cue evidence must not enter through the generic parser");
             assert!(
                 error.to_string().contains("qualified"),
                 "rejection must come from the existing qualified cue boundary"
