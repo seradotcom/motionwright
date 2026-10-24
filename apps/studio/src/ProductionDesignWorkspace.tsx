@@ -10,12 +10,12 @@ import { inheritedTextInk } from "./canvasInheritedInk";
 import { emptyProductionDesign, realizeProductHero, sameValue } from "./creativeProduction";
 import { bootstrap, projectHistory } from "./api";
 import {
-  acknowledgeProductionDraft, cleanProductionPlan, createProductionDraft, decodeProductionCopy, editProductionDraft,
+  acknowledgeProductionDraft, assertProductionOrigins, cleanProductionPlan, createProductionDraft, decodeProductionCopy, editProductionDraft,
   encodeProductionFile, inspectProductionOutcome, prepareProductionSubmission, productionConflict,
   productionCopyKey, productionHasInput, productionHasWork, productionLabel, productionOutcomeMatches,
   productionPointerKey, productionPreparationMatches, productionScope, productionUnconfirmed, productionValue,
-  PRODUCTION_RECOVERY_PREFIX, readProductionCopies, reconcileProductionDraft, releaseProductionOutcome,
-  resolveProductionDraft, retainProductionFailure, retainReviewedProductionIntent, writeProductionCopy,
+  PRODUCTION_RECOVERY_PREFIX, readProductionCopies, readProductionRecoveryPointer, recoverProductionAfterReadFailure, reconcileProductionDraft, releaseProductionOutcome,
+  resolveProductionDraft, retainProductionFailure, retainProductionOrigin, retainReviewedProductionIntent, writeProductionCopy,
 } from "./productionDesignDraft";
 import type { ProductionCustody, ProductionDraft, ProductionInput, ProductionOperation, ProductionOutcomeReview, ProductionRecoveryEntry, ProductionTarget } from "./productionDesignDraft";
 import type { HeroConfig, ProductionPlan, NarrativeEvidenceKind, NativeCapsule } from "./creativeProduction";
@@ -43,6 +43,7 @@ const previewIdentity = "00000000-0000-4000-8000-000000000005";
 const aspects = [{ label:"16:9", width:1920,height:1080 },{ label:"9:16",width:1080,height:1920 },{label:"1:1",width:1080,height:1080}];
 
 type ProductionSession = { draft: ProductionDraft; custody: ProductionCustody; inFlight: boolean; preparing: boolean;
+  pointerObserved: boolean; editedWhileRecoveryBlocked: boolean;
   error: string | null; backupError: string | null; recoveryProblem: string | null; notice: string | null; copies: ProductionRecoveryEntry[]; limited: boolean; notify?: () => void };
 // Author buffers survive tab/workspace navigation. They never own Project state
 // and never replay a stored mutation. App's existing coordinator is the writer.
@@ -63,21 +64,27 @@ function refreshProductionCopies(session: ProductionSession) {
 function getProductionSession(project: Project, target: ProductionTarget): ProductionSession {
   const scope = productionScope(project, target), existing = productionSessions.get(scope);
   if (existing) return existing;
-  let pointer: string | null = null, recovered: ProductionDraft | null = null, backupError: string | null = null;
+  let pointer: string | null = null, pointerObserved = false, recovered: ProductionDraft | null = null, backupError: string | null = null;
   try {
     pointer = window.sessionStorage.getItem(productionPointerKey(scope));
+    pointerObserved = true;
     // A cloned/new tab starts an independent buffer. Recovery of that tab's own
     // pointer is automatic only on reload; all copies remain explicitly visible.
     const reload = performance.getEntriesByType("navigation").some(entry => (entry as PerformanceNavigationTiming).type === "reload");
     if (pointer && reload && !window.opener) {
-      const raw = window.localStorage.getItem(productionCopyKey(scope, pointer));
+      const key = productionCopyKey(scope, pointer), raw = window.localStorage.getItem(key);
       if (raw === null) throw new Error("The Production pointer refers to a missing copy. Earlier author bytes were not replaced.");
-      recovered = decodeProductionCopy(raw, scope, pointer).draft;
+      const candidate = retainProductionOrigin(decodeProductionCopy(raw, scope, pointer).draft, { key, raw });
+      assertProductionOrigins(window.localStorage, candidate);
+      if (window.sessionStorage.getItem(productionPointerKey(scope)) !== pointer || window.localStorage.getItem(key) !== raw)
+        throw new Error("The Production recovery source changed before adoption. Earlier input was kept.");
+      recovered = recoverProductionAfterReadFailure(candidate, createProductionDraft(project, target), false, project);
     }
   } catch (reason) { backupError = message(reason); }
   const session: ProductionSession = {
-    draft: recovered ? reconcileProductionDraft(recovered, project) : createProductionDraft(project, target),
+    draft: recovered ?? createProductionDraft(project, target),
     custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: pointer },
+    pointerObserved, editedWhileRecoveryBlocked: false,
     inFlight: false, preparing: false, error: null, backupError, recoveryProblem: backupError,
     notice: recovered ? "Recovered this tab's Production input. No saved operation was repeated." : null, copies: [], limited: false,
   };
@@ -90,7 +97,7 @@ function backupProduction(session: ProductionSession): boolean {
   try {
     // A failed own-copy recovery is not erased by the first new keystroke.
     // Keep the original pointer/bytes until an explicit recovery action.
-    if (session.recoveryProblem) throw new Error(session.recoveryProblem + " Retry reading that copy or explicitly keep the current input in a new copy.");
+    if (session.recoveryProblem) throw new Error(session.recoveryProblem + " Retry reading the earlier copy before starting new custody; current input remains available for download.");
     if (session.custody.expectedRaw !== null) {
       const old = decodeProductionCopy(session.custody.expectedRaw, session.draft.scope, session.custody.writerId).draft;
       if (!productionHasWork(old) && !sameValue(old, session.draft)) forkProductionWriter(session);
@@ -115,7 +122,11 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
   const busy = externalBusy || productionBusy(project), conflict = productionConflict(session.draft, project);
   useEffect(() => {
     mounted.current = true; const update = () => redraw(value => value + 1); session.notify = update;
-    const changed = (event: StorageEvent) => { if (event.key === null || event.key.startsWith(PRODUCTION_RECOVERY_PREFIX)) { refreshProductionCopies(session); update(); } };
+    const changed = (event: StorageEvent) => { if (event.key === null || event.key.startsWith(PRODUCTION_RECOVERY_PREFIX)) {
+      try { assertProductionOrigins(window.localStorage, session.draft); }
+      catch (reason) { session.backupError = message(reason); }
+      refreshProductionCopies(session); update();
+    } };
     window.addEventListener("storage", changed);
     return () => { mounted.current = false; epoch.current++; if (session.notify === update) delete session.notify; window.removeEventListener("storage", changed); };
   }, [session]);
@@ -125,8 +136,12 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
     setReview(value => productionOutcomeMatches(session.draft, project, value) ? value : null);
   }, [project, session]);
   function edit(input: ProductionInput) {
-    session.error = null; session.notice = null; setReview(null);
-    replaceProduction(session, editProductionDraft(session.draft, input));
+    try {
+      const next = editProductionDraft(session.draft, input);
+      if (session.recoveryProblem) session.editedWhileRecoveryBlocked = true;
+      session.error = null; session.notice = null; setReview(null);
+      replaceProduction(session, next);
+    } catch (reason) { session.error = message(reason); notifyProduction(session); }
   }
   async function send(operation: ProductionOperation = "save") {
     if (externalBusy || productionBusy(current.current) || session.backupError || productionUnconfirmed(session.draft)) return;
@@ -172,12 +187,23 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
   function restore(copy: ProductionRecoveryEntry) {
     if (busy || productionUnconfirmed(session.draft) || !copy.value) return;
     try {
+      if (session.recoveryProblem) throw new Error("Retry the earlier Production copy before restoring another input. Its unconfirmed attempt must remain recoverable.");
       if (productionHasWork(session.draft) && !backupProduction(session)) return;
+      const observation = readProductionRecoveryPointer(window.sessionStorage, session.draft.scope, {
+        observed: session.pointerObserved, expectedPointer: session.custody.expectedPointer,
+      });
+      session.pointerObserved = observation.observed; session.custody.expectedPointer = observation.expectedPointer;
       const raw = window.localStorage.getItem(copy.key);
       if (raw !== copy.raw) throw new Error("This Production recovery copy changed. Refresh the list first.");
-      const restored = decodeProductionCopy(raw, session.draft.scope, copy.writerId);
+      const restored = retainProductionOrigin(decodeProductionCopy(raw, session.draft.scope, copy.writerId).draft, { key: copy.key, raw });
+      assertProductionOrigins(window.localStorage, restored);
+      const next = recoverProductionAfterReadFailure({ ...restored, intent: true }, createProductionDraft(current.current, target), false, current.current);
+      if (window.localStorage.getItem(copy.key) !== raw
+        || window.sessionStorage.getItem(productionPointerKey(session.draft.scope)) !== session.custody.expectedPointer)
+        throw new Error("The Production recovery source changed before restoration.");
       forkProductionWriter(session); session.error = null;
-      replaceProduction(session, reconcileProductionDraft({ ...restored.draft, intent: true }, current.current));
+      session.editedWhileRecoveryBlocked = false;
+      replaceProduction(session, next);
       session.notice = "Restored a separate editable Production copy. No Project change was sent."; setReview(null); notifyProduction(session);
     } catch (reason) { session.error = message(reason); refreshProductionCopies(session); notifyProduction(session); }
   }
@@ -205,10 +231,10 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
       replaceProduction(session, next, false); setReview(null); refreshProductionCopies(session); notifyProduction(session);
     } catch (reason) { session.backupError = message(reason); notifyProduction(session); }
   }
-  function download() {
+  function download(copyRaw?: string) {
     try {
-      const raw = encodeProductionFile(session.draft), url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
-      const anchor = document.createElement("a"); anchor.href = url; anchor.download = "motionwright-production-" + target.kind + "-" + Date.now() + ".json";
+      const raw = copyRaw ?? encodeProductionFile(session.draft), url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = "motionwright-production-" + target.kind + (copyRaw === undefined ? "-draft-" : "-copy-") + Date.now() + ".json";
       document.body.appendChild(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
       session.notice = "Started downloading the complete Production input. This does not confirm a browser backup or a Project save."; notifyProduction(session);
     } catch (reason) { session.error = message(reason); notifyProduction(session); }
@@ -216,6 +242,7 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
   function discard(copy: ProductionRecoveryEntry) {
     if (busy || copy.writerId === session.custody.writerId) return;
     try {
+      if (session.draft.origins?.some(origin => origin.key === copy.key)) throw new Error("This copy retains an earlier unconfirmed Production attempt. Download it without removing its original bytes.");
       if (window.sessionStorage.getItem(productionPointerKey(session.draft.scope)) === copy.writerId && !backupProduction(session)) return;
       if (window.localStorage.getItem(copy.key) !== copy.raw) throw new Error("This Production recovery changed. Review it before discarding.");
       window.localStorage.removeItem(copy.key);
@@ -227,34 +254,50 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
   function freshCopy() {
     if (busy) return;
     try {
-      session.custody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: window.sessionStorage.getItem(productionPointerKey(session.draft.scope)) };
-      session.recoveryProblem = null;
+      if (session.recoveryProblem) throw new Error("Retry the earlier Production copy before creating new custody. It may contain an unconfirmed attempt; current input remains available for download.");
+      const observation = readProductionRecoveryPointer(window.sessionStorage, session.draft.scope, {
+        observed: session.pointerObserved, expectedPointer: session.custody.expectedPointer,
+      });
+      session.pointerObserved = observation.observed; session.custody.expectedPointer = observation.expectedPointer;
+      assertProductionOrigins(window.localStorage, session.draft); forkProductionWriter(session);
       if (backupProduction(session)) session.notice = "Verified a new copy of your current input. Earlier unreadable or changed bytes were retained separately.";
       notifyProduction(session);
     } catch (reason) { session.backupError = message(reason); notifyProduction(session); }
   }
   function retryBackup() {
+    if (busy) return;
     try {
       if (session.recoveryProblem) {
-        const pointer = window.sessionStorage.getItem(productionPointerKey(session.draft.scope));
-        if (pointer !== session.custody.expectedPointer) throw new Error("The earlier recovery pointer changed. Review its copies or explicitly keep current input in a new copy.");
-        if (pointer) {
-          const raw = window.localStorage.getItem(productionCopyKey(session.draft.scope, pointer));
+        const observation = readProductionRecoveryPointer(window.sessionStorage, session.draft.scope, {
+          observed: session.pointerObserved, expectedPointer: session.custody.expectedPointer,
+        });
+        // Latch a successful observation even if the following copy read fails.
+        session.pointerObserved = observation.observed; session.custody.expectedPointer = observation.expectedPointer;
+        const pointer = observation.expectedPointer;
+        if (pointer === null) {
+          // A known writer's removal was rejected above. An initially unreadable
+          // empty pointer may now start custody without replacing current input.
+          assertProductionOrigins(window.localStorage, session.draft);
+          if (window.sessionStorage.getItem(productionPointerKey(session.draft.scope)) !== null)
+            throw new Error("The Production recovery pointer changed before publication.");
+        } else {
+          const key = productionCopyKey(session.draft.scope, pointer), raw = window.localStorage.getItem(key);
           if (raw === null) throw new Error("The earlier recovery copy is still missing. Current input remains in this editor.");
-          const recovered = decodeProductionCopy(raw, session.draft.scope, pointer).draft;
-          if (productionUnconfirmed(recovered)) {
-            // A restored readable record may reveal a previously uncertain
-            // operation. Carry that comparison forward, preserving newer raw
-            // input and a later sequence; verification cannot clear UNKNOWN.
-            session.draft = { ...recovered, input: session.draft.input, intent: true,
-              sequence: Math.max(recovered.sequence, session.draft.sequence) + 1 };
-          }
+          const recovered = retainProductionOrigin(decodeProductionCopy(raw, session.draft.scope, pointer).draft, { key, raw });
+          assertProductionOrigins(window.localStorage, recovered); assertProductionOrigins(window.localStorage, session.draft);
+          const next = recoverProductionAfterReadFailure(recovered, session.draft, session.editedWhileRecoveryBlocked, current.current);
+          assertProductionOrigins(window.localStorage, next);
+          if (window.sessionStorage.getItem(productionPointerKey(session.draft.scope)) !== pointer || window.localStorage.getItem(key) !== raw)
+            throw new Error("The Production recovery source changed before adoption. Earlier input was kept.");
+          session.draft = next;
         }
-        // Successful explicit verification retains both inputs; it never loads
-        // an earlier copy over the author's newer typing.
-        session.recoveryProblem = null;
+        // Adopt before clearing the blocker. A failed new copy retries the
+        // adopted ordinary/UNKNOWN input, never the temporary placeholder.
+        session.recoveryProblem = null; session.editedWhileRecoveryBlocked = false;
+        forkProductionWriter(session); setReview(null);
       }
-      backupProduction(session); notifyProduction(session);
+      if (backupProduction(session)) session.notice = "Current Production recovery copy confirmed. No Project change was sent.";
+      notifyProduction(session);
     } catch (reason) { session.backupError = message(reason); notifyProduction(session); }
   }
   return { session, draft: session.draft, busy, conflict, review, reviewing, edit, send, choose, restore, readOutcome, continueEditing, download, discard, freshCopy,
@@ -271,7 +314,7 @@ function ProductionDraftFeedback({ editor, project }: { editor: ProductionEditor
     {session.backupError && <div className="production-notice" role="alert" aria-label={label + " backup warning"}>
       <strong>Local recovery needs attention.</strong><p>{session.backupError}</p>
       <button className="secondary-button" type="button" disabled={busy} onClick={editor.retry}><RefreshCw size={14}/> Retry {label} backup</button>
-      <button className="secondary-button" type="button" disabled={busy} onClick={editor.freshCopy}>Keep {label} input in a new copy</button>
+      <button className="secondary-button" type="button" disabled={busy || session.recoveryProblem !== null} onClick={editor.freshCopy}>Keep {label} input in a new copy</button>
     </div>}
     {draft.pending?.outcome === "NOT_SENT" && <p role="status">This preparation was NOT_SENT. Confirm its copy before a separate explicit save.</p>}
     {productionUnconfirmed(draft) && draft.pending && <section className="production-notice" role="region" aria-label={"Unconfirmed " + label}>
@@ -292,15 +335,16 @@ function ProductionDraftFeedback({ editor, project }: { editor: ProductionEditor
       <button className="secondary-button" disabled={busy} onClick={() => editor.choose("saved")}>Use saved {label} values</button>
     </section>}
     {productionHasInput(draft) && !conflict && !productionUnconfirmed(draft) && <button className="text-button" disabled={busy} onClick={() => editor.choose("saved")}>Use saved {label} values</button>}
-    <button className="text-button" type="button" onClick={editor.download}>Download {label} draft</button>
+    <button className="text-button" type="button" onClick={() => editor.download()}>Download {label} draft</button>
     {(copies.length > 0 || session.limited) && <details role="region" aria-label={label + " recovery copies"}>
       <summary>Local {label} recovery copies</summary><p>Copies are scoped to this project generation, branch, and editor target. Restoring never writes a Project.</p>
       {session.limited && <p>Only the first 64 copies were inspected. No copy was removed automatically.</p>}
       {copies.map((copy, index) => <div role="group" aria-label={label + " recovery copy " + (index + 1)} key={copy.key}>
         <p>{copy.value ? new Date(copy.value.updatedAt).toLocaleString() + (productionUnconfirmed(copy.value.draft) ? " · Unconfirmed attempt" : " · Local input") : "Unreadable copy; original bytes were preserved."}</p>
         {copy.value && <details><summary>Inspect copied input</summary><pre>{JSON.stringify(copy.value.draft.input, null, 2)}</pre></details>}
-        {copy.value && <button className="secondary-button" disabled={busy || productionUnconfirmed(draft)} onClick={() => editor.restore(copy)}>Restore {label} copy {index + 1}</button>}
-        <button className="text-button" disabled={busy} onClick={() => editor.discard(copy)}>Discard {label} copy {index + 1}</button>
+        {copy.value && <button className="secondary-button" disabled={busy || session.recoveryProblem !== null || productionUnconfirmed(draft)} onClick={() => editor.restore(copy)}>Restore {label} copy {index + 1}</button>}
+        <button className="text-button" type="button" onClick={() => editor.download(copy.raw)}>Download {label} copy {index + 1}</button>
+        <button className="text-button" disabled={busy || draft.origins?.some(origin => origin.key === copy.key)} onClick={() => editor.discard(copy)}>Discard {label} copy {index + 1}</button>
       </div>)}
     </details>}
   </section>;
@@ -471,6 +515,6 @@ export default function ProductionDesignWorkspace(props:{graphServices:Pick<Sema
     <header className="production-workspace-header"><div><span className="eyebrow">CREATIVE PRODUCTION</span><h1>Direct the work. Preserve the decisions.</h1><p>{design.heroes.length} component{design.heroes.length===1?"":"s"} · {design.capsules.length} native source{design.capsules.length===1?"":"s"} · revision {props.project.revision}</p></div>
       <label className="production-scene-select"><span>Working scene</span><select aria-label="Production working scene" value={props.scene?.id ?? ""} onChange={e=>{setRepairDraft(null);props.onSelectScene(e.target.value);}}><option value="" disabled>Select a scene</option>{sceneOptions}</select></label></header>
     <nav className="production-tabs" aria-label="Production tools">{([ ["component","Components"],["stage","ProductStage"],["camera","Camera"],["graph","Graph"],["plan","Production plan"],["brand","Brand & taste"],["sources","Native sources"],["captures","Capture sources"],["identity","Identity & consent"],["generation","Generation journal"],["data","Measured data"],["procedural","Procedural"],["impact","Render impact"],["evaluator","Evaluators"],["distillation","Distillation"],["patch","Scoped changes"],["inspection","Native inspection"],["contrast","Pixel contrast"] ] as const).map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} onClick={()=>{if(tab==="patch" && key!=="patch") setRepairDraft(null);setTab(key);}}>{label}</button>)}</nav>
-    {tab==="component"?<HeroWorkbench key={productionScope(props.project,{kind:"hero",sceneId:props.scene?.id ?? null})} {...props}/>:tab==="stage"?<ProductStageWorkbench {...props} commit={props.commitCamera}/>:tab==="camera"?<CameraReframeWorkbench {...props}/>:tab==="graph"?<SemanticGraphWorkbench {...props} {...props.graphServices} commit={props.commitCamera}/>:tab==="plan"?<PlanWorkbench key={productionScope(props.project,{kind:"plan"})} {...props}/>:tab==="brand"?<BrandTasteWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="captures"?<CaptureSourceWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="generation"?<PaidGenerationWorkspace key={props.project.generation} project={props.project} scene={props.scene} busy={props.busy} commit={props.commit}/>:tab==="identity"?<IdentityOriginWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="data"?<MeasuredDataWorkbench project={props.project} scene={props.scene} busy={props.busy} commit={props.commitCamera} onOpenCanvas={props.onOpenCanvas}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commitCamera} busy={props.busy} onOpenCanvas={props.onOpenCanvas} displayProfile={props.displayProfile}/>:tab==="impact"?<RenderTailWorkbench project={props.project}/>:tab==="evaluator"?<CreativeEvaluatorWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="distillation"?<ComponentDistillationWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="contrast"?<NativeContrastWorkbench project={props.project} scene={props.scene} displayProfile={props.displayProfile} evidence={props.evidence} busy={props.busy} onOpenRender={props.onOpenRender}/>:tab==="inspection"?<NativeInspectionWorkbench {...props} onDraftRepair={draft=>{setRepairDraft(draft);setTab("patch");}}/>:<CreativePatchWorkbench {...props} repairDraft={repairDraft} onDismissRepair={()=>setRepairDraft(null)}/>}
+    {tab==="component"?<HeroWorkbench key={productionScope(props.project,{kind:"hero",sceneId:props.scene?.id ?? null})} {...props}/>:tab==="stage"?<ProductStageWorkbench {...props} commit={props.commitCamera}/>:tab==="camera"?<CameraReframeWorkbench {...props}/>:tab==="graph"?<SemanticGraphWorkbench {...props} {...props.graphServices} commit={props.commitCamera}/>:tab==="plan"?<PlanWorkbench key={productionScope(props.project,{kind:"plan"})} {...props}/>:tab==="brand"?<BrandTasteWorkbench project={props.project} commit={props.commitCamera} busy={props.busy}/>:tab==="sources"?<SourcesWorkbench {...props}/>:tab==="captures"?<CaptureSourceWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="generation"?<PaidGenerationWorkspace key={props.project.generation} project={props.project} scene={props.scene} busy={props.busy} commit={props.commit}/>:tab==="identity"?<IdentityOriginWorkbench project={props.project} commit={props.commit} busy={props.busy}/>:tab==="data"?<MeasuredDataWorkbench project={props.project} scene={props.scene} busy={props.busy} commit={props.commitCamera} onOpenCanvas={props.onOpenCanvas}/>:tab==="procedural"?<ProceduralFieldWorkbench project={props.project} scene={props.scene} commit={props.commitCamera} busy={props.busy} onOpenCanvas={props.onOpenCanvas} displayProfile={props.displayProfile}/>:tab==="impact"?<RenderTailWorkbench project={props.project}/>:tab==="evaluator"?<CreativeEvaluatorWorkbench project={props.project} scene={props.scene} commit={props.commit} busy={props.busy} onOpenCanvas={props.onOpenCanvas}/>:tab==="distillation"?<ComponentDistillationWorkbench project={props.project} commit={props.commitCamera} busy={props.busy}/>:tab==="contrast"?<NativeContrastWorkbench project={props.project} scene={props.scene} displayProfile={props.displayProfile} evidence={props.evidence} busy={props.busy} onOpenRender={props.onOpenRender}/>:tab==="inspection"?<NativeInspectionWorkbench {...props} onDraftRepair={draft=>{setRepairDraft(draft);setTab("patch");}}/>:<CreativePatchWorkbench {...props} repairDraft={repairDraft} onDismissRepair={()=>setRepairDraft(null)}/>}
   </section>;
 }

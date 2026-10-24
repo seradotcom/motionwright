@@ -127,5 +127,14 @@ test("failed synthetic late CAS never claims a successful campaign revision",asy
   const revision=await page.locator(".revision-chip").innerText();
   await page.getByRole("button",{name:"Apply owner-reviewed campaign via project CAS"}).click();
   await expect(page.locator(".revision-chip")).toHaveText(revision);
-  await expect(page.getByText(/Owner rollout requested. Confirm a new project revision/)).toBeVisible();
+  const recovery=page.getByRole("region",{name:"campaign draft recovery",exact:true});
+  await expect(recovery.getByRole("alert")).toContainText("Synthetic late style-lock failure: no partial project update");
+  await expect(recovery.getByRole("region",{name:"campaign uncertain outcome",exact:true})).toContainText("UNKNOWN");
+  await expect(page.getByLabel("Brand rollout campaign")).toHaveValue("Original launch batch");
+  await expect(page.getByRole("region",{name:"Proposed brand campaign changes"})).toContainText("2 component(s) would change");
+  await expect(page.getByRole("button",{name:"Apply owner-reviewed campaign via project CAS"})).toBeDisabled();
+  await expect(page.getByText(/Owner rollout requested\. Confirm a new project revision/)).toHaveCount(0);
+  await expect(recovery.getByText(/Saved campaign at r/)).toHaveCount(0);
+  const calls=await page.evaluate(()=>(window as unknown as {__BRAND_CALLS__:Array<{name:string}>}).__BRAND_CALLS__);
+  expect(calls.filter(call=>call.name==="apply_change")).toHaveLength(1);
 });
