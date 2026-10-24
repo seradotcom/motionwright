@@ -35,6 +35,7 @@ on:
       - 'tooling/mlt_official_runtime_intake.py'
       - 'tooling/requirements/mlt-g2-custody.txt'
       - 'tooling/tests/test_native_manim_camera_evidence.py'
+      - 'tooling/tests/test_native_manim_static_custody.py'
       - 'tooling/tests/test_native_manim_camera_cycle.py'
       - 'tooling/tests/test_native_manim_camera_cycle_publication.py'
       - 'tooling/tests/test_native_manim_camera_pixels.py'
@@ -88,6 +89,13 @@ jobs:
           elif event != "pull_request":
               raise SystemExit("Unsupported Manim workflow event")
           PY
+
+      - name: Quick source and conformance policies
+        run: |
+          python3 -B tooling/source_policy.py
+          python3 -B tooling/acceptance_policy.py
+          python3 -B tooling/creative_status_policy.py
+          python3 -B tooling/public_surface_policy.py
 
       - name: Install pinned private-custody test dependencies outside the checkout
         run: |
@@ -179,6 +187,35 @@ jobs:
           ))
           PY
 
+      - name: Require 29 complete static original-custody regressions on Linux
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_manim_static_custody.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$RUNNER_TEMP/manim-static-custody-g0/report.json"
+          python3 -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          value = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "manim-static-custody-g0/report.json").read_bytes()
+          )
+          assert value["status"] == "PASS" and value["exit_code"] == 0
+          assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert value["require_complete"] is True and "source_postcheck_error" not in value
+          assert len(value["steps"]) == 1
+          step = value["steps"][0]
+          assert step["entry_point"] == "discovery:test_native_manim_static_custody.py"
+          assert step["status"] == "PASS" and step["exit_code"] == 0
+          counts = step["counts"]
+          assert counts["terminal_status"] == "OK"
+          assert counts["tests_run"] == counts["passed"] == 29
+          assert all(counts[key] == 0 for key in (
+              "errors", "failures", "skipped", "expected_failures", "unexpected_successes",
+          ))
+          PY
+
       - name: Retain original source-contract reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -189,6 +226,7 @@ jobs:
             ${{ runner.temp }}/manim-camera-custody-g0/
             ${{ runner.temp }}/manim-camera-cycle-g0/
             ${{ runner.temp }}/manim-camera-cycle-publication-g0/
+            ${{ runner.temp }}/manim-static-custody-g0/
           if-no-files-found: error
           retention-days: 14
 
