@@ -165,7 +165,7 @@ pub(crate) fn explicit_eviction_guard(blob_root: &Path) -> Result<Option<Guard>>
     }
 }
 
-pub(super) fn validate_store(store: &Store) -> Result<()> {
+pub(crate) fn validate_store(store: &Store) -> Result<()> {
     if database_identity(&store.path)? != store.cas_database_id
         || load_store_id(&store.conn)? != store.cas_store_id
     {

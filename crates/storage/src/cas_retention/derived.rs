@@ -2118,4 +2118,203 @@ mod tests {
         assert_eq!(count, 1);
         fixture.assert_blob();
     }
+    #[test]
+    fn derived_cache_old_tombstone_does_not_revoke_a_registered_replacement_reference() {
+        let fixture = Fixture::new();
+        let mut store = fixture.open();
+        let (project, key) = proxy_case(&mut store, &fixture);
+        let old = store
+            .put_render_window_proxy(&key, &fixture.source, 17)
+            .unwrap();
+        let manifest = store
+            .derived_cache_manifest_path(&old.scope_sha256, KIND, &key.fingerprint_sha256)
+            .unwrap();
+        let root = discover(&fixture.blob_root).unwrap().unwrap();
+        let old_id = {
+            let gate = root.gate().unwrap();
+            *gate
+                .catalog
+                .derived
+                .as_ref()
+                .unwrap()
+                .references
+                .iter()
+                .find(|(_, r)| r.manifest.path == manifest)
+                .unwrap()
+                .0
+        };
+        // Retain a real SQL tombstone across explicit revocation and a later
+        // valid public admission for the same current key.
+        store
+            .conn
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+             INSERT INTO render_window_cache_evictions SELECT * FROM render_window_cache_entries;
+             DELETE FROM render_window_cache_entries;
+             COMMIT;",
+            )
+            .unwrap();
+        assert!(
+            store
+                .evict_derived_cache_exact(
+                    &crate::render_window_cache::scope(&key),
+                    KIND,
+                    &key.fingerprint_sha256
+                )
+                .unwrap()
+        );
+        let replacement_source = fixture.base.join("replacement-proxy.bin");
+        let replacement_bytes = b"replacement with a new exact reference identity";
+        fs::write(&replacement_source, replacement_bytes).unwrap();
+        let new = store
+            .put_render_window_proxy(&key, &replacement_source, 23)
+            .unwrap();
+        assert_ne!(new.blob_sha256, old.blob_sha256);
+        let (new_id, reference_before) = {
+            let gate = root.gate().unwrap();
+            let (id, reference) = gate
+                .catalog
+                .derived
+                .as_ref()
+                .unwrap()
+                .references
+                .iter()
+                .find(|(_, r)| r.manifest.path == manifest)
+                .unwrap();
+            (*id, serde_json::to_value(reference).unwrap())
+        };
+        assert_ne!(new_id, old_id);
+        let manifest_before = fs::read(&manifest).unwrap();
+        let report = store.drain_render_window_evictions(64).unwrap();
+        assert_eq!(report.tombstones_selected, 1);
+        assert_eq!(report.tombstones_cleared, 1);
+        assert_eq!(report.manifests_removed, 0);
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM render_window_cache_entries",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(fs::read(&manifest).unwrap(), manifest_before);
+        assert_eq!(store.load_project(project.id).unwrap(), project);
+        let recovered = store.recover_cas(zero()).unwrap();
+        assert_eq!(
+            recovered.removed, 1,
+            "only the explicitly revoked old publication: {recovered:?}"
+        );
+        assert_eq!(recovered.unresolved, 0, "{recovered:?}");
+        assert_eq!(
+            fs::read(digest_path(&fixture.blob_root, &new.blob_sha256).unwrap()).unwrap(),
+            replacement_bytes
+        );
+        let gate = root.gate().unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                gate.catalog
+                    .derived
+                    .as_ref()
+                    .unwrap()
+                    .references
+                    .get(&new_id)
+                    .unwrap()
+            )
+            .unwrap(),
+            reference_before
+        );
+        drop(gate);
+        assert_eq!(fs::read(&fixture.source).unwrap(), PAYLOAD);
+        assert_eq!(fs::read(&replacement_source).unwrap(), replacement_bytes);
+    }
+
+    #[test]
+    fn derived_cache_changed_proxy_lock_preserves_unresolved_state_and_bytes() {
+        let fixture = Fixture::new();
+        let mut store = fixture.open();
+        let (_, key) = proxy_case(&mut store, &fixture);
+        let record = store
+            .put_render_window_proxy(&key, &fixture.source, 17)
+            .unwrap();
+        let manifest = store
+            .derived_cache_manifest_path(&record.scope_sha256, KIND, &key.fingerprint_sha256)
+            .unwrap();
+        store
+            .conn
+            .execute("DELETE FROM render_window_cache_entries", [])
+            .unwrap();
+        let root = discover(&fixture.blob_root).unwrap().unwrap();
+        let lock_id = {
+            let gate = root.gate().unwrap();
+            let value = serde_json::to_value(&gate.catalog).unwrap();
+            Uuid::parse_str(value["derived"]["proxy"]["lock"]["id"].as_str().unwrap()).unwrap()
+        };
+        let lock_path = root.lock_path(lock_id);
+        let original_id =
+            file_identity(&open_control(&lock_path, false, true, false).unwrap()).unwrap();
+        fs::rename(&lock_path, fixture.base.join("displaced-proxy.lock")).unwrap();
+        let replacement = File::create_new(&lock_path).unwrap();
+        replacement.sync_all().unwrap();
+        let replacement_id = file_identity(&replacement).unwrap();
+        assert_ne!(original_id, replacement_id);
+        drop(replacement);
+        let catalog_path = root.control.join("catalog.json");
+        let before_catalog = fs::read(&catalog_path).unwrap();
+        let before_manifest = fs::read(&manifest).unwrap();
+        let before_sql = all_sql_rows(&store);
+        assert!(store.recover_cas(zero()).is_err());
+        assert_eq!(fs::read(&catalog_path).unwrap(), before_catalog);
+        assert_eq!(fs::read(&manifest).unwrap(), before_manifest);
+        assert_eq!(all_sql_rows(&store), before_sql);
+        assert_eq!(
+            file_identity(&open_control(&lock_path, false, true, false).unwrap()).unwrap(),
+            replacement_id
+        );
+        assert!(fs::read(&lock_path).unwrap().is_empty());
+        fixture.assert_blob();
+        assert_eq!(fs::read(&fixture.source).unwrap(), PAYLOAD);
+    }
+
+    #[test]
+    fn derived_cache_explicit_proxy_eviction_cannot_reveal_a_legacy_fallback() {
+        let fixture = Fixture::new();
+        let mut store = fixture.open();
+        let (_, key) = proxy_case(&mut store, &fixture);
+        let record = store
+            .put_render_window_proxy(&key, &fixture.source, 17)
+            .unwrap();
+        let managed = store
+            .derived_cache_manifest_path(&record.scope_sha256, KIND, &key.fingerprint_sha256)
+            .unwrap();
+        // A historical fallback manifest is fixture data, never new custody.
+        let legacy = fixture
+            .base
+            .join("derived-cache")
+            .join("sha256")
+            .join(&record.scope_sha256[..2])
+            .join(&record.scope_sha256)
+            .join(managed.file_name().unwrap());
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        let rows = all_sql_rows(&store);
+        assert!(
+            store
+                .evict_derived_cache_exact(
+                    &crate::render_window_cache::scope(&key),
+                    KIND,
+                    &key.fingerprint_sha256
+                )
+                .unwrap()
+        );
+        assert!(!managed.exists());
+        assert!(!legacy.exists());
+        assert!(store.lookup_render_window_proxy(&key).unwrap().is_none());
+        assert_eq!(all_sql_rows(&store), rows);
+        assert_eq!(store.recover_cas(zero()).unwrap().removed, 1);
+        assert_eq!(all_sql_rows(&store), rows);
+        assert_eq!(fs::read(&fixture.source).unwrap(), PAYLOAD);
+    }
 }

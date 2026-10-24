@@ -284,6 +284,7 @@ impl Store {
             });
         }
         let mut impact = project.inspect_render_tail_impact(request)?;
+        proxy::validate_store(self)?;
         let proxy_access = proxy::acquire(&self.blob_root, false)?;
         if matches!(proxy_access, proxy::Access::Busy) {
             return Err(invalid("proxy admission is active; purge was not started"));
@@ -438,6 +439,7 @@ impl Store {
         if limit == 0 || limit > 256 {
             return Err(invalid("eviction batch must be in 1..=256"));
         }
+        proxy::validate_store(self)?;
         let proxy_access = proxy::acquire(&self.blob_root, false)?;
         if matches!(proxy_access, proxy::Access::Busy) {
             return Err(invalid(
@@ -497,9 +499,32 @@ impl Store {
             );
             // Safe without reading project source: the trigger revoked this
             // registration in the same transaction as the revision update.
-            let revoked = match proxy::withdraw(self, &proxy_access, &owner, digest)? {
-                Some(removed) => removed,
-                None => self.evict_derived_cache_exact(&owner, KIND, digest)?,
+            // A retained tombstone predates a later valid admission for the
+            // same key. The live proxy lock excludes another admission until
+            // this observation and tombstone deletion have both finished.
+            let registered: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM render_window_cache_entries
+                 WHERE project_id=?1 AND generation=?2 AND revision=?3
+                   AND deliverable_id=?4 AND source_start=?5 AND source_end=?6
+                   AND fingerprint_sha256=?7)",
+                params![
+                    project_id.to_string(),
+                    generation.to_string(),
+                    *revision as i64,
+                    deliverable_id.to_string(),
+                    *start as i64,
+                    *end as i64,
+                    digest
+                ],
+                |row| row.get(0),
+            )?;
+            let revoked = if registered {
+                false
+            } else {
+                match proxy::withdraw(self, &proxy_access, &owner, digest)? {
+                    Some(removed) => removed,
+                    None => self.evict_derived_cache_exact(&owner, KIND, digest)?,
+                }
             };
             if revoked {
                 removed += 1;
