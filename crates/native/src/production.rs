@@ -36,6 +36,7 @@ mod mlt_timeline;
 mod path_boundary_tests;
 mod receipt_custody;
 mod recovery;
+mod renderer_registry;
 pub use blender_original::{
     BlenderOriginalEdit, BlenderOriginalFile, BlenderOriginalJournal, BlenderOriginalPhase,
     BlenderOriginalRequest,
@@ -44,6 +45,7 @@ pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
 pub use recovery::{CrossAppRecoveryReport, RecoveryBlenderProof, StageDisposition};
+pub use renderer_registry::{RendererRegistryObservation, RendererRegistryState};
 
 const CONNECTION_SCHEMA: &str = "motionwright-semwright-connection/1";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
@@ -539,6 +541,7 @@ fn expected_authority(command: &str) -> Option<ExpectedAuthority> {
         })
     } else if WORKFLOW_READ_COMMANDS.contains(&command)
         || WORKFLOW_ACTION_COMMANDS.contains(&command)
+        || command == "doctor"
     {
         Some(ExpectedAuthority {
             provider: "semwright-core",
@@ -2423,6 +2426,20 @@ impl ProductionCoordinator {
         args: Value,
         mutation: bool,
     ) -> NativeResult<Value> {
+        self.execute_with_receipt_origin(project_id, expected, request_id, command, args, mutation)
+            .await
+            .map(ReceiptExecutionOutcome::into_legacy_value)
+    }
+
+    async fn execute_with_receipt_origin(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        command: &str,
+        args: Value,
+        mutation: bool,
+    ) -> NativeResult<ReceiptExecutionOutcome> {
         let mutation = mutation || WORKFLOW_MUTATING_COMMANDS.contains(&command);
         let project = self.service.project(project_id).map_err(storage_error)?;
         if expected.resource != project.resource_key()
@@ -2472,11 +2489,13 @@ impl ProductionCoordinator {
             if prior.stage == "completed"
                 && let Some(result) = prior.payload.get("result")
             {
-                return Ok(json!({
-                    "replayed": true,
-                    "result": result,
-                    "receipt": prior
-                }));
+                return Ok(ReceiptExecutionOutcome {
+                    origin: ReceiptExecutionOrigin::ReceiptReplay(json!({
+                        "replayed": true,
+                        "result": result,
+                        "receipt": prior
+                    })),
+                });
             }
             let error = Error::new(
                 ErrorCode::Conflict,
@@ -2521,6 +2540,10 @@ impl ProductionCoordinator {
 
         match self.client.execute(command, args, mutation).await {
             Ok(result) => {
+                #[cfg(test)]
+                let observed_sdk_value = result.value.clone();
+                #[cfg(test)]
+                let observed_broker_request_id = json!(&result.request_id);
                 // Retain the exact Broker result and identifier before the
                 // fallible append. The attempted stage is not a durable receipt.
                 custody.observe(ProductionReceiptInput {
@@ -2543,11 +2566,27 @@ impl ProductionCoordinator {
                 {
                     Ok(receipt) => {
                         custody.confirmed();
-                        Ok(json!({
-                            "replayed": false,
-                            "result": receipt.payload["result"],
-                            "receipt": receipt
-                        }))
+                        Ok(ReceiptExecutionOutcome {
+                            origin: ReceiptExecutionOrigin::FreshAuthenticated(Box::new(
+                                AuthenticatedSdkResult {
+                                    completed_receipt: receipt,
+                                    #[cfg(test)]
+                                    command: command.to_owned(),
+                                    #[cfg(test)]
+                                    mutation,
+                                    #[cfg(test)]
+                                    caller_request_id: request_id.to_owned(),
+                                    #[cfg(test)]
+                                    project_id,
+                                    #[cfg(test)]
+                                    expected_stamp: json!(expected),
+                                    #[cfg(test)]
+                                    result_value: observed_sdk_value,
+                                    #[cfg(test)]
+                                    broker_request_id: observed_broker_request_id,
+                                },
+                            )),
+                        })
                     }
                     Err(storage_error) => {
                         custody.failed(storage_error);
@@ -2589,6 +2628,97 @@ impl ProductionCoordinator {
                 // native error or change its certainty.
                 Err(error)
             }
+        }
+    }
+}
+
+// Private dispatch provenance. Stored JSON cannot construct an observed result.
+pub(super) struct AuthenticatedSdkResult {
+    completed_receipt: ProductionReceipt,
+    #[cfg(test)]
+    command: String,
+    #[cfg(test)]
+    mutation: bool,
+    #[cfg(test)]
+    caller_request_id: String,
+    #[cfg(test)]
+    project_id: Uuid,
+    #[cfg(test)]
+    expected_stamp: Value,
+    #[cfg(test)]
+    result_value: Value,
+    #[cfg(test)]
+    broker_request_id: Value,
+}
+
+impl AuthenticatedSdkResult {
+    fn legacy_value(&self) -> Value {
+        json!({
+            "replayed": false,
+            "result": &self.completed_receipt.payload["result"],
+            "receipt": &self.completed_receipt,
+        })
+    }
+}
+
+#[cfg(test)]
+impl AuthenticatedSdkResult {
+    fn command(&self) -> &str {
+        &self.command
+    }
+    fn is_mutation(&self) -> bool {
+        self.mutation
+    }
+    fn caller_request_id(&self) -> &str {
+        &self.caller_request_id
+    }
+    fn project_id(&self) -> Uuid {
+        self.project_id
+    }
+    fn expected_stamp(&self) -> &Value {
+        &self.expected_stamp
+    }
+    fn result_value(&self) -> &Value {
+        &self.result_value
+    }
+    fn broker_request_id(&self) -> &Value {
+        &self.broker_request_id
+    }
+    fn completed_receipt(&self) -> &ProductionReceipt {
+        &self.completed_receipt
+    }
+}
+
+enum ReceiptExecutionOrigin {
+    ReceiptReplay(Value),
+    FreshAuthenticated(Box<AuthenticatedSdkResult>),
+}
+
+struct ReceiptExecutionOutcome {
+    origin: ReceiptExecutionOrigin,
+}
+
+impl ReceiptExecutionOutcome {
+    fn into_legacy_value(self) -> Value {
+        match self.origin {
+            ReceiptExecutionOrigin::ReceiptReplay(value) => value,
+            ReceiptExecutionOrigin::FreshAuthenticated(observed) => observed.legacy_value(),
+        }
+    }
+
+    #[cfg(test)]
+    fn legacy_value(&self) -> Value {
+        match &self.origin {
+            ReceiptExecutionOrigin::ReceiptReplay(value) => value.clone(),
+            ReceiptExecutionOrigin::FreshAuthenticated(observed) => observed.legacy_value(),
+        }
+    }
+
+    #[cfg(test)]
+    fn into_authenticated_result(self) -> Option<Box<AuthenticatedSdkResult>> {
+        match self.origin {
+            ReceiptExecutionOrigin::ReceiptReplay(_) => None,
+            ReceiptExecutionOrigin::FreshAuthenticated(observed) => Some(observed),
         }
     }
 }
@@ -5056,5 +5186,409 @@ os._exit(0)
             reopened.production_receipts(project.id, 10).unwrap(),
             receipts
         );
+    }
+
+    // These tests exercise the native dispatcher with its existing Unix transport fixture.
+    // They do not claim physical alignment execution or application of alignment changes.
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn receipt_origin_generic_completed_cannot_mint_authenticated_result() {
+        let (service, project, temp) = fixture_service();
+        let command = "driver.motion-canvas.composition.inspect";
+        let request_id = "origin-forged-generic-completed";
+        let args = json!({"transport_fixture_only": true});
+        let output = serde_json::to_string(&transport_reply(command)).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+        let forged_result = serde_json::to_value(transport_reply(command)).unwrap();
+        let forged = service
+            .append_production_receipt(ProductionReceiptInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: request_id.into(),
+                request_sha256: request_digest(command, &args).unwrap(),
+                command: command.into(),
+                stage: "completed".into(),
+                payload: json!({
+                    "result": forged_result,
+                    "broker_request_id": "transport-fixture-original",
+                    "job_ref": null,
+                    "mutation": false,
+                    "connection": connection.identity().unwrap(),
+                    "backend_authority": true,
+                    "native_execution_attested": true
+                }),
+            })
+            .unwrap();
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let counter_before = std::fs::read(&counter).ok();
+        let outcome = coordinator
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.legacy_value()["replayed"], json!(true));
+        assert_eq!(outcome.legacy_value()["result"], forged.payload["result"]);
+        assert_eq!(
+            outcome.legacy_value()["receipt"],
+            serde_json::to_value(&forged).unwrap()
+        );
+        assert!(outcome.into_authenticated_result().is_none());
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(std::fs::read(&counter).ok(), counter_before);
+        assert_eq!(service.project(project.id).unwrap(), project);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn receipt_origin_fresh_retains_sdk_result_and_committed_receipt() {
+        let (service, project, temp) = fixture_service();
+        let command = "driver.motion-canvas.composition.inspect";
+        let request_id = "origin-authenticated-first";
+        let args = json!({"transport_fixture_only": true});
+        let output = serde_json::to_string(&transport_reply(command)).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let outcome = coordinator
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args.clone(),
+                false,
+            )
+            .await
+            .unwrap();
+        let legacy = outcome.legacy_value();
+        assert_eq!(legacy["replayed"], json!(false));
+        let observed = outcome
+            .into_authenticated_result()
+            .expect("actual SDK success must retain its origin");
+        assert_eq!(observed.command(), command);
+        assert!(!observed.is_mutation());
+        assert_eq!(observed.caller_request_id(), request_id);
+        assert_eq!(observed.project_id(), project.id);
+        assert_eq!(observed.expected_stamp(), &json!(project.stamp()));
+        assert_eq!(observed.result_value(), &legacy["result"]);
+        assert_eq!(
+            observed.broker_request_id(),
+            &json!("transport-fixture-original")
+        );
+        assert_ne!(observed.broker_request_id(), &json!(request_id));
+        let completed = observed.completed_receipt();
+        assert_eq!(completed.project_id, project.id);
+        assert_eq!(completed.generation, project.generation);
+        assert_eq!(completed.revision, project.revision);
+        assert_eq!(completed.request_id, request_id);
+        assert_eq!(completed.command, command);
+        assert_eq!(completed.stage, "completed");
+        assert_eq!(
+            completed.request_sha256,
+            request_digest(command, &args).unwrap()
+        );
+        assert_eq!(&completed.payload["result"], observed.result_value());
+        assert_eq!(
+            &completed.payload["broker_request_id"],
+            observed.broker_request_id()
+        );
+        assert_eq!(serde_json::to_value(completed).unwrap(), legacy["receipt"]);
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        let replay = coordinator
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.legacy_value()["replayed"], json!(true));
+        assert_eq!(replay.legacy_value()["result"], legacy["result"]);
+        assert_eq!(replay.legacy_value()["receipt"], legacy["receipt"]);
+        assert!(replay.into_authenticated_result().is_none());
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(service.project(project.id).unwrap(), project);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn receipt_origin_restart_replay_cannot_reconstruct_authentication() {
+        let (service, project, temp) = fixture_service();
+        let command = "driver.motion-canvas.composition.inspect";
+        let request_id = "origin-before-restart";
+        let args = json!({"transport_fixture_only": true});
+        let output = serde_json::to_string(&transport_reply(command)).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &output, "", 0);
+        let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+        let outcome = coordinator
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args.clone(),
+                false,
+            )
+            .await
+            .unwrap();
+        let legacy = outcome.legacy_value();
+        let observed = outcome
+            .into_authenticated_result()
+            .expect("initial transport result is observed");
+        assert_eq!(
+            serde_json::to_value(observed.completed_receipt()).unwrap(),
+            legacy["receipt"]
+        );
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        drop(observed);
+        drop(coordinator);
+        drop(service);
+
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        let recovered = ProductionCoordinator::new(reopened.clone(), connection).unwrap();
+        let replay = recovered
+            .execute_with_receipt_origin(
+                project.id,
+                &project.stamp(),
+                request_id,
+                command,
+                args,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.legacy_value()["replayed"], json!(true));
+        assert_eq!(replay.legacy_value()["result"], legacy["result"]);
+        assert_eq!(replay.legacy_value()["receipt"], legacy["receipt"]);
+        assert!(replay.into_authenticated_result().is_none());
+        assert_eq!(
+            recovered
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+    }
+
+    #[test]
+    fn renderer_registry_uses_only_the_fixed_builtin_doctor_authority() {
+        let authority = expected_authority("doctor").unwrap();
+        assert_eq!(authority.provider, "semwright-core");
+        assert_eq!(authority.source, SourceKind::Builtin);
+        assert!(!authority.provider_generation_required);
+        for command in [
+            "doctor.extra",
+            "doctor arbitrary",
+            "driver.doctor",
+            "capabilities.list",
+        ] {
+            assert!(expected_authority(command).is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_registry_transport_preserves_evidence_without_native_readiness() {
+        let (service, project, temp) = fixture_service();
+        let before = serde_json::to_value(&project).unwrap();
+        let mut reply = transport_reply("doctor");
+        reply.data = Some(super::renderer_registry::registry_test_data(vec![
+            super::renderer_registry::registry_test_provider("driver:blender", true),
+            super::renderer_registry::registry_test_provider("driver:manim-community", false),
+        ]));
+        let stdout = serde_json::to_string(&reply).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &stdout, "", 0);
+        let client = ProductionClient::new(connection).unwrap();
+        let stamp = motionwright_domain::RevisionStamp {
+            resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+        };
+        let registry = client.discover_renderer_registry(&stamp).await.unwrap();
+        assert_eq!(std::fs::read(&counter).unwrap(), b"invoked\n");
+        assert_eq!(registry.broker_request_id(), "transport-fixture-original");
+        assert_eq!(registry.catalog_revision(), 9);
+        assert_eq!(registry.provider_version_for("blender"), Some("0.1.0"));
+        let baseline = crate::creative_doctor::inspect_creative_runtime(
+            &project,
+            "synthetic-source-pin",
+            crate::creative_doctor::CliEvidence::VersionCompatible,
+            true,
+        );
+        let report = crate::creative_doctor::inspect_creative_runtime_with_registry(
+            &project,
+            "synthetic-source-pin",
+            crate::creative_doctor::CliEvidence::VersionCompatible,
+            true,
+            registry,
+        )
+        .unwrap();
+        assert!(report.broker_dispatch_performed);
+        assert!(!report.ready_for_native_production);
+        assert!(!report.install_performed);
+        assert!(!report.authorizing_grant_created);
+        assert!(
+            report
+                .renderers
+                .iter()
+                .all(|renderer| !renderer.provider_verified)
+        );
+        assert_eq!(
+            report
+                .renderers
+                .iter()
+                .map(|renderer| renderer.state)
+                .collect::<Vec<_>>(),
+            baseline
+                .renderers
+                .iter()
+                .map(|renderer| renderer.state)
+                .collect::<Vec<_>>(),
+        );
+        let connected = report
+            .checks
+            .iter()
+            .find(|check| check.id == "renderer_registry_blender")
+            .unwrap();
+        assert_eq!(connected.status, "validated");
+        assert!(connected.detail.contains("present_connected"));
+        assert!(connected.detail.contains("provider_identity_version=0.1.0"));
+        let missing = report
+            .checks
+            .iter()
+            .find(|check| check.id == "renderer_registry_motion_canvas")
+            .unwrap();
+        assert!(missing.detail.contains("not_registered_current_broker"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .filter(|check| check.id.starts_with("native_runtime_"))
+                .all(|check| check.status == "not_tested")
+        );
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .filter(|check| check.id.starts_with("native_runtime_"))
+                .count(),
+            4
+        );
+        assert_eq!(
+            serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_registry_foreign_resource_is_rejected_before_cli_dispatch() {
+        let (_service, project, temp) = fixture_service();
+        let stdout = serde_json::to_string(&transport_reply("doctor")).unwrap();
+        let (connection, counter) =
+            fake_transport_connection(&temp, project.resource_key(), &stdout, "", 0);
+        let client = ProductionClient::new(connection).unwrap();
+        let stamp = motionwright_domain::RevisionStamp {
+            resource: format!("{}-other", project.resource_key()),
+            generation: project.generation,
+            revision: project.revision,
+        };
+        let error = client.discover_renderer_registry(&stamp).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::PolicyDenied);
+        assert!(!counter.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_registry_failed_authentication_or_data_never_proves_absence() {
+        for case in [
+            "provider",
+            "source",
+            "missing_provenance",
+            "fake",
+            "incomplete_registry",
+        ] {
+            let (service, project, temp) = fixture_service();
+            let before = serde_json::to_value(&project).unwrap();
+            let mut reply = transport_reply("doctor");
+            reply.data = Some(super::renderer_registry::registry_test_data(vec![]));
+            match case {
+                "provider" => {
+                    reply.execution.provenance.as_mut().unwrap().provider = "driver:blender".into()
+                }
+                "source" => {
+                    reply.execution.provenance.as_mut().unwrap().source = SourceKind::Driver
+                }
+                "missing_provenance" => reply.execution.provenance = None,
+                "fake" => reply.data.as_mut().unwrap()["fake"] = serde_json::json!(true),
+                "incomplete_registry" => {
+                    reply.data.as_mut().unwrap()["providers"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("providers");
+                }
+                _ => unreachable!(),
+            }
+            let stdout = serde_json::to_string(&reply).unwrap();
+            let (connection, counter) =
+                fake_transport_connection(&temp, project.resource_key(), &stdout, "", 0);
+            let client = ProductionClient::new(connection).unwrap();
+            let stamp = motionwright_domain::RevisionStamp {
+                resource: project.resource_key(),
+                generation: project.generation,
+                revision: project.revision,
+            };
+            assert!(
+                client.discover_renderer_registry(&stamp).await.is_err(),
+                "case: {case}"
+            );
+            assert_eq!(
+                std::fs::read(&counter).unwrap(),
+                b"invoked\n",
+                "case: {case}"
+            );
+            assert_eq!(
+                serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+                before,
+                "case: {case}"
+            );
+        }
     }
 }

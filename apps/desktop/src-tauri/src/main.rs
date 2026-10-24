@@ -30,7 +30,7 @@ use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
 use local_error::sanitized;
-use motionwright_domain::{AlignmentEvidence, Change, CueEvidence, Project, RevisionStamp};
+use motionwright_domain::{Change, Project, RevisionStamp};
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
     build_application,
@@ -2091,17 +2091,8 @@ async fn apply_change(
         scope,
         request.request_id.trim(),
     )?;
-    let trusted_audio_evidence = match &request.change {
-        Change::ImportMeasuredVoice { .. } | Change::AddVoiceTrack { .. } => true,
-        Change::AddTranscriptSegment { segment } | Change::UpsertTranscriptSegment { segment } => {
-            matches!(segment.alignment, AlignmentEvidence::Measured { .. })
-        }
-        Change::AddAudioCue { cue } | Change::UpsertAudioCue { cue } => matches!(
-            cue.evidence,
-            CueEvidence::Measured | CueEvidence::TranscriptAligned
-        ),
-        _ => false,
-    };
+    let trusted_audio_evidence =
+        motionwright_native::requires_qualified_audio_boundary(&request.change);
     if trusted_audio_evidence {
         return Err(
             "Measured audio evidence can only enter through the qualified audio import/alignment boundary."
