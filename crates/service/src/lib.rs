@@ -7,6 +7,7 @@ mod models;
 mod portability;
 mod project_creation;
 mod project_projection;
+mod semantic_graph;
 mod svg_admission;
 pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodeBudget, OriginalMixDecodedPcm,
@@ -26,6 +27,7 @@ pub use project_projection::{
     NodePageCursor, ProjectionError, ProjectionFailure, ProjectionHead, ProjectionIdentity,
     ProjectionResult, ScenePage, ScenePageCursor, SceneRef, SceneSummary,
 };
+pub use semantic_graph::SemanticGraphContextRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceImportMetadata {
@@ -1180,6 +1182,7 @@ impl StudioService {
         request_id: &str,
         change: &Change,
     ) -> StorageResult<ApplyOutcome> {
+        self.require_semantic_graph_write_admission(change)?;
         self.store.lock().apply(id, expected, request_id, change)
     }
 }

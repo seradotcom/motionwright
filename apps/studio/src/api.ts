@@ -1035,6 +1035,8 @@ export async function applyChange(project: Project, change: Change): Promise<Pro
     });
   }
 
+  if (change.type === "upsert_semantic_graph" || change.type === "remove_semantic_graph")
+    throw new Error("Semantic Graph saving requires the actual StudioService and matching native consumer.");
   return simulateChange(project, change, requestId, true);
 }
 

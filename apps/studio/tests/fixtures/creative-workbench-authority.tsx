@@ -39,10 +39,17 @@ const commit = (change: Change): Promise<Project> => coordinator.run(project, ()
   return new Promise<Project>((resolve, reject) => replies.set(request.id, { resolve, reject }));
 }, receipt => { project = receipt; render(); });
 const legacyCommit = async (change: Change): Promise<void> => { await commit(change); };
+// This component fixture does not provide a native Graph transport.
+const unavailableGraph = (): never => { throw new Error("Graph is unavailable in this synthetic Production fixture."); };
 function render() {
   sessionStorage.setItem(fixtureKey, JSON.stringify({ project, sceneId, playhead }));
   const scene = project.scenes.find(value => value.id === sceneId) ?? null;
   flushSync(() => root.render(mounted ? <StrictMode><ProductionDesignWorkspace project={project} scene={scene}
+    graphServices={{
+      readContext: null,
+      outcomeTransport: { readProject: async () => unavailableGraph(), readHistory: async () => unavailableGraph() },
+      refreshProject: async () => unavailableGraph(), openReview: unavailableGraph,
+    }}
     commit={legacyCommit} commitCamera={commit} busy={false} playhead={playhead}
     onSeek={value => { if (playhead !== value) { playhead = value; queueMicrotask(render); } }}
     onSelectScene={id => { sceneId = id; render(); }} onOpenCanvas={() => {}} onOpenRender={() => {}}

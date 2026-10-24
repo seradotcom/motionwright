@@ -370,6 +370,9 @@ impl Session {
 
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "semantic_graph_authoring_context" => encoded(
+                project_projection::semantic_graph_context(&self.service, request(args)?)?,
+            ),
             "export_caption_sidecar" => encoded(caption_export::export_caption_sidecar(
                 &self.service,
                 &self.grants,

@@ -2,6 +2,8 @@ import CommandPalette, { type EditorCommand } from "./CommandPalette";
 import SceneInspector from "./SceneInspector";
 import { isPaletteShortcut } from "./editorCommandSearch";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
+import { graphReviewAnchor, graphSame } from "./semanticGraph";
+import { readSemanticGraphContext } from "./semanticGraphService";
 import ProgramDesignStudy, { hasEditableProgramDesign } from "./ProgramDesignStudy";
 import {
   Activity,
@@ -61,6 +63,7 @@ import {
 import {
   applyChange,
   bootstrap,
+  projectHistory,
   exportProjectBundle,
   importAssetFile,
   importProjectBundle,
@@ -98,6 +101,7 @@ import type {
   Project,
   ProjectState,
   RationalTime,
+  ReviewAnchor,
   RendererKind,
   Scene,
 } from "./types";
@@ -1483,6 +1487,7 @@ export default function App() {
     setView(accepted);
   }, []);
   const [workspace, setWorkspace] = useState<Workspace>("Timeline");
+  const [graphReviewSelection, setGraphReviewSelection] = useState<{ owner: string; resource: string } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
@@ -1903,6 +1908,24 @@ export default function App() {
   const commitCamera = useCallback((change: Change): Promise<Project> =>
     transactProject(source => applyChange(source, change)), [transactProject]);
 
+  // Read real selected source through the existing coordinator. A context read
+  // can report blocked; it does not grant a write or acknowledge an UNKNOWN.
+  const openGraphReview = useCallback((anchor: ReviewAnchor) => {
+    const source = viewRef.current?.kind === "full" ? viewRef.current.boot.project : null;
+    if (!source || !graphSame(graphReviewAnchor(source, anchor.resource), anchor)) {
+      setError("The saved Graph review source changed. Inspect the current Graph before opening its review."); return;
+    }
+    setGraphReviewSelection({ owner: JSON.stringify([source.id, source.generation, source.active_branch]), resource: anchor.resource });
+    setWorkspace("Review");
+  }, []);
+  const refreshGraphProject = useCallback(async (): Promise<Project> => {
+    const source = viewRef.current;
+    if (!("__TAURI_INTERNALS__" in window) || source?.kind !== "full") throw new Error("A saved Graph refresh requires the actual StudioService.");
+    const next = await admitSavedView(source.boot.project.id, "editor");
+    if (next.kind !== "full") throw new Error("The complete saved Graph source is unavailable.");
+    return next.boot.project;
+  }, [admitSavedView]);
+
   const commit = useCallback(async (change: Change) => {
     setError(null);
     try {
@@ -2073,7 +2096,21 @@ export default function App() {
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
       case "Production":
-        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
+        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera} graphServices={{
+          readContext: readSemanticGraphContext,
+          outcomeTransport: {
+            readProject: async id => {
+              if (!("__TAURI_INTERNALS__" in window)) throw new Error("A saved Graph read requires StudioService.");
+              const value = await bootstrap(id);
+              if (!value.project || value.project.id !== id) throw new Error("The selected saved Graph Project is unavailable.");
+              return value.project;
+            },
+            readHistory: async (source, after, limit) => {
+              if (!("__TAURI_INTERNALS__" in window)) throw new Error("Graph history requires StudioService.");
+              return projectHistory(source, after, limit);
+            },
+          }, refreshProject: refreshGraphProject, openReview: openGraphReview,
+        }} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
           commitRequired={commitRequired} playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
@@ -2110,7 +2147,9 @@ export default function App() {
           key={[project.id, project.generation, project.revision].join(":")}
           project={project} desktopMode={boot.native_sdk.mode === "tauri"} />;
       case "Review":
-        return <ReviewWorkspace project={project} scene={selectedScene} commit={commitCamera} playhead={playhead} onSeek={seekTo} />;
+        return <ReviewWorkspace project={project} scene={selectedScene} commit={commitCamera} playhead={playhead} onSeek={seekTo}
+          key={graphReviewSelection?.owner === JSON.stringify([project.id, project.generation, project.active_branch]) ? graphReviewSelection.resource : "selected-resource"}
+          externalResource={graphReviewSelection?.owner === JSON.stringify([project.id, project.generation, project.active_branch]) ? graphReviewSelection.resource : null} />;
       case "Deliver":
         return (
           <DeliverView

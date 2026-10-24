@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { parseBeatTime } from "./sceneBeatTiming";
 import { bootstrap, projectHistory } from "./api";
 import { sameValue } from "./creativeProduction";
+import { graphReviewAnchor, isGraphReviewResource } from "./semanticGraph";
 import type { Change, CreativeReview, Project, ProjectEvent, RationalTime, ReviewKind } from "./types";
 
 export type ReviewChange = Extract<Change, { type: "add_review" | "resolve_review" | "reopen_review" }>;
@@ -42,7 +43,7 @@ export function reviewIdentity(scope: string): [string, string, string, ReviewTa
   const value: unknown = JSON.parse(scope);
   if (!Array.isArray(value) || value.length !== 5 || !value.slice(0, 3).every(uuid)
     || !["comment", "resolution", "alternative"].includes(value[3]) || typeof value[4] !== "string"
-    || (value[3] === "comment" ? !/^(project|scene|claim):/.test(value[4]) || value[4].split(":").length !== 2 || !uuid(value[4].split(":")[1]) : !uuid(value[4])))
+    || (value[3] === "comment" ? !isGraphReviewResource(value[4]) && (!/^(project|scene|claim):/.test(value[4]) || value[4].split(":").length !== 2 || !uuid(value[4].split(":")[1])) : !uuid(value[4])))
     throw new Error("The review recovery owner or target is invalid.");
   const [id, generation, branch, kind, target] = value as [string, string, string, ReviewTarget["kind"], string];
   if (kind === "comment" && target.startsWith("project:") && target !== "project:" + id)
@@ -63,6 +64,8 @@ function assertTarget(draft: ReviewDraft, project: Project): ReviewTarget {
     throw new Error("The reviewed claim is no longer present. Its raw input was kept.");
   if (target.kind === "comment" && target.id.startsWith("scene:") && !project.scenes.some(scene => "scene:" + scene.id === target.id))
     throw new Error("The reviewed scene is no longer present. Its raw input was kept.");
+  if (target.kind === "comment" && isGraphReviewResource(target.id) && !graphReviewAnchor(project, target.id))
+    throw new Error("The reviewed Graph identity or profile is no longer present. Its raw input was kept.");
   if (target.kind === "resolution" && !project.reviews.some(review => review.id === target.id))
     throw new Error("The reviewed item is no longer present. Its resolution input was kept.");
   if (target.kind === "alternative" && (!project.branches.some(branch => branch.id === target.id && branch.id !== project.active_branch)
@@ -106,16 +109,18 @@ const sum = (left: RationalTime, right: RationalTime): RationalTime => {
 export function reviewTimes(project: Project, resource: string, raw: ReviewRaw, playhead: number): {
   start: RationalTime | null; end: RationalTime | null;
 } {
-  if (raw.timeMode === "resource") return { start: null, end: null };
+  const graph = isGraphReviewResource(resource) ? graphReviewAnchor(project, resource) : null;
+  if (isGraphReviewResource(resource) && !graph) throw new Error("The saved Graph review source is unavailable.");
+  if (raw.timeMode === "resource") return { start: graph?.start ?? null, end: graph?.end ?? null };
   const scene = resource.startsWith("scene:") ? project.scenes.find(item => "scene:" + item.id === resource) : null;
-  if (resource !== "project:" + project.id && !scene) throw new Error("The review resource is unavailable.");
+  if (resource !== "project:" + project.id && !scene && !graph) throw new Error("The review resource is unavailable.");
   const zero = { num: "0", den: "1" }, one = { num: "1", den: "1" };
   const ends = [...project.scenes.map(item => sum(item.start, item.duration)),
     ...project.audio.voice_tracks.map(track => track.measured_duration),
     ...project.audio.transcript.map(segment => segment.end), ...project.audio.cues.map(cue => cue.at),
     ...project.markers.map(marker => marker.at)];
-  const lower = scene?.start ?? zero;
-  const upper = scene ? sum(scene.start, scene.duration) : ends.reduce((a, b) => compare(a, b) < 0 ? b : a, one);
+  const lower = graph?.start ?? scene?.start ?? zero;
+  const upper = graph?.end ?? (scene ? sum(scene.start, scene.duration) : ends.reduce((a, b) => compare(a, b) < 0 ? b : a, one));
   const start = parseBeatTime(raw.timeMode === "playhead" ? String(playhead) : raw.rangeStart);
   const end = raw.timeMode === "range" ? parseBeatTime(raw.rangeEnd) : null;
   if (compare(start, lower) < 0 || compare(start, upper) > 0 || (end && (compare(end, start) < 0 || compare(end, upper) > 0)))
@@ -140,11 +145,11 @@ export function prepareReviewSubmission(draft: ReviewDraft, project: Project, ch
     throw new Error("The resolution request does not match its exact draft and review.");
   if (!validChange(change)) throw new Error("The review request is outside the supported domain contract.");
   if (target.kind === "comment" && change.type === "add_review") {
-    const raw = draft.raw;
+    const raw = draft.raw, graph = graphReviewAnchor(project, change.resource);
     const exactRange = raw.timeMode !== "range" || (same(change.start, parseBeatTime(raw.rangeStart)) && same(change.end, parseBeatTime(raw.rangeEnd)));
-    const resourceOnly = raw.timeMode !== "resource" || (change.start === null && change.end === null);
+    const resourceOnly = raw.timeMode !== "resource" || (same(change.start, graph?.start ?? null) && same(change.end, graph?.end ?? null));
     const pointOnly = raw.timeMode !== "playhead" || (change.start !== null && change.end === null);
-    if (!exactRange || !resourceOnly || !pointOnly || change.locale !== null || change.profile_id !== null)
+    if (!exactRange || !resourceOnly || !pointOnly || change.locale !== (graph?.locale ?? null) || change.profile_id !== (graph?.profile_id ?? null))
       throw new Error("The request does not preserve its exact authored review time.");
   }
   const priorReview = change.type === "add_review" ? null : project.reviews.find(review => review.id === change.review_id) ?? null;
@@ -277,7 +282,7 @@ function validChange(value: unknown): value is ReviewChange {
     && /^-?(?:0|[1-9]\d{0,18})$/.test(input.num) && /^[1-9]\d{0,18}$/.test(input.den));
   return value.type === "add_review" && exactKeys(value, ["type", "kind", "resource", "body", "start", "end", "locale", "profile_id"])
     && ["creative", "technical", "editorial"].includes(String(value.kind))
-    && typeof value.resource === "string" && /^(project|scene|claim):[0-9a-f-]{36}$/i.test(value.resource)
+    && typeof value.resource === "string" && (/^(project|scene|claim):[0-9a-f-]{36}$/i.test(value.resource) || isGraphReviewResource(value.resource))
     && typeof value.body === "string" && bytes(value.body) <= 8000 && !!value.body.trim() && time(value.start) && time(value.end)
     && (value.locale === null || typeof value.locale === "string") && (value.profile_id === null || uuid(value.profile_id));
 }

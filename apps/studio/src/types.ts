@@ -637,8 +637,10 @@ export interface Project {
 }
 
 import type { BrandCampaignRollout } from "./brandCampaign";
+import type { SemanticGraphChange } from "./semanticGraph";
 
 export type Change =
+  | SemanticGraphChange
   | NarrativeEditingChange
   | { type:"record_narration_take"; expected_source_sha256:string; expected_project_revision:number; reviewer:string; reason:string }
   | { type:"release_narration_take"; expected_source_sha256:string; reviewer:string; reason:string }

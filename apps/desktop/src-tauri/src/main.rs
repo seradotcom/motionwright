@@ -476,6 +476,20 @@ async fn project_scene_page(
 }
 
 #[tauri::command]
+async fn semantic_graph_authoring_context(
+    state: State<'_, AppState>,
+    request: motionwright_service::SemanticGraphContextRequest,
+) -> Result<motionwright_domain::GraphAuthoringContext, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        project_projection::semantic_graph_context(&service, request)
+    })
+    .await
+    .map_err(|_| "Graph source inspection is unavailable".to_owned())?
+    .map_err(sanitized)
+}
+
+#[tauri::command]
 async fn project_scene_nodes(
     state: State<'_, AppState>,
     request: project_projection::Nodes,
@@ -2175,6 +2189,7 @@ fn main() {
             project_projection_head,
             project_scene_page,
             project_scene_nodes,
+            semantic_graph_authoring_context,
             issue_project_creation_grant,
             create_project,
             recover_project_creation,

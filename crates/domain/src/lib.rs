@@ -28,6 +28,7 @@ mod product_stage;
 mod production_design;
 mod render_tail_impact;
 mod scene_timing_guard;
+mod semantic_graph;
 mod semantic_sfx;
 mod stage_capture;
 pub use brand_campaign::*;
@@ -59,6 +60,7 @@ pub use procedural::*;
 pub use product_stage::*;
 pub use production_design::*;
 pub use render_tail_impact::*;
+pub use semantic_graph::*;
 pub use semantic_sfx::*;
 pub use stage_capture::*;
 
@@ -134,6 +136,7 @@ pub enum LockKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectLock {
     pub id: Uuid,
+    #[serde(deserialize_with = "crate::semantic_graph::deserialize_semantic_graph_resource")]
     pub resource: String,
     pub kind: LockKind,
     pub note: String,
@@ -702,6 +705,9 @@ impl Project {
             &self.assets,
             &self.deliverables,
         )?;
+        self.production_design
+            .validate_semantic_graphs(&self.scenes, &self.deliverables)?;
+        validate_semantic_graph_lock_resources(&self.locks)?;
         if self
             .production_design
             .narration_take_lock
@@ -914,7 +920,7 @@ impl Project {
         if let Some(id) = parsed("lock:") {
             return self.locks.iter().any(|lock| lock.id == id);
         }
-        false
+        semantic_graph_resource_exists(&self.production_design.semantic_graphs, resource)
     }
 
     fn proposal_scope_allows_scene(&self, scope: &ProposalScope, scene_id: Uuid) -> bool {
@@ -1077,6 +1083,40 @@ impl Project {
     }
 
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
+        // Graph locks use one canonical spelling. Reject invalid aliases before
+        // the unchanged generic SetLock path can mutate even an empty Project.
+        if let Change::SetLock { resource, .. } = change {
+            validate_semantic_graph_resource_spelling(resource)?;
+        }
+        // Graph edits and changes to their existing scene/profile dependencies
+        // preserve the entire document on rejection outside Store as well.
+        // Keep the existing Narrative and timing guards inside this boundary.
+        if matches!(
+            change,
+            Change::UpsertSemanticGraph { .. } | Change::RemoveSemanticGraph { .. }
+        ) || !self.production_design.semantic_graphs.is_empty()
+            || self.branch_workspaces.iter().any(|workspace| {
+                !workspace
+                    .base_state
+                    .production_design
+                    .semantic_graphs
+                    .is_empty()
+                    || !workspace
+                        .current_state
+                        .production_design
+                        .semantic_graphs
+                        .is_empty()
+            })
+        {
+            let mut candidate = self.clone();
+            candidate.apply_change_with_existing_graph_guards(change)?;
+            *self = candidate;
+            return Ok(());
+        }
+        self.apply_change_with_existing_graph_guards(change)
+    }
+
+    fn apply_change_with_existing_graph_guards(&mut self, change: &Change) -> Result<()> {
         // Preserve the existing domain guards inside the original implementation.
         // This outer transaction also protects editorial metadata through branch
         // checkout/merge and existing SceneBeat changes.
@@ -1161,6 +1201,14 @@ impl Project {
             ));
         }
         match change {
+            Change::UpsertSemanticGraph { graph } => self.upsert_semantic_graph(graph)?,
+            Change::RemoveSemanticGraph {
+                graph_id,
+                scene_id,
+                source_snapshot,
+            } => {
+                self.remove_semantic_graph(*graph_id, *scene_id, source_snapshot)?;
+            }
             Change::RecordNarrationTake {
                 expected_source_sha256,
                 expected_project_revision,
@@ -2737,6 +2785,14 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    UpsertSemanticGraph {
+        graph: Box<SemanticGraph>,
+    },
+    RemoveSemanticGraph {
+        graph_id: Uuid,
+        scene_id: Uuid,
+        source_snapshot: GraphSourceSnapshot,
+    },
     RecordNarrationTake {
         expected_source_sha256: String,
         expected_project_revision: u64,
