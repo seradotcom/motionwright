@@ -23,7 +23,6 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-      CAPTURE_EVIDENCE: ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/startup-capture
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -37,6 +36,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CAPTURE_EVIDENCE="$RUNNER_TEMP/motionwright-ci/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/startup-capture"
+          export CAPTURE_EVIDENCE
+          printf 'CAPTURE_EVIDENCE=%s\n' "$CAPTURE_EVIDENCE" >> "$GITHUB_ENV"
           mkdir -p "$CAPTURE_EVIDENCE/tmp"
           export TMPDIR="$CAPTURE_EVIDENCE/tmp"
           printf 'TMPDIR=%s\n' "$TMPDIR" >> "$GITHUB_ENV"
