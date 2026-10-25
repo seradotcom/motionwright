@@ -1,0 +1,159 @@
+name: Startup Capture Source Controls
+
+on:
+  push:
+    branches: ["verify/startup-capture-source-*"]
+    paths:
+      - "tooling/startup_capture_core.py"
+      - "tooling/tests/test_startup_capture_core.py"
+      - ".github/workflows/startup-capture-source.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: startup-capture-source-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  source-controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      CAPTURE_EVIDENCE: ${{ github.workspace }}/verification/startup-capture/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Bind source and retain G0 originals
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CAPTURE_EVIDENCE/tmp"
+          export TMPDIR="$CAPTURE_EVIDENCE/tmp"
+          printf 'TMPDIR=%s\n' "$TMPDIR" >> "$GITHUB_ENV"
+          python3 -I -B - <<'PY'
+          import ast, hashlib, json, os, pathlib, subprocess, sys, time
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          output = pathlib.Path(os.environ["CAPTURE_EVIDENCE"])
+          source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+          assert source == os.environ["GITHUB_SHA"]
+          paths = ("tooling/startup_capture_core.py", "tooling/tests/test_startup_capture_core.py",
+                   ".github/workflows/startup-capture-source.yml", "tooling/ci_test_runner.py")
+          files = {name: {"bytes": (root/name).stat().st_size,
+                          "sha256": hashlib.sha256((root/name).read_bytes()).hexdigest()}
+                   for name in paths}
+          context = {"schema": "motionwright.startup-capture-source-context/1", "source_sha": source,
+                     "source_tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip(),
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                     "job": os.environ["GITHUB_JOB"], "python": sys.version, "files": files,
+                     "scope": "Source controls and real Linux kernel fixtures only",
+                     "installed_application_executed": False, "formal_acceptance": False}
+          (output/"context-before.json").write_text(json.dumps(context, indent=2)+"\n")
+          for name in paths[:2]:
+              ast.parse((root/name).read_bytes(), filename=name)
+          commands = (
+              ("whitespace", ["git", "diff", "--check", "HEAD^", "HEAD"]),
+              ("source-policy", [sys.executable, "-B", "tooling/source_policy.py"]),
+              ("acceptance-policy", [sys.executable, "-B", "tooling/acceptance_policy.py"]),
+              ("creative-policy", [sys.executable, "-B", "tooling/creative_status_policy.py"]),
+          )
+          records = []
+          for label, argv in commands:
+              started = time.monotonic()
+              with (output/(label+".stdout.original")).open("xb") as out, (output/(label+".stderr.original")).open("xb") as err:
+                  child = subprocess.Popen(argv, cwd=root, stdout=out, stderr=err)
+                  (output/(label+".intent.json")).write_text(json.dumps({"argv": argv, "pid": child.pid, "source_sha": source})+"\n")
+                  try:
+                      code = child.wait(timeout=120)
+                  except subprocess.TimeoutExpired:
+                      child.kill()
+                      code = child.wait(timeout=10)
+                      records.append({"label": label, "state": "TIMEOUT", "exit_code": code})
+                      (output/"g0-results.json").write_text(json.dumps(records, indent=2)+"\n")
+                      raise SystemExit(1)
+              records.append({"label": label, "argv": argv, "exit_code": code,
+                              "seconds": time.monotonic()-started})
+              (output/"g0-results.json").write_text(json.dumps(records, indent=2)+"\n")
+              if code:
+                  raise SystemExit(code)
+          PY
+      - name: Check workflow syntax with the existing pinned validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CAPTURE_EVIDENCE/actionlint"
+          archive="$CAPTURE_EVIDENCE/actionlint/actionlint.tar.gz"
+          curl --fail --silent --show-error --location --retry 0 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive" 2>"$CAPTURE_EVIDENCE/actionlint/download.stderr.original"
+          printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "$archive" \
+            | sha256sum --check >"$CAPTURE_EVIDENCE/actionlint/check.stdout.original"
+          tar -xzf "$archive" -C "$CAPTURE_EVIDENCE/actionlint" actionlint
+          status=0
+          "$CAPTURE_EVIDENCE/actionlint/actionlint" -shellcheck= -pyflakes= \
+            .github/workflows/startup-capture-source.yml \
+            >"$CAPTURE_EVIDENCE/actionlint/stdout.original" \
+            2>"$CAPTURE_EVIDENCE/actionlint/stderr.original" || status=$?
+          printf '%s\n' "$status" >"$CAPTURE_EVIDENCE/actionlint/exit-code.original"
+          exit "$status"
+      - name: Exercise G0 evidence and security contracts through both entrypoints
+        shell: bash
+        run: |
+          python3 -I -B tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
+            --pattern test_public_surface_policy.py \
+            --pattern test_creative_status_policy.py \
+            --pattern test_acceptance_session.py \
+            --pattern test_acceptance_evidence_identity.py \
+            --pattern test_source_policy_credentials.py \
+            --pattern test_ci_job_plan.py \
+            --mode both --expected-source "$GITHUB_SHA" \
+            --report "$CAPTURE_EVIDENCE/g0-contracts/receipt.json" --require-complete
+      - name: Exercise bounded capture and actual Linux process closure
+        shell: bash
+        run: |
+          python3 -I -B tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
+            --pattern test_startup_capture_core.py \
+            --mode both --expected-source "$GITHUB_SHA" \
+            --report "$CAPTURE_EVIDENCE/kernel-controls/receipt.json" --require-complete
+      - name: Retain final source identity without promoting a product verdict
+        if: always()
+        shell: bash
+        run: |
+          python3 -I -B - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          output = pathlib.Path(os.environ["CAPTURE_EVIDENCE"])
+          before_path = output/"context-before.json"
+          if not before_path.is_file():
+              raise SystemExit("source context was not retained")
+          before = json.loads(before_path.read_text())
+          after = {name: {"bytes": (root/name).stat().st_size,
+                          "sha256": hashlib.sha256((root/name).read_bytes()).hexdigest()}
+                   for name in before["files"]}
+          observed = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+          unchanged = after == before["files"] and observed == before["source_sha"]
+          result = {"source_sha": observed, "files": after, "source_unchanged": unchanged,
+                    "installed_application_executed": False, "human_acceptance": False,
+                    "release_acceptance": False}
+          (output/"context-after.json").write_text(json.dumps(result, indent=2)+"\n")
+          if not unchanged:
+              raise SystemExit("source changed during source controls")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: startup-capture-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CAPTURE_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 30
