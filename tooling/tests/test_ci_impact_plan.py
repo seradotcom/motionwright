@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -1057,6 +1058,52 @@ class ClosedNonproductInputTests(unittest.TestCase):
         self.repo.commit("unreviewed transitive policy input")
         self.assert_full(self.repo.plan())
 
+
+
+
+class GitBlobReadCacheTests(unittest.TestCase):
+    """Immutable bytes may be reused; path authority and bounds still apply."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-ci-blob-cache-")
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Repo(Path(self.temp.name))
+
+    def test_identical_blob_consumers_read_git_content_once(self):
+        tree = impact.Tree(self.repo.root, self.repo.baseline)
+        first = ".github/workflows/ci.yml"
+        second = ".github/workflows/native-production.yml"
+        self.assertEqual(tree.entries[first][1], tree.entries[second][1])
+        expected = (self.repo.root / first).read_bytes()
+        with mock.patch.object(impact, "git", wraps=impact.git) as reader:
+            self.assertEqual(tree.read(first), expected)
+            self.assertEqual(tree.read(first), expected)
+            self.assertEqual(tree.read(second), expected)
+        self.assertEqual([call.args[1] for call in reader.call_args_list],
+                         ["cat-file", "cat-file"])
+        self.assertEqual([call.args[2] for call in reader.call_args_list],
+                         ["-s", "blob"])
+
+    def test_cached_blob_does_not_admit_a_nonregular_path(self):
+        tree = impact.Tree(self.repo.root, self.repo.baseline)
+        source = ".github/workflows/ci.yml"
+        tree.read(source)
+        # The same bytes can be recorded under a different Git mode.
+        tree.entries["linked-workflow"] = ("120000", tree.entries[source][1])
+        with self.assertRaisesRegex(impact.PlanError, "not a regular Git blob"):
+            tree.read("linked-workflow")
+
+    def test_new_source_reads_its_own_changed_object_and_enforces_size(self):
+        before = impact.Tree(self.repo.root, self.repo.baseline)
+        first = before.read("README.md")
+        self.repo.write("README.md", "Changed source bytes.\n")
+        self.repo.write("oversized.txt", "x" * 2_000_001)
+        changed = self.repo.commit("changed input and oversized object")
+        after = impact.Tree(self.repo.root, changed)
+        self.assertEqual(before.read("README.md"), first)
+        self.assertEqual(after.read("README.md"), (self.repo.root / "README.md").read_bytes())
+        with self.assertRaisesRegex(impact.PlanError, "bounded parser size"):
+            after.read("oversized.txt")
 
 
 if __name__ == "__main__":

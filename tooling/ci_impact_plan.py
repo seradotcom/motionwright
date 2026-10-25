@@ -254,6 +254,10 @@ class Tree:
         require(git_text(repo, "cat-file", "-t", sha) == "commit", "SHA is not a commit")
         self.tree_sha = git_text(repo, "rev-parse", f"{sha}^{{tree}}")
         self.entries: dict[str, tuple[str, str]] = {}
+        # Git object identity is immutable within this source snapshot. Repeated
+        # consumer scans may read the same workflow many times; retain only the
+        # already bounded bytes, with no reuse across planning invocations.
+        self._blob_cache: dict[str, bytes] = {}
         for row in git(repo, "ls-tree", "-r", "-z", sha).split(b"\0"):
             if not row:
                 continue
@@ -266,9 +270,11 @@ class Tree:
     def read(self, path: str) -> bytes:
         mode, oid = self.entries[safe_path(path)]
         require(mode in ("100644", "100755"), "source input is not a regular Git blob")
-        size = int(git_text(self.repo, "cat-file", "-s", oid))
-        require(size <= 2_000_000, "source input exceeds bounded parser size")
-        return git(self.repo, "cat-file", "blob", oid)
+        if oid not in self._blob_cache:
+            size = int(git_text(self.repo, "cat-file", "-s", oid))
+            require(size <= 2_000_000, "source input exceeds bounded parser size")
+            self._blob_cache[oid] = git(self.repo, "cat-file", "blob", oid)
+        return self._blob_cache[oid]
 
     def workflows(self) -> set[str]:
         return {
