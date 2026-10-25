@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import ProductionDesignWorkspace from "../../src/ProductionDesignWorkspace";
+import type { NativeSourceServices } from "../../src/NativeSourceWorkbench";
 import { applyChange } from "../../src/api";
 import { fixtureBootstrap } from "../../src/fixture";
 import { ProjectMutationGate } from "../../src/projectMutation";
@@ -39,10 +40,22 @@ const commit = (change: Change): Promise<Project> => coordinator.run(project, ()
   return new Promise<Project>((resolve, reject) => replies.set(request.id, { resolve, reject }));
 }, receipt => { project = receipt; render(); });
 const legacyCommit = async (change: Change): Promise<void> => { await commit(change); };
+// This component fixture does not provide a native Graph transport.
+const unavailableGraph = (): never => { throw new Error("Graph is unavailable in this synthetic Production fixture."); };
+// Native source transport is outside this synthetic component fixture.
+const sourceServices: NativeSourceServices = {
+  saveSource: async () => { throw new Error("Native source saving is unavailable in this synthetic component fixture."); },
+  refreshProject: async () => { throw new Error("Native source refresh is unavailable in this synthetic component fixture."); },
+};
 function render() {
   sessionStorage.setItem(fixtureKey, JSON.stringify({ project, sceneId, playhead }));
   const scene = project.scenes.find(value => value.id === sceneId) ?? null;
-  flushSync(() => root.render(mounted ? <StrictMode><ProductionDesignWorkspace project={project} scene={scene}
+  flushSync(() => root.render(mounted ? <StrictMode><ProductionDesignWorkspace sourceServices={sourceServices} project={project} scene={scene}
+    graphServices={{
+      readContext: null,
+      outcomeTransport: { readProject: async () => unavailableGraph(), readHistory: async () => unavailableGraph() },
+      refreshProject: async () => unavailableGraph(), openReview: unavailableGraph,
+    }}
     commit={legacyCommit} commitCamera={commit} busy={false} playhead={playhead}
     onSeek={value => { if (playhead !== value) { playhead = value; queueMicrotask(render); } }}
     onSelectScene={id => { sceneId = id; render(); }} onOpenCanvas={() => {}} onOpenRender={() => {}}

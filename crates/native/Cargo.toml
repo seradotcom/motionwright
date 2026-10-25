@@ -4,12 +4,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+license-file.workspace = true
 
 [dependencies]
+base64 = "0.23"
 motionwright-domain = { path = "../domain" }
 motionwright-storage = { path = "../storage" }
 motionwright-service = { path = "../service" }
 motionwright-manim-profile = { path = "../manim-profile" }
+motionwright-hyperframes-profile = { path = "../hyperframes-profile" }
 semwright-native-sdk = { workspace = true, features = ["driver", "graph", "effects"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -18,10 +21,12 @@ async-trait.workspace = true
 tokio = { workspace = true, features = ["process", "time", "io-util"] }
 sha2.workspace = true
 hex.workspace = true
+semwright-audio-domain.workspace = true
 semwright-project-graph.workspace = true
 semwright-media-time.workspace = true
 semwright-motion-authoring.workspace = true
 semwright-semantic-composition.workspace = true
+semwright-driver-blender.workspace = true
 
 [dev-dependencies]
 rusqlite.workspace = true

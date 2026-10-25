@@ -5,24 +5,95 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "SOURCE_LOCK.json"
       - "crates/domain/**"
       - "crates/storage/**"
       - "crates/service/**"
       - "crates/native/**"
+      - "crates/manim-profile/**"
+      - "crates/hyperframes-profile/**"
+      - "crates/driver-hyperframes/**"
+      - "native/hyperframes/**"
+      - "tooling/hyperframes/**"
+      - "tooling/native_hyperframes*.py"
+      - "tooling/tests/test_native_hyperframes*.py"
+      - "tooling/native_evidence_projection.py"
+      - "tooling/tests/test_native_evidence_projection.py"
+      - "tooling/ci_private_evidence.py"
+      - "tooling/native_av_failure_guard.py"
+      - "tooling/mlt_official_runtime_intake.py"
+      - "tooling/ci_test_runner.py"
+      - "tooling/requirements/mlt-g2-custody.txt"
+      - "tooling/native_aac_clock_inspection.py"
+      - "tooling/native_aac_clock_custody.py"
+      - "tooling/native_mlt_evidence_selection.py"
+      - "tooling/native_film180_evidence_selection.py"
+      - "tooling/native_pcm_source_fidelity.py"
+      - "tooling/native_mlt_sequence_e2e.py"
+      - "tooling/native_film180_original_g2.py"
+      - "tooling/native_mlt_g2_custody.py"
+      - "tooling/tests/test_native_aac_clock_inspection.py"
+      - "tooling/tests/test_native_aac_clock_custody.py"
+      - "tooling/tests/test_native_mlt_evidence_selection.py"
+      - "tooling/tests/test_native_film180_evidence_selection.py"
+      - "tooling/tests/native_selection_test_fixtures.py"
       - ".github/workflows/native-production.yml"
   push:
     branches: ["main", "feat/**"]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "SOURCE_LOCK.json"
       - "crates/domain/**"
       - "crates/storage/**"
       - "crates/service/**"
       - "crates/native/**"
+      - "crates/manim-profile/**"
+      - "crates/hyperframes-profile/**"
+      - "crates/driver-hyperframes/**"
+      - "native/hyperframes/**"
+      - "tooling/hyperframes/**"
+      - "tooling/native_hyperframes*.py"
+      - "tooling/tests/test_native_hyperframes*.py"
+      - "tooling/native_evidence_projection.py"
+      - "tooling/tests/test_native_evidence_projection.py"
+      - "tooling/ci_private_evidence.py"
+      - "tooling/native_av_failure_guard.py"
+      - "tooling/mlt_official_runtime_intake.py"
+      - "tooling/ci_test_runner.py"
+      - "tooling/requirements/mlt-g2-custody.txt"
+      - "tooling/native_aac_clock_inspection.py"
+      - "tooling/native_aac_clock_custody.py"
+      - "tooling/native_mlt_evidence_selection.py"
+      - "tooling/native_film180_evidence_selection.py"
+      - "tooling/native_pcm_source_fidelity.py"
+      - "tooling/native_mlt_sequence_e2e.py"
+      - "tooling/native_film180_original_g2.py"
+      - "tooling/native_mlt_g2_custody.py"
+      - "tooling/tests/test_native_aac_clock_inspection.py"
+      - "tooling/tests/test_native_aac_clock_custody.py"
+      - "tooling/tests/test_native_mlt_evidence_selection.py"
+      - "tooling/tests/test_native_film180_evidence_selection.py"
+      - "tooling/tests/native_selection_test_fixtures.py"
       - ".github/workflows/native-production.yml"
   workflow_dispatch:
+    inputs:
+      native_scenario:
+        description: Run the existing contracts or one original HyperFrames scenario
+        type: choice
+        options: [contracts, hyperframes]
+        default: contracts
+        required: true
+      evidence_recipient_spki:
+        description: Approved RSA-3072 public SPKI DER in base64 for selected originals
+        type: string
+        required: false
+      evidence_recipient_sha256:
+        description: SHA256 of the approved public SPKI DER bytes
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -32,6 +103,342 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+      - name: HyperFrames source G0 (126 boundary, 11 intake, 17 owner and 54 Node contracts)
+        id: hf_source_g0
+        if: github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$RUNNER_OS" = Linux
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          g0="$RUNNER_TEMP/hyperframes-source-g0-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$g0"
+          python3 -m venv "$g0/venv"
+          "$g0/venv/bin/python" -B -E -s -m pip install \
+            --disable-pip-version-check --no-input --require-hashes --only-binary=:all: \
+            -r tooling/requirements/mlt-g2-custody.txt
+          "$g0/venv/bin/python" -B -E -s tooling/ci_test_runner.py \
+            --pattern test_native_hyperframes.py \
+            --pattern test_native_hyperframes_actions.py \
+            --pattern test_native_hyperframes_runtime_intake.py \
+            --pattern test_native_evidence_projection.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$g0/caller.json"
+          "$g0/venv/bin/python" -B -E -s tooling/ci_test_runner.py \
+            --test-directory tooling/hyperframes --pattern test_owner_provision.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$g0/owner.json"
+          node --test --test-reporter=tap \
+            native/hyperframes/tests/adapter-contract.test.mjs \
+            tooling/hyperframes/prepare-runtime.test.mjs 2>&1 | tee "$g0/node.tap"
+          "$g0/venv/bin/python" -B -E -s - "$g0" <<'PY'
+          import json, os, re, sys
+          from pathlib import Path
+          sys.path.insert(0, "tooling")
+          from ci_test_runner import source_state
+          root = Path(sys.argv[1])
+          for filename, counts in (
+              ("caller.json", [42, 32, 11, 52]), ("owner.json", [17])):
+              value = json.loads((root / filename).read_bytes())
+              assert value["status"] == "PASS" and value["exit_code"] == 0
+              assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+              assert len(value["steps"]) == len(counts)
+              for step, count in zip(value["steps"], counts, strict=True):
+                  actual = step["counts"]
+                  assert step["status"] == "PASS"
+                  assert actual["tests_run"] == actual["passed"] == count
+                  assert not any(actual[key] for key in (
+                      "failures", "errors", "skipped", "expected_failures", "unexpected_successes"))
+          text = (root / "node.tap").read_text(encoding="utf-8")
+          for label, expected in (("tests",54),("pass",54),("fail",0),("cancelled",0),("skipped",0),("todo",0)):
+              values = re.findall(r"(?m)^# " + label + r" ([0-9]+)$", text)
+              assert values == [str(expected)], (label, values)
+          source_state(Path.cwd(), os.environ["GITHUB_SHA"])
+          print(json.dumps({"source_sha": os.environ["GITHUB_SHA"],
+                            "python_passed": 154, "node_passed": 54, "skipped": 0}))
+          PY
+      - name: Retain HyperFrames source G0 originals
+        if: ${{ always() && steps.hf_source_g0.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}/*.json
+            ${{ runner.temp }}/hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            ${{ runner.temp }}/hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}/node.tap
+          if-no-files-found: error
+          retention-days: 14
+      - name: Verify AAC custody consumers (179 selected source contracts)
+        id: aac_source_contracts
+        if: github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'
+        env:
+          CUSTODY_PYTHON: ${{ runner.temp }}/hyperframes-source-g0-${{ github.run_id }}-${{ github.run_attempt }}/venv/bin/python
+        run: |
+          set -euo pipefail
+          umask 077
+          root="$RUNNER_TEMP/mw-aac-clock-production-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$root"
+          mkdir -m 700 "$root"
+          report="$root/contracts.json"
+          set +e
+          "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --mode dotted --require-complete \
+            --expected-source "$GITHUB_SHA" --report "$report" \
+            --pattern test_native_aac_clock_inspection.py \
+            --pattern test_native_aac_clock_custody.py \
+            --pattern test_native_mlt_evidence_selection.py \
+            --pattern test_native_film180_evidence_selection.py \
+            --pattern test_native_evidence_projection.py \
+            > "$root/runner.stdout" 2> "$root/runner.stderr"
+          runner_exit=$?
+          set -e
+          "$CUSTODY_PYTHON" -B -E -s - "$root/runner-exit.json" "$runner_exit" <<'PY'
+          import json, sys
+          from pathlib import Path
+          value = {"schema": "motionwright.ci.source-runner-terminal/1", "exit_code": int(sys.argv[2]), "automatic_retry": False}
+          with Path(sys.argv[1]).open("x", encoding="utf-8", newline="\n") as handle:
+              json.dump(value, handle, sort_keys=True)
+              handle.write("\n")
+          PY
+          if [ "$runner_exit" -ne 0 ]; then exit "$runner_exit"; fi
+          "$CUSTODY_PYTHON" -B -E -s - "$root" "$report" <<'PY'
+          SUITES = [('tooling/tests/test_native_aac_clock_inspection.py', 35, 'a3dfb4ecd5e9dc0e45f8bcf07487eb8c99a88d117ea6a82437f09f80e3596b41'), ('tooling/tests/test_native_aac_clock_custody.py', 22, '1b367311b655cd0250df2786446abf13ca7c8756c5ee7aff67f1f51219f4507f'), ('tooling/tests/test_native_mlt_evidence_selection.py', 38, '9a2a26593b9fb25a431c022ba2ceb0702ee32158a7e4cf180e613e25aff5d1ee'), ('tooling/tests/test_native_film180_evidence_selection.py', 32, '7894f402449384fb81b5a24870a8a44fe89506effdcd6bf0e518f51e671aacac'), ('tooling/tests/test_native_evidence_projection.py', 52, 'a46e578a07d9edd01fac9b3c178e8e2ac8d21ba59b56b3585471175153d11396')]
+          MODE = 'dotted'
+          GROUP = 'production'
+          TOTAL = 179
+
+          import ast
+          from datetime import datetime
+          import hashlib
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+
+
+          def contract_need(value, message):
+              if not value:
+                  raise ValueError(message)
+
+
+          def contract_sha(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+
+          def contract_private(path, directory=False):
+              path = Path(path)
+              mark = path.lstat()
+              wanted = stat.S_ISDIR if directory else stat.S_ISREG
+              contract_need(wanted(mark.st_mode) and not path.is_symlink()
+                       and path.resolve(strict=True) == path and mark.st_uid == os.geteuid(),
+                       "Source group source-report identity/owner/type")
+              contract_need(stat.S_IMODE(mark.st_mode) == (0o700 if directory else 0o600),
+                       "Source group source-report must already be private; no retroactive chmod")
+              return mark
+
+
+          def contract_original(path):
+              before = contract_private(path)
+              raw = Path(path).read_bytes()
+              after = contract_private(path)
+              keys = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+              contract_need(before.st_nlink == 1 and tuple(getattr(before, k) for k in keys) == tuple(getattr(after, k) for k in keys)
+                       and len(raw) == before.st_size, "Source group original changed/aliased during readback")
+              return raw
+
+
+          def contract_json(raw):
+              def pairs(rows):
+                  result = {}
+                  for key, value in rows:
+                      contract_need(key not in result, "Source group duplicate JSON key")
+                      result[key] = value
+                  return result
+              return json.loads(raw, object_pairs_hook=pairs,
+                                parse_constant=lambda _: contract_need(False, "Source group nonfinite JSON"))
+
+
+          def contract_roster(raw, path, count, expected_sha):
+              tree = ast.parse(raw, filename=path)
+              contract_need(not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_tests"
+                               for n in ast.walk(tree)), "Unreviewed dynamic Source group discovery")
+              names, classes = [], []
+              for cls in tree.body:
+                  if not isinstance(cls, ast.ClassDef):
+                      continue
+                  methods = [n.name for n in cls.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")]
+                  if methods:
+                      contract_need([ast.unparse(base) for base in cls.bases] == ["unittest.TestCase"]
+                               and cls.name not in classes and len(methods) == len(set(methods)), "Source group class/method roster changed")
+                      classes.append(cls.name)
+                      names.extend(cls.name + "." + name for name in methods)
+              names.sort()
+              contract_need(len(names) == len(set(names)) == count
+                       and contract_sha(("\n".join(names) + "\n").encode()) == expected_sha, "Source group nominal source roster requires review")
+              return names
+
+
+          def contract_nominal(raw, expected):
+              text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+              contract_need(not any(c in text for c in ("\r", "\x00", "\v", "\f", "\x85", "\u2028", "\u2029")),
+                       "Source group noncanonical line separator")
+              footer = re.search(r"\n-{70}\nRan ([0-9]+) tests? in [0-9]+(?:\.[0-9]+)?s\n\nOK\n\Z", text)
+              contract_need(footer is not None and footer.group(1) == str(len(expected)), "Source group incomplete/failed unittest footer")
+              body = text[:footer.start()]
+              contract_need(body.endswith("\n"), "Source group terminal/footer separation")
+              observed = []
+              lines = body[:-1].split("\n")
+              index = 0
+              diagnostic = "MLT G2 secondary evidence failure; native outcome retained."
+              diagnostic_modules = (".test_native_mlt_g2_observation.", ".test_native_mlt_live_observer_diagnostics.",
+                                    ".test_native_film180_original_g2.")
+              while index < len(lines):
+                  match = re.fullmatch(r"(test_[A-Za-z0-9_]+) \(([A-Za-z_][A-Za-z0-9_.]*)\) \.\.\. (.*)", lines[index])
+                  contract_need(match is not None, "Source group foreign/omitted/unreviewed nominal outcome")
+                  method, identity, terminal = match.groups()
+                  identity = identity if identity.rsplit(".", 1)[-1] == method else identity + "." + method
+                  contract_need(identity in expected, "Source group diagnostic/terminal has no selected case")
+                  index += 1
+                  if terminal != "ok":
+                      contract_need(terminal == diagnostic and any(part in "." + identity for part in diagnostic_modules),
+                                    "Source group unreviewed diagnostic")
+                      count = 1
+                      while index < len(lines) and lines[index] == diagnostic:
+                          count += 1
+                          index += 1
+                      contract_need(count <= 16 and index < len(lines) and lines[index] == "ok",
+                                    "Source group diagnostic has no terminal success")
+                      index += 1
+                  observed.append(identity)
+              contract_need(observed == expected, "Source group duplicate/missing/foreign nominal cases")
+              return observed
+
+
+          def contract_check_receipt(receipt, source, github, definitions, runner_sha, locks, interpreter_sha):
+              contract_need(type(receipt) is dict and receipt.get("schema") == "motionwright.unittest-execution/1", "Source group receipt schema")
+              contract_need(receipt.get("executed_source_sha") == source["executed_source_sha"]
+                       and receipt.get("tree_sha") == source["tree_sha"] and receipt.get("github") == github,
+                       "Source group source/run/attempt/job differs")
+              contract_need(receipt.get("status") == "PASS" and type(receipt.get("exit_code")) is int and receipt["exit_code"] == 0
+                       and receipt.get("require_complete") is True and "source_postcheck_error" not in receipt,
+                       "Source group failed/incomplete/uncertain source receipt")
+              contract_need(receipt.get("test_definition_sha256") == definitions and receipt.get("runner_sha256") == runner_sha
+                       and receipt.get("source_locks") == locks and receipt.get("python_executable_sha256") == interpreter_sha,
+                       "Source group physical input/runner/interpreter identity differs")
+              contract_need(type(receipt.get("steps")) is list and len(receipt["steps"]) == len(SUITES), "Source group requires its entire closed module set")
+              contract_need(datetime.fromisoformat(receipt["started_at_utc"]) <= datetime.fromisoformat(receipt["completed_at_utc"]),
+                       "Source group receipt chronology")
+
+
+          def contract_check_step(step, path, count, mode, ids, logs, executable):
+              module = path[:-3].replace("/", ".")
+              label = "discovery:" + Path(path).name if mode == "discovery" else "dotted:" + module
+              command = [executable, "-B", "-E", "-s", "-m", "unittest"]
+              command += ["discover", "-s", "tooling/tests", "-p", Path(path).name, "-v"] if mode == "discovery" else [module, "-v"]
+              contract_need(step.get("entry_point") == label and step.get("command") == command, "Source group wrong entry point/interpreter")
+              contract_need(step.get("status") == "PASS" and type(step.get("exit_code")) is int and step["exit_code"] == 0,
+                       "Source group nonterminal/failed process")
+              counts = step.get("counts")
+              expected = {"terminal_status": "OK", "tests_run": count, "passed": count, "failures": 0, "errors": 0,
+                          "skipped": 0, "expected_failures": 0, "unexpected_successes": 0}
+              contract_need(type(counts) is dict and set(counts) == set(expected)
+                       and counts["terminal_status"] == "OK"
+                       and all(type(counts[k]) is int and counts[k] == v for k, v in expected.items() if k != "terminal_status"),
+                       "Source group omitted/noninteger/wrong counts")
+              duration = step.get("duration_seconds")
+              contract_need(type(duration) in (int, float) and math.isfinite(duration) and duration >= 0, "Source group invalid duration")
+              for stream, raw in logs.items():
+                  contract_need(type(step.get(stream)) is dict and set(step[stream]) == {"file", "sha256"}
+                           and step[stream]["sha256"] == contract_sha(raw), "Source group original stream hash differs")
+              prefix = Path(path).stem if mode == "discovery" else module
+              return contract_nominal(logs["stderr"], [prefix + "." + name for name in ids])
+
+
+          def admit_contract_source():
+              # Use the existing canonical verifier; no test/native command is started here.
+              from tooling.ci_test_runner import source_state
+              root, report = Path(sys.argv[1]), Path(sys.argv[2])
+              contract_private(root, directory=True)
+              contract_need(report.parent == root, "Source group report must use its reserved root")
+              contract_private(report.parent, directory=True)
+              wanted = {"contracts.json", "runner.stdout", "runner.stderr", "runner-exit.json"} | {f"contracts-{i:02d}-{stream}.log" for i in range(len(SUITES)) for stream in ("stdout", "stderr")}
+              contract_need(set(p.name for p in report.parent.iterdir()) == wanted, "Source group full source-report original closure differs")
+              before = source_state(Path.cwd(), os.environ["GITHUB_SHA"])
+              github = {key: os.environ.get(key, "") for key in
+                        ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}
+              contract_need(all(github.values()), "Source group job identity incomplete")
+              raw = contract_original(report)
+              receipt = contract_json(raw)
+              originals = {str(report): contract_sha(raw)}
+              terminal_raw = contract_original(root / "runner-exit.json")
+              terminal = contract_json(terminal_raw)
+              contract_need(terminal == {"schema": "motionwright.ci.source-runner-terminal/1",
+                                        "exit_code": 0, "automatic_retry": False}
+                            and type(terminal["exit_code"]) is int,
+                            "Source group original runner exit differs")
+              originals[str(root / "runner-exit.json")] = contract_sha(terminal_raw)
+              for name in ("runner.stdout", "runner.stderr"):
+                  originals[str(root / name)] = contract_sha(contract_original(root / name))
+
+              definitions, rosters = {}, {}
+              for path, count, nominal_sha in SUITES:
+                  body = Path(path).read_bytes()
+                  definitions[path] = contract_sha(body)
+                  rosters[path] = contract_roster(body, path, count, nominal_sha)
+              locks = {path: contract_sha(Path(path).read_bytes()) for path in
+                       ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json") if Path(path).is_file()}
+              runner_sha = contract_sha(Path("tooling/ci_test_runner.py").read_bytes())
+              interpreter_sha = contract_sha(Path(sys.executable).read_bytes())
+              contract_check_receipt(receipt, before, github, definitions, runner_sha, locks, interpreter_sha)
+              # Canonical runner preserves requested discovery order, then sorted dotted files.
+              plan = [(row, MODE) for row in (SUITES if MODE == "discovery" else sorted(SUITES))]
+              observed = []
+              for index, ((path, count, nominal_sha), mode) in enumerate(plan):
+                  step = receipt["steps"][index]
+                  logs = {}
+                  for stream in ("stdout", "stderr"):
+                      name = f"contracts-{index:02d}-{stream}.log"
+                      contract_need(step[stream]["file"] == name, "Source group aliased stream path")
+                      body = contract_original(report.parent / name)
+                      logs[stream] = body
+                      originals[str(report.parent / name)] = contract_sha(body)
+                  ids = contract_check_step(step, path, count, mode, rosters[path], logs, str(sys.executable))
+                  observed.append({"entry_point": step["entry_point"], "nominal_ids": ids, "source_path": path})
+              contract_need(sum(len(row["nominal_ids"]) for row in observed) == TOTAL, "Source group incomplete invocation roster")
+              contract_need(source_state(Path.cwd(), os.environ["GITHUB_SHA"]) == before
+                       and definitions == {path: contract_sha(Path(path).read_bytes()) for path in definitions}
+                       and all(contract_sha(contract_original(Path(path))) == pin for path, pin in originals.items()), "Source group source/originals changed")
+              value = {"schema": "motionwright.closed-source-contract-group/1", "group": GROUP, **before, "github": github,
+                       "status": "PASS_SOURCE_CONTRACTS_ONLY", "unique_methods": TOTAL, "invocations": TOTAL,
+                       "steps": observed, "original_receipt_sha256": contract_sha(raw), "original_streams": originals,
+                       "scope": "Source/custody contracts only; no physical production or human acceptance",
+                       "native_execution": False, "formal_acceptance": False, "automatic_retry": False}
+              destination = report.parent / "contracts-admission.json"
+              with destination.open("x", encoding="utf-8", newline="\n") as handle:
+                  json.dump(value, handle, indent=2, sort_keys=True)
+                  handle.write("\n")
+              contract_private(destination)
+
+
+          admit_contract_source()
+          PY
+
+      - name: Retain AAC consumer source-report originals
+        if: always() && steps.aac_source_contracts.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: aac-source-production-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mw-aac-clock-production-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 14
+
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
@@ -45,5 +452,392 @@ jobs:
         run: cargo test --locked -p motionwright-native production::tests --all-targets
       - name: Original terminal receipt custody
         run: cargo test --locked -p motionwright-native --lib production::receipt_custody::tests -- --nocapture
-      - name: Native production clippy
-        run: cargo clippy --locked -p motionwright-storage -p motionwright-service -p motionwright-native --all-targets -- -D warnings
+      - name: Compile and test HyperFrames source targets without provisioning a runtime
+        id: hf_source_g1
+        if: github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          g1_logs="$RUNNER_TEMP/hyperframes-source-g1"
+          mkdir -m 700 "$g1_logs"
+          run_contract() {
+            label="$1"
+            expected="$2"
+            shift 2
+            set +e
+            "$@" 2>&1 | tee "$g1_logs/$label.log"
+            contract_statuses=("${PIPESTATUS[@]}")
+            set -e
+            if [ "${#contract_statuses[@]}" -ne 2 ]; then
+              printf '%s\n' "Unexpected source/capture pipeline width" >&2
+              return 2
+            fi
+            contract_exit="${contract_statuses[0]}"
+            capture_exit="${contract_statuses[1]}"
+            python3 - "$g1_logs/$label.log" "$expected" "$label" "$contract_exit" "$capture_exit" <<'PY'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          path, expected_count, label, exit_code = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+          capture_exit = int(sys.argv[5])
+          required_by_label = {'profile': ['tests::native_html_is_deterministic_and_has_no_user_code_or_network_dependency', 'tests::signed_layer_order_is_preserved_inside_an_explicit_stacking_context', 'tests::malformed_or_unrepresentable_source_never_produces_native_html', 'tests::source_binding_and_edit_change_fingerprint_without_hiding_original_source'], 'driver': ['driver::tests::no_host_context_cannot_start_or_replay_native_mutation', 'driver::tests::missing_grants_and_malformed_descriptor_refuse_before_execution', 'store::tests::native_source_roundtrip_preserves_original_and_refuses_unmanaged_html_changes', 'store::tests::missing_or_unpinned_dependency_is_read_only_rejection', 'store::tests::secret_and_traversal_paths_are_rejected_before_dependency_reads'], 'direct-consumer': ['linux::tests::original_compiled_request_is_admitted_without_a_host', 'linux::tests::changed_source_inventory_is_rejected_before_a_host', 'linux::tests::wrong_phase_attempt_is_rejected_before_a_host', 'linux::tests::request_cannot_inject_an_unreviewed_execution_option'], 'native-projection': ['hyperframes::tests::typed_hyperframes_source_keeps_canvas_identity_and_does_not_dispatch', 'hyperframes::tests::unsupported_blend_camera_and_subpixel_source_refuse_before_native_dispatch'], 'native-example': ['tests::original_project_contains_exact_native_timing_and_editable_nodes', 'tests::source_edit_keeps_original_id_and_does_not_replay']}
+          required = required_by_label[label]
+          assert len(required) == len(set(required)) == expected_count
+          raw = path.read_bytes()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace").replace("\r\n", "\n"))
+          actual = re.findall(r"(?m)^test (\S+) \.\.\. (ok|FAILED|ignored)$", text)
+          rows = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
+          complete = (exit_code == 0 and capture_exit == 0 and head == os.environ["GITHUB_SHA"] and not dirty
+                      and len(actual) == len(required) and sorted(actual) == sorted((name, "ok") for name in required)
+                      and len(rows) == 1 and rows[0][:5] == ("ok", str(expected_count), "0", "0", "0"))
+          receipt = {"schema": "motionwright.native.closed-source-roster/1", "source_sha": head, "tree_sha": tree,
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                     "job": os.environ["GITHUB_JOB"], "label": label, "required": sorted(required),
+                     "observed": actual, "terminal_rows": rows, "exit_code": exit_code, "capture_exit_code": capture_exit,
+                     "log": {"file": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+                     "stream_representation": "Original process stdout/stderr merged by shell",
+                     "status": "PASS" if complete else "FAIL", "native_execution": False,
+                     "formal_acceptance": False}
+          with path.with_suffix(".receipt.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          print(json.dumps({"label": label, "status": receipt["status"], "source_sha": head,
+                            "required_count": expected_count, "observed_count": len(actual), "exit_code": exit_code}))
+          if not complete:
+              raise SystemExit("Exact source roster omitted, renamed, duplicated, skipped, failed or source changed")
+          PY
+          }
+          run_contract profile 4 cargo test --locked -p motionwright-hyperframes-profile --lib
+          run_contract driver 5 cargo test --locked -p motionwright-driver-hyperframes --lib
+          run_contract direct-consumer 4 cargo test --locked -p motionwright-driver-hyperframes \
+            --example native-hyperframes-direct-reference -- --nocapture
+          run_contract native-projection 2 cargo test --locked -p motionwright-native \
+            --lib hyperframes -- --nocapture
+          run_contract native-example 2 cargo test --locked -p motionwright-native \
+            --example native-hyperframes-e2e -- --nocapture
+          cargo build --locked -p motionwright-driver-hyperframes \
+            --bin semwright-hyperframes-driver --example native-hyperframes-direct-reference
+          cargo build --locked -p motionwright-native --example native-hyperframes-e2e
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code --quiet
+      - name: Retain exact HyperFrames source G1 originals
+        if: ${{ always() && steps.hf_source_g1.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-source-g1-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hyperframes-source-g1/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Native production and HyperFrames source clippy
+        run: cargo clippy --locked -p motionwright-storage -p motionwright-service -p motionwright-native -p motionwright-hyperframes-profile -p motionwright-driver-hyperframes --all-targets -- -D warnings
+
+  hyperframes-native:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_scenario == 'hyperframes'
+    needs: production-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    concurrency:
+      group: native-hyperframes-original
+      cancel-in-progress: false
+    env:
+      HF_ROOT: /tmp/motionwright-hf-${{ github.run_id }}-${{ github.run_attempt }}
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+      PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+      PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+
+      - name: Reserve one original Linux namespace and custody environment
+        id: setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_OS" = Linux
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test ! -e "$HF_ROOT"
+          mkdir -m 700 "$HF_ROOT"
+          mkdir -m 700 "$HF_ROOT/public" "$HF_ROOT/g0" "$HF_ROOT/g1" "$HF_ROOT/bin"
+          python3 -m venv "$HF_ROOT/venv"
+          "$HF_ROOT/venv/bin/python" -m pip install \
+            --disable-pip-version-check --no-input --require-hashes \
+            -r tooling/requirements/mlt-g2-custody.txt
+          "$HF_ROOT/venv/bin/python" -B -E -s - <<'PY'
+          import os, sys
+          sys.path.insert(0, "tooling")
+          import ci_private_evidence as custody
+          import native_hyperframes_actions as actions
+          custody.public_key({
+              "spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
+              "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]})
+          actions.source_bindings(actions.context())
+          PY
+
+      - name: Source-bound HyperFrames caller and owner G0
+        id: g0_python
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$HF_ROOT/venv/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_native_hyperframes.py \
+            --pattern test_native_hyperframes_actions.py \
+            --pattern test_native_hyperframes_runtime_intake.py \
+            --pattern test_native_evidence_projection.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$HF_ROOT/g0/caller.json"
+          "$HF_ROOT/venv/bin/python" -B tooling/ci_test_runner.py \
+            --test-directory tooling/hyperframes --pattern test_owner_provision.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$HF_ROOT/g0/owner.json"
+          "$HF_ROOT/venv/bin/python" -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["HF_ROOT"]) / "g0"
+          for filename, counts in (
+              ("caller.json", [42, 32, 11, 52]), ("owner.json", [17])):
+              value = json.loads((root / filename).read_bytes())
+              assert value["status"] == "PASS" and value["exit_code"] == 0
+              assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
+              assert len(value["steps"]) == len(counts)
+              for step, count in zip(value["steps"], counts, strict=True):
+                  actual = step["counts"]
+                  assert step["status"] == "PASS"
+                  assert actual["tests_run"] == actual["passed"] == count
+                  assert not any(actual[key] for key in (
+                      "failures", "errors", "skipped", "expected_failures", "unexpected_successes"))
+          PY
+
+      - name: Original adapter and offline finalizer G0
+        id: g0_node
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test --test-reporter=tap \
+            native/hyperframes/tests/adapter-contract.test.mjs \
+            tooling/hyperframes/prepare-runtime.test.mjs > "$HF_ROOT/g0/node.tap" 2>&1
+          "$HF_ROOT/venv/bin/python" -B - <<'PY'
+          import os, re
+          from pathlib import Path
+          text = (Path(os.environ["HF_ROOT"]) / "g0/node.tap").read_text()
+          for label, expected in (("tests",54),("pass",54),("fail",0),("cancelled",0),("skipped",0),("todo",0)):
+              values = re.findall(r"(?m)^# " + label + r" ([0-9]+)$", text)
+              assert values == [str(expected)], (label, values)
+          PY
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seradotcom/semwright
+          ref: 4849b3c1dcee9b37438801b4264f59480bff9e40
+          path: _semwright
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: |
+            . -> target
+            _semwright -> target
+
+      - name: Existing canonical Host sandbox and build dependencies
+        id: sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C _semwright rev-parse HEAD)" = 4849b3c1dcee9b37438801b4264f59480bff9e40
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh "$HF_ROOT/sandbox-profile.txt"
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang ffmpeg
+
+      - name: Source-bound Rust gates and original executables
+        id: g1
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_test() {
+            label="$1"
+            expected="$2"
+            shift 2
+            set +e
+            "$@" 2>&1 | tee "$HF_ROOT/g1/$label.log"
+            contract_statuses=("${PIPESTATUS[@]}")
+            set -e
+            if [ "${#contract_statuses[@]}" -ne 2 ]; then
+              printf '%s\n' "Unexpected source/capture pipeline width" >&2
+              return 2
+            fi
+            contract_exit="${contract_statuses[0]}"
+            capture_exit="${contract_statuses[1]}"
+            "$HF_ROOT/venv/bin/python" -B - "$HF_ROOT/g1/$label.log" "$expected" "$label" "$contract_exit" "$capture_exit" <<'PY'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          path, expected_count, label, exit_code = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+          capture_exit = int(sys.argv[5])
+          required_by_label = {'profile': ['tests::native_html_is_deterministic_and_has_no_user_code_or_network_dependency', 'tests::signed_layer_order_is_preserved_inside_an_explicit_stacking_context', 'tests::malformed_or_unrepresentable_source_never_produces_native_html', 'tests::source_binding_and_edit_change_fingerprint_without_hiding_original_source'], 'driver': ['driver::tests::no_host_context_cannot_start_or_replay_native_mutation', 'driver::tests::missing_grants_and_malformed_descriptor_refuse_before_execution', 'store::tests::native_source_roundtrip_preserves_original_and_refuses_unmanaged_html_changes', 'store::tests::missing_or_unpinned_dependency_is_read_only_rejection', 'store::tests::secret_and_traversal_paths_are_rejected_before_dependency_reads'], 'direct-consumer': ['linux::tests::original_compiled_request_is_admitted_without_a_host', 'linux::tests::changed_source_inventory_is_rejected_before_a_host', 'linux::tests::wrong_phase_attempt_is_rejected_before_a_host', 'linux::tests::request_cannot_inject_an_unreviewed_execution_option'], 'native-projection': ['hyperframes::tests::typed_hyperframes_source_keeps_canvas_identity_and_does_not_dispatch', 'hyperframes::tests::unsupported_blend_camera_and_subpixel_source_refuse_before_native_dispatch'], 'native-example': ['tests::original_project_contains_exact_native_timing_and_editable_nodes', 'tests::source_edit_keeps_original_id_and_does_not_replay']}
+          required = required_by_label[label]
+          assert len(required) == len(set(required)) == expected_count
+          raw = path.read_bytes()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace").replace("\r\n", "\n"))
+          actual = re.findall(r"(?m)^test (\S+) \.\.\. (ok|FAILED|ignored)$", text)
+          rows = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
+          complete = (exit_code == 0 and capture_exit == 0 and head == os.environ["GITHUB_SHA"] and not dirty
+                      and len(actual) == len(required) and sorted(actual) == sorted((name, "ok") for name in required)
+                      and len(rows) == 1 and rows[0][:5] == ("ok", str(expected_count), "0", "0", "0"))
+          receipt = {"schema": "motionwright.native.closed-source-roster/1", "source_sha": head, "tree_sha": tree,
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                     "job": os.environ["GITHUB_JOB"], "label": label, "required": sorted(required),
+                     "observed": actual, "terminal_rows": rows, "exit_code": exit_code, "capture_exit_code": capture_exit,
+                     "log": {"file": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+                     "stream_representation": "Original process stdout/stderr merged by shell",
+                     "status": "PASS" if complete else "FAIL", "native_execution": False,
+                     "formal_acceptance": False}
+          with path.with_suffix(".receipt.json").open("x", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          print(json.dumps({"label": label, "status": receipt["status"], "source_sha": head,
+                            "required_count": expected_count, "observed_count": len(actual), "exit_code": exit_code}))
+          if not complete:
+              raise SystemExit("Exact source roster omitted, renamed, duplicated, skipped, failed or source changed")
+          PY
+          }
+          run_test profile 4 cargo test --locked -p motionwright-hyperframes-profile --lib
+          run_test driver 5 cargo test --locked -p motionwright-driver-hyperframes --lib
+          run_test direct-consumer 4 cargo test --locked -p motionwright-driver-hyperframes \
+            --example native-hyperframes-direct-reference -- --nocapture
+          run_test native-projection 2 cargo test --locked -p motionwright-native --lib hyperframes -- --nocapture
+          run_test native-example 2 cargo test --locked -p motionwright-native --example native-hyperframes-e2e -- --nocapture
+          cargo clippy --locked -p motionwright-driver-hyperframes \
+            -p motionwright-hyperframes-profile -p motionwright-native --all-targets -- -D warnings \
+            > "$HF_ROOT/g1/clippy.log" 2>&1
+          cargo build --locked -p motionwright-driver-hyperframes \
+            --bin semwright-hyperframes-driver --example native-hyperframes-direct-reference \
+            > "$HF_ROOT/g1/build-driver.log" 2>&1
+          cargo build --locked -p motionwright-native --example native-hyperframes-e2e \
+            > "$HF_ROOT/g1/build-native.log" 2>&1
+
+      - name: Build exact Semwright daemon, CLI and sandbox
+        id: g1_sdk
+        working-directory: _semwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins \
+            > "$HF_ROOT/g1/build-sdk.log" 2>&1
+          cargo build --locked -p semwright-plugin-host --bin semwright-sandbox \
+            > "$HF_ROOT/g1/build-sandbox.log" 2>&1
+
+      - name: Bind the actual seven binaries outside the checkout
+        id: binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 700 target/debug/examples/native-hyperframes-e2e "$HF_ROOT/bin/mw-hf"
+          install -m 700 target/debug/examples/native-hyperframes-direct-reference "$HF_ROOT/bin/direct-hf"
+          install -m 700 target/debug/semwright-hyperframes-driver "$HF_ROOT/bin/driver-hf"
+          install -m 700 "$(readlink -f "$(command -v node)")" "$HF_ROOT/bin/node"
+          install -m 700 _semwright/target/debug/semwright "$HF_ROOT/bin/semwright"
+          install -m 700 _semwright/target/debug/semwrightd "$HF_ROOT/bin/semwrightd"
+          install -m 700 _semwright/target/debug/semwright-sandbox "$HF_ROOT/bin/semwright-sandbox"
+
+      - name: One public distribution intake and existing offline finalizer
+        id: intake
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$HF_ROOT/venv/bin/python" -B tooling/native_hyperframes_runtime_intake.py \
+            --runtime "$HF_ROOT/runtime" --evidence "$HF_ROOT/intake" \
+            --node "$HF_ROOT/bin/node" \
+            --ffmpeg "$(readlink -f "$(command -v ffmpeg)")" \
+            --ffprobe "$(readlink -f "$(command -v ffprobe)")"
+
+      - name: Original direct and mediated jobs, edit, fresh reopen and selected originals
+        id: native
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$HF_ROOT/venv/bin/python" -B tooling/native_hyperframes_actions.py \
+            --owner "$HF_ROOT/owner" --runtime "$HF_ROOT/runtime" --intake "$HF_ROOT/intake" \
+            --sealed "$HF_ROOT/public/selected-originals.sealed" \
+            --public-result "$HF_ROOT/public/actions-result.json" \
+            --mw "$HF_ROOT/bin/mw-hf" --direct "$HF_ROOT/bin/direct-hf" \
+            --driver "$HF_ROOT/bin/driver-hf" --node "$HF_ROOT/bin/node" \
+            --sem-cli "$HF_ROOT/bin/semwright" --daemon "$HF_ROOT/bin/semwrightd" \
+            --sandbox-helper "$HF_ROOT/bin/semwright-sandbox"
+
+      - name: Record closed gate outcomes
+        if: always()
+        shell: bash
+        env:
+          GATE_SETUP: ${{ steps.setup.outcome }}
+          GATE_G0_PYTHON: ${{ steps.g0_python.outcome }}
+          GATE_G0_NODE: ${{ steps.g0_node.outcome }}
+          GATE_SANDBOX: ${{ steps.sandbox.outcome }}
+          GATE_G1: ${{ steps.g1.outcome }}
+          GATE_G1_SDK: ${{ steps.g1_sdk.outcome }}
+          GATE_BINARIES: ${{ steps.binaries.outcome }}
+          GATE_INTAKE: ${{ steps.intake.outcome }}
+          GATE_NATIVE: ${{ steps.native.outcome }}
+        run: |
+          set -euo pipefail
+          test -d "$HF_ROOT/public" || exit 0
+          python3 -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = {
+              "schema": "motionwright.hyperframes.actions-gates/1",
+              "source_sha": os.environ["GITHUB_SHA"],
+              "semwright_sha": "4849b3c1dcee9b37438801b4264f59480bff9e40",
+              "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "gates": {key: os.environ.get("GATE_" + key.upper(), "") or "NOT_RUN"
+                        for key in ("setup", "g0_python", "g0_node", "sandbox", "g1", "g1_sdk", "binaries", "intake", "native")},
+              "automatic_retry": False, "formal_acceptance": False,
+              "human_acceptance": False, "release_authorized": False}
+          target = Path(os.environ["HF_ROOT"]) / "public/gates.json"
+          with target.open("x") as output:
+              json.dump(value, output, sort_keys=True)
+              output.write("\n")
+          PY
+
+      - name: Retain first-party G0 and Rust gate originals
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-gates-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.HF_ROOT }}/g0/
+            ${{ env.HF_ROOT }}/g1/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Retain sealed selected originals and closed public results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hyperframes-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.HF_ROOT }}/public/selected-originals.sealed
+            ${{ env.HF_ROOT }}/public/actions-result.json
+            ${{ env.HF_ROOT }}/public/gates.json
+          if-no-files-found: warn
+          retention-days: 14

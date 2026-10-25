@@ -183,7 +183,10 @@ class CompilerSourceIntakeTests(unittest.TestCase):
             self.assertEqual(receipt["original_c_source"]["origin"], "RETRIEVED_PINNED_UPSTREAM")
             self.assertEqual(receipt["repaired_c_source"]["origin"],
                              "DETERMINISTIC_SOURCE_RECONSTRUCTION")
-            self.assertFalse(receipt["compiler_artifact_contains_sources"])
+            self.assertFalse(receipt["source_files_selected_from_compiler_artifact"])
+            self.assertEqual(receipt["compiler_artifact_source_inventory"],
+                             "NOT_INSPECTED_BY_RECONSTRUCTION")
+            self.assertNotIn("compiler_artifact_contains_sources", receipt)
             self.assertFalse(receipt["compiled_binary_rebuilt"])
             self.assertFalse(receipt["module_installed"])
             self.assertEqual(receipt["native_execution"], "NOT_RUN")

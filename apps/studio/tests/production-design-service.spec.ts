@@ -1,6 +1,7 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { Change, Project } from "../src/types";
+import { decodeProductionCopy, productionScope, type ProductionDraft } from "../src/productionDesignDraft";
 import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
 
 // Actual App, source-built StudioService, effect grants and SQLite. Faults alter
@@ -298,5 +299,255 @@ for (const fault of ["data", "pointer"] as const) {
       expect(unrelated(final)).toEqual(unrelated(initial)); expect(await service.reopen(initial.id)).toEqual(final);
     } catch (reason) { primary = { reason }; }
     finally { await finish(page, info, service, [], final, observations, [], primary); }
+  });
+}
+
+const planScope = (project: Project) => JSON.stringify([project.id, project.generation, project.active_branch, "plan", null]);
+async function activePlanCopy(page: Page, scope: string) {
+  const result = await page.evaluate(scope => {
+    const writerId = sessionStorage.getItem("motionwright.production-writer.v1:" + encodeURIComponent(scope));
+    if (!writerId) throw new Error("The plan has no confirmed local writer.");
+    const key = "motionwright.production-recovery.v1:" + encodeURIComponent(scope) + ":" + writerId, raw = localStorage.getItem(key);
+    if (raw === null) throw new Error("The plan writer has no retained copy.");
+    return { writerId, key, raw };
+  }, scope);
+  return { ...result, draft: JSON.parse(result.raw).draft as ProductionDraft };
+}
+async function injectFirstPlanRead(page: Page, scope: string, fault: "pointer" | "copy") {
+  await page.addInitScript(({ scope, fault }) => {
+    const original = Storage.prototype.getItem, marker = "motionwright-test-production-read:" + fault + ":" + scope;
+    if (original.call(sessionStorage, marker) === "used") return;
+    const pointerKey = "motionwright.production-writer.v1:" + encodeURIComponent(scope);
+    const copyPrefix = "motionwright.production-recovery.v1:" + encodeURIComponent(scope) + ":";
+    const observation = { fired: false, key: "", fault };
+    const exposed = window as unknown as { __PRODUCTION_READ_FAULT__: typeof observation; __RESTORE_PRODUCTION_READ__: () => void };
+    exposed.__PRODUCTION_READ_FAULT__ = observation;
+    exposed.__RESTORE_PRODUCTION_READ__ = () => { Storage.prototype.getItem = original; };
+    Storage.prototype.getItem = function(key: string) {
+      if (!observation.fired && ((fault === "pointer" && this === sessionStorage && key === pointerKey)
+        || (fault === "copy" && this === localStorage && key.startsWith(copyPrefix)))) {
+        observation.fired = true; observation.key = key; sessionStorage.setItem(marker, "used");
+        throw new Error("Injected first Production " + fault + " read failure");
+      }
+      return original.call(this, key);
+    };
+  }, { scope, fault });
+}
+async function restorePlanRead(page: Page) {
+  return page.evaluate(() => {
+    const exposed = window as unknown as { __PRODUCTION_READ_FAULT__: { fired: boolean; key: string; fault: string }; __RESTORE_PRODUCTION_READ__: () => void };
+    exposed.__RESTORE_PRODUCTION_READ__(); return exposed.__PRODUCTION_READ_FAULT__;
+  });
+}
+
+for (const fault of ["pointer", "copy"] as const) for (const outcome of ["ordinary", "UNKNOWN"] as const) {
+  test(`Production retries an initial ${fault} read for ${outcome} input without replacing raw intent or replaying a real operation`, async ({ page }, info) => {
+    const service = await setup(info), observations: Record<string, unknown> = { fault, outcome };
+    const originalInvoke = service.invoke.bind(service);
+    let final: Project | undefined, primary: Failure | undefined;
+    try {
+      const initial = await unlocked(service), scope = planScope(initial); observations.initial = initial;
+      await attach(page, service, initial, true);
+      const raw = "  Earlier synthetic author direction\nKeep its exact spacing  "; await fillPlan(page, raw);
+      await page.getByLabel("Reviewer", { exact: true }).fill("  Retained author reviewer  ");
+      await page.getByLabel("Approval note", { exact: true }).fill("  An unsent reviewer note\n  ");
+      if (outcome === "UNKNOWN") {
+        let armed = true;
+        service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+          const request = args.request as ApplyArgs["request"] | undefined;
+          if (!armed || command !== "apply_change" || request?.change.type !== "set_production_plan") return originalInvoke<T>(command, args);
+          armed = false; await originalInvoke<Project>(command, args);
+          throw new Error("The real plan committed; only its original reply was lost for this recovery scenario.");
+        };
+        await button(page, "Save production plan").click();
+        await expect(page.getByRole("alert").filter({ hasText: "only its original reply was lost" })).toBeVisible();
+        await expect(page.getByRole("region", { name: "Unconfirmed Production plan", exact: true })).toBeVisible();
+        service.invoke = originalInvoke;
+      }
+      const before = await activePlanCopy(page, scope), savedBeforeRecovery = await service.project(initial.id);
+      expect(before.draft.pending?.outcome ?? null).toBe(outcome === "UNKNOWN" ? "UNKNOWN" : null);
+      const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+      observations.originalCopy = before; observations.savedBeforeRecovery = savedBeforeRecovery;
+      await injectFirstPlanRead(page, scope, fault); await page.reload(); await openProduction(page, true);
+      const warning = page.getByRole("alert", { name: "Production plan backup warning", exact: true });
+      await expect(warning).toContainText("Injected first Production " + fault + " read failure");
+      const freshCopyBlocked = await button(page, "Keep Production plan input in a new copy").isDisabled();
+      await expect(button(page, "Save production plan")).toBeDisabled();
+      const injection = await restorePlanRead(page); expect(injection.fired).toBe(true);
+      expect(injection.key).toBe(fault === "pointer" ? "motionwright.production-writer.v1:" + encodeURIComponent(scope) : before.key);
+      observations.injection = injection;
+      // The other two paths are intentionally untouched. This distinguishes
+      // recovery from a new intent and detects the old placeholder overwrite.
+      const gesture = outcome === "ordinary" && fault === "copy" ? "ABA" : outcome === "UNKNOWN" && fault === "pointer" ? "clear" : "untouched";
+      let expectedConcept = raw;
+      if (gesture !== "untouched") {
+        const initialPlaceholder = await concept(page).inputValue();
+        await concept(page).fill("Temporary explicit edit while recovery is blocked");
+        expectedConcept = gesture === "clear" ? "" : initialPlaceholder; await concept(page).fill(expectedConcept);
+      }
+      expect(await service.project(initial.id)).toEqual(savedBeforeRecovery);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      await button(page, "Retry Production plan backup").click(); await expect(warning).toHaveCount(0);
+      await expect(concept(page)).toHaveValue(expectedConcept);
+      const recovered = await activePlanCopy(page, scope);
+      expect(recovered.writerId).not.toBe(before.writerId);
+      expect(await page.evaluate(key => localStorage.getItem(key), before.key)).toBe(before.raw);
+      if (gesture === "untouched") {
+        expect(recovered.draft.input).toEqual(before.draft.input); expect(recovered.draft.sequence).toBe(before.draft.sequence);
+        expect(recovered.draft.intent).toBe(before.draft.intent);
+        await expect(page.getByLabel("Reviewer", { exact: true })).toHaveValue("  Retained author reviewer  ");
+      } else {
+        expect(recovered.draft.sequence).toBeGreaterThan(before.draft.sequence); expect(recovered.draft.intent).toBe(true);
+      }
+      expect(recovered.draft.pending).toEqual(before.draft.pending);
+      expect(freshCopyBlocked).toBe(true); observations.freshCopyBlocked = freshCopyBlocked;
+      if (outcome === "UNKNOWN") expect(recovered.draft.origins).toContainEqual({ key: before.key, raw: before.raw });
+      if (outcome === "UNKNOWN" && fault === "copy") {
+        const copies = page.getByRole("region", { name: "Production plan recovery copies", exact: true });
+        await copies.locator("summary").first().click();
+        await expect(copies.getByRole("button", { name: /^Download Production plan copy [0-9]+$/ })).toHaveCount(1);
+        const received = page.waitForEvent("download"); await button(page, "Download Production plan copy 1").click();
+        const download = await received, path = await download.path();
+        if (!path) throw new Error("The retained Production original did not produce a download.");
+        const bytes = await readFile(path); expect(bytes.equals(Buffer.from(before.raw, "utf8"))).toBe(true);
+        await info.attach("exact-retained-production-original", { body: bytes, contentType: "application/json" });
+        observations.originalDownloadBytes = bytes.byteLength;
+      }
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      observations.gesture = gesture; observations.recoveredCopy = recovered;
+      await page.reload(); await openProduction(page, true); await expect(concept(page)).toHaveValue(expectedConcept);
+      expect(await service.project(initial.id)).toEqual(savedBeforeRecovery);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      if (outcome === "UNKNOWN") {
+        await expect(button(page, "Save production plan")).toBeDisabled();
+        await button(page, "Read saved Production plan and history").click();
+        await expect(page.getByLabel("Production plan outcome review", { exact: true })).toContainText("consecutive history records");
+        await button(page, "Keep earlier Production plan attempt and continue editing").click();
+        await expect(page.getByRole("region", { name: "Unconfirmed Production plan", exact: true })).toHaveCount(0);
+        expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      }
+      const separate = "Separate explicit plan after " + fault + " / " + outcome + " recovery";
+      await fillPlan(page, separate); await button(page, "Save production plan").click(); await revision(page, savedBeforeRecovery.revision + 1);
+      final = await service.project(initial.id); expect(final.production_design!.plan!.concept).toBe(separate);
+      expect(applies(service)).toHaveLength(writes + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+      expect(unrelated(final)).toEqual(unrelated(initial));
+      expect(await page.evaluate(key => localStorage.getItem(key), before.key)).toBe(before.raw);
+      const events = await service.history(initial.id, initial.revision);
+      expect(events.map(event => event.change.type)).toEqual(outcome === "UNKNOWN" ? ["set_production_plan", "set_production_plan"] : ["set_production_plan"]);
+      await service.close(); await service.start();
+      expect(await service.project(initial.id)).toEqual(final); expect(await service.history(initial.id, initial.revision)).toEqual(events);
+      observations.journal = events;
+    } catch (reason) { primary = { reason }; }
+    finally { service.invoke = originalInvoke; await finish(page, info, service, [], final, observations, [], primary); }
+  });
+}
+
+test("Production confirms an empty pointer after an initial read failure while retaining the input typed during the blocker", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = {};
+  let final: Project | undefined, primary: Failure | undefined;
+  try {
+    const initial = await unlocked(service), scope = planScope(initial); observations.initial = initial;
+    await service.attachFixturePage(page, initial.id); await injectFirstPlanRead(page, scope, "pointer");
+    await page.goto("/"); await openProduction(page, true);
+    const warning = page.getByRole("alert", { name: "Production plan backup warning", exact: true });
+    await expect(warning).toContainText("Injected first Production pointer read failure");
+    const raw = "  New raw direction while the first pointer read is unavailable  "; await fillPlan(page, raw);
+    await expect(button(page, "Keep Production plan input in a new copy")).toBeDisabled();
+    await expect(button(page, "Save production plan")).toBeDisabled();
+    const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+    const injection = await restorePlanRead(page); expect(injection.fired).toBe(true); observations.injection = injection;
+    expect(await page.evaluate(scope => sessionStorage.getItem("motionwright.production-writer.v1:" + encodeURIComponent(scope)), scope)).toBeNull();
+    await button(page, "Retry Production plan backup").click(); await expect(warning).toHaveCount(0); await expect(concept(page)).toHaveValue(raw);
+    const copy = await activePlanCopy(page, scope); expect(copy.draft.pending).toBeNull(); expect(copy.draft.intent).toBe(true);
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    expect(await service.project(initial.id)).toEqual(initial);
+    await page.reload(); await openProduction(page, true); await expect(concept(page)).toHaveValue(raw);
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    await button(page, "Save production plan").click(); await revision(page, initial.revision + 1);
+    final = await service.project(initial.id); expect(final.production_design!.plan!.concept).toBe(raw);
+    expect(applies(service)).toHaveLength(writes + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+    expect(unrelated(final)).toEqual(unrelated(initial)); expect(await service.reopen(initial.id)).toEqual(final);
+    observations.recoveredCopy = copy;
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, [], final, observations, [], primary); }
+});
+
+for (const target of ["component", "plan"] as const) {
+  test(`Production ${target} retains its first observed UNKNOWN bytes when a failed recovery read is followed by a same-writer replacement`, async ({ page }, info) => {
+    const service = await setup(info), observations: Record<string, unknown> = { target };
+    const originalInvoke = service.invoke.bind(service);
+    let final: Project | undefined, primary: Failure | undefined;
+    try {
+      const initial = await unlocked(service), sceneId = target === "component" ? heroCreationScene(initial).id : null;
+      const scope = productionScope(initial, target === "plan" ? { kind: "plan" } : { kind: "hero", sceneId });
+      const label = target === "plan" ? "Production plan" : "Component";
+      await attach(page, service, initial, target === "plan");
+      if (target === "plan") await fillPlan(page, "An actual original plan before a failed recovery read");
+      else await headline(page).fill("An actual original component");
+      let armed = true;
+      service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+        const request = args.request as ApplyArgs["request"] | undefined;
+        if (!armed || command !== "apply_change" || request?.change.type !== (target === "plan" ? "set_production_plan" : "upsert_product_hero"))
+          return originalInvoke<T>(command, args);
+        armed = false; await originalInvoke<Project>(command, args);
+        throw new Error("The real Production mutation committed; its original response delivery was lost.");
+      };
+      await button(page, target === "plan" ? "Save production plan" : "Add to scene").click();
+      const unknown = page.getByRole("region", { name: "Unconfirmed " + label, exact: true });
+      await expect(unknown).toBeVisible(); service.invoke = originalInvoke;
+      final = await service.project(initial.id); expect(final.revision).toBe(initial.revision + 1);
+      const first = await activePlanCopy(page, scope), before = await service.observeStoredProject(final);
+      expect(first.draft.pending?.outcome).toBe("UNKNOWN");
+      const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+      const reopenEditor = async () => {
+        await page.reload(); await openProduction(page, target === "plan");
+        if (sceneId) await page.getByLabel("Production working scene").selectOption(sceneId);
+      };
+      await injectFirstPlanRead(page, scope, "copy"); await reopenEditor();
+      const warning = page.getByRole("alert", { name: label + " backup warning", exact: true });
+      await expect(warning).toContainText("Injected first Production copy read failure");
+      expect((await restorePlanRead(page)).fired).toBe(true);
+      const input = target === "plan" ? concept(page) : headline(page);
+      await input.fill("Later text authored during unavailable recovery"); await input.fill("");
+      await button(page, "Retry " + label + " backup").click();
+      await expect(warning).toHaveCount(0); await expect(unknown).toBeVisible(); await expect(input).toHaveValue("");
+      const recovered = await activePlanCopy(page, scope);
+      expect(recovered.draft.pending).toEqual(first.draft.pending);
+      expect(await page.evaluate(key => localStorage.getItem(key), first.key)).toBe(first.raw);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      // Re-arm the same one-shot read fault for the real recovered writer.
+      await page.evaluate(marker => sessionStorage.removeItem(marker), "motionwright-test-production-read:copy:" + scope);
+      await reopenEditor(); await expect(warning).toContainText("Injected first Production copy read failure");
+      expect((await restorePlanRead(page)).fired).toBe(true);
+      await input.fill("Later input after the second read failure");
+      const replacementCopy = JSON.parse(recovered.raw); replacementCopy.draft.pending = null;
+      const replacement = JSON.stringify(replacementCopy);
+      // B is a valid local copy under A's writer, but is not the bytes that
+      // this failed read first observed. Its removal of UNKNOWN is not consent.
+      expect(decodeProductionCopy(replacement, scope, recovered.writerId).draft.pending).toBeNull();
+      await page.evaluate(({ key, raw }) => localStorage.setItem(key, raw), { key: recovered.key, raw: replacement });
+      await button(page, "Retry " + label + " backup").click();
+      await expect(warning, "PRODUCTION_FIRST_READ_SAME_WRITER_REPLACEMENT_REFUSED").toContainText("original Production recovery bytes changed");
+      await expect(input).toHaveValue("Later input after the second read failure");
+      await expect(button(page, target === "plan" ? "Save production plan" : "Update component")).toBeDisabled();
+      const copies = page.getByRole("region", { name: label + " recovery copies", exact: true });
+      await copies.locator("summary").first().click();
+      const received = page.waitForEvent("download"); await button(page, "Download " + label + " copy 1").click();
+      const downloaded = await (await received).path();
+      if (!downloaded) throw new Error("The first Production observation did not produce a download.");
+      const bytes = await readFile(downloaded);
+      expect(bytes.equals(Buffer.from(recovered.raw, "utf8"))).toBe(true);
+      await expect(button(page, "Discard " + label + " copy 1")).toBeDisabled();
+      expect(await page.evaluate(key => localStorage.getItem(key), recovered.key)).toBe(replacement);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+      const after = await service.observeStoredProject(final);
+      expect(after.project).toEqual(before.project); expect(after.journal).toEqual(before.journal);
+      await service.close(); await service.start();
+      expect(await service.project(final.id)).toEqual(final); expect(await service.history(final.id, 0)).toEqual(before.journal);
+      Object.assign(observations, { initial, first, recovered, replacement, before, after, writes, grants, additionalMutations: 0, additionalGrants: 0 });
+      await info.attach("first-observed-production-copy", { body: bytes, contentType: "application/json" });
+      await page.screenshot({ path: info.outputPath("production-first-observed-copy.png"), fullPage: true });
+    } catch (reason) { primary = { reason }; }
+    finally { service.invoke = originalInvoke; await finish(page, info, service, [], final, observations, [], primary); }
   });
 }

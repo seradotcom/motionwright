@@ -11,10 +11,12 @@ import argparse
 import configparser
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
 import struct
+import stat
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +51,117 @@ def regular(path: Path) -> Path:
     require(path.is_file() and not path.is_symlink(),
             "Candidate inspection requires an existing regular non-symlink file")
     return path
+
+
+
+# Only the already declared product notices and the retained GLib backport.
+# A complete inventory of the remaining transitive dependencies is separate.
+NOTICE_FILES = (
+    ("LICENSE", "licenses/motionwright/LICENSE"),
+    ("THIRD_PARTY_NOTICES.md", "licenses/THIRD_PARTY_NOTICES.md"),
+    ("vendor/glib-0.18.5/LICENSE", "licenses/glib-0.18.5/LICENSE"),
+    ("vendor/glib-0.18.5/COPYRIGHT", "licenses/glib-0.18.5/COPYRIGHT"),
+)
+MAX_NOTICE_BYTES = 128 * 1024
+
+
+def notice_resource_directory(binary: Path, kind: str) -> Path:
+    """Use the installed resource layout of the pinned Tauri bundler."""
+    if kind in ("deb", "appimage"):
+        require(binary.parent.name == "bin" and binary.parent.parent.name == "usr",
+                "candidate_notice_layout_invalid")
+        return binary.parent.parent / "lib" / "Motionwright"
+    if kind == "nsis":
+        return binary.parent
+    if kind == "dmg":
+        require(binary.parent.name == "MacOS"
+                and binary.parent.parent.name == "Contents",
+                "candidate_notice_layout_invalid")
+        return binary.parent.parent / "Resources"
+    raise CandidateError("candidate_notice_kind_invalid")
+
+
+def _notice_bytes(anchor: Path, relative: Path) -> bytes:
+    """Inspect bounded resources below one physical, explicitly supplied anchor.
+
+    The caller resolves the package/source anchor once, allowing locator aliases
+    such as macOS /var. Relative package components must remain regular and
+    unlinked. This is controlled package inspection, not an atomic filesystem
+    snapshot against a concurrent writer.
+    """
+    require(anchor.is_absolute() and not relative.is_absolute()
+            and not relative.drive and bool(relative.parts)
+            and all(part not in ("", ".", "..") for part in relative.parts),
+            "candidate_notice_relative_path_invalid")
+    try:
+        path = anchor
+        for index, part in enumerate(relative.parts):
+            path = path / part
+            info = path.lstat()
+            require(not stat.S_ISLNK(info.st_mode)
+                    and not (getattr(info, "st_file_attributes", 0)
+                             & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)),
+                    "candidate_notice_link_refused")
+            if index < len(relative.parts) - 1:
+                require(stat.S_ISDIR(info.st_mode), "candidate_notice_not_directory")
+        require(stat.S_ISREG(info.st_mode), "candidate_notice_not_regular")
+        require(0 < info.st_size <= MAX_NOTICE_BYTES, "candidate_notice_size_invalid")
+        with path.open("rb") as stream:
+            data = stream.read(MAX_NOTICE_BYTES + 1)
+        require(len(data) == info.st_size and len(data) <= MAX_NOTICE_BYTES,
+                "candidate_notice_size_changed")
+        return data
+    except OSError as error:
+        raise CandidateError("candidate_notice_missing_or_unreadable") from error
+
+
+def compare_notice_bytes(expected: bytes, packaged: bytes) -> dict:
+    """Compare content; a license name or source digest alone is insufficient."""
+    require(0 < len(expected) <= MAX_NOTICE_BYTES
+            and 0 < len(packaged) <= MAX_NOTICE_BYTES,
+            "candidate_notice_size_invalid")
+    expected_hash = hashlib.sha256(expected).hexdigest()
+    packaged_hash = hashlib.sha256(packaged).hexdigest()
+    require(len(expected) == len(packaged) and expected_hash == packaged_hash,
+            "candidate_notice_bytes_changed")
+    return {
+        "source_bytes": len(expected), "packaged_bytes": len(packaged),
+        "source_sha256": expected_hash, "packaged_sha256": packaged_hash,
+    }
+
+
+def verify_license_notices(*, installed_binary: Path, kind: str,
+                           desktop: dict, root: Path = ROOT) -> dict:
+    resources = desktop.get("bundle", {}).get("resources")
+    require(isinstance(resources, dict)
+            and all(resources.get("../../../" + source) == target
+                    for source, target in NOTICE_FILES),
+            "candidate_notice_resource_mapping_invalid")
+    resource_root = notice_resource_directory(installed_binary, kind)
+    package_root = (installed_binary.parent if kind == "nsis"
+                    else installed_binary.parents[2])
+    resource_relative = resource_root.relative_to(package_root)
+    try:
+        source_anchor = root.resolve(strict=True)
+        package_anchor = package_root.resolve(strict=True)
+    except OSError as error:
+        raise CandidateError("candidate_notice_missing_or_unreadable") from error
+    records = []
+    for source, target in NOTICE_FILES:
+        expected = _notice_bytes(source_anchor, Path(source))
+        packaged = _notice_bytes(package_anchor, resource_relative / target)
+        records.append({
+            "source_relative_path": source,
+            "resource_relative_path": target,
+            **compare_notice_bytes(expected, packaged),
+        })
+    return {
+        "status": "DECLARED_NOTICES_PRESENT_BYTE_EXACT",
+        "scope": "PRODUCT_LICENSE_AND_DECLARED_NOTICES_AND_VENDORED_GLIB",
+        "digest_kind": "raw-bytes",
+        "complete_dependency_inventory": "NOT_VERIFIED",
+        "files": records,
+    }
 
 
 def verify_installer(receipt: dict, kind: str, artifact: Path) -> dict:
@@ -187,6 +300,132 @@ def verify_macos_bundle(path: Path, executable: Path) -> dict:
     }
 
 
+
+# Budget for this installed-resource inspection, not a collector provenance claim.
+MAX_CARGO_NOTICE_TOTAL_BYTES = 512 * 1024 * 1024
+
+
+def _closed_cargo_directory(*, capture, anchor: Path,
+                            relative: Path, expected: dict[str, bool]) -> None:
+    directory = capture.admitted(anchor, relative, directory=True)
+    seen = set()
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            require(entry.name in expected and entry.name not in seen,
+                    "candidate_cargo_notice_tree_extra")
+            # Reject links/reparse points even if the target has the right bytes.
+            capture.admitted(anchor, relative / entry.name,
+                             directory=expected[entry.name])
+            seen.add(entry.name)
+    require(seen == set(expected), "candidate_cargo_notice_resource_missing")
+
+
+def _verify_cargo_notice_subtree(*, capture, index_raw: bytes,
+                                 anchor: Path, relative: Path) -> dict:
+    # The external index digest and binary/source identity were verified first.
+    index = capture.parse_json(index_raw)
+    digests = set()
+    for component in index["components"]:
+        notices = component.get("notices")
+        require(isinstance(notices, list), "candidate_cargo_notice_roster_invalid")
+        for notice in notices:
+            require(isinstance(notice, dict)
+                    and isinstance(notice.get("sha256"), str)
+                    and SHA64.fullmatch(notice["sha256"]) is not None,
+                    "candidate_cargo_notice_roster_invalid")
+            digests.add(notice["sha256"])
+    expected_root = {"index.json": False}
+    if digests:
+        expected_root["texts"] = True
+    expected_texts = {digest + ".txt": False for digest in digests}
+
+    def inspect_names():
+        _closed_cargo_directory(capture=capture, anchor=anchor,
+                                relative=relative, expected=expected_root)
+        if digests:
+            _closed_cargo_directory(capture=capture, anchor=anchor,
+                                    relative=relative / "texts", expected=expected_texts)
+
+    inspect_names()
+    total = 0
+    for digest in sorted(digests):
+        observed = capture.stable_hash(
+            anchor, relative / "texts" / (digest + ".txt"),
+            limit=MAX_CARGO_NOTICE_TOTAL_BYTES - total,
+        )
+        require(observed["sha256"] == digest, "candidate_cargo_notice_digest_mismatch")
+        total += observed["bytes"]
+    inspect_names()
+    require(capture.stable_read(anchor, relative / "index.json", 16 * 1024 * 1024)
+            == index_raw, "candidate_cargo_index_changed_during_inspection")
+    return {"status": "DECLARED_CARGO_TEXTS_PRESENT_BYTE_EXACT",
+            "scope": "CARGO_NOTICE_SUBTREE_ONLY", "subtree_closed": True,
+            "unique_texts": len(digests), "total_bytes": total,
+            "full_package_inventory": "NOT_VERIFIED"}
+
+
+def verify_cargo_build_binding(*, candidate: dict, record: dict,
+                               installed_binary: Path, kind: str) -> dict:
+    """Join a declared candidate Cargo capture to the inspected executable."""
+    if "cargo_build" not in record:
+        return {"status": "NOT_VERIFIED", "reason": "candidate_receipt_has_no_cargo_capture"}
+    binding = record["cargo_build"]
+    require(isinstance(binding, dict)
+            and set(binding) == {"index_sha256", "source_tree", "target",
+                                 "root_package", "binary_target"},
+            "candidate_cargo_binding_invalid")
+    targets = {
+        ("linux", "x86_64"): "x86_64-unknown-linux-gnu",
+        ("linux", "amd64"): "x86_64-unknown-linux-gnu",
+        ("windows", "x86_64"): "x86_64-pc-windows-msvc",
+        ("windows", "amd64"): "x86_64-pc-windows-msvc",
+        ("macos", "x86_64"): "x86_64-apple-darwin",
+        ("macos", "arm64"): "aarch64-apple-darwin",
+        ("macos", "aarch64"): "aarch64-apple-darwin",
+    }
+    target = targets.get((candidate["platform"], candidate["arch"]))
+    require(target is not None and binding.get("target") == target
+            and binding.get("root_package") == "motionwright-desktop"
+            and binding.get("binary_target") == "motionwright-desktop",
+            "candidate_cargo_target_mismatch")
+    import importlib.util
+    specification = importlib.util.spec_from_file_location(
+        "motionwright_candidate_dependency_capture",
+        ROOT / "scripts" / "candidate_dependency_capture.py",
+    )
+    require(specification is not None and specification.loader is not None,
+            "candidate_cargo_verifier_unavailable")
+    capture = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(capture)
+    package_root = (installed_binary.parent if kind == "nsis"
+                    else installed_binary.parents[2])
+    resource_root = notice_resource_directory(installed_binary, kind)
+    resource_relative = resource_root.relative_to(package_root)
+    binary_relative = installed_binary.relative_to(package_root)
+    try:
+        anchor = package_root.resolve(strict=True)
+        raw = capture.stable_read(
+            anchor, resource_relative / "licenses/cargo/index.json", 16 * 1024 * 1024,
+        )
+        result = capture.verify_binary_binding(
+            raw, expected_index_sha256=binding["index_sha256"],
+            expected_source=candidate["source_revision"],
+            expected_source_tree=binding["source_tree"], expected_target=target,
+            expected_package="motionwright-desktop", expected_binary="motionwright-desktop",
+            binary_root=anchor, binary_path=anchor / binary_relative,
+        )
+        result["notice_resources"] = _verify_cargo_notice_subtree(
+            capture=capture, index_raw=raw, anchor=anchor,
+            relative=resource_relative / "licenses/cargo",
+        )
+        return result
+    except capture.CaptureError as error:
+        raise CandidateError(str(error)) from error
+    except CandidateError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise CandidateError("candidate_cargo_capture_missing_or_invalid") from error
+
 def build_receipt(*, candidate_receipt: Path, artifact: Path,
                   installed_binary: Path, kind: str, method: str,
                   linux_desktop_entry: Path | None = None,
@@ -213,6 +452,19 @@ def build_receipt(*, candidate_receipt: Path, artifact: Path,
         require(kind == "appimage" and linux_gui_probe.get("status") == "WINDOW_OBSERVED"
                 and linux_gui_probe.get("window_title") == "Motionwright",
                 "Candidate GUI probe does not prove a visible Motionwright window")
+    notices = verify_license_notices(
+        installed_binary=installed_binary, kind=kind, desktop=verified["desktop"],
+    )
+    cargo_binding = verify_cargo_build_binding(
+        candidate=verified["candidate"], record=verified["record"],
+        installed_binary=installed_binary, kind=kind,
+    )
+    if cargo_binding.get("status") == "CAPTURED_ROOT_BINARY_BYTE_EXACT":
+        require(
+            binary["binary_bytes"] == cargo_binding["bytes"]
+            and binary["binary_sha256"] == cargo_binding["sha256"],
+            "candidate_binary_changed_between_inspections",
+        )
     return {
         "schema_version": 1,
         "candidate": verified["candidate"],
@@ -226,6 +478,8 @@ def build_receipt(*, candidate_receipt: Path, artifact: Path,
             "method": method,
             "status": "PASS",
             "binary": binary,
+            "license_notices": notices,
+            "cargo_build_binding": cargo_binding,
             **extra,
             "gui_window_probe": "WINDOW_OBSERVED" if linux_gui_probe else "NOT_RUN",
         },

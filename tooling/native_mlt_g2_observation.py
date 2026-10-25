@@ -21,6 +21,16 @@ from cross_app_public_artifact import strict_object
 from native_av_failure_guard import NativeCommandFailure
 import native_mlt_loaded_module as loaded
 import native_mlt_runtime_admission as admission
+from source_lock_admission import load_source_lock, verify_source_lock
+
+
+def _admitted_semwright_pin() -> str:
+    """Freeze this caller's current source identity through the existing admission."""
+    root = Path(__file__).resolve().parents[1]
+    lock = load_source_lock(root)
+    verify_source_lock(root, lock)
+    return lock["dependencies"]["semwright"]["revision"]
+
 
 SCHEMA = "motionwright.native.mlt-g2-inputs/1"
 TERMINAL_SCOPE = "canonical_assemble_command"
@@ -32,7 +42,8 @@ REFERENCE_CHECKOUT = "a31505e3c0884a419b0b3b1072af0ba4057f9442"
 REFERENCE_PR_HEAD = "30f02fd0b744cda36035a4473c98e066f89d3d00"
 REPAIRED_MODULE_SHA256 = "e0d32f13536d568762be4b426edf9dce11602a3ec0eea4bc334d5346316b515a"
 COMPILER_RECEIPT_SHA256 = "cefa3ed54d02eaf894245248c07a39439489566d56a94b7f356748eba63cb2e8"
-SEMWRIGHT_PIN = "54d3459a051adbce4cae9f60c0dea8f60c824be6"
+REFERENCE_SEMWRIGHT_PIN = "54d3459a051adbce4cae9f60c0dea8f60c824be6"
+SEMWRIGHT_PIN = _admitted_semwright_pin()
 MELT = Path("/usr/bin/melt-7")
 MELT_ALIAS = Path("/usr/bin/melt")
 MELT_ARCHIVE_ALIAS = {"archive_path": "usr/bin/melt",
@@ -102,7 +113,7 @@ def reference_source(raw: bytes) -> tuple[bytes, dict]:
                 "g2_original_public_manifest_changed")
         proof = strict_object(document)
         require(proof.get("motionwright_source_sha") == REFERENCE_CHECKOUT
-                and proof.get("semwright_source_pin") == SEMWRIGHT_PIN
+                and proof.get("semwright_source_pin") == REFERENCE_SEMWRIGHT_PIN
                 and proof.get("mode") == "final-mp4",
                 "g2_original_public_manifest_identity")
         wav = archive.read("native-master-source.wav")

@@ -1,0 +1,298 @@
+{
+  "accepted_row_ids": [
+    "ACC-001",
+    "ACC-008",
+    "CR-AUDIO-01",
+    "CR-CHANGE-06",
+    "CR-DELIVER-06",
+    "CR-EXT-07",
+    "CR-FOUND-01",
+    "CR-JOBS-04",
+    "CR-PROJECT-01",
+    "CR-PROJECT-02",
+    "CR-PROJECT-03",
+    "CR-PROJECT-04",
+    "CR-PROJECT-07",
+    "CR-SDK-01",
+    "CR-SDK-05",
+    "CR-VARIANT-08",
+    "CR-WORKFLOW-06",
+    "CR-WORKFLOW-08"
+  ],
+  "applied": true,
+  "authenticated_principal_claimed": false,
+  "human_acceptance": false,
+  "human_identity_claimed": false,
+  "input_index_sha256": "38e52bfd02b5aedfef897cc331ed66ddc0d58fb5f2090095e3fc1fa152d6950f",
+  "new_product_executions": 0,
+  "release_authorized": false,
+  "review_bindings": [
+    {
+      "before_row_sha256": "8095bc6bf7e5817c9d98658147fdf04466a0163f135fd7735e40c5b359122217",
+      "criterion_ids": [
+        "CR-FOUND-01#/statement",
+        "CR-FOUND-01#/acceptance_criterion"
+      ],
+      "id": "CR-FOUND-01",
+      "source_record_sha256": "a6cf5b29c633e8a8f5fb73fdaede56f14d418e1f554c8f5420bca3fb3eefcca8",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "f3bd74abe75a5a1976f6a7078ef285b87d59eec106e3264f7e66d4106da91be0",
+      "criterion_ids": [
+        "CR-PROJECT-01#/statement",
+        "CR-PROJECT-01#/acceptance_criterion"
+      ],
+      "id": "CR-PROJECT-01",
+      "source_record_sha256": "b23d7b462c711f28a39e2f47a6c147c3b32bf4836bb563153ae8e5773bd12755",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "ae241ec939c7bc72220c75846a934da589353265ae77d8b49fbead8b327b07da",
+      "criterion_ids": [
+        "CR-PROJECT-02#/statement",
+        "CR-PROJECT-02#/acceptance_criterion"
+      ],
+      "id": "CR-PROJECT-02",
+      "source_record_sha256": "7cded496e2f8faced05d96f385687da8c4906762b5fb0c08cf1f0e8ad548784e",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "90724273fc715d560f63ed1ef2c42775d3fc80c8241f31ef15013629c16673f1",
+      "criterion_ids": [
+        "CR-PROJECT-03#/statement",
+        "CR-PROJECT-03#/acceptance_criterion"
+      ],
+      "id": "CR-PROJECT-03",
+      "source_record_sha256": "a5d5d0e823d12b37d39b381c3bf9b412f3b2e041f14d78254167a1f4a1b14f6c",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "97f75b7bebcfc3afef95009654c674b1eee0002b29d03c1f37d8fea394f61915",
+      "criterion_ids": [
+        "CR-PROJECT-04#/statement",
+        "CR-PROJECT-04#/acceptance_criterion"
+      ],
+      "id": "CR-PROJECT-04",
+      "source_record_sha256": "68234569fa8bd9ad1a737c82d609139d6af638d5c8d7d8b0f1ba1a3ef936e13a",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "74c1794e37696f8a6e34cfadf083e308f7c8680e8cb29f87c92e80993f21450f",
+      "criterion_ids": [
+        "CR-PROJECT-07#/statement",
+        "CR-PROJECT-07#/acceptance_criterion"
+      ],
+      "id": "CR-PROJECT-07",
+      "source_record_sha256": "89db026f8213561e6a5c632c9f6ad1771099466ae0f4827a7191ec8c919d7d2e",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "ee3f33effd2633e46ad713cfa268fd0ff862cb91cdab42083b78ebde5310d68f",
+      "criterion_ids": [
+        "CR-AUDIO-01#/statement",
+        "CR-AUDIO-01#/acceptance_criterion"
+      ],
+      "id": "CR-AUDIO-01",
+      "source_record_sha256": "d147f542b3011a0e03010daff83afc33026972d961bd2855564ebeb5a3be672c",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "d9f784d4eb0b0b42401f0041974fac75f1850a10fed92075ad2917893f353486",
+      "criterion_ids": [
+        "CR-CHANGE-06#/statement",
+        "CR-CHANGE-06#/acceptance_criterion"
+      ],
+      "id": "CR-CHANGE-06",
+      "source_record_sha256": "2fe32b3f150bf7e0166886c6875292b87bdb17ff20230175992db1ea48144c3d",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "d8615659ebef6a2b3ef9ac6d5a15f9cba95094272c04307531dc569eac7ca839",
+      "criterion_ids": [
+        "CR-SDK-01#/statement",
+        "CR-SDK-01#/acceptance_criterion"
+      ],
+      "id": "CR-SDK-01",
+      "source_record_sha256": "8cf69d2390c577fa5d7a1e78d7333079836b40ced97afd5e7b2ebfcdf1f7314c",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "2a0bcde4ed9bd5ad37e6fc472b166161f0decde267f564372020e900668d3c7b",
+      "criterion_ids": [
+        "CR-SDK-05#/statement",
+        "CR-SDK-05#/acceptance_criterion"
+      ],
+      "id": "CR-SDK-05",
+      "source_record_sha256": "0be628d3e256aa21cd7f7838a54217451a528f5eb3276bfc22d330e8536b5f27",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "9562030853b748217eba4f559c8bfd6c2f7bb94152e710c79029d2afc820baed",
+      "criterion_ids": [
+        "CR-JOBS-04#/statement",
+        "CR-JOBS-04#/acceptance_criterion"
+      ],
+      "id": "CR-JOBS-04",
+      "source_record_sha256": "4933ca9aa330caf2c04794592fe8e0c062cf463ece359e4d9eddb32f95f64495",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "103d066b5b6a345fde5a1efb6a6834e1b6a6aed46e045b18d9e568e4110625e9",
+      "criterion_ids": [
+        "CR-WORKFLOW-06#/statement",
+        "CR-WORKFLOW-06#/acceptance_criterion"
+      ],
+      "id": "CR-WORKFLOW-06",
+      "source_record_sha256": "cd1270980624c15c7ed19cfc22c110b3f3640b5c544d1d6f6a7fe71fef4fcc51",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "5ce9205b18761c1b12d6fba90a4162d5ebd651504d72c232b6d884766b492878",
+      "criterion_ids": [
+        "CR-WORKFLOW-08#/statement",
+        "CR-WORKFLOW-08#/acceptance_criterion"
+      ],
+      "id": "CR-WORKFLOW-08",
+      "source_record_sha256": "8238199a5c38ec57c9265490b068fb889d05c9fdc702580e42120caebe071513",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "6f67c2785a0dc6d2e19f9a0a879345aa1e226ff16cdab7e6a04af91a3e6a73a0",
+      "criterion_ids": [
+        "CR-VARIANT-08#/statement",
+        "CR-VARIANT-08#/acceptance_criterion"
+      ],
+      "id": "CR-VARIANT-08",
+      "source_record_sha256": "9ce22b482875743377bdff9577294deb6df17612d35363adc258ba6c8c4d446c",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "d056f7e0a6938f3593025f24a95a07cb5727d60360fb8949534c225f27c02fcb",
+      "criterion_ids": [
+        "CR-DELIVER-06#/statement",
+        "CR-DELIVER-06#/acceptance_criterion"
+      ],
+      "id": "CR-DELIVER-06",
+      "source_record_sha256": "6e008d8d64ea8797383ab4c966d111d8efe6827f12b29d233138c20b805e0fcd",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "dea3d52b958d64bffa878e03db98bf02bfc6ecfe747a25e933aea412504650ed",
+      "criterion_ids": [
+        "CR-EXT-07#/statement",
+        "CR-EXT-07#/acceptance_criterion"
+      ],
+      "id": "CR-EXT-07",
+      "source_record_sha256": "4f0e14336334234619088b32e3e9ac88dfb1a7ce47fa1cfd64ec27dca285885d",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "1793f64aa3596433cca9caa13f71aed20daf609121ea7e50e9eb09cbbca05d7d",
+      "criterion_ids": [
+        "ACC-001#/given",
+        "ACC-001#/when",
+        "ACC-001#/then",
+        "ACC-001#/prohibited",
+        "ACC-001#/evidence_required/0",
+        "ACC-001#/evidence_required/1",
+        "ACC-001#/evidence_required/2",
+        "ACC-001#/evidence_required/3",
+        "ACC-001#/evidence_required/4"
+      ],
+      "id": "ACC-001",
+      "source_record_sha256": "098f60301d6e98ff28beffc4d3adcd8d5a86e9caecedef4ddb27a446e1fcbc8d",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "26ff16fa76f40350eafe8afbc37a833b96a78eda6149f1b72f86ce466d2ce121",
+      "criterion_ids": [
+        "ACC-008#/given",
+        "ACC-008#/when",
+        "ACC-008#/then",
+        "ACC-008#/prohibited",
+        "ACC-008#/evidence_required/0",
+        "ACC-008#/evidence_required/1",
+        "ACC-008#/evidence_required/2",
+        "ACC-008#/evidence_required/3",
+        "ACC-008#/evidence_required/4"
+      ],
+      "id": "ACC-008",
+      "source_record_sha256": "0847edf06ea3cdc7d635f0b28272df2916d40140dc24c20cc78b873a3fbe0949",
+      "status": "accepted"
+    },
+    {
+      "before_row_sha256": "9827396ccfaf6b48b71c0c932a0df09b810a4127cb38dd0831e5b4397b62b686",
+      "criterion_ids": [
+        "A05-E00-01#/scenario",
+        "A05-E00-01#/negative_scenario",
+        "A05-E00-01#/evidence_required/0",
+        "A05-E00-01#/evidence_required/1",
+        "A05-E00-01#/evidence_required/2",
+        "A05-E00-01#/evidence_required/3",
+        "A05-E00-01#/evidence_required/4",
+        "A05-E00-01#/evidence_required/5"
+      ],
+      "id": "A05-E00-01",
+      "source_record_sha256": "82ff6a23efe2d3086ea1d991cf001d1abdd987bd18f122ce7a04faf223cc1287",
+      "status": "open"
+    },
+    {
+      "before_row_sha256": "af97911e67ade5e5002dc85f8819cc060a49c39b1b1694d2031d3a662b7d7e46",
+      "criterion_ids": [
+        "A05-E00-04#/scenario",
+        "A05-E00-04#/negative_scenario",
+        "A05-E00-04#/evidence_required/0",
+        "A05-E00-04#/evidence_required/1",
+        "A05-E00-04#/evidence_required/2",
+        "A05-E00-04#/evidence_required/3",
+        "A05-E00-04#/evidence_required/4",
+        "A05-E00-04#/evidence_required/5"
+      ],
+      "id": "A05-E00-04",
+      "source_record_sha256": "80395fde69d10a2c67b93fe380e16285b6bf85bfa9ed103ed9bd8ad494b3d573",
+      "status": "open"
+    },
+    {
+      "before_row_sha256": "98b00db2368854a30e2c4caeb25b3b39b559a2b8faab9340b046a22e6ed92fe1",
+      "criterion_ids": [
+        "MW05-E00-01#/requirement",
+        "MW05-E00-01#/acceptance",
+        "MW05-E00-01#/negative_case"
+      ],
+      "id": "MW05-E00-01",
+      "source_record_sha256": "1c8058f5346a996c1eaea9ab94244b290fe40bf1274e536832234373975a4baf",
+      "status": "open"
+    },
+    {
+      "before_row_sha256": "6addcfa79d6f57fdf7fd1daf3250fa99be1c681df3d2e6701782a27d2f1cc450",
+      "criterion_ids": [
+        "MW05-E00-04#/requirement",
+        "MW05-E00-04#/acceptance",
+        "MW05-E00-04#/negative_case"
+      ],
+      "id": "MW05-E00-04",
+      "source_record_sha256": "f9f4d4970525abd41489876cefff57fa9c9ae35e7c091572e6b6d291d4688fa5",
+      "status": "open"
+    }
+  ],
+  "review_receipt": {
+    "path": "docs/acceptance/evidence/contractual-review-a8d-20261022.json",
+    "sha256": "a99cd9246a389370a2ffc094c1c086d9d3384d50637161e98dae969ae38da6ee"
+  },
+  "reviewed_at_utc": "2026-10-22T03:03:32.547918+00:00",
+  "reviewer_kind": "automated_technical",
+  "schema": "conformance.contractual-admission/1",
+  "separate_technical_review_pending_row_ids": [
+    "A05-E00-01",
+    "A05-E00-04",
+    "MW05-E00-01",
+    "MW05-E00-04"
+  ],
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+    "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+  },
+  "technical_criteria_changed": false
+}

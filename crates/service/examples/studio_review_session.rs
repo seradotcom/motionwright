@@ -370,6 +370,9 @@ impl Session {
 
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "semantic_graph_authoring_context" => encoded(
+                project_projection::semantic_graph_context(&self.service, request(args)?)?,
+            ),
             "export_caption_sidecar" => encoded(caption_export::export_caption_sidecar(
                 &self.service,
                 &self.grants,
@@ -398,7 +401,7 @@ impl Session {
                     "project_selection": project_selection,
                     "native_sdk": {
                         "application": "motionwright",
-                        "pinned_revision": "54d3459a051adbce4cae9f60c0dea8f60c824be6",
+                        "pinned_revision": "4849b3c1dcee9b37438801b4264f59480bff9e40",
                         "version": "1.0.0",
                         // Selects UI routes for the explicit browser fixture;
                         // it is not a claim that this process hosts Tauri.
@@ -479,7 +482,9 @@ impl Session {
                     request.request_id.trim(),
                 )?;
                 let trusted_audio_evidence = match &request.change {
-                    Change::ImportMeasuredVoice { .. } | Change::AddVoiceTrack { .. } => true,
+                    Change::ApplyVoiceAlignment { .. }
+                    | Change::ImportMeasuredVoice { .. }
+                    | Change::AddVoiceTrack { .. } => true,
                     Change::AddTranscriptSegment { segment }
                     | Change::UpsertTranscriptSegment { segment } => {
                         matches!(segment.alignment, AlignmentEvidence::Measured { .. })
@@ -542,6 +547,22 @@ impl Session {
             ),
             "recover_file_import" => encoded(
                 file_import::recover_file_import(&self.service, request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
+            "prepare_native_capsule_source_file" => encoded(
+                file_import::prepare_native_capsule_source_file(&self.service, request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
+            "import_native_capsule_source_file" => encoded(
+                file_import::import_native_capsule_source_file(
+                    &self.service,
+                    &self.grants,
+                    request(args)?,
+                )
+                .map_err(|error| error.to_string())?,
+            ),
+            "recover_native_capsule_source_file" => encoded(
+                file_import::recover_native_capsule_source_file(&self.service, request(args)?)
                     .map_err(|error| error.to_string())?,
             ),
             "waveform_page" => {

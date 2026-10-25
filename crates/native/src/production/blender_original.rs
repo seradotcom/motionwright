@@ -8,6 +8,17 @@ use super::*;
 use crate::multi_renderer::{BlenderOriginalScenePlan, build_blender_original_scene_plan};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "blender_product_consumer.rs"]
+mod product;
+pub use product::{
+    BLENDER_PRODUCT_RECIPE_MEDIA_TYPE, BlenderProductAnnotationEdit, BlenderProductAssetBinding,
+    BlenderProductAttemptProjection, BlenderProductAttemptRequest, BlenderProductAttemptState,
+    BlenderProductAttemptSummary, BlenderProductCycleJournal, BlenderProductCycleRequest,
+    BlenderProductLineageSnapshot, BlenderProductNativeBinding, BlenderProductSourceScope,
+    BlenderProductSourceSnapshot, decode_blender_product_recipe, read_blender_product_attempt,
+    read_blender_product_source, realize_blender_product_cycle_with_connections,
+};
+
 const ORIGINAL_SCHEMA: &str = "motionwright.blender.original-scene-attempt/1";
 const ORIGINAL_FILE: &str = "blender-original.blend";
 const EDITED_FILE: &str = "blender-edited.blend";
@@ -196,15 +207,52 @@ fn native_generation(value: &Value) -> NativeResult<u64> {
         .ok_or_else(|| backend("Original Blender response has no semantic generation"))
 }
 
-struct OriginalSession<'a> {
+trait OriginalPhaseScope {
+    fn project_id(&self) -> Uuid;
+    fn expected(&self) -> &RevisionStamp;
+    fn request_id(&self) -> &str;
+    fn phase_label(&self) -> &'static str;
+}
+
+impl OriginalPhaseScope for BlenderOriginalRequest {
+    fn project_id(&self) -> Uuid {
+        self.project_id
+    }
+    fn expected(&self) -> &RevisionStamp {
+        &self.expected
+    }
+    fn request_id(&self) -> &str {
+        &self.request_id
+    }
+    fn phase_label(&self) -> &'static str {
+        self.phase.label()
+    }
+}
+
+trait OriginalCallJournal {
+    fn calls_mut(&mut self) -> &mut Vec<Value>;
+}
+
+impl OriginalCallJournal for BlenderOriginalJournal {
+    fn calls_mut(&mut self) -> &mut Vec<Value> {
+        &mut self.calls
+    }
+}
+
+struct OriginalSession<
+    'a,
+    R = BlenderOriginalRequest,
+    P = BlenderOriginalScenePlan,
+    J = BlenderOriginalJournal,
+> {
     coordinator: &'a ProductionCoordinator,
-    request: &'a BlenderOriginalRequest,
-    plan: &'a BlenderOriginalScenePlan,
-    journal: &'a mut BlenderOriginalJournal,
+    request: &'a R,
+    plan: &'a P,
+    journal: &'a mut J,
     sequence: u32,
 }
 
-impl OriginalSession<'_> {
+impl<R: OriginalPhaseScope, P, J: OriginalCallJournal> OriginalSession<'_, R, P, J> {
     async fn call(&mut self, command: &str, args: Value, mutation: bool) -> NativeResult<Value> {
         self.sequence = self
             .sequence
@@ -212,12 +260,12 @@ impl OriginalSession<'_> {
             .ok_or_else(|| backend("Original Blender command sequence overflowed"))?;
         let request_id = format!(
             "{}:{}:{:06}",
-            self.request.request_id,
-            self.request.phase.label(),
+            self.request.request_id(),
+            self.request.phase_label(),
             self.sequence
         );
-        let index = self.journal.calls.len();
-        self.journal.calls.push(json!({
+        let index = self.journal.calls_mut().len();
+        self.journal.calls_mut().push(json!({
             "sequence": self.sequence, "command": command, "args": args.clone(),
             "mutation": mutation, "request_id": request_id,
             "native_result": null, "native_error": null
@@ -225,8 +273,8 @@ impl OriginalSession<'_> {
         match self
             .coordinator
             .execute(
-                self.request.project_id,
-                &self.request.expected,
+                self.request.project_id(),
+                self.request.expected(),
                 &request_id,
                 command,
                 args,
@@ -235,13 +283,13 @@ impl OriginalSession<'_> {
             .await
         {
             Ok(value) => {
-                self.journal.calls[index]["native_result"] = value.clone();
+                self.journal.calls_mut()[index]["native_result"] = value.clone();
                 response_data(&value)
                     .cloned()
                     .map_err(|error| if mutation { error.uncertain() } else { error })
             }
             Err(error) => {
-                self.journal.calls[index]["native_error"] = serde_json::to_value(&error)
+                self.journal.calls_mut()[index]["native_error"] = serde_json::to_value(&error)
                     .unwrap_or_else(|_| json!({"diagnostic_serialization_failed": true}));
                 Err(error)
             }
@@ -397,7 +445,9 @@ impl OriginalSession<'_> {
         }
         Ok((Value::Object(values), pages))
     }
+}
 
+impl OriginalSession<'_> {
     async fn identity_at(
         &mut self,
         reference: &str,
@@ -603,65 +653,10 @@ impl OriginalSession<'_> {
 
     async fn isolate_scene(&mut self) -> NativeResult<()> {
         let scene_name = self.plan.native_scene_name.clone();
-        let collection_name = self.plan.contribution.collection_name.clone();
-        let camera_name = self.plan.camera.object_name.clone();
-        let (scene_ref, _) = self.lookup("scenes", &scene_name).await?;
-        let master = self
-            .sole_relation(&scene_ref, "collection", "Collection")
-            .await?;
-        let (_, pages) = self.relations(&master, "children").await?;
-        let names = Self::page_items(&pages)
-            .map(|item| native_string(item, "name").map(str::to_owned))
-            .collect::<NativeResult<Vec<_>>>()?;
-        if names
-            .iter()
-            .filter(|name| **name == collection_name)
-            .count()
-            != 1
-        {
-            return Err(backend(
-                "Original Blender collection is not attached to the active Scene",
-            ));
-        }
-        for name in names.into_iter().filter(|name| *name != collection_name) {
-            let (scene_ref, _) = self.lookup("scenes", &scene_name).await?;
-            let master = self
-                .sole_relation(&scene_ref, "collection", "Collection")
-                .await?;
-            let (target_ref, _) = self.lookup("collections", &name).await?;
-            self.call(
-                "driver.blender.semantic.relation.unlink",
-                json!({
-                    "ref": master, "property": "children", "target_ref": target_ref
-                }),
-                true,
-            )
-            .await?;
-        }
-        let (scene_ref, _) = self.lookup("scenes", &scene_name).await?;
-        let master = self
-            .sole_relation(&scene_ref, "collection", "Collection")
-            .await?;
-        let (_, pages) = self.relations(&master, "objects").await?;
-        let names = Self::page_items(&pages)
-            .map(|item| native_string(item, "name").map(str::to_owned))
-            .collect::<NativeResult<Vec<_>>>()?;
-        for name in names.into_iter().filter(|name| *name != camera_name) {
-            let (scene_ref, _) = self.lookup("scenes", &scene_name).await?;
-            let master = self
-                .sole_relation(&scene_ref, "collection", "Collection")
-                .await?;
-            let (target_ref, _) = self.lookup("objects", &name).await?;
-            self.call(
-                "driver.blender.semantic.relation.unlink",
-                json!({
-                    "ref": master, "property": "objects", "target_ref": target_ref
-                }),
-                true,
-            )
-            .await?;
-        }
-        Ok(())
+        let collections = BTreeSet::from([self.plan.contribution.collection_name.clone()]);
+        let objects = BTreeSet::from([self.plan.camera.object_name.clone()]);
+        self.isolate_named_scene_membership(&scene_name, &collections, &objects)
+            .await
     }
 
     async fn membership(
@@ -1153,6 +1148,7 @@ impl ProductionCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use motionwright_domain::{
         BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RendererKind,
     };

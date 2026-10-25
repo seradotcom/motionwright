@@ -1,0 +1,204 @@
+{
+  "schema_version": 1,
+  "profile_id": "mw-manim-semantic-graph-v1",
+  "execution_snapshot": {
+    "project_id": "00000000-0000-0000-0000-000000000001",
+    "generation": "00000000-0000-0000-0000-000000000002",
+    "branch_id": "00000000-0000-0000-0000-000000000003",
+    "revision": 8
+  },
+  "scene_clock": {
+    "timeline_start": {
+      "num": "20",
+      "den": "1"
+    },
+    "duration": {
+      "num": "10",
+      "den": "1"
+    },
+    "frame_rate": {
+      "num": "10",
+      "den": "1"
+    },
+    "project_start_frame": 200,
+    "project_end_frame_exclusive": 300,
+    "local_start_frame": 0,
+    "frame_count": 100
+  },
+  "render_profile": {
+    "width": 640,
+    "height": 360,
+    "frame_rate": 10
+  },
+  "scene_matte": {
+    "kind": "solid",
+    "color": "#000000",
+    "opacity": 1
+  },
+  "source": {
+    "id": "00000000-0000-0000-0000-00000000001e",
+    "scene_id": "00000000-0000-0000-0000-000000000004",
+    "component_version": 1,
+    "subject_ref": {
+      "kind": "scene",
+      "scene_id": "00000000-0000-0000-0000-000000000004"
+    },
+    "time_range": {
+      "start": {
+        "num": "2",
+        "den": "1"
+      },
+      "duration": {
+        "num": "6",
+        "den": "1"
+      }
+    },
+    "brand_profile_ref": null,
+    "variant_profile_ref": "00000000-0000-0000-0000-000000000005",
+    "reference_frame": {
+      "width": 640,
+      "height": 360
+    },
+    "motion": "full",
+    "style": {
+      "background": "#102030",
+      "vertex_fill": "#405060",
+      "text_color": "#ffffff",
+      "edge_color": "#abcdef",
+      "accent_color": "#fedcba",
+      "font_family": "Instrument Sans Variable",
+      "font_size": 10,
+      "edge_width": 2,
+      "disclosure_box": {
+        "x": 20,
+        "y": 280,
+        "width": 600,
+        "height": 60
+      }
+    },
+    "content": {
+      "kind": "system_flow",
+      "source": {
+        "kind": "synthetic",
+        "disclosure": "Synthetic flow; no recorded execution."
+      },
+      "vertices": [
+        {
+          "id": "00000000-0000-0000-0000-00000000000a",
+          "label": "Origin\nA",
+          "meaning": "Authored causal meaning",
+          "unit": {
+            "kind": "qualitative"
+          },
+          "box": {
+            "x": 10.25,
+            "y": 20.5,
+            "width": 100,
+            "height": 60
+          },
+          "shape": "rectangle",
+          "target": null,
+          "appearance": {
+            "at": {
+              "num": "0",
+              "den": "1"
+            },
+            "duration": {
+              "num": "1",
+              "den": "1"
+            }
+          }
+        },
+        {
+          "id": "00000000-0000-0000-0000-00000000000b",
+          "label": "B",
+          "meaning": "Authored destination",
+          "unit": {
+            "kind": "symbol",
+            "symbol": "count"
+          },
+          "box": {
+            "x": 300.75,
+            "y": 20.5,
+            "width": 70,
+            "height": 70
+          },
+          "shape": "circle",
+          "target": null,
+          "appearance": {
+            "at": {
+              "num": "0",
+              "den": "1"
+            },
+            "duration": {
+              "num": "1",
+              "den": "1"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "00000000-0000-0000-0000-000000000014",
+          "label": "Payload",
+          "from_vertex_id": "00000000-0000-0000-0000-00000000000a",
+          "to_vertex_id": "00000000-0000-0000-0000-00000000000b",
+          "from_port": "right",
+          "to_port": "left",
+          "waypoints": [
+            {
+              "x": 100.125,
+              "y": 40.625
+            },
+            {
+              "x": 100.125,
+              "y": 80.25
+            }
+          ],
+          "label_box": {
+            "x": 150,
+            "y": 120,
+            "width": 150,
+            "height": 60
+          },
+          "appearance": {
+            "at": {
+              "num": "1",
+              "den": "1"
+            },
+            "duration": {
+              "num": "1",
+              "den": "1"
+            }
+          },
+          "channel": "data"
+        }
+      ],
+      "events": [
+        {
+          "id": "00000000-0000-0000-0000-000000000028",
+          "edge_id": "00000000-0000-0000-0000-000000000014",
+          "label": "Pulse",
+          "at": {
+            "num": "2",
+            "den": "1"
+          },
+          "duration": {
+            "num": "1",
+            "den": "1"
+          }
+        }
+      ]
+    },
+    "authorship": {
+      "author_label": "Fixture author",
+      "rationale": "Explicit canonical source fixture",
+      "source_snapshot": {
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "generation": "00000000-0000-0000-0000-000000000002",
+        "branch_id": "00000000-0000-0000-0000-000000000003",
+        "revision": 7
+      }
+    }
+  }
+}

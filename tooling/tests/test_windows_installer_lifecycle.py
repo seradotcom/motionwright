@@ -16,7 +16,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import windows_installer_lifecycle as lifecycle
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_storage_schema_contract import cohort as storage_cohort_fixture
+from test_storage_schema_contract import add_schema_five_cas, cohort as storage_cohort_fixture
 from windows_cold_start import ColdStartError
 from release_manifest import ManifestError
 
@@ -980,6 +980,42 @@ class StorageCohortLifecycleTests(unittest.TestCase):
         with self.assertRaises(ColdStartError):
             self.capture("missing-binding-column")
         self.assertFalse((self.root / "missing-binding-column/snapshot.json").exists())
+
+    def test_five_capture_preserves_original_sqlite_family_with_cas_identity(self):
+        database, project = self.seed_four()
+        add_schema_five_cas(database)
+        database.commit()
+        self.selected = storage_cohort_fixture(5)
+        original = {path.name: path.read_bytes() for path in self.profile.iterdir()}
+        reference = self.capture("five-capture")
+        value = lifecycle.snapshot_value(self.root, reference, self.operation, "before",
+            self.fx.context["registry_keys"], storage_cohort=self.selected)
+        self.assertEqual(value["schema"], "motionwright.windows-lifecycle-snapshot/2")
+        self.assertEqual(value["storage_cohort"], self.selected)
+        self.assertEqual(value["project"]["project_id"], project["id"])
+        self.assertEqual({path.name: path.read_bytes() for path in self.profile.iterdir()}, original)
+        for name, ref in value["sqlite_family"].items():
+            self.assertEqual(lifecycle.bound_file(self.root, ref).read_bytes(), original[name])
+
+    def test_five_input_cohort_binds_source_tree_and_original_source_bytes(self):
+        self.selected = storage_cohort_fixture(5)
+        self.bind_inputs(self.selected)
+        observed = self.fx.validate_inputs()
+        self.assertEqual(observed["storage_cohort"], self.selected)
+        self.assertEqual(observed["source_sha"], self.selected["source_sha"])
+        self.assertEqual(observed["source_tree"], self.selected["source_tree"])
+
+    def test_missing_cas_controls_never_publish_a_five_snapshot(self):
+        database, _ = self.seed_four()
+        add_schema_five_cas(database)
+        database.execute("DROP TABLE cas_import_commits")
+        database.commit()
+        self.selected = storage_cohort_fixture(5)
+        original = {path.name: path.read_bytes() for path in self.profile.iterdir()}
+        with self.assertRaisesRegex(ColdStartError, "storage_cas_objects_differ"):
+            self.capture("five-missing-cas")
+        self.assertFalse((self.root / "five-missing-cas/snapshot.json").exists())
+        self.assertEqual({path.name: path.read_bytes() for path in self.profile.iterdir()}, original)
 
 
 if __name__ == "__main__":

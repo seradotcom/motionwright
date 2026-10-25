@@ -5,8 +5,9 @@ import {
   FILE_IMPORT_PREFIX, assertNoFileImport, fileImportDownload, fileImportKey, fileImportProjectPrefix, importFileWithRetention,
   parseFileImportReceipt, readFileImport, readFileImports, recoverFileImportWithRetention,
   removeFileImport, requireFileImport, retainFileImport,
+  fileImportIntentName, fileImportIntentMediaType, parseNativeCapsuleSourceSpec, sameNativeCapsuleSourceSpec,
   type FileImportCopy, type FileImportInput, type FileImportRead, type FileImportReceipt,
-  type FileImportStorage, type FileImportTransport, type PreparedFileImport, type RetainedFileImport,
+  type FileImportStorage, type FileImportTransport, type PreparedFileImport, type RetainedFileImport, type NativeCapsuleSourceSpec7,
 } from "./fileImport";
 
 // Synthetic transport/storage boundaries only. Service/CAS/reopen coverage is
@@ -18,7 +19,7 @@ const REQUEST = "12345678-1234-4567-89ab-1234567890ae";
 const TOKEN = "12345678-1234-4567-89ab-1234567890af";
 const NIL = "00000000-0000-0000-0000-000000000000";
 const source = (): Project => ({ ...structuredClone(fixtureProject), id: ID, generation: GEN, revision: 4 });
-const input = (): FileImportInput => ({ kind: "voice", path: "  E:\\Media\\original voice.wav  ", label: "  Editorial take  " });
+const input = () => ({ kind: "voice", path: "  E:\\Media\\original voice.wav  ", label: "  Editorial take  " } satisfies FileImportInput);
 const preparation = (): PreparedFileImport => ({
   schema: "motionwright.file-import-preparation/1", project_id: ID, generation: GEN, revision: 4,
   path: "E:\\Media\\original voice.wav", intent: { kind: "voice", name: "original voice.wav", media_type: "audio/wav", label: "Editorial take" },
@@ -90,8 +91,10 @@ describe("retained file import", () => {
     port.grant.mockImplementation(async prepared => {
       const original = retained(readFileImport(ID, storage)).copy;
       expect(original.input.path).toBe(input().path);
+      if (original.input.kind !== "voice") throw new Error("Expected the original voice input");
       expect(original.input.label).toBe(input().label);
       expect(original.preparation).toEqual(preparation());
+      if (prepared.intent.kind !== "voice") throw new Error("Expected the prepared voice intent");
       prepared.intent.name = "Synthetic mutable grant argument";
       return { token: TOKEN, effect: "import_local", project_id: ID, generation: GEN, revision: 4, one_time: true };
     });
@@ -100,6 +103,7 @@ describe("retained file import", () => {
       expect(kind).toBe("voice");
       expect(request).toEqual({ project_id: ID, generation: GEN, revision: 4, request_id: copy.request_id,
         path: preparation().path, intent: preparation().intent, effect_grant: TOKEN });
+      if (request.intent.kind !== "voice") throw new Error("Expected the dispatched voice intent");
       request.intent.name = "Synthetic mutable dispatch argument";
       return receipt(copy);
     });
@@ -191,7 +195,7 @@ describe("retained file import", () => {
   it.each(["request", "intent", "project", "generation", "revision", "unknown"])("rejects a mismatched receipt: %s", field => {
     const storage = new MemoryStorage(); const copy = save(storage).copy; const invalid = receipt(copy);
     if (field === "request") invalid.request_id = TOKEN;
-    if (field === "intent") invalid.intent.name += ".changed";
+    if (field === "intent" && invalid.intent.kind === "voice") invalid.intent.name += ".changed";
     if (field === "project") invalid.project.id = TOKEN;
     if (field === "generation") invalid.project.generation = NEXT_GEN;
     if (field === "revision") invalid.project.revision = 15;
@@ -244,6 +248,7 @@ describe("retained file import", () => {
 
   it("rejects in-memory mutation even when the saved raw string is unchanged", async () => {
     const storage = new MemoryStorage(); const original = save(storage); const port = transport(storage);
+    if (original.copy.preparation.intent.kind !== "voice") throw new Error("Expected the retained voice intent");
     original.copy.preparation.intent.name = "Changed in this view";
     expect(() => requireFileImport(original, storage)).toThrow("retained original");
     await expect(recoverFileImportWithRetention(source(), original, port, storage)).rejects.toThrow();
@@ -469,5 +474,292 @@ describe("append-only file import list", () => {
     const storage = new MemoryStorage(); const first = save(storage);
     expect(() => retainFileImport(preparation(), input(), storage, REQUEST, first.copy.created_at + 1)).toThrow("retained import");
     expect(storage.getItem(first.key)).toBe(first.raw); expect(storage.writes).toBe(1); expect(storage.removals).toBe(0);
+  });
+});
+
+const nativeSpec = (): NativeCapsuleSourceSpec7 => ({
+  name: "  Opening source.blend  ", media_type: "application/octet-stream", capsule_id: NEXT_GEN, scene_id: GEN,
+  label: "  Opening capsule\nEditorial version  ",
+  editable_parameters: ["Title = \"Opening\"", "Camera focal length", "Title = \"Opening\"", "Accent colour"],
+  native_editor_hint: "  Open the source in Blender\nKeep the authored camera  ",
+});
+const nativeInput = (spec = nativeSpec()) => ({
+  kind: "native_capsule_source", path: "  E:\\Media\\opening source.blend  ", spec,
+} satisfies FileImportInput);
+function nativePreparation(submitted = nativeInput()): PreparedFileImport & { intent: { kind: "native_capsule_source"; spec: NativeCapsuleSourceSpec7 } } {
+  return { schema: "motionwright.file-import-preparation/1", project_id: ID, generation: GEN, revision: 4,
+    path: submitted.path.trim(), intent: { kind: "native_capsule_source", spec: structuredClone(submitted.spec) } };
+}
+function saveNative(storage: MemoryStorage, submitted = nativeInput(), request = REQUEST): RetainedFileImport {
+  return retainFileImport(nativePreparation(submitted), submitted, storage, request, 1_790_000_000_000);
+}
+function nativeTransport(storage: MemoryStorage, submitted = nativeInput()) {
+  const port = transport(storage);
+  port.prepare.mockResolvedValue(nativePreparation(submitted));
+  return port;
+}
+
+describe("native source spec contract", () => {
+  it("preserves all seven fields, spaces, line feeds, duplicate parameters and their order without aliasing", () => {
+    const submitted = nativeSpec(); const expected = structuredClone(submitted);
+    const parsed = parseNativeCapsuleSourceSpec(submitted);
+    expect(parsed).toEqual(expected); expect(parsed).not.toBe(submitted);
+    expect(parsed.editable_parameters).not.toBe(submitted.editable_parameters);
+    submitted.editable_parameters.reverse(); submitted.label = "Changed after validation";
+    expect(parsed).toEqual(expected); expect(sameNativeCapsuleSourceSpec(parsed, expected)).toBe(true);
+    expect(sameNativeCapsuleSourceSpec(parsed, { ...expected, editable_parameters: [...expected.editable_parameters].reverse() })).toBe(false);
+    expect(parseNativeCapsuleSourceSpec({ ...expected, editable_parameters: [] }).editable_parameters).toEqual([]);
+    expect(fileImportIntentName({ kind: "native_capsule_source", spec: parsed })).toBe(expected.name);
+    expect(fileImportIntentMediaType({ kind: "native_capsule_source", spec: parsed })).toBe(expected.media_type);
+    expect(fileImportIntentName({ kind: "asset", name: "Existing image", media_type: "image/png" })).toBe("Existing image");
+    expect(fileImportIntentMediaType(preparation().intent)).toBe("audio/wav");
+  });
+
+  it("matches Rust's Unicode scalar, White_Space and control rules without rewriting authored text", () => {
+    const spec = { ...nativeSpec(), name: "\uFEFF", media_type: "application/\uFEFFcustom", label: "\uFEFF",
+      native_editor_hint: "line one\nline two", editable_parameters: ["🙂".repeat(500)] };
+    expect(parseNativeCapsuleSourceSpec(spec)).toEqual(spec);
+    expect(() => parseNativeCapsuleSourceSpec({ ...spec, name: "\u0085" })).toThrow();
+    expect(() => parseNativeCapsuleSourceSpec({ ...spec, media_type: "application/\u0085custom" })).toThrow();
+    expect(() => parseNativeCapsuleSourceSpec({ ...spec, label: "line\u0085two" })).toThrow();
+    expect(() => parseNativeCapsuleSourceSpec({ ...spec, label: "\n\n" })).toThrow();
+  });
+
+  it.each([
+    ["name UTF-8 bound", { name: "é".repeat(257) }],
+    ["media UTF-8 bound", { media_type: "é".repeat(128) }],
+    ["label UTF-8 bound", { label: "é".repeat(129) }],
+    ["hint UTF-8 bound", { native_editor_hint: "é".repeat(129) }],
+    ["parameter UTF-8 bound", { editable_parameters: ["🙂".repeat(501)] }],
+    ["parameter count", { editable_parameters: Array.from({ length: 65 }, () => "parameter") }],
+    ["sparse parameter array", { editable_parameters: new Array(1) }],
+    ["non-string parameter", { editable_parameters: [1] }],
+    ["blank parameter", { editable_parameters: [" \n "] }],
+    ["parameter carriage return", { editable_parameters: ["line\rtwo"] }],
+    ["label tab", { label: "line\ttwo" }],
+    ["hint DEL", { native_editor_hint: "line\u007ftwo" }],
+    ["hint C1 control", { native_editor_hint: "line\u009ftwo" }],
+    ["name lone high surrogate", { name: "name\ud800" }],
+    ["name lone low surrogate", { name: "name\udfff" }],
+    ["parameter lone surrogate", { editable_parameters: ["parameter\ud800"] }],
+    ["uppercase capsule identity", { capsule_id: NEXT_GEN.toUpperCase() }],
+    ["nil capsule identity", { capsule_id: NIL }],
+    ["nil scene identity", { scene_id: NIL }],
+    ["noncanonical scene identity", { scene_id: GEN.replaceAll("-", "") }],
+    ["unknown source digest", { source_sha256: "a".repeat(64) }],
+    ["unknown fidelity", { fidelity: "verified" }],
+    ["unknown grant", { effect_grant: TOKEN }],
+  ])("rejects %s before any transport or local write", async (_label, patch) => {
+    const spec = { ...nativeSpec(), ...patch };
+    expect(() => parseNativeCapsuleSourceSpec(spec)).toThrow();
+    const storage = new MemoryStorage(); const port = nativeTransport(storage);
+    await expect(importFileWithRetention(source(), { ...nativeInput(), spec } as FileImportInput, port, storage)).rejects.toThrow();
+    expect(port.prepare).not.toHaveBeenCalled(); expect(port.grant).not.toHaveBeenCalled();
+    expect(port.dispatch).not.toHaveBeenCalled(); expect(storage.writes).toBe(0);
+  });
+
+  it("rejects missing fields and non-record specs instead of inferring native metadata", () => {
+    for (const field of Object.keys(nativeSpec())) {
+      const spec: Record<string, unknown> = { ...nativeSpec() }; delete spec[field];
+      expect(() => parseNativeCapsuleSourceSpec(spec)).toThrow();
+    }
+    for (const value of [null, undefined, [], "source", 1]) expect(() => parseNativeCapsuleSourceSpec(value)).toThrow();
+  });
+});
+
+const nativeSubstitutions: Array<[string, (spec: NativeCapsuleSourceSpec7) => void]> = [
+  ["name", spec => { spec.name = "Different source.blend"; }],
+  ["media type", spec => { spec.media_type = "application/x-other"; }],
+  ["capsule identity", spec => { spec.capsule_id = TOKEN; }],
+  ["scene identity", spec => { spec.scene_id = TOKEN; }],
+  ["label spacing", spec => { spec.label = spec.label.trim(); }],
+  ["parameter order", spec => { spec.editable_parameters.reverse(); }],
+  ["parameter contents", spec => { spec.editable_parameters[1] = "Different camera"; }],
+  ["parameter count", spec => { spec.editable_parameters.pop(); }],
+  ["editor hint", spec => { spec.native_editor_hint = "Different editor"; }],
+];
+
+describe("retained native source import", () => {
+  it("round trips the full native input and intent through durable readback before grant and dispatch", async () => {
+    const storage = new MemoryStorage(); const submitted = nativeInput(); const expected = structuredClone(submitted);
+    const port = nativeTransport(storage, submitted);
+    port.prepare.mockImplementation(async request => {
+      expect(request).toEqual({ project_id: ID, generation: GEN, revision: 4, ...expected });
+      expect(storage.writes).toBe(0);
+      if (request.kind !== "native_capsule_source") throw new Error("Expected the native request");
+      request.spec.editable_parameters.reverse(); request.spec.label = "Mutated prepare argument";
+      return nativePreparation(expected);
+    });
+    port.grant.mockImplementation(async prepared => {
+      const saved = retained(readFileImport(ID, storage));
+      expect(saved.copy.input).toEqual(expected);
+      expect(saved.copy.preparation).toEqual(nativePreparation(expected));
+      expect(requireFileImport(saved, storage)).toEqual(saved.copy);
+      if (prepared.intent.kind !== "native_capsule_source") throw new Error("Expected the native preparation");
+      prepared.intent.spec.label = "Mutated grant argument";
+      prepared.intent.spec.editable_parameters.reverse();
+      return { token: TOKEN, effect: "import_local", project_id: ID, generation: GEN, revision: 4, one_time: true };
+    });
+    port.dispatch.mockImplementation(async (kind, request) => {
+      const copy = retained(readFileImport(ID, storage)).copy;
+      expect(kind).toBe("native_capsule_source");
+      expect(request).toEqual({ project_id: ID, generation: GEN, revision: 4, request_id: copy.request_id,
+        path: expected.path.trim(), intent: nativePreparation(expected).intent, effect_grant: TOKEN });
+      if (request.intent.kind !== "native_capsule_source") throw new Error("Expected the native intent");
+      request.intent.spec.editable_parameters[0] = "Mutated dispatch argument";
+      return receipt(copy);
+    });
+    const completed = await importFileWithRetention(source(), submitted, port, storage);
+    expect(completed.project.revision).toBe(15); expect(completed.retained.copy.input).toEqual(expected);
+    expect(completed.retained.copy.preparation.intent).toEqual(nativePreparation(expected).intent);
+    expect(Object.keys(completed.retained.copy.input)).toEqual(["kind", "path", "spec"]);
+    expect(Object.keys(completed.retained.copy.preparation.intent)).toEqual(["kind", "spec"]);
+    expect(JSON.parse(fileImportDownload(ID, completed.retained.raw)).raw).toBe(completed.retained.raw);
+    expect(submitted).toEqual(expected); expect(completed.retained.raw).not.toContain(TOKEN);
+    expect(completed.retained.raw).not.toContain("Mutated");
+    expect(port.prepare).toHaveBeenCalledOnce(); expect(port.grant).toHaveBeenCalledOnce();
+    expect(port.dispatch).toHaveBeenCalledOnce(); expect(port.recover).not.toHaveBeenCalled();
+    expect(storage.writes).toBe(1); expect(storage.removals).toBe(0);
+  });
+
+  it("retains every authored native field across UNKNOWN and only reads the original receipt without replay", async () => {
+    const storage = new MemoryStorage(); const submitted = nativeInput(); const expected = structuredClone(submitted);
+    const port = nativeTransport(storage, submitted);
+    port.dispatch.mockRejectedValueOnce(new Error("Synthetic native acknowledgement lost after commit"));
+    await expect(importFileWithRetention(source(), submitted, port, storage)).rejects.toThrow("acknowledgement lost");
+    const original = retained(readFileImport(ID, storage));
+    submitted.path = "E:\\Media\\later source.blend"; submitted.spec.label = "Later creative input";
+    submitted.spec.editable_parameters.reverse();
+    expect(original.copy.input).toEqual(expected);
+    await expect(importFileWithRetention(source(), submitted, port, storage)).rejects.toThrow("retained import");
+    port.recover.mockResolvedValueOnce(null).mockResolvedValueOnce(receipt(original.copy, true));
+    expect(await recoverFileImportWithRetention(source(), original, port, storage)).toBeNull();
+    expect(port.current).not.toHaveBeenCalled();
+    const latest = await recoverFileImportWithRetention({ ...source(), revision: 12 }, original, port, storage);
+    expect(latest?.revision).toBe(15);
+    expect(port.recover).toHaveBeenNthCalledWith(2, { project_id: ID, generation: GEN, revision: 4,
+      request_id: original.copy.request_id, intent: nativePreparation(expected).intent });
+    expect(port.prepare).toHaveBeenCalledOnce(); expect(port.grant).toHaveBeenCalledOnce();
+    expect(port.dispatch).toHaveBeenCalledOnce(); expect(port.recover).toHaveBeenCalledTimes(2);
+    expect(port.current).toHaveBeenCalledExactlyOnceWith(ID);
+    expect(storage.getItem(original.key)).toBe(original.raw); expect(storage.removals).toBe(0);
+  });
+
+  it.each(nativeSubstitutions)("rejects preparation substitution of %s before durable retention or effects", async (_label, substitute) => {
+    const storage = new MemoryStorage(); const port = nativeTransport(storage);
+    const prepared = nativePreparation(); substitute(prepared.intent.spec); port.prepare.mockResolvedValue(prepared);
+    await expect(importFileWithRetention(source(), nativeInput(), port, storage)).rejects.toThrow("differs from the authored input");
+    expect(storage.writes).toBe(0); expect(port.grant).not.toHaveBeenCalled(); expect(port.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(nativeSubstitutions)("rejects historical receipt substitution of %s and keeps the UNKNOWN original", async (_label, substitute) => {
+    const storage = new MemoryStorage(); const original = saveNative(storage); const port = nativeTransport(storage);
+    const changed = receipt(original.copy, true);
+    if (changed.intent.kind !== "native_capsule_source") throw new Error("Expected the native receipt");
+    substitute(changed.intent.spec); port.recover.mockResolvedValue(changed);
+    await expect(recoverFileImportWithRetention(source(), original, port, storage)).rejects.toThrow("differs from the original request");
+    expect(port.current).not.toHaveBeenCalled(); expect(port.prepare).not.toHaveBeenCalled();
+    expect(port.grant).not.toHaveBeenCalled(); expect(port.dispatch).not.toHaveBeenCalled();
+    expect(storage.getItem(original.key)).toBe(original.raw); expect(storage.removals).toBe(0);
+  });
+
+  it.each(["request", "project", "generation", "revision"])("rejects native receipt %s identity mismatches", async field => {
+    const storage = new MemoryStorage(); const original = saveNative(storage); const port = nativeTransport(storage);
+    const changed = receipt(original.copy, true);
+    if (field === "request") changed.request_id = TOKEN;
+    if (field === "project") changed.project.id = TOKEN;
+    if (field === "generation") changed.project.generation = NEXT_GEN;
+    if (field === "revision") changed.project.revision++;
+    port.recover.mockResolvedValue(changed);
+    await expect(recoverFileImportWithRetention(source(), original, port, storage)).rejects.toThrow();
+    expect(port.current).not.toHaveBeenCalled(); expect(port.grant).not.toHaveBeenCalled(); expect(port.dispatch).not.toHaveBeenCalled();
+    expect(storage.getItem(original.key)).toBe(original.raw);
+  });
+
+  it.each(["quota", "silent-drop", "other-window", "unreadable"])("blocks native effects when durable readback is %s", async mode => {
+    const storage = new MemoryStorage(); const port = nativeTransport(storage);
+    if (mode === "quota") storage.failSet = true;
+    if (mode === "silent-drop") storage.afterSet = key => storage.data.delete(key);
+    if (mode === "other-window") storage.afterSet = key => storage.data.set(key, "Another window's native input");
+    if (mode === "unreadable") storage.afterSet = () => { storage.failGet = true; };
+    await expect(importFileWithRetention(source(), nativeInput(), port, storage)).rejects.toThrow();
+    expect(port.grant).not.toHaveBeenCalled(); expect(port.dispatch).not.toHaveBeenCalled(); expect(storage.removals).toBe(0);
+    if (mode === "other-window") expect([...storage.data.values()]).toEqual(["Another window's native input"]);
+  });
+
+  it("refuses another window's valid native replacement after the grant without overwriting either authored spec", async () => {
+    const storage = new MemoryStorage(); const port = nativeTransport(storage); let original: RetainedFileImport | undefined;
+    let peer: RetainedFileImport | undefined;
+    port.grant.mockImplementation(async () => {
+      original = retained(readFileImport(ID, storage));
+      const other = nativeInput({ ...nativeSpec(), label: "Another window's capsule", editable_parameters: ["Other parameter"] });
+      peer = saveNative(new MemoryStorage(), other, original.copy.request_id);
+      storage.data.set(original.key, peer.raw);
+      return { token: TOKEN, effect: "import_local", project_id: ID, generation: GEN, revision: 4, one_time: true };
+    });
+    await expect(importFileWithRetention(source(), nativeInput(), port, storage)).rejects.toThrow("changed");
+    if (!original || !peer) throw new Error("Expected both retained originals");
+    expect(original.copy.input).toEqual(nativeInput());
+    expect(storage.getItem(peer.key)).toBe(peer.raw); expect(port.dispatch).not.toHaveBeenCalled();
+    await expect(recoverFileImportWithRetention(source(), original, port, storage)).rejects.toThrow("changed");
+    expect(port.recover).not.toHaveBeenCalled(); expect(storage.removals).toBe(0);
+  });
+
+  it("preserves two interleaved native requests and permits only the explicitly selected read-only recovery", async () => {
+    const storage = new MemoryStorage(); let peer: RetainedFileImport | undefined;
+    const other = nativeInput({ ...nativeSpec(), capsule_id: TOKEN, label: "Other authored capsule" });
+    storage.beforeSet = () => { storage.beforeSet = null; peer = saveNative(storage, other, TOKEN); };
+    const original = saveNative(storage);
+    if (!peer) throw new Error("Expected the interleaved native request");
+    expect(readFileImports(ID, storage).copies).toHaveLength(2);
+    expect(requireFileImport(original, storage).input).toEqual(nativeInput());
+    expect(requireFileImport(peer, storage).input).toEqual(other);
+    const port = nativeTransport(storage); port.recover.mockResolvedValue(receipt(peer.copy, true));
+    expect((await recoverFileImportWithRetention(source(), peer, port, storage))?.revision).toBe(15);
+    expect(port.recover).toHaveBeenCalledExactlyOnceWith({ project_id: ID, generation: GEN, revision: 4,
+      request_id: TOKEN, intent: nativePreparation(other).intent });
+    expect(port.grant).not.toHaveBeenCalled(); expect(port.dispatch).not.toHaveBeenCalled();
+    expect(storage.getItem(original.key)).toBe(original.raw); expect(storage.getItem(peer.key)).toBe(peer.raw);
+    expect(storage.removals).toBe(0);
+  });
+
+  it.each(["input-extra", "intent-extra", "spec-extra", "input-order", "key-identity"])("keeps malformed native %s bytes available for explicit recovery", mode => {
+    const storage = new MemoryStorage(); const original = saveNative(storage); const value = JSON.parse(original.raw);
+    if (mode === "input-extra") value.input.label = null;
+    if (mode === "intent-extra") value.preparation.intent.name = "Flattened legacy field";
+    if (mode === "spec-extra") value.preparation.intent.spec.source_sha256 = "a".repeat(64);
+    if (mode === "input-order") value.input.spec.editable_parameters.reverse();
+    if (mode === "key-identity") value.request_id = TOKEN;
+    const raw = JSON.stringify(value); storage.data.set(original.key, raw);
+    const state = readFileImport(ID, storage); expect(state.kind).toBe("invalid");
+    if (state.kind !== "invalid") throw new Error("Expected preserved malformed native bytes");
+    expect(state.raw).toBe(raw); expect(JSON.parse(fileImportDownload(ID, raw)).raw).toBe(raw);
+    expect(() => assertNoFileImport(ID, storage)).toThrow("retained import");
+    expect(storage.getItem(original.key)).toBe(raw); expect(storage.removals).toBe(0);
+  });
+
+  it("retains the maximum native spec twice beyond the legacy bound without truncating authored data", () => {
+    const maximum: NativeCapsuleSourceSpec7 = { ...nativeSpec(), name: "\"".repeat(512), media_type: "x".repeat(255),
+      label: "\"".repeat(256), native_editor_hint: "\\".repeat(256), editable_parameters: Array.from({ length: 64 }, () => "\\".repeat(2_000)) };
+    const submitted = { ...nativeInput(maximum), path: "E:\\Media\\" + "x".repeat(65_000) };
+    const storage = new MemoryStorage(); const saved = saveNative(storage, submitted);
+    expect(new TextEncoder().encode(saved.raw).length).toBeGreaterThan(65_536);
+    expect(saved.copy.input).toEqual(submitted); expect(saved.copy.preparation.intent).toEqual(nativePreparation(submitted).intent);
+    expect(retained(readFileImport(ID, storage)).raw).toBe(saved.raw);
+    expect(requireFileImport(saved, storage)).toEqual(saved.copy);
+  });
+
+  it("keeps the legacy wire schema and 64-KiB limit while rejecting native copies above their explicit bound", () => {
+    const storage = new MemoryStorage(); const legacy = save(storage);
+    expect(legacy.raw).toBe(JSON.stringify({ schema: "motionwright.file-import-intent/1", request_id: REQUEST,
+      created_at: 1_790_000_000_000, preparation: preparation(), input: { kind: "voice", path: input().path,
+        name: null, media_type: null, label: input().label } }));
+    const oversizedLegacy = legacy.raw + " ".repeat(65_537 - legacy.raw.length);
+    storage.data.set(legacy.key, oversizedLegacy);
+    expect(readFileImport(ID, storage).kind).toBe("invalid"); expect(storage.getItem(legacy.key)).toBe(oversizedLegacy);
+    const nativeStorage = new MemoryStorage(); const saved = saveNative(nativeStorage);
+    const oversizedNative = saved.raw + " ".repeat(2_097_153 - saved.raw.length);
+    nativeStorage.data.set(saved.key, oversizedNative);
+    expect(readFileImport(ID, nativeStorage).kind).toBe("invalid"); expect(nativeStorage.getItem(saved.key)).toBe(oversizedNative);
   });
 });

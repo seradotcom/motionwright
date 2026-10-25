@@ -195,7 +195,7 @@ class ReadinessGateTests(unittest.TestCase):
     def test_all_synthetic_passes_still_require_external_attestation(self):
         for entry in self.acceptance["cases"]:
             entry.update(status="PASS", independent=True,
-                         evidence=[{"fake": "not authenticated by this tool"}])
+                         evidence=["docs/acceptance/recorded-review.json"])
         for entry in self.requirements["requirements"]:
             entry.update(implementation_assessment="VERIFIED",
                          verification_status="VERIFIED",
@@ -483,6 +483,77 @@ class ReadinessGateTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("source_sha_invalid", stderr.getvalue())
         self.assertNotIn(str(self.root), stderr.getvalue())
+
+    def test_canonical_string_pass_is_counted_without_authorizing_release(self):
+        self.acceptance["cases"][0].update(
+            status="PASS", independent=True,
+            evidence=["docs/acceptance/recorded-review.json"],
+        )
+        self.store()
+        report = self.summary()
+        self.assertEqual(report["private_acceptance"]["status_counts"]["PASS"], 1)
+        self.assertFalse(report["claims"]["stable_release_authorized"])
+        self.assertFalse(
+            report["private_acceptance"]["independent_evidence_validated_by_this_report"]
+        )
+
+    def test_noncanonical_pass_evidence_is_rejected(self):
+        for evidence in (
+            [{"fake": "not a canonical pointer"}],
+            [""],
+            ["   "],
+            ["docs/review.json", {"fake": "mixed type"}],
+            ["docs/review.json", "docs/review.json"],
+        ):
+            with self.subTest(evidence=evidence):
+                self.acceptance["cases"][0].update(
+                    status="PASS", independent=True, evidence=evidence,
+                )
+                self.store()
+                self.rejects("unreviewed_acceptance_pass")
+
+    def test_missing_independence_with_canonical_evidence_is_rejected(self):
+        self.acceptance["cases"][0].update(
+            status="PASS", independent=False,
+            evidence=["docs/acceptance/recorded-review.json"],
+        )
+        self.store()
+        self.rejects("unreviewed_acceptance_pass")
+
+    def test_retained_canonical_history_above_old_five_mb_budget_is_readable(self):
+        for document, key in (
+            (self.requirements, "requirements"),
+            (self.acceptance, "cases"),
+        ):
+            document[key][0]["assessment_history"] = [
+                {"synthetic_prior": "c" * 12_500_000}
+            ]
+        self.acceptance["cases"][0].update(
+            status="PASS", independent=True,
+            evidence=["docs/acceptance/recorded-review.json"],
+        )
+        self.store()
+        for relative in (
+            "docs/acceptance/requirements-status.json",
+            "docs/acceptance/acceptance-status.json",
+        ):
+            self.assertGreater((self.root / relative).stat().st_size, 8_000_000)
+        report = self.summary()
+        self.assertEqual(report["status"], "BLOCKED_PENDING_EXTERNAL_EVIDENCE")
+        self.assertEqual(report["private_acceptance"]["status_counts"]["PASS"], 1)
+        self.assertFalse(report["claims"]["stable_release_authorized"])
+
+    def test_larger_ledger_budget_does_not_expand_unrelated_json_limit(self):
+        self.security["unrelated_padding"] = "d" * gate.MAX_READINESS_JSON_BYTES
+        self.store()
+        self.rejects("security_policy_invalid")
+
+    def test_acceptance_ledger_exceeding_finite_ceiling_is_rejected(self):
+        self.acceptance["cases"][0]["assessment_history"] = [
+            {"synthetic_prior": "e" * gate.MAX_CONFORMANCE_LEDGER_BYTES}
+        ]
+        self.store()
+        self.rejects("acceptance_invalid")
 
 
 if __name__ == "__main__":

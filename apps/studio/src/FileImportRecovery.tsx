@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Download, FileCheck2, RefreshCw } from "lucide-react";
 import {
-  FILE_IMPORT_CHANGED, FILE_IMPORT_PREFIX, fileImportDownload, readFileImports, removeFileImport,
+  FILE_IMPORT_CHANGED, FILE_IMPORT_PREFIX, fileImportDownload, fileImportIntentName, readFileImports, removeFileImport,
   type FileImportEntry, type FileImportRead,
   type RetainedFileImport,
 } from "./fileImport";
@@ -96,7 +96,7 @@ export default function FileImportRecovery({ project, busy, confirmation, onReco
     try {
       const found = await onRecover(retained);
       setNotice(found
-        ? `The original import of ${retained.copy.preparation.intent.name} is confirmed. The latest saved project is open.`
+        ? `The original import of ${fileImportIntentName(retained.copy.preparation.intent)} is confirmed. The latest saved project is open.`
         : "The original import was not found. This check did not send an import. Keep the copy while you check the project.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally {
@@ -162,14 +162,15 @@ export default function FileImportRecovery({ project, busy, confirmation, onReco
             setSelectedKey(event.target.value); setConfirmRemove(null); setRemoveKey(null); setError(null); setNotice(null);
           }}>
             {collection.copies.map((entry, index) => <option key={entryKey(entry)} value={entryKey(entry)}>
-              {index + 1}. {entry.kind === "retained" ? entry.retained.copy.preparation.intent.name : "Unreadable recovery copy"}
+              {index + 1}. {entry.kind === "retained" ? fileImportIntentName(entry.retained.copy.preparation.intent) : "Unreadable recovery copy"}
             </option>)}
           </select>
         </label>}
         {selected && (collection.error || collection.limited) && <p role="alert">{collection.error ?? "Some saved requests are outside this bounded page."} Existing copies were kept; new imports are paused.</p>}
         {retained && <>
-          <p><strong>{retained.copy.preparation.intent.name}</strong>{" · "}
-            {retained.copy.preparation.intent.kind === "voice" ? "Voice take import" : "Project media"}</p>
+          <p><strong>{fileImportIntentName(retained.copy.preparation.intent)}</strong>{" · "}
+            {retained.copy.preparation.intent.kind === "voice" ? "Voice take import"
+              : retained.copy.preparation.intent.kind === "native_capsule_source" ? "Native source and capsule" : "Project media"}</p>
           <p>{foreign
             ? "This request belongs to an earlier restored version of this project. Its recovery copy has been kept."
             : confirmsSelected ? "The import is saved. You can download or review the local copy before removing it."
@@ -180,6 +181,11 @@ export default function FileImportRecovery({ project, busy, confirmation, onReco
               <dt>File</dt><dd>{retained.copy.input.path}</dd>
               <dt>Prepared at</dt><dd>Revision {retained.copy.preparation.revision}</dd>
               {retained.copy.preparation.intent.kind === "voice" && <><dt>Take label</dt><dd>{retained.copy.preparation.intent.label}</dd></>}
+              {retained.copy.preparation.intent.kind === "native_capsule_source" && <>
+                <dt>Capsule label</dt><dd>{retained.copy.preparation.intent.spec.label}</dd>
+                <dt>Capsule</dt><dd>{retained.copy.preparation.intent.spec.capsule_id}</dd>
+                <dt>Scene</dt><dd>{retained.copy.preparation.intent.spec.scene_id}</dd>
+              </>}
               <dt>Request</dt><dd>{retained.copy.request_id}</dd>
             </dl>
           </details>
@@ -187,7 +193,7 @@ export default function FileImportRecovery({ project, busy, confirmation, onReco
         {(state.kind === "invalid" || state.kind === "unreadable") && <p>{state.error}</p>}
         {state.kind === "invalid" && <p>Download the saved copy before removing it. A new import is paused for this project.</p>}
         {confirmed ? <div className="file-import-notice" role="status">
-          <p>The original import of {confirmed.retained.copy.preparation.intent.name} is confirmed at revision r{confirmed.retained.copy.preparation.revision + 1}. The latest saved project is open.</p>
+          <p>The original import of {fileImportIntentName(confirmed.retained.copy.preparation.intent)} is confirmed at revision r{confirmed.retained.copy.preparation.revision + 1}. The latest saved project is open.</p>
           {state.kind !== "empty" && <p>The local recovery copy could not be cleared: {confirmed.cleanupWarning}</p>}
           {!confirmsSelected && state.kind !== "empty" && <p>This confirmation does not apply to the selected copy. It belongs to original request {confirmed.retained.copy.request_id}; review the current copy separately.</p>}
         </div> : notice && <p className="file-import-notice" role="status">{notice}</p>}

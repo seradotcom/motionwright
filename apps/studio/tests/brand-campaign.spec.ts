@@ -1,7 +1,40 @@
 import {expect,test,type Page} from "./support/selectedSyntheticProject";
 import {fixtureBootstrap} from "../src/fixture";
-import {defaultHeroConfig,emptyProductionDesign} from "../src/creativeProduction";
-import type {BrandCampaignRollout} from "../src/brandCampaign";
+import {defaultHeroConfig,emptyProductionDesign,mergeComponentNodes,realizeProductHero} from "../src/creativeProduction";
+import {previewBrandCampaign,type BrandCampaignRollout} from "../src/brandCampaign";
+import type {Project} from "../src/types";
+
+/** Synthetic browser transport only, not StudioService, SQLite or native evidence.
+ * Build the response from its source and rollout through existing editorial
+ * helpers; never copy the live authoring proof or an expected receipt. */
+async function syntheticCampaignCommit(source:Project,rollout:BrandCampaignRollout):Promise<Project>{
+  const preview=await previewBrandCampaign(source,rollout),project=structuredClone(source);
+  const design=project.production_design;
+  if(!design)throw new Error("Missing synthetic production design");
+  for(const row of preview.rows.filter(value=>value.changed)){
+    const heroIndex=design.heroes.findIndex(value=>value.id===row.hero_id);
+    const hero=design.heroes[heroIndex],scene=project.scenes.find(value=>value.id===row.scene_id);
+    if(!hero||!scene||hero.scene_id!==scene.id)throw new Error("Unbound original scene");
+    const config={...hero.config,accent:row.to_accent,wordmark:row.to_wordmark};
+    const baseline=await realizeProductHero(hero.id,config);
+    scene.nodes=mergeComponentNodes(hero.baseline,scene.nodes,baseline);scene.status="draft";
+    design.heroes[heroIndex]={id:hero.id,scene_id:hero.scene_id,component_version:1,config,baseline};
+    design.project_decisions!.push({
+      id:crypto.randomUUID(),scene_id:row.scene_id,author:rollout.reviewer_declaration,
+      decision:"Campaign "+rollout.campaign+": brand accent "+row.from_accent+" to "+row.to_accent
+        +", wordmark "+row.from_wordmark+" to "+row.to_wordmark+"; policy SHA-256 "+rollout.brand_sha256,
+      rationale:rollout.rationale,
+    });
+  }
+  project.revision++;project.updated_at=new Date().toISOString();
+  if(project.schema_version===1)project.schema_version=2;
+  for(const branch of project.branches)if(branch.id===project.active_branch)branch.head_revision=project.revision;
+  for(const review of project.reviews)if(review.status==="resolved"
+      &&review.anchor.branch_id===project.active_branch&&review.anchor.revision<project.revision){
+    review.status="needs_recheck";review.resolution=null;review.resolved_at=null;
+  }
+  return project;
+}
 
 async function syntheticBrand(page:Page,failSecond=false){
   const boot=structuredClone(fixtureBootstrap);
@@ -9,9 +42,11 @@ async function syntheticBrand(page:Page,failSecond=false){
   const project=boot.project;
   project.production_design=emptyProductionDesign();
   project.locks=[];project.reviews=[];project.scenes.forEach(s=>s.status="draft");
-  project.production_design.heroes=project.scenes.slice(0,2).map((scene,index)=>({
-    id:"00000000-0000-4000-8000-00000000007"+index,
-    scene_id:scene.id,component_version:1,baseline:[],config:defaultHeroConfig(),
+  project.production_design.heroes=await Promise.all(project.scenes.slice(0,2).map(async(scene,index)=>{
+    const id="00000000-0000-4000-8000-00000000007"+index,config=defaultHeroConfig();
+    const baseline=await realizeProductHero(id,config);
+    scene.nodes.push(...structuredClone(baseline));
+    return {id,scene_id:scene.id,component_version:1,baseline,config};
   }));
   project.production_design.brand_profile={
     id:"00000000-0000-4000-8000-000000000070",
@@ -20,10 +55,12 @@ async function syntheticBrand(page:Page,failSecond=false){
       {kind:"required_wordmark",id:"00000000-0000-4000-8000-000000000072",text:"Mw"},
     ]
   };
+  await page.exposeFunction("__SYNTHETIC_BRAND_CAMPAIGN__",syntheticCampaignCommit);
   await page.addInitScript(({boot,fail})=>{
     const rt=window as unknown as {
       __TAURI_INTERNALS__:{invoke:(n:string,a?:Record<string,unknown>)=>Promise<unknown>};
       __BRAND_CALLS__:Array<{name:string;kind?:string}>;
+      __SYNTHETIC_BRAND_CAMPAIGN__:(source:Project,rollout:BrandCampaignRollout)=>Promise<Project>;
     };
     let project=structuredClone(boot.project);
     const calls:Array<{name:string;kind?:string}>=[];
@@ -47,20 +84,8 @@ async function syntheticBrand(page:Page,failSecond=false){
           source.revision!==project.revision)throw new Error("Synthetic CAS refused stale brand source");
         if(source.change.type!=="apply_brand_campaign")throw new Error("Unexpected synthetic mutation");
         if(fail)throw new Error("Synthetic late style-lock failure: no partial project update");
-        const proposal=source.change.rollout;
-        for(const sceneId of proposal.scene_ids){
-          const hero=project.production_design!.heroes.find(h=>h.scene_id===sceneId);
-          if(!hero)throw new Error("Unbound original scene");
-          const from=hero.config.accent;
-          if(proposal.accent!==null)hero.config.accent=proposal.accent;
-          if(proposal.wordmark!==null)hero.config.wordmark=proposal.wordmark;
-          project.production_design!.project_decisions!.push({
-            id:crypto.randomUUID(),scene_id:sceneId,author:proposal.reviewer_declaration,
-            decision:"Campaign "+proposal.campaign+": brand accent "+from+" to "+hero.config.accent,
-            rationale:proposal.rationale,
-          });
-        }
-        project.revision++;
+        const saved=await rt.__SYNTHETIC_BRAND_CAMPAIGN__(structuredClone(project),source.change.rollout);
+        project=structuredClone(saved);
         return structuredClone(project);
       }
       calls.push({name});
@@ -127,5 +152,14 @@ test("failed synthetic late CAS never claims a successful campaign revision",asy
   const revision=await page.locator(".revision-chip").innerText();
   await page.getByRole("button",{name:"Apply owner-reviewed campaign via project CAS"}).click();
   await expect(page.locator(".revision-chip")).toHaveText(revision);
-  await expect(page.getByText(/Owner rollout requested. Confirm a new project revision/)).toBeVisible();
+  const recovery=page.getByRole("region",{name:"campaign draft recovery",exact:true});
+  await expect(recovery.getByRole("alert")).toContainText("Synthetic late style-lock failure: no partial project update");
+  await expect(recovery.getByRole("region",{name:"campaign uncertain outcome",exact:true})).toContainText("UNKNOWN");
+  await expect(page.getByLabel("Brand rollout campaign")).toHaveValue("Original launch batch");
+  await expect(page.getByRole("region",{name:"Proposed brand campaign changes"})).toContainText("2 component(s) would change");
+  await expect(page.getByRole("button",{name:"Apply owner-reviewed campaign via project CAS"})).toBeDisabled();
+  await expect(page.getByText(/Owner rollout requested\. Confirm a new project revision/)).toHaveCount(0);
+  await expect(recovery.getByText(/Saved campaign at r/)).toHaveCount(0);
+  const calls=await page.evaluate(()=>(window as unknown as {__BRAND_CALLS__:Array<{name:string}>}).__BRAND_CALLS__);
+  expect(calls.filter(call=>call.name==="apply_change")).toHaveLength(1);
 });

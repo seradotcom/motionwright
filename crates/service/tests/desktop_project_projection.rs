@@ -266,3 +266,111 @@ fn desktop_storage_failures_expose_no_sql_paths_or_document_text() {
         project_projection::head(&service, request(json!({"project_id": project.id}))).unwrap();
     assert_eq!(head.title, project.title);
 }
+
+#[test]
+fn desktop_graph_context_is_read_only_blocked_and_rejects_stale_source_after_peer_edit() {
+    use motionwright_domain::{GraphAvailability, GraphBlockReason, GraphSourceSnapshot};
+    use motionwright_service::SemanticGraphContextRequest;
+
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("desktop-graph-context.sqlite");
+    let project = fixture(1, 1);
+    let service = persist(&path, &project);
+    let journal = service.history(project.id, 0, 1024).unwrap();
+    let snapshot = GraphSourceSnapshot::from_project(&project);
+    let scene_id = project.scenes[0].id;
+    let profile_id = project.deliverables[0].id;
+    let wire = json!({
+        "source_snapshot": snapshot,
+        "scene_id": scene_id,
+        "variant_profile_ref": profile_id
+    });
+
+    let context = project_projection::semantic_graph_context(
+        &service,
+        request::<SemanticGraphContextRequest>(wire.clone()),
+    )
+    .unwrap();
+    assert_eq!(context.source_snapshot, snapshot);
+    assert_eq!(context.scene_id, scene_id);
+    assert_eq!(context.variant_profile_ref, profile_id);
+    assert_eq!(context.availability, GraphAvailability::Blocked);
+    assert_eq!(
+        context.blocking_reasons,
+        vec![
+            GraphBlockReason::GraphWriteUnavailable,
+            GraphBlockReason::NativeGraphProfileUnavailable,
+            GraphBlockReason::UnsupportedRendererGuardMissing,
+            GraphBlockReason::ProfileUnsupported,
+        ]
+    );
+    assert_eq!(
+        context.dependencies,
+        project.semantic_graph_dependencies().unwrap()
+    );
+    let response = serde_json::to_value(&context).unwrap();
+    assert_eq!(response["source_snapshot"], wire["source_snapshot"]);
+    assert_eq!(response["availability"], json!("blocked"));
+    assert_eq!(service.project(project.id).unwrap(), project);
+    assert_eq!(service.history(project.id, 0, 1024).unwrap(), journal);
+
+    let mut peer = Store::open(&path).unwrap();
+    let change = Change::RenameProject {
+        title: "Peer edit after Graph inspection".into(),
+    };
+    let edited = peer
+        .apply(
+            project.id,
+            &RevisionStamp::from(&project),
+            "desktop-graph-context-peer-edit",
+            &change,
+        )
+        .unwrap()
+        .project;
+    assert_eq!(edited.revision, project.revision + 1);
+    let edited_journal = service.history(project.id, 0, 1024).unwrap();
+    assert_eq!(edited_journal.len(), journal.len() + 1);
+    assert_eq!(edited_journal.last().unwrap().change, change);
+    assert!(
+        project_projection::semantic_graph_context(
+            &service,
+            request::<SemanticGraphContextRequest>(wire),
+        )
+        .is_err()
+    );
+    assert_eq!(service.project(project.id).unwrap(), edited);
+    assert_eq!(
+        service.history(project.id, 0, 1024).unwrap(),
+        edited_journal
+    );
+
+    drop(peer);
+    drop(service);
+    let reopened = StudioService::open(&path).unwrap();
+    let retained = reopened.project(project.id).unwrap();
+    assert_eq!(retained, edited);
+    let fresh_snapshot = GraphSourceSnapshot::from_project(&retained);
+    let fresh = project_projection::semantic_graph_context(
+        &reopened,
+        request::<SemanticGraphContextRequest>(json!({
+            "source_snapshot": fresh_snapshot,
+            "scene_id": scene_id,
+            "variant_profile_ref": profile_id
+        })),
+    )
+    .unwrap();
+    assert_eq!(fresh.source_snapshot, fresh_snapshot);
+    assert_eq!(fresh.scene_id, scene_id);
+    assert_eq!(fresh.variant_profile_ref, profile_id);
+    assert_eq!(fresh.availability, GraphAvailability::Blocked);
+    assert_eq!(fresh.blocking_reasons, context.blocking_reasons);
+    assert_eq!(
+        fresh.dependencies,
+        retained.semantic_graph_dependencies().unwrap()
+    );
+    assert_eq!(reopened.project(project.id).unwrap(), retained);
+    assert_eq!(
+        reopened.history(project.id, 0, 1024).unwrap(),
+        edited_journal
+    );
+}

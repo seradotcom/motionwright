@@ -1031,9 +1031,23 @@ def main()->None:
     native.add_argument("--current-project",type=Path,required=True)
     native.add_argument("--media-root",type=Path,action="append",required=True)
     native.add_argument("--output",type=Path,required=True)
+    alab=mode.add_parser("external-alab-readonly")
+    alab.add_argument("--request",type=Path,required=True)
+    alab.add_argument("--evidence-root",type=Path,required=True)
+    alab.add_argument("--ffprobe",type=Path,required=True)
     args=parser.parse_args()
     try:
-        if args.command=="export":
+        if args.command=="external-alab-readonly":
+            from alab_readonly import external_alab_readonly, Unknown
+            try:
+                result=external_alab_readonly(args.request,args.evidence_root,args.ffprobe)
+            except Unknown as error:
+                print("otio-alab-unknown-no-retry: "+str(error),file=sys.stderr)
+                raise SystemExit(3) from error
+            print(json.dumps(result,sort_keys=True))
+            raise SystemExit(0 if result["status"]=="READONLY_METADATA_ORIGINALS_RETAINED"
+                             else 3 if result["status"]=="UNKNOWN_NO_RETRY" else 2)
+        elif args.command=="export":
             insist(args.root.is_dir()and not args.root.is_symlink(),"Owner root missing")
             result=export_portable(args.root,read_json(args.root,args.request),args.output)
         elif args.command=="preview-kdenlive-cut":

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { assertAudioRecipeExtensions, canonicalAudioTargets, canonicalOriginalMix, originalMixEnvelopeKeys } from "./audioRecipeContract";
 import { sameProjectRevision } from "./projectMutation";
 import {
   canonicalRecipeField, decodeRecipeDraft, deliveryArchetypes, deliveryRoles, editRecipeField,
@@ -58,7 +59,7 @@ const ownerPart = (scope: string) => JSON.stringify((JSON.parse(scope) as unknow
 function identity(scope: string): [string, string, string, string, RecipeGroup] {
   const value: unknown = JSON.parse(scope);
   if (!Array.isArray(value) || value.length !== 5 || value.slice(0, 4).some(part => typeof part !== "string" || !part)
-    || !uuid(value[3]) || !["film", "mix"].includes(String(value[4]))) throw new Error("Recipe author input has an invalid owner identity.");
+    || !uuid(value[3]) || !["film", "mix", "targets"].includes(String(value[4]))) throw new Error("Recipe author input has an invalid owner identity.");
   return value as [string, string, string, string, RecipeGroup];
 }
 function checkOwner(state: RecipeAuthorState, project: Project): string {
@@ -70,11 +71,13 @@ function checkOwner(state: RecipeAuthorState, project: Project): string {
 }
 /** Stable semantic comparison only; this string is never used as a command. */
 export function recipeFingerprint(recipe: DeliveryRecipe | null): string {
-  if (!recipe || (!recipe.scene_intents.length && !recipe.original_mix)) return "null";
+  if (!recipe) return "null";
+  const targets = canonicalAudioTargets(recipe);
+  if (!recipe.scene_intents.length && !recipe.original_mix && !Object.hasOwn(targets, "audio_targets")) return "null";
   return JSON.stringify({ schema: recipe.schema,
     scene_intents: recipe.scene_intents.map(intent => ({ scene_id: intent.scene_id, role: intent.role, archetype: intent.archetype }))
       .sort((a, b) => a.scene_id.localeCompare(b.scene_id)),
-    original_mix: recipe.original_mix ? Object.fromEntries(Object.entries(recipe.original_mix).sort(([a], [b]) => a.localeCompare(b))) : null });
+    original_mix: canonicalOriginalMix(recipe.original_mix), ...targets });
 }
 /** History payloads are untrusted JSON. Check the current wire shape and its
  * existing domain bounds, but not membership in today's Project: a later event
@@ -82,7 +85,7 @@ export function recipeFingerprint(recipe: DeliveryRecipe | null): string {
  */
 export function assertRecipeHistoryPayload(value: unknown): asserts value is DeliveryRecipe | null {
   if (value === null) return;
-  if (!record(value) || !exact(value, ["schema", "scene_intents", "original_mix"])
+  if (!record(value) || !exact(value, ["schema", "scene_intents", "original_mix"], ["audio_targets"])
     || value.schema !== "motionwright.delivery-recipe/1" || !Array.isArray(value.scene_intents)
     || value.scene_intents.length > 4096) throw new Error("The saved recipe history contains an invalid recipe payload.");
   const scenes = new Set<string>();
@@ -95,11 +98,13 @@ export function assertRecipeHistoryPayload(value: unknown): asserts value is Del
       throw new Error("The saved recipe history contains an invalid scene intent.");
     scenes.add(sceneId.toLowerCase());
   }
+  assertAudioRecipeExtensions({ original_mix: value.original_mix,
+    ...(Object.hasOwn(value, "audio_targets") ? { audio_targets: value.audio_targets } : {}) });
   if (value.original_mix === null) return;
   const mix = value.original_mix;
   // Keep persisted history aligned with DeliveryRecipe and its validator.
   // Unknown fields require a shared wire contract before they can be accepted.
-  if (!record(mix) || !exact(mix, ["music_asset_id", "sfx_asset_id", "sfx_gain_db", "duck_attenuation_db", "duck_attack_samples", "duck_release_samples"]))
+  if (!record(mix) || !exact(mix, ["music_asset_id", "sfx_asset_id", "sfx_gain_db", "duck_attenuation_db", "duck_attack_samples", "duck_release_samples"], originalMixEnvelopeKeys))
     throw new Error("The saved recipe history contains an invalid original mix.");
   for (const key of ["music_asset_id", "sfx_asset_id"]) if (mix[key] !== null && !uuid(mix[key]))
     throw new Error("The saved recipe history contains an invalid audio source identity.");
@@ -124,7 +129,7 @@ export function editRecipeAuthorState(state: RecipeAuthorState, field: string, r
   const input = editRecipeField(state.input, field, raw, current), sequence = state.sequence + 1;
   // During an own-copy read failure even a return to the saved value is a later
   // decision. Keep its raw value before another Project observation can change it.
-  if (retainDecision) input.edits[field] = { base: input.edits[field]?.base ?? current[field] ?? "", value: raw, intent: true };
+  if (retainDecision || state.input.group === "targets") input.edits[field] = { base: input.edits[field]?.base ?? current[field] ?? "", value: raw, intent: true };
   if (!Number.isSafeInteger(sequence)) throw new Error("The recipe edit sequence is exhausted. Keep an author copy before continuing.");
   return { ...state, input, sequence, fieldSequences: { ...state.fieldSequences, [field]: sequence } };
 }
@@ -154,6 +159,49 @@ export function recoverRecipeAuthorState(recovered: RecipeAuthorState, project: 
     }
   }
   return observeRecipeAuthorState(next, project);
+}
+/** Session-only read custody; it is not part of the persisted author schema. */
+export interface RecipeReadObservation {
+  observed: boolean;
+  pointer: string | null;
+  copy: { key: string; raw: string | null | undefined } | null;
+}
+export function readRecipeOwnRecovery(storage: Pick<Storage, "getItem">, pointers: Pick<Storage, "getItem">,
+  current: RecipeAuthorState, project: Project, observation: RecipeReadObservation, allowLegacy = false): RecipeAuthorState {
+  checkOwner(current, project);
+  const scope = current.input.scope, pointerKey = recipePointerKey(scope), pointer = pointers.getItem(pointerKey);
+  if (observation.observed && pointer !== observation.pointer) throw new Error("This tab's recipe pointer changed. Earlier input was kept; review its retained copies before continuing.");
+  // Anchor the successful pointer read even if its copy cannot yet be read.
+  observation.observed = true; observation.pointer = pointer;
+  const source = observation.copy, prefix = RECIPE_DRAFT_STORAGE_PREFIX + scope + ":", legacyKey = RECIPE_DRAFT_STORAGE_PREFIX + "writer";
+  let writer = pointer, legacyRead = false, legacyWriter: string | null = null;
+  if (writer === null && source) {
+    if (!source.key.startsWith(prefix)) throw new Error("The earlier recipe copy belongs to another scope.");
+    writer = source.key.slice(prefix.length);
+  } else if (writer === null && allowLegacy) {
+    legacyRead = true; legacyWriter = pointers.getItem(legacyKey); writer = legacyWriter;
+  }
+  const recheckPointer = () => {
+    if (pointers.getItem(pointerKey) !== pointer || (legacyRead && pointers.getItem(legacyKey) !== legacyWriter))
+      throw new Error("The earlier recipe pointer changed during Retry. Its input was kept.");
+  };
+  if (writer === null) { recheckPointer(); return current; }
+  const key = recipeDraftStorageKey(scope, writer);
+  if (source && source.key !== key) throw new Error("The earlier recipe pointer no longer identifies the retained copy.");
+  observation.copy = { key, raw: undefined };
+  const raw = storage.getItem(key); observation.copy.raw = raw;
+  if (raw === null) {
+    // Preserve the existing legacy global-writer behavior for a clean scope.
+    if (pointer === null && source === null && legacyRead) {
+      if (storage.getItem(key) !== null) throw new Error("The earlier recipe copy changed during Retry. Its bytes were kept.");
+      recheckPointer(); observation.copy = null; return current;
+    }
+    throw new Error("This tab's recipe pointer still references a missing copy.");
+  }
+  const recovered = decodeRecipeRecovery(raw, scope, current.input.group, writer);
+  const next = recoverRecipeAuthorState(recovered, project, current);
+  if (storage.getItem(key) !== raw) throw new Error("The earlier recipe copy changed during Retry. Its bytes were kept.");
+  recheckPointer(); return next;
 }
 export function prepareRecipeSubmission(state: RecipeAuthorState, project: Project, id: string): {
   state: RecipeAuthorState; change: Extract<Change, { type: "set_delivery_recipe" }>;
@@ -386,6 +434,8 @@ export function retainReviewedRecipeIntent(storage: StorageLike, session: Pick<S
 type RecipeSession = {
   state: RecipeAuthorState;
   custody: RecipeCustody;
+  pointerObserved: boolean;
+  readBlocked: boolean;
   inFlight: boolean;
   backupError: string | null;
   copyWarning: string | null;
@@ -394,7 +444,7 @@ type RecipeSession = {
   copies: RecipeCopy[];
   limited: boolean;
   /** undefined raw means storage could not be read; deletion must wait for a fresh read. */
-  unreadableOwn: { key: string; raw: string | null | undefined } | null;
+  unreadableOwn: RecipeReadObservation["copy"];
   listeners: Set<() => void>;
   review: RecipeOutcomeReview | null;
   reviewing: boolean;
@@ -425,10 +475,10 @@ function refreshCopies(session: RecipeSession) {
 function getSession(project: Project, profileId: string, group: RecipeGroup): RecipeSession {
   const scope = recipeDraftScope(project, profileId, group), existing = sessions.get(scope);
   if (existing) return existing;
-  let pointer: string | null = null, recovered: RecipeAuthorState | null = null;
+  let pointer: string | null = null, pointerObserved = false, recovered: RecipeAuthorState | null = null;
   let backupError: string | null = null, unreadableOwn: RecipeSession["unreadableOwn"] = null;
   try {
-    pointer = window.sessionStorage.getItem(recipePointerKey(scope));
+    pointer = window.sessionStorage.getItem(recipePointerKey(scope)); pointerObserved = true;
     const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
     const ownReload = navigation?.type === "reload" && !window.opener;
     const legacy = ownReload && pointer === null ? window.sessionStorage.getItem(RECIPE_DRAFT_STORAGE_PREFIX + "writer") : null;
@@ -441,13 +491,19 @@ function getSession(project: Project, profileId: string, group: RecipeGroup): Re
         if (raw === null) {
           // A legacy global pointer often has no draft for a clean scope.
           if (pointer !== null) throw new Error("This tab's recipe pointer references a missing copy.");
-        } else recovered = decodeRecipeRecovery(raw, scope, group, recoveredWriter);
+        } else {
+          const decoded = decodeRecipeRecovery(raw, scope, group, recoveredWriter);
+          if (window.localStorage.getItem(key) !== raw || window.sessionStorage.getItem(recipePointerKey(scope)) !== pointer)
+            throw new Error("The earlier recipe copy or pointer changed while it was being read.");
+          recovered = decoded;
+        }
       } catch (failure) { unreadableOwn = { key, raw }; throw failure; }
     }
   } catch (failure) { backupError = explain(failure); }
   const session: RecipeSession = {
     state: recovered ? recoverRecipeAuthorState(recovered, project) : createRecipeAuthorState(project, profileId, group),
     custody: { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: pointer },
+    pointerObserved, readBlocked: backupError !== null,
     inFlight: false, backupError, copyWarning: null, error: null,
     message: recovered ? (recipeHasWork(recovered)
       ? "Recovered this tab's recipe input. An uncertain save still requires a current saved-project and history review."
@@ -462,6 +518,7 @@ function forkWriter(session: RecipeSession) {
 }
 function backup(session: RecipeSession): boolean {
   try {
+    if (session.readBlocked) throw new Error("Retry reading this tab's earlier recipe pointer and copy before writing another checkpoint; an uncertain attempt may still be retained there.");
     if (session.unreadableOwn) throw new Error("The earlier unreadable recipe copy must be reviewed or explicitly discarded before writing a new checkpoint.");
     if (session.custody.expectedRaw !== null) {
       const before = decodeRecipeRecovery(session.custody.expectedRaw, session.state.input.scope, session.state.input.group, session.custody.writerId);
@@ -513,7 +570,7 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
     different = recipeFingerprint(proposed) !== recipeFingerprint(canonical);
   } catch (failure) { validationError = explain(failure); }
   const canSave = dirty && different && !busy && !locked && !sourceBehind && !unconfirmed
-    && !session.backupError && !session.unreadableOwn && !validationError && conflicts.length === 0;
+    && !session.backupError && !session.readBlocked && !session.unreadableOwn && !validationError && conflicts.length === 0;
   const currentSession = () => mounted.current && live.current.session === session;
 
   useEffect(() => {
@@ -539,7 +596,7 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
     if (!currentSession() || sourceBehind || locked) return;
     try {
       const saved = recipeFields(savedDeliveryRecipe(live.current.project, profileId), group);
-      const retainDecision = session.unreadableOwn !== null;
+      const retainDecision = session.readBlocked || session.unreadableOwn !== null;
       let next = editRecipeAuthorState(observedState(session, live.current.project), field, raw, saved, retainDecision);
       if (group === "mix" && field !== "enabled") next = editRecipeAuthorState(next, "enabled", "true", saved, retainDecision);
       session.error = null; session.message = null; replace(session, next);
@@ -555,7 +612,7 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
     } catch (failure) { session.error = explain(failure); notify(session); }
   };
   const save = async () => {
-    if (!currentSession() || projectBusy(live.current.project) || locked || session.backupError || session.unreadableOwn || recipeUnconfirmed(session.state)) return;
+    if (!currentSession() || projectBusy(live.current.project) || locked || session.backupError || session.readBlocked || session.unreadableOwn || recipeUnconfirmed(session.state)) return;
     const id = crypto.randomUUID();
     let change: Extract<Change, { type: "set_delivery_recipe" }>;
     try {
@@ -615,7 +672,7 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
     } catch (failure) { session.error = explain(failure); notify(session); }
   };
   const recoverCopy = (key: string) => {
-    if (!currentSession() || projectBusy(live.current.project) || sourceBehind || session.unreadableOwn || recipeHasWork(session.state)) return;
+    if (!currentSession() || projectBusy(live.current.project) || sourceBehind || session.readBlocked || session.unreadableOwn || recipeHasWork(session.state)) return;
     try {
       const copy = session.copies.find(copy => copy.key === key);
       if (!copy?.state || window.localStorage.getItem(key) !== copy.raw) throw new Error("That recovery copy changed. Refresh it before choosing Recover.");
@@ -629,6 +686,7 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
   const discardCopy = (key: string) => {
     if (!currentSession() || projectBusy(live.current.project)) return;
     try {
+      if (session.readBlocked) throw new Error("Read this tab's earlier recipe pointer with Retry before discarding a separate copy.");
       const copy = session.copies.find(copy => copy.key === key);
       if (!copy || key === recipeDraftStorageKey(scope, session.custody.writerId) || window.localStorage.getItem(key) !== copy.raw)
         throw new Error("That separate copy changed. Refresh it before explicitly discarding it.");
@@ -644,33 +702,37 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
     try {
       const copy = session.unreadableOwn;
       if (copy.raw === undefined) throw new Error("Read this copy with Retry before deciding whether to discard it.");
+      if (!session.pointerObserved || window.sessionStorage.getItem(recipePointerKey(scope)) !== session.custody.expectedPointer)
+        throw new Error("The earlier recipe pointer changed. Retry its read before discarding the copy.");
       if (window.localStorage.getItem(copy.key) !== copy.raw) throw new Error("The unreadable copy changed. Retry the recovery read before discarding it.");
       window.localStorage.removeItem(copy.key);
       if (window.localStorage.getItem(copy.key) !== null) throw new Error("Removal of the unreadable copy was not confirmed.");
-      session.unreadableOwn = null; session.error = null;
+      session.unreadableOwn = null; session.readBlocked = false; session.error = null;
       backup(session); notify(session);
     } catch (failure) { session.error = explain(failure); notify(session); }
   };
   const retryBackup = () => {
     if (!currentSession() || projectBusy(live.current.project)) return;
-    if (session.unreadableOwn) {
+    if (session.readBlocked || session.unreadableOwn) {
       try {
-        const copy = session.unreadableOwn, raw = window.localStorage.getItem(copy.key);
-        session.unreadableOwn = { ...copy, raw };
-        if (raw === null) throw new Error("This tab's recipe pointer still references a missing copy.");
-        const writerId = copy.key.slice((RECIPE_DRAFT_STORAGE_PREFIX + scope + ":").length);
-        const recovered = decodeRecipeRecovery(raw, scope, group, writerId);
-        const next = recoverRecipeAuthorState(recovered, live.current.project, session.state);
-        if (window.localStorage.getItem(copy.key) !== raw) throw new Error("The earlier recipe copy changed during Retry. Its bytes were kept.");
-        session.unreadableOwn = null; forkWriter(session); session.error = null;
-        session.message = "Recovered the earlier recipe copy and retained typing from the read failure. Its original bytes remain separate; any uncertain save still requires review.";
+        const observation: RecipeReadObservation = { observed: session.pointerObserved, pointer: session.custody.expectedPointer, copy: session.unreadableOwn };
+        const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+        let next: RecipeAuthorState;
+        try { next = readRecipeOwnRecovery(window.localStorage, window.sessionStorage, session.state, live.current.project,
+          observation, navigation?.type === "reload" && !window.opener); }
+        finally { session.pointerObserved = observation.observed; session.custody.expectedPointer = observation.pointer; session.unreadableOwn = observation.copy; }
+        const hadCopy = observation.copy !== null;
+        forkWriter(session); session.unreadableOwn = null; session.readBlocked = false; session.error = null;
+        session.message = hadCopy
+          ? "Recovered the earlier recipe copy and retained typing from the read failure. Its original bytes remain separate; any uncertain save still requires review."
+          : "Confirmed the empty recipe pointer and retained current typing in a separate copy. Save any recipe change explicitly.";
         replace(session, next); return;
       } catch (failure) { session.backupError = explain(failure); notify(session); return; }
     }
     backup(session); notify(session);
   };
   const clearGroup = () => {
-    if (!currentSession() || projectBusy(live.current.project) || locked || sourceBehind || session.unreadableOwn || recipeHasWork(session.state)) return;
+    if (!currentSession() || projectBusy(live.current.project) || locked || sourceBehind || session.readBlocked || session.unreadableOwn || recipeHasWork(session.state)) return;
     try {
       let next = createRecipeAuthorState(live.current.project, profileId, group);
       const saved = recipeFields(savedDeliveryRecipe(live.current.project, profileId), group), empty = recipeFields(null, group);
@@ -699,7 +761,7 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
   return {
     values, savedValues: current, edits: visible.input.edits, conflicts, dirty, awaiting: visible.pending !== null,
     pending: busy, locked, sourceBehind, error, message: session.message, canSave,
-    recoveryBlocked: session.backupError !== null || session.unreadableOwn !== null,
+    recoveryBlocked: session.backupError !== null || session.readBlocked || session.unreadableOwn !== null,
     unreadableCopy: session.unreadableOwn !== null,
     unconfirmed, notSent: visible.pending?.outcome === "NOT_SENT", reviewing: session.reviewing,
     review: recipeOutcomeMatches(visible, project, session.review) ? session.review : null,

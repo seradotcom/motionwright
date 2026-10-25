@@ -22,7 +22,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
 sys.path.insert(0, str(ROOT / "tooling/tests"))
-from test_storage_schema_contract import cohort as storage_cohort_fixture
+from test_storage_schema_contract import add_schema_five_cas, cohort as storage_cohort_fixture
 MODULE = ROOT / "tooling" / "windows_cold_start.py"
 spec = importlib.util.spec_from_file_location("windows_cold_start", MODULE)
 assert spec and spec.loader
@@ -42,6 +42,12 @@ def schema_four_project(target):
           result_json TEXT,created_at TEXT,
           apply_binding_version INTEGER NOT NULL DEFAULT 0 CHECK(apply_binding_version IN (0,1)),
           apply_binding_json TEXT)""")
+    return source
+
+def schema_five_project(target):
+    source = schema_four_project(target)
+    with closing(sqlite3.connect(target)) as connection, connection:
+        add_schema_five_cas(connection)
     return source
 
 def project_db(target: Path, *, title: str = TITLE, duplicate: bool = False,
@@ -739,6 +745,82 @@ class WindowsCandidateUnitTests(unittest.TestCase):
             self.assertEqual(launch.call_count, 1)
 
 
+
+    def test_explicit_five_reads_real_sqlite_and_keeps_both_historical_contracts(self):
+        database = self.root / "motionwright.sqlite3"
+        source = schema_five_project(database)
+        original = database.read_bytes()
+        selected = storage_cohort_fixture(5)
+        observed = windows.read_project_snapshot(database, storage_cohort=selected)
+        self.assertEqual(observed["project_id"], source["id"])
+        self.assertEqual(source["schema_version"], 2)
+        self.assertEqual(windows.expected_storage_schema(selected, windows.CURRENT_FIRST_USE_CONTRACT), 5)
+        with self.assertRaises(windows.ColdStartError):
+            windows.expected_storage_schema(selected, windows.LEGACY_FIRST_USE_CONTRACT)
+        with self.assertRaises(windows.ColdStartError):
+            windows.read_project_snapshot(database)
+        self.assertEqual(windows.expected_storage_schema(None, windows.CURRENT_FIRST_USE_CONTRACT), 3)
+        self.assertEqual(windows.expected_storage_schema(None, windows.LEGACY_FIRST_USE_CONTRACT), 2)
+        self.assertEqual(database.read_bytes(), original)
+
+    def test_five_cas_layout_is_required_by_snapshot_and_preaction_readiness(self):
+        database = self.root / "motionwright.sqlite3"
+        schema_five_project(database)
+        selected = storage_cohort_fixture(5)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DELETE FROM projects")
+        self.assertTrue(windows._empty_library_ready(database, storage_cohort=selected))
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DROP TABLE cas_import_commits")
+        original = database.read_bytes()
+        self.assertFalse(windows._empty_library_ready(database, storage_cohort=selected))
+        with self.assertRaisesRegex(windows.ColdStartError, "storage_cas_objects_differ"):
+            windows.read_project_snapshot(database, storage_cohort=selected)
+        self.assertEqual(database.read_bytes(), original)
+
+    def test_five_boot_threads_the_cohort_to_the_actual_snapshot_reader(self):
+        database = self.root / "motionwright.sqlite3"
+        source = schema_five_project(database)
+        with mocked_boot() as (process, launch, create), \
+             patch.object(windows, "known_databases", return_value=[database]):
+            observed, repeated, elapsed = windows.boot_once(
+                self.root / "unused.exe", {}, [self.root], self.root / "boot-five.log",
+                storage_cohort=storage_cohort_fixture(5))
+        self.assertEqual(observed["project_id"], source["id"])
+        self.assertEqual(repeated, database)
+        create.assert_not_called()
+        self.assertEqual(launch.call_count, 1)
+
+    def test_five_missing_cas_prevents_create_during_bounded_boot(self):
+        database = self.root / "motionwright.sqlite3"
+        schema_five_project(database)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DELETE FROM projects")
+            connection.execute("DROP TABLE cas_import_commits")
+        with mocked_boot() as (process, launch, create), \
+             patch.object(windows, "known_databases", return_value=[database]):
+            with self.assertRaisesRegex(windows.ColdStartError, "deadline"):
+                windows.boot_once(
+                    self.root / "unused.exe", {}, [self.root], self.root / "missing-five-cas.log",
+                    seconds=3, storage_cohort=storage_cohort_fixture(5))
+        create.assert_not_called()
+        self.assertEqual(launch.call_count, 1)
+
+    def test_uncertain_create_under_five_keeps_the_original_and_never_replays(self):
+        database = self.root / "motionwright.sqlite3"
+        schema_five_project(database)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DELETE FROM projects")
+        original = windows.ColdStartError("synthetic original create UNKNOWN")
+        with mocked_boot(create_effect=original) as (process, launch, create), \
+             patch.object(windows, "known_databases", return_value=[database]):
+            with self.assertRaises(windows.ColdStartError) as caught:
+                windows.boot_once(
+                    self.root / "unused.exe", {}, [self.root], self.root / "unknown-five.log",
+                    storage_cohort=storage_cohort_fixture(5))
+        self.assertIs(caught.exception, original)
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(launch.call_count, 1)
 
     def test_postlaunch_source_change_blocks_positive_publication(self):
         executable, receipt, source = candidate_fixture(self.root)

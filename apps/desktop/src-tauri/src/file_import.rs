@@ -4,7 +4,7 @@
 //! identity and uses the existing one-time local import grant. Recovery reads a
 //! historical receipt; callers must fetch the current Project separately.
 use super::effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
-use motionwright_domain::{Project, RevisionStamp};
+use motionwright_domain::{LockKind, NativeCapsuleSourceSpec, Project, RevisionStamp};
 use motionwright_service::{FileImportIntent, StudioService, VoiceImportMetadata};
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
@@ -28,6 +28,18 @@ pub(crate) struct FileImportPrepareRequest {
     pub name: Option<String>,
     pub media_type: Option<String>,
     pub label: Option<String>,
+}
+
+/// Qualified native source metadata. This is not a renderer/provider request.
+/// Both this DTO and the domain's seven-field spec deny unknown fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NativeCapsuleSourcePrepareRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub path: String,
+    pub spec: NativeCapsuleSourceSpec,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -168,6 +180,11 @@ fn validate_intent(intent: &FileImportIntent) -> Result<(), FileImportError> {
         | FileImportIntent::Voice {
             name, media_type, ..
         } => (name, media_type),
+        FileImportIntent::NativeCapsuleSource { .. } => {
+            return Err(FileImportError::Invalid(
+                "Native source imports require their qualified source-save boundary.".into(),
+            ));
+        }
     };
     // These are the domain's existing metadata bounds. Do not trim again:
     // the existing filename/stem fallbacks can legitimately contain spaces.
@@ -348,6 +365,11 @@ fn dispatch_file_import(
                 label: label.clone(),
             },
         ),
+        FileImportIntent::NativeCapsuleSource { .. } => {
+            return Err(FileImportError::Invalid(
+                "Native source imports require their qualified source-save boundary.".into(),
+            ));
+        }
     }
     .map_err(storage_error)?;
     Ok(FileImportReceipt {
@@ -405,12 +427,252 @@ pub(crate) fn recover_file_import(
     }))
 }
 
+// The existing domain exposes bind_asset only after real source capture;
+// design_text and Asset::validate are private. Reuse the existing name/MIME
+// validation and mirror only the domain's metadata-only design_text bounds.
+// Do not construct a pretend Asset, source digest, Change or grant to validate.
+fn validate_native_source_text(
+    value: &str,
+    max_bytes: usize,
+    label: &str,
+) -> Result<(), FileImportError> {
+    if value.trim().is_empty()
+        || value.len() > max_bytes
+        || value
+            .chars()
+            .any(|value| value.is_control() && value != '\n')
+    {
+        return Err(FileImportError::Invalid(format!(
+            "Invalid native source {label}."
+        )));
+    }
+    Ok(())
+}
+
+fn validate_native_source_spec(spec: &NativeCapsuleSourceSpec) -> Result<(), FileImportError> {
+    validate_intent(&FileImportIntent::Asset {
+        name: spec.name.clone(),
+        media_type: spec.media_type.clone(),
+    })?;
+    if spec.capsule_id.is_nil() || spec.scene_id.is_nil() {
+        return Err(FileImportError::Invalid(
+            "Native source imports require nonnil capsule and scene identities.".into(),
+        ));
+    }
+    validate_native_source_text(&spec.label, 256, "capsule label")?;
+    validate_native_source_text(&spec.native_editor_hint, 256, "editor hint")?;
+    if spec.editable_parameters.len() > 64 {
+        return Err(FileImportError::Invalid(
+            "Native source editable parameters exceed 64 entries.".into(),
+        ));
+    }
+    for parameter in &spec.editable_parameters {
+        validate_native_source_text(parameter, 2000, "editable parameter")?;
+    }
+    Ok(())
+}
+
+fn qualified_native_source_spec(
+    intent: &FileImportIntent,
+) -> Result<&NativeCapsuleSourceSpec, FileImportError> {
+    let FileImportIntent::NativeCapsuleSource { spec } = intent else {
+        return Err(FileImportError::Invalid(
+            "The native source command requires its qualified source-save intent.".into(),
+        ));
+    };
+    validate_native_source_spec(spec)?;
+    Ok(spec)
+}
+
+// Advisory dispatch preflight, without a synthetic Asset/Change. The real
+// domain/service still validates the captured binding and all project guards.
+// Preparation and historical recovery deliberately do not call this function.
+fn validate_native_source_target(
+    project: &Project,
+    spec: &NativeCapsuleSourceSpec,
+) -> Result<(), FileImportError> {
+    if project
+        .scenes
+        .iter()
+        .filter(|scene| scene.id == spec.scene_id)
+        .count()
+        != 1
+    {
+        return Err(FileImportError::Invalid(
+            "The native source destination scene is missing or ambiguous.".into(),
+        ));
+    }
+    let mut capsules = project
+        .production_design
+        .capsules
+        .iter()
+        .filter(|capsule| capsule.id == spec.capsule_id);
+    let existing = capsules.next();
+    if capsules.next().is_some() {
+        return Err(FileImportError::Invalid(
+            "The native capsule identity is ambiguous.".into(),
+        ));
+    }
+    if existing.is_none() && project.production_design.capsules.len() >= 256 {
+        return Err(FileImportError::Invalid(
+            "Native capsule budget exceeded.".into(),
+        ));
+    }
+    let mut resources = vec![project.resource_key(), format!("scene:{}", spec.scene_id)];
+    if let Some(existing) = existing {
+        // Moving a stable capsule to a different scene is a supported domain
+        // operation. Both old and new scene content locks remain applicable.
+        resources.push(format!("scene:{}", existing.scene_id));
+    }
+    if project
+        .locks
+        .iter()
+        .any(|lock| lock.kind == LockKind::Content && resources.contains(&lock.resource))
+    {
+        return Err(FileImportError::Invalid(
+            "Native source content is locked in the project or an affected scene.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_native_source_result_revision(
+    requested: u64,
+    previous: u64,
+    returned: u64,
+) -> Result<(), FileImportError> {
+    if previous != requested || requested.checked_add(1) != Some(returned) {
+        return Err(FileImportError::Invalid(
+            "The native source result does not match the original retained revision.".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_native_capsule_source_file(
+    service: &StudioService,
+    request: NativeCapsuleSourcePrepareRequest,
+) -> Result<PreparedFileImport, FileImportError> {
+    current_project(
+        service,
+        request.project_id,
+        request.generation,
+        Some(request.revision),
+    )?;
+    validate_native_source_spec(&request.spec)?;
+    // Lexical PathBuf/is_absolute validation only: never stat, canonicalize,
+    // open source bytes, inspect CAS, consume a grant or preflight content locks.
+    absolute_asset_path(&request.path)?;
+    Ok(PreparedFileImport {
+        schema: "motionwright.file-import-preparation/1",
+        project_id: request.project_id,
+        generation: request.generation,
+        revision: request.revision,
+        path: request.path.trim().to_owned(),
+        intent: FileImportIntent::NativeCapsuleSource { spec: request.spec },
+    })
+}
+
+pub(crate) fn import_native_capsule_source_file(
+    service: &StudioService,
+    grants: &EffectGrantRegistry,
+    request: FileImportDispatchRequest,
+) -> Result<FileImportReceipt, FileImportError> {
+    validate_request_id(&request.request_id)?;
+    let project = current_project(
+        service,
+        request.project_id,
+        request.generation,
+        Some(request.revision),
+    )?;
+    let spec = qualified_native_source_spec(&request.intent)?;
+    validate_native_source_target(&project, spec)?;
+    let source = absolute_asset_path(&request.path)?;
+    grants
+        .consume(
+            request.effect_grant,
+            EffectKind::ImportLocal,
+            EffectScope::project(request.project_id, request.generation, request.revision),
+            request.path.trim(),
+        )
+        .map_err(FileImportError::Invalid)?;
+    // This sole service operation captures immutable bytes and commits asset,
+    // capsule, event, revision and original request receipt atomically. There is
+    // no asset-import/upsert fallback and no renderer/provider authority here.
+    let outcome = service
+        .import_native_capsule_source_file(
+            request.project_id,
+            &project.stamp(),
+            &request.request_id,
+            &source,
+            spec.clone(),
+        )
+        .map_err(storage_error)?;
+    validate_native_source_result_revision(
+        request.revision,
+        outcome.previous_revision,
+        outcome.project.revision,
+    )?;
+    Ok(FileImportReceipt {
+        schema: "motionwright.file-import-receipt/1",
+        request_id: request.request_id,
+        intent: request.intent,
+        project: outcome.project,
+        replayed: outcome.replayed,
+    })
+}
+
+pub(crate) fn recover_native_capsule_source_file(
+    service: &StudioService,
+    request: FileImportRecoveryRequest,
+) -> Result<Option<FileImportReceipt>, FileImportError> {
+    validate_request_id(&request.request_id)?;
+    qualified_native_source_spec(&request.intent)?;
+    let current = current_project(service, request.project_id, request.generation, None)?;
+    let original = RevisionStamp {
+        resource: current.resource_key(),
+        generation: request.generation,
+        revision: request.revision,
+    };
+    // No grant/path/scene/capsule/lock/CAS lookup: this is the original receipt,
+    // whose target can now be absent from the current branch. None is not retry
+    // permission. The frontend fetches current Project separately.
+    let outcome = service
+        .recover_file_import(
+            request.project_id,
+            &original,
+            &request.request_id,
+            &request.intent,
+        )
+        .map_err(storage_error)?;
+    outcome
+        .map(|outcome| {
+            validate_native_source_result_revision(
+                request.revision,
+                outcome.previous_revision,
+                outcome.project.revision,
+            )?;
+            Ok(FileImportReceipt {
+                schema: "motionwright.file-import-receipt/1",
+                request_id: request.request_id,
+                intent: request.intent,
+                project: outcome.project,
+                replayed: outcome.replayed,
+            })
+        })
+        .transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use motionwright_domain::{Change, RationalTime};
     use serde_json::{Value, json};
-    use std::{collections::BTreeMap, fs, path::Path};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        fs,
+        path::Path,
+    };
 
     struct Files {
         directory: tempfile::TempDir,
@@ -492,23 +754,52 @@ mod tests {
         events: Value,
         payload_sha256: String,
         blobs: BTreeMap<PathBuf, Vec<u8>>,
+        directories: BTreeSet<PathBuf>,
+        control: BTreeMap<PathBuf, Option<Vec<u8>>>,
     }
 
-    fn blob_files(root: &Path, relative: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
+    fn blob_files(
+        root: &Path,
+        relative: &Path,
+        output: &mut BTreeMap<PathBuf, Vec<u8>>,
+        directories: &mut BTreeSet<PathBuf>,
+    ) {
         let path = root.join(relative);
-        let entries = match fs::read_dir(&path) {
-            Ok(entries) => entries,
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
             Err(error) => panic!("cannot inspect owned test CAS: {error}"),
         };
-        for entry in entries {
+        assert!(metadata.is_dir());
+        assert!(!metadata.file_type().is_symlink());
+        directories.insert(relative.to_path_buf());
+        for entry in fs::read_dir(&path).unwrap() {
             let entry = entry.unwrap();
             let relative = relative.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                blob_files(root, &relative, output);
+            let kind = entry.file_type().unwrap();
+            assert!(!kind.is_symlink());
+            if kind.is_dir() {
+                blob_files(root, &relative, output, directories);
             } else {
+                assert!(kind.is_file());
                 output.insert(relative, fs::read(entry.path()).unwrap());
             }
+        }
+    }
+
+    fn control_tree(root: &Path, relative: &Path, output: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+        let path = root.join(relative);
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        if metadata.is_dir() {
+            output.insert(relative.to_path_buf(), None);
+            for entry in fs::read_dir(&path).unwrap() {
+                let entry = entry.unwrap();
+                control_tree(root, &relative.join(entry.file_name()), output);
+            }
+        } else {
+            assert!(metadata.is_file());
+            output.insert(relative.to_path_buf(), Some(fs::read(&path).unwrap()));
         }
     }
 
@@ -516,12 +807,27 @@ mod tests {
         let backup = service.export_project(project_id).unwrap();
         let root = service.store().lock().blob_root().to_path_buf();
         let mut blobs = BTreeMap::new();
-        blob_files(&root, Path::new(""), &mut blobs);
+        let mut directories = BTreeSet::new();
+        blob_files(&root, Path::new(""), &mut blobs, &mut directories);
+        let anchor: Value =
+            serde_json::from_slice(&fs::read(root.join(".motionwright-cas-root-v1.json")).unwrap())
+                .unwrap();
+        let root_id = Uuid::parse_str(anchor["root_id"].as_str().unwrap()).unwrap();
+        let control_root = PathBuf::from(anchor["control"].as_str().unwrap());
+        let parent = fs::canonicalize(root.parent().unwrap()).unwrap();
+        assert_eq!(
+            control_root,
+            parent.join(format!(".motionwright-cas-{root_id}"))
+        );
+        let mut control = BTreeMap::new();
+        control_tree(&control_root, Path::new(""), &mut control);
         Snapshot {
             project: backup.project,
             events: serde_json::to_value(backup.events).unwrap(),
             payload_sha256: backup.payload_sha256,
             blobs,
+            directories,
+            control,
         }
     }
 
@@ -1082,6 +1388,7 @@ mod tests {
     #[test]
     fn lost_ack_recovery_after_later_revisions_and_reopen_never_reimports_or_rewinds_head() {
         let (files, service, project, grants) = fixture();
+        let initial = snapshot(&service, project.id);
         let asset_path = files.directory.path().join("  original direction.txt");
         let voice_path = files.directory.path().join("  original narration  .wav");
         fs::write(
@@ -1116,10 +1423,18 @@ mod tests {
         ] {
             head = advance(&service, &head, title);
         }
+        let before_removal = snapshot(&service, project.id);
+        let mut expected_blobs = before_removal.blobs.clone();
+        let blob_root = service.store().lock().blob_root().to_path_buf();
         let mut removed_blobs = Vec::new();
         for imported in &voice.project.assets {
             if let Some(digest) = &imported.content_sha256 {
                 let blob = service.store().lock().verified_blob_path(digest).unwrap();
+                let relative = blob.strip_prefix(&blob_root).unwrap();
+                let expected_bytes = expected_blobs
+                    .remove(relative)
+                    .expect("imported media must occur in the complete CAS snapshot");
+                assert_eq!(fs::read(&blob).unwrap(), expected_bytes);
                 fs::remove_file(&blob).unwrap();
                 removed_blobs.push(blob);
             }
@@ -1129,6 +1444,9 @@ mod tests {
         drop(service);
         let reopened = StudioService::open(&files.database).unwrap();
         let before = snapshot(&reopened, project.id);
+        assert_eq!(before.blobs, expected_blobs);
+        assert_eq!(before.directories, before_removal.directories);
+        assert_eq!(before.control, before_removal.control);
         for _ in 0..3 {
             let asset_result = recover_file_import(
                 &reopened,
@@ -1156,7 +1474,7 @@ mod tests {
         assert!(!asset_path.exists());
         assert!(!voice_path.exists());
         assert!(removed_blobs.iter().all(|path| !path.exists()));
-        assert!(before.blobs.is_empty());
+        assert_eq!(before.blobs, initial.blobs);
     }
 
     #[test]
@@ -1219,6 +1537,9 @@ mod tests {
             let result = match intent {
                 FileImportIntent::Asset { .. } => import_asset_file(&service, &grants, changed),
                 FileImportIntent::Voice { .. } => import_voice_file(&service, &grants, changed),
+                FileImportIntent::NativeCapsuleSource { .. } => {
+                    unreachable!("this fixture contains only legacy asset/voice intents")
+                }
             };
             assert!(
                 matches!(result, Err(FileImportError::Storage(message)) if message.contains("request id was reused"))
@@ -1231,6 +1552,60 @@ mod tests {
         assert_eq!(original.project, receipt.project);
         assert_eq!(original.intent, receipt.intent);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn source_intent_cannot_enter_legacy_asset_or_voice_commands() {
+        let (files, service, project, grants) = fixture();
+        let path = files.directory.path().join("missing-source.json");
+        let path = path.to_str().unwrap().to_owned();
+        let scope = EffectScope::project(project.id, project.generation, project.revision);
+        let token = grants
+            .issue(EffectKind::ImportLocal, scope, &path)
+            .unwrap()
+            .token;
+        let request = FileImportDispatchRequest {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: Uuid::new_v4().to_string(),
+            effect_grant: token,
+            path: path.clone(),
+            intent: FileImportIntent::NativeCapsuleSource {
+                spec: motionwright_domain::NativeCapsuleSourceSpec {
+                    name: "Authored source".into(),
+                    media_type: "application/json".into(),
+                    capsule_id: Uuid::new_v4(),
+                    scene_id: Uuid::new_v4(),
+                    label: "Unadmitted native source".into(),
+                    editable_parameters: vec![],
+                    native_editor_hint: "Synthetic editor".into(),
+                },
+            },
+        };
+        let before = snapshot(&service, project.id);
+        assert!(matches!(
+            import_asset_file(&service, &grants, request.clone()),
+            Err(FileImportError::Invalid(_))
+        ));
+        assert!(matches!(
+            import_voice_file(&service, &grants, request.clone()),
+            Err(FileImportError::Invalid(_))
+        ));
+        assert!(matches!(
+            recover_file_import(&service, recovery(&request)),
+            Err(FileImportError::Invalid(_))
+        ));
+        assert_eq!(snapshot(&service, project.id), before);
+        // Rejection precedes even consuming the caller's original grant.
+        grants
+            .consume(
+                token,
+                EffectKind::ImportLocal,
+                EffectScope::project(project.id, project.generation, project.revision),
+                &path,
+            )
+            .unwrap();
     }
 
     #[test]
@@ -1275,6 +1650,10 @@ mod tests {
     #[test]
     fn undecodable_voice_and_active_svg_fail_real_service_without_published_content() {
         let (files, service, project, grants) = fixture();
+        // This fixture checks complete custody during rejection, including
+        // private staging; first creation of that directory is tested separately.
+        let staging = service.store().lock().blob_root().join(".staging");
+        fs::create_dir(&staging).unwrap();
         let before = snapshot(&service, project.id);
         let cases = [
             (
@@ -1317,5 +1696,781 @@ mod tests {
             );
             assert_eq!(snapshot(&service, project.id), before);
         }
+    }
+
+    fn source_scene(service: &StudioService, project: &Project, name: &str) -> Project {
+        service
+            .apply(
+                project.id,
+                &project.stamp(),
+                &Uuid::new_v4().to_string(),
+                &Change::AddScene {
+                    name: name.into(),
+                    objective: "Preserve authored source bytes".into(),
+                    duration_seconds: 3,
+                },
+            )
+            .unwrap()
+            .project
+    }
+
+    fn native_preparation(project: &Project, path: &Path) -> NativeCapsuleSourcePrepareRequest {
+        NativeCapsuleSourcePrepareRequest {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            path: path.to_str().unwrap().to_owned(),
+            spec: NativeCapsuleSourceSpec {
+                name: "  Authored source  ".into(),
+                media_type: "application/json".into(),
+                capsule_id: Uuid::new_v4(),
+                scene_id: project.scenes.last().unwrap().id,
+                label: "  Native source label  ".into(),
+                editable_parameters: vec![
+                    "  title.text  ".into(),
+                    "camera.position\nsecondary".into(),
+                ],
+                native_editor_hint: "Open trusted authoring application\nPreserve source bytes"
+                    .into(),
+            },
+        }
+    }
+
+    #[test]
+    fn qualified_source_prepare_is_closed_metadata_only_and_keeps_exact_authored_fields() {
+        let (files, service, initial, _) = fixture();
+        let project = source_scene(&service, &initial, "Authored scene");
+        let path = files.directory.path().join("missing-native-source.json");
+        let mut request = native_preparation(&project, &path);
+        request.path = format!("  {}  ", request.path);
+        let before = snapshot(&service, project.id);
+        let prepared = prepare_native_capsule_source_file(&service, roundtrip(&request)).unwrap();
+        assert_eq!(prepared.path, path.to_str().unwrap());
+        assert_eq!(
+            prepared.intent,
+            FileImportIntent::NativeCapsuleSource {
+                spec: request.spec.clone()
+            }
+        );
+        assert_eq!(prepared.schema, "motionwright.file-import-preparation/1");
+        assert!(!path.exists());
+        for forbidden in ["kind", "effect_grant", "source_sha256", "renderer"] {
+            let mut wire = serde_json::to_value(&request).unwrap();
+            wire[forbidden] = json!("unadmitted");
+            assert!(serde_json::from_value::<NativeCapsuleSourcePrepareRequest>(wire).is_err());
+        }
+        for forbidden in [
+            "source_asset_id",
+            "source_sha256",
+            "fidelity",
+            "provider_grant",
+            "evidence_sha256",
+            "renderer",
+        ] {
+            let mut wire = serde_json::to_value(&request).unwrap();
+            wire["spec"][forbidden] = json!("unadmitted");
+            assert!(serde_json::from_value::<NativeCapsuleSourcePrepareRequest>(wire).is_err());
+            let mut intent = serde_json::to_value(&prepared.intent).unwrap();
+            intent["spec"][forbidden] = json!("unadmitted");
+            assert!(serde_json::from_value::<FileImportIntent>(intent).is_err());
+        }
+        assert_eq!(snapshot(&service, project.id), before);
+    }
+
+    #[test]
+    fn qualified_source_prepare_checks_stamp_but_defers_target_and_content_lock_checks_to_dispatch()
+    {
+        let (files, service, initial, grants) = fixture();
+        let project = source_scene(&service, &initial, "Locked authored scene");
+        let locked = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                &Uuid::new_v4().to_string(),
+                &Change::SetLock {
+                    resource: project.resource_key(),
+                    kind: LockKind::Content,
+                    note: "Authored content lock".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let path = files.directory.path().join("still-missing.json");
+        let request = native_preparation(&locked, &path);
+        let before = snapshot(&service, locked.id);
+        let prepared = prepare_native_capsule_source_file(&service, request.clone()).unwrap();
+        let dispatch = dispatch(&prepared, &grants);
+        assert!(
+            matches!(import_native_capsule_source_file(&service, &grants, dispatch.clone()),
+            Err(FileImportError::Invalid(message)) if message.contains("locked"))
+        );
+        grants
+            .consume(
+                dispatch.effect_grant,
+                EffectKind::ImportLocal,
+                EffectScope::project(locked.id, locked.generation, locked.revision),
+                &prepared.path,
+            )
+            .unwrap();
+        let mut stale = request.clone();
+        stale.revision -= 1;
+        stale.path = "relative".into();
+        stale.spec.label.clear();
+        assert!(
+            prepare_native_capsule_source_file(&service, stale)
+                .unwrap_err()
+                .to_string()
+                .contains("stale")
+        );
+        let mut foreign = request.clone();
+        foreign.generation = Uuid::new_v4();
+        foreign.spec.label.clear();
+        assert!(
+            prepare_native_capsule_source_file(&service, foreign)
+                .unwrap_err()
+                .to_string()
+                .contains("generation")
+        );
+        let mut missing_target = request.clone();
+        missing_target.spec.scene_id = Uuid::new_v4();
+        assert!(prepare_native_capsule_source_file(&service, missing_target).is_ok());
+        for path in ["", "  ", "relative-source.json"] {
+            assert!(
+                prepare_native_capsule_source_file(
+                    &service,
+                    NativeCapsuleSourcePrepareRequest {
+                        path: path.into(),
+                        ..request.clone()
+                    }
+                )
+                .is_err()
+            );
+        }
+        assert!(!path.exists());
+        assert_eq!(snapshot(&service, locked.id), before);
+    }
+
+    #[test]
+    fn qualified_source_invalid_metadata_and_identity_preserve_the_unconsumed_grant() {
+        let (files, service, initial, grants) = fixture();
+        let project = source_scene(&service, &initial, "Spec boundary");
+        let path = files.directory.path().join("missing.json");
+        let prepare = native_preparation(&project, &path);
+        let spec = prepare.spec.clone();
+        let prepared = prepare_native_capsule_source_file(&service, prepare).unwrap();
+        let request = dispatch(&prepared, &grants);
+        let mut invalid = Vec::new();
+        for value in ["".to_string(), "é".repeat(257)] {
+            let mut next = spec.clone();
+            next.name = value;
+            invalid.push(next);
+        }
+        for value in ["application/\u{2003}json".to_string(), "x".repeat(256)] {
+            let mut next = spec.clone();
+            next.media_type = value;
+            invalid.push(next);
+        }
+        for value in [
+            "".to_string(),
+            "é".repeat(129),
+            "bad\tlabel".to_string(),
+            "bad\u{0085}label".to_string(),
+        ] {
+            let mut next = spec.clone();
+            next.label = value;
+            invalid.push(next);
+        }
+        let mut next = spec.clone();
+        next.native_editor_hint = "bad\rhint".into();
+        invalid.push(next);
+        let mut next = spec.clone();
+        next.editable_parameters = vec!["x".into(); 65];
+        invalid.push(next);
+        for value in [
+            "".to_string(),
+            "é".repeat(1001),
+            "bad\0parameter".to_string(),
+        ] {
+            let mut next = spec.clone();
+            next.editable_parameters = vec![value];
+            invalid.push(next);
+        }
+        let mut next = spec.clone();
+        next.capsule_id = Uuid::nil();
+        invalid.push(next);
+        let mut next = spec.clone();
+        next.scene_id = Uuid::nil();
+        invalid.push(next);
+        let before = snapshot(&service, project.id);
+        for spec in invalid {
+            assert!(matches!(
+                import_native_capsule_source_file(
+                    &service,
+                    &grants,
+                    FileImportDispatchRequest {
+                        intent: FileImportIntent::NativeCapsuleSource { spec: spec.clone() },
+                        ..request.clone()
+                    }
+                ),
+                Err(FileImportError::Invalid(_))
+            ));
+            assert!(matches!(
+                recover_native_capsule_source_file(
+                    &service,
+                    FileImportRecoveryRequest {
+                        intent: FileImportIntent::NativeCapsuleSource { spec },
+                        ..recovery(&request)
+                    }
+                ),
+                Err(FileImportError::Invalid(_))
+            ));
+        }
+        for request_id in [
+            "not-a-uuid".to_owned(),
+            Uuid::nil().to_string(),
+            "A22D7BE1-1ED8-4DE9-85F8-37B75E820011".to_owned(),
+        ] {
+            assert!(matches!(
+                import_native_capsule_source_file(
+                    &service,
+                    &grants,
+                    FileImportDispatchRequest {
+                        request_id: request_id.clone(),
+                        ..request.clone()
+                    }
+                ),
+                Err(FileImportError::Invalid(_))
+            ));
+            assert!(matches!(
+                recover_native_capsule_source_file(
+                    &service,
+                    FileImportRecoveryRequest {
+                        request_id,
+                        ..recovery(&request)
+                    }
+                ),
+                Err(FileImportError::Invalid(_))
+            ));
+        }
+        grants
+            .consume(
+                request.effect_grant,
+                EffectKind::ImportLocal,
+                EffectScope::project(project.id, project.generation, project.revision),
+                &prepared.path,
+            )
+            .unwrap();
+        assert!(!path.exists());
+        assert_eq!(snapshot(&service, project.id), before);
+    }
+
+    #[test]
+    fn qualified_source_commands_reject_legacy_intents_without_grant_or_source_effects() {
+        let (files, service, initial, grants) = fixture();
+        let project = source_scene(&service, &initial, "Qualified intent");
+        let path = files.directory.path().join("missing.json");
+        let prepared =
+            prepare_native_capsule_source_file(&service, native_preparation(&project, &path))
+                .unwrap();
+        let request = dispatch(&prepared, &grants);
+        let before = snapshot(&service, project.id);
+        for intent in [
+            FileImportIntent::Asset {
+                name: "Source".into(),
+                media_type: "application/json".into(),
+            },
+            FileImportIntent::Voice {
+                name: "Voice".into(),
+                media_type: "audio/wav".into(),
+                label: "Voice".into(),
+            },
+        ] {
+            let changed = FileImportDispatchRequest {
+                intent,
+                ..request.clone()
+            };
+            assert!(matches!(
+                import_native_capsule_source_file(&service, &grants, changed.clone()),
+                Err(FileImportError::Invalid(_))
+            ));
+            assert!(matches!(
+                recover_native_capsule_source_file(&service, recovery(&changed)),
+                Err(FileImportError::Invalid(_))
+            ));
+        }
+        grants
+            .consume(
+                request.effect_grant,
+                EffectKind::ImportLocal,
+                EffectScope::project(project.id, project.generation, project.revision),
+                &prepared.path,
+            )
+            .unwrap();
+        assert_eq!(snapshot(&service, project.id), before);
+    }
+
+    #[test]
+    fn qualified_source_dispatch_checks_current_scope_and_absolute_path_before_consuming_grant() {
+        let (files, service, initial, grants) = fixture();
+        let project = source_scene(&service, &initial, "Revision boundary");
+        let path = files.directory.path().join("missing.json");
+        let prepared =
+            prepare_native_capsule_source_file(&service, native_preparation(&project, &path))
+                .unwrap();
+        let request = dispatch(&prepared, &grants);
+        let head = advance(&service, &project, "Later revision");
+        let before = snapshot(&service, project.id);
+        assert!(
+            matches!(import_native_capsule_source_file(&service, &grants, request.clone()), Err(FileImportError::Invalid(message)) if message.contains("stale"))
+        );
+        grants
+            .consume(
+                request.effect_grant,
+                EffectKind::ImportLocal,
+                EffectScope::project(project.id, project.generation, project.revision),
+                &prepared.path,
+            )
+            .unwrap();
+        let current =
+            prepare_native_capsule_source_file(&service, native_preparation(&head, &path)).unwrap();
+        let request = dispatch(&current, &grants);
+        assert!(matches!(
+            import_native_capsule_source_file(
+                &service,
+                &grants,
+                FileImportDispatchRequest {
+                    generation: Uuid::new_v4(),
+                    ..request.clone()
+                }
+            ),
+            Err(FileImportError::Invalid(_))
+        ));
+        assert!(matches!(
+            import_native_capsule_source_file(
+                &service,
+                &grants,
+                FileImportDispatchRequest {
+                    project_id: Uuid::new_v4(),
+                    ..request.clone()
+                }
+            ),
+            Err(FileImportError::Storage(_))
+        ));
+        assert!(matches!(
+            import_native_capsule_source_file(
+                &service,
+                &grants,
+                FileImportDispatchRequest {
+                    path: "relative.json".into(),
+                    ..request.clone()
+                }
+            ),
+            Err(FileImportError::Invalid(_))
+        ));
+        grants
+            .consume(
+                request.effect_grant,
+                EffectKind::ImportLocal,
+                EffectScope::project(head.id, head.generation, head.revision),
+                &current.path,
+            )
+            .unwrap();
+        assert!(!path.exists());
+        assert_eq!(snapshot(&service, project.id), before);
+    }
+
+    #[test]
+    fn qualified_source_dispatch_binds_exact_existing_import_local_grant_and_consumes_once() {
+        let (files, service, initial, grants) = fixture();
+        let project = source_scene(&service, &initial, "Grant boundary");
+        let path = files.directory.path().join("source.json");
+        fs::write(&path, br#"{"authored":"original"}"#).unwrap();
+        let prepared =
+            prepare_native_capsule_source_file(&service, native_preparation(&project, &path))
+                .unwrap();
+        let scope = EffectScope::project(project.id, project.generation, project.revision);
+        let before = snapshot(&service, project.id);
+        let wrong = [
+            grants
+                .issue(
+                    EffectKind::ImportLocal,
+                    scope,
+                    &format!("{}.other", prepared.path),
+                )
+                .unwrap()
+                .token,
+            grants
+                .issue(
+                    EffectKind::ImportLocal,
+                    EffectScope::unscoped_import(),
+                    &prepared.path,
+                )
+                .unwrap()
+                .token,
+            grants
+                .issue(
+                    EffectKind::ImportLocal,
+                    EffectScope::project(project.id, Uuid::new_v4(), project.revision),
+                    &prepared.path,
+                )
+                .unwrap()
+                .token,
+            grants
+                .issue(EffectKind::ProjectEdit, scope, &prepared.path)
+                .unwrap()
+                .token,
+            Uuid::new_v4(),
+        ];
+        for effect_grant in wrong {
+            let request = FileImportDispatchRequest {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: Uuid::new_v4().to_string(),
+                effect_grant,
+                path: prepared.path.clone(),
+                intent: prepared.intent.clone(),
+            };
+            assert!(
+                matches!(import_native_capsule_source_file(&service, &grants, request), Err(FileImportError::Invalid(message)) if message.contains("Effect grant"))
+            );
+            assert_eq!(snapshot(&service, project.id), before);
+        }
+        let request = dispatch(&prepared, &grants);
+        let receipt =
+            import_native_capsule_source_file(&service, &grants, roundtrip(&request)).unwrap();
+        assert!(!receipt.replayed);
+        assert_eq!(receipt.project.revision, project.revision + 1);
+        assert!(
+            grants
+                .consume(
+                    request.effect_grant,
+                    EffectKind::ImportLocal,
+                    scope,
+                    &prepared.path
+                )
+                .is_err()
+        );
+        let after = snapshot(&service, project.id);
+        assert!(import_native_capsule_source_file(&service, &grants, request).is_err());
+        assert_eq!(snapshot(&service, project.id), after);
+    }
+
+    #[test]
+    fn qualified_source_missing_target_and_all_affected_content_locks_precede_source_and_grant() {
+        for lock_target in ["project", "destination", "previous"] {
+            let (files, service, initial, grants) = fixture();
+            let project = source_scene(&service, &initial, "Original source scene");
+            let path = files.directory.path().join("source.json");
+            fs::write(&path, br#"{"source":1}"#).unwrap();
+            let prepare = native_preparation(&project, &path);
+            let mut spec = prepare.spec.clone();
+            let prepared = prepare_native_capsule_source_file(&service, prepare).unwrap();
+            let saved =
+                import_native_capsule_source_file(&service, &grants, dispatch(&prepared, &grants))
+                    .unwrap()
+                    .project;
+            let next = source_scene(&service, &saved, "Destination source scene");
+            let previous_scene = spec.scene_id;
+            spec.scene_id = next.scenes.last().unwrap().id;
+            let resource = match lock_target {
+                "project" => next.resource_key(),
+                "destination" => format!("scene:{}", spec.scene_id),
+                _ => format!("scene:{previous_scene}"),
+            };
+            let locked = service
+                .apply(
+                    next.id,
+                    &next.stamp(),
+                    &Uuid::new_v4().to_string(),
+                    &Change::SetLock {
+                        resource,
+                        kind: LockKind::Content,
+                        note: "Content preservation".into(),
+                    },
+                )
+                .unwrap()
+                .project;
+            fs::remove_file(&path).unwrap();
+            let prepared = prepare_native_capsule_source_file(
+                &service,
+                NativeCapsuleSourcePrepareRequest {
+                    project_id: locked.id,
+                    generation: locked.generation,
+                    revision: locked.revision,
+                    path: path.to_str().unwrap().into(),
+                    spec,
+                },
+            )
+            .unwrap();
+            let request = dispatch(&prepared, &grants);
+            let before = snapshot(&service, locked.id);
+            assert!(
+                matches!(import_native_capsule_source_file(&service, &grants, request.clone()), Err(FileImportError::Invalid(message)) if message.contains("locked"))
+            );
+            grants
+                .consume(
+                    request.effect_grant,
+                    EffectKind::ImportLocal,
+                    EffectScope::project(locked.id, locked.generation, locked.revision),
+                    &prepared.path,
+                )
+                .unwrap();
+            let mut missing = native_preparation(&locked, &path);
+            missing.spec.scene_id = Uuid::new_v4();
+            let prepared = prepare_native_capsule_source_file(&service, missing).unwrap();
+            let request = dispatch(&prepared, &grants);
+            assert!(
+                matches!(import_native_capsule_source_file(&service, &grants, request.clone()), Err(FileImportError::Invalid(message)) if message.contains("scene"))
+            );
+            grants
+                .consume(
+                    request.effect_grant,
+                    EffectKind::ImportLocal,
+                    EffectScope::project(locked.id, locked.generation, locked.revision),
+                    &prepared.path,
+                )
+                .unwrap();
+            assert_eq!(snapshot(&service, locked.id), before);
+        }
+    }
+
+    #[test]
+    fn qualified_source_replacement_can_move_and_preserves_old_asset_and_digest_in_one_commit() {
+        let (files, service, initial, grants) = fixture();
+        let project = source_scene(&service, &initial, "First source scene");
+        let path = files.directory.path().join("source.json");
+        let old_bytes = br#"{"source":"first authored bytes"}"#;
+        fs::write(&path, old_bytes).unwrap();
+        let prepare = native_preparation(&project, &path);
+        let mut spec = prepare.spec.clone();
+        let prepared = prepare_native_capsule_source_file(&service, prepare).unwrap();
+        let first =
+            import_native_capsule_source_file(&service, &grants, dispatch(&prepared, &grants))
+                .unwrap();
+        let old = first.project.production_design.capsules[0].clone();
+        let head = source_scene(&service, &first.project, "Second source scene");
+        spec.scene_id = head.scenes.last().unwrap().id;
+        fs::write(&path, br#"{"source":"second authored bytes"}"#).unwrap();
+        let before = snapshot(&service, head.id);
+        let prepared = prepare_native_capsule_source_file(
+            &service,
+            NativeCapsuleSourcePrepareRequest {
+                project_id: head.id,
+                generation: head.generation,
+                revision: head.revision,
+                path: path.to_str().unwrap().into(),
+                spec: spec.clone(),
+            },
+        )
+        .unwrap();
+        let request = dispatch(&prepared, &grants);
+        let second = import_native_capsule_source_file(&service, &grants, request.clone()).unwrap();
+        assert_eq!(
+            second.intent,
+            FileImportIntent::NativeCapsuleSource { spec: spec.clone() }
+        );
+        assert_eq!(second.project.revision, head.revision + 1);
+        assert_eq!(second.project.assets.len(), head.assets.len() + 1);
+        assert_eq!(second.project.production_design.capsules.len(), 1);
+        let capsule = &second.project.production_design.capsules[0];
+        assert_eq!(capsule.id, old.id);
+        assert_eq!(capsule.scene_id, spec.scene_id);
+        assert_ne!(capsule.source_asset_id, old.source_asset_id);
+        assert_ne!(capsule.source_sha256, old.source_sha256);
+        assert!(
+            second
+                .project
+                .assets
+                .iter()
+                .any(|asset| asset.id == old.source_asset_id)
+        );
+        assert_eq!(
+            service
+                .store()
+                .lock()
+                .read_blob(&old.source_sha256, 4096)
+                .unwrap(),
+            old_bytes.as_slice()
+        );
+        for fidelity in [
+            &capsule.fidelity.visual,
+            &capsule.fidelity.temporal,
+            &capsule.fidelity.structural,
+            &capsule.fidelity.editable,
+        ] {
+            assert_eq!(*fidelity, motionwright_domain::Fidelity::Unavailable);
+        }
+        assert!(capsule.fidelity.evidence_sha256.is_none());
+        assert!(capsule.property_fidelity.is_empty());
+        let after = snapshot(&service, head.id);
+        assert_eq!(
+            after.events.as_array().unwrap().len(),
+            before.events.as_array().unwrap().len() + 1
+        );
+        let original = recover_native_capsule_source_file(&service, recovery(&request))
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.project, second.project);
+        assert_eq!(original.intent, second.intent);
+        assert_eq!(snapshot(&service, head.id), after);
+        // Pure budget preflight uses a clone of a real committed capsule; it
+        // never publishes a synthetic full-budget Project or obtains a grant.
+        let mut full = second.project.clone();
+        while full.production_design.capsules.len() < 256 {
+            let mut copy = capsule.clone();
+            copy.id = Uuid::new_v4();
+            full.production_design.capsules.push(copy);
+        }
+        assert!(validate_native_source_target(&full, &spec).is_ok());
+        let mut new = spec;
+        new.capsule_id = Uuid::new_v4();
+        assert!(
+            validate_native_source_target(&full, &new)
+                .unwrap_err()
+                .to_string()
+                .contains("budget")
+        );
+    }
+
+    #[test]
+    fn qualified_source_recovery_is_historical_when_current_branch_has_no_original_targets_or_source()
+     {
+        let (files, service, initial, grants) = fixture();
+        let branched = service
+            .apply(
+                initial.id,
+                &initial.stamp(),
+                &Uuid::new_v4().to_string(),
+                &Change::CreateBranch {
+                    name: "Before native source".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let other = branched
+            .branches
+            .iter()
+            .find(|branch| branch.name == "Before native source")
+            .unwrap()
+            .id;
+        let project = source_scene(&service, &branched, "Later native source scene");
+        let path = files.directory.path().join("source.json");
+        fs::write(&path, br#"{"source":"retained receipt"}"#).unwrap();
+        let prepare = native_preparation(&project, &path);
+        let spec = prepare.spec.clone();
+        let prepared = prepare_native_capsule_source_file(&service, prepare).unwrap();
+        let request = dispatch(&prepared, &grants);
+        let receipt =
+            import_native_capsule_source_file(&service, &grants, request.clone()).unwrap();
+        let current = service
+            .apply(
+                project.id,
+                &receipt.project.stamp(),
+                &Uuid::new_v4().to_string(),
+                &Change::CheckoutBranch { branch_id: other },
+            )
+            .unwrap()
+            .project;
+        assert!(current.revision > receipt.project.revision);
+        assert!(!current.scenes.iter().any(|scene| scene.id == spec.scene_id));
+        assert!(
+            !current
+                .production_design
+                .capsules
+                .iter()
+                .any(|capsule| capsule.id == spec.capsule_id)
+        );
+        fs::remove_file(&path).unwrap();
+        let digest = receipt.project.production_design.capsules[0]
+            .source_sha256
+            .clone();
+        let blob = service.store().lock().verified_blob_path(&digest).unwrap();
+        fs::remove_file(blob).unwrap();
+        drop(service);
+        let reopened = StudioService::open(&files.database).unwrap();
+        let before = snapshot(&reopened, project.id);
+        let recovered =
+            recover_native_capsule_source_file(&reopened, roundtrip(&recovery(&request)))
+                .unwrap()
+                .unwrap();
+        assert_eq!(recovered.project, receipt.project);
+        assert_eq!(recovered.intent, receipt.intent);
+        assert!(recovered.replayed);
+        assert_eq!(reopened.project(project.id).unwrap(), current);
+        let missing = FileImportRecoveryRequest {
+            request_id: Uuid::new_v4().to_string(),
+            ..recovery(&request)
+        };
+        assert!(
+            recover_native_capsule_source_file(&reopened, missing)
+                .unwrap()
+                .is_none()
+        );
+        let different_revision = FileImportRecoveryRequest {
+            revision: request.revision + 1,
+            ..recovery(&request)
+        };
+        assert!(
+            matches!(recover_native_capsule_source_file(&reopened, different_revision), Err(FileImportError::Invalid(message)) if message.contains("original retained revision"))
+        );
+        let different_generation = FileImportRecoveryRequest {
+            generation: Uuid::new_v4(),
+            ..recovery(&request)
+        };
+        assert!(
+            matches!(recover_native_capsule_source_file(&reopened, different_generation), Err(FileImportError::Invalid(message)) if message.contains("generation"))
+        );
+        let mut changed_spec = spec;
+        changed_spec.label = "A different authored operation".into();
+        let different_intent = FileImportRecoveryRequest {
+            intent: FileImportIntent::NativeCapsuleSource { spec: changed_spec },
+            ..recovery(&request)
+        };
+        assert!(matches!(
+            recover_native_capsule_source_file(&reopened, different_intent),
+            Err(FileImportError::Storage(_))
+        ));
+        assert_eq!(snapshot(&reopened, project.id), before);
+    }
+
+    #[test]
+    fn qualified_source_real_service_rejection_spends_grant_without_publishing_graph_or_cas_content()
+     {
+        let (files, service, initial, grants) = fixture();
+        let project = source_scene(&service, &initial, "Source rejection");
+        let staging = service.store().lock().blob_root().join(".staging");
+        fs::create_dir_all(staging).unwrap();
+        let path = files.directory.path().join("active.svg");
+        fs::write(
+            &path,
+            br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#,
+        )
+        .unwrap();
+        let mut prepare = native_preparation(&project, &path);
+        prepare.spec.media_type = "image/svg+xml".into();
+        let prepared = prepare_native_capsule_source_file(&service, prepare).unwrap();
+        let request = dispatch(&prepared, &grants);
+        let before = snapshot(&service, project.id);
+        assert!(matches!(
+            import_native_capsule_source_file(&service, &grants, request.clone()),
+            Err(FileImportError::Storage(_))
+        ));
+        assert!(
+            grants
+                .consume(
+                    request.effect_grant,
+                    EffectKind::ImportLocal,
+                    EffectScope::project(project.id, project.generation, project.revision),
+                    &prepared.path
+                )
+                .is_err()
+        );
+        assert!(
+            recover_native_capsule_source_file(&service, recovery(&request))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(snapshot(&service, project.id), before);
     }
 }

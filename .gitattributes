@@ -10,3 +10,10 @@ third_party/semwright-source-evidence/54d3459a051adbce4cae9f60c0dea8f60c824be6/e
 
 # Preserve the exact bytes of the source provenance observation.
 docs/acceptance/evidence/source-provenance-candidate-a8f4e74a.json -text
+
+# Preserve the successor SDK source records as exact Git-object bytes.
+third_party/semwright-source-evidence/4849b3c1dcee9b37438801b4264f59480bff9e40/Cargo.toml -text
+third_party/semwright-source-evidence/4849b3c1dcee9b37438801b4264f59480bff9e40/LICENSE-MIT -text
+third_party/semwright-source-evidence/4849b3c1dcee9b37438801b4264f59480bff9e40/LICENSE-APACHE -text
+third_party/semwright-source-evidence/4849b3c1dcee9b37438801b4264f59480bff9e40/evidence.json -text
+third_party/semwright-source-evidence/4849b3c1dcee9b37438801b4264f59480bff9e40/NOTICE -text

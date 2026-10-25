@@ -659,12 +659,16 @@ impl ProductionCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use motionwright_domain::{
         BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RevisionStamp,
     };
+    #[cfg(unix)]
     use motionwright_storage::Store;
     use semwright_media_time::Rate;
+    #[cfg(unix)]
     use std::collections::BTreeSet;
+    #[cfg(unix)]
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -706,6 +710,7 @@ mod tests {
         (coordinator, project, connection)
     }
 
+    #[cfg(unix)]
     fn fake_glb(path: &Path) -> RecoveryBlenderProof {
         let mut file = fs::File::create(path).unwrap();
         file.write_all(b"glTF").unwrap();

@@ -8,6 +8,7 @@ import { emptyProductionDesign } from "./creativeProduction";
 import { seconds } from "./types";
 
 export const CAMERA_REFRAME_VERSION=1;
+export const CAMERA_REFRAME_MANIM_VERSION=2;
 export const CAMERA_REFRAME_FPS=30;
 export const CAMERA_REFRAME_MAX=16;
 export interface CameraReframe {
@@ -27,7 +28,8 @@ export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
     Object.keys(source).sort().join("|")!==[...KEYS].sort().join("|"))
     invalid("unknown or missing source parameters");
   if(!UUID.test(source.id) || !UUID.test(source.scene_id) ||
-    source.component_version!==CAMERA_REFRAME_VERSION || source.scene_id!==scene.id)
+    (source.component_version!==CAMERA_REFRAME_VERSION &&
+      source.component_version!==CAMERA_REFRAME_MANIM_VERSION) || source.scene_id!==scene.id)
     invalid("invalid identity, scene or version");
   for(const [label,value,min,max] of [
     ["start x",source.start_center_x,720,1200],
@@ -38,12 +40,32 @@ export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
     if(!Number.isFinite(value)||value<min||value>max)
       invalid(label+" is outside the admitted source canvas");
   }
-  if(scene.renderer!=="motion-canvas" || scene.nodes.length<1 || scene.nodes.length>32 ||
+  const admittedPair=(source.component_version===CAMERA_REFRAME_VERSION && scene.renderer==="motion-canvas") ||
+    (source.component_version===CAMERA_REFRAME_MANIM_VERSION && scene.renderer==="manim-community");
+  if(!admittedPair || scene.nodes.length<1 || scene.nodes.length>32 ||
     scene.beats.length || scene.nodes.some(node=>node.keyframes.length ||
       node.parent_id!==null || node.kind==="group"))
     invalid("an original, ungrouped and motion-free Canvas shot with at most 32 objects is required");
   if(scene.camera.zoom!==1 || scene.camera.rotation_deg!==0)
     invalid("this planar reframe cannot represent optical zoom or 3D rotation");
+  // Match the existing Rust v2 source contract. Do not admit visual semantics
+  // that the selected native contributor would silently discard.
+  if(source.component_version===CAMERA_REFRAME_MANIM_VERSION){
+    if(scene.camera.safe_margin<.05)
+      invalid("Manim camera requires an authored safe margin of at least 0.05");
+    for(const node of scene.nodes){
+      if(!["rectangle","circle"].includes(node.kind) ||
+        node.coordinate_space!=="project_pixels" || node.relations.length ||
+        node.opacity!==1 || node.rotation_deg!==0 || node.text!==null ||
+        node.style.stroke!==null || node.style.stroke_width!==0 ||
+        node.style.blend_mode!=="normal" || node.style.font_family!==null ||
+        node.style.font_size!==null || node.style.font_weight!==null ||
+        node.style.line_height!==null || (node.kind==="circle" && node.width!==node.height))
+        invalid("Manim camera cannot preserve the authored shape semantics of node "+node.id);
+      if(typeof node.style.fill!=="string" || !/^#[0-9a-f]{6}$/i.test(node.style.fill))
+        invalid("Manim camera requires explicit opaque #RRGGBB fill for node "+node.id);
+    }
+  }
   const dx=source.end_center_x-source.start_center_x;
   const dy=source.end_center_y-source.start_center_y;
   if(Math.abs(dx)>80 || Math.abs(dy)>80 || (Math.abs(dx)<.001 && Math.abs(dy)<.001))

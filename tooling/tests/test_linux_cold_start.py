@@ -17,7 +17,7 @@ from unittest.mock import patch
 TOOLING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLING))
 sys.path.insert(0, str(TOOLING / "tests"))
-from test_storage_schema_contract import cohort as storage_cohort_fixture
+from test_storage_schema_contract import add_schema_five_cas, cohort as storage_cohort_fixture
 SPEC = importlib.util.spec_from_file_location(
     "linux_cold_start", TOOLING / "linux_cold_start.py"
 )
@@ -41,6 +41,12 @@ def schema_four_store(root):
             apply_binding_version INTEGER NOT NULL DEFAULT 0 CHECK(apply_binding_version IN (0,1)),
             apply_binding_json TEXT);
         """)
+    return database
+
+def schema_five_store(root):
+    database = schema_four_store(root)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        add_schema_five_cas(connection)
     return database
 
 def seeded_store(root: Path, *, name: str = "motionwright ci first use") -> Path:
@@ -103,7 +109,7 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
             connection.execute("DELETE FROM projects")
         self.assertTrue(probe._empty_library_ready(self.scratch))
         self.assertFalse(probe._bootstrap_committed(self.scratch))
-        for version in (2, 4):
+        for version in (2, 4, 5):
             with closing(sqlite3.connect(database)) as connection, connection:
                 connection.execute("PRAGMA user_version=" + str(version))
             with self.subTest(schema=version):
@@ -209,7 +215,7 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
 
     def test_schema_mismatch_or_corrupt_file_cannot_become_pass(self):
         database = seeded_store(self.scratch)
-        for version in (0, 1, 2, 4):
+        for version in (0, 1, 2, 4, 5):
             with closing(sqlite3.connect(database)) as conn, conn:
                 conn.execute("PRAGMA user_version=" + str(version))
             with self.subTest(schema=version), self.assertRaisesRegex(
@@ -334,6 +340,57 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
         self.assertEqual(result["schema"], "motionwright.ci.installed-cold-relaunch/2")
         self.assertEqual(result["storage_cohort"], selected)
         self.assertEqual(result["persistence"]["schema_version"], 4)
+        self.assertNotIn("window_interaction", calls[1])
+
+
+    def test_explicit_five_reads_cas_and_document_without_changing_sqlite(self):
+        database = schema_five_store(self.scratch)
+        original = database.read_bytes()
+        selected = storage_cohort_fixture(5)
+        observed = probe.read_snapshot(self.scratch / "data", storage_cohort=selected)
+        self.assertEqual(observed.schema_version, 5)
+        self.assertEqual(probe.attest_persistence(observed, observed)["schema_version"], 5)
+        with self.assertRaises(probe.ColdStartError):
+            probe.read_snapshot(self.scratch / "data")
+        with self.assertRaises(probe.ColdStartError):
+            probe.read_snapshot(self.scratch / "data", storage_cohort=storage_cohort_fixture(4))
+        self.assertEqual(database.read_bytes(), original)
+
+    def test_five_requires_cas_in_both_snapshot_and_preaction_readiness(self):
+        database = schema_five_store(self.scratch)
+        selected = storage_cohort_fixture(5)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DELETE FROM projects")
+        self.assertTrue(probe._empty_library_ready(self.scratch, storage_cohort=selected))
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DROP TABLE cas_import_commits")
+        original = database.read_bytes()
+        self.assertFalse(probe._empty_library_ready(self.scratch, storage_cohort=selected))
+        with patch.object(probe, "_send_native_x11_create") as create:
+            self.assertFalse(probe._first_project_window_interaction(
+                self.scratch, storage_cohort=selected))
+            create.assert_not_called()
+        with self.assertRaisesRegex(probe.ColdStartError, "storage_cas_objects_differ"):
+            probe.read_snapshot(self.scratch / "data", storage_cohort=selected)
+        self.assertEqual(database.read_bytes(), original)
+
+    def test_five_relaunch_threads_one_source_cohort_to_both_real_sqlite_reads(self):
+        selected = storage_cohort_fixture(5)
+        calls = []
+        def gui(app_run, scratch, **kwargs):
+            if not calls:
+                schema_five_store(scratch)
+            calls.append(kwargs)
+            self.assertTrue(kwargs["ready_check"](scratch))
+            return {"status": "WINDOW_OBSERVED"}
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), patch.object(probe, "run_probe", side_effect=gui):
+            result = probe.probe_cold_relaunch(
+                app_run=self.work / "AppRun", scratch=self.scratch,
+                source_sha="a" * 40, semwright_sha="c" * 40, storage_cohort=selected)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["storage_cohort"], selected)
+        self.assertEqual(result["persistence"]["schema_version"], 5)
+        self.assertEqual(result["claims"]["native_renderer_execution"], "NOT_RUN")
         self.assertNotIn("window_interaction", calls[1])
 
 

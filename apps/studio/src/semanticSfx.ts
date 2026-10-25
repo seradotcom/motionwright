@@ -22,6 +22,7 @@ export interface SemanticSfxCue {
   gain_milli_db:number;
   attack_frames:number;
   release_frames:number;
+  tail_policy?:"within_scene"|"continue_across_cuts";
   original_source_attestation:string;
 }
 export interface ScheduledSfx {
@@ -53,7 +54,9 @@ function frame(time:{num:string;den:string}):number{
 }
 export function validateSemanticSfx(project:Project,cue:SemanticSfxCue):ScheduledSfx{
   if(!cue || typeof cue!=="object" || Array.isArray(cue))invalid("Invalid SFX cue schema.");
-  exactly(cue,CUE_KEYS);
+  exactly(cue,Object.hasOwn(cue,"tail_policy")?[...CUE_KEYS,"tail_policy"]:CUE_KEYS);
+  if(Object.hasOwn(cue,"tail_policy") && !["within_scene","continue_across_cuts"].includes(cue.tail_policy!))
+    invalid("Unsupported semantic SFX tail policy.");
   if(cue.schema!==SFX_CUE_SCHEMA || !uuid.test(cue.id) || !uuid.test(cue.scene_id) ||
     !EVENT_KINDS.includes(cue.event) ||
     !Number.isInteger(cue.offset_frames) || cue.offset_frames< -15 || cue.offset_frames>30 ||
@@ -85,9 +88,14 @@ export function validateSemanticSfx(project:Project,cue:SemanticSfxCue):Schedule
     invalid("Unsupported SFX semantic anchor.");
   }
   const at=relative+cue.offset_frames;
-  if(at<0 || at+cue.source_frames>frame(scene.duration))
+  if(at<0 || at>=frame(scene.duration))invalid("SFX onset must stay inside its authored scene interval.");
+  if((cue.tail_policy??"within_scene")==="within_scene" && at+cue.source_frames>frame(scene.duration))
     invalid("SFX source tail leaves its authored scene interval.");
   const begin=frame(scene.start)+at,end=begin+cue.source_frames;
+  if(cue.tail_policy==="continue_across_cuts" && end>project.scenes.reduce((total,item)=>total+frame(item.duration),0))
+    invalid("SFX source tail exceeds the complete project cut; no implicit trim.");
+  // This source placement remains distinct from the canonical domain service's
+  // selected-delivery-cut admission and the native mixer's real PCM readback.
   if(end>36000)invalid("SFX placement exceeds bounded native film.");
   return {cue_id:cue.id,absolute_start_frame:begin,absolute_end_frame:end,
     first_sample:begin*1600,sample_count:cue.source_frames*1600};

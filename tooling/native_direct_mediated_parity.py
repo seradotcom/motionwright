@@ -158,6 +158,74 @@ def decoded_rgba_frame_hashes(
     return hashes
 
 
+def decoded_rgba_png_capture(
+    png: bytes, width: int, height: int, *, ffmpeg: Path,
+    executable_sha256: str, capture: dict,
+) -> bytes:
+    """Decode one captured PNG with a pinned verifier and bounded raw output.
+
+    The caller must validate the complete PNG transport and bind its bytes to
+    the native artifact witness. This function does not discover a renderer,
+    render a scene, resize an image, or certify the producer's fidelity.
+    """
+    from manim_native_readback import run_bounded
+    from native_mlt_loaded_module import _verified_binary
+
+    def check(ok: bool, code: str) -> None:
+        if not ok:
+            raise DirectParityError(code)
+
+    check(type(width) is int and type(height) is int
+          and 0 < width <= 3840 and 0 < height <= 3840
+          and width * height <= 1920 * 1080, "single_png_geometry_budget")
+    check(type(png) is bytes and 33 <= len(png) <= 32 * 1024 * 1024,
+          "single_png_input_budget")
+    check(png[:8] == PNG_MAGIC and png[8:12] == b"\0\0\0\r"
+          and png[12:16] == b"IHDR", "single_png_ihdr")
+    check((int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big"))
+          == (width, height), "single_png_geometry_mismatch")
+    check(tuple(png[24:29]) == (8, 6, 0, 0, 0), "single_png_rgba8_required")
+    check(type(capture) is dict and not capture, "single_png_capture_must_be_new")
+    check(isinstance(ffmpeg, Path) and ffmpeg.is_absolute()
+          and ffmpeg.resolve(strict=True) == ffmpeg
+          and not any(path.is_symlink() for path in (ffmpeg, *ffmpeg.parents)),
+          "single_png_decoder_path")
+    check(type(executable_sha256) is str
+          and HEX_SHA256.fullmatch(executable_sha256) is not None,
+          "single_png_decoder_digest")
+    argv = [
+        str(ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error", "-xerror",
+        "-noautorotate", "-f", "image2pipe", "-c:v", "png", "-i", "pipe:0",
+        "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1",
+        "-pix_fmt", "rgba", "-c:v", "rawvideo", "-f", "rawvideo", "pipe:1",
+    ]
+    before_sha = None
+    checked_after = False
+    try:
+        with _verified_binary(ffmpeg, executable_sha256, 768 * 1024 * 1024) as verified:
+            before_sha = verified["sha256"]
+            decoded, _terminal = run_bounded(
+                argv, width * height * 4, 30, input_bytes=png, capture=capture)
+        checked_after = True
+    finally:
+        # Original terminal and bounded streams remain in capture on failure.
+        capture["decoder"] = {
+            "method": "ffmpeg_single_png_stdin_to_rgba",
+            "executable_path": str(ffmpeg), "expected_executable_sha256": executable_sha256,
+            "observed_executable_sha256": before_sha,
+            "binary_identity_checked_after": checked_after,
+            "version_observed": False, "runtime_libraries_attested": False,
+            "width": width, "height": height, "pixel_format": "rgba",
+            "expected_stdout_bytes": width * height * 4,
+            "stdin_budget_bytes": 32 * 1024 * 1024, "stderr_budget_bytes": 65536,
+            "decode_timeout_seconds": 30, "cleanup_allowance_seconds": 10,
+            "native_render_performed": False, "resize_performed": False,
+        }
+    check(capture["stderr"] == b"", "single_png_decoder_reported_error")
+    check(len(decoded) == width * height * 4, "single_png_decoded_size")
+    return decoded
+
+
 def compare_native_pngs(
     mediated: Path, direct: Path, expected_frames: int = 60,
 ) -> dict[str, Any]:

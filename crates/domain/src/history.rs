@@ -61,6 +61,7 @@ impl BranchState {
 
         self.brief.validate()?;
         self.narrative.validate()?;
+        validate_narrative_realizations(&self.narrative, &self.scenes)?;
         self.audio.validate()?;
         self.visual_language.validate()?;
         self.production_design
@@ -70,6 +71,9 @@ impl BranchState {
             assets,
             &self.deliverables,
         )?;
+        self.production_design
+            .validate_semantic_graphs(&self.scenes, &self.deliverables)?;
+        validate_semantic_graph_lock_resources(&self.locks)?;
 
         if self.proposal_sets.len() > 512 || self.model_invocations.len() > 10_000 {
             return Err(DomainError::Invalid(
@@ -250,6 +254,7 @@ pub enum ReviewStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewAnchor {
+    #[serde(deserialize_with = "crate::semantic_graph::deserialize_semantic_graph_resource")]
     pub resource: String,
     pub branch_id: Uuid,
     pub revision: u64,
@@ -285,6 +290,9 @@ pub struct MergeRecord {
 
 impl CreativeReview {
     fn validate(&self, project: &Project) -> Result<()> {
+        // Historical Graph reviews may outlive their target, but their resource
+        // identity must retain the same unambiguous spelling as Graph locks.
+        validate_semantic_graph_resource_spelling(&self.anchor.resource)?;
         if self.body.trim().is_empty()
             || self.body.len() > 8_000
             || self.anchor.resource.trim().is_empty()
@@ -553,6 +561,13 @@ impl Project {
                 locale,
                 profile_id,
             } => {
+                self.validate_semantic_graph_review_anchor(
+                    resource,
+                    *start,
+                    *end,
+                    locale.as_deref(),
+                    *profile_id,
+                )?;
                 if let Some(claim_id) = resource.strip_prefix("claim:")
                     && !self
                         .brief

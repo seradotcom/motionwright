@@ -1,0 +1,1920 @@
+{
+  "counts": {
+    "acceptance_proposals": 18,
+    "fields": 72,
+    "rows": 22,
+    "separate_technical_reviews_pending": 4
+  },
+  "id": "contractual-review-22-a8d-20261022",
+  "input_snapshot_sha256": "e80779e1286a0de02524de6a3d632a6267395bb8abc7918e793866184ba07dde",
+  "kind": "technical_review_of_existing_sources_and_original_evidence",
+  "ledger_changes_applied": 0,
+  "limits": [
+    "The receipt records a scoped technical review, not a human signature or authenticated second principal.",
+    "Execution identities remain those of the retained original evidence.",
+    "Source changes require their own currency assessment.",
+    "The separate review of the conformance verifier and final dossier is not supplied by this receipt."
+  ],
+  "new_product_executions": 0,
+  "private_review_sha256": "560ebe25ac105ffbcd21447fc76192b9b8042c9ff2a6df4908fb6b3ac370c60c",
+  "release_decision": "not_granted",
+  "reviewed_at_utc": "2026-10-22T02:46:22.113372+00:00",
+  "rows": [
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "external-locked-consumer-build-main-a8d77c9d",
+            "external-public-core-source-main-a8d77c9d"
+          ],
+          "id": "CR-FOUND-01#/statement",
+          "source_clause_sha256": "d7b9334791eac150d827bb1976a4319b290380feb751c05a14581a8dbc61fd86",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-cr-found-01-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "external-locked-consumer-build-main-a8d77c9d",
+            "external-public-core-source-main-a8d77c9d"
+          ],
+          "id": "CR-FOUND-01#/acceptance_criterion",
+          "source_clause_sha256": "aba1ccd516aff63529f731f6e14292349c07a92a7103324c20c8c8b065bad6a6",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-cr-found-01-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-FOUND-01",
+      "original_record_sha256": "a6cf5b29c633e8a8f5fb73fdaede56f14d418e1f554c8f5420bca3fb3eefcca8",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0",
+          "git_blob": "0ca9eb243a6777539c45185946eb1db67a24bfec",
+          "lines": [
+            1,
+            47
+          ],
+          "path": "Cargo.toml",
+          "range_sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "fce2a8df3b88e5138394338ad2fc57b48ce5d4d00dda37c651b3b9060224bddb",
+          "git_blob": "080780bce3c77cc489197885c9e15a47b441cb32",
+          "lines": [
+            1,
+            120
+          ],
+          "path": "tooling/source_policy.py",
+          "range_sha256": "fd7e10aa53c0ab937504d2314854ffe7368f748f8c5d62192a0872cded34690a",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The separate application consumes the pinned public dependencies. The retained isolated locked build and manifest inspection support this boundary; restored dependency caches are disclosed.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "project-complete-reopen-main-a8d77c9d",
+            "project-durable-lifecycle-source-main-a8d77c9d"
+          ],
+          "id": "CR-PROJECT-01#/statement",
+          "source_clause_sha256": "1f7484c9d7e6412c64e363c520cb778b2883f363320b0a00e963849388297030",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-project-01-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "project-complete-reopen-main-a8d77c9d"
+          ],
+          "id": "CR-PROJECT-01#/acceptance_criterion",
+          "source_clause_sha256": "5d927b28a646e122415e26c8472872d75b7a7838cce5346b29d1a5fdb0e5e524",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-project-01-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-PROJECT-01",
+      "original_record_sha256": "b23d7b462c711f28a39e2f47a6c147c3b32bf4836bb563153ae8e5773bd12755",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "33592569ff865e7711c954baa04da74860e7d9ac9e0d25f8d94e6b553cad7558",
+          "git_blob": "85118bf124d35481bbab9295ebd7100e8ce69e0f",
+          "lines": [
+            164,
+            216
+          ],
+          "path": "crates/service/tests/delivery_recipe_persistence.rs",
+          "range_sha256": "d922abb541812c6b9f190b6a200b1f279a43bd73eb4e1785a27ac715604b65c8",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "1aa0a71170ddf3bcab9374039d0ab237d0f455684df714c7bbdb98a68d32cdeb",
+          "git_blob": "c556d33bdd595e970597c75664c3d5e102943770",
+          "lines": [
+            144,
+            191
+          ],
+          "path": "crates/storage/tests/delivery_recipe_compatibility.rs",
+          "range_sha256": "181e43f400077d2f3cea63dfcee0234d2d7444a1ea1200c7d9dee28c96c72a3c",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "Actual Store and StudioService reopen operations preserve the complete recorded project and journal. Bundle bytes and references survive transfer and reopen.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "document-journal-invalidation-main-a8d77c9d"
+          ],
+          "id": "CR-PROJECT-02#/statement",
+          "source_clause_sha256": "2625bef77b10a4553ba96c4e554a2d5e8353920911bb5ecabbd47eda0e6a0ee2",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-project-02-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "sqlite-apply-process-termination-recovery-main-a8d77c9d"
+          ],
+          "id": "CR-PROJECT-02#/acceptance_criterion",
+          "source_clause_sha256": "612ce677d79521f3eb9a9572d02c9e51b145cfed1cd7366640eb68c6bb201c21",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-project-02-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-PROJECT-02",
+      "original_record_sha256": "7cded496e2f8faced05d96f385687da8c4906762b5fb0c08cf1f0e8ad548784e",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "a99ea20d52e4b8f7442ddb29fd8c3ab59794b1b05384581fd5b29a1da5743ec3",
+          "git_blob": "017261a5c865593be6ad5ebc8d1def39f436e4a9",
+          "lines": [
+            1293,
+            1480
+          ],
+          "path": "crates/storage/src/lib.rs",
+          "range_sha256": "b43c325e75897441c382dd9db9a46fc54d952e6aa84a84fe5033ef8adcbf814a",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "3198697fd965b471d1187559d82bf487fe71b15a76aeb7af3333cf945e29bbc5",
+          "git_blob": "f28af9dde32da5fe8202a372630f64c8305a80a7",
+          "lines": [
+            205,
+            224
+          ],
+          "path": "crates/storage/src/apply_crash_tests.rs",
+          "range_sha256": "145d17036c70de732730d306d529003ca1c2d70e62c3ee62ce8fbdbe9a8b6ebf",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "3198697fd965b471d1187559d82bf487fe71b15a76aeb7af3333cf945e29bbc5",
+          "git_blob": "f28af9dde32da5fe8202a372630f64c8305a80a7",
+          "lines": [
+            545,
+            625
+          ],
+          "path": "crates/storage/src/apply_crash_tests.rs",
+          "range_sha256": "004236f7bd4a69767ac1aa5c81f82c42dc36010437e25032793f0a0666677db4",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The shared transaction and real writer-process crash checkpoints preserve document, event and receipt consistency before and after commit.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "sqlite-cas-statement-sufficiency-main-a8d77c9d",
+            "sqlite-cas-transaction-writer-census-main-a8d77c9d",
+            "sqlite-two-client-cas-main-a8d77c9d"
+          ],
+          "id": "CR-PROJECT-03#/statement",
+          "source_clause_sha256": "2e2995a92e4fac8a045f0684e476e7a502f3520c2ad725543f1866413a514b74",
+          "sufficiency_review_ids": [
+            "a8d-project03-statement-review-cr-project-03-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "sqlite-two-client-cas-main-a8d77c9d"
+          ],
+          "id": "CR-PROJECT-03#/acceptance_criterion",
+          "source_clause_sha256": "d3504b01e31212f08d5c455f1d4b5bc12efd8c28c2bca0512d0e88ac8519027a",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-project-03-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-PROJECT-03",
+      "original_record_sha256": "a5d5d0e823d12b37d39b381c3bf9b412f3b2e041f14d78254167a1f4a1b14f6c",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "a99ea20d52e4b8f7442ddb29fd8c3ab59794b1b05384581fd5b29a1da5743ec3",
+          "git_blob": "017261a5c865593be6ad5ebc8d1def39f436e4a9",
+          "lines": [
+            1293,
+            1480
+          ],
+          "path": "crates/storage/src/lib.rs",
+          "range_sha256": "b43c325e75897441c382dd9db9a46fc54d952e6aa84a84fe5033ef8adcbf814a",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "33592569ff865e7711c954baa04da74860e7d9ac9e0d25f8d94e6b553cad7558",
+          "git_blob": "85118bf124d35481bbab9295ebd7100e8ce69e0f",
+          "lines": [
+            219,
+            290
+          ],
+          "path": "crates/service/tests/delivery_recipe_persistence.rs",
+          "range_sha256": "736b9f44e8bc7f81bc659971cc8f6be4fd9fc7fd5c8762274ab43869dc96290e",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The source writer census and a synchronized two-connection conflict establish one successful write and one conflict at a common base revision.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "current-a8d-app-owned-store-sdk-service-source-observations"
+          ],
+          "id": "CR-PROJECT-04#/statement",
+          "source_clause_sha256": "8a0b8485ba2e98e9ac5a08ccb87fd037f9166ea515687e81e645e19ce059963c",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-project-04-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "project-canonical-observer-main-a8d77c9d"
+          ],
+          "id": "CR-PROJECT-04#/acceptance_criterion",
+          "source_clause_sha256": "7d61750d230d8ba3d2aef6df029c9fe25d5932b806627b286cf5831898298938",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-project-04-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-PROJECT-04",
+      "original_record_sha256": "68234569fa8bd9ad1a737c82d609139d6af638d5c8d7d8b0f1ba1a3ef936e13a",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "7b094ef5e4803fa0bd78c051c49362c1a0a32872ea17f97c7c9b6bc425c7b840",
+          "git_blob": "fb20af5ad6a7f863e29267b702ce6800ba6d4de5",
+          "lines": [
+            3653,
+            3669
+          ],
+          "path": "crates/native/src/lib.rs",
+          "range_sha256": "05f30e05f1bf6ebaf8bd3663ae3a76f1954f9a3281b1dbc44d64780ee904d181",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "7b094ef5e4803fa0bd78c051c49362c1a0a32872ea17f97c7c9b6bc425c7b840",
+          "git_blob": "fb20af5ad6a7f863e29267b702ce6800ba6d4de5",
+          "lines": [
+            4219,
+            4312
+          ],
+          "path": "crates/native/src/lib.rs",
+          "range_sha256": "22a68a0bada6013909f6f0c7ca41225fe7a01cb0bae469a00d4cec0be1131522",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "Application-owned state is mutated through StudioService and inspected through the SDK adapter over the same project authority.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "sqlite-schema-atomicity-main-a8d77c9d"
+          ],
+          "id": "CR-PROJECT-07#/statement",
+          "source_clause_sha256": "3a5cda31bd3de648a161c051b4418f512b3ceade0c5923359761d122d0bdb827",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-project-07-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "sqlite-schema-atomicity-main-a8d77c9d"
+          ],
+          "id": "CR-PROJECT-07#/acceptance_criterion",
+          "source_clause_sha256": "c5bfcf35a093451d3cd834c63a28e988e2c130c6de006d3027a0de8dacffc392",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-project-07-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-PROJECT-07",
+      "original_record_sha256": "89db026f8213561e6a5c632c9f6ad1771099466ae0f4827a7191ec8c919d7d2e",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "1997c77aa2e6dd19da008c4553532342cb2a56e4c5173ca2cab8134b0456d6a2",
+          "git_blob": "7201fb1b6d42c11c8da477445ee400b5f0d67da3",
+          "lines": [
+            18,
+            111
+          ],
+          "path": "crates/storage/tests/schema_migration_atomicity.rs",
+          "range_sha256": "23f3f0287e2e1f25abb731957893afe2fa8592706c653e9e8b704cecefbf004d",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The retained schema migration, rollback and future-version rejection results preserve known document identity and foreign extension data within their fixture scope.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "current-a8d-decoded-original-audio-measurement-observations"
+          ],
+          "id": "CR-AUDIO-01#/statement",
+          "source_clause_sha256": "9a6a5c58367a6a590d40810ce51474a8196109f32c3c51745a6deaf06e1a647f",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-audio-01-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "current-a8d-decoded-original-audio-measurement-observations"
+          ],
+          "id": "CR-AUDIO-01#/acceptance_criterion",
+          "source_clause_sha256": "435707aeebf29fecf245ca11ca8606379d94006f49c2fe722c5e4e1c7d1dac6b",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-audio-01-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-AUDIO-01",
+      "original_record_sha256": "d147f542b3011a0e03010daff83afc33026972d961bd2855564ebeb5a3be672c",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "c189e5daf526427cf7371659676c22357891476485f280e5c74ea3624de820e9",
+          "git_blob": "80243f5550dbb240fe99ec8b2c9d8a8ce0e81165",
+          "lines": [
+            486,
+            517
+          ],
+          "path": "crates/service/src/audio.rs",
+          "range_sha256": "d695fcd6b4ed0d878a9bd43d9b0a0b2ff37691f15af7a3a5b865d70bb0bb27a0",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "568ec98891f8ea8b3267d5ce19974efc8e90729df2bcf02d10bc7016cc30ffd3",
+          "git_blob": "212c63b3c3fd05107bfa23e67c58b61b8bbc8cfb",
+          "lines": [
+            1396,
+            1470
+          ],
+          "path": "crates/service/src/lib.rs",
+          "range_sha256": "c23adcad7d3eb3e73a402e32b0a20585c08ad4ed4ce0e362676442ef7f464d95",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "Known PCM input bytes are decoded and imported with independently predetermined frame, sample-rate, channel and duration expectations.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "restore-history-current-authority-main-a8d77c9"
+          ],
+          "id": "CR-CHANGE-06#/statement",
+          "source_clause_sha256": "79aa5c4f8f0cb02fb9fee2abeba62b1524de16e02280efe7a0b9d4f898a84188",
+          "sufficiency_review_ids": [
+            "a8d-change-next-review-cr-change-06-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "restore-history-current-authority-main-a8d77c9"
+          ],
+          "id": "CR-CHANGE-06#/acceptance_criterion",
+          "source_clause_sha256": "6d0596afac72cc8064ce133c116d7f9c164a506d9e32385268dcf964e6b53049",
+          "sufficiency_review_ids": [
+            "a8d-change-next-review-cr-change-06-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-CHANGE-06",
+      "original_record_sha256": "2fe32b3f150bf7e0166886c6875292b87bdb17ff20230175992db1ea48144c3d",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "8ec3fc42ea8f860821480c46b8c67cc5d851e32aed7479e19f2a4c52d91bef53",
+          "git_blob": "cfe8288e5b11019def5f479b8db4c9950660a595",
+          "lines": [
+            37,
+            186
+          ],
+          "path": "crates/service/tests/delivery_recipe_authority.rs",
+          "range_sha256": "c5bbe572b09eb1b6053a9f73e03b50ad42c61ead093993b7c29f0e1329525c20",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "ec340f2d27b79981c365ceb2a4626dce40b9d7f108d78c0e71e808acf2dde421",
+          "git_blob": "26e4f9b89393a80cd6912821ee1cc5e508bbdf2f",
+          "lines": [
+            498,
+            528
+          ],
+          "path": "crates/service/tests/portable_secret_boundaries.rs",
+          "range_sha256": "8cd06a869e5e9f2f7bafe0e75cd62b103f09a2747939b94f3655e401f3aa352a",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "39f8f7e8b23ea8d896c320cfe21fa6675f8353d6f44a0444fb1ca700062328c6",
+          "git_blob": "3d7a1196cc6098cb019ab27f9f9f593078dd104c",
+          "lines": [
+            519,
+            546
+          ],
+          "path": "crates/service/tests/scoped_change_preservation.rs",
+          "range_sha256": "a102606ea2d9540156904b7fc5bcdff34d8fa2a81f3f3cad440847189372b6b3",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "Restore preserves history while renewing generation and excluding old operational grants. Source boundaries and retained replay, reopen and stale-authority checks support the stated scope.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "canonical-sdk-public-consumer-main-a8d77c9d"
+          ],
+          "id": "CR-SDK-01#/statement",
+          "source_clause_sha256": "326b4f60ba2cbd051eb7cc163c53694be1ace6fe8af65ecac177ef009b913516",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-cr-sdk-01-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "canonical-sdk-public-consumer-main-a8d77c9d"
+          ],
+          "id": "CR-SDK-01#/acceptance_criterion",
+          "source_clause_sha256": "dad26dd7e362d0f45425e690562fe2d088e3251e920add586c6dbb8f441bfa64",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-cr-sdk-01-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-SDK-01",
+      "original_record_sha256": "8cf69d2390c577fa5d7a1e78d7333079836b40ced97afd5e7b2ebfcdf1f7314c",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "e30fc0e35d3e3f3725086eade164493589a81bcd6ffb60b91b61ee3eaeb97479",
+          "git_blob": "464499b3d40ea0c566bb9c6fed53e92eb86d5c3d",
+          "lines": [
+            1,
+            30
+          ],
+          "path": "crates/native/Cargo.toml",
+          "range_sha256": "e30fc0e35d3e3f3725086eade164493589a81bcd6ffb60b91b61ee3eaeb97479",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0",
+          "git_blob": "0ca9eb243a6777539c45185946eb1db67a24bfec",
+          "lines": [
+            1,
+            47
+          ],
+          "path": "Cargo.toml",
+          "range_sha256": "455492e78f913df8979a470f2538d0a2bcf5abd293b4937a6e1342233ee305e0",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The pinned public SDK consumer compiles from an isolated application checkout without private upstream paths or copied upstream crates.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "native-operation-metadata-main-a8d77c9d"
+          ],
+          "id": "CR-SDK-05#/statement",
+          "source_clause_sha256": "cb7e2e310a8364030cc4421dad50e04941fe6025effce2e58c1b656143295264",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-sdk-05-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "native-operation-metadata-main-a8d77c9d"
+          ],
+          "id": "CR-SDK-05#/acceptance_criterion",
+          "source_clause_sha256": "7257c9bcf3775a380e7fbeddef016ead7918893be718d7d9ba2aff6e01625d26",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-sdk-05-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-SDK-05",
+      "original_record_sha256": "0be628d3e256aa21cd7f7838a54217451a528f5eb3276bfc22d330e8536b5f27",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "7b094ef5e4803fa0bd78c051c49362c1a0a32872ea17f97c7c9b6bc425c7b840",
+          "git_blob": "fb20af5ad6a7f863e29267b702ce6800ba6d4de5",
+          "lines": [
+            1689,
+            1724
+          ],
+          "path": "crates/native/src/lib.rs",
+          "range_sha256": "f8745793236cad8553ad30f0a0395687a34b4141e441388e2aa0cd82f3685b01",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "7b094ef5e4803fa0bd78c051c49362c1a0a32872ea17f97c7c9b6bc425c7b840",
+          "git_blob": "fb20af5ad6a7f863e29267b702ce6800ba6d4de5",
+          "lines": [
+            3671,
+            3680
+          ],
+          "path": "crates/native/src/lib.rs",
+          "range_sha256": "5ff2788a71c5fdbbf00d232017ee21d08cfced130ca8f4dae1a4782fb7829f68",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The complete declaration census binds risk, idempotence, timeout and dry-run metadata to the operation constructors and preserves explicit absence of undo semantics.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "current-a8d-production-cancellation-state-projection-observations"
+          ],
+          "id": "CR-JOBS-04#/statement",
+          "source_clause_sha256": "65313bf8ab70eaa92c08a75a0a89a7dbe8dd9198dfe53845089f31c55d2205b5",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-jobs-04-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "current-a8d-production-cancellation-state-projection-observations"
+          ],
+          "id": "CR-JOBS-04#/acceptance_criterion",
+          "source_clause_sha256": "b36142a9d00c73ddd068e62dae1b448fdd3e7ddeffb1fc817468ead14515a919",
+          "sufficiency_review_ids": [
+            "a8d-renewed-review-cr-jobs-04-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-JOBS-04",
+      "original_record_sha256": "4933ca9aa330caf2c04794592fe8e0c062cf463ece359e4d9eddb32f95f64495",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "716eab3218aa72fea1a0a55d6a6ed45a4cde714a9ff8cf7dd6762794ff92a3a7",
+          "git_blob": "6921587c3d268a74710f6fbc20764ae826c42bdd",
+          "lines": [
+            135,
+            147
+          ],
+          "path": "crates/service/src/jobs.rs",
+          "range_sha256": "7ef8f42cd86cefac3ba7bcbedf878a4a04a1187360e3062ff4699e184fd0447f",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "716eab3218aa72fea1a0a55d6a6ed45a4cde714a9ff8cf7dd6762794ff92a3a7",
+          "git_blob": "6921587c3d268a74710f6fbc20764ae826c42bdd",
+          "lines": [
+            185,
+            205
+          ],
+          "path": "crates/service/src/jobs.rs",
+          "range_sha256": "b4401e27f0bd92997f2fa92147bc621ce1d2571603ffeecb5dab68bd1e665084",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "716eab3218aa72fea1a0a55d6a6ed45a4cde714a9ff8cf7dd6762794ff92a3a7",
+          "git_blob": "6921587c3d268a74710f6fbc20764ae826c42bdd",
+          "lines": [
+            904,
+            942
+          ],
+          "path": "crates/service/src/jobs.rs",
+          "range_sha256": "1524c3e262f41c4900bba787c1f388edbfa48926ddf8ccde92e4ae88c540973a",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "Cancellation requests and terminal confirmation remain distinct in the inspected projection and exact retained methods; uncertainty does not produce a false cancelled terminal state.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "workflow-ai-disclosure-source-main-a8d77c9d"
+          ],
+          "id": "CR-WORKFLOW-06#/statement",
+          "source_clause_sha256": "18c65973bf1a6cec740bad4f071190f9fb2cc7d9afd9c10f6e8fb07ed96524f1",
+          "sufficiency_review_ids": [
+            "a8d-workflow-review-cr-workflow-06-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "workflow-ai-disclosure-source-main-a8d77c9d"
+          ],
+          "id": "CR-WORKFLOW-06#/acceptance_criterion",
+          "source_clause_sha256": "d0967aaafbbd710e435e5e11cb2268111a2c085a7e9187e1a4eee693e2c6e1cf",
+          "sufficiency_review_ids": [
+            "a8d-workflow-review-cr-workflow-06-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-WORKFLOW-06",
+      "original_record_sha256": "cd1270980624c15c7ed19cfc22c110b3f3640b5c544d1d6f6a7fe71fef4fcc51",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "8c3b432d88d3ee0cdfbc466b24cc750b854a7755c71dcec117104c992ff971a1",
+          "git_blob": "0dd5b95c634063891c3996933e8d8718980967aa",
+          "lines": [
+            718,
+            725
+          ],
+          "path": "apps/studio/src/WorkflowWorkspace.tsx",
+          "range_sha256": "83e007bf69034ca1e6869054641632db39100b44e2273e83dd0107df735c1a33",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "5f689ff93e87f1d334e435987b43f37d51ad683f2f3b4c5a8181650db478e61c",
+          "git_blob": "7883bfbb898761710a7a5cfc255e333933fc0243",
+          "lines": [
+            50,
+            58
+          ],
+          "path": "docs/workflows.md",
+          "range_sha256": "902eb8eff4e371b4ce59643bbc023f3bc3338219b90ba694122939fd7df6276a",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The current distributed documentation and interface source disclose variation in AI-dependent results without claiming deterministic creative output.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "workflow-browser-boundary-unit-main-a8d77c9d",
+            "workflow-canonical-view-source-main-a8d77c9d"
+          ],
+          "id": "CR-WORKFLOW-08#/statement",
+          "source_clause_sha256": "bbf2130785ef10026dc4f2638dc4291005e74190aec790d41151fc4b01c4586c",
+          "sufficiency_review_ids": [
+            "a8d-workflow-review-cr-workflow-08-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "workflow-builtin-authority-unit-main-a8d77c9d",
+            "workflow-canonical-view-source-main-a8d77c9d"
+          ],
+          "id": "CR-WORKFLOW-08#/acceptance_criterion",
+          "source_clause_sha256": "19da61c4cd7272b6c0d0ed532d3a58548331f1f4a42ef08b9128eee1a98671e5",
+          "sufficiency_review_ids": [
+            "a8d-workflow-review-cr-workflow-08-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-WORKFLOW-08",
+      "original_record_sha256": "8238199a5c38ec57c9265490b068fb889d05c9fdc702580e42120caebe071513",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "5f689ff93e87f1d334e435987b43f37d51ad683f2f3b4c5a8181650db478e61c",
+          "git_blob": "7883bfbb898761710a7a5cfc255e333933fc0243",
+          "lines": [
+            3,
+            30
+          ],
+          "path": "docs/workflows.md",
+          "range_sha256": "56d95b3b23be2d6048800f9131fd1f8bc4c0960443c3147166b2e4ecde41f91b",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "8c3b432d88d3ee0cdfbc466b24cc750b854a7755c71dcec117104c992ff971a1",
+          "git_blob": "0dd5b95c634063891c3996933e8d8718980967aa",
+          "lines": [
+            160,
+            193
+          ],
+          "path": "apps/studio/src/WorkflowWorkspace.tsx",
+          "range_sha256": "0ebe7843dcd69679d296cca3e6c3a3c03df857fedcea2d79ed7efe252251285d",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The inspected view, API, shell client and allowlist retain the existing workflow authority. The evidence does not certify provider execution or replay.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "variant-portable-browser-roundtrip-main-a8d77c9d",
+            "variant-portable-service-roundtrip-main-a8d77c9d"
+          ],
+          "id": "CR-VARIANT-08#/statement",
+          "source_clause_sha256": "a808913619dc83d56cf59916644743689f124f247663846fe42ea459bb60ad83",
+          "sufficiency_review_ids": [
+            "a8d-variant-next-review-cr-variant-08-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "variant-portable-browser-roundtrip-main-a8d77c9d",
+            "variant-portable-service-roundtrip-main-a8d77c9d"
+          ],
+          "id": "CR-VARIANT-08#/acceptance_criterion",
+          "source_clause_sha256": "34493141ed157b798810938126a2988008e8405e55b1cc7b603ce03e1b0371c3",
+          "sufficiency_review_ids": [
+            "a8d-variant-next-review-cr-variant-08-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-VARIANT-08",
+      "original_record_sha256": "9ce22b482875743377bdff9577294deb6df17612d35363adc258ba6c8c4d446c",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "ec340f2d27b79981c365ceb2a4626dce40b9d7f108d78c0e71e808acf2dde421",
+          "git_blob": "26e4f9b89393a80cd6912821ee1cc5e508bbdf2f",
+          "lines": [
+            498,
+            528
+          ],
+          "path": "crates/service/tests/portable_secret_boundaries.rs",
+          "range_sha256": "8cd06a869e5e9f2f7bafe0e75cd62b103f09a2747939b94f3655e401f3aa352a",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "33592569ff865e7711c954baa04da74860e7d9ac9e0d25f8d94e6b553cad7558",
+          "git_blob": "85118bf124d35481bbab9295ebd7100e8ce69e0f",
+          "lines": [
+            578,
+            710
+          ],
+          "path": "crates/service/tests/delivery_recipe_persistence.rs",
+          "range_sha256": "287d4f8b4628c5796aea984ec1058360f9d381a751123ef4a1dfdc937234c7ba",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "329809d2d93e8caa8033c6f2aa90a2136c12f8faf7d845a77eabf09e648636f5",
+          "git_blob": "df7c36eb8aee2fe905e16f83fdd927bdb5b25357",
+          "lines": [
+            773,
+            834
+          ],
+          "path": "apps/studio/tests/delivery-recipe.spec.ts",
+          "range_sha256": "9fb0f64dc16370416b1f6d2f98ef089a5a78056bdd08ee3ea57511f3ef23349f",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "One retained browser and service sequence exports and imports an editable structured bundle, with both closed SQLite stores, identities, history, digests and a subsequent persisted edit.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "delivery-current-platform-candidate-receipts-main-a8d77c9d",
+            "delivery-current-source-and-license-boundaries-main-a8d77c9d"
+          ],
+          "id": "CR-DELIVER-06#/statement",
+          "source_clause_sha256": "fb4724ab4cdf16b7298f2496f205e9cf0244e8c173d16cbbec368a507be8066f",
+          "sufficiency_review_ids": [
+            "a8d-deliver-review-cr-deliver-06-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "delivery-current-source-and-license-boundaries-main-a8d77c9d"
+          ],
+          "id": "CR-DELIVER-06#/acceptance_criterion",
+          "source_clause_sha256": "e7aa3a817a5975d09f69edc68f31e73a035218c56638734e0c73449468555c25",
+          "sufficiency_review_ids": [
+            "a8d-deliver-review-cr-deliver-06-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-DELIVER-06",
+      "original_record_sha256": "6e008d8d64ea8797383ab4c966d111d8efe6827f12b29d233138c20b805e0fcd",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "ad3f3e3abb02f8fcf04a26dd5f8aa7d95ebffed6897862204bc3b8933c36cd76",
+          "git_blob": "a046409229a246264275678ed2fb95a4ea03d56d",
+          "lines": [
+            1,
+            71
+          ],
+          "path": "docs/installed-candidate-smoke.md",
+          "range_sha256": "ad3f3e3abb02f8fcf04a26dd5f8aa7d95ebffed6897862204bc3b8933c36cd76",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "3389038c99c51a7e88d7af2f33231887dae248c79bacac7204dc51db5b3f51a5",
+          "git_blob": "0e8640288877c161d6bbff68b37aca50a213694e",
+          "lines": [
+            1,
+            82
+          ],
+          "path": "docs/delivery.md",
+          "range_sha256": "3389038c99c51a7e88d7af2f33231887dae248c79bacac7204dc51db5b3f51a5",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "bd55325c611a13d909b2643f7861b691be70d726aa6b7baf36c3e592a9053f2b",
+          "git_blob": "6890a949087e0f011bd918ce26bf8126deebb440",
+          "lines": [
+            1,
+            220
+          ],
+          "path": "tooling/package_receipt.py",
+          "range_sha256": "aa81112463bd17375f56d9ef995d18986865a8d868ee9c92b51802711019bdee",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "Current package receipts, workflow steps and distributed guidance disclose signature limitations and do not instruct users to disable operating-system protections.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "extensions-current-future-profile-source-main-a8d77c9d"
+          ],
+          "id": "CR-EXT-07#/statement",
+          "source_clause_sha256": "d90d87dc20544e8d77b7bd18b332ec94c5ec048dbc3f32562aae7325ba0578e4",
+          "sufficiency_review_ids": [
+            "a8d-extensions-review-cr-ext-07-statement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "extensions-current-future-profile-source-main-a8d77c9d"
+          ],
+          "id": "CR-EXT-07#/acceptance_criterion",
+          "source_clause_sha256": "7915af445152f13def525cb4a55f7b2f6f899b37dee071cbeb47e691eb09d16b",
+          "sufficiency_review_ids": [
+            "a8d-extensions-review-cr-ext-07-acceptance-criterion"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "CR-EXT-07",
+      "original_record_sha256": "4f0e14336334234619088b32e3e9ac88dfb1a7ce47fa1cfd64ec27dca285885d",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "769e336f91a4aa1696921b8c83caeeca391e59efc31e497d0fa8e7167d8f2132",
+          "git_blob": "1b47bda1e3946da5005b4d243806b67d840bd9ff",
+          "lines": [
+            64,
+            68
+          ],
+          "path": "docs/renderers.md",
+          "range_sha256": "47130429e6ed310481f9f5ae72250db705c9164ccb8d1ec79ae90ced4715be09",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "fa406e3644e97547676c45d8acbde37143ee4886f58f651e30401f31c8e2b109",
+          "git_blob": "0815e36a2af9ee06de89395975615e4c70413a15",
+          "lines": [
+            613,
+            619
+          ],
+          "path": "apps/studio/src/IntegrationsWorkspace.tsx",
+          "range_sha256": "30a97269923aa3a18ede2693b58cb2e425093f21c25b33868cfa97264f619cb5",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The current documentation and interface source describe interactive output as a future optional capability and do not claim a delivered player.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "acc001-inspectable-source-main-a8d77c9d"
+          ],
+          "id": "ACC-001#/given",
+          "source_clause_sha256": "fcea7fdd9c4f173d71ec3e86ce8c4e0f80a80b6ac25ef20122fe5c096ac2cc02",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-acc-001-given"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc001-actual-isolated-consumer-build-main-a8d77c9d"
+          ],
+          "id": "ACC-001#/when",
+          "source_clause_sha256": "bb0417a30bf745b11742df0849377f67d1587f4d973ec7e4dc5e44741593715f",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-acc-001-when"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc001-actual-isolated-consumer-build-main-a8d77c9d",
+            "acc001-current-owner-mapping-main-a8d77c9d",
+            "acc001-inspectable-source-main-a8d77c9d",
+            "acc001-realized-film-mapping-main-a8d77c9d"
+          ],
+          "id": "ACC-001#/then",
+          "source_clause_sha256": "928c9e1c746edf0f182d7150cf37d7f2c59ca4ee860b5d084f08da3ee42dd7bb",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-acc-001-then"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc001-evidence-boundary-review-main-a8d77c9d"
+          ],
+          "id": "ACC-001#/prohibited",
+          "source_clause_sha256": "b6591bfdacfbcc9279d1c044851bcb811bb0e4a9f7270082e52c498bb0f9e96a",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-acc-001-prohibited"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc001-evidence-boundary-review-main-a8d77c9d"
+          ],
+          "id": "ACC-001#/evidence_required/0",
+          "source_clause_sha256": "3abd047d40c67ebebb0ccfd77256c10eaee0c542c415fd5e2d4c45d72da0966c",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-acc-001-evidence-required-0"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc001-evidence-boundary-review-main-a8d77c9d"
+          ],
+          "id": "ACC-001#/evidence_required/1",
+          "source_clause_sha256": "2c2eb7cef3e11c99828c12b08008f095722a5cd06c9ddc573f5182b67fd2721a",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-acc-001-evidence-required-1"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc001-evidence-boundary-review-main-a8d77c9d"
+          ],
+          "id": "ACC-001#/evidence_required/2",
+          "source_clause_sha256": "7e2b31844fdb163d92dafc03c9517728c7574e98f9ac09960f2d180e4c87d076",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-acc-001-evidence-required-2"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc001-evidence-boundary-review-main-a8d77c9d"
+          ],
+          "id": "ACC-001#/evidence_required/3",
+          "source_clause_sha256": "c41899b19bc76a66927bc644ab38ef82728850db4cfd21bc3905d1cb4645bb6c",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-acc-001-evidence-required-3"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc001-evidence-boundary-review-main-a8d77c9d"
+          ],
+          "id": "ACC-001#/evidence_required/4",
+          "source_clause_sha256": "9a5be43fbf3723a8a87c69726ebee1648438a313f163a10ce44762779af54c42",
+          "sufficiency_review_ids": [
+            "a8d-foundation-scenario-review-acc-001-evidence-required-4"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "ACC-001",
+      "original_record_sha256": "098f60301d6e98ff28beffc4d3adcd8d5a86e9caecedef4ddb27a446e1fcbc8d",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "347a612255184316ff8d0eb5cf33dc1f05caffe93a50d36c222aa15b0998296d",
+          "git_blob": "29e9f62d685afa203a8d65e536d14c5ceac68e14",
+          "lines": [
+            1,
+            220
+          ],
+          "path": ".github/workflows/ci.yml",
+          "range_sha256": "1876c38ff85fee9c5886c07b22ccf95ad8aa3d449d8075fe6cbedd4354bfb5bb",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "34cf7abcef0c1d7c5e57851b86ba789597b0180c2dfe678437ddc0564aaa0869",
+          "git_blob": "605a7a4d3fc7ddf87e829763cad4a40df12bb022",
+          "lines": [
+            1,
+            29
+          ],
+          "path": "crates/native/src/film.rs",
+          "range_sha256": "44b8043947dd73806a8563cb66d8257d941a3469fb7f85207a371310821bc86c",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The same source and lock bind the isolated checkout, actual locked consumer build, public dependency resolution and inspected canonical mappings. This is acceptance of the build scenario only.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "acc008-public-master-negative-main-a8d77c9d"
+          ],
+          "id": "ACC-008#/given",
+          "source_clause_sha256": "5b60d948c3ef532450906c925a52a09731a86269a42bc88b838160189dd3ce8b",
+          "sufficiency_review_ids": [
+            "a8d-audio-cases-review-acc-008-given"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc008-public-master-negative-main-a8d77c9d"
+          ],
+          "id": "ACC-008#/when",
+          "source_clause_sha256": "4800d0a1a1f73e8969bd25609f4f519341b19a4168e38a0e23fb887d2e54138d",
+          "sufficiency_review_ids": [
+            "a8d-audio-cases-review-acc-008-when"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc008-public-master-negative-main-a8d77c9d"
+          ],
+          "id": "ACC-008#/then",
+          "source_clause_sha256": "3a2501a56ce9929a147802a51a954cfc6a42bde65d256b029b0a767bfb3a1412",
+          "sufficiency_review_ids": [
+            "a8d-audio-cases-review-acc-008-then"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc008-current-negative-sufficiency-main-a8d77c9d",
+            "acc008-public-master-negative-main-a8d77c9d"
+          ],
+          "id": "ACC-008#/prohibited",
+          "source_clause_sha256": "b6591bfdacfbcc9279d1c044851bcb811bb0e4a9f7270082e52c498bb0f9e96a",
+          "sufficiency_review_ids": [
+            "a8d-audio-cases-review-acc-008-prohibited"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc008-current-negative-sufficiency-main-a8d77c9d"
+          ],
+          "id": "ACC-008#/evidence_required/0",
+          "source_clause_sha256": "3abd047d40c67ebebb0ccfd77256c10eaee0c542c415fd5e2d4c45d72da0966c",
+          "sufficiency_review_ids": [
+            "a8d-audio-cases-review-acc-008-evidence-required-0"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc008-current-negative-sufficiency-main-a8d77c9d"
+          ],
+          "id": "ACC-008#/evidence_required/1",
+          "source_clause_sha256": "2c2eb7cef3e11c99828c12b08008f095722a5cd06c9ddc573f5182b67fd2721a",
+          "sufficiency_review_ids": [
+            "a8d-audio-cases-review-acc-008-evidence-required-1"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc008-public-master-negative-main-a8d77c9d"
+          ],
+          "id": "ACC-008#/evidence_required/2",
+          "source_clause_sha256": "7e2b31844fdb163d92dafc03c9517728c7574e98f9ac09960f2d180e4c87d076",
+          "sufficiency_review_ids": [
+            "a8d-audio-cases-review-acc-008-evidence-required-2"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc008-current-negative-sufficiency-main-a8d77c9d"
+          ],
+          "id": "ACC-008#/evidence_required/3",
+          "source_clause_sha256": "c41899b19bc76a66927bc644ab38ef82728850db4cfd21bc3905d1cb4645bb6c",
+          "sufficiency_review_ids": [
+            "a8d-audio-cases-review-acc-008-evidence-required-3"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "acc008-current-negative-sufficiency-main-a8d77c9d"
+          ],
+          "id": "ACC-008#/evidence_required/4",
+          "source_clause_sha256": "9a5be43fbf3723a8a87c69726ebee1648438a313f163a10ce44762779af54c42",
+          "sufficiency_review_ids": [
+            "a8d-audio-cases-review-acc-008-evidence-required-4"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "ACC-008",
+      "original_record_sha256": "0847edf06ea3cdc7d635f0b28272df2916d40140dc24c20cc78b873a3fbe0949",
+      "recommendation": "accept_reviewed_row",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "2fbaa54d3da97ce05193f9a41e8802c3358b19b34a037b1185ff13c7dd1d4ffc",
+          "git_blob": "807ec85571456186d259d9e9c587ff1899d9fdec",
+          "lines": [
+            351,
+            491
+          ],
+          "path": "crates/native/tests/audio_master_native_admission.rs",
+          "range_sha256": "86b5f2cc7cc04872029465a52e8daf883dc5fcd62236eee92e955ff1f5595bf9",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "The retained method creates the missing-audio input in SQLite, requests the master through the public entry point, observes its precise early rejection and verifies unchanged state and no transport invocation.",
+        "status": "completed"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-01#/scenario",
+          "source_clause_sha256": "748e738f337c1b2ef4f883c441a9ed97e3e06aac4034aa2a5ec7e422d0744ffa",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-01-scenario"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "source-history-controls-main-a8d77c9d"
+          ],
+          "id": "A05-E00-01#/negative_scenario",
+          "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-01-negative-scenario"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-01#/evidence_required/0",
+          "source_clause_sha256": "1bb674a01b3d49980ea989bf6cf6057d480978c233e815795a4fe0080e0902f0",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-01-evidence-required-0"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-01#/evidence_required/1",
+          "source_clause_sha256": "4c4650f528a64b2a43d8825b31326c69666bbbecd94b4060c90c1a18437db059",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-01-evidence-required-1"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-01#/evidence_required/2",
+          "source_clause_sha256": "0e64e97e29eba660ee10b1925f4a19738c5e33e7ece19b1d2218c1c8c6276cf5",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-01-evidence-required-2"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-01#/evidence_required/3",
+          "source_clause_sha256": "d891735d74628a0bd84149945ad4cd5dc46c1e998809edefc58092047af0984b",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-01-evidence-required-3"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-01#/evidence_required/4",
+          "source_clause_sha256": "fdbfa0e95da2b180644ae9380f8a0a9f0911a540009af503531fe27529981ce3",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-01-evidence-required-4"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-01#/evidence_required/5",
+          "source_clause_sha256": "eb1e063ed76261e24ccebb0a42c14c323a108d9ac0b41394927f82e7856932b9",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-01-evidence-required-5"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "A05-E00-01",
+      "original_record_sha256": "82ff6a23efe2d3086ea1d991cf001d1abdd987bd18f122ce7a04faf223cc1287",
+      "recommendation": "retain_open",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "52efc65db5f41d2ce5661c1700be2bd1a26160fa07ef81d749eb0d757cd8d97d",
+          "git_blob": "732e57ca07669f1d42959b90a61937d77b04f61c",
+          "lines": [
+            386,
+            519
+          ],
+          "path": "tooling/conformance_policy.py",
+          "range_sha256": "f50877e5cad04e5710ce3513a3aa7180e2a06beacb7b6c036a6d7b0a9cfa0c6e",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "8164c6adda8b9a6ae2ff8f447b4ce617e91ab027b294bca0532a9f188ed58e0e",
+          "git_blob": "af5414b9edb20923aa3198fcb28e29e9b933414b",
+          "lines": [
+            50,
+            92
+          ],
+          "path": "tooling/acceptance_policy.py",
+          "range_sha256": "929badee335c2af65d24b6cfbae77b6ea7b3e6795731040f1fa7f6c83f4ac46b",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f",
+          "git_blob": "d331e974485aea6406b7439670fe9b949c91260b",
+          "lines": [
+            21,
+            68
+          ],
+          "path": "tooling/creative_status_policy.py",
+          "range_sha256": "50f03b39d8f09c0d66e420fdc09d9565832bc98880f651ae7dc1a15320fbe818",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "dcbf3c717ddcc97fabb911d7a3e348b4373a7a0b13d29313d51e51091e825370",
+          "git_blob": "948956f091db0fa2687fb018d9facca97d7a536c",
+          "lines": [
+            164,
+            211
+          ],
+          "path": "tooling/tests/test_creative_status_policy.py",
+          "range_sha256": "8a285c3b39c0822814bfd1d3fe305b92638c63461331496e391a0663f0d804bf",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "A separate technical review must bind the verifier version and final dossier snapshot, check the inventory and evidence states, and record its result. The earlier frozen audit retains its narrower inventory scope.",
+        "status": "separate_review_pending"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-04#/scenario",
+          "source_clause_sha256": "10066e0dcf9fc76910569f6776ec5259efbd63200c1230ef8f51e6ba747e6214",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-04-scenario"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "source-history-controls-main-a8d77c9d"
+          ],
+          "id": "A05-E00-04#/negative_scenario",
+          "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-04-negative-scenario"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-04#/evidence_required/0",
+          "source_clause_sha256": "1bb674a01b3d49980ea989bf6cf6057d480978c233e815795a4fe0080e0902f0",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-04-evidence-required-0"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-04#/evidence_required/1",
+          "source_clause_sha256": "4c4650f528a64b2a43d8825b31326c69666bbbecd94b4060c90c1a18437db059",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-04-evidence-required-1"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-04#/evidence_required/2",
+          "source_clause_sha256": "0e64e97e29eba660ee10b1925f4a19738c5e33e7ece19b1d2218c1c8c6276cf5",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-04-evidence-required-2"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-04#/evidence_required/3",
+          "source_clause_sha256": "d891735d74628a0bd84149945ad4cd5dc46c1e998809edefc58092047af0984b",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-04-evidence-required-3"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-04#/evidence_required/4",
+          "source_clause_sha256": "fdbfa0e95da2b180644ae9380f8a0a9f0911a540009af503531fe27529981ce3",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-04-evidence-required-4"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "A05-E00-04#/evidence_required/5",
+          "source_clause_sha256": "eb1e063ed76261e24ccebb0a42c14c323a108d9ac0b41394927f82e7856932b9",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-a05-e00-04-evidence-required-5"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "A05-E00-04",
+      "original_record_sha256": "80395fde69d10a2c67b93fe380e16285b6bf85bfa9ed103ed9bd8ad494b3d573",
+      "recommendation": "retain_open",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "52efc65db5f41d2ce5661c1700be2bd1a26160fa07ef81d749eb0d757cd8d97d",
+          "git_blob": "732e57ca07669f1d42959b90a61937d77b04f61c",
+          "lines": [
+            386,
+            519
+          ],
+          "path": "tooling/conformance_policy.py",
+          "range_sha256": "f50877e5cad04e5710ce3513a3aa7180e2a06beacb7b6c036a6d7b0a9cfa0c6e",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "8164c6adda8b9a6ae2ff8f447b4ce617e91ab027b294bca0532a9f188ed58e0e",
+          "git_blob": "af5414b9edb20923aa3198fcb28e29e9b933414b",
+          "lines": [
+            50,
+            92
+          ],
+          "path": "tooling/acceptance_policy.py",
+          "range_sha256": "929badee335c2af65d24b6cfbae77b6ea7b3e6795731040f1fa7f6c83f4ac46b",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f",
+          "git_blob": "d331e974485aea6406b7439670fe9b949c91260b",
+          "lines": [
+            21,
+            68
+          ],
+          "path": "tooling/creative_status_policy.py",
+          "range_sha256": "50f03b39d8f09c0d66e420fdc09d9565832bc98880f651ae7dc1a15320fbe818",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "dcbf3c717ddcc97fabb911d7a3e348b4373a7a0b13d29313d51e51091e825370",
+          "git_blob": "948956f091db0fa2687fb018d9facca97d7a536c",
+          "lines": [
+            164,
+            211
+          ],
+          "path": "tooling/tests/test_creative_status_policy.py",
+          "range_sha256": "8a285c3b39c0822814bfd1d3fe305b92638c63461331496e391a0663f0d804bf",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "A separate technical review must bind the verifier version and final dossier snapshot, verify artifact-to-source and claim coverage, and record its result without inheriting acceptance across source changes.",
+        "status": "separate_review_pending"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "MW05-E00-01#/requirement",
+          "source_clause_sha256": "0c8a4bbdb8d2811017515ba2c203f90fa7514035484b07b608454fad65f2e1b5",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-mw05-e00-01-requirement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "MW05-E00-01#/acceptance",
+          "source_clause_sha256": "748e738f337c1b2ef4f883c441a9ed97e3e06aac4034aa2a5ec7e422d0744ffa",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-mw05-e00-01-acceptance"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "source-history-controls-main-a8d77c9d"
+          ],
+          "id": "MW05-E00-01#/negative_case",
+          "source_clause_sha256": "890b663e3d3b39d3d27e51f2ea73a56dcdf2cc338c58e8a45d518ea85b75526d",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-mw05-e00-01-negative-case"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "MW05-E00-01",
+      "original_record_sha256": "1c8058f5346a996c1eaea9ab94244b290fe40bf1274e536832234373975a4baf",
+      "recommendation": "retain_open",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "52efc65db5f41d2ce5661c1700be2bd1a26160fa07ef81d749eb0d757cd8d97d",
+          "git_blob": "732e57ca07669f1d42959b90a61937d77b04f61c",
+          "lines": [
+            386,
+            519
+          ],
+          "path": "tooling/conformance_policy.py",
+          "range_sha256": "f50877e5cad04e5710ce3513a3aa7180e2a06beacb7b6c036a6d7b0a9cfa0c6e",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "8164c6adda8b9a6ae2ff8f447b4ce617e91ab027b294bca0532a9f188ed58e0e",
+          "git_blob": "af5414b9edb20923aa3198fcb28e29e9b933414b",
+          "lines": [
+            50,
+            92
+          ],
+          "path": "tooling/acceptance_policy.py",
+          "range_sha256": "929badee335c2af65d24b6cfbae77b6ea7b3e6795731040f1fa7f6c83f4ac46b",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f",
+          "git_blob": "d331e974485aea6406b7439670fe9b949c91260b",
+          "lines": [
+            21,
+            68
+          ],
+          "path": "tooling/creative_status_policy.py",
+          "range_sha256": "50f03b39d8f09c0d66e420fdc09d9565832bc98880f651ae7dc1a15320fbe818",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "dcbf3c717ddcc97fabb911d7a3e348b4373a7a0b13d29313d51e51091e825370",
+          "git_blob": "948956f091db0fa2687fb018d9facca97d7a536c",
+          "lines": [
+            164,
+            211
+          ],
+          "path": "tooling/tests/test_creative_status_policy.py",
+          "range_sha256": "8a285c3b39c0822814bfd1d3fe305b92638c63461331496e391a0663f0d804bf",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "A separate technical review must bind the verifier version and final dossier snapshot, check the inventory and evidence states, and record its result. The earlier frozen audit retains its narrower inventory scope.",
+        "status": "separate_review_pending"
+      }
+    },
+    {
+      "applied": false,
+      "criterion_bindings": [
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d",
+            "positive-cli-controls-main-a8d77c9d"
+          ],
+          "id": "MW05-E00-04#/requirement",
+          "source_clause_sha256": "cc5650358cdbc8dc8cbde59a267e1768d3c1b0c0db27d46f18012b573f1c506a",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-mw05-e00-04-requirement"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "original-catalogue-evidence-audit-main-a8d77c9d"
+          ],
+          "id": "MW05-E00-04#/acceptance",
+          "source_clause_sha256": "10066e0dcf9fc76910569f6776ec5259efbd63200c1230ef8f51e6ba747e6214",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-mw05-e00-04-acceptance"
+          ]
+        },
+        {
+          "evidence_ids": [
+            "source-history-controls-main-a8d77c9d"
+          ],
+          "id": "MW05-E00-04#/negative_case",
+          "source_clause_sha256": "2b5d638b371f9f6b8990d43c0428040b7a3ea8c1aa4ef69a3efb0ec54cb47df1",
+          "sufficiency_review_ids": [
+            "a8d-a5-direct-review-mw05-e00-04-negative-case"
+          ]
+        }
+      ],
+      "human_review_required": false,
+      "id": "MW05-E00-04",
+      "original_record_sha256": "f9f4d4970525abd41489876cefff57fa9c9ae35e7c091572e6b6d291d4688fa5",
+      "recommendation": "retain_open",
+      "release_authorized": false,
+      "source": {
+        "digest_kind": "git-text-lf",
+        "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+        "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+      },
+      "source_refs": [
+        {
+          "file_sha256": "52efc65db5f41d2ce5661c1700be2bd1a26160fa07ef81d749eb0d757cd8d97d",
+          "git_blob": "732e57ca07669f1d42959b90a61937d77b04f61c",
+          "lines": [
+            386,
+            519
+          ],
+          "path": "tooling/conformance_policy.py",
+          "range_sha256": "f50877e5cad04e5710ce3513a3aa7180e2a06beacb7b6c036a6d7b0a9cfa0c6e",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "8164c6adda8b9a6ae2ff8f447b4ce617e91ab027b294bca0532a9f188ed58e0e",
+          "git_blob": "af5414b9edb20923aa3198fcb28e29e9b933414b",
+          "lines": [
+            50,
+            92
+          ],
+          "path": "tooling/acceptance_policy.py",
+          "range_sha256": "929badee335c2af65d24b6cfbae77b6ea7b3e6795731040f1fa7f6c83f4ac46b",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "443998494d88c3a7a2b9a477fc62cf19359ae20d9884046a9284e96c7ea8a82f",
+          "git_blob": "d331e974485aea6406b7439670fe9b949c91260b",
+          "lines": [
+            21,
+            68
+          ],
+          "path": "tooling/creative_status_policy.py",
+          "range_sha256": "50f03b39d8f09c0d66e420fdc09d9565832bc98880f651ae7dc1a15320fbe818",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        },
+        {
+          "file_sha256": "dcbf3c717ddcc97fabb911d7a3e348b4373a7a0b13d29313d51e51091e825370",
+          "git_blob": "948956f091db0fa2687fb018d9facca97d7a536c",
+          "lines": [
+            164,
+            211
+          ],
+          "path": "tooling/tests/test_creative_status_policy.py",
+          "range_sha256": "8a285c3b39c0822814bfd1d3fe305b92638c63461331496e391a0663f0d804bf",
+          "source_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750"
+        }
+      ],
+      "technical_review": {
+        "authenticated_identity_claimed": false,
+        "method": "automated",
+        "reviewer_identity": null,
+        "reviewer_kind": "automated_technical",
+        "scope": "A separate technical review must bind the verifier version and final dossier snapshot, verify artifact-to-source and claim coverage, and record its result without inheriting acceptance across source changes.",
+        "status": "separate_review_pending"
+      }
+    }
+  ],
+  "schema": "conformance.contractual-review-receipt/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "a8d77c9db8be9e2b17e31121498b73ff9bbd0750",
+    "source_lock_sha256": "f0e42c064c71a2307b4043b8b345ff54b36f8df2692db5809ce1e85635fdc1c1"
+  }
+}

@@ -2,17 +2,80 @@ name: V05 OTIO real media source interchange
 
 on:
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: 'Source, accessibility observation, Kdenlive roundtrip, or admitted ALab metadata only'
+        type: choice
+        options: [source, accessibility-only, kdenlive-gui, external-alab-readonly]
+        default: source
+        required: true
+      expected_source_sha:
+        description: 'Exact source SHA; required for every explicit native selection'
+        type: string
+        default: ''
+        required: false
+      evidence_recipient:
+        description: 'Existing admitted RSA-3072 public recipient JSON; required for native selections'
+        type: string
+        default: ''
+        required: false
+      external_alab_admission:
+        description: 'Reviewed frozen ALab admission JSON; required only for external-alab-readonly'
+        type: string
+        default: ''
+        required: false
+      external_alab_admission_sha256:
+        description: 'Exact SHA-256 of the supplied frozen ALab admission bytes'
+        type: string
+        default: ''
+        required: false
   pull_request:
     paths:
       - 'tooling/otio-media/**'
-      - 'crates/domain/examples/otio_real_media_fixture.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'SOURCE_LOCK.json'
+      - 'rust-toolchain.toml'
+      - 'tooling/ci_private_evidence.py'
+      - 'tooling/ci_otio_alab_readonly.py'
+      - 'tooling/tests/test_ci_otio_alab_readonly.py'
+      - 'tooling/ci_alab_source_control_custody.py'
+      - 'tooling/tests/test_ci_alab_source_control_custody.py'
+      - 'tooling/ci_test_runner.py'
+      - 'tooling/cross_app_public_artifact.py'
+      - 'tooling/mlt_official_runtime_intake.py'
+      - 'tooling/requirements/mlt-g2-custody.txt'
+      - 'crates/domain/**'
+      - 'crates/storage/**'
+      - 'crates/service/**'
+      - 'crates/manim-profile/**'
+      - 'crates/hyperframes-profile/**'
+      - 'crates/native/**'
       - 'docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md'
       - '.github/workflows/v05-otio-real-media.yml'
   push:
     branches: ['main']
     paths:
       - 'tooling/otio-media/**'
-      - 'crates/domain/examples/otio_real_media_fixture.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'SOURCE_LOCK.json'
+      - 'rust-toolchain.toml'
+      - 'tooling/ci_private_evidence.py'
+      - 'tooling/ci_otio_alab_readonly.py'
+      - 'tooling/tests/test_ci_otio_alab_readonly.py'
+      - 'tooling/ci_alab_source_control_custody.py'
+      - 'tooling/tests/test_ci_alab_source_control_custody.py'
+      - 'tooling/ci_test_runner.py'
+      - 'tooling/cross_app_public_artifact.py'
+      - 'tooling/mlt_official_runtime_intake.py'
+      - 'tooling/requirements/mlt-g2-custody.txt'
+      - 'crates/domain/**'
+      - 'crates/storage/**'
+      - 'crates/service/**'
+      - 'crates/manim-profile/**'
+      - 'crates/hyperframes-profile/**'
+      - 'crates/native/**'
       - 'docs/creative-production/V05_OTIO_MEDIA_INTERCHANGE.md'
       - '.github/workflows/v05-otio-real-media.yml'
 
@@ -20,11 +83,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: v05-otio-media-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope != 'source' && format('kdenlive-native-exclusive-{0}', github.repository) || format('v05-otio-media-{0}', github.ref) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verification_scope != 'source') }}
 
 jobs:
   verified-native-rust-otio-and-open-timeline-io:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'source'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -38,6 +102,40 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Verify ALab caller source contracts without external media
+        id: alab_source_g0
+        run: |
+          set -euo pipefail
+          python3 -m pip install --only-binary=:all: --require-hashes \
+            -r tooling/requirements/mlt-g2-custody.txt
+          python3 -B tooling/ci_test_runner.py \
+            --pattern test_ci_otio_alab_readonly.py --pattern test_ci_alab_source_control_custody.py \
+            --mode discovery --require-complete \
+            --expected-source "$GITHUB_SHA" --timeout 120 \
+            --report "$RUNNER_TEMP/alab-caller-g0.json"
+      - name: Close bounded ALab g0 source-control originals
+        id: alab_g0_custody
+        if: always()
+        env:
+          SOURCE_CONTROL_STEP_OUTCOME: ${{ steps.alab_source_g0.outcome }}
+        run: |
+          set -euo pipefail
+          python3 -B tooling/ci_alab_source_control_custody.py \
+            --profile g0 --expected-source "$GITHUB_SHA" \
+            --step-outcome "$SOURCE_CONTROL_STEP_OUTCOME" --github-output "$GITHUB_OUTPUT"
+      - name: Retain the closed ALab g0 source-control artifact
+        if: always() && steps.alab_g0_custody.outputs.ready == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: alab-source-controls-g0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.alab_g0_custody.outputs.directory }}/source-control-originals.tar
+            ${{ steps.alab_g0_custody.outputs.directory }}/source-control-custody.json
+          if-no-files-found: error
+          retention-days: 7
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: '1.98.1'
@@ -46,9 +144,6 @@ jobs:
         with:
           key: native-otio-real-media-1.98.1
           cache-on-failure: true
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: '3.12'
       - name: Verify existing canonical Rust exporter and new original source fixture
         run: |
           set -euo pipefail
@@ -56,9 +151,69 @@ jobs:
           cargo test --locked -p motionwright-domain otio_export_is_linear_and_carries_an_explicit_loss_report
           cargo clippy --locked -p motionwright-domain --example otio_real_media_fixture -- -D warnings
           cargo build --locked -p motionwright-domain --example otio_real_media_fixture
+          cargo clippy --locked -p motionwright-native --example native_otio_owner_cut_e2e -- -D warnings
+          cargo build --locked -p motionwright-native --example native_otio_owner_cut_e2e
           python3 -m py_compile tooling/otio-media/*.py
           python3 tooling/source_policy.py
           python3 tooling/creative_status_policy.py
+      - name: Require the three original owner-cut Rust cases
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "otio-owner-cut-rust"
+          root.mkdir(exist_ok=False)
+          expected = {
+              "tests::sqlite_owner_cut_commits_once_and_reopens_preserving_editable_source",
+              "tests::retained_unknown_intent_prevents_any_second_apply",
+              "tests::concurrent_source_change_rejects_before_owner_intent_or_commit",
+          }
+          def source():
+              head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+              if head != os.environ["GITHUB_SHA"]:
+                  raise ValueError("Owner-cut test source differs from dispatch")
+              if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip():
+                  raise ValueError("Owner-cut test source is dirty")
+              paths = ["crates/native/examples/native_otio_owner_cut_e2e.rs", "Cargo.lock",
+                       "SOURCE_LOCK.json", ".github/workflows/v05-otio-real-media.yml"]
+              return {"sha": head,
+                      "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+                      "files": {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}}
+          before = source()
+          argv = ["cargo", "test", "--locked", "-p", "motionwright-native",
+                  "--example", "native_otio_owner_cut_e2e", "--", "--nocapture"]
+          receipt = {"schema": "motionwright.native.otio-owner-cut-required-rust/1",
+                     "source_before": before, "run_id": os.environ["GITHUB_RUN_ID"],
+                     "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "command": argv,
+                     "required": sorted(expected), "state": "INTENT", "automatic_retry": False,
+                     "native_execution": False, "human_acceptance": False, "release_authorized": False}
+          def retain():
+              (root / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+          retain()
+          try:
+              result = subprocess.run(argv, capture_output=True, timeout=1200)
+              stdout, stderr, code = result.stdout, result.stderr, result.returncode
+          except subprocess.TimeoutExpired as original:
+              stdout, stderr, code = original.stdout or b"", original.stderr or b"", 124
+              receipt["state"] = "UNKNOWN_NO_RETRY"
+          for label, raw in (("stdout", stdout), ("stderr", stderr)):
+              with (root / (label + ".log")).open("xb") as stream:
+                  stream.write(raw)
+              receipt[label] = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+          receipt["exit_code"] = code
+          retain()
+          view = stdout.decode("utf-8", "replace").replace("\r\n", "\n")
+          names = re.findall(r"^test (\S+) \.\.\. ok$", view, re.M)
+          summaries = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;", view, re.M)
+          receipt["source_after"] = source()
+          complete = (code == 0 and len(names) == 3 and set(names) == expected
+                      and summaries == [("3", "0", "0")] and receipt["source_after"] == before)
+          receipt.update(state="PASS" if complete else receipt["state"] if code == 124 else "FAIL",
+                         observed=names, tests_run=len(names))
+          retain()
+          print(json.dumps(receipt, sort_keys=True))
+          if not complete:
+              raise SystemExit("Every original owner-cut Rust case must actually execute once")
+          PY
       - name: Install and identify OpenTimelineIO, FFmpeg and FFprobe on disposable CI
         run: |
           set -euo pipefail
@@ -67,6 +222,7 @@ jobs:
             sudo apt-get install -y --no-install-recommends ffmpeg
           fi
           python3 -m pip install --no-deps --only-binary=:all: 'opentimelineio==0.18.1'
+          python3 -m pip check
           motionwright_ffmpeg="$(command -v ffmpeg)"
           motionwright_ffprobe="$(command -v ffprobe)"
           test -x "$motionwright_ffmpeg"
@@ -95,6 +251,15 @@ jobs:
                   yield node.id()
 
           discovered = list(test_ids(suite))
+          contract_counts = {
+              "test_kdenlive_gui_e2e": 85, "test_kdenlive_complete_g2_fixture": 10,
+              "test_kdenlive_live_process": 23, "test_kdenlive_accessibility_diagnostics": 11,
+              "test_kdenlive_owner_cut": 8, "test_kdenlive_accessibility_preflight": 9,
+          }
+          contract_groups = {name: [case for case in discovered if case.startswith(name + ".")]
+                             for name in contract_counts}
+          if any(len(contract_groups[name]) != count for name, count in contract_counts.items()):
+              raise SystemExit("Incomplete GUI, route, owner or accessibility-preflight source cases")
           native_prefix = "test_native_media.NativeMediaAdmissionTests."
           required_native = {
               native_prefix + name
@@ -128,6 +293,8 @@ jobs:
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           print(json.dumps({
               "otio_python_discovery": len(discovered),
+              "required_contract_modules": contract_groups,
+              "existing_route_and_owner_cases": 137, "accessibility_preflight_cases": 9,
               "tests_run": result.testsRun,
               "required_native_tests": sorted(required_native),
               "skipped": [{"id": test.id(), "reason": reason} for test, reason in result.skipped],
@@ -173,7 +340,17 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Retain original owner-cut source-test receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: otio-owner-source-rust-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/otio-owner-cut-rust/
+          if-no-files-found: warn
+          retention-days: 7
+
   verified-windows-junction-admission:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'source'
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -307,4 +484,363 @@ jobs:
           name: otio-windows-path-admission-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: verification/otio-windows-reparse/
           if-no-files-found: error
+          retention-days: 7
+
+  admitted-native-kdenlive-gui:
+    if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'accessibility-only' || inputs.verification_scope == 'kdenlive-gui' || inputs.verification_scope == 'external-alab-readonly')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+      MOTIONWRIGHT_KDENLIVE_GUI_SCOPE: ${{ inputs.verification_scope }}
+      MOTIONWRIGHT_APPROVED_KDENLIVE_G2_SOURCE: ${{ inputs.verification_scope == 'external-alab-readonly' && '0' || '1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Admit a fresh manual attempt before any native operation
+        env:
+          NATIVE_RECIPIENT_JSON: ${{ inputs.evidence_recipient }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          ALAB_ADMISSION_JSON: ${{ inputs.external_alab_admission }}
+          ALAB_ADMISSION_SHA256: ${{ inputs.external_alab_admission_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(id -u)" -ne 0
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$EXPECTED_SOURCE_SHA" = "$GITHUB_SHA"
+          test "${#EXPECTED_SOURCE_SHA}" -eq 40
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          raw = os.environ["NATIVE_RECIPIENT_JSON"].encode("utf-8")
+          if not 0 < len(raw) <= 8192:
+              raise SystemExit("Native evidence requires an admitted bounded public recipient")
+          recipient = json.loads(raw)
+          if set(recipient) != {"spki_der_base64", "sha256"}:
+              raise SystemExit("Unexpected public recipient fields")
+          target = Path(os.environ["RUNNER_TEMP"]) / "kdenlive-public-recipient.json"
+          with target.open("xb") as stream:
+              stream.write(raw)
+          if os.environ["MOTIONWRIGHT_KDENLIVE_GUI_SCOPE"] == "external-alab-readonly":
+              admission = os.environ["ALAB_ADMISSION_JSON"].encode("utf-8")
+              digest = os.environ["ALAB_ADMISSION_SHA256"]
+              if (not 0 < len(admission) <= 16384
+                      or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                      or hashlib.sha256(admission).hexdigest() != digest):
+                  raise SystemExit("ALab requires actual frozen admission bytes and their exact digest")
+              target = Path(os.environ["RUNNER_TEMP"]) / "alab-frozen-admission.json"
+              with target.open("xb") as stream:
+                  stream.write(admission)
+          PY
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        if: inputs.verification_scope == 'kdenlive-gui'
+        with:
+          toolchain: '1.98.1'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        if: inputs.verification_scope == 'kdenlive-gui'
+        with:
+          key: native-otio-real-media-1.98.1
+          cache-on-failure: true
+      - name: Build canonical fixture executables for the full route only
+        if: inputs.verification_scope == 'kdenlive-gui'
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo build --locked -p motionwright-domain --example otio_real_media_fixture
+          cargo build --locked -p motionwright-native --example native_otio_owner_cut_e2e
+      - name: Require the three original owner-cut Rust cases
+        if: inputs.verification_scope == 'kdenlive-gui'
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "otio-owner-cut-rust"
+          root.mkdir(exist_ok=False)
+          expected = {
+              "tests::sqlite_owner_cut_commits_once_and_reopens_preserving_editable_source",
+              "tests::retained_unknown_intent_prevents_any_second_apply",
+              "tests::concurrent_source_change_rejects_before_owner_intent_or_commit",
+          }
+          def source():
+              head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+              if head != os.environ["GITHUB_SHA"]:
+                  raise ValueError("Owner-cut test source differs from dispatch")
+              if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip():
+                  raise ValueError("Owner-cut test source is dirty")
+              paths = ["crates/native/examples/native_otio_owner_cut_e2e.rs", "Cargo.lock",
+                       "SOURCE_LOCK.json", ".github/workflows/v05-otio-real-media.yml"]
+              return {"sha": head,
+                      "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+                      "files": {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}}
+          before = source()
+          argv = ["cargo", "test", "--locked", "-p", "motionwright-native",
+                  "--example", "native_otio_owner_cut_e2e", "--", "--nocapture"]
+          receipt = {"schema": "motionwright.native.otio-owner-cut-required-rust/1",
+                     "source_before": before, "run_id": os.environ["GITHUB_RUN_ID"],
+                     "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "command": argv,
+                     "required": sorted(expected), "state": "INTENT", "automatic_retry": False,
+                     "native_execution": False, "human_acceptance": False, "release_authorized": False}
+          def retain():
+              (root / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+          retain()
+          try:
+              result = subprocess.run(argv, capture_output=True, timeout=1200)
+              stdout, stderr, code = result.stdout, result.stderr, result.returncode
+          except subprocess.TimeoutExpired as original:
+              stdout, stderr, code = original.stdout or b"", original.stderr or b"", 124
+              receipt["state"] = "UNKNOWN_NO_RETRY"
+          for label, raw in (("stdout", stdout), ("stderr", stderr)):
+              with (root / (label + ".log")).open("xb") as stream:
+                  stream.write(raw)
+              receipt[label] = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+          receipt["exit_code"] = code
+          retain()
+          view = stdout.decode("utf-8", "replace").replace("\r\n", "\n")
+          names = re.findall(r"^test (\S+) \.\.\. ok$", view, re.M)
+          summaries = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;", view, re.M)
+          receipt["source_after"] = source()
+          complete = (code == 0 and len(names) == 3 and set(names) == expected
+                      and summaries == [("3", "0", "0")] and receipt["source_after"] == before)
+          receipt.update(state="PASS" if complete else receipt["state"] if code == 124 else "FAIL",
+                         observed=names, tests_run=len(names))
+          retain()
+          print(json.dumps(receipt, sort_keys=True))
+          if not complete:
+              raise SystemExit("Every original owner-cut Rust case must actually execute once")
+          PY
+      - name: Install disposable GUI and accessibility observation dependencies
+        if: inputs.verification_scope != 'external-alab-readonly'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            ffmpeg dbus-x11 xvfb xauth openbox xdotool \
+            python3.12-venv python3-gi gir1.2-atspi-2.0 at-spi2-core libxcb-cursor0 libopengl0 libegl1
+          /usr/bin/python3.12 -c 'import ctypes; ctypes.CDLL("libOpenGL.so.0"); ctypes.CDLL("libEGL.so.1")'
+          /usr/bin/python3.12 -m venv --system-site-packages "$RUNNER_TEMP/kdenlive-gui-python"
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" -m pip install \
+            --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, str(Path("tooling").resolve(strict=True)))
+          from ci_private_evidence import public_key, regular, strict
+          public_key(strict(regular(Path(os.environ["RUNNER_TEMP"]) / "kdenlive-public-recipient.json", 8192)[0]))
+          import gi
+          gi.require_version("Atspi", "2.0")
+          from gi.repository import Atspi
+          required = [(Atspi, "init"), (Atspi, "get_desktop"), (Atspi, "set_timeout"),
+                      (Atspi.Accessible, "get_process_id"),
+                      (Atspi.Accessible, "get_editable_text_iface"),
+                      (Atspi.Action, "get_action_name"), (Atspi.Action, "do_action"),
+                      (Atspi.Text, "get_character_count"), (Atspi.Text, "get_text"),
+                      (Atspi.EditableText, "set_text_contents")]
+          if not all(callable(getattr(owner, name, None)) for owner, name in required):
+              raise SystemExit("Required AT-SPI binding is absent")
+          PY
+      - name: Run exact offline GUI contracts without native effects or skips
+        if: inputs.verification_scope != 'external-alab-readonly'
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" - <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          import unittest
+          sys.path.insert(0, str(Path("tooling/otio-media").resolve(strict=True)))
+          import test_kdenlive_gui_e2e as tests
+          import test_kdenlive_complete_g2_fixture as original_tests
+          import test_kdenlive_live_process as process_tests
+          import test_kdenlive_accessibility_diagnostics as diagnostic_tests
+          import test_kdenlive_owner_cut as owner_tests
+          import test_kdenlive_accessibility_preflight as preflight_tests
+          modules = [
+              (tests, 85), (original_tests, 10), (process_tests, 23),
+              (diagnostic_tests, 11), (owner_tests, 8), (preflight_tests, 9),
+          ]
+          def ids(node):
+              if isinstance(node, unittest.TestSuite):
+                  for child in node:
+                      yield from ids(child)
+              else:
+                  yield node.id()
+          suites, roster, groups = [], [], {}
+          for module, count in modules:
+              suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+              names = list(ids(suite))
+              if len(names) != count or len(set(names)) != count:
+                  raise SystemExit("Incomplete selected source module: " + module.__name__)
+              suites.append(suite)
+              roster.extend(names)
+              groups[module.__name__] = names
+          if len(roster) != 146 or len(set(roster)) != 146:
+              raise SystemExit("Require all 146 GUI, route, owner and observer-only cases")
+          result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(suites))
+          print(json.dumps({"tests_run": result.testsRun, "roster": roster, "modules": groups,
+                            "existing_route_and_owner_cases": 137, "accessibility_preflight_cases": 9,
+                            "skips": len(result.skipped), "failures": len(result.failures),
+                            "errors": len(result.errors), "native_execution": False}, sort_keys=True))
+          if (not result.wasSuccessful() or result.testsRun != 146 or result.skipped
+                  or result.expectedFailures or result.unexpectedSuccesses):
+              raise SystemExit(1)
+          PY
+      - name: Obtain the exact official Kdenlive distribution once
+        if: inputs.verification_scope != 'external-alab-readonly'
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/kdenlive-distribution-original"
+          curl --fail --show-error --silent --location --max-redirs 5 \
+            --proto '=https' --proto-redir '=https' --connect-timeout 30 \
+            --max-time 180 --max-filesize 1073741824 \
+            --dump-header "$RUNNER_TEMP/kdenlive-distribution-original/download.headers" \
+            --output "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage" \
+            'https://download.kde.org/Attic/kdenlive/25.08/linux/kdenlive-25.08.3-x86_64.AppImage'
+          printf '%s  %s\n' \
+            '38ec1bdec007ccd9171f951ba00ded8cc2dd43570c14a438e88fabb4f0a81f4f' \
+            "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage" | sha256sum --check --status
+          chmod 0700 "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage"
+      - name: Install only metadata and existing custody dependencies for ALab
+        if: inputs.verification_scope == 'external-alab-readonly'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg python3.12-venv
+          /usr/bin/python3.12 -m venv "$RUNNER_TEMP/kdenlive-gui-python"
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" -m pip install \
+            --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+      - name: Require the exact ALab source controls without real media execution
+        id: alab_source_controls
+        if: inputs.verification_scope == 'external-alab-readonly'
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" -B tooling/ci_test_runner.py \
+            --pattern test_ci_otio_alab_readonly.py --pattern test_ci_alab_source_control_custody.py \
+            --mode discovery --require-complete \
+            --expected-source "$GITHUB_SHA" --timeout 120 \
+            --report "$RUNNER_TEMP/alab-caller-source-controls.json"
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" -B tooling/ci_test_runner.py \
+            --test-directory tooling/otio-media --pattern test_bridge.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" --timeout 120 \
+            --report "$RUNNER_TEMP/alab-owner-source-controls.json"
+      - name: Close bounded ALab alab source-control originals
+        id: alab_controls_custody
+        if: always() && inputs.verification_scope == 'external-alab-readonly'
+        env:
+          SOURCE_CONTROL_STEP_OUTCOME: ${{ steps.alab_source_controls.outcome }}
+        run: |
+          set -euo pipefail
+          python3 -B tooling/ci_alab_source_control_custody.py \
+            --profile alab --expected-source "$GITHUB_SHA" \
+            --step-outcome "$SOURCE_CONTROL_STEP_OUTCOME" --github-output "$GITHUB_OUTPUT"
+      - name: Retain the closed ALab alab source-control artifact
+        if: always() && steps.alab_controls_custody.outputs.ready == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: alab-source-controls-alab-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.alab_controls_custody.outputs.directory }}/source-control-originals.tar
+            ${{ steps.alab_controls_custody.outputs.directory }}/source-control-custody.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Run one admitted read-only ALab metadata observation
+        if: inputs.verification_scope == 'external-alab-readonly' && steps.alab_controls_custody.outputs.verified == 'true'
+        id: alab
+        env:
+          ALAB_ADMISSION_SHA256: ${{ inputs.external_alab_admission_sha256 }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/kdenlive-gui-python/bin/python" -B tooling/ci_otio_alab_readonly.py \
+            --source-sha "$GITHUB_SHA" \
+            --recipient "$RUNNER_TEMP/kdenlive-public-recipient.json" \
+            --admission "$RUNNER_TEMP/alab-frozen-admission.json" \
+            --admission-sha256 "$ALAB_ADMISSION_SHA256" \
+            --evidence-root "$RUNNER_TEMP/alab-readonly-original" \
+            --public-dir "$RUNNER_TEMP/kdenlive-public-evidence"
+      - name: Run one selected native observation or import-edit-owner route
+        if: inputs.verification_scope != 'external-alab-readonly'
+        id: native
+        run: |
+          set -euo pipefail
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1920x1080x24' bash -c '
+            set -euo pipefail
+            openbox >"$RUNNER_TEMP/kdenlive-distribution-original/window-manager.stdout.log" \
+              2>"$RUNNER_TEMP/kdenlive-distribution-original/window-manager.stderr.log" &
+            exec "$RUNNER_TEMP/kdenlive-gui-python/bin/python" -B \
+              tooling/otio-media/kdenlive_gui_e2e.py \
+              --source-sha "$GITHUB_SHA" \
+              --verification-scope "$MOTIONWRIGHT_KDENLIVE_GUI_SCOPE" \
+              --appimage "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage" \
+              --appdir "$RUNNER_TEMP/kdenlive-appimage-extract/squashfs-root" \
+              --evidence-root "$RUNNER_TEMP/kdenlive-native-original" \
+              --capsule "$RUNNER_TEMP/kdenlive-original-capsule" \
+              --public-dir "$RUNNER_TEMP/kdenlive-public-evidence" \
+              --recipient "$RUNNER_TEMP/kdenlive-public-recipient.json" \
+              --distribution-evidence "$RUNNER_TEMP/kdenlive-distribution-original"
+          '
+      - name: Preserve a closed status if preflight or the native caller failed
+        if: always()
+        env:
+          NATIVE_STEP_OUTCOME: ${{ steps.native.outcome }}
+          ALAB_STEP_OUTCOME: ${{ steps.alab.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "kdenlive-public-evidence"
+          root.mkdir(mode=0o700, exist_ok=True)
+          target = root / "projection.json"
+          if not target.exists():
+              outcome = os.environ.get("NATIVE_STEP_OUTCOME")
+              projection = {
+                  "schema": "motionwright.native.kdenlive-gui-preflight/1",
+                  "source_sha": os.environ["GITHUB_SHA"],
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "status": "GATE_DID_NOT_PUBLISH",
+                  "native_execution": "NOT_RUN" if outcome == "skipped" else "NOT_OBSERVED",
+                  "ciphertext_sha256": None, "automatic_retry": False,
+                  "other_workflow_selections": "NOT_RUN",
+                  "human_acceptance": False, "release_authorized": False}
+              if os.environ["MOTIONWRIGHT_KDENLIVE_GUI_SCOPE"] == "external-alab-readonly":
+                  outcome = os.environ.get("ALAB_STEP_OUTCOME")
+                  projection.update(
+                      schema="motionwright.otio.external-alab-readonly-preflight/1",
+                      scope="external-alab-readonly", source_origin="NOT_OBSERVED",
+                      metadata_only=True, decoded_frames_verified=False, candidate_admitted=False,
+                      native_execution="NOT_RUN" if outcome == "skipped" else "UNKNOWN_NO_RETRY",
+                      status="NOT_STARTED" if outcome == "skipped" else "UNKNOWN_NO_RETRY")
+              with target.open("x", encoding="utf-8") as stream:
+                  json.dump(projection, stream, sort_keys=True)
+                  stream.write("\n")
+          PY
+      - name: Retain only sealed originals and the closed public projection
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kdenlive-native-sealed-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/kdenlive-public-evidence/projection.json
+            ${{ runner.temp }}/kdenlive-public-evidence/original-evidence.mwseal
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain original owner-cut source-test receipts
+        if: always() && inputs.verification_scope != 'external-alab-readonly'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: otio-owner-native-gate-rust-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/otio-owner-cut-rust/
+          if-no-files-found: warn
           retention-days: 7

@@ -1,3 +1,4 @@
+import type { NarrativeEditingState, NarrativeEditingChange } from "./narrativeEditing";
 import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
 import type { DeliveryRecipe } from "./deliveryRecipe";
 import type { MeasuredTable, MeasuredView } from "./measuredData";
@@ -199,6 +200,7 @@ export interface NarrativeBeat {
 export interface ProtectedSection { beat_id: string; reason: string; }
 export interface Narrative {
   premise: string; beats: NarrativeBeat[]; protected_sections: ProtectedSection[];
+  editing?: NarrativeEditingState | null;
 }
 export interface VoiceTrack {
   id: string; asset_id: string; label: string; sample_rate_hz: number; channels: number;
@@ -527,6 +529,83 @@ export interface MasterExportReceipt {
   /** Optional unsigned local integrity descriptor, not an authenticity signature. */
   integrity_manifest_path?: string | null;
 }
+
+/** Numeric outcomes emitted by the current native decoded-audio measurement.
+ * These states grant no listening, creative or distribution approval. */
+export type DeliveryAudioQcStatus = "not_requested" | "within_targets" | "outside_targets" | "unavailable";
+export type NativeAvAudioQcUnavailableReason =
+  | "session_unavailable" | "source_changed" | "connection_unavailable"
+  | "artifact_changed" | "measurement_unavailable" | "unresolved_receipt" | "unsupported_platform";
+
+/** Public QC/2 projection only. Private measurement proofs, paths, connection
+ * identity, request/lane selectors and complete receipts never enter Studio. */
+export interface DeliveryAudioQcReport {
+  schema: "motionwright.delivery-audio-qc-report/2";
+  qc: {
+    schema: "motionwright.delivery-audio-qc/1";
+    status: DeliveryAudioQcStatus;
+    targets: { target_lufs: number | null; target_true_peak_dbtp: number | null } | null;
+    target_lufs_milli: number | null;
+    target_true_peak_millidbtp: number | null;
+    measured_integrated_lufs_milli: number | null;
+    measured_true_peak_millidbtp: number | null;
+    lufs_delta_milli: number | null;
+    lufs_tolerance_milli: number;
+    lufs_status: DeliveryAudioQcStatus;
+    true_peak_status: DeliveryAudioQcStatus;
+    evaluated_phase: "decoded_mlt_master";
+    decoded_wav_sha256: string;
+    decoded_sample_frames: number;
+    measurement_receipt_id: string;
+    /** Public digest reference, not the private proof or a way to reconstruct it. */
+    measurement_proof_sha256: string;
+    evidence_scope: "final-decoded-pcm16-public-milli-numeric-qc-not-mastered-not-intelligibility-not-human-approved";
+  };
+  measurement_method: { engine: string; version: string; producer_schema_version: number };
+  decoded_input: {
+    format: "wav_pcm_s16le";
+    sha256: string;
+    sample_rate_hz: number;
+    channels: number;
+    channel_layout: string;
+    sample_interval: { start_sample_frame: number; end_sample_frame_exclusive: number };
+  };
+  measurement_windows: {
+    integrated_loudness: "complete_decoded_input_with_provider_gating";
+    momentary_window_ms: number;
+    short_term_window_ms: number;
+    momentary_and_short_term_position: "ending_at_decoded_input_end";
+    loudness_range: "complete_decoded_input_with_provider_gating";
+    true_peak: "complete_decoded_input";
+    sample_peak: "complete_decoded_input";
+  };
+  true_peak_oversample: number;
+  measured_levels: {
+    integrated_lufs_milli: number | null;
+    momentary_lufs_milli: number | null;
+    short_term_lufs_milli: number | null;
+    loudness_range_milli: number | null;
+    true_peak_millidbtp: number | null;
+    sample_peak_millidbfs: number | null;
+  };
+  units: {
+    integrated_lufs_milli: "LUFS"; momentary_lufs_milli: "LUFS"; short_term_lufs_milli: "LUFS";
+    loudness_range_milli: "LU"; true_peak_millidbtp: "dBTP"; sample_peak_millidbfs: "dBFS";
+    target_lufs_milli: "LUFS"; target_true_peak_millidbtp: "dBTP";
+    lufs_delta_milli: "LU"; lufs_tolerance_milli: "LU";
+  };
+  published_resolution: {
+    numerator: 1; denominator: 1000; rounding_authority: "identified_provider_integer_milli_output";
+  };
+  master_artifact_sha256: string;
+  evidence_scope: "measured-final-pcm-numeric-report-not-normalization-not-intelligibility-not-human-acceptance";
+}
+
+export type NativeAvAudioQcResponse =
+  | { kind: "report"; report: DeliveryAudioQcReport }
+  | { kind: "not_requested" }
+  | { kind: "unavailable"; reason: NativeAvAudioQcUnavailableReason };
+
 /** Trusted desktop mint from a source-bound multi-segment native MP4.
  * No MLT raw project handles, filesystem paths, or arbitrary render plans. */
 export interface NativeMultisegmentAvMasterEvidence {
@@ -543,6 +622,8 @@ export interface NativeMultisegmentAvMasterEvidence {
   master_sha256: string;
   /** Opaque session owner media token: read-only review if review_only=true. */
   export_token: string;
+  /** Absent on historical evidence; absence is not a numeric QC outcome. */
+  audio_qc?: NativeAvAudioQcResponse;
   /** True means only a real local native master review, never deliver/publish. */
   review_only: boolean;
   provider_project_cleanup: "not_requested_requires_foreground_broker_consent";
@@ -554,6 +635,8 @@ export interface NativeMultisegmentAvMasterEvidence {
 export interface MltAvMasterEvidence {
   /** Ephemeral, source-verified desktop delivery handle; never a path. */
   export_token?: string | null;
+  /** Fresh public projection; readback revalidates instead of persisting this value. */
+  audio_qc?: NativeAvAudioQcResponse;
   project_resource: string;
   generation: string;
   revision: number;
@@ -635,8 +718,11 @@ export interface Project {
 }
 
 import type { BrandCampaignRollout } from "./brandCampaign";
+import type { SemanticGraphChange } from "./semanticGraph";
 
 export type Change =
+  | SemanticGraphChange
+  | NarrativeEditingChange
   | { type:"record_narration_take"; expected_source_sha256:string; expected_project_revision:number; reviewer:string; reason:string }
   | { type:"release_narration_take"; expected_source_sha256:string; reviewer:string; reason:string }
   | { type:"apply_brand_campaign"; rollout:BrandCampaignRollout }
@@ -858,3 +944,21 @@ export const rationalSeconds = (value: number): RationalTime => {
     den: String(1000 / divisor),
   };
 };
+
+/** Read-only references from the original receipt stream, never proof or grants. */
+export interface NativeAudioQcReceiptHint {
+  decoded_measurement_receipt_id: string;
+  master_sha256: string;
+}
+export interface NativeAudioQcReceiptInventory {
+  project_id: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  items: NativeAudioQcReceiptHint[];
+  legacy_unbound_count: number;
+  unavailable_count: number;
+}
+export type NativeAudioQcReceiptInventoryResponse =
+  | { kind: "inventory"; inventory: NativeAudioQcReceiptInventory }
+  | { kind: "unavailable"; reason: NativeAvAudioQcUnavailableReason };

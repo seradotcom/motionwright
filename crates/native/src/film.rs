@@ -1,5 +1,10 @@
+#[path = "film_brand_fonts.rs"]
+mod film_brand_fonts;
 #[path = "film_captions.rs"]
 mod film_captions;
+
+#[cfg(test)]
+use crate::semantic_graph_source_fixture as graph_source_guard_fixture;
 
 use crate::component_text::{fixed_canvas_text, fixed_component_text};
 use crate::expressive::{entry_motion, responsive_scene};
@@ -81,13 +86,6 @@ impl FilmBuildOptions {
             .map_err(|error| contract("Film frame rate is invalid", error))?;
         if self.font_family.trim().is_empty() || self.mono_font_family.trim().is_empty() {
             return Err(invalid("Film fonts must be explicit"));
-        }
-        if self.font_family != MOTION_CANVAS_FONT_FAMILY
-            || self.mono_font_family != MOTION_CANVAS_MONO_FONT_FAMILY
-        {
-            return Err(unsupported(format!(
-                "Pinned Motion Canvas production requires bundled fonts {MOTION_CANVAS_FONT_FAMILY:?} and {MOTION_CANVAS_MONO_FONT_FAMILY:?}"
-            )));
         }
         let mut map = HashMap::new();
         for intent in &self.scene_intents {
@@ -180,6 +178,16 @@ fn motion_canvas_runs(
         if scene.renderer != RendererKind::MotionCanvas {
             flush_run(&mut runs, &mut current);
             continue;
+        }
+        if project
+            .production_design
+            .semantic_graphs
+            .iter()
+            .any(|graph| graph.scene_id == scene.id && graph.variant_profile_ref == profile.id)
+        {
+            return Err(unsupported(
+                "Selected Motion Canvas scene contains a semantic Graph that this projection cannot preserve",
+            ));
         }
         if scene.duration > max_duration {
             return Err(unsupported(format!(
@@ -781,9 +789,10 @@ fn output_profile(
     if i64::from(frame_rate.num) != profile.frame_rate.num
         || i64::from(frame_rate.den) != profile.frame_rate.den
     {
-        return Err(invalid(
-            "Film frame rate must match the versioned deliverable profile",
-        ));
+        return Err(unsupported(format!(
+            "Film frame-rate conversion is unsupported: saved_deliverable_rate={}/{}; requested_output_rate={}/{}; policy=preserve-saved-frame-rate-v1; no rounding or retiming was applied",
+            profile.frame_rate.num, profile.frame_rate.den, frame_rate.num, frame_rate.den,
+        )));
     }
     let projection = layout_projection(profile);
     let safe_margin = scenes
@@ -836,9 +845,9 @@ fn visual_token(project: &Project, names: &[&str], purpose: &str) -> NativeResul
 
 /// A Native Motion Canvas Film is a visual composition. Include only media
 /// that an actual authored visual subject references. Automatically copying
-/// every Project/CAS asset into Film is incorrect: measured VO, music, fonts,
-/// and unused binary imports belong to other subsystems, and have not been
-/// registered with the Motion Canvas managed-asset registry. An unrelated
+/// every Project/CAS asset into Film is incorrect: measured VO, music and
+/// unused imports are not managed visual resources. Selected brand fonts
+/// enter separately through FontRight/CAS and the public provider. An unrelated
 /// WAV asset caused a real driver composition-plan rejection in native CI.
 /// Preserve true digest-bound image/video asset references and fail closed.
 fn assets(project: &Project, sequences: &[Sequence]) -> NativeResult<Vec<AssetRef>> {
@@ -1538,25 +1547,36 @@ fn build_segment(
         sequences
     };
 
-    let segment_assets = assets(project, &sequences)?;
+    let fonts =
+        film_brand_fonts::project_fonts(project, &options.font_family, &options.mono_font_family)?;
+    let mut segment_assets = assets(project, &sequences)?;
+    for asset in fonts.assets {
+        if let Some(existing) = segment_assets
+            .iter()
+            .find(|existing| existing.id == asset.id)
+        {
+            if existing != &asset {
+                return Err(unsupported(
+                    "Selected font and visual asset identities conflict",
+                ));
+            }
+        } else {
+            segment_assets.push(asset);
+        }
+    }
+    if segment_assets.len() > 128 {
+        return Err(unsupported(
+            "Canonical Film supports at most 128 selected media and font assets",
+        ));
+    }
     let film = Film {
         version: AUTHORING_VERSION,
         id: format!("mw-{}-{segment_index}", project.id.simple()),
         output,
         editorial: EditorialSystem {
             version: 1,
-            font: FontSpec {
-                family: options.font_family.clone(),
-                asset_digest: None,
-                fallback: FontFallback::AllowAndReport,
-                permitted_fallbacks: vec![],
-            },
-            mono_font: FontSpec {
-                family: options.mono_font_family.clone(),
-                asset_digest: None,
-                fallback: FontFallback::AllowAndReport,
-                permitted_fallbacks: vec![],
-            },
+            font: fonts.primary,
+            mono_font: fonts.mono,
             type_scale,
             colors: BTreeMap::from([
                 (
@@ -1621,6 +1641,8 @@ pub fn build_motion_canvas_segments(
         .validate_metric_source_notices()
         .map_err(|error| contract("MetricEvidence source disclosure is invalid", error))?;
     let intents = options.intent_map()?;
+    // Resolve the existing FontRight/Asset contract before native effects.
+    film_brand_fonts::project_fonts(project, &options.font_family, &options.mono_font_family)?;
     let deliverable = project
         .deliverables
         .iter()
@@ -1642,6 +1664,10 @@ pub fn build_motion_canvas_segments(
         options.frame_rate,
         &mut segments,
     )?;
+    // Captions add native Text runs after segment construction.
+    for segment in &segments {
+        film_brand_fonts::validate_bundled_weights(&segment.film)?;
+    }
     Ok(segments)
 }
 
@@ -2294,7 +2320,17 @@ mod tests {
         let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
-        assert!(error.message.contains("bundled fonts"));
+        assert!(
+            error
+                .message
+                .contains("requires a cleared digest-bound Asset source")
+        );
+        assert!(error.message.contains(&project.resource_key()));
+        assert!(
+            error
+                .message
+                .contains(&format!("revision {}", project.revision))
+        );
     }
 
     #[test]
@@ -2928,6 +2964,111 @@ mod tests {
     }
 
     #[test]
+    fn rational_frame_identity_preserves_partitioned_master_without_accumulated_error() {
+        let rate = Rate::new(30_000, 1_001).unwrap();
+        let mut project = Project::new("Exact rational master clock").unwrap();
+        let mut profile = project.deliverables[0].clone();
+        let deliverable_id = profile.id;
+        profile.frame_rate = RationalTime::new(30_000, 1_001).unwrap();
+        project
+            .apply_change(&Change::UpsertDeliverable { profile })
+            .unwrap();
+        for index in 0..33 {
+            project
+                .apply_change(&Change::AddScene {
+                    name: format!("Rational frame {index:02}"),
+                    objective: "Keep the exact authored clock".into(),
+                    duration_seconds: 1,
+                })
+                .unwrap();
+            let scene_id = project.scenes.last().unwrap().id;
+            project
+                .apply_change(&Change::SetSceneDuration {
+                    scene_id,
+                    duration: rate.at(1).unwrap(),
+                })
+                .unwrap();
+            project
+                .apply_change(&Change::AddCanvasNode {
+                    scene_id,
+                    node: node("shape", None),
+                })
+                .unwrap();
+        }
+        let original = project.clone();
+        let mut options = fixture_options(&project);
+        options.frame_rate = rate;
+        let segments = build_motion_canvas_segments(&project, deliverable_id, &options).unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].frame_count, 32);
+        assert_eq!(segments[1].frame_count, 1);
+        let total_frames = segments
+            .iter()
+            .map(|segment| segment.frame_count)
+            .sum::<u64>();
+        let total_duration = segments
+            .iter()
+            .try_fold(Rational::ZERO, |sum, segment| {
+                sum.checked_add(segment.duration)
+            })
+            .unwrap();
+        assert_eq!(total_frames, 33);
+        assert_eq!(
+            total_duration,
+            rate.at(i64::try_from(total_frames).unwrap()).unwrap()
+        );
+        assert_eq!(
+            total_duration
+                .checked_sub(rate.at(i64::try_from(total_frames).unwrap()).unwrap())
+                .unwrap(),
+            Rational::ZERO,
+        );
+        for (segment, first_scene) in [(&segments[0], 0usize), (&segments[1], 32)] {
+            assert_eq!(segment.film.output.frame_rate, rate);
+            assert_eq!(
+                segment.global_start,
+                rate.at(i64::try_from(first_scene).unwrap()).unwrap()
+            );
+            assert_eq!(
+                segment.duration,
+                rate.at(i64::try_from(segment.frame_count).unwrap())
+                    .unwrap()
+            );
+            let realized = realize(&segment.film).unwrap();
+            assert_eq!(
+                realized.schedule.frame_count(&segment.film.output).unwrap(),
+                segment.frame_count
+            );
+            for (offset, beat) in segment.film.sequences[0].beats.iter().enumerate() {
+                let interval = realized.schedule.interval(&beat.shots[0].span_id).unwrap();
+                let source = &project.scenes[first_scene + offset];
+                assert_eq!(
+                    interval.start,
+                    rate.at(i64::try_from(offset).unwrap()).unwrap()
+                );
+                assert_eq!(
+                    interval.end,
+                    rate.at(i64::try_from(offset + 1).unwrap()).unwrap()
+                );
+                assert_eq!(
+                    segment.global_start.checked_add(interval.start).unwrap(),
+                    source.start,
+                );
+                assert_eq!(interval.duration().unwrap(), source.duration);
+            }
+        }
+        let last = segments.last().unwrap();
+        assert_eq!(
+            last.global_start.checked_add(last.duration).unwrap(),
+            rate.at(33).unwrap(),
+        );
+        assert_eq!(
+            project, original,
+            "clock admission must not retime the source"
+        );
+    }
+
+    #[test]
     fn native_render_rejects_frame_rate_drift_from_profile() {
         let project = fixture_project();
         let options = FilmBuildOptions {
@@ -2946,7 +3087,136 @@ mod tests {
         };
         let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
             .unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidArgument);
-        assert!(error.message.contains("versioned deliverable profile"));
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("saved_deliverable_rate=30/1"));
+        assert!(error.message.contains("requested_output_rate=24/1"));
+        assert!(error.message.contains("preserve-saved-frame-rate-v1"));
+    }
+    #[test]
+    fn selected_brand_source_is_editable_and_its_digest_changes_the_film() {
+        use motionwright_domain::{Asset, FontRight, RightsStatus};
+        let mut project = fixture_project();
+        let asset_id = Uuid::new_v4();
+        project.assets.push(Asset {
+            id: asset_id,
+            name: "Brand source".into(),
+            media_type: "font/ttf".into(),
+            content_sha256: Some("a".repeat(64)),
+            source_revision: Some("source-only-rights-fixture".into()),
+        });
+        project.visual_language.fonts.push(FontRight {
+            family: "Brand Family".into(),
+            source: format!("asset:{asset_id}"),
+            rights_status: RightsStatus::Cleared,
+        });
+        for scene in &mut project.scenes {
+            for node in &mut scene.nodes {
+                if node.kind == "text" {
+                    node.style.font_family = Some("Brand Family".into());
+                }
+            }
+        }
+        let mut options = fixture_options(&project);
+        options.font_family = "Brand Family".into();
+        let master = project.deliverables[0].id;
+        let original = serde_json::to_vec(&project).unwrap();
+        let before = build_motion_canvas_segments(&project, master, &options).unwrap();
+        assert_eq!(serde_json::to_vec(&project).unwrap(), original);
+        assert_eq!(before[0].film.assets.len(), 1);
+        assert_eq!(
+            before[0]
+                .film
+                .editorial
+                .font
+                .asset_digest
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "a".repeat(64)
+        );
+        assert_eq!(before[0].film.editorial.font.fallback, FontFallback::Deny);
+        let old_digest = Digest::of_bytes(&serde_json::to_vec(&before[0].film).unwrap());
+        project
+            .assets
+            .iter_mut()
+            .find(|asset| asset.id == asset_id)
+            .unwrap()
+            .content_sha256 = Some("b".repeat(64));
+        let after = build_motion_canvas_segments(&project, master, &options).unwrap();
+        assert_ne!(
+            old_digest,
+            Digest::of_bytes(&serde_json::to_vec(&after[0].film).unwrap())
+        );
+        assert_eq!(before[0].film.sequences, after[0].film.sequences);
+        let reopened: Project = serde_json::from_slice(&original).unwrap();
+        assert_eq!(
+            reopened.visual_language.fonts,
+            project.visual_language.fonts
+        );
+        assert_eq!(reopened.scenes, project.scenes);
+    }
+
+    fn attach_source_guard_graph(project: &mut Project, scene_index: usize, profile_index: usize) {
+        let mut selected = project.clone();
+        selected.scenes.swap(0, scene_index);
+        selected.deliverables.swap(0, profile_index);
+        let mut graph = graph_source_guard_fixture::graph_for(&selected, false);
+        graph.time_range.start = motionwright_domain::RationalTime::new(0, 1).unwrap();
+        graph.time_range.duration = motionwright_domain::RationalTime::new(1, 1).unwrap();
+        project
+            .apply_change(&motionwright_domain::Change::UpsertSemanticGraph {
+                graph: Box::new(graph),
+            })
+            .unwrap();
+        project.validate().unwrap();
+    }
+
+    #[test]
+    fn motion_canvas_runs_reject_selected_scene_graph() {
+        let mut project = fixture_project();
+        assert!(
+            !motion_canvas_runs(&project, &project.deliverables[0])
+                .unwrap()
+                .is_empty()
+        );
+        attach_source_guard_graph(&mut project, 0, 0);
+        let before = project.clone();
+        let error = motion_canvas_runs(&project, &project.deliverables[0]).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn motion_canvas_runs_preserve_other_profile_graph_scope() {
+        let mut project = fixture_project();
+        let mut other_profile = project.deliverables[0].clone();
+        other_profile.id = Uuid::new_v4();
+        other_profile.name = "Graph-only source guard profile".into();
+        project.deliverables.push(other_profile);
+        project.validate().unwrap();
+        let baseline = motion_canvas_runs(&project, &project.deliverables[0]).unwrap();
+        assert!(!baseline.is_empty());
+        let other_profile_index = project.deliverables.len() - 1;
+        attach_source_guard_graph(&mut project, 0, other_profile_index);
+        let before = project.clone();
+        let runs = motion_canvas_runs(&project, &project.deliverables[0]).unwrap();
+        assert_eq!(runs, baseline);
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn motion_canvas_runs_preserve_other_renderer_graph_scope() {
+        let mut project = fixture_project();
+        project.scenes[1].renderer = RendererKind::ManimCommunity;
+        project.scenes[1].nodes.clear();
+        project.scenes[1].beats.clear();
+        project.validate().unwrap();
+        let baseline = motion_canvas_runs(&project, &project.deliverables[0]).unwrap();
+        assert!(!baseline.is_empty());
+        attach_source_guard_graph(&mut project, 1, 0);
+        let before = project.clone();
+        let runs = motion_canvas_runs(&project, &project.deliverables[0]).unwrap();
+        assert_eq!(runs, baseline);
+        assert_eq!(project, before);
     }
 }

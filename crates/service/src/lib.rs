@@ -1,4 +1,5 @@
 mod audio;
+mod brand_fonts;
 mod file_import;
 mod import_limits;
 mod jobs;
@@ -7,10 +8,15 @@ mod models;
 mod portability;
 mod project_creation;
 mod project_projection;
+mod semantic_graph;
+mod semantic_graph_admission;
 mod svg_admission;
 pub use audio::{
     AudioMeasurement, MAX_WAVEFORM_PAGE_SIZE, OriginalMixDecodeBudget, OriginalMixDecodedPcm,
     WAVEFORM_FRAMES_PER_PEAK, WaveformPage,
+};
+pub use brand_fonts::{
+    BrandFontSource, MAX_BRAND_FONT_BYTES, VerifiedBrandFont, brand_font_source,
 };
 pub use import_limits::ImportLimits;
 pub use jobs::{
@@ -25,6 +31,10 @@ pub use project_projection::{
     MAX_NODE_PAGE_ITEMS, MAX_PROJECTION_RESPONSE_BYTES, MAX_SCENE_PAGE_ITEMS, NodePage,
     NodePageCursor, ProjectionError, ProjectionFailure, ProjectionHead, ProjectionIdentity,
     ProjectionResult, ScenePage, ScenePageCursor, SceneRef, SceneSummary,
+};
+pub use semantic_graph::SemanticGraphContextRequest;
+pub use semantic_graph_admission::{
+    SemanticGraphAdmission, SemanticGraphWriteLease, SemanticGraphWriteScope,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,12 +95,15 @@ fn has_xml_element_local_name(text: &str, local_names: &[&str]) -> bool {
     })
 }
 
-fn source_looks_like_svg(source: &Path, media_type: &str) -> StorageResult<bool> {
+fn source_looks_like_svg(
+    input: &mut (impl Read + Seek),
+    size: u64,
+    media_type: &str,
+) -> StorageResult<bool> {
     // An XML/SVG document can be encoded as UTF-16/UTF-32, including without
     // a BOM when its initial characters are ASCII XML/whitespace. Treating its
     // NUL-containing header as ordinary raster bytes would let a caller
     // mislabel active SVG as image/png and bypass the SVG admission guard.
-    let mut input = File::open(source)?;
     let mut header = [0_u8; 4];
     // A regular-file read is permitted to return fewer than four bytes.
     // Finish the short header read before classifying BOM-less UTF-16/32;
@@ -152,15 +165,14 @@ fn source_looks_like_svg(source: &Path, media_type: &str) -> StorageResult<bool>
         // Decode at most the existing SVG import budget. This deliberately
         // preserves ordinary UTF-16 text without SVG while failing closed
         // for malformed or oversized potentially executable XML.
-        let size = input.metadata()?.len();
         if size > MAX_SVG_IMPORT_BYTES {
             return Err(StorageError::BlobTooLarge {
                 size,
                 limit: MAX_SVG_IMPORT_BYTES,
             });
         }
-        // Keep reading the same private staged file handle inspected above.
-        // Reopening by pathname would introduce a replacement race in sniffing.
+        // Keep reading the same retained reader inspected above: a private
+        // file handle or the prefix captured with a portable member's digest.
         input.rewind()?;
         let mut encoded_bytes = Vec::new();
         input
@@ -335,18 +347,49 @@ fn validate_importable_asset(
         ));
     }
 
+    let input = File::open(source)?;
+    let opened = input.metadata()?;
+    if !opened.is_file() {
+        return Err(StorageError::UnsafeSourcePath(
+            "asset import requires an opened regular file".into(),
+        ));
+    }
+    validate_importable_asset_reader(input, opened.len(), media_type, original_svg_extension)
+}
+
+fn validate_importable_asset_reader(
+    mut input: impl Read + Seek,
+    size: u64,
+    media_type: &str,
+    original_svg_extension: bool,
+) -> StorageResult<()> {
     let declared_svg = media_type.eq_ignore_ascii_case("image/svg+xml") || original_svg_extension;
-    if !declared_svg && !source_looks_like_svg(source, media_type)? {
+    if !declared_svg && !source_looks_like_svg(&mut input, size, media_type)? {
         return Ok(());
     }
-    if metadata.len() > MAX_SVG_IMPORT_BYTES {
+    if size > MAX_SVG_IMPORT_BYTES {
         return Err(StorageError::BlobTooLarge {
-            size: metadata.len(),
+            size,
             limit: MAX_SVG_IMPORT_BYTES,
         });
     }
 
-    let bytes = fs::read(source)?;
+    input.rewind()?;
+    let mut bytes = Vec::new();
+    input
+        .take(MAX_SVG_IMPORT_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SVG_IMPORT_BYTES {
+        return Err(StorageError::BlobTooLarge {
+            size: bytes.len() as u64,
+            limit: MAX_SVG_IMPORT_BYTES,
+        });
+    }
+    if bytes.len() as u64 != size {
+        return Err(invalid_import(
+            "SVG asset byte count changed during validation",
+        ));
+    }
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| invalid_import("SVG assets must be valid UTF-8 XML"))?;
     let lowered = text.to_ascii_lowercase();
@@ -946,11 +989,15 @@ impl StudioService {
         &self,
         source: impl AsRef<Path>,
     ) -> StorageResult<BundleImportPlan> {
-        self.store.lock().inspect_project_bundle(source)
+        self.store
+            .lock()
+            .inspect_project_bundle_with_admission(source, &portability::SvgBundleAdmission)
     }
 
     pub fn import_project_bundle(&self, source: impl AsRef<Path>) -> StorageResult<Project> {
-        self.store.lock().import_project_bundle(source)
+        self.store
+            .lock()
+            .import_project_bundle_with_admission(source, &portability::SvgBundleAdmission)
     }
 
     /// Atomic cross-process application recovery claim, not an execution grant.
@@ -1180,6 +1227,7 @@ impl StudioService {
         request_id: &str,
         change: &Change,
     ) -> StorageResult<ApplyOutcome> {
+        self.require_semantic_graph_write_admission(change)?;
         self.store.lock().apply(id, expected, request_id, change)
     }
 }

@@ -55,6 +55,9 @@ pub struct ProductionDesign {
     /// Original semantic 2D camera pans. No 3D orbit or optical dolly claim.
     #[serde(default)]
     pub camera_reframes: Vec<CameraReframe>,
+    /// Typed semantic source; absence preserves pre-Graph document serialization.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_graphs: Vec<SemanticGraph>,
     /// Original data-only creative playbooks, never executable skills.
     #[serde(default)]
     pub evaluator_bundles: Vec<CreativeEvaluatorBundle>,

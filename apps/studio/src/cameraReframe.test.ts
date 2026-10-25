@@ -104,3 +104,76 @@ describe("source-authoritative planar camera reframe",()=>{
     }});
   });
 });
+
+
+describe("Camera v2 client profile consistency",()=>{
+  function manimSource(){
+    const {project,camera}=source(),scene=project.scenes[0];
+    scene.renderer="manim-community";
+    const rectangle=scene.nodes[0];
+    rectangle.x=400;rectangle.y=400;rectangle.width=220;rectangle.height=120;
+    rectangle.rotation_deg=0;rectangle.opacity=1;rectangle.coordinate_space="project_pixels";
+    rectangle.style={fill:"#86C8D1",stroke:null,stroke_width:0,blend_mode:"normal",
+      font_family:null,font_size:null,font_weight:null,line_height:null};
+    const circle=structuredClone(rectangle);circle.id=crypto.randomUUID();circle.kind="circle";
+    circle.x=1050;circle.y=430;circle.width=160;circle.height=160;circle.z_index=1;
+    scene.nodes=[rectangle,circle];
+    camera.component_version=2;camera.end_center_x=1000;camera.end_center_y=544;camera.duration_frames=24;
+    return {project,camera};
+  }
+  it("admits the existing Manim v2 pair without changing original vector shapes",async()=>{
+    // The same two-shape bounds and camera values are admitted by the Rust domain.
+    const {project,camera}=manimSource(),before=structuredClone(project);
+    const saved=await applyChange(project,{type:"upsert_camera_reframe",reframe:camera});
+    expect(saved.production_design?.camera_reframes).toEqual([camera]);
+    expect(saved.scenes[0].nodes).toEqual(before.scenes[0].nodes);
+    expect(saved.scenes[0].renderer).toBe("manim-community");
+    expect(saved.id).toBe(before.id);expect(saved.active_branch).toBe(before.active_branch);
+    expect(()=>validateCameraReframe(camera,saved.scenes[0])).not.toThrow();
+    const edited=await applyChange(saved,{type:"upsert_camera_reframe",
+      reframe:{...camera,end_center_x:1012}});
+    expect(edited.production_design?.camera_reframes?.[0].component_version).toBe(2);
+    expect(edited.scenes[0].nodes).toEqual(before.scenes[0].nodes);
+    expect(project).toEqual(before);
+  });
+  it("rejects cross-version renderer pairs without inferring a migration",async()=>{
+    for(const [version,renderer] of [[1,"manim-community"],[2,"motion-canvas"],[3,"manim-community"]] as const){
+      const {project,camera}=manimSource();
+      camera.component_version=version;project.scenes[0].renderer=renderer;
+      const before=structuredClone(project);
+      await expect(applyChange(project,{type:"upsert_camera_reframe",reframe:camera}))
+        .rejects.toThrow(/CameraReframe/);
+      expect(project).toEqual(before);
+    }
+  });
+  it("rejects every unrepresented Manim shape feature without modifying authored source",async()=>{
+    const mutators:Array<(project:Project)=>void>=[
+      p=>{p.scenes[0].camera.safe_margin=.049;},
+      p=>{p.scenes[0].nodes[0].kind="text";},
+      p=>{p.scenes[0].nodes[1].height=159;},
+      p=>{p.scenes[0].nodes[0].coordinate_space="normalized";},
+      p=>{p.scenes[0].nodes[0].opacity=.7;},
+      p=>{p.scenes[0].nodes[0].rotation_deg=5;},
+      p=>{p.scenes[0].nodes[0].text="Retain this text";},
+      p=>{p.scenes[0].nodes[0].style.stroke="#101010";},
+      p=>{p.scenes[0].nodes[0].style.stroke_width=1;},
+      p=>{p.scenes[0].nodes[0].style.blend_mode="multiply";},
+      p=>{p.scenes[0].nodes[0].style.font_family="system";},
+      p=>{p.scenes[0].nodes[0].style.font_size=14;},
+      p=>{p.scenes[0].nodes[0].style.font_weight=700;},
+      p=>{p.scenes[0].nodes[0].style.line_height=1.2;},
+      p=>{p.scenes[0].nodes[0].style.fill=null;},
+      p=>{p.scenes[0].nodes[0].style.fill="red";},
+      p=>{p.scenes[0].nodes[0].style.fill="#86C8D180";},
+      p=>{p.scenes[0].nodes[0].relations=[{id:crypto.randomUUID(),
+        target_id:p.scenes[0].nodes[1].id,kind:"align_center_x"}];},
+    ];
+    for(const mutate of mutators){
+      const {project,camera}=manimSource();mutate(project);
+      const before=structuredClone(project);
+      await expect(applyChange(project,{type:"upsert_camera_reframe",reframe:camera}))
+        .rejects.toThrow(/CameraReframe/);
+      expect(project).toEqual(before);
+    }
+  });
+});

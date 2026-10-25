@@ -97,8 +97,7 @@ def read_snapshot(data_root: Path, *, storage_cohort=None) -> ProjectSnapshot:
             if schema != expected_schema:
                 raise ColdStartError("Installed database schema is not the supported native schema")
             if storage_cohort is not None:
-                storage.validate_receipt_columns(
-                    conn.execute("PRAGMA main.table_xinfo(\'receipts\')").fetchall(), storage_cohort)
+                storage.validate_schema_layout(conn, storage_cohort)
             rows = conn.execute(
                 "SELECT id,generation,revision,title,document_json "
                 "FROM projects ORDER BY id LIMIT 2"
@@ -201,8 +200,7 @@ def _empty_library_ready(scratch: Path, *, storage_cohort=None) -> bool:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("PRAGMA trusted_schema=OFF")
             if storage_cohort is not None:
-                storage.validate_receipt_columns(
-                    connection.execute("PRAGMA main.table_xinfo(\'receipts\')").fetchall(), storage_cohort)
+                storage.validate_schema_layout(connection, storage_cohort)
             return (
                 connection.execute("PRAGMA quick_check(1)").fetchone() == ("ok",)
                 and connection.execute("PRAGMA user_version").fetchone() == (expected_schema,)

@@ -105,18 +105,30 @@ test("an approved owner registration sends one scoped canonical evaluator change
   await page.getByLabel(/I reviewed the per-scene technical changes/).check();
   await expect(admit).toBeEnabled();
   await expect(page.locator(".revision-chip")).toHaveText(rev);
-  // The outer App.commit resolves void even when its service call is refused.
-  // Reject the first attempted candidate and require the canonical version list
-  // to remain unchanged; a resolved promise must never be labelled committed.
+  // A rejected original response is retained as UNKNOWN. The former immediate
+  // retry expectation is incompatible with durable uncertainty: first inspect
+  // the actual current Project, then authorize a separate new registration.
+  const candidateBefore=await page.getByLabel("Evaluator experimental candidate JSON").inputValue();
   await page.evaluate(()=>(window as unknown as {
     __EXPERIMENT_REJECT_NEXT__:boolean
   }).__EXPERIMENT_REJECT_NEXT__=true);
   await admit.click();
   await expect(page.getByLabel("Evaluator source version").locator("option")).toHaveCount(2);
-  await expect(page.getByText(/Registration requested. Confirm the candidate/)).toBeVisible();
+  await expect(page.locator(".revision-chip")).toHaveText(rev);
+  const unknown=page.getByRole("region",{name:"Unconfirmed evaluator experiment registration",exact:true});
+  await expect(unknown).toContainText("UNKNOWN");
+  await expect(admit).toBeDisabled();
+  await expect(page.getByLabel("Evaluator experimental candidate JSON")).toHaveValue(candidateBefore);
+  await expect(page.getByLabel("Experiment owner review rationale")).toHaveValue("I reviewed technical regressions and abstentions for original source.");
+  await page.getByRole("button",{name:"Inspect current experiment project and history",exact:true}).click();
+  await expect(unknown).toContainText("0 journal changes match the original registration");
+  await expect(admit).toBeDisabled();
+  await page.getByLabel("Confirm separate experiment registration",{exact:true}).check();
   await expect(admit).toBeEnabled();
   await admit.click();
   await expect(page.getByLabel("Evaluator source version").locator("option")).toHaveCount(3);
+  await expect(unknown).toHaveCount(0);
+  await expect(page.getByLabel("Evaluator experimental candidate JSON")).toHaveValue(candidateBefore);
   const calls=await page.evaluate(()=>(window as unknown as {
     __EXPERIMENT_TEST_CALLS__:Array<{command:string;kind?:string}>
   }).__EXPERIMENT_TEST_CALLS__);

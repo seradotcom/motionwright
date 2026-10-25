@@ -6,6 +6,8 @@ members = [
   "crates/service",
   "crates/manim-profile",
   "crates/driver-manim-community",
+  "crates/hyperframes-profile",
+  "crates/driver-hyperframes",
   "crates/native",
   "apps/desktop/src-tauri",
 ]
@@ -15,9 +17,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 license = "AGPL-3.0-or-later"
+license-file = "LICENSE"
 repository = "https://github.com/seradotcom/motionwright"
 
 [workspace.dependencies]
+schemars = { version = "1", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 thiserror = "2.0"
@@ -30,15 +34,17 @@ tempfile = "3.23"
 parking_lot = "0.12"
 async-trait = "0.1"
 symphonia = { version = "0.6.1", features = ["all"] }
-tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync"] }
-semwright-native-sdk = { git = "https://github.com/seradotcom/semwright", rev = "54d3459a051adbce4cae9f60c0dea8f60c824be6", package = "semwright-native-sdk" }
-semwright-driver-sdk = { git = "https://github.com/seradotcom/semwright", rev = "54d3459a051adbce4cae9f60c0dea8f60c824be6", package = "semwright-driver-sdk" }
-semwright-types = { git = "https://github.com/seradotcom/semwright", rev = "54d3459a051adbce4cae9f60c0dea8f60c824be6", package = "semwright-types" }
-semwright-media-time = { git = "https://github.com/seradotcom/semwright", rev = "54d3459a051adbce4cae9f60c0dea8f60c824be6", package = "semwright-media-time" }
-semwright-project-graph = { git = "https://github.com/seradotcom/semwright", rev = "54d3459a051adbce4cae9f60c0dea8f60c824be6", package = "semwright-project-graph" }
-semwright-effect-conformance = { git = "https://github.com/seradotcom/semwright", rev = "54d3459a051adbce4cae9f60c0dea8f60c824be6", package = "semwright-effect-conformance" }
-semwright-motion-authoring = { git = "https://github.com/seradotcom/semwright", rev = "54d3459a051adbce4cae9f60c0dea8f60c824be6", package = "semwright-motion-authoring" }
-semwright-semantic-composition = { git = "https://github.com/seradotcom/semwright", rev = "54d3459a051adbce4cae9f60c0dea8f60c824be6", package = "semwright-semantic-composition" }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync"] }
+semwright-audio-domain = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-audio-domain" }
+semwright-native-sdk = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-native-sdk" }
+semwright-driver-sdk = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-driver-sdk" }
+semwright-types = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-types" }
+semwright-media-time = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-media-time" }
+semwright-project-graph = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-project-graph" }
+semwright-effect-conformance = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-effect-conformance" }
+semwright-motion-authoring = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-motion-authoring" }
+semwright-semantic-composition = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-semantic-composition" }
+semwright-driver-blender = { git = "https://github.com/seradotcom/semwright", rev = "4849b3c1dcee9b37438801b4264f59480bff9e40", package = "semwright-driver-blender" }
 
 # v0.1 security: exact crates.io glib 0.18.5 with the independently
 # audited VariantStrIter FFI out-parameter backport. Do not replace this

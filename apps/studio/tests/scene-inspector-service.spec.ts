@@ -118,13 +118,16 @@ async function withInspector(page: Page, info: TestInfo, run: (value: InspectorC
 
 
 test("Inspector raw objective and exact fraction survive actual App navigation before SQLite commits and restart", async ({ page }, info) => {
-  await withInspector(page, info, async ({ service, baseline, sceneId, sceneName, applyCount, observe, restart }) => {
+  await withInspector(page, info, async ({ service, baseline, sceneId, sceneName, applyCount, observations, observe, restart }) => {
+    const workspaces = page.getByRole("navigation", { name: "Workspaces", exact: true });
+    await expect(button(workspaces, "Canvas")).toHaveAttribute("aria-current", "page");
     await objective(page).fill("  Exact Inspector objective\n  retained  ");
     await duration(page).fill("  1001/30  ");
     await button(page, "Brief").click(); await openInspector(page, sceneName);
     await page.reload(); await revision(page, baseline.revision); await openInspector(page, sceneName);
     await expect(objective(page)).toHaveValue("  Exact Inspector objective\n  retained  ");
     await expect(duration(page)).toHaveValue("  1001/30  ");
+    await expect(button(workspaces, "Canvas")).toHaveAttribute("aria-current", "page");
     await button(page, "Commit objective").click(); await revision(page, baseline.revision + 1);
     await expect(duration(page)).toHaveValue("  1001/30  ");
     await button(page, "Ripple").click(); await revision(page, baseline.revision + 2);
@@ -134,7 +137,108 @@ test("Inspector raw objective and exact fraction survive actual App navigation b
     expect(applies(service)).toHaveLength(applyCount + 2);
     expect((await service.history(baseline.id, baseline.revision)).map(event => event.change.type))
       .toEqual(["update_scene_objective", "set_scene_duration"]);
+    // Keep the original two Canvas commits and compare the whole journal after
+    // their original process restart before exercising the other final routes.
+    const firstOracle = await service.observeStoredProject(saved);
     await restart(saved);
+    const firstReopened = await service.observeStoredProject(saved);
+    expect(firstReopened.project).toEqual(firstOracle.project);
+    expect(firstReopened.journal).toEqual(firstOracle.journal);
+    await expect(button(workspaces, "Canvas")).toHaveAttribute("aria-current", "page");
+
+    await button(workspaces, "Storyboard").click();
+    await expect(button(workspaces, "Storyboard")).toHaveAttribute("aria-current", "page");
+    const storyCard = page.locator(".story-card").filter({ has: page.getByText(sceneName, { exact: true }) });
+    await expect(storyCard).toHaveCount(1); await storyCard.click();
+    await expect(storyCard).toHaveClass(/selected/);
+    await expect(page.locator(".inspector .read-field")).toHaveText(sceneName);
+    const storyboardObjective = "Storyboard-authored objective retained through a new service process";
+    await objective(page).fill(storyboardObjective);
+    await expect(button(workspaces, "Storyboard")).toHaveAttribute("aria-current", "page");
+    await button(page, "Commit objective").click(); await revision(page, baseline.revision + 3);
+    const storyboardSaved = await observe("Storyboard route original objective commit");
+    expect(storyboardSaved.scenes.find(item => item.id === sceneId)!.objective).toBe(storyboardObjective);
+    expect(applies(service)).toHaveLength(applyCount + 3);
+    expect(applies(service).at(-1)!.request.change).toEqual({
+      type: "update_scene_objective", scene_id: sceneId, objective: storyboardObjective,
+    });
+    await expect(storyCard.locator(".story-copy p")).toHaveText(storyboardObjective);
+
+    await button(workspaces, "Timeline").click();
+    await expect(button(workspaces, "Timeline")).toHaveAttribute("aria-current", "page");
+    const clip = page.locator(".timeline-clip").filter({ has: page.getByText(sceneName, { exact: true }) });
+    await expect(clip).toHaveCount(1); await clip.click();
+    await expect(clip).toHaveClass(/selected/);
+    await expect(page.locator(".inspector .read-field")).toHaveText(sceneName);
+    await duration(page).fill("1501/30");
+    await expect(button(workspaces, "Timeline")).toHaveAttribute("aria-current", "page");
+    await button(page, "Ripple").click(); await revision(page, baseline.revision + 4);
+    const routedSaved = await observe("Timeline route original exact duration commit");
+    expect(routedSaved.scenes.find(item => item.id === sceneId)!.duration).toEqual({ num: "1501", den: "30" });
+    expect(routedSaved.scenes.find(item => item.id === sceneId)!.objective).toBe(storyboardObjective);
+    expect(routedSaved.scenes.map(item => item.id)).toEqual(saved.scenes.map(item => item.id));
+    const routeRequests = applies(service).slice(applyCount);
+    expect(routeRequests).toHaveLength(4);
+    expect(routeRequests.map(value => value.request.revision))
+      .toEqual([baseline.revision, baseline.revision + 1, baseline.revision + 2, baseline.revision + 3]);
+    expect(routeRequests.map(value => value.request.change)).toEqual([
+      { type: "update_scene_objective", scene_id: sceneId, objective: "Exact Inspector objective\n  retained" },
+      { type: "set_scene_duration", scene_id: sceneId, duration: { num: "1001", den: "30" } },
+      { type: "update_scene_objective", scene_id: sceneId, objective: storyboardObjective },
+      { type: "set_scene_duration", scene_id: sceneId, duration: { num: "1501", den: "30" } },
+    ]);
+    expect(new Set(routeRequests.map(value => value.request.request_id)).size).toBe(4);
+    expect(new Set(routeRequests.map(value => value.request.effect_grant)).size).toBe(4);
+    const routeJournal = await service.history(baseline.id, baseline.revision);
+    expect(routeJournal.map(event => event.revision))
+      .toEqual([baseline.revision + 1, baseline.revision + 2, baseline.revision + 3, baseline.revision + 4]);
+    expect(routeJournal.map(event => event.change)).toEqual(routeRequests.map(value => value.request.change));
+
+    const beforeReopen = await service.observeStoredProject(routedSaved);
+    const exitsBeforeReopen = service.processExits.length;
+    const priorProcessId = service.transcript.at(-1)?.processId;
+    expect(priorProcessId).toBeDefined();
+    await restart(routedSaved);
+    expect(service.processExits).toHaveLength(exitsBeforeReopen + 1);
+    expect(service.processExits.at(-1)).toMatchObject({ processId: priorProcessId, code: 0, signal: null });
+    const afterReopen = await service.observeStoredProject(routedSaved);
+    expect(afterReopen.project).toEqual(beforeReopen.project);
+    expect(afterReopen.journal).toEqual(beforeReopen.journal);
+    const reopenedProcessId = service.transcript.at(-1)?.processId;
+    expect(reopenedProcessId).toBeDefined();
+    // The close/start helper observes a new child lifetime; PID numbers alone
+    // are not an oracle because an OS may reuse a previous number.
+    await expect(button(workspaces, "Canvas")).toHaveAttribute("aria-current", "page");
+    await expect(objective(page)).toHaveValue(storyboardObjective);
+    await expect(duration(page)).toHaveValue("1501/30");
+    await page.screenshot({ path: info.outputPath("inspector-reopened-canvas.png"), fullPage: true });
+    await button(workspaces, "Storyboard").click(); await storyCard.click();
+    await expect(button(workspaces, "Storyboard")).toHaveAttribute("aria-current", "page");
+    await expect(storyCard).toHaveClass(/selected/);
+    await expect(storyCard.locator(".story-copy p")).toHaveText(storyboardObjective);
+    await expect(objective(page)).toHaveValue(storyboardObjective);
+    await expect(duration(page)).toHaveValue("1501/30");
+    await page.screenshot({ path: info.outputPath("inspector-reopened-storyboard.png"), fullPage: true });
+    await button(workspaces, "Timeline").click(); await clip.click();
+    await expect(button(workspaces, "Timeline")).toHaveAttribute("aria-current", "page");
+    await expect(clip).toHaveClass(/selected/);
+    await expect(objective(page)).toHaveValue(storyboardObjective);
+    await expect(duration(page)).toHaveValue("1501/30");
+    await page.screenshot({ path: info.outputPath("inspector-reopened-timeline.png"), fullPage: true });
+    expect(applies(service)).toHaveLength(applyCount + 4);
+    expect(await service.project(baseline.id)).toEqual(routedSaved);
+    expect((await service.observeStoredProject(routedSaved)).journal).toEqual(beforeReopen.journal);
+    observations.finalEditorRoutes = {
+      scope: "synthetic actual App authoring through shared Inspector, real service and SQLite; no native or human acceptance",
+      commitWorkspaces: ["Canvas", "Canvas", "Storyboard", "Timeline"], sceneId,
+      requestIds: routeRequests.map(value => value.request.request_id),
+      firstOracle, firstReopened, beforeReopen, afterReopen,
+      priorProcessId, reopenedProcessId, originalExit: service.processExits.at(-1),
+      reopenedWorkspaces: ["Canvas", "Storyboard", "Timeline"],
+      screenshots: ["inspector-reopened-canvas.png", "inspector-reopened-storyboard.png", "inspector-reopened-timeline.png"],
+      sourceRevisions: [baseline.revision, saved.revision, storyboardSaved.revision, routedSaved.revision],
+      applyCountAfterReadback: applies(service).length,
+    };
   });
 });
 test("held original Inspector reply retains later input before a separately granted save", async ({ page }, info) => {

@@ -1,0 +1,30 @@
+{
+  "schema": "motionwright.source-evidence/1",
+  "repository": "https://github.com/seradotcom/semwright",
+  "revision": "4849b3c1dcee9b37438801b4264f59480bff9e40",
+  "version": "1.0.0",
+  "license_expression": "MIT OR Apache-2.0",
+  "files": [
+    {
+      "upstream_path": "Cargo.toml",
+      "bytes": 6133,
+      "sha256": "51f94fd4afb6e48de17d043e5447ecf7555f88b89b4cd138fd644185eaaef5a7",
+      "git_blob_sha1": "84c3b2ca2ec9fc9cae1f2f9f0dd8631e9694e660",
+      "path": "third_party/semwright-source-evidence/4849b3c1dcee9b37438801b4264f59480bff9e40/Cargo.toml"
+    },
+    {
+      "upstream_path": "LICENSE-MIT",
+      "bytes": 1079,
+      "sha256": "ad56b5c3e274c6d82e1424447211bfb4e5b2c22c86e6cf8aa8120458aa7347ef",
+      "git_blob_sha1": "0f7bced0f3b3e3176ed81072c7bf13388d459f60",
+      "path": "third_party/semwright-source-evidence/4849b3c1dcee9b37438801b4264f59480bff9e40/LICENSE-MIT"
+    },
+    {
+      "upstream_path": "LICENSE-APACHE",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob_sha1": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "path": "third_party/semwright-source-evidence/4849b3c1dcee9b37438801b4264f59480bff9e40/LICENSE-APACHE"
+    }
+  ]
+}

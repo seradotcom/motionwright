@@ -132,13 +132,16 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         sample_frames: n,
         measured_voice: stem(0),
         original_music: stem(1),
-        original_sfx: stem(2),
+        original_sfx: stem(2).into(),
         voice_gain_db: f64::from(project.audio.mix.voice_gain_db),
         music_gain_db: f64::from(project.audio.mix.music_gain_db),
         sfx_gain_db: -8.0,
         duck_attenuation_db: 14.0,
         duck_attack_samples: 2400,
         duck_release_samples: 4800,
+        voice_envelope: Default::default(),
+        music_envelope: Default::default(),
+        sfx_envelope: Default::default(),
         voice_windows: vec![
             VoiceActivityWindow {
                 start_sample: 28800,

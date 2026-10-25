@@ -138,7 +138,7 @@ def verify_local_checkout(root: Path, expected_sha: str) -> None:
 # Bound authentic, append-only predecessor snapshots in the two public ledgers
 # without lifting the original ceiling for unrelated readiness source metadata.
 MAX_READINESS_JSON_BYTES = 3_000_000
-MAX_CONFORMANCE_LEDGER_BYTES = 5_000_000
+MAX_CONFORMANCE_LEDGER_BYTES = 16_000_000
 
 
 def source_json(
@@ -235,8 +235,11 @@ def summarize(root: Path, tested_source_sha: str) -> dict:
         evidence = case.get("evidence")
         need(isinstance(evidence, list), "acceptance_evidence_invalid")
         if case["status"] == "PASS":
+            # Canonical acceptance evidence is a roster of public source
+            # pointers. This aggregate report does not authenticate the review.
             need(case.get("independent") is True and bool(evidence)
-                 and all(isinstance(ref, dict) for ref in evidence),
+                 and all(isinstance(ref, str) and ref.strip() for ref in evidence)
+                 and len(evidence) == len(set(evidence)),
                  "unreviewed_acceptance_pass")
         else:
             need(not case.get("independent", False)

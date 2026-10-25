@@ -6,6 +6,7 @@ use motionwright_manim_profile::{
         CAMERA_SOURCE_MIME_V1, ManimCameraScenePlanV1, PreparedCameraProgramV1,
         camera_source_bundle_v1, camera_source_package_v1, compile_camera_program_source_only,
     },
+    semantic_graph::ManimSemanticGraphPlan,
     validate_plan,
 };
 use semwright_driver_sdk::{
@@ -25,6 +26,11 @@ use std::{
 };
 use uuid::Uuid;
 
+mod editable_source;
+mod graph_source;
+mod native_video_observation;
+mod static_source;
+
 const DRIVER_ID: &str = "manim-community";
 const DRIVER_SCOPE: &str = "driver:manim-community";
 const MANIM_VERSION: &str = "0.21.0";
@@ -39,6 +45,133 @@ const MAX_JOBS: usize = 32;
 const MAX_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_VIDEO_BYTES: u64 = 512 * 1024 * 1024;
 const RENDER_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DoctorArgs {
+    #[serde(default)]
+    probe_runtime: bool,
+}
+
+fn unobserved_runtime_probe(requested: bool, reason: &str) -> Value {
+    json!({
+        "schema": 1,
+        "operation": "runtime_version_probe",
+        "requested": requested,
+        "source": "none",
+        "state": "not_observed",
+        "expected_version": MANIM_VERSION,
+        "observed_version": null,
+        "compatible": null,
+        "reason_code": reason,
+        "render_performed": false,
+        "scene_mutation_performed": false,
+    })
+}
+
+fn validated_runtime_probe(stdout: &[u8]) -> Result<Value> {
+    if stdout.is_empty() || stdout.len() > 4096 {
+        return Err(backend("Manim runtime observation exceeds its bound"));
+    }
+    let data: Value = serde_json::from_slice(stdout)
+        .map_err(|_| backend("Manim runtime observation is malformed"))?;
+    if !data.as_object().is_some_and(|object| object.len() == 11)
+        || data.get("schema").and_then(Value::as_u64) != Some(1)
+        || data.get("operation").and_then(Value::as_str) != Some("runtime_version_probe")
+        || data.get("requested").and_then(Value::as_bool) != Some(true)
+        || data.get("source").and_then(Value::as_str) != Some("host_native_package_probe")
+        || data.get("expected_version").and_then(Value::as_str) != Some(MANIM_VERSION)
+        || data.get("render_performed").and_then(Value::as_bool) != Some(false)
+        || data
+            .get("scene_mutation_performed")
+            .and_then(Value::as_bool)
+            != Some(false)
+    {
+        return Err(backend("Manim runtime observation contract differs"));
+    }
+    match data.get("state").and_then(Value::as_str) {
+        Some("observed") => {
+            let version = data
+                .get("observed_version")
+                .and_then(Value::as_str)
+                .ok_or_else(|| backend("Manim native version was not observed"))?;
+            if version.is_empty()
+                || version.len() > 80
+                || version
+                    .chars()
+                    .any(|ch| ch.is_control() || ch.is_whitespace())
+            {
+                return Err(backend("Manim observed version is out of bounds"));
+            }
+            let compatible = version == MANIM_VERSION;
+            let reason = if compatible {
+                "version_observed"
+            } else {
+                "version_mismatch"
+            };
+            if data.get("compatible").and_then(Value::as_bool) != Some(compatible)
+                || data.get("reason_code").and_then(Value::as_str) != Some(reason)
+            {
+                return Err(backend("Manim observed compatibility is inconsistent"));
+            }
+        }
+        Some("package_not_found") => {
+            if data.get("observed_version") != Some(&Value::Null)
+                || data.get("compatible") != Some(&Value::Null)
+                || data.get("reason_code").and_then(Value::as_str)
+                    != Some("package_not_found_in_declared_runtime")
+            {
+                return Err(backend("Manim package observation is inconsistent"));
+            }
+        }
+        _ => return Err(backend("Manim runner did not return a native observation")),
+    }
+    Ok(data)
+}
+
+fn doctor_input_schema() -> Value {
+    json!({
+        "type":"object",
+        "properties":{"probe_runtime":{"type":"boolean","default":false}},
+        "additionalProperties":false,
+    })
+}
+
+fn doctor_output_schema() -> Value {
+    json!({
+        "type":"object",
+        "properties":{
+            "driver":{"const":DRIVER_ID},
+            "driver_version":{"type":"string","minLength":1,"maxLength":80},
+            "runtime":{"const":"Manim Community"},
+            "runtime_version_contract":{"const":MANIM_VERSION},
+            "host_tools":{"type":"boolean"},
+            "arbitrary_python":{"const":false},
+            "network":{"const":false},
+            "max_jobs":{"const":MAX_JOBS},
+            "runtime_probe":{
+                "type":"object",
+                "properties":{
+                    "schema":{"const":1},
+                    "operation":{"const":"runtime_version_probe"},
+                    "requested":{"type":"boolean"},
+                    "source":{"enum":["none","host_native_package_probe"]},
+                    "state":{"enum":["not_observed","observed","package_not_found"]},
+                    "expected_version":{"const":MANIM_VERSION},
+                    "observed_version":{"type":["string","null"],"minLength":1,"maxLength":80},
+                    "compatible":{"type":["boolean","null"]},
+                    "reason_code":{"enum":["not_requested","host_context_unavailable","host_tools_unavailable","host_probe_failed","runner_failed","invalid_runner_response","version_observed","version_mismatch","package_not_found_in_declared_runtime"]},
+                    "render_performed":{"const":false},
+                    "scene_mutation_performed":{"const":false},
+                },
+                "required":["schema","operation","requested","source","state","expected_version","observed_version","compatible","reason_code","render_performed","scene_mutation_performed"],
+                "additionalProperties":false,
+            },
+        },
+        "required":["driver","driver_version","runtime","runtime_version_contract","host_tools","arbitrary_python","network","max_jobs","runtime_probe"],
+        "additionalProperties":false,
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -93,7 +226,7 @@ struct JobArgs {
 /// This descriptor does not authorize execution or assert visual acceptance.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CameraSourceArtifact {
+struct EditableSourceArtifact {
     relative_path: String,
     sha256: String,
     bytes: u64,
@@ -117,7 +250,27 @@ struct RenderArtifact {
     #[serde(skip_serializing_if = "Option::is_none")]
     camera_getters_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    camera_source: Option<CameraSourceArtifact>,
+    camera_source: Option<EditableSourceArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    static_source: Option<EditableSourceArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    static_getters: Option<static_source::NativeGetterArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    editable_source: Option<EditableSourceArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    editable_getters: Option<static_source::NativeGetterArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    editable_input_source: Option<editable_source::SourceBundleReadback>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_input_source: Option<graph_source::SourceBundleReadback>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_source: Option<EditableSourceArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_getters: Option<static_source::NativeGetterArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decoded_video: Option<native_video_observation::NativeVideoArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decoded_video_error: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +298,88 @@ impl JobPhase {
     }
 }
 
+/// These variants select trusted compilers, never an alternate execution path.
+#[derive(Debug, Clone)]
+enum OriginalSourcePlan {
+    Legacy,
+    Camera(Box<ManimCameraScenePlanV1>),
+    Static(Box<motionwright_manim_profile::ManimScenePlanV2>),
+    Editable(Box<motionwright_manim_profile::editable_scene::Plan>),
+    Graph(Box<ManimSemanticGraphPlan>),
+}
+
+impl OriginalSourcePlan {
+    fn frame_count(&self) -> Option<u64> {
+        match self {
+            Self::Legacy => None,
+            Self::Camera(plan) => Some(u64::from(plan.clock.frame_count)),
+            Self::Static(plan) => Some(u64::from(plan.clock.frame_count)),
+            Self::Editable(plan) => Some(u64::from(plan.clock.frame_count)),
+            Self::Graph(plan) => Some(u64::from(plan.scene_clock.frame_count)),
+        }
+    }
+    fn graph(&self) -> Option<&ManimSemanticGraphPlan> {
+        match self {
+            Self::Graph(plan) => Some(plan),
+            _ => None,
+        }
+    }
+    fn editable(&self) -> Option<&motionwright_manim_profile::editable_scene::Plan> {
+        match self {
+            Self::Editable(plan) => Some(plan),
+            _ => None,
+        }
+    }
+    fn camera(&self) -> Option<&ManimCameraScenePlanV1> {
+        match self {
+            Self::Camera(plan) => Some(plan),
+            _ => None,
+        }
+    }
+    fn static_shapes(&self) -> Option<&motionwright_manim_profile::ManimScenePlanV2> {
+        match self {
+            Self::Static(plan) => Some(plan),
+            _ => None,
+        }
+    }
+}
+
+/// Original inputs stay typed until their bytes are released before Host dispatch.
+enum OriginalSourceInput {
+    Editable(editable_source::VerifiedSourceBundle),
+    Graph(graph_source::VerifiedSourceBundle),
+}
+
+impl OriginalSourceInput {
+    fn require_plan(&self, plan: &OriginalSourcePlan) -> Result<()> {
+        if matches!(
+            (self, plan),
+            (Self::Editable(_), OriginalSourcePlan::Editable(_))
+                | (Self::Graph(_), OriginalSourcePlan::Graph(_))
+        ) {
+            Ok(())
+        } else {
+            Err(invalid(
+                "Original source input differs from its selected trusted compiler",
+            ))
+        }
+    }
+
+    fn editable(&self) -> Option<&editable_source::VerifiedSourceBundle> {
+        match self {
+            Self::Editable(input) => Some(input),
+            Self::Graph(_) => None,
+        }
+    }
+
+    fn graph(&self) -> Option<&graph_source::VerifiedSourceBundle> {
+        match self {
+            Self::Graph(input) => Some(input),
+            Self::Editable(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RenderJob {
     host_job: RuntimeToolJob,
@@ -157,8 +392,13 @@ struct RenderJob {
     diagnostic: Option<String>,
     /// Kept only in the original Driver Host's bounded job lifetime. Imported
     /// source/ZIP cannot assert this typed source identity.
-    camera_plan: Option<ManimCameraScenePlanV1>,
-    camera_source: Option<CameraSourceArtifact>,
+    source_plan: OriginalSourcePlan,
+    camera_source: Option<EditableSourceArtifact>,
+    static_source: Option<EditableSourceArtifact>,
+    editable_source: Option<EditableSourceArtifact>,
+    editable_input_source: Option<editable_source::SourceBundleReadback>,
+    graph_input_source: Option<graph_source::SourceBundleReadback>,
+    graph_source: Option<EditableSourceArtifact>,
     source_custody_error: Option<String>,
 }
 
@@ -458,15 +698,15 @@ fn camera_source_relative(source_file: &str) -> Result<String> {
     Ok(format!("mw_{token}.mwcam.zip"))
 }
 
-fn bounded_camera_file(root: &Path, relative: &str, maximum: usize) -> Result<Vec<u8>> {
+fn bounded_source_file(root: &Path, relative: &str, maximum: usize) -> Result<Vec<u8>> {
     let (path, size) = safe_output_file(root, relative)?;
     if size > maximum as u64 {
-        return Err(invalid("Manim camera source exceeds its byte budget"));
+        return Err(invalid("Manim source exceeds its byte budget"));
     }
     let mut bytes = Vec::with_capacity(size as usize);
     let mut file = fs::File::open(&path)?;
     if !file.metadata()?.is_file() || file.metadata()?.len() != size {
-        return Err(invalid("Manim camera source changed before bounded read"));
+        return Err(invalid("Manim source changed before bounded read"));
     }
     std::io::Read::by_ref(&mut file)
         .take(maximum as u64 + 1)
@@ -477,7 +717,7 @@ fn bounded_camera_file(root: &Path, relative: &str, maximum: usize) -> Result<Ve
         || after_path != path
         || after_size != size
     {
-        return Err(invalid("Manim camera source changed during bounded read"));
+        return Err(invalid("Manim source changed during bounded read"));
     }
     Ok(bytes)
 }
@@ -486,7 +726,7 @@ fn expected_camera_source(
     source_file: &str,
     plan: &ManimCameraScenePlanV1,
     plan_sha256: &str,
-) -> Result<(CameraSourceArtifact, Vec<u8>, Vec<u8>)> {
+) -> Result<(EditableSourceArtifact, Vec<u8>, Vec<u8>)> {
     let package = camera_source_package_v1(plan).map_err(map_profile_error)?;
     if package.closure.plan_sha256 != plan_sha256 {
         return Err(invalid(
@@ -499,7 +739,7 @@ fn expected_camera_source(
         .get("scene.py")
         .ok_or_else(|| invalid("Closed Manim camera package has no generated program"))?
         .clone();
-    let artifact = CameraSourceArtifact {
+    let artifact = EditableSourceArtifact {
         relative_path: camera_source_relative(source_file)?,
         sha256: hex::encode(Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
@@ -515,10 +755,10 @@ fn retain_camera_source(
     source_file: &str,
     plan: &ManimCameraScenePlanV1,
     plan_sha256: &str,
-) -> Result<CameraSourceArtifact> {
+) -> Result<EditableSourceArtifact> {
     let (artifact, bundle, expected_source) =
         expected_camera_source(source_file, plan, plan_sha256)?;
-    if bounded_camera_file(work_root, source_file, MAX_SOURCE_BYTES)? != expected_source {
+    if bounded_source_file(work_root, source_file, MAX_SOURCE_BYTES)? != expected_source {
         return Err(invalid(
             "Generated Manim source differs from the original typed camera plan",
         ));
@@ -527,7 +767,7 @@ fn retain_camera_source(
     let mut output = OpenOptions::new().write(true).create_new(true).open(path)?;
     output.write_all(&bundle)?;
     output.sync_all()?;
-    if bounded_camera_file(
+    if bounded_source_file(
         output_root,
         &artifact.relative_path,
         MAX_SOURCE_BUNDLE_BYTES_V2,
@@ -546,12 +786,12 @@ fn verify_retained_camera_source(
     source_file: &str,
     plan: &ManimCameraScenePlanV1,
     plan_sha256: &str,
-    recorded: Option<&CameraSourceArtifact>,
-) -> Result<CameraSourceArtifact> {
+    recorded: Option<&EditableSourceArtifact>,
+) -> Result<EditableSourceArtifact> {
     let (expected, bundle, python) = expected_camera_source(source_file, plan, plan_sha256)?;
     if recorded != Some(&expected)
-        || bounded_camera_file(work_root, source_file, MAX_SOURCE_BYTES)? != python
-        || bounded_camera_file(
+        || bounded_source_file(work_root, source_file, MAX_SOURCE_BYTES)? != python
+        || bounded_source_file(
             output_root,
             &expected.relative_path,
             MAX_SOURCE_BUNDLE_BYTES_V2,
@@ -599,7 +839,71 @@ impl ManimCommunityDriver {
             "arbitrary_python": false,
             "network": false,
             "max_jobs": MAX_JOBS,
+            "runtime_probe": unobserved_runtime_probe(false, "not_requested"),
         })
+    }
+
+    async fn doctor_with_runtime(
+        &self,
+        args: DoctorArgs,
+        context: &DriverExecutionContext,
+    ) -> Result<Value> {
+        let mut report = self.doctor();
+        if !args.probe_runtime {
+            return Ok(report);
+        }
+        if std::env::var_os("SEMWRIGHT_DRIVER_HOST_TOOLS").is_none() {
+            report["runtime_probe"] = unobserved_runtime_probe(true, "host_tools_unavailable");
+            return Ok(report);
+        }
+        let literal = |value: &str| RuntimeToolArg::Literal {
+            value: value.into(),
+        };
+        let output = context
+            .execute_runtime_tool_args(
+                MANIM_TOOL,
+                vec![
+                    literal("probe"),
+                    literal("--runtime-root"),
+                    RuntimeToolArg::MountPath {
+                        mount: RUNTIME_MOUNT.into(),
+                        relative: String::new(),
+                    },
+                    literal("--python-sealed"),
+                    RuntimeToolArg::ToolPath {
+                        tool: PYTHON_TOOL.into(),
+                    },
+                    literal("--ffmpeg-sealed"),
+                    RuntimeToolArg::ToolPath {
+                        tool: FFMPEG_TOOL.into(),
+                    },
+                    literal("--fontconfig-root"),
+                    RuntimeToolArg::MountPath {
+                        mount: FONTCONFIG_MOUNT.into(),
+                        relative: String::new(),
+                    },
+                    literal("--work-root"),
+                    RuntimeToolArg::MountPath {
+                        mount: WORK_MOUNT.into(),
+                        relative: String::new(),
+                    },
+                ],
+                Vec::new(),
+                Duration::from_secs(30),
+                Some(RuntimeToolCwd {
+                    mount: WORK_MOUNT.into(),
+                    relative: String::new(),
+                }),
+            )
+            .await;
+        context.check_cancelled()?;
+        report["runtime_probe"] = match output {
+            Ok(output) if output.exit_code == 0 => validated_runtime_probe(&output.stdout)
+                .unwrap_or_else(|_| unobserved_runtime_probe(true, "invalid_runner_response")),
+            Ok(_) => unobserved_runtime_probe(true, "runner_failed"),
+            Err(_) => unobserved_runtime_probe(true, "host_probe_failed"),
+        };
+        Ok(report)
     }
 
     async fn start(&mut self, args: Value, context: &DriverExecutionContext) -> Result<Value> {
@@ -609,8 +913,15 @@ impl ManimCommunityDriver {
         args.profile.validate().map_err(map_profile_error)?;
         let source = compile_manim_python(&args.plan).map_err(map_profile_error)?;
         let plan_sha256 = plan_digest(&args.plan)?;
-        self.start_prepared_source(source, plan_sha256, args.profile, None, context)
-            .await
+        self.start_prepared_source(
+            source,
+            plan_sha256,
+            args.profile,
+            OriginalSourcePlan::Legacy,
+            None,
+            context,
+        )
+        .await
     }
 
     /// The separate camera command shares the exact same Semwright Host
@@ -629,7 +940,67 @@ impl ManimCommunityDriver {
             program.python_source,
             program.plan_sha256,
             args.profile,
-            Some(args.plan),
+            OriginalSourcePlan::Camera(Box::new(args.plan)),
+            None,
+            context,
+        )
+        .await
+    }
+
+    async fn start_static(
+        &mut self,
+        args: Value,
+        context: &DriverExecutionContext,
+    ) -> Result<Value> {
+        context.check_cancelled()?;
+        let args: static_source::StaticStartArgs = serde_json::from_value(args)?;
+        let program = static_source::prepare(&args)?;
+        self.start_prepared_source(
+            program.source,
+            program.plan_sha256,
+            args.profile,
+            OriginalSourcePlan::Static(Box::new(args.plan)),
+            None,
+            context,
+        )
+        .await
+    }
+
+    async fn start_editable(
+        &mut self,
+        args: Value,
+        context: &DriverExecutionContext,
+    ) -> Result<Value> {
+        context.check_cancelled()?;
+        let args: editable_source::StartArgs = serde_json::from_value(args)?;
+        let program = editable_source::prepare(&args, Some(&self.output_root))?;
+        self.start_prepared_source(
+            program.source,
+            program.plan_sha256,
+            args.profile,
+            OriginalSourcePlan::Editable(Box::new(args.plan)),
+            program.input_source.map(OriginalSourceInput::Editable),
+            context,
+        )
+        .await
+    }
+
+    async fn start_graph(
+        &mut self,
+        args: Value,
+        context: &DriverExecutionContext,
+    ) -> Result<Value> {
+        context.check_cancelled()?;
+        let args: graph_source::StartArgs = serde_json::from_value(args)?;
+        let program = graph_source::prepare(&args)?;
+        let original_input =
+            graph_source::prepare_original_input(&args, &self.output_root, &program)?;
+        self.start_prepared_source(
+            program.python_source,
+            program.plan_sha256,
+            args.profile,
+            OriginalSourcePlan::Graph(Box::new(args.plan)),
+            original_input.map(OriginalSourceInput::Graph),
             context,
         )
         .await
@@ -640,10 +1011,18 @@ impl ManimCommunityDriver {
         source: String,
         plan_sha256: String,
         profile: ManimRenderProfile,
-        camera_plan: Option<ManimCameraScenePlanV1>,
+        source_plan: OriginalSourcePlan,
+        source_input: Option<OriginalSourceInput>,
         context: &DriverExecutionContext,
     ) -> Result<Value> {
         context.check_cancelled()?;
+        if let Some(input) = &source_input {
+            input.require_plan(&source_plan)?;
+        }
+        let editable_input = source_input
+            .as_ref()
+            .and_then(OriginalSourceInput::editable);
+        let graph_input = source_input.as_ref().and_then(OriginalSourceInput::graph);
         if self.jobs.len() >= MAX_JOBS {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
@@ -666,6 +1045,7 @@ impl ManimCommunityDriver {
             output_name
         );
 
+        graph_source::require_distinct_original_output(&source_file, graph_input)?;
         let source_path = self.work_root.join(&source_file);
         let mut file = OpenOptions::new()
             .write(true)
@@ -673,8 +1053,8 @@ impl ManimCommunityDriver {
             .open(&source_path)?;
         file.write_all(source.as_bytes())?;
         file.sync_all()?;
-        let camera_source = camera_plan
-            .as_ref()
+        let camera_source = source_plan
+            .camera()
             .map(|plan| {
                 retain_camera_source(
                     &self.work_root,
@@ -686,6 +1066,69 @@ impl ManimCommunityDriver {
             })
             .transpose()?;
 
+        let static_source = source_plan
+            .static_shapes()
+            .map(|plan| {
+                static_source::retain(
+                    &self.work_root,
+                    &self.output_root,
+                    &source_file,
+                    plan,
+                    &plan_sha256,
+                )
+            })
+            .transpose()?;
+
+        let graph_source = source_plan
+            .graph()
+            .map(|plan| {
+                graph_source::retain(
+                    &self.work_root,
+                    &self.output_root,
+                    &source_file,
+                    plan,
+                    &plan_sha256,
+                    graph_input,
+                )
+            })
+            .transpose()?;
+
+        let fontconfig_arg = if let Some(plan) = source_plan.editable() {
+            let relative = editable_source::stage_assets(
+                &self.work_root,
+                &self.output_root,
+                &source_file,
+                plan,
+                editable_input,
+            )?;
+            RuntimeToolArg::MountPath {
+                mount: WORK_MOUNT.into(),
+                relative,
+            }
+        } else {
+            RuntimeToolArg::MountPath {
+                mount: FONTCONFIG_MOUNT.into(),
+                relative: String::new(),
+            }
+        };
+        let editable_source = source_plan
+            .editable()
+            .map(|plan| {
+                editable_source::retain(
+                    &self.work_root,
+                    &self.output_root,
+                    &source_file,
+                    plan,
+                    &plan_sha256,
+                    editable_input,
+                )
+            })
+            .transpose()?;
+        let editable_input_source = editable_input.map(|input| input.observation.clone());
+        let graph_input_source = graph_input.map(|input| input.observation.clone());
+        // Package bytes are a bounded, pre-effect input only; the retained job
+        // contains the original small provenance snapshot, never font/ZIP data.
+        drop(source_input);
         let literal = |value: String| RuntimeToolArg::Literal { value };
         let host_job = context
             .start_runtime_tool_job_args(
@@ -706,10 +1149,7 @@ impl ManimCommunityDriver {
                         tool: FFMPEG_TOOL.into(),
                     },
                     literal("--fontconfig-root".into()),
-                    RuntimeToolArg::MountPath {
-                        mount: FONTCONFIG_MOUNT.into(),
-                        relative: String::new(),
-                    },
+                    fontconfig_arg,
                     literal("--work-root".into()),
                     RuntimeToolArg::MountPath {
                         mount: WORK_MOUNT.into(),
@@ -753,8 +1193,13 @@ impl ManimCommunityDriver {
                 profile,
                 artifact: None,
                 diagnostic: None,
-                camera_plan,
+                source_plan,
                 camera_source,
+                static_source,
+                editable_source,
+                editable_input_source,
+                graph_input_source,
+                graph_source,
                 source_custody_error: None,
             },
         );
@@ -798,7 +1243,7 @@ impl ManimCommunityDriver {
                         output.stderr.len()
                     ));
                 } else {
-                    let camera_getters_sha256 = if let Some(plan) = &job.camera_plan {
+                    let camera_getters_sha256 = if let Some(plan) = job.source_plan.camera() {
                         match verified_camera_getters_from_work_root(
                             &self.work_root,
                             &job.source_file,
@@ -819,7 +1264,7 @@ impl ManimCommunityDriver {
                     };
                     let (path, bytes) = safe_output_file(&self.output_root, &job.output_relative)?;
                     let sha256 = sha256_file(&path)?;
-                    let camera_source = if let Some(plan) = &job.camera_plan {
+                    let camera_source = if let Some(plan) = job.source_plan.camera() {
                         match verify_retained_camera_source(
                             &self.work_root,
                             &self.output_root,
@@ -839,6 +1284,84 @@ impl ManimCommunityDriver {
                     } else {
                         None
                     };
+                    let (static_source, static_getters) =
+                        if let Some(plan) = job.source_plan.static_shapes() {
+                            match static_source::verify_completed(
+                                &self.work_root,
+                                &self.output_root,
+                                &job.source_file,
+                                plan,
+                                &job.plan_sha256,
+                                job.static_source.as_ref(),
+                            ) {
+                                Ok((source, getters)) => (Some(source), Some(getters)),
+                                Err(error) => {
+                                    // Preserve the known native video outcome separately
+                                    // from a failed editable-source or geometry readback.
+                                    job.source_custody_error = Some(error.to_string());
+                                    (None, None)
+                                }
+                            }
+                        } else {
+                            (None, None)
+                        };
+                    let (editable_source, editable_getters) =
+                        if let Some(plan) = job.source_plan.editable() {
+                            match editable_source::verify_completed(
+                                &self.work_root,
+                                &self.output_root,
+                                &job.source_file,
+                                plan,
+                                &job.plan_sha256,
+                                job.editable_source.as_ref(),
+                            ) {
+                                Ok((source, getters)) => (Some(source), Some(getters)),
+                                Err(error) => {
+                                    job.source_custody_error = Some(error.to_string());
+                                    (None, None)
+                                }
+                            }
+                        } else {
+                            (None, None)
+                        };
+                    let (graph_source, graph_getters) = if let Some(plan) = job.source_plan.graph()
+                    {
+                        match graph_source::verify_completed(
+                            &self.work_root,
+                            &self.output_root,
+                            &job.source_file,
+                            plan,
+                            &job.plan_sha256,
+                            job.graph_source.as_ref(),
+                            job.graph_input_source.as_ref(),
+                        ) {
+                            Ok((source, getters)) => (Some(source), Some(getters)),
+                            Err(error) => {
+                                // Preserve the known original video outcome. A
+                                // missing/invalid graph closure is not a retry.
+                                job.source_custody_error = Some(error.to_string());
+                                (None, None)
+                            }
+                        }
+                    } else {
+                        (None, None)
+                    };
+                    let observation = native_video_observation::read_for_original_job(
+                        &self.work_root,
+                        &self.output_root,
+                        &job.source_file,
+                        native_video_observation::OriginalEncodedVideo {
+                            relative_path: &job.output_relative,
+                            sha256: &sha256,
+                            bytes,
+                        },
+                        job.profile,
+                        job.source_plan.frame_count(),
+                    );
+                    let (decoded_video, decoded_video_error) = match observation {
+                        Ok(value) => (Some(value), None),
+                        Err(_) => (None, Some("original_native_video_observation_unavailable")),
+                    };
                     job.artifact = Some(RenderArtifact {
                         relative_path: job.output_relative.clone(),
                         sha256,
@@ -850,6 +1373,16 @@ impl ManimCommunityDriver {
                         plan_sha256: job.plan_sha256.clone(),
                         camera_getters_sha256,
                         camera_source,
+                        static_source,
+                        static_getters,
+                        editable_source,
+                        editable_getters,
+                        editable_input_source: job.editable_input_source.clone(),
+                        graph_input_source: job.graph_input_source.clone(),
+                        graph_source,
+                        graph_getters,
+                        decoded_video,
+                        decoded_video_error,
                     });
                     job.phase = JobPhase::Succeeded;
                 }
@@ -915,6 +1448,9 @@ impl ManimCommunityDriver {
         match command {
             "driver.manim-community.render.start" => self.start(args, context).await,
             "driver.manim-community.camera.render.start" => self.start_camera(args, context).await,
+            static_source::START_COMMAND => self.start_static(args, context).await,
+            editable_source::START_COMMAND => self.start_editable(args, context).await,
+            graph_source::START_COMMAND => self.start_graph(args, context).await,
             "driver.manim-community.render.status" => {
                 let args: JobArgs = serde_json::from_value(args)?;
                 self.refresh(&args.job_ref, context).await
@@ -962,11 +1498,17 @@ impl Driver for ManimCommunityDriver {
         &mut self,
         command: &str,
         descriptor_sha256: &str,
-        _args: Value,
+        args: Value,
     ) -> Result<Value> {
         self.verify_descriptor(command, descriptor_sha256)?;
         if command == "driver.manim-community.doctor" {
-            return Ok(self.doctor());
+            let args: DoctorArgs = serde_json::from_value(args)?;
+            let mut report = self.doctor();
+            if args.probe_runtime {
+                report["runtime_probe"] =
+                    unobserved_runtime_probe(true, "host_context_unavailable");
+            }
+            return Ok(report);
         }
         Err(Error::new(
             ErrorCode::Unsupported,
@@ -984,7 +1526,8 @@ impl Driver for ManimCommunityDriver {
         self.verify_descriptor(command, descriptor_sha256)?;
         context.check_cancelled()?;
         if command == "driver.manim-community.doctor" {
-            return Ok(self.doctor());
+            let args: DoctorArgs = serde_json::from_value(args)?;
+            return self.doctor_with_runtime(args, &context).await;
         }
         self.execute_with_runtime(command, args, &context).await
     }
@@ -1200,10 +1743,7 @@ fn capability_catalog() -> Result<Vec<Capability>> {
         capability(CapabilitySpec {
             name: "driver.manim-community.doctor",
             description: "Inspect the bounded Manim Community runtime contract without executing user code",
-            schemas: (
-                json!({"type":"object","properties":{},"additionalProperties":false}),
-                json!({"type":"object"}),
-            ),
+            schemas: (doctor_input_schema(), doctor_output_schema()),
             risk: Risk::ReadOnly,
             idempotency: Idempotency::ReadOnly,
             dry_run: true,
@@ -1218,6 +1758,52 @@ fn capability_catalog() -> Result<Vec<Capability>> {
             dry_run: false,
             tags: &[
                 "manim",
+                "renderer",
+                "render",
+                "job",
+                "artifact-out:video/clip",
+            ],
+        }),
+        capability(CapabilitySpec {
+            name: static_source::START_COMMAND,
+            description: "Render a closed static V2 source with its authored clock, editable package and native object measurements",
+            schemas: (static_source::start_schema(), job_output_schema()),
+            risk: Risk::MutatingReversible,
+            idempotency: Idempotency::NonIdempotent,
+            dry_run: false,
+            tags: &[
+                "manim",
+                "renderer",
+                "render",
+                "job",
+                "artifact-out:video/clip",
+            ],
+        }),
+        capability(CapabilitySpec {
+            name: editable_source::START_COMMAND,
+            description: "Render closed editable V3 text and shapes with verified private font assets and native object measurements",
+            schemas: (editable_source::start_schema(), job_output_schema()),
+            risk: Risk::MutatingReversible,
+            idempotency: Idempotency::NonIdempotent,
+            dry_run: false,
+            tags: &[
+                "manim",
+                "renderer",
+                "render",
+                "job",
+                "artifact-out:video/clip",
+            ],
+        }),
+        capability(CapabilitySpec {
+            name: graph_source::START_COMMAND,
+            description: "Render a closed semantic graph at its exact authored reference frame through the original Manim Host; opaque RGBA8, even axes at most 4096 and at most 8847360 pixels",
+            schemas: (graph_source::start_schema(), job_output_schema()),
+            risk: Risk::MutatingReversible,
+            idempotency: Idempotency::NonIdempotent,
+            dry_run: false,
+            tags: &[
+                "manim",
+                "semantic-graph",
                 "renderer",
                 "render",
                 "job",
@@ -1293,7 +1879,7 @@ mod tests {
     #[test]
     fn catalog_never_exposes_python_or_shell_execution() {
         let caps = capability_catalog().unwrap();
-        assert_eq!(caps.len(), 6);
+        assert_eq!(caps.len(), 9);
         for capability in caps {
             assert!(
                 capability
@@ -1301,7 +1887,7 @@ mod tests {
                     .name
                     .starts_with("driver.manim-community.")
             );
-            let encoded = serde_json::to_string(&capability.descriptor).unwrap();
+            let encoded = serde_json::to_string(&capability.descriptor.input_schema).unwrap();
             assert!(!encoded.contains("python"));
             assert!(!encoded.contains("shell"));
             assert!(!encoded.contains("command_line"));
@@ -1780,5 +2366,102 @@ mod tests {
             camera_source_relative("mw_0123456789abcdef0123456789abcdef.py").unwrap(),
             "mw_0123456789abcdef0123456789abcdef.mwcam.zip",
         );
+    }
+    fn observed_probe_fixture(version: &str) -> Value {
+        let compatible = version == MANIM_VERSION;
+        json!({
+            "schema":1,"operation":"runtime_version_probe","requested":true,
+            "source":"host_native_package_probe","state":"observed",
+            "expected_version":MANIM_VERSION,"observed_version":version,
+            "compatible":compatible,
+            "reason_code":if compatible {"version_observed"} else {"version_mismatch"},
+            "render_performed":false,"scene_mutation_performed":false,
+        })
+    }
+
+    #[test]
+    fn doctor_probe_is_opt_in_and_rejects_arbitrary_inputs() {
+        assert!(
+            !serde_json::from_value::<DoctorArgs>(json!({}))
+                .unwrap()
+                .probe_runtime
+        );
+        assert!(
+            serde_json::from_value::<DoctorArgs>(json!({"probe_runtime":true}))
+                .unwrap()
+                .probe_runtime
+        );
+        for args in [
+            json!({"probe_runtime":"true"}),
+            json!({"probe_runtime":true,"source":"untrusted.py"}),
+            json!({"python":"/untrusted"}),
+        ] {
+            assert!(serde_json::from_value::<DoctorArgs>(args).is_err());
+        }
+        let schema = doctor_input_schema();
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
+        let output = doctor_output_schema();
+        assert_eq!(output["additionalProperties"], false);
+        assert_eq!(
+            output["properties"]["runtime_probe"]["additionalProperties"],
+            false
+        );
+    }
+
+    #[test]
+    fn doctor_probe_preserves_mismatch_and_rejects_metadata_or_forged_compatibility() {
+        for version in ["0.21.0", "0.20.1"] {
+            let data = observed_probe_fixture(version);
+            let accepted = validated_runtime_probe(&serde_json::to_vec(&data).unwrap()).unwrap();
+            assert_eq!(accepted["observed_version"], version);
+            assert_eq!(accepted["compatible"], version == MANIM_VERSION);
+        }
+        let mut lie = observed_probe_fixture("0.20.1");
+        lie["compatible"] = json!(true);
+        assert!(validated_runtime_probe(&serde_json::to_vec(&lie).unwrap()).is_err());
+        let metadata = unobserved_runtime_probe(true, "host_context_unavailable");
+        assert!(validated_runtime_probe(&serde_json::to_vec(&metadata).unwrap()).is_err());
+        let mut extra = observed_probe_fixture(MANIM_VERSION);
+        extra["injected"] = json!(true);
+        assert!(validated_runtime_probe(&serde_json::to_vec(&extra).unwrap()).is_err());
+        let mut rendered = observed_probe_fixture(MANIM_VERSION);
+        rendered["render_performed"] = json!(true);
+        assert!(validated_runtime_probe(&serde_json::to_vec(&rendered).unwrap()).is_err());
+        assert!(validated_runtime_probe(&vec![b'x'; 4097]).is_err());
+    }
+
+    #[tokio::test]
+    async fn doctor_without_host_context_does_not_claim_native_version_or_create_jobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut driver = ManimCommunityDriver {
+            work_root: temp.path().to_owned(),
+            output_root: temp.path().to_owned(),
+            jobs: BTreeMap::new(),
+            capabilities: capability_catalog().unwrap(),
+        };
+        let capability = driver
+            .capabilities
+            .iter()
+            .find(|capability| capability.descriptor.name == "driver.manim-community.doctor")
+            .unwrap();
+        let digest = descriptor_digest(&capability.descriptor).unwrap();
+        let result = driver
+            .execute(
+                "driver.manim-community.doctor",
+                &digest,
+                json!({"probe_runtime":true}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["runtime_probe"]["state"], "not_observed");
+        assert_eq!(result["runtime_probe"]["observed_version"], Value::Null);
+        assert_eq!(result["runtime_probe"]["compatible"], Value::Null);
+        assert_eq!(
+            result["runtime_probe"]["reason_code"],
+            "host_context_unavailable"
+        );
+        assert!(driver.jobs.is_empty());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 }

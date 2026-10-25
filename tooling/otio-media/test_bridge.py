@@ -815,4 +815,504 @@ class VideoReadbackTests(unittest.TestCase):
                             f"sys.{stream}.flush(); time.sleep(2)"])
 
 
+# ALab read-only causal controls: no network, ffprobe, decode or adoption.
+import copy as _alab_copy
+import struct as _alab_struct
+import time as _alab_time
+import zlib as _alab_zlib
+import alab_readonly as _alab
+
+def _alab_request_fixture():
+    return {
+        "schema": _alab.REQUEST_SCHEMA,
+        "context": {"source_sha": "1"*40, "semwright_sha": "2"*40,
+                    "run_id": "1234567", "run_attempt": 1},
+        "source_tree": "3"*40, "job_name": "admitted-native-kdenlive-gui",
+        "recipient_spki_sha256": "4"*64,
+        "admission_reference": "source-test-only-external-reference",
+        "archive": _alab_copy.deepcopy(_alab.ARCHIVE),
+        "members": _alab_copy.deepcopy(_alab.MEMBERS),
+        "limits": _alab_copy.deepcopy(_alab.LIMITS),
+        "mode": "external-alab-readonly",
+        "prohibited_effects": _alab_copy.deepcopy(_alab.PROHIBITED_EFFECTS),
+    }
+
+def _alab_deflate(data):
+    encoder = _alab_zlib.compressobj(level=6, wbits=-15)
+    return encoder.compress(data) + encoder.flush()
+
+def _alab_member_fixture(data=b"synthetic media bytes for source controls",
+                         flags=0, descriptor="signed"):
+    row = _alab_copy.deepcopy(_alab.MEMBERS[0])
+    name = row["name"].encode("ascii")
+    compressed = _alab_deflate(data)
+    crc = _alab_zlib.crc32(data) & 0xffffffff
+    extra = b"\x55\x54\x01\x00\x00"
+    row.update(bytes=len(data), compressed_bytes=len(compressed),
+               crc32=f"{crc:08x}", sha256=hashlib.sha256(data).hexdigest(),
+               local_header_offset=128, compression=8)
+    header = _alab_struct.pack("<IHHHHHIIIHH", 0x04034b50, 20, flags, 8, 0, 0,
+        0 if flags & 8 else crc, 0 if flags & 8 else len(compressed),
+        len(data), len(name), len(extra))
+    trailer = b""
+    if flags & 8:
+        values = _alab_struct.pack("<III", crc, len(compressed), len(data))
+        trailer = (_alab_struct.pack("<I", 0x08074b50)+values
+                   if descriptor=="signed" else values)
+    body = header + name + extra + compressed + trailer + b"PK\x03\x04"
+    blob = b"\x00"*row["local_header_offset"] + body
+    position = row["local_header_offset"]+30+len(name)+len(extra)+len(compressed)
+    return row, data, compressed, blob, position
+
+class _ALabWire:
+    def __init__(self, blob=None, *, status=206, changed=None,
+                 duplicate=None, short=False, extra=b""):
+        self.blob, self.status = blob, status
+        self.changed, self.duplicate = changed or {}, duplicate
+        self.short, self.extra = short, extra
+        self.calls, self.raw_headers, self.raw_bodies = [], [], []
+    def __call__(self, start, length, deadline, on_header, on_body):
+        self.calls.append((start, length))
+        body = b"q"*length if self.blob is None else self.blob[start:start+length]
+        if self.short:
+            body = body[:-1]
+        body += self.extra
+        fields = [
+            ("ETag", _alab.ARCHIVE["etag"]),
+            ("Content-Range", f"bytes {start}-{start+length-1}/{_alab.ARCHIVE['bytes']}"),
+            ("Content-Length", str(length)), ("Content-Encoding", "identity"),
+        ]
+        fields = [(key, self.changed.get(key,value)) for key,value in fields]
+        if self.duplicate is not None:
+            fields.append(self.duplicate)
+        raw = (f"HTTP/1.1 {self.status} source-test\r\n".encode("ascii")
+               + b"".join(key.encode("ascii")+b": "+value.encode("ascii")+b"\r\n"
+                          for key,value in fields) + b"\r\n")
+        self.raw_headers.append(raw)
+        self.raw_bodies.append(body)
+        on_header(raw)
+        on_body(body)
+        return {"status":self.status,"headers":fields}
+
+class ExternalALabReadonlyTests(unittest.TestCase):
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory(prefix="alab-readonly-source-")
+        self.addCleanup(temporary.cleanup)
+        self.root=Path(temporary.name).resolve()
+        self.counter=0
+    def area(self):
+        self.counter+=1
+        result=self.root/f"case-{self.counter}"
+        result.mkdir()
+        return result
+    def intake(self,wire,*,deadline=None):
+        root=self.area()
+        return root,_alab.Intake(root,_alab_time.monotonic()+10 if deadline is None else deadline,transport=wire)
+    def assert_originals(self,root,record):
+        for descriptor in record["originals"].values():
+            raw=(root/descriptor["path"]).read_bytes()
+            self.assertEqual(len(raw),descriptor["bytes"])
+            self.assertEqual(hashlib.sha256(raw).hexdigest(),descriptor["sha256"])
+    def observe_popen(self):
+        real=subprocess.Popen
+        children=[]
+        def remember(*args,**kwargs):
+            child=real(*args,**kwargs);children.append(child);return child
+        def close_owned():
+            for child in children:
+                if child.poll() is None:child.kill()
+                child.wait(timeout=3)
+        self.addCleanup(close_owned)
+        return children,remember
+
+    def test_request_accepts_pinned_external_reference_without_mutation(self):
+        request=_alab_request_fixture();before=_alab_copy.deepcopy(request)
+        _alab.validate_request(request)
+        self.assertEqual(request,before)
+        self.assertTrue(all(v is False for v in request["prohibited_effects"].values()))
+    def test_request_refuses_unknown_and_missing_keys(self):
+        for change in ("extra","missing"):
+            with self.subTest(change=change):
+                r=_alab_request_fixture()
+                if change=="extra":r["grant"]=True
+                else:r.pop("recipient_spki_sha256")
+                with self.assertRaises(_alab.Refused):_alab.validate_request(r)
+    def test_request_rejects_bool_and_float_integer_aliases(self):
+        for key,value in (("per_range_attempts",True),("per_range_attempts",1.0),("all_range_requests_max",27.0)):
+            with self.subTest(key=key,value=value):
+                r=_alab_request_fixture();r["limits"][key]=value
+                with self.assertRaises(_alab.Refused):_alab.validate_request(r)
+        r=_alab_request_fixture();r["members"][0]["compression"]=8.0
+        with self.assertRaises(_alab.Refused):_alab.validate_request(r)
+    def test_request_archive_and_member_roster_are_fixed(self):
+        changes=(
+            lambda r:r["archive"].update(url="https://example.invalid/a.zip"),
+            lambda r:r["archive"].update(redirects_allowed=True),
+            lambda r:r["members"][0].update(name="../replacement.mov"),
+            lambda r:r["members"].reverse(),lambda r:r["members"].pop(),
+        )
+        for i,change in enumerate(changes):
+            with self.subTest(change=i):
+                r=_alab_request_fixture();change(r)
+                with self.assertRaises(_alab.Refused):_alab.validate_request(r)
+    def test_request_cannot_enable_effects_or_change_mode_or_job(self):
+        changes=(
+            lambda r:r["prohibited_effects"].update(decode=True),
+            lambda r:r["prohibited_effects"].update(infer_source_origin=True),
+            lambda r:r.update(mode="render"),lambda r:r.update(job_name="another-job"),
+        )
+        for i,change in enumerate(changes):
+            with self.subTest(change=i):
+                r=_alab_request_fixture();change(r)
+                with self.assertRaises(_alab.Refused):_alab.validate_request(r)
+    def test_request_context_and_external_references_have_exact_shapes(self):
+        changes=(
+            lambda r:r["context"].update(run_attempt=True),
+            lambda r:r["context"].update(run_attempt=1.0),
+            lambda r:r["context"].update(run_attempt=2),
+            lambda r:r["context"].update(run_id=1234567),
+            lambda r:r["context"].update(run_id="0"),
+            lambda r:r["context"].update(source_sha="z"*40),
+            lambda r:r.update(source_tree="3"*39),
+            lambda r:r.update(recipient_spki_sha256="4"*63),
+            lambda r:r.update(admission_reference=""),
+        )
+        for i,change in enumerate(changes):
+            with self.subTest(change=i):
+                r=_alab_request_fixture();change(r)
+                with self.assertRaises(_alab.Refused):_alab.validate_request(r)
+    def test_context_requires_exact_observed_ci_environment(self):
+        r=_alab_request_fixture()
+        env={"GITHUB_SHA":r["context"]["source_sha"],"GITHUB_RUN_ID":r["context"]["run_id"],
+             "GITHUB_RUN_ATTEMPT":"1","GITHUB_JOB":r["job_name"]}
+        _alab.validate_context(r,env)
+        for key in env:
+            with self.subTest(key=key):
+                changed=dict(env);changed[key]="mismatch"
+                with self.assertRaises(_alab.Refused):_alab.validate_context(r,changed)
+        with self.assertRaises(_alab.Refused):_alab.validate_context(r,{})
+    def test_json_rejects_nested_duplicate_keys(self):
+        for raw in (b'{"x":1,"x":2}',b'{"context":{"run_id":"1","run_id":"2"}}'):
+            with self.subTest(raw=raw):
+                with self.assertRaises(_alab.Refused):_alab.strict_object(raw,"source-test")
+    def test_json_rejects_nonobjects_nonfinite_and_bad_utf8(self):
+        for raw in (b"[]",b"null",b'{"x":NaN}',b'{"x":Infinity}',b'{"x":1e999}',b'{"x":"\xff"}'):
+            with self.subTest(raw=raw):
+                with self.assertRaises(_alab.Refused):_alab.strict_object(raw,"source-test")
+    def test_raw_deflate_accepts_exact_crc_size_and_sha(self):
+        row,data,compressed,_,_=_alab_member_fixture()
+        self.assertEqual(_alab.inflate_exact(compressed,row),data)
+    def test_raw_deflate_rejects_crc_or_sha_mismatch(self):
+        row,_,compressed,_,_=_alab_member_fixture()
+        for key,value in (("crc32","00000000"),("sha256","0"*64)):
+            with self.subTest(key=key):
+                changed=dict(row);changed[key]=value
+                with self.assertRaises(_alab.Refused):_alab.inflate_exact(compressed,changed)
+    def test_raw_deflate_rejects_wrong_size_and_uncompressed_budget(self):
+        row,data,compressed,_,_=_alab_member_fixture()
+        for size in (len(data)-1,len(data)+1,_alab.LIMITS["max_uncompressed_member_bytes"]+1):
+            with self.subTest(size=size):
+                with self.assertRaises(_alab.Refused):_alab.inflate_exact(compressed,dict(row,bytes=size))
+    def test_raw_deflate_requires_real_eof(self):
+        row,_,compressed,_,_=_alab_member_fixture();raw=compressed[:-1]
+        with self.assertRaises(_alab.Refused):_alab.inflate_exact(raw,dict(row,compressed_bytes=len(raw)))
+    def test_raw_deflate_refuses_trailing_bytes_or_second_stream(self):
+        row,_,compressed,_,_=_alab_member_fixture()
+        for suffix in (b"\x00",_alab_deflate(b"another stream")):
+            with self.subTest(suffix=suffix):
+                raw=compressed+suffix
+                with self.assertRaises(_alab.Refused):_alab.inflate_exact(raw,dict(row,compressed_bytes=len(raw)))
+    def test_range_retains_exact_original_headers_and_body(self):
+        wire=_ALabWire();root,intake=self.intake(wire)
+        self.assertEqual(intake.fetch(100,17),b"q"*17)
+        retained=[p.read_bytes() for p in root.rglob("*") if p.is_file()]
+        self.assertIn(wire.raw_headers[0],retained);self.assertIn(wire.raw_bodies[0],retained)
+    def test_range_refuses_wrong_status_etag_range_encoding_or_total(self):
+        variants=({"status":200},{"status":302},{"changed":{"ETag":'"changed"'}},
+            {"changed":{"Content-Range":"bytes 1-17/573418844"}},
+            {"changed":{"Content-Range":"bytes 0-16/573418845"}},
+            {"changed":{"Content-Encoding":"gzip"}},{"changed":{"Content-Length":"18"}})
+        for variant in variants:
+            with self.subTest(variant=variant):
+                wire=_ALabWire(**variant);_,intake=self.intake(wire)
+                with self.assertRaises(_alab.Refused):intake.fetch(0,17)
+                self.assertEqual(len(wire.calls),1)
+    def test_range_refuses_ambiguous_duplicate_critical_headers(self):
+        wire=_ALabWire(duplicate=("etag",_alab.ARCHIVE["etag"]));_,intake=self.intake(wire)
+        with self.assertRaises(_alab.Refused):intake.fetch(0,17)
+        self.assertEqual(len(wire.calls),1)
+    def test_range_refuses_short_or_overlong_actual_body(self):
+        for variant in ({"short":True},{"extra":b"x"}):
+            with self.subTest(variant=variant):
+                wire=_ALabWire(**variant);_,intake=self.intake(wire)
+                with self.assertRaises(_alab.Refused):intake.fetch(0,17)
+                self.assertEqual(len(wire.calls),1)
+    def test_range_refuses_invalid_size_or_expired_deadline_before_transport(self):
+        for start,length in ((-1,1),(True,1),(0.0,1),(0,0),(0,-1),(0,True),(0,1.0),(0,_alab.LIMITS["one_request_max"]+1)):
+            with self.subTest(start=start,length=length):
+                wire=_ALabWire();_,intake=self.intake(wire)
+                with self.assertRaises(_alab.Refused):intake.fetch(start,length)
+                self.assertEqual(wire.calls,[])
+        wire=_ALabWire();_,intake=self.intake(wire,deadline=_alab_time.monotonic()-1)
+        with self.assertRaises(_alab.Refused):intake.fetch(0,1)
+        self.assertEqual(wire.calls,[])
+    def test_range_count_budget_stops_before_twenty_eighth_request(self):
+        wire=_ALabWire();_,intake=self.intake(wire);limit=_alab.LIMITS["all_range_requests_max"]
+        for index in range(limit):intake.fetch(index,1)
+        with self.assertRaises(_alab.Refused):intake.fetch(limit,1)
+        self.assertEqual(len(wire.calls),limit)
+    def test_range_bytes_budget_is_shared_across_requests(self):
+        wire=_ALabWire();_,intake=self.intake(wire)
+        chunk=_alab.LIMITS["one_request_max"];total=_alab.LIMITS["range_bytes_budget"]
+        self.assertEqual(total%chunk,0)
+        for index in range(total//chunk):intake.fetch(index*chunk,chunk)
+        with self.assertRaises(_alab.Refused):intake.fetch(total,1)
+        self.assertEqual(len(wire.calls),total//chunk)
+    def test_member_accepts_fixed_header_and_both_data_descriptor_encodings(self):
+        for flags,encoding in ((0,"signed"),(8,"signed"),(8,"unsigned")):
+            with self.subTest(flags=flags,encoding=encoding):
+                row,data,_,blob,_=_alab_member_fixture(flags=flags,descriptor=encoding)
+                wire=_ALabWire(blob);root,intake=self.intake(wire);d=intake.member(row)
+                self.assertEqual((root/row["retained_path"]).read_bytes(),data)
+                self.assertEqual(d["bytes"],len(data));self.assertEqual(d["sha256"],row["sha256"])
+                self.assertEqual(d["crc32"],row["crc32"])
+    def test_member_rejects_header_identity_method_sizes_or_unflagged_zeros(self):
+        row,_,_,original,_=_alab_member_fixture();offset=row["local_header_offset"]
+        mutations=((0,b"BAD!"),(6,_alab_struct.pack("<H",1)),(8,_alab_struct.pack("<H",0)),
+            (14,_alab_struct.pack("<I",0)),(18,_alab_struct.pack("<I",row["compressed_bytes"]+1)),
+            (22,_alab_struct.pack("<I",row["bytes"]+1)),(30,b"X"))
+        for relative,replacement in mutations:
+            with self.subTest(relative=relative):
+                changed=bytearray(original);changed[offset+relative:offset+relative+len(replacement)]=replacement
+                wire=_ALabWire(bytes(changed));root,intake=self.intake(wire)
+                with self.assertRaises(_alab.Refused):intake.member(row)
+                self.assertFalse((root/row["retained_path"]).exists())
+        flagged,_,_,original,_=_alab_member_fixture(flags=8)
+        changed=bytearray(original);i=flagged["local_header_offset"]+6;changed[i:i+2]=b"\x00\x00"
+        _,intake=self.intake(_ALabWire(bytes(changed)))
+        with self.assertRaises(_alab.Refused):intake.member(flagged)
+    def test_member_rejects_wrong_data_descriptor_crc_or_sizes(self):
+        row,_,_,original,offset=_alab_member_fixture(flags=8)
+        for relative,value in ((4,0),(8,row["compressed_bytes"]+1),(12,row["bytes"]+1)):
+            with self.subTest(relative=relative):
+                changed=bytearray(original);changed[offset+relative:offset+relative+4]=_alab_struct.pack("<I",value)
+                root,intake=self.intake(_ALabWire(bytes(changed)))
+                with self.assertRaises(_alab.Refused):intake.member(row)
+                self.assertFalse((root/row["retained_path"]).exists())
+    def test_command_retains_binary_streams_and_original_terminal(self):
+        root=self.area()
+        script="import os; os.write(1,b'\\x00\\xffok\\n'); os.write(2,b'\\xfeerr\\x00')"
+        record=_alab.run_command([sys.executable,"-I","-B","-c",script],root,"binary",_alab_time.monotonic()+5)
+        self.assertEqual(record["stdout"],b"\x00\xffok\n");self.assertEqual(record["stderr"],b"\xfeerr\x00")
+        self.assertIs(type(record["terminal"]["exit_code"]),int);self.assertEqual(record["terminal"]["exit_code"],0)
+        self.assert_originals(root,record)
+        terminal=json.loads((root/record["originals"]["terminal"]["path"]).read_bytes())
+        self.assertEqual(terminal["exit_code"],0)
+    def test_command_overflow_stops_the_owned_child_and_marks_partial_capture(self):
+        root=self.area();children,remember=self.observe_popen()
+        script="import os,time; os.write(1,b'x'*65536); time.sleep(3)"
+        with patch.object(_alab.subprocess,"Popen",side_effect=remember):
+            with self.assertRaises(_alab.Refused) as raised:
+                _alab.run_command([sys.executable,"-I","-B","-c",script],root,"overflow",_alab_time.monotonic()+5,limit=128)
+        self.assertNotIsInstance(raised.exception,_alab.Unknown)
+        self.assertEqual(len(children),1);self.assertIsNotNone(children[0].poll())
+        record=raised.exception.record;self.assertTrue(record["terminal"]["overflow"])
+        self.assertFalse(record["terminal"]["stdout"]["complete"])
+        self.assertLessEqual(record["terminal"]["stdout"]["retained_bytes"],128)
+        self.assertGreater(record["terminal"]["stdout"]["observed_bytes"],128)
+        self.assert_originals(root,record)
+    def test_command_timeout_remains_unknown_without_leaving_owned_child(self):
+        root=self.area();children,remember=self.observe_popen()
+        script="import os,time; os.write(1,b'partial\\x00'); os.write(2,b'waiting\\n'); time.sleep(3)"
+        with patch.object(_alab.subprocess,"Popen",side_effect=remember):
+            with self.assertRaises(_alab.Unknown) as raised:
+                _alab.run_command([sys.executable,"-I","-B","-c",script],root,"timeout",_alab_time.monotonic()+0.6)
+        self.assertEqual(len(children),1);self.assertIsNotNone(children[0].poll())
+        record=raised.exception.record;self.assertTrue(record["terminal"]["timed_out"]);self.assert_originals(root,record)
+    def test_primary_nonzero_survives_terminal_custody_failure(self):
+        class Completed:
+            def __init__(self):
+                self.stdout=io.BytesIO(b"\xfforiginal stdout");self.stderr=io.BytesIO(b"original failure\n")
+                self.returncode=7;self.pid=None
+            def poll(self):return self.returncode
+            def wait(self,timeout=None):return self.returncode
+            def kill(self):raise AssertionError("A completed process must not be killed")
+        root=self.area();original_write=_alab.write_new
+        def custody_failure(owner,relative,raw):
+            if "terminal" in str(relative):raise OSError("source-test terminal custody failure")
+            return original_write(owner,relative,raw)
+        with patch.object(_alab.subprocess,"Popen",return_value=Completed()),patch.object(_alab,"write_new",side_effect=custody_failure):
+            with self.assertRaises(_alab.Refused) as raised:
+                _alab.run_command(["inert-test-double"],root,"nonzero",_alab_time.monotonic()+5)
+        self.assertNotIsInstance(raised.exception,_alab.Unknown)
+        record=raised.exception.record;self.assertEqual(record["terminal"]["exit_code"],7)
+        self.assertEqual(record["stderr"],b"original failure\n");self.assertTrue(record["custody_errors"])
+
+# Orchestration controls: five small synthetic members and original process stubs.
+import socket as _alab_test_socket
+
+def _alab_small_roster():
+    rows=[];archive=bytearray()
+    for index,original in enumerate(_alab.MEMBERS):
+        row=_alab_copy.deepcopy(original)
+        data=f"SYNTHETIC SOURCE TEST {index}: {row['name']}\n".encode("utf-8")
+        compressed=_alab_deflate(data);crc=_alab_zlib.crc32(data)&0xffffffff;name=row["name"].encode("ascii")
+        row.update(bytes=len(data),compressed_bytes=len(compressed),crc32=f"{crc:08x}",
+                   sha256=hashlib.sha256(data).hexdigest(),local_header_offset=len(archive),compression=8)
+        archive.extend(_alab_struct.pack("<IHHHHHIIIHH",0x04034b50,20,0,8,0,0,crc,len(compressed),len(data),len(name),0))
+        archive.extend(name);archive.extend(compressed);rows.append(row)
+    return rows,bytes(archive)
+
+def _alab_stub_command_record(root,index,argv,stdout,stderr=b"",*,exit_code=0,execution_status="TERMINAL_OBSERVED"):
+    terminal={"spawned":True,"exit_code":exit_code,"execution_status":execution_status,
+        "timed_out":execution_status=="UNKNOWN_NO_RETRY","overflow":False,"forced":False,
+        "stdout":{"observed_bytes":len(stdout),"retained_bytes":len(stdout),"complete":execution_status=="TERMINAL_OBSERVED"},
+        "stderr":{"observed_bytes":len(stderr),"retained_bytes":len(stderr),"complete":execution_status=="TERMINAL_OBSERVED"}}
+    prefix=f"source-test-probe-{index}"
+    originals={
+        "argv":_alab.write_new(root,f"{prefix}.argv.original.json",(json.dumps(argv)+"\n").encode()),
+        "stdout":_alab.write_new(root,f"{prefix}.stdout.original.bin",stdout),
+        "stderr":_alab.write_new(root,f"{prefix}.stderr.original.bin",stderr),
+        "terminal":_alab.write_new(root,f"{prefix}.terminal.original.json",(json.dumps(terminal,sort_keys=True)+"\n").encode()),
+    }
+    return {"stdout":stdout,"stderr":stderr,"terminal":terminal,"originals":originals,"custody_errors":[]}
+
+class _ALabBooleanTerminalChild:
+    def __init__(self):
+        self.stdout=io.BytesIO(b"\xffretained source-test stdout")
+        self.stderr=io.BytesIO(b"source-test uncertain terminal\n");self.returncode=True;self.pid=None
+    def poll(self):return self.returncode
+    def wait(self,timeout=None):return self.returncode
+    def kill(self):raise AssertionError("A completed test double must not be killed")
+
+class ExternalALabOrchestrationTests(unittest.TestCase):
+    setUp=ExternalALabReadonlyTests.setUp
+    area=ExternalALabReadonlyTests.area
+    def assert_no_acceptance(self,result):
+        self.assertEqual(result["source_origin"],"NOT_OBSERVED")
+        for key in ["decoded_frames_verified","candidate_admitted","human_acceptance","release_authorized","automatic_retry"]:
+            self.assertIs(result[key],False)
+    def scenario(self,variant):
+        owner=self.area();request_path=owner/"request.json";evidence_root=owner/"evidence";tool=owner/"ffprobe"
+        tool.write_bytes(b"SYNTHETIC TOOL IDENTITY; NEVER EXECUTED\n");tool.chmod(0o700)
+        rows,archive=_alab_small_roster();wire=_ALabWire(archive);calls=[];records=[]
+        malformed=b"\xffALAB-METADATA-CORRUPT\x00"
+        def command_runner(argv,root,label,deadline,**kwargs):
+            index=len(calls);calls.append(list(argv))
+            if index==0:stdout=b"ffprobe version 7.1.1 source-test-only\n"
+            else:
+                frames=52 if index==1 else 182;timecode="00:00:41:18" if index==1 else "00:00:42:00"
+                document={"streams":[
+                    {"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080,
+                     "nb_frames":str(frames),"r_frame_rate":"24/1","avg_frame_rate":"24/1",
+                     "time_base":"1/2400","start_pts":0,"duration_ts":frames*100,"tags":{}},
+                    {"index":1,"codec_type":"data","codec_name":"unknown","codec_tag_string":"tmcd",
+                     "time_base":"1/2400","start_pts":0,"duration_ts":frames*100,"tags":{"timecode":timecode}}],
+                    "format":{"start_time":"0.000000","duration":str(frames/24),"tags":{"timecode":timecode}}}
+                stdout=json.dumps(document).encode()
+            exit_code=0;execution_status="TERMINAL_OBSERVED";stderr=b""
+            if variant=="invalid-json" and index==1:stdout=malformed
+            elif variant=="version-nonzero" and index==0:exit_code=7;stderr=b"source-test version failure\n"
+            elif variant=="version-unknown" and index==0:
+                exit_code=None;execution_status="UNKNOWN_NO_RETRY";stderr=b"source-test unknown version terminal\n"
+            elif variant=="boolean-terminal" and index==0:exit_code=True
+            record=_alab_stub_command_record(root,index,argv,stdout,stderr,exit_code=exit_code,execution_status=execution_status)
+            records.append(record)
+            if variant=="tool-drift" and index==0:tool.write_bytes(b"CHANGED SYNTHETIC TOOL IDENTITY\n")
+            if variant=="request-drift" and index==0:
+                with request_path.open("ab") as changed:changed.write(b" \n")
+            if variant=="version-unknown" and index==0:
+                error=_alab.Unknown("source-test unknown version terminal");error.record=record;raise error
+            return record
+        with patch.object(_alab,"MEMBERS",rows):
+            request=_alab_request_fixture();request_path.write_text(json.dumps(request),encoding="utf-8")
+            environment={"GITHUB_SHA":request["context"]["source_sha"],"GITHUB_RUN_ID":request["context"]["run_id"],
+                         "GITHUB_RUN_ATTEMPT":"1","GITHUB_JOB":request["job_name"]}
+            result=_alab.external_alab_readonly(request_path,evidence_root,tool,transport=wire,command_runner=command_runner,environ=environment)
+        retained=json.loads((evidence_root/"result.json").read_bytes())
+        self.assertEqual(retained["status"],result["status"]);self.assert_no_acceptance(result)
+        return result,evidence_root,calls,records,malformed
+
+    def test_invalid_metadata_preserves_originals_before_parse_and_stops(self):
+        result,root,calls,records,malformed=self.scenario("invalid-json")
+        self.assertEqual(result["status"],"FAILED");self.assertEqual(len(calls),2)
+        record=records[1];self.assertEqual(record["terminal"]["exit_code"],0)
+        self.assertEqual((root/record["originals"]["stdout"]["path"]).read_bytes(),malformed)
+        self.assertEqual((root/record["originals"]["stderr"]["path"]).read_bytes(),b"")
+        terminal=json.loads((root/record["originals"]["terminal"]["path"]).read_bytes())
+        self.assertIs(type(terminal["exit_code"]),int);self.assertEqual(terminal["exit_code"],0)
+    def test_version_unknown_or_nonzero_never_starts_a_media_probe(self):
+        for variant,expected in (("version-unknown","UNKNOWN_NO_RETRY"),("version-nonzero","FAILED")):
+            with self.subTest(variant=variant):
+                result,root,calls,records,_=self.scenario(variant)
+                self.assertEqual(result["status"],expected);self.assertEqual(len(calls),1);self.assertEqual(len(records),1)
+                for d in records[0]["originals"].values():
+                    raw=(root/d["path"]).read_bytes();self.assertEqual(len(raw),d["bytes"])
+                    self.assertEqual(hashlib.sha256(raw).hexdigest(),d["sha256"])
+    def test_tool_identity_change_stops_before_first_media_probe(self):
+        result,_,calls,_,_=self.scenario("tool-drift");self.assertEqual(result["status"],"FAILED");self.assertEqual(len(calls),1)
+    def test_request_identity_change_cannot_publish_metadata_success(self):
+        result,_,calls,_,_=self.scenario("request-drift");self.assertEqual(result["status"],"FAILED")
+        self.assertGreaterEqual(len(calls),1);self.assertLessEqual(len(calls),3)
+    def test_orchestration_boolean_exit_code_is_unknown_and_not_retried(self):
+        result,root,calls,records,_=self.scenario("boolean-terminal")
+        self.assertEqual(result["status"],"UNKNOWN_NO_RETRY");self.assertEqual(len(calls),1)
+        terminal=json.loads((root/records[0]["originals"]["terminal"]["path"]).read_bytes())
+        self.assertIs(terminal["exit_code"],True)
+    def test_run_command_boolean_terminal_is_unknown_with_null_exit_code(self):
+        root=self.area()
+        with patch.object(_alab.subprocess,"Popen",return_value=_ALabBooleanTerminalChild()):
+            with self.assertRaises(_alab.Unknown) as raised:
+                _alab.run_command(["source-test-double"],root,"boolean-terminal",_alab_time.monotonic()+5)
+        record=raised.exception.record;self.assertEqual(record["terminal"]["execution_status"],"UNKNOWN_NO_RETRY")
+        self.assertIsNone(record["terminal"]["exit_code"])
+        terminal=json.loads((root/record["originals"]["terminal"]["path"]).read_bytes());self.assertIsNone(terminal["exit_code"])
+    def test_unknown_primary_survives_failure_to_preserve_terminal(self):
+        root=self.area();original_write=_alab.write_new
+        def fail_terminal(owner,relative,raw):
+            if "terminal" in str(relative):raise OSError("source-test secondary terminal custody failure")
+            return original_write(owner,relative,raw)
+        with patch.object(_alab.subprocess,"Popen",return_value=_ALabBooleanTerminalChild()),patch.object(_alab,"write_new",side_effect=fail_terminal):
+            with self.assertRaises(_alab.Unknown) as raised:
+                _alab.run_command(["source-test-double"],root,"unknown-custody",_alab_time.monotonic()+5)
+        record=raised.exception.record;self.assertEqual(record["terminal"]["execution_status"],"UNKNOWN_NO_RETRY")
+        self.assertIsNone(record["terminal"]["exit_code"]);self.assertTrue(record["custody_errors"])
+        self.assertEqual(record["stderr"],b"source-test uncertain terminal\n")
+    def test_https_read_error_closes_response_and_connection_preserving_primary(self):
+        closures=[];connections=[]
+        response_wire=(b"HTTP/1.1 206 Partial Content\r\n"+b"ETag: "+_alab.ARCHIVE["etag"].encode()+b"\r\n"
+                       +b"Content-Range: bytes 0-15/573418844\r\nContent-Length: 16\r\nContent-Encoding: identity\r\n\r\n0123456789abcdef")
+        class BrokenBody(io.BytesIO):
+            def read(self,size=-1):raise OSError("source-test primary HTTP body read failure")
+            def close(self):
+                if not self.closed:
+                    closures.append("response");super().close();raise RuntimeError("source-test secondary response close")
+                super().close()
+        class FakeSocket:
+            def __init__(self):self.file=BrokenBody(response_wire)
+            def makefile(self,mode,*args,**kwargs):return self.file
+            def settimeout(self,timeout):pass
+            def shutdown(self,*args):pass
+            def close(self):pass
+        class FakeConnection:
+            def __init__(self,host,port=None,timeout=None,**kwargs):
+                self.host=host;self.port=port;self.timeout=timeout;self.sock=FakeSocket()
+                self.response_class=None;self.response=None;self.closed=False;connections.append(self)
+            def connect(self):pass
+            def request(self,method,path,body=None,headers=None,**kwargs):self.request_observed=(method,path,headers)
+            def getresponse(self):
+                self.response=self.response_class(self.sock,method="GET");self.response.begin();return self.response
+            def close(self):
+                if not self.closed:
+                    self.closed=True;self.sock=None;closures.append("connection");raise RuntimeError("source-test secondary connection close")
+        raw_headers=[];raw_bodies=[]
+        with patch.object(_alab.http.client,"HTTPSConnection",FakeConnection),patch.object(_alab_test_socket,"getaddrinfo",side_effect=AssertionError("No DNS is permitted in this source test")):
+            with self.assertRaisesRegex(OSError,"primary HTTP body read failure"):
+                _alab._http_transport(0,16,_alab_time.monotonic()+2,raw_headers.append,raw_bodies.append)
+        self.assertEqual(len(connections),1);self.assertTrue(connections[0].closed)
+        self.assertIn("response",closures);self.assertIn("connection",closures)
+        self.assertTrue(b"".join(raw_headers).startswith(b"HTTP/1.1 206 Partial Content"))
+        self.assertEqual(raw_bodies,[])
+
+
 if __name__=="__main__":unittest.main()

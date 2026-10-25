@@ -7,19 +7,49 @@
 //! This 3-bus PCM implementation remains inside motionwright-native and
 //! uses the same pinned Semwright SDK authority as other production paths.
 use motionwright_domain::{
-    AlignmentEvidence, DeliverableProfile, OriginalMixRecipe, Project, RationalTime, RevisionStamp,
-    VoiceTrack, variant_dependency_fingerprint,
+    AlignmentEvidence, DeliverableProfile, OriginalMixBusEnvelope, OriginalMixRecipe, Project,
+    RationalTime, RevisionStamp, VoiceTrack, variant_dependency_fingerprint,
 };
-use motionwright_service::StudioService;
+use motionwright_service::{OriginalMixDecodeBudget, StudioService};
+
+mod semantic_bus;
+pub use semantic_bus::{OriginalSfxSource, SemanticSfxBusReceipt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use uuid::Uuid;
 #[derive(Debug)]
-pub struct MixError(pub String);
+pub enum MixError {
+    Unsupported(String),
+    StaleReference(String),
+}
+impl MixError {
+    pub fn into_native(self) -> semwright_native_sdk::Error {
+        let code = match &self {
+            Self::Unsupported(_) => semwright_native_sdk::ErrorCode::Unsupported,
+            Self::StaleReference(_) => semwright_native_sdk::ErrorCode::StaleReference,
+        };
+        semwright_native_sdk::Error::new(code, self.to_string())
+    }
+}
+fn mix_unsupported(message: impl Into<String>) -> MixError {
+    MixError::Unsupported(message.into())
+}
+fn mix_stale(message: impl Into<String>) -> MixError {
+    MixError::StaleReference(message.into())
+}
+fn check_current(condition: bool, reason: &str) -> Result<()> {
+    if condition {
+        Ok(())
+    } else {
+        Err(mix_stale(reason))
+    }
+}
 impl std::fmt::Display for MixError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        match self {
+            Self::Unsupported(message) | Self::StaleReference(message) => f.write_str(message),
+        }
     }
 }
 impl std::error::Error for MixError {}
@@ -28,7 +58,7 @@ fn check(condition: bool, reason: &str) -> Result<()> {
     if condition {
         Ok(())
     } else {
-        Err(MixError(reason.into()))
+        Err(MixError::Unsupported(reason.into()))
     }
 }
 fn valid_sha(value: &str) -> bool {
@@ -39,13 +69,17 @@ fn valid_sha(value: &str) -> bool {
 }
 fn canonical_digest<T: serde::Serialize>(value: &T) -> Result<String> {
     let raw = serde_json::to_vec(value)
-        .map_err(|e| MixError(format!("Cannot encode exact source: {e}")))?;
+        .map_err(|e| MixError::Unsupported(format!("Cannot encode exact source: {e}")))?;
     Ok(hex::encode(Sha256::digest(raw)))
 }
 
 const SAMPLE_RATE: u64 = 48_000;
-const MAX_SAMPLES: u64 = 48_000 * 15;
-const MAX_PCM_BYTES: usize = (MAX_SAMPLES * 4) as usize;
+fn maximum_samples(budget: OriginalMixDecodeBudget) -> u64 {
+    match budget {
+        OriginalMixDecodeBudget::Audition15Seconds => 48_000 * 15,
+        OriginalMixDecodeBudget::FullCut180Seconds => 48_000 * 180,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -79,13 +113,19 @@ pub struct OriginalMixPlan {
     pub sample_frames: u64,
     pub measured_voice: PcmStemReceipt,
     pub original_music: PcmStemReceipt,
-    pub original_sfx: PcmStemReceipt,
+    pub original_sfx: OriginalSfxSource,
     pub voice_gain_db: f64,
     pub music_gain_db: f64,
     pub sfx_gain_db: f64,
     pub duck_attenuation_db: f64,
     pub duck_attack_samples: u32,
     pub duck_release_samples: u32,
+    #[serde(default, skip_serializing_if = "OriginalMixBusEnvelope::is_neutral")]
+    pub voice_envelope: OriginalMixBusEnvelope,
+    #[serde(default, skip_serializing_if = "OriginalMixBusEnvelope::is_neutral")]
+    pub music_envelope: OriginalMixBusEnvelope,
+    #[serde(default, skip_serializing_if = "OriginalMixBusEnvelope::is_neutral")]
+    pub sfx_envelope: OriginalMixBusEnvelope,
     pub voice_windows: Vec<VoiceActivityWindow>,
     pub sample_peak_guard_dbfs: f64,
     pub source_classification: String,
@@ -124,8 +164,9 @@ fn time_to_sample(r: RationalTime) -> Result<u64> {
         numerator % denominator == 0,
         "Narration time crosses a fractional source sample; explicit retime/resampling needed",
     )?;
-    u64::try_from(numerator / denominator)
-        .map_err(|_| MixError("Voice sample index exceeded bounded source clock".into()))
+    u64::try_from(numerator / denominator).map_err(|_| {
+        MixError::Unsupported("Voice sample index exceeded bounded source clock".into())
+    })
 }
 fn check_stem(asset: &PcmStemReceipt, project: &Project, n: u64) -> Result<()> {
     check(
@@ -146,21 +187,35 @@ fn check_stem(asset: &PcmStemReceipt, project: &Project, n: u64) -> Result<()> {
 }
 impl OriginalMixPlan {
     pub fn validate(&self, project: &Project) -> Result<()> {
+        self.validate_with_budget(project, OriginalMixDecodeBudget::Audition15Seconds)
+    }
+
+    pub fn validate_with_budget(
+        &self,
+        project: &Project,
+        budget: OriginalMixDecodeBudget,
+    ) -> Result<()> {
+        check_current(
+            self.project_id == project.id
+                && self.generation == project.generation
+                && self.project_revision == project.revision,
+            "Mix source project revision or generation changed",
+        )?;
         check(
-            self.schema == "motionwright.original-audio-mix/1"
+            self.schema == self.original_sfx.plan_schema()
                 && self.project_id == project.id
                 && self.generation == project.generation
                 && self.project_revision == project.revision
                 && self.sample_rate == 48000
                 && self.channels == 2
-                && (SAMPLE_RATE..=MAX_SAMPLES).contains(&self.sample_frames),
+                && (SAMPLE_RATE..=maximum_samples(budget)).contains(&self.sample_frames),
             "Mix cannot proceed on a stale project or unsupported PCM timebase",
         )?;
         let profile = project
             .deliverables
             .iter()
             .find(|item| item.id == self.deliverable_profile_id)
-            .ok_or_else(|| MixError("Mix has no current delivery profile".into()))?;
+            .ok_or_else(|| MixError::Unsupported("Mix has no current delivery profile".into()))?;
         check(
             profile.audio_sample_rate_hz == self.sample_rate
                 && profile.language == self.language
@@ -170,17 +225,18 @@ impl OriginalMixPlan {
         project
             .audio
             .validate()
-            .map_err(|err| MixError(err.to_string()))?;
-        let active = project
-            .audio
-            .active_voice_track_id
-            .ok_or_else(|| MixError("No owner-imported measured active voice track".into()))?;
+            .map_err(|err| MixError::Unsupported(err.to_string()))?;
+        let active = project.audio.active_voice_track_id.ok_or_else(|| {
+            MixError::Unsupported("No owner-imported measured active voice track".into())
+        })?;
         let track = project
             .audio
             .voice_tracks
             .iter()
             .find(|voice| voice.id == active)
-            .ok_or_else(|| MixError("Measured voice track is no longer active".into()))?;
+            .ok_or_else(|| {
+                MixError::Unsupported("Measured voice track is no longer active".into())
+            })?;
         check(
             track.sample_rate_hz == 48000
                 && track.channels == 2
@@ -199,13 +255,22 @@ impl OriginalMixPlan {
                 "Localized delivery profile refers to another voice take",
             )?;
         }
+        for envelope in [self.voice_envelope, self.music_envelope, self.sfx_envelope] {
+            envelope
+                .validate_for_sample_frames(self.sample_frames)
+                .map_err(|error| mix_unsupported(error.to_string()))?;
+        }
         check_stem(&self.measured_voice, project, self.sample_frames)?;
         check_stem(&self.original_music, project, self.sample_frames)?;
-        check_stem(&self.original_sfx, project, self.sample_frames)?;
+        self.original_sfx.validate_source(
+            project,
+            self.deliverable_profile_id,
+            self.sample_frames,
+        )?;
         check(
             self.original_music.asset_id != self.measured_voice.asset_id
-                && self.original_sfx.asset_id != self.measured_voice.asset_id
-                && self.original_sfx.asset_id != self.original_music.asset_id,
+                && self.original_sfx.imported_asset_id() != Some(self.measured_voice.asset_id)
+                && self.original_sfx.imported_asset_id() != Some(self.original_music.asset_id),
             "Voice, music and SFX require three distinct source assets",
         )?;
         for value in [self.voice_gain_db, self.music_gain_db, self.sfx_gain_db] {
@@ -260,11 +325,14 @@ impl OriginalMixPlan {
         {
             check(
                 saved.music_asset_id == Some(self.original_music.asset_id)
-                    && saved.sfx_asset_id == Some(self.original_sfx.asset_id)
+                    && saved.sfx_asset_id == self.original_sfx.imported_asset_id()
                     && saved.sfx_gain_db == self.sfx_gain_db
                     && saved.duck_attenuation_db == self.duck_attenuation_db
                     && saved.duck_attack_samples == self.duck_attack_samples
-                    && saved.duck_release_samples == self.duck_release_samples,
+                    && saved.duck_release_samples == self.duck_release_samples
+                    && saved.voice_envelope == self.voice_envelope
+                    && saved.music_envelope == self.music_envelope
+                    && saved.sfx_envelope == self.sfx_envelope,
                 "Mix sources or envelopes differ from the saved delivery recipe",
             )?;
         }
@@ -315,9 +383,30 @@ fn duck_gain(plan: &OriginalMixPlan, at: u64) -> f64 {
     }
     result
 }
-fn digest_pcm(samples: &[u8], receipt: &PcmStemReceipt) -> Result<()> {
+/// Linear fades use sample spans, as the existing semantic-SFX mixer does:
+/// n=0 is unity; n>0 starts/ends at exact zero and reaches unity at the
+/// adjoining sample boundary. Validation forbids overlapping spans.
+fn bus_envelope_gain(envelope: &OriginalMixBusEnvelope, at: u64, frames: u64) -> f64 {
+    if envelope.muted {
+        return 0.0;
+    }
+    let incoming = if envelope.fade_in_samples == 0 {
+        1.0
+    } else {
+        (at as f64 / f64::from(envelope.fade_in_samples)).min(1.0)
+    };
+    let outgoing = if envelope.fade_out_samples == 0 {
+        1.0
+    } else {
+        ((frames - 1 - at) as f64 / f64::from(envelope.fade_out_samples)).min(1.0)
+    };
+    incoming.min(outgoing)
+}
+
+fn digest_pcm(samples: &[u8], receipt: &PcmStemReceipt, maximum_samples: u64) -> Result<()> {
     check(
-        samples.len() <= MAX_PCM_BYTES && samples.len() == receipt.sample_frames as usize * 4,
+        samples.len() as u64 <= maximum_samples * 4
+            && samples.len() as u64 == receipt.sample_frames * 4,
         "Mix PCM input size differs from admitted exact 16-bit stereo source",
     )?;
     let digest = hex::encode(Sha256::digest(samples));
@@ -340,10 +429,30 @@ pub fn render_original_source_mix(
     music: &[u8],
     sfx: &[u8],
 ) -> Result<(Vec<u8>, OriginalMixEvidence)> {
-    plan.validate(project)?;
-    digest_pcm(voice, &plan.measured_voice)?;
-    digest_pcm(music, &plan.original_music)?;
-    digest_pcm(sfx, &plan.original_sfx)?;
+    render_original_source_mix_with_budget(
+        plan,
+        project,
+        voice,
+        music,
+        sfx,
+        OriginalMixDecodeBudget::Audition15Seconds,
+    )
+}
+
+pub fn render_original_source_mix_with_budget(
+    plan: &OriginalMixPlan,
+    project: &Project,
+    voice: &[u8],
+    music: &[u8],
+    sfx: &[u8],
+    budget: OriginalMixDecodeBudget,
+) -> Result<(Vec<u8>, OriginalMixEvidence)> {
+    plan.validate_with_budget(project, budget)?;
+    let limit_samples = maximum_samples(budget);
+    digest_pcm(voice, &plan.measured_voice, limit_samples)?;
+    digest_pcm(music, &plan.original_music, limit_samples)?;
+    plan.original_sfx
+        .verify_pcm(sfx, (limit_samples * 4) as usize)?;
     let gains = [plan.voice_gain_db, plan.music_gain_db, plan.sfx_gain_db].map(db_to_gain);
     let limit = db_to_gain(plan.sample_peak_guard_dbfs);
     let mut out = Vec::with_capacity(plan.sample_frames as usize * 4);
@@ -353,10 +462,12 @@ pub fn render_original_source_mix(
     for index in 0..plan.sample_frames as usize {
         let duck = duck_gain(plan, index as u64);
         lowest_duck = lowest_duck.min(duck);
+        let envelopes = [plan.voice_envelope, plan.music_envelope, plan.sfx_envelope]
+            .map(|envelope| bus_envelope_gain(&envelope, index as u64, plan.sample_frames));
         for channel in 0..2 {
-            let mixed = sample(voice, index, channel) * gains[0]
-                + sample(music, index, channel) * gains[1] * duck
-                + sample(sfx, index, channel) * gains[2];
+            let mixed = sample(voice, index, channel) * gains[0] * envelopes[0]
+                + sample(music, index, channel) * gains[1] * duck * envelopes[1]
+                + sample(sfx, index, channel) * gains[2] * envelopes[2];
             check(
                 mixed.is_finite() && mixed.abs() < limit,
                 "Original PCM mix would clip or violate guard: review gains instead of silently applying a limiter",
@@ -381,7 +492,12 @@ pub fn render_original_source_mix(
         measured_pcm_rms_dbfs: level(rms),
         minimum_music_duck_gain: lowest_duck,
         measured_music_duck_windows: plan.voice_windows.len() as u32,
-        input_source_checks: "ALL_THREE_FULL_PCM_SHA256_VERIFIED".into(),
+        input_source_checks: if plan.original_sfx.semantic_bus().is_some() {
+            "VOICE_MUSIC_AND_SELECTED_SFX_BUS_ALL_SOURCE_PCM_SHA256_VERIFIED"
+        } else {
+            "ALL_THREE_FULL_PCM_SHA256_VERIFIED"
+        }
+        .into(),
         rendered_media: "RAW_PCM_S16LE_ONLY".into(),
         independently_verified_lufs: false,
         independently_verified_true_peak: false,
@@ -398,9 +514,30 @@ pub fn write_mix_wav<W: Write>(
     sfx: &[u8],
     out: &mut W,
 ) -> Result<OriginalMixEvidence> {
-    let (pcm, evidence) = render_original_source_mix(plan, project, voice, music, sfx)?;
+    write_mix_wav_with_budget(
+        plan,
+        project,
+        voice,
+        music,
+        sfx,
+        out,
+        OriginalMixDecodeBudget::Audition15Seconds,
+    )
+}
+
+pub fn write_mix_wav_with_budget<W: Write>(
+    plan: &OriginalMixPlan,
+    project: &Project,
+    voice: &[u8],
+    music: &[u8],
+    sfx: &[u8],
+    out: &mut W,
+    budget: OriginalMixDecodeBudget,
+) -> Result<OriginalMixEvidence> {
+    let (pcm, evidence) =
+        render_original_source_mix_with_budget(plan, project, voice, music, sfx, budget)?;
     let n = u32::try_from(pcm.len())
-        .map_err(|_| MixError("RIFF output byte budget exceeded".into()))?;
+        .map_err(|_| MixError::Unsupported("RIFF output byte budget exceeded".into()))?;
     let mut header = Vec::with_capacity(44);
     header.extend_from_slice(b"RIFF");
     header.extend_from_slice(&(36 + n).to_le_bytes());
@@ -415,9 +552,9 @@ pub fn write_mix_wav<W: Write>(
     header.extend_from_slice(b"data");
     header.extend_from_slice(&n.to_le_bytes());
     out.write_all(&header)
-        .map_err(|e| MixError(format!("RIFF header could not be written: {e}")))?;
+        .map_err(|e| MixError::Unsupported(format!("RIFF header could not be written: {e}")))?;
     out.write_all(&pcm)
-        .map_err(|e| MixError(format!("PCM source could not be written: {e}")))?;
+        .map_err(|e| MixError::Unsupported(format!("PCM source could not be written: {e}")))?;
     Ok(evidence)
 }
 
@@ -432,7 +569,7 @@ pub fn reviewed_voice_windows(
         .voice_tracks
         .iter()
         .find(|track| track.id == voice_track_id)
-        .ok_or_else(|| MixError("Selected source voice is absent".into()))?;
+        .ok_or_else(|| MixError::Unsupported("Selected source voice is absent".into()))?;
     let mut windows = project
         .audio
         .transcript
@@ -470,26 +607,24 @@ fn saved_mix_inputs(
         .deliverables
         .iter()
         .find(|profile| profile.id == profile_id)
-        .ok_or_else(|| MixError("Saved mix has no current delivery profile".into()))?;
+        .ok_or_else(|| MixError::Unsupported("Saved mix has no current delivery profile".into()))?;
     let recipe = project
         .production_design
         .delivery_recipes
         .get(&profile_id)
         .and_then(|recipe| recipe.original_mix.as_ref())
         .ok_or_else(|| {
-            MixError("Save an original mix in the delivery recipe before production".into())
+            MixError::Unsupported(
+                "Save an original mix in the delivery recipe before production".into(),
+            )
         })?;
     recipe
         .validate(&project.assets)
-        .map_err(|error| MixError(error.to_string()))?;
+        .map_err(|error| MixError::Unsupported(error.to_string()))?;
     check(
         project.audio.mix.target_lufs.is_none()
             && project.audio.mix.target_true_peak_dbfs.is_none(),
         "Saved mix has no native loudness/true-peak certification; measurement targets remain unsupported",
-    )?;
-    check(
-        project.audio.sfx_cues.is_empty(),
-        "A semantic SFX schedule requires its verified derived bus; an original WAV cannot silently replace those cues",
     )?;
     check(
         profile.included_scene_ids.is_empty()
@@ -502,7 +637,7 @@ fn saved_mix_inputs(
         "Saved original mix requires the full original cut; no implicit audio trim, reorder or padding",
     )?;
     let voice_id = profile.voice_track_id.ok_or_else(|| {
-        MixError("Bind one measured voice to the saved mix delivery profile".into())
+        MixError::Unsupported("Bind one measured voice to the saved mix delivery profile".into())
     })?;
     check(
         project.audio.active_voice_track_id == Some(voice_id),
@@ -513,7 +648,7 @@ fn saved_mix_inputs(
         .voice_tracks
         .iter()
         .find(|track| track.id == voice_id)
-        .ok_or_else(|| MixError("Saved mix voice is no longer present".into()))?;
+        .ok_or_else(|| MixError::Unsupported("Saved mix voice is no longer present".into()))?;
     Ok((recipe, track, profile))
 }
 
@@ -526,6 +661,7 @@ pub struct PreparedOriginalMix {
     wav_bytes: Vec<u8>,
     wav_sha256: String,
     audio_inputs_sha256: String,
+    budget: OriginalMixDecodeBudget,
 }
 
 impl PreparedOriginalMix {
@@ -550,15 +686,21 @@ impl PreparedOriginalMix {
     }
 
     pub fn verify_project(&self, project: &Project, profile_id: Uuid) -> Result<()> {
-        check(
+        check_current(
+            self.plan.project_id == project.id
+                && self.plan.generation == project.generation
+                && self.plan.project_revision == project.revision,
+            "Prepared mix source revision or generation changed",
+        )?;
+        check_current(
             self.plan.deliverable_profile_id == profile_id,
             "Prepared mix belongs to another output profile",
         )?;
         saved_mix_inputs(project, profile_id)?;
-        self.plan.validate(project)?;
+        self.plan.validate_with_budget(project, self.budget)?;
         let fingerprint = variant_dependency_fingerprint(project, profile_id)
-            .map_err(|error| MixError(error.to_string()))?;
-        check(
+            .map_err(|error| MixError::Unsupported(error.to_string()))?;
+        check_current(
             fingerprint.audio_inputs_sha256 == self.audio_inputs_sha256
                 && canonical_digest(&self.plan)? == self.evidence.source_plan_sha256
                 && self.wav_bytes.len() as u64 == 44 + self.plan.sample_frames * 4
@@ -578,10 +720,28 @@ pub fn prepare_saved_original_mix(
     expected: &RevisionStamp,
     profile_id: Uuid,
 ) -> Result<PreparedOriginalMix> {
+    prepare_saved_original_mix_with_budget(
+        service,
+        project_id,
+        expected,
+        profile_id,
+        OriginalMixDecodeBudget::Audition15Seconds,
+    )
+}
+
+/// Explicit native master policy. The default public audition factory above
+/// retains its 15-second cap; a caller cannot widen it through JSON or an env var.
+pub fn prepare_saved_original_mix_with_budget(
+    service: &StudioService,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    profile_id: Uuid,
+    budget: OriginalMixDecodeBudget,
+) -> Result<PreparedOriginalMix> {
     let project = service
         .project(project_id)
-        .map_err(|_| MixError("Saved mix source project is unavailable".into()))?;
-    check(
+        .map_err(|_| mix_stale("Saved mix source project is unavailable"))?;
+    check_current(
         expected.resource == project.resource_key()
             && expected.generation == project.generation
             && expected.revision == project.revision,
@@ -589,32 +749,60 @@ pub fn prepare_saved_original_mix(
     )?;
     project
         .validate()
-        .map_err(|error| MixError(error.to_string()))?;
+        .map_err(|error| MixError::Unsupported(error.to_string()))?;
     let (recipe, track, profile) = saved_mix_inputs(&project, profile_id)?;
     let music_id = recipe.music_asset_id.ok_or_else(|| {
-        MixError("Saved original mix has no selected music asset; no invented silent source".into())
-    })?;
-    let sfx_id = recipe.sfx_asset_id.ok_or_else(|| {
-        MixError("Saved original mix has no selected SFX asset; no invented silent source".into())
+        MixError::Unsupported(
+            "Saved original mix has no selected music asset; no invented silent source".into(),
+        )
     })?;
     let decode = |asset_id| {
         service
-            .decoded_stem_for_original_mix(project.id, project.revision, asset_id)
-            .map_err(|_| {
-                MixError("Saved mix PCM source failed current project/CAS verification".into())
+            .decoded_stem_for_original_mix_with_budget(project.id, expected, asset_id, budget)
+            .map_err(|error| {
+                let current = service.project(project.id).ok();
+                let stale = current
+                    .as_ref()
+                    .is_none_or(|current| current.stamp() != *expected)
+                    || matches!(
+                        error,
+                        motionwright_storage::StorageError::GenerationConflict
+                            | motionwright_storage::StorageError::Conflict { .. }
+                            | motionwright_storage::StorageError::BlobMissing { .. }
+                            | motionwright_storage::StorageError::InvalidBlobDigest
+                            | motionwright_storage::StorageError::UnsafeSourcePath(_)
+                    );
+                if stale {
+                    mix_stale("Saved mix source identity or CAS custody changed")
+                } else {
+                    mix_unsupported("Saved mix PCM source failed supported WAV/budget verification")
+                }
             })
     };
     let voice = decode(track.asset_id)?;
     let music = decode(music_id)?;
-    let sfx = decode(sfx_id)?;
+    let base_sfx = recipe
+        .sfx_asset_id
+        .map(|id| decode(id).map(|pcm| (id, pcm)))
+        .transpose()?;
     let receipt = |asset_id, pcm: &motionwright_service::OriginalMixDecodedPcm| PcmStemReceipt {
         asset_id,
         source_asset_sha256: pcm.original_asset_sha256.clone(),
         decoded_pcm_sha256: pcm.decoded_pcm_sha256.clone(),
         sample_frames: pcm.sample_frames,
     };
+    let base_sfx = base_sfx.map(|(id, pcm)| (receipt(id, &pcm), pcm.interleaved_s16le));
+    let (sfx_source, sfx_pcm) = semantic_bus::prepare_sfx_source(
+        service,
+        &project,
+        expected,
+        profile_id,
+        base_sfx,
+        voice.sample_frames,
+        budget,
+    )?;
     let plan = OriginalMixPlan {
-        schema: "motionwright.original-audio-mix/1".into(),
+        schema: sfx_source.plan_schema().into(),
         project_id: project.id,
         generation: project.generation,
         project_revision: project.revision,
@@ -625,13 +813,16 @@ pub fn prepare_saved_original_mix(
         sample_frames: voice.sample_frames,
         measured_voice: receipt(track.asset_id, &voice),
         original_music: receipt(music_id, &music),
-        original_sfx: receipt(sfx_id, &sfx),
+        original_sfx: sfx_source,
         voice_gain_db: f64::from(project.audio.mix.voice_gain_db),
         music_gain_db: f64::from(project.audio.mix.music_gain_db),
         sfx_gain_db: recipe.sfx_gain_db,
         duck_attenuation_db: recipe.duck_attenuation_db,
         duck_attack_samples: recipe.duck_attack_samples,
         duck_release_samples: recipe.duck_release_samples,
+        voice_envelope: recipe.voice_envelope,
+        music_envelope: recipe.music_envelope,
+        sfx_envelope: recipe.sfx_envelope,
         voice_windows: reviewed_voice_windows(&project, track.id)?,
         sample_peak_guard_dbfs: -1.0,
         source_classification: "ORIGINAL_LICENSED_SOURCE_REQUIRED_NOT_SPEECH_VERIFIED".into(),
@@ -639,28 +830,30 @@ pub fn prepare_saved_original_mix(
         is_mastered: false,
     };
     let mut wav_bytes = Vec::new();
-    let evidence = write_mix_wav(
+    let evidence = write_mix_wav_with_budget(
         &plan,
         &project,
         &voice.interleaved_s16le,
         &music.interleaved_s16le,
-        &sfx.interleaved_s16le,
+        &sfx_pcm,
         &mut wav_bytes,
+        budget,
     )?;
     let fingerprint = variant_dependency_fingerprint(&project, profile_id)
-        .map_err(|error| MixError(error.to_string()))?;
+        .map_err(|error| MixError::Unsupported(error.to_string()))?;
     let result = PreparedOriginalMix {
         plan,
         evidence,
         wav_sha256: hex::encode(Sha256::digest(&wav_bytes)),
         wav_bytes,
         audio_inputs_sha256: fingerprint.audio_inputs_sha256,
+        budget,
     };
     // All three reads and DSP may have overlapped a real edit or a generation
     // replacement. Never return an artifact from the stale source snapshot.
     let latest = service
         .project(project_id)
-        .map_err(|_| MixError("Saved mix project became unavailable during preparation".into()))?;
+        .map_err(|_| mix_stale("Saved mix project became unavailable during preparation"))?;
     result.verify_project(&latest, profile_id)?;
     Ok(result)
 }

@@ -271,13 +271,16 @@ def inspect_live_native_kdenlive(
     }
 
 
-def compare_distinct_native_sessions(first: dict, reopened: dict) -> dict:
+def compare_distinct_native_sessions(
+        first: dict, reopened: dict, *, expected_first_phase: str = "import") -> dict:
+    require(expected_first_phase in ("import", "reopen"),
+            "native_Kdenlive_expected_first_phase_not_supported")
     require(type(first) is dict and type(reopened) is dict
             and first.get("schema") == reopened.get("schema") ==
             "motionwright.native.kdenlive-live-process/1"
-            and first.get("phase") == "import"
+            and first.get("phase") == expected_first_phase
             and reopened.get("phase") == "reopen",
-            "native_Kdenlive_session_phases_not_original_and_reopen")
+            "native_Kdenlive_session_phases_do_not_match_requested_reopen")
     require(first.get("live_application_binary_and_pid_verified") is True
             and reopened.get("live_application_binary_and_pid_verified") is True
             and first.get("actual_executable_sha256") ==

@@ -88,6 +88,8 @@ pub struct Narrative {
     pub premise: String,
     pub beats: Vec<NarrativeBeat>,
     pub protected_sections: Vec<ProtectedSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editing: Option<crate::NarrativeEditingState>,
 }
 
 impl Narrative {
@@ -107,6 +109,9 @@ impl Narrative {
         }
         for section in &self.protected_sections {
             section.validate()?;
+        }
+        if let Some(editing) = &self.editing {
+            editing.validate(&self.beats)?;
         }
         Ok(())
     }

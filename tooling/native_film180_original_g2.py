@@ -840,6 +840,42 @@ class FilmAttempt:
                 raise
         return retain
 
+
+    def capture_original_pcm(self, stage, master_sha):
+        """Retain the original decode payload once, before content inspection.
+
+        Raw stdout/stderr retain their existing private custody. The dedicated
+        s16le original is copied directly from that same callback payload; no
+        readback of excluded logs, decoder replay, trimming or padding occurs.
+        """
+        require(stage in {"original", "edited"} and HEX64.fullmatch(master_sha),
+                "Film180_PCM_capture_identity")
+        retain_raw = self.capture(stage + ".original-pcm-decode")
+        used = False
+        def retain(payload):
+            nonlocal used
+            require(not used, "Film180_PCM_capture_replay_refused")
+            used = True
+            retain_raw(payload)
+            if type(payload.get("exit_code")) is not int or payload["exit_code"] != 0 or payload.get("deadline_exceeded") is not False:
+                return
+            pcm = payload.get("stdout")
+            require(type(pcm) is bytes and 0 < len(pcm) <= 2 * 1024 * 1024
+                    and len(pcm) % 4 == 0 and payload.get("automatic_retry") is False,
+                    "Film180_PCM_capture_original_shape")
+            new_bytes(self.evidence_dir / (stage + "-original-master-decoded.s16le"), pcm)
+            write_private_json(self.evidence_dir / (stage + "-original-pcm-capture.json"), {
+                "schema": "motionwright.native.film180.original-pcm-capture/2", "phase": stage,
+                "master_sha256": master_sha, "decoded_pcm_sha256": hashlib.sha256(pcm).hexdigest(),
+                "decoded_pcm_bytes": len(pcm), "decoded_stereo_frames": len(pcm) // 4,
+                "channels": 2, "sample_rate": 48000, "sample_width_bytes": 2,
+                "decoder_exit_code": 0, "deadline_exceeded": False,
+                "captured_from_original_decoder_stdout": True, "decoder_reinvoked_by_custody": False,
+                "source_start_offset_frames_assumed": 0, "packet_PTS_and_AAC_priming_verified": False,
+                "human_acceptance": False,
+            })
+        return retain
+
     def run_argv(self, label, argv, *, env, timeout=30):
         require(label not in self.command_labels, "Film180_command_replay_refused")
         self.command_labels.add(label)
@@ -1015,6 +1051,113 @@ def retained_live_observer(attempt: FilmAttempt, stage: str,
             raise primary[0].with_traceback(primary[1])
 
 
+
+def retain_original_audio_packets(attempt, stage, master, master_sha, ffprobe="ffprobe"):
+    """One bounded read-only probe of this phase's published original MP4.
+
+    Packet times and skip metadata remain observations; this does not approve
+    AAC priming, source alignment, renderer success or a native re-dispatch.
+    """
+    import tempfile
+    require(stage in {"original", "edited"} and HEX64.fullmatch(master_sha),
+            "Film180_packet_original_identity")
+    label = stage + ".original-packet-probe"
+    require(label not in attempt.command_labels, "Film180_packet_probe_replay_refused")
+    # Latch before any original-file read or process launch, including failures.
+    attempt.command_labels.add(label)
+    require(digest(master) == master_sha, "Film180_packet_original_identity")
+    argv = [
+        ffprobe, "-v", "error", "-select_streams", "a:0", "-show_streams",
+        "-show_packets", "-of", "json", str(master),
+    ]
+    # Keep the redirected stdout file alive until this single invocation's
+    # available originals and terminal have been retained, including failures.
+    result = primary = primary_traceback = None
+    capture_errors = []
+    with tempfile.TemporaryFile() as output:
+        try:
+            result = subprocess.run(
+                argv, stdout=output, stderr=subprocess.PIPE, timeout=60, check=False,
+            )
+        except BaseException as error:
+            primary, primary_traceback = error, error.__traceback__
+        raw = None
+        stdout_size = None
+        try:
+            output.seek(0, 2)
+            stdout_size = output.tell()
+            if type(stdout_size) is int and 0 <= stdout_size <= 1024 * 1024:
+                output.seek(0)
+                raw = output.read(1024 * 1024 + 1)
+                require(type(raw) is bytes and len(raw) == stdout_size,
+                        "Film180_packet_original_stream_changed")
+        except BaseException as error:
+            raw = None
+            capture_errors.append(("stdout-read", error))
+        stderr = getattr(primary if primary is not None else result, "stderr", None)
+        # A retained stream is never a truncated prefix. On timeout, stderr
+        # means exactly the available bytes carried by TimeoutExpired, not EOF.
+        stdout_complete = type(raw) is bytes
+        stderr_complete = type(stderr) is bytes and len(stderr) <= 64 * 1024
+        terminal = {
+            "schema": "motionwright.native.film180.original-packet-probe/1",
+            "phase": stage, "master_sha256": master_sha,
+            "argv": argv, "timeout_seconds": 60,
+            "exit_code": getattr(result, "returncode", None),
+            "deadline_exceeded": isinstance(primary, subprocess.TimeoutExpired),
+            "error_class": type(primary).__name__ if primary is not None else None,
+            "stdout_observed_bytes": stdout_size,
+            "stderr_observed_bytes": len(stderr) if type(stderr) is bytes else None,
+            "stdout_sha256": hashlib.sha256(raw).hexdigest() if stdout_complete else None,
+            "stderr_sha256": hashlib.sha256(stderr).hexdigest() if stderr_complete else None,
+            "stdout_original_included": False, "stderr_original_included": False,
+            "stdout_within_retention_bound": stdout_complete,
+            "stderr_within_retention_bound": stderr_complete,
+            "automatic_retry": False, "native_effect_invoked": False,
+            "native_terminal_inferred_from_exit": False,
+            "terminal_captured_before_json_parse": True,
+        }
+        for stream, payload, complete in (
+                ("stdout", raw, stdout_complete), ("stderr", stderr, stderr_complete)):
+            if not complete:
+                continue
+            try:
+                new_bytes(attempt.evidence_dir / (label + "." + stream), payload)
+                terminal[stream + "_original_included"] = True
+            except BaseException as error:
+                capture_errors.append((stream + "-retain", error))
+        terminal["custody_failures"] = [kind for kind, _ in capture_errors]
+        try:
+            write_private_json(attempt.evidence_dir / (label + ".terminal.json"), terminal)
+        except BaseException as error:
+            capture_errors.append(("terminal-retain", error))
+        if capture_errors:
+            try:
+                attempt.secondary(label + ".capture")
+            except BaseException:
+                pass
+        if primary is not None:
+            raise primary.with_traceback(primary_traceback)
+        require(type(getattr(result, "returncode", None)) is int
+                and result.returncode == 0 and type(stdout_size) is int
+                and 0 < stdout_size <= 1024 * 1024,
+                "Film180_packet_original_bounded_probe")
+        if capture_errors:
+            raise capture_errors[0][1]
+        require(stderr_complete, "Film180_packet_original_stderr_bounded_probe")
+    from native_evidence_projection import strict, project
+    from native_mlt_evidence_selection import PACKETS
+    require(digest(master) == master_sha, "Film180_master_changed_during_packet_probe")
+    new_bytes(attempt.evidence_dir / (stage + "-original-master-packets.json"), raw)
+    value = project(strict(raw), PACKETS)
+    write_private_json(attempt.evidence_dir / (stage + "-original-packet-capture.json"), {
+        "schema": "motionwright.native.film180.original-packets/2", "phase": stage,
+        "master_sha256": master_sha, "original_packet_document_sha256": hashlib.sha256(raw).hexdigest(),
+        "original_packet_document_bytes": len(raw), "packet_count": len(value["packets"]),
+        "native_effect_invoked": False, "automatic_retry": False,
+        "packet_PTS_and_AAC_priming_verified": False,
+    })
+
 def stage_and_decode(paths: dict[str, Path], connection: Path,
                      database: Path, project_file: Path, source_audio: Path,
                      stage: str, env: dict[str, str], evidence: Path,
@@ -1091,11 +1234,29 @@ def stage_and_decode(paths: dict[str, Path], connection: Path,
             "native_melt_effect_started_by_witness": False,
         }
         write_private_json(evidence / f"{stage}-original-live-MLT-loaded-module.json", loaded_module)
-    receipt = verified_source_readback(
-        project_file, digest(project_file), source_audio, source_sha,
-        render_path, digest(render_path), master_evidence, digest(master_evidence),
-        original_mp4, video_sha, pcm_capture=attempt.capture(stage + ".original-pcm-decode"),
-    )
+    try:
+        retain_original_audio_packets(attempt, stage, original_mp4, video_sha)
+        receipt = verified_source_readback(
+            project_file, digest(project_file), source_audio, source_sha,
+            render_path, digest(render_path), master_evidence, digest(master_evidence),
+            original_mp4, video_sha, pcm_capture=attempt.capture_original_pcm(stage, video_sha),
+        )
+    finally:
+        try:
+            from native_aac_clock_custody import retain_clock_diagnostic
+            probe = shutil.which("ffprobe")
+            require(probe is not None, "Film180_clock_probe_unavailable")
+            clock_capture = retain_clock_diagnostic(
+                evidence_dir=evidence, phase=stage, scenario="film180-g2",
+                master=original_mp4, master_sha256=video_sha,
+                ffprobe=Path(probe).resolve(strict=True), env=env,
+                source_document=project_file, original_wav=evidence / "firstparty-source.wav",
+                packets=evidence / (stage + "-original-master-packets.json"),
+                decoded_pcm=evidence / (stage + "-original-master-decoded.s16le"))
+            if clock_capture["state"] != "CAPTURED":
+                attempt.secondary(stage + ".clock-custody-incomplete")
+        except Exception:
+            attempt.secondary(stage + ".clock-custody-failed")
     readback = evidence / f"{stage}-independent-AV-content.json"
     write_private_json(readback, receipt)
     all_frames = actual_all180_original_RGB_digests(original_mp4, "ffmpeg")

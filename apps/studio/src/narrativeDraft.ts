@@ -288,7 +288,8 @@ export function encodeNarrativeCopy(copy: NarrativeCopy): string {
   decodeNarrativeCopy(raw, copy.scope, copy.writerId);
   return raw;
 }
-export function readNarrativeCopies(storage: NarrativeStorage, scope: string): { entries: NarrativeRecoveryEntry[]; limited: boolean } {
+export function readNarrativeCopies(storage: NarrativeStorage, scope: string,
+  onEntry?: (entry: NarrativeRecoveryEntry) => void): { entries: NarrativeRecoveryEntry[]; limited: boolean } {
   const prefix = NARRATIVE_RECOVERY_PREFIX + encodeURIComponent(scope) + ":";
   const entries: NarrativeRecoveryEntry[] = [];
   let limited = false;
@@ -301,7 +302,9 @@ export function readNarrativeCopies(storage: NarrativeStorage, scope: string): {
     const writerId = key.slice(prefix.length);
     let value: NarrativeCopy | null = null;
     try { value = decodeNarrativeCopy(raw, scope, writerId); } catch { /* Original bytes remain recoverable. */ }
-    entries.push({ key, writerId, raw, value });
+    const entry = { key, writerId, raw, value };
+    onEntry?.(entry);
+    entries.push(entry);
   }
   return { entries, limited };
 }

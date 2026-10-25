@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::semantic_graph_source_fixture as graph_source_guard_fixture;
+
 use motionwright_domain::{BlendMode, CanvasNode, CoordinateSpace, Project, RendererKind, Scene};
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use serde::{Deserialize, Serialize};
@@ -230,6 +233,16 @@ pub fn build_blender_contribution(
     scene_id: Uuid,
 ) -> NativeResult<BlenderSceneContribution> {
     let scene = renderer_scene(project, scene_id, &RendererKind::Blender)?;
+    if project
+        .production_design
+        .semantic_graphs
+        .iter()
+        .any(|graph| graph.scene_id == scene.id)
+    {
+        return Err(unsupported(
+            "Selected Blender scene contains a semantic Graph that this projection cannot preserve",
+        ));
+    }
     let mut objects = Vec::with_capacity(scene.nodes.len());
     for node in &scene.nodes {
         ensure_flat_semantics(node)?;
@@ -573,6 +586,29 @@ fn manim_color(node: &CanvasNode) -> String {
         .unwrap_or_else(|| "#FFFFFF".to_owned())
 }
 
+// The compatibility V1 wire carries only font size and color. Its public
+// Project projection must not erase authored typography or clamp it to fit
+// the narrower renderer profile. The normal saved-source route uses V3.
+fn legacy_manim_font_size(node: &CanvasNode) -> NativeResult<f64> {
+    if node.style.font_family.is_some()
+        || node.style.font_weight.is_some()
+        || node.style.line_height.is_some()
+    {
+        return Err(unsupported(format!(
+            "Manim V1 text node {} has authored font family, weight or line height that its wire profile cannot preserve; use the editable source profile",
+            node.id
+        )));
+    }
+    let size = node.style.font_size.unwrap_or(48.0);
+    if !(4.0..=512.0).contains(&size) {
+        return Err(unsupported(format!(
+            "Manim V1 text node {} has font size {} outside its supported range 4..512; authored size was not changed",
+            node.id, size
+        )));
+    }
+    Ok(size)
+}
+
 pub fn build_manim_plan(project: &Project, scene_id: Uuid) -> NativeResult<ManimScenePlan> {
     let scene = renderer_scene(project, scene_id, &RendererKind::ManimCommunity)?;
     let mut primitives = Vec::with_capacity(scene.nodes.len());
@@ -590,7 +626,7 @@ pub fn build_manim_plan(project: &Project, scene_id: Uuid) -> NativeResult<Manim
                     .ok_or_else(|| invalid("Manim text node has no text"))?,
                 x,
                 y,
-                font_size: node.style.font_size.unwrap_or(48.0).clamp(4.0, 512.0),
+                font_size: legacy_manim_font_size(node)?,
                 color,
             },
             "shape" | "rectangle" => ManimPrimitive::Rectangle {
@@ -883,16 +919,86 @@ mod tests {
         assert_eq!(error.code, ErrorCode::Unsupported);
     }
 
-    #[test]
-    fn manim_compiler_emits_only_generated_declarative_scene_code() {
+    // A V1 compatibility fixture leaves fields absent only when their absence
+    // is authored. It never clears a field on an incoming Project.
+    fn project_with_legacy_manim_text() -> Project {
         let mut project = project_with_renderer(RendererKind::ManimCommunity);
-        let scene = project.scenes[0].id;
+        let scene_id = project.scenes[0].id;
+        let mut text = node("text", Some("x = y + 1"), 640.0, 400.0);
+        text.style.font_family = None;
+        text.style.font_weight = None;
+        text.style.line_height = None;
         project
             .apply_change(&Change::AddCanvasNode {
-                scene_id: scene,
-                node: node("text", Some("x = y + 1"), 640.0, 400.0),
+                scene_id,
+                node: text,
             })
             .unwrap();
+        project
+    }
+
+    #[test]
+    fn manim_legacy_projection_rejects_authored_typography_without_rewriting_source() {
+        let original = project_with_legacy_manim_text();
+        let scene_id = original.scenes[0].id;
+        let original_wire = serde_json::to_value(&original).unwrap();
+        assert!(build_manim_plan(&original, scene_id).is_ok());
+        for field in ["font_family", "font_weight", "line_height"] {
+            let mut authored = original.clone();
+            let style = &mut authored.scenes[0].nodes[1].style;
+            match field {
+                "font_family" => style.font_family = Some("Instrument Sans Variable".into()),
+                "font_weight" => style.font_weight = Some(600),
+                "line_height" => style.line_height = Some(1.25),
+                _ => unreachable!(),
+            }
+            authored.validate().unwrap();
+            let before = serde_json::to_value(&authored).unwrap();
+            let error = build_manim_plan(&authored, scene_id).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported, "{field}");
+            assert!(error.message.contains("V1 text node"), "{field}");
+            assert_eq!(serde_json::to_value(&authored).unwrap(), before, "{field}");
+        }
+        assert_eq!(serde_json::to_value(&original).unwrap(), original_wire);
+        assert!(build_manim_plan(&original, scene_id).is_ok());
+    }
+
+    #[test]
+    fn manim_legacy_projection_preserves_supported_sizes_and_refuses_clamping() {
+        let original = project_with_legacy_manim_text();
+        let scene_id = original.scenes[0].id;
+        for size in [4.0, 48.0, 512.0] {
+            let mut authored = original.clone();
+            authored.scenes[0].nodes[1].style.font_size = Some(size);
+            authored.validate().unwrap();
+            let before = serde_json::to_value(&authored).unwrap();
+            let plan = build_manim_plan(&authored, scene_id).unwrap();
+            let ManimPrimitive::Text { font_size, .. } = &plan.primitives[1] else {
+                panic!("the original text node must remain text");
+            };
+            assert_eq!(*font_size, size);
+            let wire = serde_json::to_value(&plan).unwrap();
+            let driver_plan: motionwright_manim_profile::ManimScenePlan =
+                serde_json::from_value(wire).unwrap();
+            motionwright_manim_profile::validate_plan(&driver_plan).unwrap();
+            assert_eq!(serde_json::to_value(&authored).unwrap(), before);
+        }
+        for size in [1.0, 3.5, 512.5, 2048.0] {
+            let mut authored = original.clone();
+            authored.scenes[0].nodes[1].style.font_size = Some(size);
+            authored.validate().unwrap();
+            let before = serde_json::to_value(&authored).unwrap();
+            let error = build_manim_plan(&authored, scene_id).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported, "{size}");
+            assert!(error.message.contains("font size"), "{size}");
+            assert_eq!(serde_json::to_value(&authored).unwrap(), before, "{size}");
+        }
+    }
+
+    #[test]
+    fn manim_compiler_emits_only_generated_declarative_scene_code() {
+        let project = project_with_legacy_manim_text();
+        let scene = project.scenes[0].id;
         let plan = build_manim_plan(&project, scene).unwrap();
         let source = compile_manim_python(&plan).unwrap();
         assert!(source.contains("class MotionwrightScene(Scene):"));
@@ -1050,5 +1156,65 @@ mod tests {
         let foreign = project_with_renderer(RendererKind::MotionCanvas);
         let error = build_blender_original_scene_plan(&foreign, foreign.scenes[0].id).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidArgument);
+    }
+
+    fn attach_source_guard_graph(project: &mut Project, scene_index: usize, profile_index: usize) {
+        let mut selected = project.clone();
+        selected.scenes.swap(0, scene_index);
+        selected.deliverables.swap(0, profile_index);
+        let mut graph = graph_source_guard_fixture::graph_for(&selected, false);
+        graph.time_range.start = motionwright_domain::RationalTime::new(0, 1).unwrap();
+        graph.time_range.duration = motionwright_domain::RationalTime::new(1, 1).unwrap();
+        project
+            .apply_change(&motionwright_domain::Change::UpsertSemanticGraph {
+                graph: Box::new(graph),
+            })
+            .unwrap();
+        project.validate().unwrap();
+    }
+
+    #[test]
+    fn blender_builders_reject_selected_scene_graph() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        let scene_id = project.scenes[0].id;
+        build_blender_contribution(&project, scene_id).unwrap();
+        build_blender_original_scene_plan(&project, scene_id).unwrap();
+        attach_source_guard_graph(&mut project, 0, 0);
+        let before = project.clone();
+        assert_eq!(
+            build_blender_contribution(&project, scene_id)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            build_blender_original_scene_plan(&project, scene_id)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn blender_contribution_preserves_other_scene_graph_scope() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        let scene_id = project.scenes[0].id;
+        let mut other_scene = project.scenes[0].clone();
+        other_scene.id = Uuid::new_v4();
+        other_scene.start = motionwright_domain::RationalTime::new(2, 1).unwrap();
+        other_scene.renderer = RendererKind::ManimCommunity;
+        other_scene.nodes.clear();
+        other_scene.beats.clear();
+        project.scenes.push(other_scene);
+        project.validate().unwrap();
+        let baseline = build_blender_contribution(&project, scene_id).unwrap();
+        attach_source_guard_graph(&mut project, 1, 0);
+        let before = project.clone();
+        assert_eq!(
+            build_blender_contribution(&project, scene_id).unwrap(),
+            baseline
+        );
+        assert_eq!(project, before);
     }
 }

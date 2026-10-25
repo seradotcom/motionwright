@@ -1,4 +1,9 @@
+import { assertDeliveryAudioTargets, originalMixEnvelopeKeys, validateAudioRecipeCut } from "./audioRecipeContract";
+import type { DeliveryAudioTargets, OriginalMixBusEnvelope } from "./audioRecipeContract";
 import type { MotionCanvasArchetype, MotionCanvasNarrativeRole, Project } from "./types";
+
+export { assertDeliveryAudioTargets } from "./audioRecipeContract";
+export type { DeliveryAudioTargets } from "./audioRecipeContract";
 
 export interface DeliverySceneIntent {
   scene_id: string;
@@ -12,13 +17,17 @@ export interface OriginalMixRecipe {
   duck_attenuation_db: number;
   duck_attack_samples: number;
   duck_release_samples: number;
+  voice_envelope?: OriginalMixBusEnvelope;
+  music_envelope?: OriginalMixBusEnvelope;
+  sfx_envelope?: OriginalMixBusEnvelope;
 }
 export interface DeliveryRecipe {
   schema: "motionwright.delivery-recipe/1";
   scene_intents: DeliverySceneIntent[];
   original_mix: OriginalMixRecipe | null;
+  audio_targets?: DeliveryAudioTargets;
 }
-export type RecipeGroup = "film" | "mix";
+export type RecipeGroup = "film" | "mix" | "targets";
 export const deliveryRoles: MotionCanvasNarrativeRole[] = ["hook", "problem", "mechanism", "evidence", "comparison", "reveal", "payoff", "cta"];
 export const deliveryArchetypes: MotionCanvasArchetype[] = ["statement", "split_explanation", "architecture_reveal", "comparison", "metric", "timeline", "code_focus", "diagram_build", "object_spotlight", "evidence_frame", "product_proof", "endcard"];
 export const emptyDeliveryRecipe = (): DeliveryRecipe => ({ schema: "motionwright.delivery-recipe/1", scene_intents: [], original_mix: null });
@@ -27,17 +36,54 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const numberFields = ["sfx_gain_db", "duck_attenuation_db", "duck_attack_samples", "duck_release_samples"] as const;
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 const mixKeys = ["enabled", "music_asset_id", "sfx_asset_id", ...numberFields] as const;
-const ownKeys = (value: unknown, keys: readonly string[], label: string): Record<string, unknown> => {
+const ownKeys = (value: unknown, keys: readonly string[], label: string, optional: readonly string[] = []): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid " + label + ".");
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== keys.length || keys.some(key => !Object.hasOwn(record, key)) || Object.keys(record).some(key => !keys.includes(key))) throw new Error("Unknown or missing " + label + " fields.");
+  if (keys.some(key => !Object.hasOwn(record, key)) || Object.keys(record).some(key => !keys.includes(key) && !optional.includes(key))) throw new Error("Unknown or missing " + label + " fields.");
   return record;
 };
+
+export const deliveryAudioTargetFields = ["target_lufs", "target_true_peak_dbtp"] as const;
+/** Exact public milli-unit input. This is authoring validation, never measured QC. */
+export function deliveryTargetMilli(value: number): number {
+  const milli = Math.round(value * 1000);
+  if (!Number.isFinite(value) || !Number.isSafeInteger(milli) || milli < -2147483648 || milli > 2147483647 || milli / 1000 !== value)
+    throw new Error("Audio targets must be exact multiples of 0.001 within signed 32-bit milli-units.");
+  return milli;
+}
+/** Preserve the complete raw buffer. A decimal finer than a milli-unit cannot
+ * become a valid target merely because Number would round away its digits. */
+export function parseDeliveryAudioTarget(raw: string): number | null {
+  if (raw.length > 128) throw new Error("Audio target input exceeds its bounded draft.");
+  const text = raw.trim();
+  if (!text) return null;
+  const parts = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(text);
+  if (!parts) throw new Error("Complete the decimal audio target before saving.");
+  const fraction = parts[3] ?? parts[4] ?? "";
+  let digits = ((parts[2] ?? "0") + fraction).replace(/^0+/, "");
+  if (!digits) return 0;
+  const invalid = () => new Error("Audio targets must be exact multiples of 0.001 within signed 32-bit milli-units.");
+  const scale = BigInt(parts[5] ?? "0") - BigInt(fraction.length) + 3n;
+  if (scale < 0n) {
+    const trailing = digits.length - digits.replace(/0+$/, "").length;
+    if (-scale > BigInt(trailing)) throw invalid();
+    digits = digits.slice(0, digits.length - Number(-scale));
+  } else {
+    if (BigInt(digits.length) + scale > 10n) throw invalid();
+    digits += "0".repeat(Number(scale));
+  }
+  if (digits.length > 10) throw invalid();
+  const exactMilli = BigInt(digits) * (parts[1] === "-" ? -1n : 1n);
+  if (exactMilli < -2147483648n || exactMilli > 2147483647n) throw invalid();
+  const value = Number(exactMilli) / 1000;
+  if (Number(text) !== value || deliveryTargetMilli(value) !== Number(exactMilli)) throw invalid();
+  return value;
+}
 
 /** Mirrors the typed wire for UI feedback. The Rust service remains canonical. */
 export function validateDeliveryRecipe(project: Project, profileId: string, candidate: unknown): asserts candidate is DeliveryRecipe {
   if (!uuid.test(profileId) || !project.deliverables.some(profile => profile.id.toLowerCase() === profileId.toLowerCase())) throw new Error("The delivery profile no longer exists.");
-  const recipe = ownKeys(candidate, ["schema", "scene_intents", "original_mix"], "delivery recipe");
+  const recipe = ownKeys(candidate, ["schema", "scene_intents", "original_mix"], "delivery recipe", ["audio_targets"]);
   if (recipe.schema !== "motionwright.delivery-recipe/1") throw new Error("Unsupported delivery recipe schema.");
   if (!Array.isArray(recipe.scene_intents) || recipe.scene_intents.length > 4096) throw new Error("Delivery scene intent is outside the bounded collection.");
   const seen = new Set<string>();
@@ -48,8 +94,9 @@ export function validateDeliveryRecipe(project: Project, profileId: string, cand
     if (intent.role !== null && !deliveryRoles.includes(intent.role as MotionCanvasNarrativeRole)) throw new Error("Unknown narrative role.");
     if (intent.archetype !== null && !deliveryArchetypes.includes(intent.archetype as MotionCanvasArchetype)) throw new Error("Unknown visual archetype.");
   }
+  validateAudioRecipeCut(project, profileId, recipe as unknown as DeliveryRecipe);
   if (recipe.original_mix === null) return;
-  const mix = ownKeys(recipe.original_mix, ["music_asset_id", "sfx_asset_id", ...numberFields], "original mix");
+  const mix = ownKeys(recipe.original_mix, ["music_asset_id", "sfx_asset_id", ...numberFields], "original mix", originalMixEnvelopeKeys);
   for (const key of ["music_asset_id", "sfx_asset_id"] as const) {
     const id = mix[key];
     if (id !== null && (typeof id !== "string" || !uuid.test(id) || !project.assets.some(asset => asset.id.toLowerCase() === id.toLowerCase() && asset.media_type.startsWith("audio/") && /^[a-f0-9]{64}$/.test(asset.content_sha256 ?? "")))) throw new Error("The selected " + key.replaceAll("_", " ") + " is not a current hashed audio source.");
@@ -65,6 +112,9 @@ export function savedDeliveryRecipe(project: Project, profileId: string): Delive
   return project.production_design?.delivery_recipes?.[profileId] ?? null;
 }
 export function recipeFields(recipe: DeliveryRecipe | null, group: RecipeGroup): Record<string, string> {
+  if (group === "targets") return Object.fromEntries(deliveryAudioTargetFields.map(field => {
+    const value = recipe?.audio_targets?.[field]; return [field, value === null || value === undefined ? "" : String(value)];
+  }));
   if (group === "film") return Object.fromEntries((recipe?.scene_intents ?? []).flatMap(intent => [
     [intent.scene_id + ":role", intent.role ?? ""], [intent.scene_id + ":archetype", intent.archetype ?? ""],
   ]));
@@ -101,6 +151,9 @@ export function submitRecipeDraft(draft: RecipeDraft, revision: number): RecipeD
   return next;
 }
 export function canonicalRecipeField(group: RecipeGroup, key: string, raw: string): string {
+  if (group === "targets" && (deliveryAudioTargetFields as readonly string[]).includes(key)) {
+    try { const value = parseDeliveryAudioTarget(raw); return value === null ? "" : String(value); } catch { return raw; }
+  }
   if (group === "mix" && (numberFields as readonly string[]).includes(key) && decimal.test(raw.trim()) && Number.isFinite(Number(raw))) return String(Number(raw));
   return raw;
 }
@@ -137,16 +190,20 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
       const archetype = fields[scene_id + ":archetype"] || null;
       return role || archetype ? [{ scene_id, role: role as MotionCanvasNarrativeRole | null, archetype: archetype as MotionCanvasArchetype | null }] : [];
     });
+  } else if (draft.group === "targets") {
+    const audio_targets: DeliveryAudioTargets = { target_lufs: parseDeliveryAudioTarget(fields.target_lufs), target_true_peak_dbtp: parseDeliveryAudioTarget(fields.target_true_peak_dbtp) };
+    if (audio_targets.target_lufs === null && audio_targets.target_true_peak_dbtp === null) delete recipe.audio_targets;
+    else { assertDeliveryAudioTargets(audio_targets); recipe.audio_targets = audio_targets; }
   } else if (fields.enabled !== "true" && fields.enabled !== "false") throw new Error("Choose whether the original mix recipe is enabled.");
   else if (fields.enabled === "false") recipe.original_mix = null;
   else {
     for (const key of numberFields) if (!decimal.test(fields[key]?.trim() ?? "")) throw new Error("Enter a decimal value for " + key.replaceAll("_", " ") + ".");
-    recipe.original_mix = { music_asset_id: fields.music_asset_id || null, sfx_asset_id: fields.sfx_asset_id || null, sfx_gain_db: Number(fields.sfx_gain_db), duck_attenuation_db: Number(fields.duck_attenuation_db), duck_attack_samples: Number(fields.duck_attack_samples), duck_release_samples: Number(fields.duck_release_samples) };
+    recipe.original_mix = { ...recipe.original_mix, music_asset_id: fields.music_asset_id || null, sfx_asset_id: fields.sfx_asset_id || null, sfx_gain_db: Number(fields.sfx_gain_db), duck_attenuation_db: Number(fields.duck_attenuation_db), duck_attack_samples: Number(fields.duck_attack_samples), duck_release_samples: Number(fields.duck_release_samples) };
   }
   return recipe;
 }
 function validField(group: RecipeGroup, key: string): boolean {
-  return group === "mix" ? (mixKeys as readonly string[]).includes(key) : /^[a-f0-9-]{36}:(role|archetype)$/.test(key) && uuid.test(key.split(":")[0]);
+  return group === "targets" ? (deliveryAudioTargetFields as readonly string[]).includes(key) : group === "mix" ? (mixKeys as readonly string[]).includes(key) : /^[a-f0-9-]{36}:(role|archetype)$/.test(key) && uuid.test(key.split(":")[0]);
 }
 export const RECIPE_DRAFT_STORAGE_PREFIX = "motionwright.delivery-recipe-draft/1:";
 const prefix = RECIPE_DRAFT_STORAGE_PREFIX;
@@ -190,7 +247,7 @@ function boundedFieldMap(value: unknown, group: RecipeGroup, edits: boolean): bo
 export function decodeRecipeDraft(raw: string, scope: string, group: RecipeGroup): RecipeDraft {
   if (new TextEncoder().encode(raw).length > 256 * 1024) throw new Error("Recipe recovery copy exceeds 256 KiB.");
   const value: unknown = JSON.parse(raw);
-  if (!record(value) || (group !== "film" && group !== "mix") || value.version !== 1 || value.scope !== scope || value.group !== group || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !boundedFieldMap(value.edits, group, true)) throw new Error("Recipe recovery copy has an unsupported identity or format.");
+  if (!record(value) || (group !== "film" && group !== "mix" && group !== "targets") || value.version !== 1 || value.scope !== scope || value.group !== group || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !boundedFieldMap(value.edits, group, true)) throw new Error("Recipe recovery copy has an unsupported identity or format.");
   if (Object.keys(value).some(key => !["version", "scope", "group", "revision", "edits", "awaiting"].includes(key))) throw new Error("Recipe recovery copy contains unknown fields.");
   if (Object.hasOwn(value, "awaiting")) {
     const awaiting = value.awaiting;

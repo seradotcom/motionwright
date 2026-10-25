@@ -7,6 +7,7 @@ This is build tooling, not an application runtime or execution capability.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import ntpath
@@ -198,7 +199,7 @@ def _nsis_escape(value: str) -> str:
     return value.replace("$", "$$").replace('"', r'$\"')
 
 
-def _capture(source: Path, capture: Path):
+def _capture(source: Path, capture: Path, expected_payload: dict | None = None):
     initial = source.lstat()
     _require_regular(initial, "source")
     if not 0 <= initial.st_size <= MAX_SOURCE_BYTES:
@@ -212,6 +213,38 @@ def _capture(source: Path, capture: Path):
         opened_source = os.fstat(source_file.fileno())
         _require_path_descriptor_match(opened_source, initial, "source")
         _require_unchanged(source.lstat(), initial, "source")
+        if expected_payload is not None:
+            if (not isinstance(expected_payload, dict)
+                    or set(expected_payload) != {"bytes", "sha256"}
+                    or type(expected_payload["bytes"]) is not int
+                    or not 0 < expected_payload["bytes"] <= MAX_SOURCE_BYTES
+                    or not isinstance(expected_payload["sha256"], str)
+                    or re.fullmatch(r"[0-9a-f]{64}", expected_payload["sha256"]) is None):
+                raise CaptureError("distribution_admission_payload_invalid")
+            expected_payload = dict(expected_payload)
+            if initial.st_size != expected_payload["bytes"]:
+                raise CaptureError("distribution_admission_payload_mismatch")
+            # Inspect the same retained descriptor before creating an output.
+            # Rewinding does not reopen a path or freeze concurrent writers.
+            reviewed_digest = hashlib.sha256()
+            reviewed_size = 0
+            allowance = initial.st_size + 1
+            while allowance:
+                block = os.read(source_file.fileno(), min(COPY_CHUNK_BYTES, allowance))
+                if not block:
+                    break
+                allowance -= len(block)
+                reviewed_size += len(block)
+                reviewed_digest.update(block)
+            _require_plain_parents(source)
+            _require_unchanged(os.fstat(source_file.fileno()), opened_source, "source")
+            if _source_change_time(source_file.fileno()) != source_change_time:
+                raise CaptureError("source change time changed before capture")
+            _require_unchanged(source.lstat(), initial, "source")
+            if (reviewed_size != expected_payload["bytes"]
+                    or reviewed_digest.hexdigest() != expected_payload["sha256"]):
+                raise CaptureError("distribution_admission_payload_mismatch")
+            os.lseek(source_file.fileno(), 0, os.SEEK_SET)
         _require_plain_parents(capture)
         capture_fd = os.open(capture, _create_flags(), 0o600)
         with os.fdopen(capture_fd, "wb") as output:
@@ -229,6 +262,13 @@ def _capture(source: Path, capture: Path):
                 copied += written
             if copied != initial.st_size:
                 raise CaptureError("source ended before its initial size")
+            if expected_payload is not None and (
+                copied != expected_payload["bytes"]
+                or digest.hexdigest() != expected_payload["sha256"]
+            ):
+                # An already-created failed capture stays private for inspection;
+                # no include is published for bytes that differ from admission.
+                raise CaptureError("distribution_admission_payload_changed")
             output.flush()
             os.fsync(output.fileno())
             _require_plain_parents(source)
@@ -254,15 +294,119 @@ def _capture(source: Path, capture: Path):
     return digest.hexdigest(), copied, captured
 
 
-def _publish_include(include: Path, payload: bytes, capture: Path | None, captured=None) -> None:
+
+def _open_publication_reader(path: Path, label: str) -> int:
+    """Retain the admitted file; Windows denies writers/deleters until close."""
+    if os.name != "nt":
+        return os.open(path, _read_flags() | getattr(os, "O_NONBLOCK", 0))
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = (wintypes.HANDLE,)
+    close.restype = wintypes.BOOL
+    # OPEN_EXISTING, GENERIC_READ, FILE_SHARE_READ only. Never fall back to
+    # sharing writes/deletion: an existing writer must also fail admission.
+    handle = create(str(path), 0x80000000, 0x00000001, None, 3,
+                    0x00200000 | 0x08000000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        raise CaptureError(
+            f"{label} cannot be held for publication: Windows error {error}"
+        ) from ctypes.WinError(error)
+    try:
+        fd = msvcrt.open_osfhandle(
+            handle, os.O_RDONLY | os.O_BINARY | getattr(os, "O_NOINHERIT", 0)
+        )
+    except BaseException:
+        close(handle)
+        raise
+    # The CRT descriptor owns the Win32 handle after successful conversion.
+    try:
+        os.set_inheritable(fd, False)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _verify_publication_bytes(reader, expected_digest: str, size: int, label: str) -> None:
+    """Hash at most the admitted length plus one byte from the retained handle."""
+    if type(size) is not int or not 0 <= size <= MAX_SOURCE_BYTES:
+        raise CaptureError(f"{label} has an invalid publication size")
+    reader.seek(0)
+    digest = hashlib.sha256()
+    count, remaining = 0, size + 1
+    while remaining:
+        block = reader.read(min(COPY_CHUNK_BYTES, remaining))
+        if not block:
+            break
+        count += len(block)
+        remaining -= len(block)
+        if count > size:
+            raise CaptureError(f"{label} bytes differ from the admitted capture")
+        digest.update(block)
+    if count != size or digest.hexdigest() != expected_digest:
+        raise CaptureError(f"{label} bytes differ from the admitted capture")
+
+
+@contextmanager
+def _publication_guard(path: Path, expected, digest: str, size: int, label: str):
+    """Bind expected bytes and identity through publication.
+
+    Windows sharing excludes concurrent writes and deletion while this context
+    lives. POSIX retains and revalidates a descriptor; it does not claim a
+    mandatory lock against unrelated writers. Neither guard extends to a later
+    invocation of the NSIS compiler.
+    """
+    _require_plain_parents(path)
+    try:
+        fd = _open_publication_reader(path, label)
+    except OSError as error:
+        raise CaptureError(f"{label} cannot be held for publication") from error
+    try:
+        reader = os.fdopen(fd, "rb", buffering=0)
+    except BaseException:
+        os.close(fd)
+        raise
+    with reader:
+        change_time = _source_change_time(reader.fileno())
+        opened = os.fstat(reader.fileno())
+        _require_path_descriptor_match(opened, expected, label)
+        _require_unchanged(path.lstat(), expected, label)
+
+        def check():
+            _require_plain_parents(path)
+            _require_unchanged(os.fstat(reader.fileno()), opened, label)
+            _require_unchanged(path.lstat(), expected, label)
+            if _source_change_time(reader.fileno()) != change_time:
+                raise CaptureError(f"{label} changed during publication")
+
+        _verify_publication_bytes(reader, digest, size, label)
+        check()
+        yield reader, check
+
+
+def _publish_include(
+    include: Path, payload: bytes, capture: Path | None, captured=None,
+    *, capture_check=None,
+) -> None:
     _require_plain_parents(include)
     _require_absent(include)
     fd, name = tempfile.mkstemp(
         prefix=".mw-nsis-include-", suffix=".pending", dir=include.parent
     )
     pending = Path(name)
-    # Failure deliberately retains this file and the capture. The final
-    # include name does not appear before the complete file is synced.
+    # Failure retains the capture and pending include for inspection.
     with os.fdopen(fd, "wb") as output:
         if output.write(payload) != len(payload):
             raise OSError("short write to pending NSIS include")
@@ -273,19 +417,42 @@ def _publish_include(include: Path, payload: bytes, capture: Path | None, captur
             raise CaptureError("pending include size differs from payload")
     pending_info = pending.lstat()
     _require_same_object(pending_info, open_pending, "pending include")
-    if capture is not None:
-        _require_plain_parents(capture)
-        _require_unchanged(capture.lstat(), captured, "capture")
-    _require_plain_parents(include)
-    _require_unchanged(pending.lstat(), pending_info, "pending include")
-    # Atomic exclusive publication on the same filesystem. There is no
-    # replace/rename-overwrite fallback if hardlinks are unsupported.
-    os.link(pending, include, follow_symlinks=False)
+    digest = hashlib.sha256(payload).hexdigest()
+    with _publication_guard(
+        pending, pending_info, digest, len(payload), "pending include"
+    ) as (reader, pending_check):
+        if capture is not None:
+            _require_plain_parents(capture)
+            _require_unchanged(capture.lstat(), captured, "capture")
+            if capture_check is None:
+                raise CaptureError("capture publication requires its retained guard")
+            capture_check()
+        _require_plain_parents(include)
+        pending_check()
+        # Both guards remain alive during atomic exclusive publication.
+        # No replace/rename fallback is allowed.
+        os.link(pending, include, follow_symlinks=False)
+        _require_same_object(include.lstat(), pending_info, "published include")
+        # Our hardlink can legitimately change ctime/nlink. Take a fresh
+        # descriptor snapshot, then verify bytes without reusing old ctime.
+        linked = os.fstat(reader.fileno())
+        linked_change_time = _source_change_time(reader.fileno())
+        _verify_publication_bytes(reader, digest, len(payload), "published include")
+        _require_unchanged(os.fstat(reader.fileno()), linked, "published include")
+        if _source_change_time(reader.fileno()) != linked_change_time:
+            raise CaptureError("published include changed during verification")
+        _require_same_object(include.lstat(), linked, "published include")
+        if capture_check is not None:
+            capture_check()
+    # Close the pending guard before removing its redundant owned name.
     try:
+        _require_plain_parents(pending)
+        _require_same_object(pending.lstat(), pending_info, "pending include")
         pending.unlink()
-    except OSError:
-        # A redundant owned name is harmless after successful publication.
+    except (OSError, CaptureError):
+        # A redundant name is harmless; never delete a known replacement.
         pass
+
 
 
 def capture_owned_file(
@@ -293,6 +460,8 @@ def capture_owned_file(
     capture: str | os.PathLike[str],
     include: str | os.PathLike[str],
     symbol: str,
+    *,
+    expected_payload: dict | None = None,
 ) -> dict[str, str | int]:
     if not isinstance(symbol, str) or _SYMBOL.fullmatch(symbol) is None:
         raise CaptureError("symbol must match MW_[A-Z0-9_]{1,48}")
@@ -308,13 +477,19 @@ def capture_owned_file(
     # additionally enforce exclusivity if a destination appears later.
     _require_absent(capture_path)
     _require_absent(include_path)
-    sha256, size, captured = _capture(source_path, capture_path)
+    sha256, size, captured = _capture(source_path, capture_path, expected_payload)
     definitions = (
         f'!define {symbol}_SOURCE "{_nsis_escape(str(capture_path))}"\n'
         f'!define {symbol}_SHA256 "{sha256}"\n'
         f'!define {symbol}_SIZE {size}\n'
     )
-    _publish_include(include_path, definitions.encode("utf-8-sig"), capture_path, captured)
+    with _publication_guard(
+        capture_path, captured, sha256, size, "capture"
+    ) as (_, capture_check):
+        _publish_include(
+            include_path, definitions.encode("utf-8-sig"), capture_path, captured,
+            capture_check=capture_check,
+        )
     return {
         "capture": str(capture_path),
         "include": str(include_path),
@@ -477,89 +652,102 @@ def emit_predecessor_include(
         raise CaptureError("predecessor manifest exceeds its bounded size")
     manifest_capture = output.parent / "mw-predecessor-manifest.capture.json"
     _require_absent(manifest_capture)
-    actual, size, captured = _capture(manifest, manifest_capture)
-    if actual != expected_manifest:
-        raise CaptureError("predecessor manifest digest differs from the independent pin")
-    with manifest_capture.open("rb") as stream:
-        raw = stream.read(MAX_PREDECESSOR_MANIFEST_BYTES + 1)
-    if len(raw) != size or hashlib.sha256(raw).hexdigest() != expected_manifest:
-        raise CaptureError("predecessor manifest capture changed before parsing")
-    _require_unchanged(manifest_capture.lstat(), captured, "manifest capture")
-    try:
-        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
-    except (UnicodeError, ValueError) as error:
-        raise CaptureError("predecessor manifest is not strict UTF-8 JSON") from error
-    _exact_keys(document, {
-        "schema", "identity", "version", "source_sha", "source_tree",
-        "target", "package", "capture_receipt", "files",
-    }, "predecessor manifest")
-    if document["schema"] != "motionwright.nsis-predecessor/1":
-        raise CaptureError("unsupported predecessor manifest schema")
-    _exact_keys(document["identity"], set(expected_identity), "predecessor identity")
-    _exact_keys(document["target"], set(expected_target), "predecessor target")
-    if document["identity"] != expected_identity or document["target"] != expected_target:
-        raise CaptureError("predecessor profile is not bound to this target application and payload")
-    _literal(document["version"], "predecessor version")
-    for field in ("source_sha", "source_tree"):
-        if not isinstance(document[field], str) or _HEX_GIT.fullmatch(document[field]) is None:
-            raise CaptureError(f"{field} must identify the predecessor Git object")
-    records = document["files"]
-    if not isinstance(records, list) or not 2 <= len(records) <= MAX_PREDECESSOR_FILES:
-        raise CaptureError("predecessor ownership inventory must be complete and bounded")
-    entries = []
-    names = set()
-    kinds = []
-    for index, record in enumerate(records):
-        _exact_keys(record, {"relative", "source", "sha256", "bytes", "kind"}, "owned file")
-        relative = _relative(record["relative"], "owned relative")
-        if relative != record["relative"]:
-            raise CaptureError("owned paths must use canonical forward slashes")
-        key = ntpath.normcase(relative.replace("/", "\\")).casefold()
-        if key in names:
-            raise CaptureError("duplicate or case-aliased owned destination")
-        names.add(key)
-        kind = record["kind"]
-        if not isinstance(kind, str) or kind not in {"main", "resource", "external_binary", "uninstaller"}:
-            raise CaptureError("unknown owned file kind")
-        if kind == "uninstaller" and relative != "uninstall.exe":
-            raise CaptureError("the predecessor self must be exactly uninstall.exe")
-        if kind != "uninstaller" and key == "uninstall.exe":
-            raise CaptureError("uninstaller destination has another role")
-        if kind == "main" and ("/" in relative or not relative.casefold().endswith(".exe")):
-            raise CaptureError("the predecessor main must be a root executable")
-        if kind in {"main", "uninstaller"} and _bounded_bytes(record["bytes"], "executable bytes") == 0:
-            raise CaptureError("predecessor executables must be nonempty")
-        kinds.append(kind)
-        item = {"path": record["source"], "sha256": record["sha256"], "bytes": record["bytes"]}
-        entries.append(_admitted_input(manifest.parent, item, f"owned file {index}"))
-    if kinds.count("main") != 1 or kinds.count("uninstaller") != 1:
-        raise CaptureError("exactly one main and one independently captured uninstaller are required")
-    inputs = [
-        ("package", *_admitted_input(manifest.parent, document["package"], "package")),
-        ("receipt", *_admitted_input(manifest.parent, document["capture_receipt"], "capture receipt")),
-    ]
-    if any(size == 0 for _, _, _, size in inputs):
-        raise CaptureError("package and capture receipt must be nonempty")
-    inputs += [(f"file-{index:04d}", *item) for index, item in enumerate(entries)]
-    # Check all output names before the next capture. Every _capture still
-    # creates exclusively and binds reads through the existing source helper.
-    targets = [output.parent / f"mw-predecessor-{name}.capture.bin" for name, *_ in inputs]
-    for target in targets:
-        _require_absent(target)
-    captured_inputs = []
-    for (label, source, digest, expected_size), target in zip(inputs, targets):
-        found, count, observed = _capture(source, target)
-        if found != digest or count != expected_size:
-            raise CaptureError(f"{label} differs from the pinned predecessor bytes")
-        captured_inputs.append((target, observed))
-    for target, observed in captured_inputs:
-        _require_plain_parents(target)
-        _require_unchanged(target.lstat(), observed, "predecessor capture")
-    _publish_include(output, _predecessor_include(document, expected_manifest), manifest_capture, captured)
-    return {
-        "enabled": True, "files": len(records), "manifest_sha256": expected_manifest,
-        "package_sha256": document["package"]["sha256"],
-    }
+    # Every input stays admitted until the final include is published.
+    with ExitStack() as guards:
+        actual, size, captured = _capture(manifest, manifest_capture)
+        if actual != expected_manifest:
+            raise CaptureError("predecessor manifest digest differs from the independent pin")
+        manifest_reader, manifest_check = guards.enter_context(_publication_guard(
+            manifest_capture, captured, expected_manifest, size, "manifest capture"
+        ))
+        manifest_reader.seek(0)
+        raw = manifest_reader.read(MAX_PREDECESSOR_MANIFEST_BYTES + 1)
+        if len(raw) != size or hashlib.sha256(raw).hexdigest() != expected_manifest:
+            raise CaptureError("predecessor manifest capture changed before parsing")
+        _require_unchanged(manifest_capture.lstat(), captured, "manifest capture")
+        try:
+            document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        except (UnicodeError, ValueError) as error:
+            raise CaptureError("predecessor manifest is not strict UTF-8 JSON") from error
+        _exact_keys(document, {
+            "schema", "identity", "version", "source_sha", "source_tree",
+            "target", "package", "capture_receipt", "files",
+        }, "predecessor manifest")
+        if document["schema"] != "motionwright.nsis-predecessor/1":
+            raise CaptureError("unsupported predecessor manifest schema")
+        _exact_keys(document["identity"], set(expected_identity), "predecessor identity")
+        _exact_keys(document["target"], set(expected_target), "predecessor target")
+        if document["identity"] != expected_identity or document["target"] != expected_target:
+            raise CaptureError("predecessor profile is not bound to this target application and payload")
+        _literal(document["version"], "predecessor version")
+        for field in ("source_sha", "source_tree"):
+            if not isinstance(document[field], str) or _HEX_GIT.fullmatch(document[field]) is None:
+                raise CaptureError(f"{field} must identify the predecessor Git object")
+        records = document["files"]
+        if not isinstance(records, list) or not 2 <= len(records) <= MAX_PREDECESSOR_FILES:
+            raise CaptureError("predecessor ownership inventory must be complete and bounded")
+        entries = []
+        names = set()
+        kinds = []
+        for index, record in enumerate(records):
+            _exact_keys(record, {"relative", "source", "sha256", "bytes", "kind"}, "owned file")
+            relative = _relative(record["relative"], "owned relative")
+            if relative != record["relative"]:
+                raise CaptureError("owned paths must use canonical forward slashes")
+            key = ntpath.normcase(relative.replace("/", "\\")).casefold()
+            if key in names:
+                raise CaptureError("duplicate or case-aliased owned destination")
+            names.add(key)
+            kind = record["kind"]
+            if not isinstance(kind, str) or kind not in {"main", "resource", "external_binary", "uninstaller"}:
+                raise CaptureError("unknown owned file kind")
+            if kind == "uninstaller" and relative != "uninstall.exe":
+                raise CaptureError("the predecessor self must be exactly uninstall.exe")
+            if kind != "uninstaller" and key == "uninstall.exe":
+                raise CaptureError("uninstaller destination has another role")
+            if kind == "main" and ("/" in relative or not relative.casefold().endswith(".exe")):
+                raise CaptureError("the predecessor main must be a root executable")
+            if kind in {"main", "uninstaller"} and _bounded_bytes(record["bytes"], "executable bytes") == 0:
+                raise CaptureError("predecessor executables must be nonempty")
+            kinds.append(kind)
+            item = {"path": record["source"], "sha256": record["sha256"], "bytes": record["bytes"]}
+            entries.append(_admitted_input(manifest.parent, item, f"owned file {index}"))
+        if kinds.count("main") != 1 or kinds.count("uninstaller") != 1:
+            raise CaptureError("exactly one main and one independently captured uninstaller are required")
+        inputs = [
+            ("package", *_admitted_input(manifest.parent, document["package"], "package")),
+            ("receipt", *_admitted_input(manifest.parent, document["capture_receipt"], "capture receipt")),
+        ]
+        if any(size == 0 for _, _, _, size in inputs):
+            raise CaptureError("package and capture receipt must be nonempty")
+        inputs += [(f"file-{index:04d}", *item) for index, item in enumerate(entries)]
+        # Check all output names before the next capture. Every _capture still
+        # creates exclusively and binds reads through the existing source helper.
+        targets = [output.parent / f"mw-predecessor-{name}.capture.bin" for name, *_ in inputs]
+        for target in targets:
+            _require_absent(target)
+        captured_checks = [manifest_check]
+        for (label, source, digest, expected_size), target in zip(inputs, targets):
+            found, count, observed = _capture(source, target)
+            if found != digest or count != expected_size:
+                raise CaptureError(f"{label} differs from the pinned predecessor bytes")
+            _, check = guards.enter_context(_publication_guard(
+                target, observed, digest, expected_size, "predecessor capture"
+            ))
+            captured_checks.append(check)
+
+        def check_all_captures():
+            for check in captured_checks:
+                check()
+
+        _publish_include(
+            output, _predecessor_include(document, expected_manifest), manifest_capture, captured,
+            capture_check=check_all_captures,
+        )
+        return {
+            "enabled": True, "files": len(records), "manifest_sha256": expected_manifest,
+            "package_sha256": document["package"]["sha256"],
+        }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -568,7 +756,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--capture")
     parser.add_argument("--include", required=True)
     parser.add_argument("--symbol")
-    parser.add_argument("--emit-predecessor", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--emit-predecessor", action="store_true")
+    modes.add_argument("--prepare-distribution", action="store_true")
     parser.add_argument("--application")
     parser.add_argument("--bundle-id")
     parser.add_argument("--arch")
@@ -588,12 +778,40 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if not all(value is not None for value in (args.source, args.capture, args.symbol)):
                 raise CaptureError("source, capture and symbol are required for a single-file capture")
-            if any(value is not None for value in (
-                args.application, args.bundle_id, args.arch,
-                args.target_version, args.target_main_sha256,
-            )):
-                raise CaptureError("predecessor identity requires --emit-predecessor")
-            capture_owned_file(args.source, args.capture, args.include, args.symbol)
+            if args.prepare_distribution:
+                if args.symbol != "MW_MAIN" or args.arch is None:
+                    raise CaptureError("distribution_admission_main_and_arch_required")
+                if any(value is not None for value in (
+                    args.application, args.bundle_id, args.target_version,
+                    args.target_main_sha256,
+                )):
+                    raise CaptureError("predecessor identity requires --emit-predecessor")
+                from source_lock_admission import verify_distribution_admission
+
+                # The real template selects this mode literally. Read caller-pinned
+                # environment inputs directly; never interpolate them into NSIS.
+                helper = Path(__file__).absolute()
+                _require_plain_parents(helper)
+                _require_regular(helper.lstat(), "helper")
+                payload = verify_distribution_admission(
+                    helper.resolve(strict=True).parents[1],
+                    arch=args.arch,
+                    record_path=os.environ.get("MW_NSIS_DISTRIBUTION_ADMISSION"),
+                    record_sha256=os.environ.get("MW_NSIS_DISTRIBUTION_ADMISSION_SHA256"),
+                )
+                capture_owned_file(
+                    args.source, args.capture, args.include, args.symbol,
+                    expected_payload=payload,
+                )
+            else:
+                if args.symbol == "MW_MAIN":
+                    raise CaptureError("distribution_admission_mode_required")
+                if any(value is not None for value in (
+                    args.application, args.bundle_id, args.arch,
+                    args.target_version, args.target_main_sha256,
+                )):
+                    raise CaptureError("predecessor identity requires --emit-predecessor")
+                capture_owned_file(args.source, args.capture, args.include, args.symbol)
     except (OSError, ValueError) as error:
         print(f"nsis_owned_files: {error}", file=sys.stderr)
         return 2

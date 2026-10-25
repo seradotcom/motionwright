@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import struct
 import sys
@@ -12,11 +14,15 @@ import types
 import unittest
 from unittest import mock
 import wave
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import native_mlt_g2_observation as g2
 from native_av_failure_guard import NativeCommandFailure, classify_native_command_failure
 from native_mlt_sequence_e2e import inspect_decoded_ci_stereo
+from source_lock_admission import SourceAdmissionError
+from test_public_surface_policy import write_source_evidence_fixture
 
 
 def source_wave() -> tuple[bytes, bytes]:
@@ -376,6 +382,168 @@ class InputEnvelopeTests(unittest.TestCase):
                 {key: self.inputs[key] for key in g2.RUNTIME_INPUT_KEYS},
                 source_sha=self.source, semwright_sha=g2.SEMWRIGHT_PIN,
             )
+
+
+class SdkSourceIdentityTests(unittest.TestCase):
+    """Real source admission over synthetic bytes; no native result is certified."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="mlt-source-identity-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.module_path = self.root / "tooling" / "native_mlt_g2_observation.py"
+        self.module_path.parent.mkdir()
+        self.module_path.write_bytes(Path(g2.__file__).read_bytes())
+        self.revision = "b" * 40
+        self.env = {
+            "GITHUB_RUN_ID": "123456", "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+        }
+        self.write_lock(self.revision)
+
+    def write_lock(self, revision):
+        entry = write_source_evidence_fixture(self.root, revision)
+        self.lock = {"schema_version": 1, "dependencies": {"semwright": entry}}
+        self.lock_path = self.root / "SOURCE_LOCK.json"
+        self.lock_path.write_text(json.dumps(self.lock), encoding="utf-8")
+
+    def load_module(self):
+        spec = importlib.util.spec_from_file_location("mlt_source_identity_fixture", self.module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def runtime_inputs(self, module, revision):
+        inputs = {key: str(self.root / key) for key in module.RUNTIME_INPUT_KEYS}
+        for key in inputs:
+            if key.endswith("_sha256"):
+                inputs[key] = "d" * 64
+        inputs.update({
+            "motionwright_sha": "c" * 40, "semwright_sha": revision,
+            "run_id": self.env["GITHUB_RUN_ID"], "run_attempt": "1",
+            "compiled_module_sha256": module.REPAIRED_MODULE_SHA256,
+            "compiler_receipt_sha256": module.COMPILER_RECEIPT_SHA256,
+        })
+        return inputs
+
+    def test_admitted_revision_changes_current_identity_without_rewriting_reference(self):
+        historical = "54d3459a051adbce4cae9f60c0dea8f60c824be6"
+        for revision in (historical, self.revision):
+            with self.subTest(revision=revision):
+                self.write_lock(revision)
+                module = self.load_module()
+                self.assertEqual(module.SEMWRIGHT_PIN, revision)
+                self.assertEqual(module.REFERENCE_SEMWRIGHT_PIN, historical)
+
+    def test_missing_current_source_lock_has_no_historical_fallback(self):
+        self.lock_path.unlink()
+        with self.assertRaisesRegex(SourceAdmissionError, "evidence_unavailable"):
+            self.load_module()
+
+    def test_unverified_current_source_has_no_historical_fallback(self):
+        self.lock["dependencies"]["semwright"]["verification"]["status"] = "unverified"
+        self.lock_path.write_text(json.dumps(self.lock), encoding="utf-8")
+        with self.assertRaisesRegex(SourceAdmissionError, "unverified"):
+            self.load_module()
+
+    def test_claimed_revision_must_match_the_retained_evidence_revision(self):
+        source = self.lock["dependencies"]["semwright"]
+        source["revision"] = "d" * 40
+        source["verification"]["revision"] = source["revision"]
+        self.lock_path.write_text(json.dumps(self.lock), encoding="utf-8")
+        with self.assertRaisesRegex(SourceAdmissionError, "evidence_binding_mismatch"):
+            self.load_module()
+
+    def test_changed_retained_source_is_refused_before_current_identity_is_available(self):
+        retained = self.root / "third_party/semwright-source-evidence/Cargo.toml"
+        retained.write_bytes(retained.read_bytes() + b"\n")
+        with self.assertRaisesRegex(SourceAdmissionError, "evidence_size_mismatch"):
+            self.load_module()
+
+    def test_old_or_mismatched_current_sdk_is_refused_before_runtime_reads(self):
+        module = self.load_module()
+        historical = module.REFERENCE_SEMWRIGHT_PIN
+        for supplied, expected in ((historical, historical),
+                                   (self.revision, historical),
+                                   (historical, self.revision)):
+            with self.subTest(supplied=supplied, expected=expected), \
+                 mock.patch.dict(module.os.environ, self.env), \
+                 mock.patch.object(module.admission, "checked_bytes") as read:
+                with self.assertRaisesRegex(module.G2Unverified, "current_execution_binding"):
+                    module.verify_runtime_inputs(
+                        self.runtime_inputs(module, supplied),
+                        source_sha="c" * 40, semwright_sha=expected,
+                    )
+                read.assert_not_called()
+
+    def test_admitted_successor_identity_reaches_the_original_runtime_preflight(self):
+        module = self.load_module()
+        inputs = self.runtime_inputs(module, self.revision)
+        boundary = OSError("source-only runtime boundary; no native files read")
+        with mock.patch.dict(module.os.environ, self.env), \
+             mock.patch.object(module.admission, "checked_bytes", side_effect=boundary) as read:
+            with self.assertRaises(OSError) as raised:
+                module.verify_runtime_inputs(
+                    inputs, source_sha="c" * 40, semwright_sha=self.revision,
+                )
+        self.assertIs(raised.exception, boundary)
+        read.assert_called_once_with(Path(inputs["official_runtime_receipt_path"]), 512 * 1024)
+
+    def test_reference_manifest_keeps_historical_sdk_even_when_current_pin_changes(self):
+        module = self.load_module()
+        wav, _ = source_wave()
+        for revision in (module.REFERENCE_SEMWRIGHT_PIN, self.revision):
+            document = json.dumps({
+                "motionwright_source_sha": module.REFERENCE_CHECKOUT,
+                "semwright_source_pin": revision, "mode": "final-mp4",
+            }).encode()
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w") as archive:
+                archive.writestr("native-master-source.wav", wav)
+                archive.writestr("native-multisegment-master.mp4", b"synthetic source-only fixture")
+                archive.writestr("native-two-segment-video-only.mkv", b"synthetic source-only fixture")
+                archive.writestr("public-evidence.json", document)
+            packed = output.getvalue()
+            with self.subTest(revision=revision), \
+                 mock.patch.object(module, "REFERENCE_ZIP_SHA256", module.sha(packed)), \
+                 mock.patch.object(module, "REFERENCE_MANIFEST_SHA256", module.sha(document)):
+                if revision == module.REFERENCE_SEMWRIGHT_PIN:
+                    admitted, provenance = module.reference_source(packed)
+                    self.assertEqual(admitted, wav)
+                    self.assertFalse(provenance["historical_right_channel_failure_superseded"])
+                else:
+                    with self.assertRaisesRegex(module.G2Unverified, "original_public_manifest_identity"):
+                        module.reference_source(packed)
+
+    def test_publication_receipt_uses_the_admitted_current_pin(self):
+        module = self.load_module()
+        source = self.root / "partial.mp4"
+        raw = b"source-only publication fixture; not decoded media"
+        source.write_bytes(raw)
+        output = self.root / "output"
+        output.mkdir()
+        master = output / "master.mp4"
+        master.write_bytes(raw)
+        evidence = self.root / "private"
+        evidence.mkdir()
+        contract = {"output_path": str(output)}
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        held = module.NamespaceMaster((41, 10), descriptor, os.fstat(descriptor), {
+            "output_path": "/tmp/semwright-video-" + "a" * 32 + "/partial.mp4",
+            "owner_contract": contract, "live_module": {"test_double": True},
+        })
+        try:
+            held.retain(evidence)
+            with mock.patch.object(module, "process_identity", side_effect=FileNotFoundError()), \
+                 mock.patch.object(module, "host_tool_contract", return_value=contract):
+                proof = held.bind_master(master)
+            self.assertEqual(proof["publication_source_pin"], self.revision)
+            self.assertNotEqual(proof["publication_source_pin"], module.REFERENCE_SEMWRIGHT_PIN)
+            self.assertEqual(proof["published_output_sha256"], module.sha(raw))
+            self.assertFalse(proof["physical_AV_master_acceptance"])
+            self.assertFalse(proof["human_acceptance"])
+        finally:
+            held.close()
 
 
 if __name__ == "__main__":

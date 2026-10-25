@@ -1,0 +1,25 @@
+{
+  "schema": "motionwright.sqlite-os-path-reviewed-source/1",
+  "scope": "sqlite-os-path-g2",
+  "baseline_sha": null,
+  "baseline_tree": null,
+  "review": {
+    "status": "PROPOSAL_REQUIRES_A1",
+    "authority": "A1",
+    "reference": null
+  },
+  "product_pins": {
+    "Cargo.toml": null,
+    "Cargo.lock": null,
+    "SOURCE_LOCK.json": null,
+    "rust-toolchain.toml": null,
+    "crates/storage/Cargo.toml": null,
+    "crates/domain/Cargo.toml": null,
+    "crates/storage/src/lib.rs": null,
+    "crates/storage/tests/sqlite_windows_reparse_authority.rs": null,
+    "crates/storage/tests/sqlite_darwin_system_alias.rs": null,
+    "crates/storage/src/blob_hash_tests.rs": null,
+    "crates/storage/src/file_import.rs": null,
+    "crates/storage/src/apply_crash_tests.rs": null
+  }
+}

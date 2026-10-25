@@ -605,3 +605,151 @@ fn production_order_extension_trigger_failure_rolls_back_every_receipt_effect() 
         );
     }
 }
+
+#[test]
+fn cas_v4_upgrade_preserves_project_receipts_and_sequence_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cas-v4.sqlite3");
+    let mut store = Store::open(&path).unwrap();
+    let project = store
+        .create_named_project("Retained CAS migration project")
+        .unwrap();
+    store
+        .append_production_receipt(receipt_input(&project, "preserved"))
+        .unwrap();
+    drop(store);
+    let legacy = Connection::open(&path).unwrap();
+    legacy
+        .execute_batch(
+            "DROP TABLE cas_import_commits; DROP TABLE cas_store_identity; PRAGMA user_version=4;",
+        )
+        .unwrap();
+    let receipts_before = raw_receipts(&legacy);
+    let sequences_before = sqlite_sequences(&legacy);
+    let document_before: String = legacy
+        .query_row(
+            "SELECT document_json FROM projects WHERE id=?1",
+            [project.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(legacy);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(reopened.load_project(project.id).unwrap(), project);
+    drop(reopened);
+    let after = Connection::open(&path).unwrap();
+    assert_eq!(raw_receipts(&after), receipts_before);
+    assert_eq!(sqlite_sequences(&after), sequences_before);
+    let document_after: String = after
+        .query_row(
+            "SELECT document_json FROM projects WHERE id=?1",
+            [project.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(document_after, document_before);
+    assert_eq!(
+        after
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .unwrap(),
+        STORAGE_SCHEMA_VERSION
+    );
+    let identity: String = after
+        .query_row(
+            "SELECT store_id FROM cas_store_identity WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(uuid::Uuid::parse_str(&identity).is_ok());
+    assert_eq!(
+        after
+            .query_row("SELECT count(*) FROM cas_import_commits", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn import_marker_removed_by_late_trigger_rolls_back_project_and_events() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut source = Store::open(directory.path().join("source/state.sqlite3")).unwrap();
+    let project = source
+        .create_named_project("Marker trigger rollback")
+        .unwrap();
+    let bundle = directory.path().join("bundle");
+    source.export_project_bundle(project.id, &bundle).unwrap();
+    let original_manifest = std::fs::read(bundle.join("manifest.json")).unwrap();
+    let path = directory.path().join("target/state.sqlite3");
+    let mut target = Store::open(&path).unwrap();
+    let external = Connection::open(&path).unwrap();
+    // Installed after Store's schema admission, so readback is indispensable.
+    external.execute_batch("CREATE TRIGGER erase_import_marker AFTER INSERT ON cas_import_commits BEGIN DELETE FROM cas_import_commits WHERE operation_id=NEW.operation_id; END;").unwrap();
+    let schema_before = schema_objects(&external);
+    assert!(target.import_project_bundle(&bundle).is_err());
+    assert!(matches!(
+        target.load_project(project.id),
+        Err(motionwright_storage::StorageError::NotFound)
+    ));
+    for table in ["projects", "events", "receipts", "cas_import_commits"] {
+        let sql = format!("SELECT count(*) FROM {table}");
+        assert_eq!(
+            external
+                .query_row(&sql, [], |row| row.get::<_, u64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(schema_objects(&external), schema_before);
+    assert_eq!(
+        std::fs::read(bundle.join("manifest.json")).unwrap(),
+        original_manifest
+    );
+    drop(target);
+    assert!(
+        Store::open(&path).is_err(),
+        "reopen rejects the reserved control trigger without repairing it"
+    );
+    assert_eq!(schema_objects(&external), schema_before);
+}
+
+#[test]
+fn committed_import_marker_survives_project_deletion_with_foreign_keys_enabled() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut source = Store::open(directory.path().join("source/state.sqlite3")).unwrap();
+    let project = source
+        .create_named_project("Durable import outcome")
+        .unwrap();
+    let bundle = directory.path().join("bundle");
+    source.export_project_bundle(project.id, &bundle).unwrap();
+    let path = directory.path().join("target/state.sqlite3");
+    let mut target = Store::open(&path).unwrap();
+    let imported = target.import_project_bundle(&bundle).unwrap();
+    drop(target);
+    let database = Connection::open(&path).unwrap();
+    database.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let marker: (String, String, String) = database
+        .query_row(
+            "SELECT operation_id,project_id,generation FROM cas_import_commits",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(marker.1, imported.id.to_string());
+    assert_eq!(marker.2, imported.generation.to_string());
+    database
+        .execute(
+            "DELETE FROM projects WHERE id=?1",
+            [imported.id.to_string()],
+        )
+        .unwrap();
+    let retained: (String, String, String) = database
+        .query_row(
+            "SELECT operation_id,project_id,generation FROM cas_import_commits",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(retained, marker);
+}

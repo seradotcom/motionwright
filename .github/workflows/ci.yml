@@ -308,6 +308,22 @@ jobs:
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
       - run: npm ci --no-audit --no-fund
+      - name: G0 installed Vite editor security
+        id: editor_security
+        working-directory: .
+        env:
+          CI_PLAN_ID: ${{ needs.plan.outputs.plan_id }}
+        run: >-
+          python3 -I -B tooling/ci_job_plan.py studio-security
+          --repo "$GITHUB_WORKSPACE" --plan-id "$CI_PLAN_ID"
+          --output "$RUNNER_TEMP/g0-studio-security"
+      - name: Retain G0 editor security originals
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: g0-studio-security-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ runner.temp }}/g0-studio-security
+          if-no-files-found: error
       - name: Typecheck and production build
         run: npm run build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

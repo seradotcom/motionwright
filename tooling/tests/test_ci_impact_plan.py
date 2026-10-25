@@ -924,5 +924,140 @@ class AggregateTests(unittest.TestCase):
                         impact.read_json(path)
 
 
+class ClosedNonproductInputTests(unittest.TestCase):
+    """Actual Git source comparisons; no application or renderer execution."""
+
+    def setUp(self):
+        from unittest import mock
+
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-closed-inputs-")
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Repo(Path(self.temp.name))
+        self.repo.write("CONTRIBUTING.md", "Human contribution guidance.\n")
+        self.repo.write(impact.NONPRODUCT_HISTORY, "VALUE = 1\n")
+        for workflow in impact.NONPRODUCT_CONSUMERS:
+            self.repo.write(workflow, "name: Source fixture\non: [push]\njobs:\n"
+                            "  guard:\n    runs-on: ubuntu-latest\n    steps:\n"
+                            "      - run: python -m unittest discover -s tooling/tests -p 'test_*.py'\n")
+        self.repo.baseline = self.repo.commit("closed fixture source")
+        tree = impact.Tree(self.repo.root, self.repo.baseline)
+        subjects = impact.NONPRODUCT_DOCUMENTS | {impact.NONPRODUCT_HISTORY}
+        inventory = [[path, list(metadata)] for path, metadata in sorted(tree.entries.items())
+                     if path not in subjects | impact.NONPRODUCT_PLANNERS]
+        review = copy.deepcopy(impact.REVIEWED_NONPRODUCT_INPUTS)
+        review["consumer_inventory_sha256"] = impact.digest(inventory)
+        review["python_asts"][impact.NONPRODUCT_HISTORY] = impact.nonproduct_python_ast(b"VALUE = 1\n")
+        patch = mock.patch.object(impact, "REVIEWED_NONPRODUCT_INPUTS", review)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def assert_full(self, plan):
+        self.assertEqual(plan["nonproduct_input_review"]["status"], "NOT_APPLIED")
+        self.assertEqual({row["workflow"] for row in plan["selected_workflows"]},
+                         impact.Tree(self.repo.root, self.repo.call("rev-parse", "HEAD")).workflows())
+
+    def test_reviewed_root_prose_keeps_g0_and_binds_every_compared_tree(self):
+        self.repo.write("README.md", "Revised human documentation.\n")
+        self.repo.write("CONTRIBUTING.md", "Revised contribution guidance.\n")
+        head = self.repo.commit("only reviewed prose")
+        plan = self.repo.plan()
+        proof = plan["nonproduct_input_review"]
+        self.assertEqual(proof["status"], "APPLIED")
+        self.assertEqual(proof["reviewed_paths"], ["CONTRIBUTING.md", "README.md"])
+        self.assertEqual({view["source_sha"] for view in proof["source_views"]},
+                         {self.repo.baseline, head})
+        self.assertEqual({row["workflow"] for row in plan["selected_workflows"]},
+                         {impact.CI, impact.PLANNER})
+        self.assertEqual(plan["accounting"]["executions_avoided"], 0)
+        self.assertEqual(plan["accounting"]["minutes_saved"], 0)
+
+    def test_identical_history_ast_preserves_history_and_broad_security_discovery(self):
+        self.repo.write(impact.NONPRODUCT_HISTORY, "# Source-only explanation.\nVALUE = (1)\n")
+        self.repo.commit("comments and equivalent syntax")
+        plan = self.repo.plan()
+        self.assertEqual(plan["nonproduct_input_review"]["status"], "APPLIED")
+        self.assertEqual(plan["unknown_paths"], [])
+        self.assertEqual({row["workflow"] for row in plan["selected_workflows"]},
+                         {impact.CI, impact.PLANNER, *impact.NONPRODUCT_CONSUMERS})
+
+    def test_logic_import_encoding_and_docstring_changes_are_not_ast_equivalence(self):
+        variants = ["VALUE = 2\n", "import subprocess\nVALUE = 1\n",
+                    "# coding: latin-1\nVALUE = 1\n", '"new runtime docstring"\nVALUE = 1\n']
+        for source in variants:
+            with self.subTest(source=source):
+                self.repo.call("reset", "--hard", self.repo.baseline)
+                self.repo.write(impact.NONPRODUCT_HISTORY, source)
+                self.repo.commit("unreviewed helper semantics")
+                plan = self.repo.plan()
+                self.assert_full(plan)
+                self.assertIn(impact.NONPRODUCT_HISTORY, plan["unknown_paths"])
+
+    def test_preexisting_new_dynamic_reader_invalidates_a_later_comment_only_diff(self):
+        self.repo.write("crates/native/src/lib.rs", 'pub fn read_input() {\n'
+                        ' let _ = std::fs::read_to_string("tooling/conformance_history_guard.py");\n}\n')
+        self.repo.baseline = self.repo.commit("new consumer before comparison base")
+        self.repo.write(impact.NONPRODUCT_HISTORY, "# Only a comment in this diff.\nVALUE = 1\n")
+        self.repo.commit("later comment")
+        plan = self.repo.plan()
+        self.assertEqual(plan["changed_paths"], [impact.NONPRODUCT_HISTORY])
+        self.assert_full(plan)
+        self.assertIn("consumer inventory changed", plan["nonproduct_input_review"]["reason"])
+
+    def test_missing_g0_changed_broad_discovery_and_mixed_product_changes_remain_full(self):
+        for name, content in [(impact.PLANNER, "name: no G0\n"),
+                              (".github/workflows/security-delivery.yml", "name: narrower discovery\n"),
+                              ("crates/domain/src/lib.rs", "pub fn changed_contract() {}\n"),
+                              ("unknown/input.dat", "unreviewed runtime input\n")]:
+            with self.subTest(path=name):
+                self.repo.call("reset", "--hard", self.repo.baseline)
+                self.repo.write("README.md", "Prose change mixed with another input.\n")
+                self.repo.write(name, content)
+                self.repo.commit("mixed input change")
+                self.assert_full(self.repo.plan())
+
+    def test_candidate_and_dependency_boundaries_take_precedence_over_proof(self):
+        self.repo.write("README.md", "Prose candidate.\n")
+        self.repo.commit("prose")
+        self.assert_full(self.repo.plan(candidate=True))
+        self.repo.write("Cargo.lock", "# Synthetic dependency change\n")
+        self.repo.commit("dependency boundary")
+        self.assert_full(self.repo.plan())
+
+    def test_added_renamed_deleted_and_executable_subjects_do_not_gain_exclusions(self):
+        for action in ("delete", "rename", "mode"):
+            with self.subTest(action=action):
+                self.repo.call("reset", "--hard", self.repo.baseline)
+                if action == "delete":
+                    self.repo.call("rm", impact.NONPRODUCT_HISTORY)
+                elif action == "rename":
+                    self.repo.call("mv", impact.NONPRODUCT_HISTORY, "tooling/other_history.py")
+                else:
+                    (self.repo.root / impact.NONPRODUCT_HISTORY).chmod(0o755)
+                    self.repo.call("update-index", "--chmod=+x", impact.NONPRODUCT_HISTORY)
+                    self.repo.call("commit", "--no-gpg-sign", "-m", "mode change")
+                    self.assert_full(self.repo.plan())
+                    continue
+                self.repo.commit("non-modification boundary")
+                self.assert_full(self.repo.plan())
+
+    def test_stale_review_cannot_ignore_an_old_compared_consumer_tree(self):
+        original = self.repo.baseline
+        self.repo.write("crates/native/src/lib.rs", "pub fn new_input_reader() {}\n")
+        changed_consumer = self.repo.commit("different compared tree")
+        self.repo.call("reset", "--hard", original)
+        self.repo.write(impact.NONPRODUCT_HISTORY, "# Same AST.\nVALUE = 1\n")
+        head = self.repo.commit("reviewed helper comment")
+        trees = {sha: impact.Tree(self.repo.root, sha) for sha in (original, changed_consumer, head)}
+        with self.assertRaisesRegex(impact.PlanError, "consumer inventory changed"):
+            impact.reviewed_nonproduct_closure(trees=trees, paths={impact.NONPRODUCT_HISTORY},
+                changes=[{"status": "M", "paths": [impact.NONPRODUCT_HISTORY]}])
+
+    def test_unrelated_conformance_policy_changes_keep_transitive_consumer_scope_broad(self):
+        self.repo.write("tooling/conformance_policy.py", "# Consumed by acceptance and creative policies.\n")
+        self.repo.commit("unreviewed transitive policy input")
+        self.assert_full(self.repo.plan())
+
+
+
 if __name__ == "__main__":
     unittest.main()

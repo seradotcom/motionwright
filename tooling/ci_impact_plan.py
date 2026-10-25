@@ -78,6 +78,105 @@ NATIVE_HELPER_WORKFLOWS = {
     "tooling/package_receipt.py": {".github/workflows/package-candidate.yml"},
 }
 
+# This narrowly reviewed profile is invalidated by any other tracked input.
+# Root prose is not a runtime fixture. The history helper remains executable
+# only through its existing source gates; changes to its Python AST are NOT
+# eligible. G0, its history consumer and broad security test discovery remain.
+# Planner files are excluded only to avoid a self-referential inventory hash;
+# changing either planner is never an eligible change and always expands CI.
+NONPRODUCT_PLANNERS = {"tooling/ci_impact_plan.py", "tooling/ci_job_plan.py"}
+NONPRODUCT_DOCUMENTS = {"CONTRIBUTING.md", "README.md"}
+NONPRODUCT_HISTORY = "tooling/conformance_history_guard.py"
+NONPRODUCT_CONSUMERS = {
+    ".github/workflows/history-archive-conformance.yml",
+    ".github/workflows/security-delivery.yml",
+}
+REVIEWED_NONPRODUCT_INPUTS = {
+    "status": "REVIEWED_CLOSED_INPUTS",
+    "documents": ["CONTRIBUTING.md", "README.md"],
+    "python_asts": {"tooling/conformance_history_guard.py": "db86256231cacb883a0a1fb908b81992a298c1706162def90de71cd5c1f6df35"},
+    "consumer_inventory_sha256": "85a1948d4cd703582dcf939c14ac06566c2de7988f071499270121f923ad8b94",
+    "unresolved_consumers": [],
+}
+
+
+def nonproduct_python_ast(raw: bytes) -> str:
+    """Bound comments/format changes to the same reviewed UTF-8 Python AST."""
+    import ast
+    import io
+    import tokenize
+
+    require(tokenize.detect_encoding(io.BytesIO(raw).readline)[0] == "utf-8",
+            "nonproduct Python encoding is not reviewed UTF-8")
+    module = ast.parse(raw, type_comments=True, feature_version=(3, 11))
+
+    def normalized(value):
+        if isinstance(value, ast.AST):
+            # Empty type_params is added to existing nodes by Python 3.12+.
+            # Locations are not semantic fields; type-ignore location changes
+            # likewise cannot introduce a new import, call, value or statement.
+            return [type(value).__name__, {key: normalized(item)
+                    for key, item in ast.iter_fields(value)
+                    if key != "lineno" and not (key == "type_params" and item == [])}]
+        if isinstance(value, list):
+            return [normalized(item) for item in value]
+        if isinstance(value, bytes):
+            return ["bytes", value.hex()]
+        if value is Ellipsis:
+            return ["ellipsis"]
+        return value
+
+    return digest(normalized(module))
+
+
+def reviewed_nonproduct_closure(*, trees, paths, changes):
+    """Apply only an exact consumer inventory, never a filename-only exclusion."""
+    review = REVIEWED_NONPRODUCT_INPUTS
+    require(isinstance(review, dict) and set(review) == {
+        "status", "documents", "python_asts", "consumer_inventory_sha256",
+        "unresolved_consumers"}, "nonproduct input review is incomplete")
+    require(review["status"] == "REVIEWED_CLOSED_INPUTS"
+            and review["unresolved_consumers"] == [], "nonproduct consumers are unresolved")
+    require(review["documents"] == sorted(NONPRODUCT_DOCUMENTS)
+            and isinstance(review["python_asts"], dict)
+            and set(review["python_asts"]) == {NONPRODUCT_HISTORY},
+            "nonproduct input scope is not reviewed")
+    expected = review["consumer_inventory_sha256"]
+    require(isinstance(expected, str) and HEX64.fullmatch(expected),
+            "nonproduct consumer inventory digest is missing")
+    ast_hash = review["python_asts"][NONPRODUCT_HISTORY]
+    require(isinstance(ast_hash, str) and HEX64.fullmatch(ast_hash),
+            "reviewed Python AST digest is missing")
+    subjects = NONPRODUCT_DOCUMENTS | {NONPRODUCT_HISTORY}
+    require(bool(paths) and paths <= subjects and bool(changes)
+            and all(change["status"] == "M" and len(change["paths"]) == 1
+                    for change in changes), "nonproduct review needs existing modified inputs only")
+    require(bool(trees), "nonproduct review has no source trees")
+    sources = []
+    for source, tree in sorted(trees.items()):
+        inventory = [[path, list(metadata)] for path, metadata in sorted(tree.entries.items())
+                     if path not in subjects | NONPRODUCT_PLANNERS]
+        require(digest(inventory) == expected,
+                "nonproduct consumer inventory changed; full verification is required")
+        require({CI, PLANNER, *NONPRODUCT_CONSUMERS} <= tree.workflows(),
+                "nonproduct G0 or source consumers are missing")
+        for path in sorted(subjects):
+            require(tree.entries.get(path, (None,))[0] == "100644",
+                    "nonproduct input is absent, executable or linked")
+            raw = tree.read(path)
+            raw.decode("utf-8", "strict")
+            if path == NONPRODUCT_HISTORY:
+                require(nonproduct_python_ast(raw) == ast_hash,
+                        "history helper AST changed; source and product scope need review")
+        sources.append({"source_sha": source, "tree_sha": tree.tree_sha,
+                        "consumer_inventory_sha256": expected})
+    return {"status": "APPLIED", "review_sha256": digest(review),
+            "reviewed_paths": sorted(paths), "source_views": sources,
+            "product_jobs": ["rust-tests", "studio-tests", "browser-acceptance"],
+            "source_consumers": sorted(NONPRODUCT_CONSUMERS) if NONPRODUCT_HISTORY in paths else [],
+            "scope": "closed-prose-or-identical-reviewed-history-AST",
+            "evidence_claim": "input-independence-only-no-test-or-release-verdict"}
+
 
 class PlanError(ValueError):
     """An input cannot be safely interpreted or bound to its source."""
@@ -507,6 +606,12 @@ def build_plan(repo: Path, *, base: str, head: str, checkout: str,
             workflow_review = {"status": "NOT_APPLIED", "reason": str(error),
                                "review_sha256": digest(workflow_impact_review)}
             force_full.append("workflow-impact-review-not-applicable")
+    nonproduct_review = {"status": "NOT_APPLIED", "reason": "scope-not-reviewed"}
+    if not candidate and not force_full and not deleted_workflows:
+        try:
+            nonproduct_review = reviewed_nonproduct_closure(trees=trees, paths=paths, changes=changes)
+        except (PlanError, SyntaxError, UnicodeError, LookupError, ValueError, TypeError) as error:
+            nonproduct_review = {"status": "NOT_APPLIED", "reason": str(error)}
     selected: dict[str, dict[str, Any]] = {}
 
     def select(workflows: set[str], stage: str, reason: str) -> None:
@@ -516,12 +621,18 @@ def build_plan(repo: Path, *, base: str, head: str, checkout: str,
             item["reasons"].add(reason)
 
     select({CI, PLANNER}, "G0", "always-fast-contract-format-lint-and-security-checks")
+    if nonproduct_review["status"] == "APPLIED":
+        select(set(nonproduct_review["source_consumers"]), "G1",
+               "closed-history-source-and-broad-security-discovery-consumers")
     if workflow_review["status"] == "APPLIED":
         select(paths, "G1", "changed-workflow-execution-definition")
         select(set(workflow_review["selected_workflows"]) - paths, "G2",
                "reviewed-workflow-consumer-closure-over-compared-source-trees")
     unknown = []
     for path in sorted(paths):
+        if (nonproduct_review["status"] == "APPLIED"
+                and path in nonproduct_review["reviewed_paths"]):
+            continue
         if path in NEUTRAL_PATHS:
             continue
         if workflow_review["status"] == "APPLIED":
@@ -590,6 +701,7 @@ def build_plan(repo: Path, *, base: str, head: str, checkout: str,
                 "package_roots": sorted(KNOWN_PACKAGE_ROOTS),
                 "neutral_paths": sorted(NEUTRAL_PATHS),
                 "helpers": {p: sorted(v) for p, v in NATIVE_HELPER_WORKFLOWS.items()},
+                "nonproduct_review": REVIEWED_NONPRODUCT_INPUTS,
             }),
         },
         "changes": sorted({json.dumps(x, sort_keys=True) for x in changes}),
@@ -597,6 +709,7 @@ def build_plan(repo: Path, *, base: str, head: str, checkout: str,
         "dependency_graphs": graphs, "affected_package_roots": affected,
         "workflow_inventory_sha256": workflow_hashes,
         "workflow_impact_review": workflow_review,
+        "nonproduct_input_review": nonproduct_review,
         "selected_workflows": [
             {"workflow": p, "stages": sorted(selected[p]["stages"]), "reasons": sorted(selected[p]["reasons"])}
             for p in sorted(selected)

@@ -4,6 +4,7 @@ import CreativeAlternativesPanel from "./CreativeAlternativesPanel";
 import { reviewHasWork, reviewTimes, useReviewDraft } from "./reviewDraft";
 import type { Change, CreativeReview, Project, RationalTime, ReviewKind, ReviewStatus, Scene } from "./types";
 import { seconds } from "./types";
+import { graphReviewAnchor } from "./semanticGraph";
 
 const reviewLabel: Record<ReviewStatus, string> = {
   open: "OPEN", resolved: "RESOLVED", dismissed: "DISMISSED", needs_recheck: "NEEDS RECHECK",
@@ -15,15 +16,19 @@ export default function ReviewWorkspace({
   commit,
   playhead,
   onSeek,
+  externalResource = null,
 }: {
   project: Project;
+  externalResource?: string | null;
   scene: Scene | null;
   commit: (change: Change) => Promise<Project>;
   playhead: number;
   onSeek: (absoluteSeconds: number) => void;
 }) {
-  const [anchorScope, setAnchorScope] = useState<"selection" | "project">("selection");
-  const resource = anchorScope === "project" || !scene ? "project:" + project.id : "scene:" + scene.id;
+  const [anchorScope, setAnchorScope] = useState<"selection" | "project" | "graph">(externalResource ? "graph" : "selection");
+  const resource = anchorScope === "graph" && externalResource ? externalResource : anchorScope === "project" || !scene ? "project:" + project.id : "scene:" + scene.id;
+  const graphAnchor = anchorScope === "graph" && externalResource ? graphReviewAnchor(project, externalResource) : null;
+  const graphUnavailable = anchorScope === "graph" && !graphAnchor;
   const editor = useReviewDraft(project, { kind: "comment", id: resource }, commit);
   const { kind, timeMode, rangeStart, rangeEnd, body } = editor.draft.raw;
   const setKind = (value: ReviewKind) => editor.edit("kind", value);
@@ -44,8 +49,8 @@ export default function ReviewWorkspace({
     ...project.audio.cues.map((cue) => seconds(cue.at)),
     ...project.markers.map((marker) => seconds(marker.at)),
   );
-  const boundsStart = scene && anchorScope === "selection" ? seconds(scene.start) : 0;
-  const boundsEnd = scene && anchorScope === "selection"
+  const boundsStart = graphAnchor?.start ? seconds(graphAnchor.start) : scene && anchorScope === "selection" ? seconds(scene.start) : 0;
+  const boundsEnd = graphAnchor?.end ? seconds(graphAnchor.end) : scene && anchorScope === "selection"
     ? seconds(scene.start) + seconds(scene.duration) : projectDuration;
   let times: { start: RationalTime | null; end: RationalTime | null } | null = null;
   try { times = reviewTimes(project, resource, editor.draft.raw, playhead); } catch { /* Keep incomplete author input unchanged. */ }
@@ -84,10 +89,12 @@ export default function ReviewWorkspace({
                   onChange={(event) => setAnchorScope(event.target.value as typeof anchorScope)}>
                   <option value="selection">{scene ? "Selected scene" : "Current project"}</option>
                   <option value="project">Whole project</option>
+                  {externalResource && <option value="graph">Saved Graph identity and profile</option>}
                 </select>
                 <span className="review-resource-name mono">{resource}</span>
               </label>
             </div>
+            {graphUnavailable && <p role="alert">This saved Graph identity or profile is unavailable. Your review input is retained.</p>}
             <div className="review-time-form">
               <label>
                 <span className="field-label">Time anchor</span>
@@ -96,7 +103,7 @@ export default function ReviewWorkspace({
                   value={timeMode}
                   onChange={(event) => setTimeMode(event.target.value as typeof timeMode)}
                 >
-                  <option value="resource">Resource only</option>
+                  <option value="resource">{graphAnchor ? "Whole saved Graph interval" : "Resource only"}</option>
                   <option value="playhead">Current playhead (project time)</option>
                   <option value="range">Explicit project time range</option>
                 </select>
@@ -155,12 +162,12 @@ export default function ReviewWorkspace({
               <button
                 className="button button-primary"
                 type="button"
-                disabled={editor.blocked || !body.trim() || (timeMode === "range" && !rangeValid) || (timeMode === "playhead" && !pointValid)}
+                disabled={editor.blocked || graphUnavailable || !times || !body.trim() || (timeMode === "range" && !rangeValid) || (timeMode === "playhead" && !pointValid)}
                 onClick={() => {
                   if (!times) return;
                   void editor.submit({
                     type: "add_review", kind, resource, body: body.trim(),
-                    start: times.start, end: times.end, locale: null, profile_id: null,
+                    start: times.start, end: times.end, locale: graphAnchor?.locale ?? null, profile_id: graphAnchor?.profile_id ?? null,
                   });
                 }}
               >

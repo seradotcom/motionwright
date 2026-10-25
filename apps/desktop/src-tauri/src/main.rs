@@ -1,6 +1,8 @@
 mod av_delivery;
 mod av_master;
+mod blender_product;
 mod caption_export;
+mod effect_authority;
 mod effect_grants;
 mod file_import;
 mod generation_journal;
@@ -11,11 +13,14 @@ mod original_mix_native;
 mod project_export;
 mod project_library;
 mod project_projection;
+mod runtime_doctor;
 mod runtime_setup;
 mod workflow_native;
 
 use av_delivery::{
-    MasterExportReceipt, MasterExportRequest, MasterReviewRequest, NativeMasterDeliveryRegistry,
+    AudioQcUnavailableReason, MasterExportReceipt, MasterExportRequest, MasterReviewRequest,
+    NativeAvAudioQcResponse, NativeMasterDeliveryRegistry, audio_targets_requested,
+    require_audio_qc_host,
 };
 use media_integrity::{
     PortableMediaVerification, VerifyPortableMediaRequest, verify_portable_media,
@@ -28,15 +33,14 @@ use av_master::{
 };
 use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
+use effect_authority::IssueEffectGrantRequest;
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
 use local_error::sanitized;
-use motionwright_domain::{AlignmentEvidence, Change, CueEvidence, Project, RevisionStamp};
+use motionwright_domain::{Change, Project, RevisionStamp};
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
     build_application,
-    creative_doctor::{
-        CliEvidence, CreativeRuntimeDoctorReport, inspect_creative_runtime, require_doctor_scope,
-    },
+    creative_doctor::{CliEvidence, require_doctor_scope},
     film::{FilmBuildOptions, build_motion_canvas_segments},
     owner_reconciliation::{
         OwnerMotionStatusObservation, authorize_original_motion_status,
@@ -69,7 +73,7 @@ use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 use workflow_native::{WorkflowActionFailure, WorkflowActionRequest, WorkflowActionResponse};
 
-const SEMWRIGHT_REVISION: &str = "54d3459a051adbce4cae9f60c0dea8f60c824be6";
+const SEMWRIGHT_REVISION: &str = "4849b3c1dcee9b37438801b4264f59480bff9e40";
 const SEMWRIGHT_VERSION: &str = "1.0.0";
 
 #[derive(Clone)]
@@ -108,15 +112,6 @@ struct ApplyRequest {
     request_id: String,
     effect_grant: Uuid,
     change: Change,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueEffectGrantRequest {
-    effect: EffectKind,
-    project_id: Option<Uuid>,
-    generation: Option<Uuid>,
-    revision: Option<u64>,
-    subject: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +196,7 @@ struct NativeAvMasterResponse {
     evidence: MltAvMasterEvidence,
     /// Owner-minted session-only export handle; never a filesystem path.
     export_token: Option<Uuid>,
+    audio_qc: NativeAvAudioQcResponse,
 }
 
 /// All private MLT receipts, temporary filesystem paths and opaque native
@@ -227,6 +223,7 @@ struct NativeMultisegmentAvResponse {
     /// was approved. Expose the exact deferred status, not hidden success.
     provider_project_cleanup: &'static str,
     evidence_scope: &'static str,
+    audio_qc: NativeAvAudioQcResponse,
 }
 
 #[derive(Debug, Deserialize)]
@@ -476,6 +473,20 @@ async fn project_scene_page(
 }
 
 #[tauri::command]
+async fn semantic_graph_authoring_context(
+    state: State<'_, AppState>,
+    request: motionwright_service::SemanticGraphContextRequest,
+) -> Result<motionwright_domain::GraphAuthoringContext, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        project_projection::semantic_graph_context(&service, request)
+    })
+    .await
+    .map_err(|_| "Graph source inspection is unavailable".to_owned())?
+    .map_err(sanitized)
+}
+
+#[tauri::command]
 async fn project_scene_nodes(
     state: State<'_, AppState>,
     request: project_projection::Nodes,
@@ -531,15 +542,7 @@ fn checked_effect_scope(
     generation: Uuid,
     revision: u64,
 ) -> Result<EffectScope, String> {
-    let project = project_library::open_project(
-        &state.service,
-        project_library::OpenProjectRequest { project_id },
-    )
-    .map_err(sanitized)?;
-    if project.generation != generation || project.revision != revision {
-        return Err("Effect grant scope is stale; refresh the project before retrying.".into());
-    }
-    Ok(EffectScope::project(project_id, generation, revision))
+    effect_authority::checked_effect_scope(&state.service, project_id, generation, revision)
 }
 
 #[tauri::command]
@@ -547,21 +550,7 @@ fn issue_effect_grant(
     state: State<'_, AppState>,
     request: IssueEffectGrantRequest,
 ) -> Result<EffectGrantReceipt, String> {
-    if request.effect == EffectKind::ProjectCreate {
-        return Err(
-            "Use the dedicated project creation command with its exact retained intent.".into(),
-        );
-    }
-    let scope = match (request.project_id, request.generation, request.revision) {
-        (Some(project_id), Some(generation), Some(revision)) => {
-            checked_effect_scope(&state, project_id, generation, revision)?
-        }
-        (None, None, None) => EffectScope::unscoped_import(),
-        _ => return Err("Effect grant project scope must be complete or absent.".into()),
-    };
-    state
-        .effect_grants
-        .issue(request.effect, scope, request.subject.trim())
+    effect_authority::issue_effect_grant(&state.service, &state.effect_grants, request)
 }
 
 /// Explicit, read-only asset SHA-256 audit. No path/digest sources or broad
@@ -845,10 +834,12 @@ async fn production_runtime_status(
 async fn creative_runtime_doctor(
     state: State<'_, AppState>,
     request: RuntimeConnectionSelectionRequest,
-) -> Result<CreativeRuntimeDoctorReport, String> {
+) -> Result<runtime_doctor::RuntimeDoctorReport, String> {
     let service = state.service.clone();
+    let runtime_connections = state.runtime_connections.clone();
     let initial = service.project(request.project_id).map_err(sanitized)?;
     require_doctor_scope(&initial, request.generation, request.revision).map_err(str::to_owned)?;
+    let expected = initial.stamp();
     let status = production_runtime_status(
         state,
         ProductionRuntimeStatusRequest {
@@ -860,14 +851,21 @@ async fn creative_runtime_doctor(
     .await?;
     let current = service.project(request.project_id).map_err(sanitized)?;
     require_doctor_scope(&current, request.generation, request.revision).map_err(str::to_owned)?;
-    build_application(service)
+    build_application(service.clone())
         .map_err(|_| "Native SDK creative contract validation failed".to_string())?;
-    Ok(inspect_creative_runtime(
-        &current,
-        SEMWRIGHT_REVISION,
-        CliEvidence::from_runtime_status(status.status),
-        true,
-    ))
+    runtime_doctor::inspect(
+        &service,
+        &runtime_connections,
+        runtime_doctor::DoctorRequest {
+            project_id: request.project_id,
+            expected: &expected,
+            source_pin: SEMWRIGHT_REVISION,
+            cli: CliEvidence::from_runtime_status(status.status),
+            connection_identity: status.connection_identity.as_deref(),
+            executable_sha256: status.executable_sha256.as_deref(),
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1248,6 +1246,42 @@ async fn production_jobs_history(
 }
 
 #[tauri::command]
+async fn native_blender_product_source(
+    state: State<'_, AppState>,
+    request: blender_product::BlenderProductReadRequest,
+) -> Result<
+    motionwright_native::production::BlenderProductSourceSnapshot,
+    blender_product::BlenderProductReadFailure,
+> {
+    let service = state.service.clone();
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        blender_product::read_source(&service, &request)
+    })
+    .await
+    .map_err(|_| blender_product::read_task_failure())??;
+    blender_product::ensure_read_current(&state.service, &snapshot.project)?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn native_blender_product_attempt(
+    state: State<'_, AppState>,
+    request: blender_product::BlenderProductAttemptReadRequest,
+) -> Result<
+    motionwright_native::production::BlenderProductAttemptProjection,
+    blender_product::BlenderProductReadFailure,
+> {
+    let service = state.service.clone();
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        blender_product::read_attempt(&service, &request)
+    })
+    .await
+    .map_err(|_| blender_product::read_task_failure())??;
+    blender_product::ensure_read_current(&state.service, &snapshot.project)?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
 async fn motion_canvas_preflight(
     state: State<'_, AppState>,
     request: FilmPreflightRequest,
@@ -1467,6 +1501,8 @@ async fn assemble_av_master(
             "Bind the selected measured voice take to this exact saved delivery profile.".into(),
         );
     }
+    let targeted_audio = audio_targets_requested(&project, request.deliverable_id);
+    require_audio_qc_host(targeted_audio).map_err(str::to_owned)?;
     let motion =
         state
             .preview
@@ -1510,6 +1546,15 @@ async fn assemble_av_master(
     if connection.resource != project.resource_key() {
         return Err("Canonical Semwright output root belongs to another project.".into());
     }
+    let audio_connection_identity = if targeted_audio {
+        Some(
+            connection
+                .identity()
+                .map_err(|_| "Native audio QC connection identity is unavailable.".to_string())?,
+        )
+    } else {
+        None
+    };
     // Source-bound native request identity is calculated *before* the WAV
     // handoff. Otherwise a fresh staging name could accidentally alter the
     // canonical Broker payload for a retry of the same logical master.
@@ -1553,24 +1598,57 @@ async fn assemble_av_master(
         &state.production_receipt_custody,
     )
     .map_err(|_| "Canonical Semwright connection was rejected".to_string())?;
-    let evidence = coordinator
-        .assemble_mlt_av_master(
-            request.project_id,
-            &expected,
-            MltAvMasterRequest {
-                request_id: &canonical_request_id,
-                deliverable_id: request.deliverable_id,
-                motion: &motion,
-                audio: &audio,
-                sync: None,
-            },
+    let master_request = MltAvMasterRequest {
+        request_id: &canonical_request_id,
+        deliverable_id: request.deliverable_id,
+        motion: &motion,
+        audio: &audio,
+        sync: None,
+    };
+    let (evidence, audio_qc) = if targeted_audio {
+        // The measured wrapper itself calls the checked original producer.
+        // Never run the unmeasured producer first or as an error fallback.
+        let measured = coordinator
+            .assemble_mlt_av_master_with_audio_analysis(
+                request.project_id,
+                &expected,
+                master_request,
+            )
+            .await
+            .map_err(|_| "Measured AV mastering did not return a complete current result. Original receipts and any produced master are retained; this attempt must not be repeated automatically.".to_string())?;
+        let audio_qc = NativeAvAudioQcResponse::from_measurements(
+            &measured.audio_measurements,
+            &coordinator,
+            measured
+                .master
+                .master
+                .pointer("/artifact/sha256")
+                .and_then(Value::as_str),
+        );
+        // A later read failure does not discard a completed master or invent
+        // a QC result. The session selector permits only a fresh proof read.
+        (measured.master, audio_qc)
+    } else {
+        let evidence = coordinator
+            .assemble_mlt_av_master(request.project_id, &expected, master_request)
+            .await
+            .map_err(|error| format!("Canonical AV mastering failed: {}", error.message))?;
+        (evidence, NativeAvAudioQcResponse::NotRequested)
+    };
+    let token = if let Some(identity) = audio_connection_identity.as_deref() {
+        state.av_delivery.register_measured(
+            &export_root,
+            &evidence,
+            &canonical_request_id,
+            identity,
         )
-        .await
-        .map_err(|error| format!("Canonical AV mastering failed: {}", error.message))?;
-    let token = state.av_delivery.register(&export_root, &evidence);
+    } else {
+        state.av_delivery.register(&export_root, &evidence)
+    };
     Ok(NativeAvMasterResponse {
         evidence,
         export_token: token,
+        audio_qc,
     })
 }
 
@@ -1603,6 +1681,8 @@ async fn assemble_multisegment_av_master(
     if profile.voice_track_id != Some(request.voice_track_id) {
         return Err("Bind the selected measured voice to this exact saved profile.".into());
     }
+    let targeted_audio = audio_targets_requested(&project, request.deliverable_id);
+    require_audio_qc_host(targeted_audio).map_err(str::to_owned)?;
     let (render, film_options, preview_root) = state.preview.multi_segment_source(
         &project,
         request.preview_token,
@@ -1634,6 +1714,15 @@ async fn assemble_multisegment_av_master(
     if connection.resource != project.resource_key() || connection.output_root != preview_root {
         return Err("Native multisegment source belongs to a different owner output root.".into());
     }
+    let audio_connection_identity = if targeted_audio {
+        Some(
+            connection
+                .identity()
+                .map_err(|_| "Native audio QC connection identity is unavailable.".to_string())?,
+        )
+    } else {
+        None
+    };
     // Only application-held Film authoring options and verified manifests are
     // used; do not derive any new render input from a WebView JSON object.
     let preflight_root = preview_root.clone();
@@ -1743,33 +1832,59 @@ async fn assemble_multisegment_av_master(
                 error.message
             )
         })?;
-    let master = coordinator
-        .assemble_native_mlt_multisegment_av_master(
-            project.id,
-            &expected,
-            MltMultisegmentAvMasterRequest {
-                request_id: &native_request_id,
-                deliverable_id: request.deliverable_id,
-                options: &film_options,
-                rendered: &render,
-                visual: &visual,
-                audio: &staged,
-            },
-        )
-        .await
-        .map_err(|error| {
-            format!(
-                "Canonical multisegment AV mastering failed: {}",
-                error.message
+    let master_request = MltMultisegmentAvMasterRequest {
+        request_id: &native_request_id,
+        deliverable_id: request.deliverable_id,
+        options: &film_options,
+        rendered: &render,
+        visual: &visual,
+        audio: &staged,
+    };
+    let (master, audio_qc) = if targeted_audio {
+        let measured = coordinator
+            .assemble_native_mlt_multisegment_av_master_with_audio_analysis(
+                project.id,
+                &expected,
+                master_request,
             )
-        })?;
-    let export_token = state
-        .av_delivery
-        .register_multisegment(&output_root, &master)
-        .ok_or_else(|| {
-            "Original native master was retained but no safe revision-scoped review or delivery token could be issued."
-                .to_string()
-        })?;
+            .await
+            .map_err(|_| "Measured multisegment mastering did not return a complete current result. Original receipts and any produced master are retained; this attempt must not be repeated automatically.".to_string())?;
+        let audio_qc = NativeAvAudioQcResponse::from_measurements(
+            &measured.audio_measurements,
+            &coordinator,
+            measured
+                .master
+                .master
+                .pointer("/artifact/sha256")
+                .and_then(Value::as_str),
+        );
+        (measured.master, audio_qc)
+    } else {
+        let master = coordinator
+            .assemble_native_mlt_multisegment_av_master(project.id, &expected, master_request)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Canonical multisegment AV mastering failed: {}",
+                    error.message
+                )
+            })?;
+        (master, NativeAvAudioQcResponse::NotRequested)
+    };
+    let export_token = if let Some(identity) = audio_connection_identity.as_deref() {
+        state.av_delivery.register_measured_multisegment(
+            &output_root,
+            &master,
+            &native_request_id,
+            identity,
+        )
+    } else {
+        state.av_delivery.register_multisegment(&output_root, &master)
+    }
+    .ok_or_else(|| {
+        "Original native master was retained but no safe revision-scoped review or delivery token could be issued."
+            .to_string()
+    })?;
     let master_sha256 = master
         .master
         .pointer("/artifact/sha256")
@@ -1796,6 +1911,7 @@ async fn assemble_multisegment_av_master(
         } else {
             "native-multisegment-av-verified-technical-output-not-human-approved"
         },
+        audio_qc,
     })
 }
 
@@ -1893,6 +2009,190 @@ async fn review_native_av_master(
     Ok(tauri::ipc::Response::new(data))
 }
 
+/// Read current QC for an existing session-authorized master. This command
+/// never consumes a render grant, starts native work, writes receipts, or
+/// accepts private request/lane/connection selectors from the WebView.
+#[tauri::command]
+async fn read_native_av_audio_qc(
+    state: State<'_, AppState>,
+    request: MasterReviewRequest,
+) -> Result<NativeAvAudioQcResponse, String> {
+    let project = match state.service.project(request.project_id) {
+        Ok(project)
+            if project.generation == request.generation && project.revision == request.revision =>
+        {
+            project
+        }
+        _ => {
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::SourceChanged,
+            ));
+        }
+    };
+    let source = match state.av_delivery.resolve(&project, request.export_token) {
+        Ok(source) => source,
+        Err(_) => {
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::SessionUnavailable,
+            ));
+        }
+    };
+    // The registry binds the profile privately. Connection selection remains
+    // owner-held; a missing connection cannot trigger render or measurement.
+    let connection_path = match selected_connection_path(&state, project.id) {
+        Ok(path) => path,
+        Err(_) => {
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::ConnectionUnavailable,
+            ));
+        }
+    };
+    let initial_connection_path = connection_path.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        source.read_audio_qc(&project, service, connection_path.as_deref(), &custody)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::MeasurementUnavailable)
+    });
+    match state.service.project(request.project_id) {
+        Ok(latest)
+            if latest.generation == request.generation && latest.revision == request.revision => {}
+        _ => {
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::SourceChanged,
+            ));
+        }
+    }
+    Ok(match selected_connection_path(&state, request.project_id) {
+        Ok(path) if path == initial_connection_path => result,
+        _ => NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::ConnectionUnavailable),
+    })
+}
+
+/// Current receipt references only; never a media or execution capability.
+#[tauri::command]
+async fn native_av_audio_qc_receipt_inventory(
+    state: State<'_, AppState>,
+    request: av_delivery::AudioQcInventoryRequest,
+) -> Result<av_delivery::NativeAvAudioQcInventoryResponse, String> {
+    use av_delivery::NativeAvAudioQcInventoryResponse as Response;
+    let project = match state.service.project(request.project_id) {
+        Ok(project)
+            if project.generation == request.generation && project.revision == request.revision =>
+        {
+            project
+        }
+        _ => {
+            return Ok(Response::Unavailable {
+                reason: AudioQcUnavailableReason::SourceChanged,
+            });
+        }
+    };
+    let path = match selected_connection_path(&state, project.id) {
+        Ok(path) => path,
+        Err(_) => {
+            return Ok(Response::Unavailable {
+                reason: AudioQcUnavailableReason::ConnectionUnavailable,
+            });
+        }
+    };
+    let initial_path = path.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        av_delivery::read_audio_qc_inventory(
+            &project,
+            request.deliverable_id,
+            service,
+            path.as_deref(),
+            &custody,
+        )
+    })
+    .await
+    .unwrap_or(Response::Unavailable {
+        reason: AudioQcUnavailableReason::MeasurementUnavailable,
+    });
+    Ok(
+        match audio_read_still_current(
+            &state,
+            request.project_id,
+            request.generation,
+            request.revision,
+            initial_path,
+        ) {
+            Ok(()) => result,
+            Err(reason) => Response::Unavailable { reason },
+        },
+    )
+}
+
+/// The durable UUID and recorded digest are untrusted selectors. Native
+/// recovery alone reconstructs the original proof; this path creates no token.
+#[tauri::command]
+async fn recover_native_av_audio_qc(
+    state: State<'_, AppState>,
+    request: av_delivery::AudioQcRecoveryRequest,
+) -> Result<NativeAvAudioQcResponse, String> {
+    let project = match state.service.project(request.project_id) {
+        Ok(project)
+            if project.generation == request.generation && project.revision == request.revision =>
+        {
+            project
+        }
+        _ => {
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::SourceChanged,
+            ));
+        }
+    };
+    let path = match selected_connection_path(&state, project.id) {
+        Ok(path) => path,
+        Err(_) => {
+            return Ok(NativeAvAudioQcResponse::unavailable(
+                AudioQcUnavailableReason::ConnectionUnavailable,
+            ));
+        }
+    };
+    let initial_path = path.clone();
+    let (project_id, generation, revision) =
+        (request.project_id, request.generation, request.revision);
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        av_delivery::recover_audio_qc(&project, &request, service, path.as_deref(), &custody)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::MeasurementUnavailable)
+    });
+    Ok(
+        match audio_read_still_current(&state, project_id, generation, revision, initial_path) {
+            Ok(()) => result,
+            Err(reason) => NativeAvAudioQcResponse::unavailable(reason),
+        },
+    )
+}
+
+fn audio_read_still_current(
+    state: &AppState,
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    initial_path: Option<PathBuf>,
+) -> Result<(), AudioQcUnavailableReason> {
+    match state.service.project(project_id) {
+        Ok(project) if project.generation == generation && project.revision == revision => {}
+        _ => return Err(AudioQcUnavailableReason::SourceChanged),
+    }
+    match selected_connection_path(state, project_id) {
+        Ok(path) if path == initial_path => Ok(()),
+        _ => Err(AudioQcUnavailableReason::ConnectionUnavailable),
+    }
+}
+
 #[tauri::command]
 async fn preview_native_frame(
     state: State<'_, AppState>,
@@ -1987,6 +2287,55 @@ async fn recover_file_import(
     .await
     .map_err(|_| {
         "Import recovery read failed. The retained request is still available.".to_string()
+    })?
+}
+
+#[tauri::command]
+async fn prepare_native_capsule_source_file(
+    state: State<'_, AppState>,
+    request: file_import::NativeCapsuleSourcePrepareRequest,
+) -> Result<file_import::PreparedFileImport, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::prepare_native_capsule_source_file(&service, request)
+            .map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| "Native source preparation task failed.".to_string())?
+}
+
+#[tauri::command]
+async fn import_native_capsule_source_file(
+    state: State<'_, AppState>,
+    request: file_import::FileImportDispatchRequest,
+) -> Result<file_import::FileImportReceipt, String> {
+    let service = state.service.clone();
+    // Shares the existing one-time import grant registry and atomic service.
+    let grants = state.effect_grants.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::import_native_capsule_source_file(&service, &grants, request)
+            .map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| {
+        "Native source save task failed. Check the original import result before saving again."
+            .to_string()
+    })?
+}
+
+#[tauri::command]
+async fn recover_native_capsule_source_file(
+    state: State<'_, AppState>,
+    request: file_import::FileImportRecoveryRequest,
+) -> Result<Option<file_import::FileImportReceipt>, String> {
+    let service = state.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_import::recover_native_capsule_source_file(&service, request)
+            .map_err(file_import_error)
+    })
+    .await
+    .map_err(|_| {
+        "Native source recovery read failed. The retained request is still available.".to_string()
     })?
 }
 
@@ -2091,17 +2440,8 @@ async fn apply_change(
         scope,
         request.request_id.trim(),
     )?;
-    let trusted_audio_evidence = match &request.change {
-        Change::ImportMeasuredVoice { .. } | Change::AddVoiceTrack { .. } => true,
-        Change::AddTranscriptSegment { segment } | Change::UpsertTranscriptSegment { segment } => {
-            matches!(segment.alignment, AlignmentEvidence::Measured { .. })
-        }
-        Change::AddAudioCue { cue } | Change::UpsertAudioCue { cue } => matches!(
-            cue.evidence,
-            CueEvidence::Measured | CueEvidence::TranscriptAligned
-        ),
-        _ => false,
-    };
+    let trusted_audio_evidence =
+        motionwright_native::requires_qualified_audio_boundary(&request.change);
     if trusted_audio_evidence {
         return Err(
             "Measured audio evidence can only enter through the qualified audio import/alignment boundary."
@@ -2175,6 +2515,7 @@ fn main() {
             project_projection_head,
             project_scene_page,
             project_scene_nodes,
+            semantic_graph_authoring_context,
             issue_project_creation_grant,
             create_project,
             recover_project_creation,
@@ -2193,6 +2534,8 @@ fn main() {
             mlt_cleanup_inventory,
             read_original_native_job_status,
             production_jobs_history,
+            native_blender_product_source,
+            native_blender_product_attempt,
             motion_canvas_preflight,
             render_motion_canvas,
             preflight_multi_segment_mlt_readiness,
@@ -2201,11 +2544,17 @@ fn main() {
             export_native_av_master,
             verify_local_media_integrity,
             review_native_av_master,
+            read_native_av_audio_qc,
+            native_av_audio_qc_receipt_inventory,
+            recover_native_av_audio_qc,
             preview_native_frame,
             prepare_file_import,
             recover_file_import,
             import_asset_file,
             import_voice_file,
+            prepare_native_capsule_source_file,
+            import_native_capsule_source_file,
+            recover_native_capsule_source_file,
             waveform_page,
             export_project_bundle,
             export_caption_sidecar,

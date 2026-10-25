@@ -123,27 +123,48 @@ fn logical_rows(path: &Path) -> BTreeMap<String, Vec<Vec<Value>>> {
     snapshot
 }
 
-fn cas_files(root: &Path) -> BTreeMap<PathBuf, String> {
-    fn visit(root: &Path, directory: &Path, result: &mut BTreeMap<PathBuf, String>) {
-        for entry in fs::read_dir(directory).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            let kind = entry.file_type().unwrap();
-            assert!(!kind.is_symlink());
-            if kind.is_dir() {
-                visit(root, &path, result);
-            } else {
-                assert!(kind.is_file());
-                result.insert(
-                    path.strip_prefix(root).unwrap().to_path_buf(),
-                    hex::encode(Sha256::digest(fs::read(path).unwrap())),
-                );
+type TreeSnapshot = BTreeMap<PathBuf, Option<Vec<u8>>>;
+
+fn tree_snapshot(root: &Path) -> TreeSnapshot {
+    fn visit(root: &Path, path: &Path, result: &mut TreeSnapshot) {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        let relative = path.strip_prefix(root).unwrap().to_path_buf();
+        let contents = if metadata.is_dir() {
+            None
+        } else {
+            assert!(metadata.is_file());
+            Some(fs::read(path).unwrap())
+        };
+        assert!(result.insert(relative, contents).is_none());
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).unwrap() {
+                visit(root, &entry.unwrap().path(), result);
             }
         }
     }
     let mut result = BTreeMap::new();
     visit(root, root, &mut result);
     result
+}
+
+fn cas_control_root(blob_root: &Path) -> PathBuf {
+    let anchor: serde_json::Value = serde_json::from_slice(
+        &fs::read(blob_root.join(".motionwright-cas-root-v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(anchor["format_version"].as_u64(), Some(1));
+    let canonical_root = fs::canonicalize(blob_root).unwrap();
+    let recorded_root: PathBuf = serde_json::from_value(anchor["canonical_root"].clone()).unwrap();
+    assert_eq!(recorded_root, canonical_root);
+    let root_id: Uuid = serde_json::from_value(anchor["root_id"].clone()).unwrap();
+    let expected = canonical_root
+        .parent()
+        .unwrap()
+        .join(format!(".motionwright-cas-{root_id}"));
+    let recorded_control: PathBuf = serde_json::from_value(anchor["control"].clone()).unwrap();
+    assert_eq!(recorded_control, expected);
+    expected
 }
 
 // Write directly to stderr so progress survives libtest capture and timeout.
@@ -176,6 +197,9 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
     diagnostic_phase(diagnostic_started, "initial_persistence_complete");
     let service = StudioService::open(&database).unwrap();
     diagnostic_phase(diagnostic_started, "service_open_complete");
+    let blob_root = service.store().lock().blob_root().to_path_buf();
+    let cas_initial = tree_snapshot(&blob_root);
+    let control_root = cas_control_root(&blob_root);
     let other_first = service.create_project("Other project one").unwrap();
     let other_second = service.create_project("Other project two").unwrap();
     let mut expected = initial;
@@ -228,17 +252,46 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
     }
     assert_eq!(expected.assets.len(), 3);
     assert_eq!(expected.audio.voice_tracks.len(), 1);
-    let blob_root = service.store().lock().blob_root().to_path_buf();
-    assert_eq!(cas_files(&blob_root).len(), 3);
+    let mut expected_media = BTreeMap::new();
+    let mut expected_cas = cas_initial.clone();
+    // Capturing imports creates this directory; completed captures leave no files.
+    assert!(matches!(
+        expected_cas.insert(PathBuf::from(".staging"), None),
+        None | Some(None)
+    ));
+    for (_, bytes, digest, blob) in &imports {
+        let relative = PathBuf::from("sha256").join(&digest[..2]).join(digest);
+        assert_eq!(blob, &blob_root.join(&relative));
+        assert!(
+            expected_media
+                .insert(relative.clone(), bytes.clone())
+                .is_none()
+        );
+        for parent in relative.ancestors().skip(1) {
+            assert!(matches!(
+                expected_cas.insert(parent.to_path_buf(), None),
+                None | Some(None)
+            ));
+        }
+        assert!(expected_cas.insert(relative, Some(bytes.clone())).is_none());
+    }
+    assert_eq!(expected_media.len(), 3);
+    assert_eq!(tree_snapshot(&blob_root), expected_cas);
     drop(service);
     diagnostic_phase(diagnostic_started, "imports_complete");
+    // Imports legitimately add durable pins; the read-only phase starts here.
+    let control_before = tree_snapshot(&control_root);
 
     // Remove only this test's first two admitted media objects and their inputs.
     // The third object is a positive custody control, not required for page reads.
-    for (source, _, _, blob) in imports.iter().take(2) {
+    for (source, bytes, digest, blob) in imports.iter().take(2) {
+        let relative = PathBuf::from("sha256").join(&digest[..2]).join(digest);
+        assert_eq!(expected_media.remove(&relative), Some(bytes.clone()));
+        assert_eq!(expected_cas.remove(&relative), Some(Some(bytes.clone())));
         fs::remove_file(source).unwrap();
         fs::remove_file(blob).unwrap();
     }
+    assert_eq!(expected_media.len(), 1);
     let assert_missing = || {
         for (source, _, _, blob) in imports.iter().take(2) {
             assert!(!source.exists() && !blob.exists());
@@ -246,8 +299,9 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
     };
     assert_missing();
     diagnostic_phase(diagnostic_started, "missing_media_preconditions_complete");
-    let cas_before = cas_files(&blob_root);
-    assert_eq!(cas_before.len(), 1);
+    let cas_before = tree_snapshot(&blob_root);
+    assert_eq!(cas_before, expected_cas);
+    assert_eq!(tree_snapshot(&control_root), control_before);
     let sql_before = logical_rows(&database);
     for table in ["projects", "events", "receipts"] {
         assert!(
@@ -387,7 +441,9 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
     diagnostic_phase(diagnostic_started, "all_projection_pages_complete");
     drop(service);
     assert_eq!(logical_rows(&database), sql_before);
-    assert_eq!(cas_files(&blob_root), cas_before);
+    assert_eq!(tree_snapshot(&blob_root), cas_before);
+    assert_eq!(cas_control_root(&blob_root), control_root);
+    assert_eq!(tree_snapshot(&control_root), control_before);
     assert_missing();
     diagnostic_phase(diagnostic_started, "custody_after_complete");
 
@@ -403,7 +459,9 @@ fn all_large_project_pages_reopen_without_selected_imported_blobs() {
     drop(reopened);
     diagnostic_phase(diagnostic_started, "reopen_complete");
     assert_eq!(logical_rows(&database), sql_before);
-    assert_eq!(cas_files(&blob_root), cas_before);
+    assert_eq!(tree_snapshot(&blob_root), cas_before);
+    assert_eq!(cas_control_root(&blob_root), control_root);
+    assert_eq!(tree_snapshot(&control_root), control_before);
     let (retained_source, retained_bytes, retained_digest, retained_blob) = &imports[2];
     assert_eq!(fs::read(retained_source).unwrap(), *retained_bytes);
     assert_eq!(fs::read(retained_blob).unwrap(), *retained_bytes);

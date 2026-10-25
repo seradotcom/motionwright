@@ -1,0 +1,313 @@
+.semantic-sfx-editor {
+  container-type: inline-size;
+  min-width: 0;
+  color: inherit;
+}
+.semantic-sfx-editor .sfx-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.semantic-sfx-editor h3,
+.semantic-sfx-editor h4 {
+  margin: 0 0 8px;
+  line-height: 1.4;
+}
+.semantic-sfx-editor h4 {
+  font-size: 1rem;
+}
+.sfx-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  align-items: start;
+  gap: 20px;
+}
+.sfx-sidebar,
+.sfx-workspace,
+.sfx-draft {
+  min-width: 0;
+}
+.sfx-sidebar {
+  border-right: 1px solid var(--border, #333a44);
+  padding-right: 16px;
+}
+.sfx-help {
+  color: var(--muted, #b2bbc5);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+p.sfx-help {
+  margin: 6px 0 10px;
+}
+.sfx-list-heading,
+.sfx-copy-title {
+  margin: 0 0 10px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.sfx-target-list,
+.sfx-copy-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sfx-target {
+  min-width: 0;
+}
+.semantic-sfx-editor .sfx-target-button {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid var(--border, #333a44);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+.semantic-sfx-editor .sfx-target-button[aria-pressed="true"] {
+  border-color: var(--accent, #b0d6c0);
+  box-shadow: inset 3px 0 0 var(--accent, #b0d6c0);
+}
+.sfx-target-label {
+  font-weight: 600;
+}
+.sfx-selected-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.sfx-target-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.sfx-id,
+.sfx-mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.sfx-identity,
+.sfx-copy-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: 8px 16px;
+  margin: 0 0 16px;
+}
+.sfx-identity > div,
+.sfx-copy-meta > div {
+  min-width: 0;
+}
+.sfx-identity dt,
+.sfx-copy-meta dt {
+  margin-bottom: 4px;
+  color: var(--muted, #b2bbc5);
+  font-size: 0.75rem;
+}
+.sfx-identity dd,
+.sfx-copy-meta dd {
+  margin: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.sfx-fieldset {
+  min-width: 0;
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid var(--border, #333a44);
+  border-radius: 6px;
+}
+.sfx-fieldset legend {
+  padding: 0 6px;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.sfx-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px;
+}
+.sfx-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+.sfx-field-wide {
+  grid-column: 1 / -1;
+}
+.semantic-sfx-editor .field-label {
+  line-height: 1.4;
+}
+.semantic-sfx-editor input,
+.semantic-sfx-editor select,
+.semantic-sfx-editor textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #333a44);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+}
+.semantic-sfx-editor input,
+.semantic-sfx-editor select {
+  min-height: 40px;
+}
+.semantic-sfx-editor input.sfx-mono,
+.semantic-sfx-editor .sfx-raw {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.75rem;
+}
+.semantic-sfx-editor textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+.semantic-sfx-editor .sfx-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.semantic-sfx-editor .button {
+  min-height: 36px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.semantic-sfx-editor :is(button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent, #b0d6c0);
+  outline-offset: 3px;
+}
+.semantic-sfx-editor :is(button, input, select, textarea):disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.sfx-error,
+.sfx-status {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border-left: 3px solid currentColor;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.sfx-status {
+  border-left-color: var(--accent, #b0d6c0);
+}
+.sfx-review,
+.sfx-recovery {
+  min-width: 0;
+  margin: 16px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--border, #333a44);
+}
+.sfx-details {
+  min-width: 0;
+  margin: 12px 0;
+}
+.sfx-details > summary {
+  cursor: pointer;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.sfx-details[open] > summary {
+  margin-bottom: 10px;
+}
+.sfx-comparison-scroll {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+.sfx-comparison {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.sfx-comparison caption {
+  padding: 0 0 8px;
+  text-align: left;
+  color: var(--muted, #b2bbc5);
+}
+.sfx-comparison th,
+.sfx-comparison td {
+  padding: 8px;
+  border: 1px solid var(--border, #333a44);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.sfx-comparison th:first-child {
+  width: 18%;
+}
+.sfx-copy {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border, #333a44);
+  border-radius: 6px;
+}
+.sfx-copy-meta {
+  margin-bottom: 8px;
+}
+.sfx-readback {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.sfx-raw {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--border, #333a44);
+  border-radius: 5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+@container (max-width: 860px) {
+  .sfx-editor-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sfx-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--border, #333a44);
+    padding: 0 0 12px;
+  }
+  .sfx-target-list {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  }
+}
+@media (max-width: 800px) {
+  .sfx-editor-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sfx-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--border, #333a44);
+    padding: 0 0 12px;
+  }
+}

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AudioWaveform, ShieldCheck } from "lucide-react";
 import { nativeOriginalMixAudition } from "./api";
+import { originalMixEnvelopeKeys, requireOriginalMixSfx, selectedOriginalMixCues } from "./audioRecipeContract";
 import { RecipeDraftReview, containRecipeKeyboard } from "./DeliveryProfiles";
 import { savedDeliveryRecipe, useDeliveryRecipeDraft, validateDeliveryRecipe } from "./deliveryRecipe";
 import { ORIGINAL_MIX_SAMPLE_PEAK_GUARD_DBFS, type OriginalMixPreviewOptions } from "./nativeMixTypes";
@@ -121,20 +122,26 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     }
   }
   if (savedMix) {
-    if (!savedMix.music_asset_id || !savedMix.sfx_asset_id) blockers.push("The saved recipe needs both an original music source and an original SFX source.");
-    else {
-      if (!sourceAudio.some(asset => asset.id === savedMix.music_asset_id)
-          || !sourceAudio.some(asset => asset.id === savedMix.sfx_asset_id)) blockers.push("The saved music and SFX sources must be current imported WAV assets with content hashes.");
-      if (savedMix.music_asset_id === savedMix.sfx_asset_id || savedMix.music_asset_id === selectedVoice?.asset_id
-          || savedMix.sfx_asset_id === selectedVoice?.asset_id) blockers.push("Voice, music and SFX must use three distinct original source assets.");
+    if (!savedMix.music_asset_id) blockers.push("The saved recipe needs an original music source.");
+    if (!sourceAudio.some(asset => asset.id === savedMix.music_asset_id)
+        || (savedMix.sfx_asset_id !== null && !sourceAudio.some(asset => asset.id === savedMix.sfx_asset_id))) {
+      blockers.push("Saved music and any imported SFX base must be current imported WAV assets with content hashes.");
+    }
+    if (savedMix.music_asset_id === selectedVoice?.asset_id
+        || (savedMix.sfx_asset_id !== null && (savedMix.music_asset_id === savedMix.sfx_asset_id
+          || savedMix.sfx_asset_id === selectedVoice?.asset_id))) {
+      blockers.push("Voice, music and an imported SFX base require distinct original source assets.");
+    }
+    if (selectedProfile) {
+      try { requireOriginalMixSfx(project, selectedProfile.id, savedMix); }
+      catch (failure) { blockers.push(explain(failure)); }
     }
   }
-  if ((project.audio.sfx_cues?.length ?? 0) > 0) blockers.push("This audition cannot apply the project's semantic SFX cue schedule. The schedule is retained; the three-bus whole-source mixer is blocked so it cannot silently omit those cues.");
   const eligible = blockers.length === 0 && selfAttested && !working;
   const inputsDisabled = !selectedProfile || mixDraft.locked || mixDraft.sourceBehind;
 
   const preview = async () => {
-    if (!eligible || inFlight.current || !selectedProfile || !savedMix?.music_asset_id || !savedMix.sfx_asset_id) return;
+    if (!eligible || inFlight.current || !selectedProfile || !savedMix?.music_asset_id) return;
     const options: OriginalMixPreviewOptions = {
       deliverable_profile_id: selectedProfile.id,
       music_asset_id: savedMix.music_asset_id,
@@ -166,7 +173,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
 
   return <details className="audio-editor-section" aria-label="Original three-bus native PCM audition" onKeyDown={containRecipeKeyboard}>
     <summary><AudioWaveform size={15} /> Voice / music / SFX · original source mix</summary>
-    <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the real imported voice, music and SFX; every stem must be stereo at 48 kHz with the same measured duration.</p>
+    <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the imported voice and music, an optional imported SFX base, and the authored SFX cues in this delivery cut. Whole-source stems use stereo at 48 kHz with the same measured duration; the native service validates cue timing and source bytes.</p>
     <label className="production-field"><span>Delivery language / profile</span>
       <select value={selectedProfile?.id ?? ""} disabled={project.deliverables.length === 0}
         onChange={event => { setProfileId(event.target.value); invalidateAudition(); }}>
@@ -181,7 +188,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     </label>
     {([
       ["music_asset_id", "Original music asset", "Select imported WAV music"],
-      ["sfx_asset_id", "Original SFX asset", "Select imported WAV effects"],
+      ["sfx_asset_id", "Original SFX asset", "No imported base; use authored cues in this cut"],
     ] as const).map(([key, label, placeholder]) => <label key={key} className="production-field"><span>{label}</span>
       <select id={fields[key].controlId} aria-label={label} value={mixDraft.values[key] ?? ""} disabled={inputsDisabled}
         onChange={event => setField(key, event.target.value)}>
@@ -190,6 +197,10 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         {selectableSources.map(asset => <option key={asset.id} value={asset.id}>{asset.name} · sha256:{asset.content_sha256?.slice(0, 10)}</option>)}
       </select>
     </label>)}
+    {selectedProfile && <p className="production-help">Authored SFX cues in this cut: {(() => {
+      try { return selectedOriginalMixCues(project, selectedProfile.id).length; }
+      catch { return "unavailable"; }
+    })()}. Cues in other cuts are retained.</p>}
     <div className="delivery-field-grid">
       {numericFields.map(field => <label className="production-field" key={field.key}>
         <span>{field.label}</span>
@@ -199,6 +210,19 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         <small id={fields[field.key].controlId + "-help"} className="production-help">{field.help} Input is retained up to 128 characters.</small>
       </label>)}
     </div>
+    {savedMix && originalMixEnvelopeKeys.some(key => savedMix[key]) && <section aria-label="Saved bus envelopes">
+      <h4>Saved bus envelopes</h4>
+      <p className="production-help">Scalar recipe edits preserve these saved mute and fade decisions. Audition consumes them from this exact saved revision.</p>
+      <ul className="production-help">{originalMixEnvelopeKeys.map(key => {
+        const envelope = savedMix[key];
+        return envelope ? <li key={key}>{key.replace("_envelope", "")}: {envelope.muted ? "muted" : "audible"}; fade in {envelope.fade_in_samples} samples; fade out {envelope.fade_out_samples} samples.</li> : null;
+      })}</ul>
+    </section>}
+    {recipe?.audio_targets && <p className="production-help" aria-label="Saved delivery audio targets">
+      Saved QC intent: {recipe.audio_targets.target_lufs === null ? "LUFS target unset" : recipe.audio_targets.target_lufs + " LUFS"};
+      {" "}{recipe.audio_targets.target_true_peak_dbtp === null ? "true-peak target unset" : recipe.audio_targets.target_true_peak_dbtp + " dBTP"}.
+      These targets are retained when editing this recipe; audition does not certify them.
+    </p>}
     <RecipeDraftReview controller={mixDraft} title="Original mix" revision={project.revision} fields={fields}
       saveLabel="Save original mix recipe" clearLabel="Clear saved original mix recipe" hasSavedGroup={savedMix !== null}
       blockedReason={!selectedProfile ? "Create a delivery profile before saving these inputs."

@@ -1,10 +1,22 @@
 import type { Project } from "./types";
 
+/** The closed authored source contract; no digest, fidelity, or grant fields. */
+export interface NativeCapsuleSourceSpec7 {
+  name: string;
+  media_type: string;
+  capsule_id: string;
+  scene_id: string;
+  label: string;
+  editable_parameters: string[];
+  native_editor_hint: string;
+}
+
 export type FileImportIntent =
   | { kind: "asset"; name: string; media_type: string }
-  | { kind: "voice"; name: string; media_type: string; label: string };
+  | { kind: "voice"; name: string; media_type: string; label: string }
+  | { kind: "native_capsule_source"; spec: NativeCapsuleSourceSpec7 };
 
-export interface FileImportInput {
+interface LegacyFileImportInput {
   kind: "asset" | "voice";
   path: string;
   name?: string | null;
@@ -12,9 +24,13 @@ export interface FileImportInput {
   label?: string | null;
 }
 
-type SavedInput = Required<FileImportInput>;
+export type FileImportInput = LegacyFileImportInput
+  | { kind: "native_capsule_source"; path: string; spec: NativeCapsuleSourceSpec7 };
+
+type SavedInput = Required<LegacyFileImportInput>
+  | Extract<FileImportInput, { kind: "native_capsule_source" }>;
 interface FileImportStamp { project_id: string; generation: string; revision: number; }
-export interface FileImportPrepareRequest extends FileImportStamp, SavedInput {}
+export type FileImportPrepareRequest = FileImportStamp & SavedInput;
 export interface PreparedFileImport extends FileImportStamp {
   schema: "motionwright.file-import-preparation/1";
   path: string;
@@ -68,6 +84,10 @@ export interface FileImportTransport {
 export const FILE_IMPORT_PREFIX = "motionwright.file-import.intent.v1:";
 export const FILE_IMPORT_CHANGED = "motionwright:file-import-copy-changed";
 const MAX_COPY_BYTES = 65_536;
+// A native copy retains the complete spec twice (authored input and prepared
+// intent). Two 64-KiB paths plus both maximum specs fit even with JSON escaping.
+// Legacy asset/voice copies keep their existing 64-KiB boundary.
+const MAX_NATIVE_COPY_BYTES = 2_097_152;
 const MAX_IMPORT_COPIES = 128;
 const MAX_STORAGE_KEYS = 4_096;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -94,6 +114,49 @@ function boundedText(value: unknown, max: number, allowEmpty = false): string {
   return value;
 }
 
+function nativeText(value: unknown, max: number, label: string, design = false): string {
+  // Rust strings contain Unicode scalar values, and Rust trim/is_whitespace
+  // use White_Space rather than JavaScript's different trim/\s character set.
+  if (typeof value !== "string" || value.length > max || /[\uD800-\uDFFF]/u.test(value)
+      || textBytes(value) > max || !/[^\p{White_Space}]/u.test(value)
+      || (design && /\p{Cc}/u.test(value.replace(/\n/g, "")))) {
+    throw new Error(`The native source ${label} is empty, invalid, or exceeds ${max} UTF-8 bytes.`);
+  }
+  return value;
+}
+
+/** Validate the seven authored fields without trimming, inferring, or sorting. */
+export function parseNativeCapsuleSourceSpec(value: unknown): NativeCapsuleSourceSpec7 {
+  if (!record(value) || !keys(value, ["name", "media_type", "capsule_id", "scene_id", "label", "editable_parameters", "native_editor_hint"])
+      || !Array.isArray(value.editable_parameters) || value.editable_parameters.length > 64) {
+    throw new Error("The native source needs exactly its seven authored fields and at most 64 editable parameters.");
+  }
+  const name = nativeText(value.name, 512, "name");
+  const media_type = nativeText(value.media_type, 255, "media type");
+  if (/\p{White_Space}/u.test(media_type)) throw new Error("The native source media type cannot contain whitespace.");
+  return {
+    name, media_type, capsule_id: uuid(value.capsule_id), scene_id: uuid(value.scene_id),
+    label: nativeText(value.label, 256, "label", true),
+    editable_parameters: Array.from(value.editable_parameters, parameter => nativeText(parameter, 2_000, "editable parameter", true)),
+    native_editor_hint: nativeText(value.native_editor_hint, 256, "editor hint", true),
+  };
+}
+
+export function sameNativeCapsuleSourceSpec(a: NativeCapsuleSourceSpec7, b: NativeCapsuleSourceSpec7): boolean {
+  return a.name === b.name && a.media_type === b.media_type && a.capsule_id === b.capsule_id
+    && a.scene_id === b.scene_id && a.label === b.label && a.native_editor_hint === b.native_editor_hint
+    && a.editable_parameters.length === b.editable_parameters.length
+    && a.editable_parameters.every((parameter, index) => parameter === b.editable_parameters[index]);
+}
+
+export function fileImportIntentName(value: FileImportIntent): string {
+  return value.kind === "native_capsule_source" ? value.spec.name : value.name;
+}
+
+export function fileImportIntentMediaType(value: FileImportIntent): string {
+  return value.kind === "native_capsule_source" ? value.spec.media_type : value.media_type;
+}
+
 function stamp(value: Record<string, unknown>): FileImportStamp {
   if (!Number.isSafeInteger(value.revision) || (value.revision as number) < 0
       || (value.revision as number) >= Number.MAX_SAFE_INTEGER) {
@@ -103,6 +166,14 @@ function stamp(value: Record<string, unknown>): FileImportStamp {
 }
 
 function savedInput(input: FileImportInput): SavedInput {
+  if (input.kind === "native_capsule_source") {
+    if (!keys(input as unknown as Record<string, unknown>, ["kind", "path", "spec"])) {
+      throw new Error("The native source input contains unsupported fields.");
+    }
+    const path = boundedText(input.path, MAX_COPY_BYTES);
+    if (!path.trim()) throw new Error("Choose the original native source file.");
+    return { kind: input.kind, path, spec: parseNativeCapsuleSourceSpec(input.spec) };
+  }
   if (input.kind !== "asset" && input.kind !== "voice") throw new Error("The import kind is unsupported.");
   const optional = (value: unknown) => value == null ? null : boundedText(value, MAX_COPY_BYTES, true);
   const result = { kind: input.kind, path: boundedText(input.path, MAX_COPY_BYTES),
@@ -114,6 +185,10 @@ function savedInput(input: FileImportInput): SavedInput {
 }
 
 function intent(value: unknown): FileImportIntent {
+  if (record(value) && value.kind === "native_capsule_source") {
+    if (!keys(value, ["kind", "spec"])) throw new Error("The prepared native source metadata is invalid.");
+    return { kind: value.kind, spec: parseNativeCapsuleSourceSpec(value.spec) };
+  }
   if (!record(value) || (value.kind !== "asset" && value.kind !== "voice")
       || !keys(value, value.kind === "voice" ? ["kind", "name", "media_type", "label"] : ["kind", "name", "media_type"])) {
     throw new Error("The prepared file metadata is invalid.");
@@ -131,6 +206,10 @@ function intent(value: unknown): FileImportIntent {
 }
 
 function sameIntent(a: FileImportIntent, b: FileImportIntent): boolean {
+  if (a.kind === "native_capsule_source" || b.kind === "native_capsule_source") {
+    return a.kind === "native_capsule_source" && b.kind === "native_capsule_source"
+      && sameNativeCapsuleSourceSpec(a.spec, b.spec);
+  }
   return a.kind === b.kind && a.name === b.name && a.media_type === b.media_type
     && (a.kind !== "voice" || (b.kind === "voice" && a.label === b.label));
 }
@@ -146,6 +225,14 @@ function prepared(value: unknown): PreparedFileImport {
 }
 
 function matchesInput(preparation: PreparedFileImport, input: SavedInput): void {
+  if (input.kind === "native_capsule_source" || preparation.intent.kind === "native_capsule_source") {
+    if (preparation.path !== input.path.trim() || input.kind !== "native_capsule_source"
+        || preparation.intent.kind !== "native_capsule_source"
+        || !sameNativeCapsuleSourceSpec(preparation.intent.spec, input.spec)) {
+      throw new Error("The prepared native source differs from the authored input. Keep the original input.");
+    }
+    return;
+  }
   if (preparation.path !== input.path.trim() || preparation.intent.kind !== input.kind
       || (input.name?.trim() && input.name.trim() !== preparation.intent.name)
       || (input.media_type?.trim() && input.media_type.trim() !== preparation.intent.media_type)
@@ -173,13 +260,17 @@ function localStorageForImport(): FileImportStorage {
 }
 
 function decode(key: string, raw: string): FileImportCopy {
-  if (raw.length > MAX_COPY_BYTES || textBytes(raw) > MAX_COPY_BYTES) throw new Error("The retained import exceeds its supported size. Its original copy was preserved.");
+  const sizeError = "The retained import exceeds its supported size. Its original copy was preserved.";
+  if (raw.length > MAX_NATIVE_COPY_BYTES || textBytes(raw) > MAX_NATIVE_COPY_BYTES) throw new Error(sizeError);
   const value: unknown = JSON.parse(raw);
   if (!record(value) || !keys(value, ["schema", "request_id", "created_at", "preparation", "input"])
       || value.schema !== "motionwright.file-import-intent/1" || !Number.isSafeInteger(value.created_at)
       || (value.created_at as number) < 0 || !record(value.input)
-      || !keys(value.input, ["kind", "path", "name", "media_type", "label"])) {
+      || !keys(value.input, value.input.kind === "native_capsule_source" ? ["kind", "path", "spec"] : ["kind", "path", "name", "media_type", "label"])) {
     throw new Error("The retained import is unreadable. Its original copy was preserved.");
+  }
+  if (value.input.kind !== "native_capsule_source" && (raw.length > MAX_COPY_BYTES || textBytes(raw) > MAX_COPY_BYTES)) {
+    throw new Error(sizeError);
   }
   const preparation = prepared(value.preparation);
   const input = savedInput(value.input as unknown as FileImportInput);
