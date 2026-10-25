@@ -13,7 +13,7 @@ on:
       - "docs/audio.md"
       - ".github/workflows/performance-acceptance.yml"
   push:
-    branches: ["main", "feat/**"]
+    branches: ["main", "feat/**", "verify/performance-cache-consumer-*"]
     paths:
       - "crates/domain/**"
       - "crates/storage/**"
@@ -25,6 +25,16 @@ on:
       - "docs/audio.md"
       - ".github/workflows/performance-acceptance.yml"
   workflow_dispatch:
+    inputs:
+      selection:
+        description: "Historical four-job compatibility, or the reviewed cache consumer only"
+        type: choice
+        options: [historical, cache-consumer]
+        default: historical
+      reviewed_source:
+        description: "Required for cache-consumer: exact reviewed 40-character SHA of this workflow"
+        type: string
+        default: ""
   schedule:
     - cron: "41 5 * * 2"
 
@@ -37,7 +47,13 @@ env:
 
 jobs:
   revision-ten:
+    if: >-
+      ${{ (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/performance-cache-consumer-')) &&
+          (github.event_name != 'workflow_dispatch' || inputs.selection == 'historical') }}
     runs-on: ubuntu-24.04
+    env:
+      MOTIONWRIGHT_BENCH_ARTIFACT_ROOT: ${{ github.workspace }}/verification/performance/originals
+      MOTIONWRIGHT_REFERENCE_PROFILES: "historical"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -57,12 +73,22 @@ jobs:
           mkdir -p verification/performance
           git rev-parse HEAD > verification/performance/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/performance/checkout-tree.txt
+          test "$(cat verification/performance/checkout-sha.txt)" = "$GITHUB_SHA"
+          git diff --exit-code HEAD -- Cargo.lock crates/service/examples/acceptance_bench.rs crates/service/examples/responsiveness_bench.rs
+          RUSTC_VERSION="$(rustc --version)"
+          export RUSTC_VERSION
+          printf '%s\n' "$RUSTC_VERSION" > verification/performance/compiler-version.txt
+          printf 'RUSTC_VERSION=%s\n' "$RUSTC_VERSION" >> "$GITHUB_ENV"
+          sha256sum Cargo.lock > verification/performance/cargo-lock-before.sha256
           status=0
-          cargo build -p motionwright-service --example acceptance_bench --release \
+          cargo build --locked -p motionwright-service --example acceptance_bench --release \
             > verification/performance/build.stdout.log 2> verification/performance/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/performance/build-exit-code.txt
           cat verification/performance/build.stdout.log
           cat verification/performance/build.stderr.log >&2
+          if [ "$status" -eq 0 ]; then
+            sha256sum --check verification/performance/cargo-lock-before.sha256
+          fi
           exit "$status"
       - name: S M L × three unrelated briefs × revision ten
         env:
@@ -70,6 +96,7 @@ jobs:
         run: |
           mkdir -p verification/performance
           sha256sum target/release/examples/acceptance_bench > verification/performance/benchmark-sha256.txt
+          cp target/release/examples/acceptance_bench verification/performance/acceptance_bench
           status=0
           /usr/bin/time -v -o verification/performance/resource-usage.txt \
             target/release/examples/acceptance_bench \
@@ -84,6 +111,25 @@ jobs:
           from pathlib import Path
           report=json.loads(Path("verification/performance/report.json").read_text())
           assert report["schema"]=="motionwright.performance.v1"
+          import hashlib
+          import os
+          expected_sha=Path("verification/performance/checkout-sha.txt").read_text().strip()
+          expected_compiler=Path("verification/performance/compiler-version.txt").read_text().strip()
+          assert expected_sha==os.environ["GITHUB_SHA"]
+          assert expected_compiler.startswith("rustc ") and expected_compiler==os.environ["RUSTC_VERSION"]
+          assert report["source_sha"]==expected_sha
+          assert report["source_binding_consistent"] is True
+          assert report["source_attribution_verified"] is False
+          binary=Path("target/release/examples/acceptance_bench")
+          retained_binary=Path("verification/performance/acceptance_bench")
+          binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+          assert hashlib.sha256(retained_binary.read_bytes()).hexdigest()==binary_sha
+          for context in (report["source_context"]["before"], report["source_context"]["after"]):
+              assert context["source_sha_compiled"]==expected_sha
+              assert context["source_sha_runtime"]==expected_sha
+              assert context["compiler_version"]==expected_compiler
+              assert context["executable"]["sha256"]==binary_sha
+              assert context["executable"]["size_bytes"]==binary.stat().st_size
           assert report["datasets"]==9 and report["briefs"]==3
           rows=report["results"]
           assert {r["size"] for r in rows}=={"S","M","L"}
@@ -120,7 +166,8 @@ jobs:
 
           directory=Path("verification/performance/budget-failure")
           directory.mkdir(parents=True, exist_ok=True)
-          environment={**os.environ, "MOTIONWRIGHT_LATENCY_BUDGET_MS": "0"}
+          environment={**os.environ, "MOTIONWRIGHT_LATENCY_BUDGET_MS": "0",
+                       "MOTIONWRIGHT_BENCH_ARTIFACT_ROOT": str((directory/"originals").resolve())}
           with (directory/"report.json").open("wb") as stdout, (directory/"stderr.log").open("wb") as stderr:
               result=subprocess.run(
                   ["target/release/examples/acceptance_bench"],
@@ -131,6 +178,25 @@ jobs:
           assert "measured commit budget exceeded:" in diagnostic
           report=json.loads((directory/"report.json").read_text(encoding="utf-8"))
           assert report["schema"]=="motionwright.performance.v1"
+          import hashlib
+          import os
+          expected_sha=Path("verification/performance/checkout-sha.txt").read_text().strip()
+          expected_compiler=Path("verification/performance/compiler-version.txt").read_text().strip()
+          assert expected_sha==os.environ["GITHUB_SHA"]
+          assert expected_compiler.startswith("rustc ") and expected_compiler==os.environ["RUSTC_VERSION"]
+          assert report["source_sha"]==expected_sha
+          assert report["source_binding_consistent"] is True
+          assert report["source_attribution_verified"] is False
+          binary=Path("target/release/examples/acceptance_bench")
+          retained_binary=Path("verification/performance/acceptance_bench")
+          binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+          assert hashlib.sha256(retained_binary.read_bytes()).hexdigest()==binary_sha
+          for context in (report["source_context"]["before"], report["source_context"]["after"]):
+              assert context["source_sha_compiled"]==expected_sha
+              assert context["source_sha_runtime"]==expected_sha
+              assert context["compiler_version"]==expected_compiler
+              assert context["executable"]["sha256"]==binary_sha
+              assert context["executable"]["size_bytes"]==binary.stat().st_size
           assert report["source_sha"]==subprocess.check_output(
               ["git", "rev-parse", "HEAD"], text=True).strip()
           assert report["latency_budget_ms"]==0
@@ -204,6 +270,9 @@ jobs:
           if-no-files-found: error
 
   waveform-lazy:
+    if: >-
+      ${{ (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/performance-cache-consumer-')) &&
+          (github.event_name != 'workflow_dispatch' || inputs.selection == 'historical') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -280,7 +349,13 @@ jobs:
           if-no-files-found: error
 
   responsiveness-service:
+    if: >-
+      ${{ (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/performance-cache-consumer-')) &&
+          (github.event_name != 'workflow_dispatch' || inputs.selection == 'historical') }}
     runs-on: ubuntu-24.04
+    env:
+      MOTIONWRIGHT_BENCH_ARTIFACT_ROOT: ${{ github.workspace }}/verification/responsiveness/originals
+      MOTIONWRIGHT_RESPONSIVENESS_PROFILE: "S"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -296,12 +371,22 @@ jobs:
           mkdir -p verification/responsiveness
           git rev-parse HEAD > verification/responsiveness/checkout-sha.txt
           git rev-parse 'HEAD^{tree}' > verification/responsiveness/checkout-tree.txt
+          test "$(cat verification/responsiveness/checkout-sha.txt)" = "$GITHUB_SHA"
+          git diff --exit-code HEAD -- Cargo.lock crates/service/examples/acceptance_bench.rs crates/service/examples/responsiveness_bench.rs
+          RUSTC_VERSION="$(rustc --version)"
+          export RUSTC_VERSION
+          printf '%s\n' "$RUSTC_VERSION" > verification/responsiveness/compiler-version.txt
+          printf 'RUSTC_VERSION=%s\n' "$RUSTC_VERSION" >> "$GITHUB_ENV"
+          sha256sum Cargo.lock > verification/responsiveness/cargo-lock-before.sha256
           status=0
-          cargo build -p motionwright-service --example responsiveness_bench --release \
+          cargo build --locked -p motionwright-service --example responsiveness_bench --release \
             > verification/responsiveness/build.stdout.log 2> verification/responsiveness/build.stderr.log || status=$?
           printf '%s\n' "$status" > verification/responsiveness/build-exit-code.txt
           cat verification/responsiveness/build.stdout.log
           cat verification/responsiveness/build.stderr.log >&2
+          if [ "$status" -eq 0 ]; then
+            sha256sum --check verification/responsiveness/cargo-lock-before.sha256
+          fi
           exit "$status"
       - name: Measure small commits and S-profile reopen
         env:
@@ -310,6 +395,7 @@ jobs:
         run: |
           mkdir -p verification/responsiveness
           sha256sum target/release/examples/responsiveness_bench > verification/responsiveness/benchmark-sha256.txt
+          cp target/release/examples/responsiveness_bench verification/responsiveness/responsiveness_bench
           status=0
           /usr/bin/time -v -o verification/responsiveness/resource-usage.txt \
             target/release/examples/responsiveness_bench \
@@ -325,6 +411,25 @@ jobs:
 
           report=json.loads(Path("verification/responsiveness/service.json").read_text())
           assert report["schema"]=="motionwright.responsiveness.v1"
+          import hashlib
+          import os
+          expected_sha=Path("verification/responsiveness/checkout-sha.txt").read_text().strip()
+          expected_compiler=Path("verification/responsiveness/compiler-version.txt").read_text().strip()
+          assert expected_sha==os.environ["GITHUB_SHA"]
+          assert expected_compiler.startswith("rustc ") and expected_compiler==os.environ["RUSTC_VERSION"]
+          assert report["source_sha"]==expected_sha
+          assert report["source_binding_consistent"] is True
+          assert report["source_attribution_verified"] is False
+          binary=Path("target/release/examples/responsiveness_bench")
+          retained_binary=Path("verification/responsiveness/responsiveness_bench")
+          binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+          assert hashlib.sha256(retained_binary.read_bytes()).hexdigest()==binary_sha
+          for context in (report["source_context_before"], report["source_context_after"]):
+              assert context["source_sha_compiled"]==expected_sha
+              assert context["source_sha_runtime"]==expected_sha
+              assert context["compiler_version"]==expected_compiler
+              assert context["executable"]["sha256"]==binary_sha
+              assert context["executable"]["size_bytes"]==binary.stat().st_size
           dataset=report["dataset"]
           assert dataset["scenes"]==12
           assert dataset["beats"]==80
@@ -367,6 +472,7 @@ jobs:
                   **os.environ,
                   "MOTIONWRIGHT_SMALL_COMMIT_P95_BUDGET_MS": commit_budget,
                   "MOTIONWRIGHT_S_REOPEN_BUDGET_MS": reopen_budget,
+                  "MOTIONWRIGHT_BENCH_ARTIFACT_ROOT": str((directory/"originals").resolve()),
               }
               with (directory/"report.json").open("wb") as stdout, (directory/"stderr.log").open("wb") as stderr:
                   result=subprocess.run(
@@ -378,6 +484,25 @@ jobs:
               assert expected_diagnostic in diagnostic and "exceeds 0us budget" in diagnostic
               report=json.loads((directory/"report.json").read_text(encoding="utf-8"))
               assert report["schema"]=="motionwright.responsiveness.v1"
+              import hashlib
+              import os
+              expected_sha=Path("verification/responsiveness/checkout-sha.txt").read_text().strip()
+              expected_compiler=Path("verification/responsiveness/compiler-version.txt").read_text().strip()
+              assert expected_sha==os.environ["GITHUB_SHA"]
+              assert expected_compiler.startswith("rustc ") and expected_compiler==os.environ["RUSTC_VERSION"]
+              assert report["source_sha"]==expected_sha
+              assert report["source_binding_consistent"] is True
+              assert report["source_attribution_verified"] is False
+              binary=Path("target/release/examples/responsiveness_bench")
+              retained_binary=Path("verification/responsiveness/responsiveness_bench")
+              binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+              assert hashlib.sha256(retained_binary.read_bytes()).hexdigest()==binary_sha
+              for context in (report["source_context_before"], report["source_context_after"]):
+                  assert context["source_sha_compiled"]==expected_sha
+                  assert context["source_sha_runtime"]==expected_sha
+                  assert context["compiler_version"]==expected_compiler
+                  assert context["executable"]["sha256"]==binary_sha
+                  assert context["executable"]["size_bytes"]==binary.stat().st_size
               assert report["source_sha"]==subprocess.check_output(
                   ["git", "rev-parse", "HEAD"], text=True).strip()
               dataset=report["dataset"]
@@ -407,6 +532,9 @@ jobs:
           if-no-files-found: error
 
   ui-selection:
+    if: >-
+      ${{ (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/performance-cache-consumer-')) &&
+          (github.event_name != 'workflow_dispatch' || inputs.selection == 'historical') }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -452,3 +580,368 @@ jobs:
             verification/responsiveness/ui-selection.json
             apps/studio/test-results
           if-no-files-found: ignore
+
+  cache-source-g0:
+    name: Cache consumer source controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cache-g0-tools/cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.cache-g0-tools/rustup
+      TMPDIR: ${{ github.workspace }}/.cache-g0-tmp
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: source
+          persist-credentials: false
+      - name: Create isolated source-control directories
+        run: mkdir -p "$CARGO_HOME" "$RUSTUP_HOME" "$TMPDIR" cache-source-g0-evidence
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Fast policies and Rust formatting
+        working-directory: source
+        run: |
+          python3 -B tooling/source_policy.py
+          python3 -B tooling/acceptance_policy.py
+          python3 -B tooling/creative_status_policy.py
+          python3 -B tooling/public_surface_policy.py
+          cargo fmt --all -- --check
+      - name: Require complete source-bound cache helper controls in both entry modes
+        working-directory: source
+        run: >-
+          python3 -B tooling/ci_test_runner.py --repo . --mode both
+          --pattern test_performance_cache_consumer.py
+          --expected-source "$GITHUB_SHA" --require-complete
+          --report ../cache-source-g0-evidence/receipt.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cache-source-g0-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: cache-source-g0-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  cache-consumer:
+    name: Cache consumer originals (independent admission required)
+    if: github.event_name == 'workflow_dispatch' && inputs.selection == 'cache-consumer'
+    needs: cache-source-g0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    concurrency:
+      group: performance-cache-consumer-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cache-consumer-tools/cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.cache-consumer-tools/rustup
+      TMPDIR: ${{ github.workspace }}/.cache-consumer-tmp
+      REVIEWED_SOURCE: ${{ inputs.reviewed_source }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: source
+          persist-credentials: false
+      - name: Create isolated runner directories
+        run: mkdir -p "$CARGO_HOME" "$RUSTUP_HOME" "$TMPDIR"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.1
+      - name: Capture the exact 15 source tests and one historical cache-consumer invocation
+        run: |
+          python3 -B - <<'PY_CACHE_CONSUMER'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import shutil
+          import signal
+          import stat
+          import subprocess
+          import sys
+          import time
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          source = workspace / "source"
+          output = workspace / "cache-consumer-evidence"
+          if output.exists():
+              raise SystemExit("evidence destination exists; no uncertain repeat")
+          output.mkdir()
+          sys.path.insert(0, str(source / "tooling"))
+          import performance_cache_consumer as contract
+          assert Path(contract.__file__).resolve() == source / "tooling/performance_cache_consumer.py"
+
+          def write(path, value):
+              path.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+
+          def digest(path):
+              value = hashlib.sha256()
+              size = 0
+              with path.open("rb") as stream:
+                  while chunk := stream.read(1024 * 1024):
+                      size += len(chunk)
+                      value.update(chunk)
+              return {"sha256": value.hexdigest(), "bytes": size}
+
+          def probe(argv):
+              return subprocess.check_output(argv, cwd=source, timeout=30).decode("utf-8").strip()
+
+          def snapshot():
+              return {"source_sha": probe(["git", "rev-parse", "HEAD"]),
+                      "source_tree": probe(["git", "rev-parse", "HEAD^{tree}"]),
+                      "git_status_porcelain": probe(["git", "status", "--porcelain", "--untracked-files=all"]),
+                      "sources": {name: digest(source / name) for name in contract.SOURCES},
+                      "infrastructure": {name: digest(source / name) for name in (
+                          ".github/workflows/performance-acceptance.yml",
+                          "tooling/performance_cache_consumer.py",
+                          "tooling/tests/test_performance_cache_consumer.py")}}
+
+          def interrupt(signum, frame):
+              raise InterruptedError("runner interrupted")
+
+          signal.signal(signal.SIGTERM, interrupt)
+
+          def run(label, argv, environment, budget):
+              if any(item["execution"]["status"] == "UNKNOWN" for item in state["commands"]):
+                  raise RuntimeError("UNKNOWN prevents subsequent command execution or retry")
+              directory = output / label
+              directory.mkdir()
+              receipt = {"schema": "motionwright.performance-cache-consumer-execution/2",
+                         "argv": argv, "cwd": str(source), "timeout_seconds": budget,
+                         "started_unix": time.time(), "status": "STARTING", "returncode": None,
+                         "retry_count": 0, "timeout_policy": "UNKNOWN; preserve originals; no retry",
+                         "process_boundary": "OWNED_POSIX_SESSION_GROUP",
+                         "owned_process_group_after_wait": "NOT_OBSERVED",
+                         "descendants_outside_owned_group": "NOT_OBSERVED", "cleanup": []}
+              state["commands"].append({"label": label, "execution": receipt})
+              write(directory / "execution.json", receipt)
+              started, process = time.monotonic(), None
+
+              def group_state():
+                  # This Linux gate starts a separate session. A zero root exit does not
+                  # establish that descendants in the inherited process group exited.
+                  # Descendants that deliberately leave that group are not observed here.
+                  try:
+                      os.killpg(process.pid, 0)
+                  except ProcessLookupError:
+                      return "ABSENT"
+                  return "PRESENT"
+
+              def stop_error(event, stage, error):
+                  message = str(error) or type(error).__name__
+                  event[stage + "_error"] = {"type": type(error).__name__, "message": message}
+                  prior = receipt.get("stop_observation", "UNKNOWN; stop interrupted or failed")
+                  receipt["stop_observation"] = prior + "; " + stage + ": " + message
+
+              with (directory / "stdout.log").open("xb") as stdout, (directory / "stderr.log").open("xb") as stderr:
+                  try:
+                      process = subprocess.Popen(argv, cwd=source, env=environment,
+                                                 stdout=stdout, stderr=stderr, start_new_session=True)
+                      receipt.update(status="RUNNING", pid=process.pid)
+                      write(directory / "execution.json", receipt)
+                      receipt["returncode"] = process.wait(timeout=budget)
+                      if type(receipt["returncode"]) is not int:
+                          raise RuntimeError("process wait did not produce an integer exit code")
+                      receipt["owned_process_group_after_wait"] = group_state()
+                      if receipt["owned_process_group_after_wait"] != "ABSENT":
+                          raise RuntimeError("owned process group remains after root exit; capture is not terminal")
+                      receipt["status"] = "COMPLETED"
+                  except (Exception, KeyboardInterrupt) as error:
+                      uncertain = process is not None or isinstance(error,
+                          (subprocess.TimeoutExpired, KeyboardInterrupt, InterruptedError))
+                      receipt.update(status="UNKNOWN" if uncertain else "START_FAILED",
+                                     reason=str(error) or type(error).__name__)
+                      write(directory / "execution.json", receipt)
+                  finally:
+                      if receipt["status"] == "UNKNOWN" and process is not None:
+                          # Stop only this invocation's group, even if the root already
+                          # exited. Never start the command again; cleanup cannot turn
+                          # UNKNOWN into success. Each signal/wait/probe is bounded.
+                          for stop_signal in (signal.SIGTERM, signal.SIGKILL):
+                              event = {"signal": stop_signal}
+                              try:
+                                  os.killpg(process.pid, stop_signal)
+                                  event["signal_requested"] = True
+                              except ProcessLookupError:
+                                  event["process_group_missing"] = True
+                              except (Exception, KeyboardInterrupt) as error:
+                                  stop_error(event, "signal", error)
+                              try:
+                                  process.wait(timeout=5)
+                                  event["wait_returncode"] = process.returncode
+                              except (Exception, KeyboardInterrupt) as error:
+                                  stop_error(event, "wait", error)
+                              try:
+                                  event["group_after_cleanup"] = group_state()
+                              except (Exception, KeyboardInterrupt) as error:
+                                  stop_error(event, "group_probe", error)
+                              receipt["cleanup"].append(event)
+                              if type(process.returncode) is int and event.get("group_after_cleanup") == "ABSENT":
+                                  break
+                          receipt["returncode_after_stop"] = process.returncode
+                          if receipt["cleanup"][-1].get("group_after_cleanup") != "ABSENT":
+                              receipt.setdefault("stop_observation", "UNKNOWN; owned process group still present or unobserved after stop budget")
+                      receipt.update(finished_unix=time.time(), elapsed_seconds=time.monotonic() - started)
+                      try:
+                          write(directory / "execution.json", receipt)
+                      except (Exception, KeyboardInterrupt) as error:
+                          receipt["observed_status_before_receipt_failure"] = receipt["status"]
+                          receipt.update(status="UNKNOWN", receipt_persistence="UNKNOWN",
+                                         receipt_write_error=str(error) or type(error).__name__)
+                          raise
+              return receipt
+
+          def inventory():
+              members, directories, total = {}, [], 0
+              for directory, dirs, files in os.walk(output, followlinks=False):
+                  for name in dirs:
+                      path = Path(directory) / name
+                      assert not path.is_symlink() and stat.S_ISDIR(path.lstat().st_mode), "nonregular directory"
+                      directories.append(path.relative_to(output).as_posix())
+                  for name in files:
+                      path = Path(directory) / name
+                      assert not path.is_symlink() and stat.S_ISREG(path.lstat().st_mode), "nonregular original"
+                      relative = path.relative_to(output).as_posix()
+                      if relative == "custody-manifest.json":
+                          continue
+                      size = path.stat().st_size
+                      assert size <= 1024**3, "original member exceeds operational custody bound"
+                      total += size
+                      assert total <= 2 * 1024**3 and len(members) < 20000, "operational custody budget exhausted"
+                      members[relative] = digest(path)
+              return {"members": members, "directories": sorted(directories), "total_bytes": total}
+
+          state = {"schema": "motionwright.performance-cache-consumer-capture/1", "status": "NOT_READY",
+                   "source_sha": os.environ["GITHUB_SHA"], "reviewed_source": os.environ["REVIEWED_SOURCE"],
+                   "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                   "job": os.environ["GITHUB_JOB"], "commands": [],
+                   "original_byte_admission": "REQUIRED", "sqlite_admission": "REQUIRED",
+                   "native_cache_claim": False, "formal_acceptance": False, "release_authorized": False}
+          environment = {key: value for key, value in os.environ.items()
+                         if not key.startswith("MOTIONWRIGHT_") and key not in
+                         ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
+          try:
+              expected = state["reviewed_source"]
+              assert re.fullmatch(r"[a-f0-9]{40}", expected) and expected == state["source_sha"], "explicit reviewed source must equal workflow SHA"
+              before = snapshot()
+              write(output / "source-before.json", before)
+              assert before["source_sha"] == expected and not before["git_status_porcelain"], "source checkout is not exact and clean"
+              free = shutil.disk_usage(workspace).free
+              write(output / "machine.json", {"platform": platform.platform(), "machine": platform.machine(),
+                  "cpu_count": os.cpu_count(), "free_disk_bytes": free, "operational_disk_minimum_bytes": 1024**3,
+                  "scope": "observed runner resources; no normative hardware or wall-clock speedup claim"})
+              assert free >= 1024**3, "insufficient observed operational disk budget"
+              tools = output / "tools"
+              tools.mkdir()
+              for name, argv in (
+                  ("rustc-version", ["rustc", "--version"]), ("rustc-vV", ["rustc", "-vV"]),
+                  ("cargo-version", ["cargo", "--version"]), ("python-version", ["python3", "--version"]),
+                  ("git-version", ["git", "--version"])):
+                  capture = subprocess.run(argv, cwd=source, capture_output=True, timeout=30, check=False)
+                  (tools / (name + ".stdout")).write_bytes(capture.stdout)
+                  (tools / (name + ".stderr")).write_bytes(capture.stderr)
+                  write(tools / (name + ".json"), {"argv": argv, "returncode": capture.returncode,
+                        "resolved_executable": shutil.which(argv[0])})
+                  assert capture.returncode == 0, "tool observation failed"
+              compiler = (tools / "rustc-version.stdout").read_text().strip()
+              target = workspace / "cache-consumer-build-target"
+              assert not target.exists(), "build target exists; no uncertain repeat"
+              target.mkdir()
+              environment.update(RUSTC_VERSION=compiler, GITHUB_SHA=expected, CARGO_TARGET_DIR=str(target),
+                                 CARGO_TERM_COLOR="never", RUST_BACKTRACE="1")
+              commands = (
+                  ("source-archive", ["git", "archive", "--format=tar", "--output=" + str(output / "source.tar"), expected], 60),
+                  ("source-g1", ["cargo", "test", "--locked", "--release", "-p", "motionwright-service",
+                                 "--example", "acceptance_bench", "--", "--nocapture", "--test-threads=1"], 900),
+                  ("build", ["cargo", "build", "--locked", "--release", "-p", "motionwright-service",
+                             "--example", "acceptance_bench"], 900),
+              )
+              for label, argv, budget in commands:
+                  receipt = run(label, argv, environment, budget)
+                  write(output / "capture.json", state)
+                  contract.require_complete_execution(receipt, argv, str(source))
+                  if label == "source-g1":
+                      roster = contract.source_test_roster((output / label / "stdout.log").read_text(encoding="utf-8"))
+                      write(output / "source-test-roster.json", roster)
+              after_build = snapshot()
+              write(output / "source-after-build.json", after_build)
+              assert before == after_build, "source changed during G1/build"
+              binary = output / "bin" / "acceptance_bench"
+              binary.parent.mkdir()
+              shutil.copy2(target / "release/examples/acceptance_bench", binary)
+              info = digest(binary)
+              fixtures = output / "fixtures"
+              fixtures.mkdir()
+              bindings = {"source_sha": expected, "source_tree": before["source_tree"],
+                  "source_directory": str(source), "compiler_version": compiler, "sources": before["sources"],
+                  "executable": {"path": str(binary), "sha256": info["sha256"], "size_bytes": info["bytes"]},
+                  "artifact_root": str(fixtures), "scope": "runner observations; independent originals admission still required"}
+              write(output / "bindings.json", bindings)
+              environment.update(MOTIONWRIGHT_REFERENCE_PROFILES="historical",
+                                 MOTIONWRIGHT_LATENCY_BUDGET_MS="2000",
+                                 MOTIONWRIGHT_BENCH_ARTIFACT_ROOT=str(fixtures))
+              argv = ["/usr/bin/time", "-v", "-o", str(output / "benchmark/resource-usage.txt"), str(binary)]
+              receipt = run("benchmark", argv, environment, 300)
+              write(output / "capture.json", state)
+              contract.require_complete_execution(receipt, argv, str(source))
+              report_original = (output / "benchmark/stdout.log").read_bytes()
+              report = contract.decode_json(report_original)
+              original_report = Path(report["artifact_directory"]) / "report.json"
+              assert original_report.resolve().is_relative_to(fixtures.resolve()), "report original escapes fixtures"
+              assert original_report.read_bytes() + b"\n" == report_original, "stdout differs from untouched original report"
+              result = contract.validate_bound_report(report, expected,
+                  before["sources"]["crates/service/examples/acceptance_bench.rs"]["sha256"], bindings)
+              result.update(input_report_sha256=hashlib.sha256(report_original).hexdigest(),
+                            bindings_sha256=digest(output / "bindings.json")["sha256"])
+              write(output / "report-check.json", result)
+              after = snapshot()
+              write(output / "source-after.json", after)
+              assert before == after, "source changed during benchmark"
+              assert digest(binary) == info, "executed binary bytes changed"
+              state.update(status="CAPTURE_COMPLETE_REPORT_CONSISTENT_ONLY", expected_datasets=9,
+                           source_tests=15, historical_warm_requests=9, measured_phase_requests=36,
+                           separate_control_setup_requests=9)
+          except (Exception, KeyboardInterrupt) as error:
+              state.update(status="UNKNOWN" if any(item["execution"]["status"] == "UNKNOWN"
+                                                 for item in state["commands"]) else "NOT_READY",
+                           error=str(error) or type(error).__name__)
+          finally:
+              write(output / "capture.json", state)
+              try:
+                  first = inventory()
+                  write(output / "custody-manifest.json", {
+                      "schema": "motionwright.performance-cache-consumer-custody/1",
+                      "source_sha": state["source_sha"], "run_id": state["run_id"], "run_attempt": state["run_attempt"],
+                      "capture_status": state["status"], "root": output.name, **first,
+                      "original_byte_admission": "REQUIRED", "sqlite_admission": "REQUIRED",
+                      "formal_acceptance": False, "release_authorized": False})
+                  assert inventory() == first, "original inventory changed during sealing"
+              except (Exception, KeyboardInterrupt) as error:
+                  uncertain = state["status"] == "UNKNOWN" or isinstance(error, (KeyboardInterrupt, InterruptedError)) or any(
+                      item["execution"]["status"] == "UNKNOWN" for item in state["commands"])
+                  state.update(status="UNKNOWN" if uncertain else "NOT_READY",
+                               custody_error=str(error) or type(error).__name__)
+                  write(output / "capture.json", state)
+              print(json.dumps({"status": state["status"], "source_sha": state["source_sha"],
+                                "original_byte_admission": "REQUIRED", "sqlite_admission": "REQUIRED",
+                                "formal_acceptance": False}))
+          raise SystemExit(0 if state["status"] == "CAPTURE_COMPLETE_REPORT_CONSISTENT_ONLY" else 1)
+          PY_CACHE_CONSUMER
+      - name: Preserve the complete original tree and checksum
+        if: always()
+        run: |
+          test -d cache-consumer-evidence
+          tar -czf cache-consumer-evidence.tar.gz cache-consumer-evidence
+          sha256sum cache-consumer-evidence.tar.gz > cache-consumer-evidence.tar.gz.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cache-consumer-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            cache-consumer-evidence.tar.gz
+            cache-consumer-evidence.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
