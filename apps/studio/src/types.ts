@@ -847,7 +847,7 @@ export interface ProductionRuntimeCompatibility {
 
 export interface CreativeDoctorCheck {
   id: string;
-  status: "validated" | "blocked" | "version_compatible" | "not_tested";
+  status: "validated" | "blocked" | "version_compatible" | "observed" | "not_tested";
   detail: string;
 }
 export interface CreativeDoctorRenderer {
@@ -855,9 +855,12 @@ export interface CreativeDoctorRenderer {
   required_semwright_driver: string | null;
   scene_count: number;
   declared_extension_admitted: boolean;
-  provider_verified: false;
+  provider_verified: boolean;
   state: "not_used" | "native_provider_not_tested" |
-    "optional_descriptor_only" | "optional_extension_not_admitted";
+    "optional_descriptor_only" | "optional_extension_not_admitted" |
+    "native_runtime_version_compatible" | "native_runtime_version_incompatible" |
+    "native_runtime_version_observed" | "native_package_not_found_in_declared_runtime" |
+    "native_runtime_not_observed";
 }
 export interface CreativeDoctorOutput {
   profile_id: string;
@@ -881,7 +884,7 @@ export interface CreativeRuntimeDoctorReport {
   checks: CreativeDoctorCheck[];
   ready_for_native_production: false;
   install_performed: false;
-  broker_dispatch_performed: false;
+  broker_dispatch_performed: boolean;
   authorizing_grant_created: false;
 }
 
