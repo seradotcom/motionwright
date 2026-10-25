@@ -23,7 +23,7 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-      CAPTURE_EVIDENCE: ${{ github.workspace }}/verification/startup-capture/${{ github.run_id }}-${{ github.run_attempt }}
+      CAPTURE_EVIDENCE: ${{ runner.temp }}/motionwright-ci/${{ github.run_id }}-${{ github.run_attempt }}/startup-capture
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
