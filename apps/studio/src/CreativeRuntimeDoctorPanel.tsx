@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Activity, ClipboardCopy, ScanSearch, ShieldAlert } from "lucide-react";
 import { inspectCreativeRuntime } from "./api";
 import type {
@@ -17,13 +17,20 @@ export default function CreativeRuntimeDoctorPanel({
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
   const [note,setNote]=useState<string|null>(null);
-  const sourceScope = [
-    project.id,project.generation,project.revision,nativeSdk.mode,
-    runtime?.status ?? "unknown",runtime?.connection_identity ?? "none",
-    runtime?.executable_sha256 ?? "none",
-  ].join(":");
-  useEffect(()=>{
-    setReport(null);setError(null);setNote(null);
+  const requestAttempt = useRef(0);
+  const sourceScope = JSON.stringify([
+    project.id,project.generation,project.revision,project.active_branch,
+    nativeSdk.mode,nativeSdk.pinned_revision,nativeSdk.version,
+    runtime?.status,runtime?.connection_identity,runtime?.executable_sha256,
+    runtime?.pinned_revision,runtime?.observed_version,runtime?.version_compatible,
+  ]);
+  useLayoutEffect(()=>{
+    requestAttempt.current += 1;
+    setReport(null);setError(null);setNote(null);setBusy(false);
+    return () => {
+      // A request loses ownership on every scope transition, including A-B-A.
+      requestAttempt.current += 1;
+    };
   },[sourceScope]);
 
   const usedRenderers=useMemo(
@@ -32,27 +39,40 @@ export default function CreativeRuntimeDoctorPanel({
   );
   const inspect=async()=>{
     if(busy)return;
+    const attempt = ++requestAttempt.current;
+    const ownsInspection = () => requestAttempt.current === attempt;
     setBusy(true);setError(null);setReport(null);setNote(null);
     try {
       const current=await inspectCreativeRuntime(project);
+      if(!ownsInspection())return;
       if(current.project_id!==project.id ||
          current.generation!==project.generation ||
          current.revision!==project.revision ||
+         current.semwright_native_sdk_source_pin!==nativeSdk.pinned_revision ||
          current.schema!=="motionwright.creative-runtime-doctor/1") {
         throw new Error("Runtime diagnosis is stale or unrecognized. Refresh this project.");
       }
       setReport(current);
     } catch(e){
-      setError(e instanceof Error?e.message:"The trusted runtime diagnosis failed.");
-    } finally {setBusy(false);}
+      if(ownsInspection()) {
+        setError(e instanceof Error?e.message:"The trusted runtime diagnosis failed.");
+      }
+    } finally {
+      if(ownsInspection())setBusy(false);
+    }
   };
   const copy=async()=>{
     if(!report||busy)return;
+    const attempt = requestAttempt.current;
     try {
       await navigator.clipboard.writeText(JSON.stringify(report,null,2));
-      setNote("This redacted local preflight report was copied. It does not prove installation or render readiness.");
+      if(requestAttempt.current===attempt) {
+        setNote("This redacted local preflight report was copied. It does not prove installation or render readiness.");
+      }
     } catch {
-      setNote("Clipboard permission was denied; the report was not copied.");
+      if(requestAttempt.current===attempt) {
+        setNote("Clipboard permission was denied; the report was not copied.");
+      }
     }
   };
   return <section className="creative-doctor" aria-label="Creative runtime doctor">
@@ -64,16 +84,16 @@ export default function CreativeRuntimeDoctorPanel({
       <span className="creative-doctor-source">SDK {nativeSdk.pinned_revision.slice(0,12)}…</span>
     </header>
     <p className="creative-doctor-intro">
-      Check your actual project, the saved Semwright connection and its version-only CLI probe.
-      The report distinguishes authored renderer support from an installed, authorized
-      Broker/Driver Host. It never launches a render, downloads a package, installs a driver,
+      Check the current project, saved Semwright connection and read-only runtime observations.
+      Each check states which source declaration, registry entry or runtime version was observed.
+      This diagnosis never launches a render, downloads a package, installs a driver,
       deletes a source file or grants an effect.
     </p>
     <div className="integration-runtime-actions">
       <button type="button" className="button" disabled={busy}
         aria-label={busy?"Checking creative environment":report?"Run diagnosis again":"Run creative runtime doctor"} onClick={()=>void inspect()}>
         <Activity size={14} aria-hidden="true"/>
-        {busy?"Checking project and CLI…":report?"Run diagnosis again":"Run creative runtime doctor"}
+        {busy?"Checking runtime diagnostics…":report?"Run diagnosis again":"Run creative runtime doctor"}
       </button>
       <button type="button" className="button secondary" disabled={busy||!report}
         onClick={()=>void copy()}><ClipboardCopy size={14} aria-hidden="true"/> Copy sanitized report</button>
@@ -113,7 +133,7 @@ export default function CreativeRuntimeDoctorPanel({
               <div><strong>{renderer.renderer}</strong><span>{renderer.scene_count} scene(s)</span></div>
               <p>{renderer.state.replaceAll("_"," ")}.
                 {renderer.required_semwright_driver?" Declared Semwright route: "+renderer.required_semwright_driver+".":""}
-                {" "}No provider capability/readback has been verified by this doctor.</p>
+                {" "}Version observations and registry membership do not verify native rendering or source readback.</p>
             </article>):<p className="creative-doctor-status">No scenes currently require a renderer.</p>}
           </div>
           <h4>Authoring memory footprint</h4>
@@ -132,9 +152,10 @@ export default function CreativeRuntimeDoctorPanel({
         <ShieldAlert size={16} aria-hidden="true"/>
         <p>Project {report.project_id.slice(0,8)}… · generation {report.generation.slice(0,8)}…
           . Ready for native production: <strong>No</strong>.
-          A source declaration, compatible CLI and this local preflight are not a live Broker handshake,
-          installed provider, media acceptance, signed package or human creative approval.
-          Installation sizing, destination and rollback are intentionally not performed.</p>
+          {" "}{report.broker_dispatch_performed
+            ? "Authenticated read-only Broker observations are included. They do not establish native rendering, source readback, a signed package or human creative approval."
+            : "A source declaration, compatible CLI and this local preflight do not establish a live Broker handshake, installed provider, media acceptance, signed package or human creative approval."}
+          {" "}Installation sizing, destination and rollback are not performed.</p>
       </div>
     </>}
   </section>;
