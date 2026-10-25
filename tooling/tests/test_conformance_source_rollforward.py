@@ -60,6 +60,11 @@ class SourceCurrencyTests(unittest.TestCase):
                 status = "not_run" if field["status"] == "not_run" else "stale"
                 expected_counts[status] = expected_counts.get(status, 0) + 1
         self.assertEqual(self.report["criterion_counts"], expected_counts)
+        for name in LEDGERS:
+            self.assertEqual(self.after[name]["current_assessment_source_semantics"],
+                             "Exact branch snapshot assessed here; main integration is not claimed. "
+                             "Later integration requires its own currency review; "
+                             "no result is transferred to another source.")
         rows = list(all_rows(self.after))
         self.assertEqual(len(rows), 396)
         self.assertEqual(sum(len(r["technical_assessment"]["criteria"])
@@ -105,6 +110,7 @@ class SourceCurrencyTests(unittest.TestCase):
         for rid, current in newer.items():
             prev = original[rid]["technical_assessment"]
             technical = current["technical_assessment"]
+            self.assertEqual(technical["integration"]["status"], "branch")
             self.assertEqual(technical["evidence_currency"]["current_record_ids"], [])
             self.assertTrue(set(prev["evidence_currency"]["current_record_ids"]).issubset(
                 technical["evidence_currency"]["historical_record_ids"]))
@@ -182,6 +188,17 @@ class SourceCurrencyTests(unittest.TestCase):
             TARGET, "", TARGET + " refs/heads/main"
         ]):
             assert_source(ROOT, TARGET, integrated=True)
+        posts, _ = rollforward(self.previous, TARGET, source_digest(ROOT / "SOURCE_LOCK.json"),
+                               original_inputs=self.originals, integrated=True,
+                               at_utc=STAMP, predecessor=OLD)
+        after = {name: parse_unique(raw, name) for name, raw in posts.items()}
+        for name in LEDGERS:
+            self.assertEqual(after[name]["current_assessment_source_semantics"],
+                             "Exact integrated snapshot assessed here. "
+                             "Later integration requires its own currency review; "
+                             "no result is transferred to another source.")
+        for row in all_rows(after):
+            self.assertEqual(row["technical_assessment"]["integration"]["status"], "main")
 
     def test_fail_is_historical_only(self):
         old = copy.deepcopy(self.previous)

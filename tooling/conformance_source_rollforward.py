@@ -196,6 +196,12 @@ def rollforward(previous: dict, target_sha: str, lock_digest: str, *,
     for name in LEDGERS:
         doc = newer[name]
         doc["current_assessment_source"] = idx["source"]
+        doc["current_assessment_source_semantics"] = (
+            ("Exact integrated snapshot assessed here. " if integrated else
+             "Exact branch snapshot assessed here; main integration is not claimed. ")
+            + "Later integration requires its own currency review; "
+              "no result is transferred to another source."
+        )
         if name == "docs/creative-production/requirements-status.json":
             doc["upstream_integrated_sha"] = target_sha
             doc["upstream_integrated_sha_semantics"] = (
