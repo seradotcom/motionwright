@@ -9,8 +9,9 @@ use motionwright_native::{
         inspect_creative_runtime_with_registry,
     },
     production::{
-        ManimRuntimeVersionObservation, ManimRuntimeVersionState, ProductionClient,
-        ProductionConnection, RendererRegistryObservation, RendererRegistryState,
+        ManimRuntimeVersionObservation, ManimRuntimeVersionState, NativeRuntimeVersionObservation,
+        NativeRuntimeVersionState, ProductionClient, ProductionConnection,
+        RendererRegistryObservation, RendererRegistryState,
     },
 };
 use motionwright_service::StudioService;
@@ -34,6 +35,8 @@ pub(crate) struct RuntimeDoctorReport {
     pub report: CreativeRuntimeDoctorReport,
     pub registry_observation: Option<RegistryObservation>,
     pub manim_runtime_observation: Option<ManimRuntimeVersionObservation>,
+    pub native_runtime_observations: Vec<NativeRuntimeVersionObservation>,
+    pub native_runtime_probe_failures: Vec<NativeRuntimeProbeFailure>,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +56,155 @@ pub(crate) struct RegistryProviderObservation {
     pub state: &'static str,
     pub provider_generation: Option<u64>,
     pub provider_version: Option<String>,
+}
+
+/// A failed read is not evidence of installation, absence or compatibility.
+/// The generation is the registry expectation, not a claimed probe result.
+#[derive(Debug, Serialize)]
+pub(crate) struct NativeRuntimeProbeFailure {
+    pub renderer: &'static str,
+    pub provider: &'static str,
+    pub registry_provider_generation: u64,
+    pub state: &'static str,
+    pub version_compatible: Option<bool>,
+    pub error_code: semwright_native_sdk::ErrorCode,
+    pub outcome_known: bool,
+    pub reason_code: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum NativeProbe {
+    Blender,
+    Mlt,
+    MotionCanvas,
+}
+
+impl NativeProbe {
+    fn renderer(self) -> &'static str {
+        match self {
+            Self::Blender => "blender",
+            Self::Mlt => "mlt",
+            Self::MotionCanvas => "motion-canvas",
+        }
+    }
+    fn provider(self) -> &'static str {
+        match self {
+            Self::Blender => "driver:blender",
+            Self::Mlt => "driver:mlt-video",
+            Self::MotionCanvas => "driver:motion-canvas",
+        }
+    }
+    fn version_check(self) -> &'static str {
+        match self {
+            Self::Blender => "native_runtime_blender_version",
+            Self::Mlt => "native_runtime_mlt_version",
+            Self::MotionCanvas => "native_runtime_motion_canvas_version",
+        }
+    }
+}
+
+fn include_native_observation(
+    report: &mut CreativeRuntimeDoctorReport,
+    expected: &RevisionStamp,
+    probe: NativeProbe,
+    provider_generation: u64,
+    observation: &NativeRuntimeVersionObservation,
+) -> Result<(), String> {
+    if observation.renderer() != probe.renderer()
+        || !observation.matches_scope(expected)
+        || observation.provider_generation() != provider_generation
+    {
+        return Err(
+            "The native provider generation or project changed during diagnosis; refresh and recheck."
+                .into(),
+        );
+    }
+    let (status, renderer_state) = match observation.state() {
+        NativeRuntimeVersionState::ObservedCompatible => {
+            ("validated", "native_runtime_version_compatible")
+        }
+        NativeRuntimeVersionState::ObservedIncompatible => {
+            ("blocked", "native_runtime_version_incompatible")
+        }
+        NativeRuntimeVersionState::Observed => ("observed", "native_runtime_version_observed"),
+        NativeRuntimeVersionState::PackageNotFound => {
+            ("blocked", "native_package_not_found_in_declared_runtime")
+        }
+        NativeRuntimeVersionState::NotObserved => ("not_tested", "native_runtime_not_observed"),
+    };
+    let check = report
+        .checks
+        .iter_mut()
+        .find(|check| check.id == probe.version_check())
+        .ok_or_else(|| "The runtime report is missing its native version check.".to_owned())?;
+    check.status = status;
+    check.detail = format!(
+        "provider={}; provider_generation={}; observed_version={}; expected_version={}; compatible={}; freshness={}; reason={}; broker_request_id={}. This is a scoped native version observation; it does not establish rendering, font admission or effect authority.",
+        probe.provider(),
+        observation.provider_generation(),
+        observation.observed_version().unwrap_or("not_observed"),
+        observation
+            .expected_version()
+            .unwrap_or("no_global_compatibility_policy"),
+        observation
+            .version_compatible()
+            .map_or("not_assessed", |compatible| {
+                if compatible { "true" } else { "false" }
+            }),
+        observation.observation_freshness(),
+        observation.reason_code(),
+        observation.broker_request_id(),
+    );
+    let renderer = report
+        .renderers
+        .iter_mut()
+        .find(|renderer| renderer.renderer == probe.renderer())
+        .ok_or_else(|| "The runtime report is missing its renderer row.".to_owned())?;
+    renderer.state = renderer_state;
+    Ok(())
+}
+
+fn include_native_failure(
+    report: &mut CreativeRuntimeDoctorReport,
+    probe: NativeProbe,
+    provider_generation: u64,
+    error: &semwright_native_sdk::Error,
+) -> Result<NativeRuntimeProbeFailure, String> {
+    let check = report
+        .checks
+        .iter_mut()
+        .find(|check| check.id == probe.version_check())
+        .ok_or_else(|| "The runtime report is missing its native version check.".to_owned())?;
+    check.status = "not_tested";
+    let dependency = if matches!(probe, NativeProbe::MotionCanvas) {
+        " Motion Canvas requires the reviewed opt-in package-probe contract; a metadata-only doctor response is not native version evidence."
+    } else {
+        ""
+    };
+    check.detail = format!(
+        "provider={}; registry_provider_generation={}; probe_error={:?}; outcome_known={}. Native availability and compatibility remain unobserved. The failed request was not retried.{}",
+        probe.provider(),
+        provider_generation,
+        error.code,
+        error.outcome_known,
+        dependency,
+    );
+    let renderer = report
+        .renderers
+        .iter_mut()
+        .find(|renderer| renderer.renderer == probe.renderer())
+        .ok_or_else(|| "The runtime report is missing its renderer row.".to_owned())?;
+    renderer.state = "native_runtime_not_observed";
+    Ok(NativeRuntimeProbeFailure {
+        renderer: probe.renderer(),
+        provider: probe.provider(),
+        registry_provider_generation: provider_generation,
+        state: "not_observed",
+        version_compatible: None,
+        error_code: error.code,
+        outcome_known: error.outcome_known,
+        reason_code: "native_runtime_probe_failed",
+    })
 }
 
 fn registry_evidence(
@@ -231,6 +383,8 @@ pub(crate) async fn inspect(
             report: inspect_creative_runtime(&current, request.source_pin, request.cli, true),
             registry_observation: None,
             manim_runtime_observation: None,
+            native_runtime_observations: Vec::new(),
+            native_runtime_probe_failures: Vec::new(),
         });
     }
     let identity = RuntimeIdentity {
@@ -259,7 +413,20 @@ pub(crate) async fn inspect(
         _ => None,
     };
     let registry_observation = registry_evidence(&registry, request.expected, &identity)?;
+    let native_generations = [
+        NativeProbe::Blender,
+        NativeProbe::Mlt,
+        NativeProbe::MotionCanvas,
+    ]
+    .into_iter()
+    .filter_map(|probe| match registry.state_for(probe.renderer()) {
+        Some(RendererRegistryState::PresentConnected { generation }) => Some((probe, generation)),
+        _ => None,
+    })
+    .collect::<Vec<_>>();
     let mut manim_runtime_observation = None;
+    let mut native_runtime_observations = Vec::new();
+    let mut native_runtime_probe_failures = Vec::new();
     let mut report = inspect_creative_runtime_with_registry(
         &current,
         request.source_pin,
@@ -282,10 +449,61 @@ pub(crate) async fn inspect(
         include_manim_observation(&mut report, request.expected, generation, &observation)?;
         manim_runtime_observation = Some(observation);
     }
+    for (probe, generation) in native_generations {
+        // Each read uses the original canonical client only while the selected
+        // project and transport still have the original identity.
+        current_connection(service, connections, &request, &identity)?;
+        let result = match probe {
+            NativeProbe::Blender => {
+                client
+                    .observe_blender_runtime_version(request.expected)
+                    .await
+            }
+            NativeProbe::Mlt => client.observe_mlt_runtime_version(request.expected).await,
+            NativeProbe::MotionCanvas => {
+                client
+                    .observe_motion_canvas_runtime_version(request.expected)
+                    .await
+            }
+        };
+        current_connection(service, connections, &request, &identity)?;
+        match result {
+            Ok(observation) => {
+                include_native_observation(
+                    &mut report,
+                    request.expected,
+                    probe,
+                    generation,
+                    &observation,
+                )?;
+                native_runtime_observations.push(observation);
+            }
+            Err(error) if error.code == semwright_native_sdk::ErrorCode::StaleReference => {
+                return Err(
+                    "The native runtime observation became stale during diagnosis; refresh and recheck."
+                        .into(),
+                );
+            }
+            Err(error) => {
+                // Do not infer absence or retry a failed/UNKNOWN probe. A later
+                // iteration is a different provider's independent read.
+                native_runtime_probe_failures.push(include_native_failure(
+                    &mut report,
+                    probe,
+                    generation,
+                    &error,
+                )?);
+            }
+        }
+    }
+    current_connection(service, connections, &request, &identity)?;
+    report.runtime_version_detail = "Semwright CLI compatibility and the authenticated Broker registry were observed. Native version results below retain their own provider generation, scope and freshness; MLT declares no global compatibility policy. Rendering, font admission, installation and effect authority remain separate checks.";
     Ok(RuntimeDoctorReport {
         report,
         registry_observation: Some(registry_observation),
         manim_runtime_observation,
+        native_runtime_observations,
+        native_runtime_probe_failures,
     })
 }
 
