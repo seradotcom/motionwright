@@ -30,7 +30,7 @@ const root = createRoot(container);
 let project: Project = structuredClone(fixtureBootstrap.project);
 let nativeSdk: Bootstrap["native_sdk"] = {...fixtureBootstrap.native_sdk, mode: "tauri"};
 let runtime: ProductionRuntimeCompatibility = {
-  status: "version_compatible", reason: null, expected_version: "1.0.0",
+  status: "ready", reason: null, expected_version: "1.0.0",
   observed_version: "1.0.0", version_compatible: true,
   pinned_revision: nativeSdk.pinned_revision, connection_identity: "connection-a",
   executable_sha256: "a".repeat(64),
