@@ -6,6 +6,8 @@ on:
     paths:
       - "tooling/startup_capture_core.py"
       - "tooling/tests/test_startup_capture_core.py"
+      - "tooling/startup_capture_collector.py"
+      - "tooling/tests/test_startup_capture_collector.py"
       - ".github/workflows/startup-capture-source.yml"
   workflow_dispatch:
 
@@ -49,6 +51,7 @@ jobs:
           source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
           assert source == os.environ["GITHUB_SHA"]
           paths = ("tooling/startup_capture_core.py", "tooling/tests/test_startup_capture_core.py",
+                   "tooling/startup_capture_collector.py", "tooling/tests/test_startup_capture_collector.py",
                    ".github/workflows/startup-capture-source.yml", "tooling/ci_test_runner.py")
           files = {name: {"bytes": (root/name).stat().st_size,
                           "sha256": hashlib.sha256((root/name).read_bytes()).hexdigest()}
@@ -57,10 +60,10 @@ jobs:
                      "source_tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip(),
                      "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                      "job": os.environ["GITHUB_JOB"], "python": sys.version, "files": files,
-                     "scope": "Source controls and real Linux kernel fixtures only",
+                     "scope": "Source controls, passive capture custody and real Linux kernel fixtures only",
                      "installed_application_executed": False, "formal_acceptance": False}
           (output/"context-before.json").write_text(json.dumps(context, indent=2)+"\n")
-          for name in paths[:2]:
+          for name in paths[:4]:
               ast.parse((root/name).read_bytes(), filename=name)
           commands = (
               ("whitespace", ["git", "diff", "--check", "HEAD^", "HEAD"]),
@@ -126,6 +129,7 @@ jobs:
           python3 -I -B tooling/ci_test_runner.py \
             --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
             --pattern test_startup_capture_core.py \
+            --pattern test_startup_capture_collector.py \
             --mode both --expected-source "$GITHUB_SHA" \
             --report "$CAPTURE_EVIDENCE/kernel-controls/receipt.json" --require-complete
       - name: Retain final source identity without promoting a product verdict

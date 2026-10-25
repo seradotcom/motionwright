@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -12,10 +13,11 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
-MODULE = Path(__file__).resolve().parent.parent / "startup_capture_core.py"
+MODULE = Path(__file__).with_name("startup_capture_core.py")
 if not MODULE.exists():
-    MODULE = Path(__file__).with_name("startup_capture_core.py")
+    MODULE = Path(__file__).resolve().parent.parent / "startup_capture_core.py"
 SPEC = importlib.util.spec_from_file_location("startup_capture_core", MODULE)
 core = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = core
@@ -24,6 +26,185 @@ SPEC.loader.exec_module(core)
 
 def frame(value):
     return (json.dumps(value, separators=(",", ":")) + "\n").encode()
+
+
+def proc_snapshot(pid=5, parent=1, group=5, session=5, start=123):
+    values = [b"S", str(parent).encode(), str(group).encode(), str(session).encode()]
+    values += [b"0"] * 15 + [str(start).encode()]
+    return str(pid).encode() + b" (fixture) " + b" ".join(values)
+
+
+_UNRESOLVED_CUSTODY = []
+
+
+def _observe_owned_terminal(child, budget, pump=None):
+    """Bounded wait of an actual retained direct child; never signal a PID."""
+    record = {"status": "UNKNOWN", "pid": child.pid, "wait_status": None,
+              "exit_code": None, "process_tree_closed": False,
+              "cleanup_deadline_ns": budget.cleanup_ns}
+    captured = core.BoundedStream(core.STATUS_LIMIT)
+    status_fd = child.status_fd
+    status_nonblocking = False
+    if status_fd is not None:
+        try:
+            os.set_blocking(status_fd, False)
+            status_nonblocking = True
+        except OSError as exc:
+            record["status_read_error"] = type(exc).__name__
+    while time.monotonic_ns() < budget.cleanup_ns:
+        if pump is not None:
+            try:
+                pump.step()
+            except (core.CaptureError, OSError) as exc:
+                record["capture_error"] = type(exc).__name__
+        elif status_nonblocking and not captured.eof:
+            try:
+                data = os.read(status_fd, 65536)
+                if data:
+                    captured.feed(data)
+                else:
+                    captured.finish()
+            except BlockingIOError:
+                pass
+            except OSError as exc:
+                record["status_read_error"] = type(exc).__name__
+                status_nonblocking = False
+        try:
+            reaped, status = os.waitpid(child.pid, os.WNOHANG)
+        except ChildProcessError:
+            record["reason"] = "original terminal wait unavailable"
+            break
+        except OSError as exc:
+            record["reason"] = f"terminal wait failed:{type(exc).__name__}"
+            break
+        if reaped == child.pid:
+            record.update(status="TERMINAL_WAIT_OBSERVED", wait_status=status,
+                          exit_code=os.waitstatus_to_exitcode(status),
+                          observed_monotonic_ns=time.monotonic_ns())
+            break
+        if reaped != 0:
+            record["reason"] = "terminal wait returned another identity"
+            break
+        remaining = max(0, (budget.cleanup_ns - time.monotonic_ns()) / 1e9)
+        if remaining:
+            if child.pidfd is not None:
+                try:
+                    select.select([child.pidfd], [], [], min(.01, remaining))
+                except OSError as exc:
+                    record["reason"] = f"retained handle wait failed:{type(exc).__name__}"
+                    break
+            else:
+                time.sleep(min(.01, remaining))
+    if record["wait_status"] is None:
+        record.setdefault("reason", "original cleanup deadline exhausted")
+    elif record["observed_monotonic_ns"] > budget.cleanup_ns:
+        record["status"] = "TERMINAL_WAIT_OBSERVED_AFTER_DEADLINE"
+    if pump is not None and status_fd in pump.streams:
+        captured = pump.streams[status_fd]
+    record["status_bytes"] = len(captured.data)
+    record["status_sha256"] = hashlib.sha256(captured.data).hexdigest()
+    record["status_eof"] = captured.eof
+    record["status_truncated"] = captured.truncated
+    child.harness_status_original = bytes(captured.data)
+    return record
+
+
+class _HarnessCustody:
+    """Established before pipes/fork, including exceptions with retained children."""
+    def __init__(self, budget):
+        self.budget = budget
+        self.fds = set()
+        self.writers = set()
+        self.child = None
+        self.pump = None
+        self.wait_status = None
+        self.cleanup_record = None
+        self.failure = None
+        self.close_errors = []
+        self.uncertain_fds = set()
+
+    def pipe(self):
+        read_fd, write_fd = os.pipe()
+        self.fds.update((read_fd, write_fd))
+        self.writers.add(write_fd)
+        return read_fd, write_fd
+
+    def own(self, fd):
+        if fd is not None and fd >= 0:
+            self.fds.add(fd)
+        return fd
+
+    def close(self, fd):
+        if fd in self.fds:
+            self.fds.remove(fd)
+            self.writers.discard(fd)
+            try:
+                os.close(fd)
+            except OSError as exc:
+                # close may already have released this descriptor. Retrying
+                # its number could close an unrelated, subsequently reused FD.
+                self.uncertain_fds.add(fd)
+                self.close_errors.append({"fd": fd, "error": type(exc).__name__,
+                                          "errno": exc.errno})
+                raise
+
+    def attach(self, child):
+        self.child = child
+        self.own(child.pidfd)
+        self.own(child.status_fd)
+        self.own(getattr(child, "ack_fd", None))
+
+    def finish(self):
+        for fd in tuple(self.writers):
+            try:
+                self.close(fd)
+            except OSError:
+                pass
+        if self.child is not None and self.wait_status is None:
+            if isinstance(self.child, core.SupervisorHandle):
+                ack_fd = self.child.ack_fd
+                if ack_fd in self.uncertain_fds or ack_fd not in self.fds:
+                    self.child.ack_fd = -1
+                else:
+                    try:
+                        self.child.abort()
+                    except OSError as exc:
+                        # Still retain and wait the original child; an abort error
+                        # is not permission to lose its process/descriptor custody.
+                        self.uncertain_fds.add(ack_fd)
+                        self.close_errors.append({"fd": ack_fd, "error": type(exc).__name__,
+                                                  "errno": exc.errno})
+                        self.child.ack_fd = -1
+                self.fds.discard(ack_fd)
+            self.cleanup_record = _observe_owned_terminal(self.child, self.budget, self.pump)
+            if isinstance(self.child, core.RetainedChildError):
+                self.child.harness_custody = self.cleanup_record
+            if self.failure is not None:
+                self.failure.harness_custody = self.cleanup_record
+            self.wait_status = self.cleanup_record["wait_status"]
+            if self.wait_status is None:
+                # Keep the actual handles and captured buffers reachable. The
+                # failing harness does not silently drop an unresolved child.
+                _UNRESOLVED_CUSTODY.append(self)
+                print("HARNESS_CUSTODY " + json.dumps(self.cleanup_record, sort_keys=True),
+                      file=sys.stderr)
+                raise AssertionError("UNKNOWN: retained child has no original terminal wait")
+        for fd in tuple(self.fds):
+            try:
+                self.close(fd)
+            except OSError:
+                pass
+        if isinstance(self.child, core.SupervisorHandle):
+            self.child.ack_fd = -1
+        if self.close_errors:
+            record = {"status": "UNKNOWN_DESCRIPTOR_CLOSE", "close_errors": self.close_errors,
+                      "pid": self.child.pid if self.child is not None else None,
+                      "wait_status": self.wait_status}
+            _UNRESOLVED_CUSTODY.append(self)
+            if self.failure is not None:
+                self.failure.harness_close_errors = self.close_errors
+            print("HARNESS_CUSTODY " + json.dumps(record, sort_keys=True), file=sys.stderr)
+            raise AssertionError("UNKNOWN: descriptor close failed after original child wait") from self.failure
 
 
 def transcript():
@@ -44,6 +225,152 @@ def transcript():
 
 
 class PortableCustodyTests(unittest.TestCase):
+    def test_procfs_coherence_positive_uses_same_kernel_identity(self):
+        raw = proc_snapshot()
+        status = b"Pid:\t5\nPPid:\t1\nNSpid:\t5\n"
+        identity = core._validate_procfs_snapshot(5, 1, 5, 5, raw, raw, status)
+        self.assertEqual(identity["pid"], 5)
+        self.assertEqual(identity["start_ticks"], 123)
+
+    def test_procfs_foreign_namespace_is_rejected_without_pid_translation(self):
+        foreign = proc_snapshot(pid=7737)
+        status = b"Pid:\t7737\nPPid:\t1\nNSpid:\t7737\t5\n"
+        with self.assertRaises(core.CaptureError):
+            core._validate_procfs_snapshot(5, 1, 5, 5, foreign, foreign, status)
+
+    def test_procfs_numeric_alias_namespace_ancestry_and_relationship_mismatch_fail(self):
+        raw = proc_snapshot()
+        status = b"Pid:\t5\nPPid:\t1\nNSpid:\t5\n"
+        cases = [
+            (raw, proc_snapshot(start=999), status),
+            (raw, raw, b"Pid:5\nPPid:1\nNSpid:5 5\n"),
+            (raw, raw, b"Pid:5\nPPid:1\n"),
+            (raw, raw, b"Pid:5\nPid:5\nPPid:1\nNSpid:5\n"),
+            (proc_snapshot(group=8), proc_snapshot(group=8), status),
+        ]
+        for self_stat, numeric_stat, self_status in cases:
+            with self.subTest(status=self_status), self.assertRaises(core.CaptureError):
+                core._validate_procfs_snapshot(5, 1, 5, 5, self_stat, numeric_stat, self_status)
+
+    def test_procfs_preparation_reads_are_bounded(self):
+        with mock.patch.object(core.Path, "open", return_value=io.BytesIO(b"x" * 16)):
+            self.assertEqual(core._read_proc_bound("fixture", 16), b"x" * 16)
+        with mock.patch.object(core.Path, "open", return_value=io.BytesIO(b"x" * 17)):
+            with self.assertRaises(core.CaptureError):
+                core._read_proc_bound("fixture", 16)
+
+    def test_incoherent_environment_rejected_before_internal_pipes_or_fork(self):
+        budget = core.Budget(time.monotonic_ns())
+        raw = proc_snapshot(pid=7737)
+        status = b"Pid:7737\nPPid:1\nNSpid:7737 5\n"
+        with mock.patch.object(core.sys, "platform", "linux"), \
+             mock.patch.object(core.os, "getpid", return_value=5), \
+             mock.patch.object(core.os, "getppid", return_value=1), \
+             mock.patch.object(core.os, "getpgrp", create=True, return_value=5), \
+             mock.patch.object(core.os, "getsid", create=True, return_value=5), \
+             mock.patch.object(core.os, "pidfd_open", create=True), \
+             mock.patch.object(core.signal, "pidfd_send_signal", create=True), \
+             mock.patch.object(core, "_read_proc_bound", side_effect=[raw, raw, status]), \
+             mock.patch.object(core.os, "pipe") as pipe, \
+             mock.patch.object(core.os, "fork", create=True) as fork:
+            with self.assertRaisesRegex(core.CaptureError, "namespace identity"):
+                core.start_supervisor(["fixture"], {}, 20, 21, budget)
+            pipe.assert_not_called()
+            fork.assert_not_called()
+
+    def test_missing_cleanup_terminal_remains_unknown_and_preserves_handles(self):
+        custody = _HarnessCustody(SimpleNamespace(cleanup_ns=100))
+        child = core.SupervisorStartError("synthetic retained child", pid=7, status_fd=None, pidfd=8)
+        custody.attach(child)
+        before = len(_UNRESOLVED_CUSTODY)
+        try:
+            with mock.patch.object(time, "monotonic_ns", return_value=100), \
+                 mock.patch.object(os, "waitpid", create=True) as wait, \
+                 mock.patch.object(os, "close") as close, \
+                 mock.patch("builtins.print"):
+                with self.assertRaisesRegex(AssertionError, "UNKNOWN"):
+                    custody.finish()
+                wait.assert_not_called()
+                close.assert_not_called()
+            self.assertIs(_UNRESOLVED_CUSTODY[-1], custody)
+            self.assertEqual(child.harness_custody["status"], "UNKNOWN")
+            self.assertIsNone(child.harness_custody["wait_status"])
+            self.assertIn(8, custody.fds)
+            self.assertEqual(child.harness_custody["cleanup_deadline_ns"], 100)
+        finally:
+            del _UNRESOLVED_CUSTODY[before:]
+
+    def test_retained_child_cleanup_uses_original_nonblocking_wait_without_signals(self):
+        child = core.SupervisorStartError("synthetic retained child", pid=7, status_fd=None, pidfd=None)
+        with mock.patch.object(time, "monotonic_ns", return_value=10), \
+             mock.patch.object(os, "WNOHANG", 1, create=True), \
+             mock.patch.object(os, "waitpid", create=True, return_value=(7, 124 << 8)) as wait, \
+             mock.patch.object(os, "waitstatus_to_exitcode", create=True, return_value=124), \
+             mock.patch.object(os, "kill", create=True) as kill, \
+             mock.patch.object(signal, "pidfd_send_signal", create=True) as send_signal:
+            result = _observe_owned_terminal(child, SimpleNamespace(cleanup_ns=100))
+        wait.assert_called_once_with(7, 1)
+        kill.assert_not_called()
+        send_signal.assert_not_called()
+        self.assertEqual(result["status"], "TERMINAL_WAIT_OBSERVED")
+        self.assertEqual(result["exit_code"], 124)
+        self.assertFalse(result["process_tree_closed"])
+
+    def test_uncertain_writer_close_is_not_retried_and_cannot_skip_child_wait(self):
+        custody = _HarnessCustody(SimpleNamespace(cleanup_ns=100))
+        child = core.SupervisorStartError("synthetic retained child", pid=7, status_fd=None, pidfd=None)
+        custody.attach(child)
+        custody.own(9)
+        custody.writers.add(9)
+        before = len(_UNRESOLVED_CUSTODY)
+        try:
+            with mock.patch.object(os, "close", side_effect=InterruptedError("fixture close outcome unknown")) as close, \
+                 mock.patch.object(time, "monotonic_ns", return_value=10), \
+                 mock.patch.object(os, "WNOHANG", 1, create=True), \
+                 mock.patch.object(os, "waitpid", create=True, return_value=(7, 124 << 8)) as wait, \
+                 mock.patch.object(os, "waitstatus_to_exitcode", create=True, return_value=124), \
+                 mock.patch("builtins.print"):
+                try:
+                    custody.close(9)
+                except OSError as original:
+                    custody.failure = original
+                with self.assertRaisesRegex(AssertionError, "descriptor close failed"):
+                    custody.finish()
+                close.assert_called_once_with(9)
+                wait.assert_called_once_with(7, 1)
+            self.assertEqual(child.harness_custody["exit_code"], 124)
+            self.assertEqual(custody.cleanup_record["status"], "TERMINAL_WAIT_OBSERVED")
+            self.assertIn(9, custody.uncertain_fds)
+            self.assertNotIn(9, custody.fds)
+        finally:
+            del _UNRESOLVED_CUSTODY[before:]
+
+    def test_uncertain_ack_close_is_not_repeated_by_abort(self):
+        custody = _HarnessCustody(SimpleNamespace(cleanup_ns=100))
+        child = core.SupervisorHandle(pid=7, start_ticks=11, pidfd=None, status_fd=None, ack_fd=9)
+        custody.attach(child)
+        before = len(_UNRESOLVED_CUSTODY)
+        try:
+            with mock.patch.object(os, "close", side_effect=InterruptedError("fixture ACK close unknown")) as close, \
+                 mock.patch.object(time, "monotonic_ns", return_value=10), \
+                 mock.patch.object(os, "WNOHANG", 1, create=True), \
+                 mock.patch.object(os, "waitpid", create=True, return_value=(7, 124 << 8)) as wait, \
+                 mock.patch.object(os, "waitstatus_to_exitcode", create=True, return_value=124), \
+                 mock.patch("builtins.print"):
+                try:
+                    custody.close(child.ack_fd)
+                except OSError as original:
+                    custody.failure = original
+                with self.assertRaisesRegex(AssertionError, "descriptor close failed"):
+                    custody.finish()
+                close.assert_called_once_with(9)
+                wait.assert_called_once_with(7, 1)
+            self.assertEqual(child.ack_fd, -1)
+            self.assertEqual(custody.cleanup_record["exit_code"], 124)
+            self.assertIn(9, custody.uncertain_fds)
+        finally:
+            del _UNRESOLVED_CUSTODY[before:]
+
     def test_budget_never_resets(self):
         value = core.Budget(123)
         self.assertEqual(value.operation_ns, 24_000_000_123)
@@ -267,25 +594,79 @@ class PortableCustodyTests(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux") and hasattr(os, "pidfd_open"),
                      "actual Linux kernel proof required; not a portable PASS")
 class LinuxKernelTests(unittest.TestCase):
+    def assert_harness_terminal_custody(self, error):
+        record = error.harness_custody
+        self.assertEqual(record["status"], "TERMINAL_WAIT_OBSERVED")
+        self.assertEqual(record["exit_code"], 124)
+        self.assertIsNotNone(record["wait_status"])
+        self.assertLessEqual(record["observed_monotonic_ns"], record["cleanup_deadline_ns"])
+        self.assertFalse(record["process_tree_closed"])
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(record["pid"], os.WNOHANG)
+
+    def test_actual_runner_procfs_identity_is_coherent_before_fork(self):
+        identity = core._check_procfs_coherence()
+        self.assertEqual(identity["pid"], os.getpid())
+        self.assertEqual(identity["parent_pid"], os.getppid())
+        self.assertEqual(identity["process_group_id"], os.getpgrp())
+        self.assertEqual(identity["session_id"], os.getsid(0))
+
+    def test_observer_harness_reaps_retained_postfork_start_error(self):
+        parent = os.getpid()
+        original_identity = core.proc_identity
+
+        def fail_parent_only(pid):
+            if os.getpid() == parent and pid != parent:
+                raise OSError("fixture postfork parent binding failure")
+            return original_identity(pid)
+
+        with mock.patch.object(core, "proc_identity", side_effect=fail_parent_only):
+            with self.assertRaises(core.SupervisorStartError) as caught:
+                self.run_observer("print('must-not-run')", elapsed=21)
+        self.assert_harness_terminal_custody(caught.exception)
+
+    def test_failed_mirror_harness_reaps_retained_postfork_start_error(self):
+        parent = os.getpid()
+        original_identity = core.proc_identity
+
+        def fail_parent_only(pid):
+            if os.getpid() == parent and pid != parent:
+                raise OSError("fixture postfork mirror parent binding failure")
+            return original_identity(pid)
+
+        with mock.patch.object(core, "proc_identity", side_effect=fail_parent_only):
+            with self.assertRaises(core.SupervisorStartError) as caught:
+                self.run_failed_mirror("EPIPE")
+        self.assert_harness_terminal_custody(caught.exception)
+
+    def test_harness_reaps_acquired_child_when_capture_setup_raises(self):
+        with mock.patch.object(core, "CapturePump", side_effect=core.CaptureError("fixture capture setup")):
+            with self.assertRaisesRegex(core.CaptureError, "fixture capture setup") as caught:
+                self.run_observer("print('must-not-run')", elapsed=21)
+        self.assert_harness_terminal_custody(caught.exception)
+
     def run_observer(self, source, *, acknowledge=True, elapsed=0, check_barrier=False, mirror=False):
         budget = core.Budget(time.monotonic_ns() - int(elapsed * 1e9))
-        out_r, out_w = os.pipe()
-        err_r, err_w = os.pipe()
-        mirror_r, mirror_w = os.pipe() if mirror else (None, None)
-        handle = core.start_supervisor([sys.executable, "-u", "-B", "-c", source],
-                                       dict(os.environ), out_w, err_w, budget, mirror_fd=mirror_w)
-        os.close(out_w)
-        os.close(err_w)
-        if mirror_w is not None:
-            os.close(mirror_w)
-        capture_fds = {out_r: core.STDOUT_LIMIT, err_r: core.SUPERVISOR_LIMIT,
-                       handle.status_fd: core.STATUS_LIMIT}
-        if mirror_r is not None:
-            capture_fds[mirror_r] = core.STATUS_LIMIT
-        pump = core.CapturePump(capture_fds, budget)
-        retained_cli = None
-        wait_status = None
+        custody = _HarnessCustody(budget)
         try:
+            out_r, out_w = custody.pipe()
+            err_r, err_w = custody.pipe()
+            mirror_r, mirror_w = custody.pipe() if mirror else (None, None)
+            try:
+                handle = core.start_supervisor([sys.executable, "-u", "-B", "-c", source],
+                    dict(os.environ), out_w, err_w, budget, mirror_fd=mirror_w)
+            except core.RetainedChildError as exc:
+                custody.attach(exc)
+                raise
+            custody.attach(handle)
+            custody.close(out_w)
+            custody.close(err_w)
+            custody.close(mirror_w)
+            capture_fds = {out_r: core.STDOUT_LIMIT, err_r: core.SUPERVISOR_LIMIT,
+                           handle.status_fd: core.STATUS_LIMIT}
+            if mirror_r is not None:
+                capture_fds[mirror_r] = core.STATUS_LIMIT
+            pump = custody.pump = core.CapturePump(capture_fds, budget)
             # Obtain immutable identity while observer code remains behind gate.
             while b"\n" not in pump.streams[handle.status_fd].data:
                 self.assertTrue(pump.step())
@@ -293,7 +674,7 @@ class LinuxKernelTests(unittest.TestCase):
             binding = core.decode_frame(raw, eof=True)
             self.assertEqual(binding["kind"], "LAUNCH_BOUND")
             cli = binding["cli"]
-            retained_cli = os.pidfd_open(cli["pid"])
+            retained_cli = custody.own(os.pidfd_open(cli["pid"]))
             self.assertEqual(core.proc_identity(cli["pid"])["start_ticks"], cli["start_ticks"])
             self.assertEqual(cli["parent_pid"], handle.pid)
             if check_barrier:
@@ -304,7 +685,7 @@ class LinuxKernelTests(unittest.TestCase):
             if acknowledge:
                 handle.admit_exec()
             else:
-                os.close(handle.ack_fd)
+                custody.close(handle.ack_fd)
                 handle.ack_fd = -1
             while pump.step():
                 pass
@@ -313,29 +694,17 @@ class LinuxKernelTests(unittest.TestCase):
             self.assertTrue(select.select([handle.pidfd], [], [], .5)[0])
             reaped, wait_status = os.waitpid(handle.pid, 0)
             self.assertEqual(reaped, handle.pid)
+            custody.wait_status = wait_status
             self.assertTrue(select.select([retained_cli], [], [], 0)[0])
             return (bytes(pump.streams[out_r].data), bytes(pump.streams[err_r].data),
                     bytes(pump.streams[handle.status_fd].data),
                     os.waitstatus_to_exitcode(wait_status), handle, budget, cli,
                     bytes(pump.streams[mirror_r].data) if mirror_r is not None else None)
+        except BaseException as exc:
+            custody.failure = exc
+            raise
         finally:
-            if wait_status is None:
-                # Preserve the subreaper while it performs bounded cleanup.
-                handle.abort()
-                until = budget.join_ns + 1_000_000_000
-                while time.monotonic_ns() < until:
-                    try:
-                        pump.step()
-                    except core.CaptureError:
-                        pass
-                    if select.select([handle.pidfd], [], [], .01)[0]:
-                        os.waitpid(handle.pid, 0)
-                        break
-            if handle.ack_fd >= 0:
-                os.close(handle.ack_fd)
-            for fd in (out_r, err_r, handle.status_fd, handle.pidfd, retained_cli, mirror_r):
-                if fd is not None:
-                    os.close(fd)
+            custody.finish()
 
     def validate(self, result):
         out, err, raw, exit_code, handle, budget, retained_cli = result[:7]
@@ -409,37 +778,43 @@ os._exit(0)
 
     def run_failed_mirror(self, failure):
         budget = core.Budget(time.monotonic_ns() - 21_000_000_000)
-        out_r, out_w = os.pipe()
-        err_r, err_w = os.pipe()
-        mirror_r, mirror_w = os.pipe()
-        prefilled = 0
-        if failure == "EPIPE":
-            os.close(mirror_r)
-            mirror_r = -1
-        elif failure == "EAGAIN":
-            os.set_blocking(mirror_w, False)
-            for _ in range(512):
-                try:
-                    written = os.write(mirror_w, b"x" * core.FRAME_LIMIT)
-                    self.assertEqual(written, core.FRAME_LIMIT)
-                    prefilled += written
-                except BlockingIOError:
-                    break
-            else:
-                self.fail("fixture pipe did not fill within its finite budget")
-            self.assertGreater(prefilled, 0)
-        else:
-            self.fail("unknown fixture failure")
-        handle = core.start_supervisor(
-            [sys.executable, "-u", "-B", "-c", "print('MUST_NOT_EXECUTE')"],
-            dict(os.environ), out_w, err_w, budget, mirror_fd=mirror_w)
-        os.close(out_w)
-        os.close(err_w)
-        os.close(mirror_w)
-        pump = core.CapturePump({out_r: core.STDOUT_LIMIT, err_r: core.SUPERVISOR_LIMIT,
-                                 handle.status_fd: core.STATUS_LIMIT}, budget)
-        waited = False
+        custody = _HarnessCustody(budget)
         try:
+            out_r, out_w = custody.pipe()
+            err_r, err_w = custody.pipe()
+            mirror_r, mirror_w = custody.pipe()
+            prefilled = 0
+            if failure == "EPIPE":
+                custody.close(mirror_r)
+                mirror_r = -1
+            elif failure == "EAGAIN":
+                os.set_blocking(mirror_w, False)
+                for _ in range(512):
+                    try:
+                        written = os.write(mirror_w, b"x" * core.FRAME_LIMIT)
+                        self.assertEqual(written, core.FRAME_LIMIT)
+                        prefilled += written
+                    except BlockingIOError:
+                        break
+                else:
+                    self.fail("fixture pipe did not fill within its finite budget")
+                self.assertGreater(prefilled, 0)
+            else:
+                self.fail("unknown fixture failure")
+            try:
+                handle = core.start_supervisor(
+                    [sys.executable, "-u", "-B", "-c", "print('MUST_NOT_EXECUTE')"],
+                    dict(os.environ), out_w, err_w, budget, mirror_fd=mirror_w)
+            except core.RetainedChildError as exc:
+                custody.attach(exc)
+                raise
+            custody.attach(handle)
+            custody.close(out_w)
+            custody.close(err_w)
+            custody.close(mirror_w)
+            pump = custody.pump = core.CapturePump(
+                {out_r: core.STDOUT_LIMIT, err_r: core.SUPERVISOR_LIMIT,
+                 handle.status_fd: core.STATUS_LIMIT}, budget)
             # Adversarial prequeued ACK: even this must not override a failed
             # independent capture sink. Normal callers retain CLI identity first.
             try:
@@ -451,8 +826,8 @@ os._exit(0)
             pump.require_complete()
             self.assertTrue(select.select([handle.pidfd], [], [], .5)[0])
             reaped, status = os.waitpid(handle.pid, 0)
-            waited = True
             self.assertEqual(reaped, handle.pid)
+            custody.wait_status = status
             self.assertEqual(os.waitstatus_to_exitcode(status), 124)
             self.assertEqual(bytes(pump.streams[out_r].data), b"")
             raw = bytes(pump.streams[handle.status_fd].data)
@@ -482,21 +857,11 @@ os._exit(0)
             with self.assertRaises(core.CaptureError):
                 core.validate_transcript(raw, eof=True, expected_supervisor=own,
                     expected_cli=records[0]["cli"], deadline_ns=budget.join_ns)
+        except BaseException as exc:
+            custody.failure = exc
+            raise
         finally:
-            handle.abort()
-            if not waited:
-                until = budget.join_ns + 1_000_000_000
-                while time.monotonic_ns() < until:
-                    try:
-                        pump.step()
-                    except core.CaptureError:
-                        pass
-                    if select.select([handle.pidfd], [], [], .01)[0]:
-                        os.waitpid(handle.pid, 0)
-                        break
-            for fd in (out_r, err_r, mirror_r, handle.status_fd, handle.pidfd):
-                if fd >= 0:
-                    os.close(fd)
+            custody.finish()
 
     def test_closed_independent_reader_is_unknown_without_cli_execution(self):
         self.run_failed_mirror("EPIPE")

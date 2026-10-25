@@ -143,9 +143,12 @@ def decode_frame(raw, *, eof, limit=STATUS_LIMIT):
 
 def proc_identity(pid):
     """Identity only; the caller needs a retained pidfd to prevent PID reuse."""
+    return _parse_proc_stat(Path(f"/proc/{pid}/stat").read_bytes(), pid)
+
+
+def _parse_proc_stat(raw, pid):
     # comm may contain Unicode, spaces or ')'; it is opaque and irrelevant to
     # identity. Numeric fields after its final ')' remain ASCII kernel fields.
-    raw = Path(f"/proc/{pid}/stat").read_bytes()
     right = raw.rfind(b")")
     if right < 0 or int(raw[:raw.find(b" ")]) != pid:
         raise CaptureError("invalid proc identity")
@@ -157,11 +160,65 @@ def proc_identity(pid):
             "process_group_id": int(fields[2])}
 
 
+def _read_proc_bound(path, limit):
+    with Path(path).open("rb") as source:
+        raw = source.read(limit + 1)
+    if len(raw) > limit:
+        raise CaptureError("procfs preparation exceeds finite read budget")
+    return raw
+
+
+def _validate_procfs_snapshot(pid, parent_pid, group_id, session_id,
+                              self_stat, numeric_stat, self_status):
+    """Reject an incompatible procfs mount; never translate namespace PIDs."""
+    try:
+        current = _parse_proc_stat(self_stat, pid)
+        numeric = _parse_proc_stat(numeric_stat, pid)
+    except (ValueError, IndexError, CaptureError) as exc:
+        raise CaptureError("unsupported procfs/PID namespace identity") from exc
+    if current != numeric:
+        raise CaptureError("procfs self and numeric identity disagree")
+    if (current["parent_pid"] != parent_pid or current["process_group_id"] != group_id
+            or current["session_id"] != session_id):
+        raise CaptureError("procfs and kernel process relationships disagree")
+    fields = {}
+    for line in self_status.splitlines():
+        key, separator, value = line.partition(b":")
+        if separator and key in (b"Pid", b"PPid", b"NSpid"):
+            if key in fields:
+                raise CaptureError("duplicate procfs identity field")
+            try:
+                fields[key] = [int(item) for item in value.split()]
+            except ValueError as exc:
+                raise CaptureError("invalid procfs identity field") from exc
+    if fields.get(b"Pid") != [pid] or fields.get(b"PPid") != [parent_pid]:
+        raise CaptureError("procfs status and kernel PID disagree")
+    if fields.get(b"NSpid") != [pid]:
+        raise CaptureError("unsupported procfs PID namespace ancestry")
+    return current
+
+
+def _check_procfs_coherence():
+    # This must run before any observer fork. An ancestor-namespace /proc
+    # cannot be repaired by mapping its PIDs into the caller's namespace.
+    pid = os.getpid()
+    try:
+        return _validate_procfs_snapshot(
+            pid, os.getppid(), os.getpgrp(), os.getsid(0),
+            _read_proc_bound("/proc/self/stat", 4096),
+            _read_proc_bound(f"/proc/{pid}/stat", 4096),
+            _read_proc_bound("/proc/self/status", 65_536),
+        )
+    except OSError as exc:
+        raise CaptureError("unsupported or unreadable procfs preparation") from exc
+
+
 def _linux():
     if (not sys.platform.startswith("linux") or not hasattr(os, "fork")
             or not hasattr(os, "pidfd_open")
             or not hasattr(signal, "pidfd_send_signal")):
         raise CaptureError("Linux fork, pidfd and procfs interfaces required")
+    _check_procfs_coherence()
 
 
 def _close_except(keep):
