@@ -213,6 +213,31 @@ class ReviewedSQLitePathSourceContracts(unittest.TestCase):
                     with self.assertRaisesRegex(gate.VerificationError, "differs"):
                         gate.reviewed_source_identity(repo, self.HEAD, gate.digest(raw))
 
+    def test_working_blob_mismatch_reports_original_path_lengths_and_hashes(self):
+        for mutation in ("changed_byte", "crlf"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as root:
+                repo, _, raw, _, git = self.fixture(root)
+                name = gate.GATE_PATHS[0]
+                path = repo / name
+                expected = path.read_bytes()
+                observed = (bytes([expected[0] ^ 1]) + expected[1:] if mutation == "changed_byte"
+                            else expected.replace(b"\n", b"\r\n"))
+                self.assertNotEqual(observed, expected)
+                path.write_bytes(observed)
+                with mock.patch.object(gate, "git_query", side_effect=git), \
+                     mock.patch.object(gate, "observe_rust") as launch:
+                    with self.assertRaisesRegex(gate.VerificationError,
+                                                "working source differs from Git blob: ") as caught:
+                        gate.reviewed_source_identity(repo, self.HEAD, gate.digest(raw))
+                launch.assert_not_called()
+                detail = json.loads(str(caught.exception).split(": ", 1)[1])
+                self.assertEqual(detail, {
+                    "path": name,
+                    "expected_bytes": len(expected), "expected_sha256": gate.digest(expected),
+                    "observed_bytes": len(observed), "observed_sha256": gate.digest(observed),
+                })
+                self.assertEqual(path.read_bytes(), observed)
+
     def test_manifest_rejects_proposal_missing_extra_wrong_pins_and_definitions(self):
         with tempfile.TemporaryDirectory() as root:
             _, original, _, _, _ = self.fixture(root)
