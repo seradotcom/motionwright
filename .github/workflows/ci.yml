@@ -93,6 +93,7 @@ jobs:
       - name: Verify read-only Semwright first-use security guardrails
         run: python3 -m unittest discover -s tooling/tests -p 'test_runtime_first_use_audit.py' -v
       - name: Reject stale source, invalid applicability and omitted selected results
+        if: ${{ !cancelled() }}
         env:
           MW_CI_JOB_TEST_TMP: ${{ runner.temp }}
         run: >-
@@ -101,6 +102,7 @@ jobs:
           --test-directory tooling/tests
           --pattern test_ci_job_plan.py
           --pattern test_source_policy_credentials.py
+          --pattern test_conformance_policy.py
           --mode both
           --expected-source "$GITHUB_SHA"
           --report "$RUNNER_TEMP/motionwright-ci/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/job-plan-contracts/receipt.json"
