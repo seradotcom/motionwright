@@ -445,6 +445,10 @@ def main() -> None:
         from native_blender_original_evidence import run_original
         run_original(sys.modules[__name__])
         return
+    if mode == "product-scene":
+        from native_blender_original_evidence import run_product
+        run_product(sys.modules[__name__])
+        return
     if mode != "static-glb":
         raise SystemExit("unsupported native Blender verification scope")
     exact_inputs()

@@ -1,5 +1,5 @@
-//! Retained, exact-shape service benchmarks. UI selection/scrub and scene/object
-//! projection paging are separate capabilities and are never inferred here.
+//! Retained, exact-shape service benchmarks with measured service projection pages.
+//! UI selection/scrub remain separate capabilities and are never inferred here.
 pub mod support {
     use motionwright_domain::{
         Beat, CameraState, CanvasNode, Change, Claim, CoordinateSpace, DomainError, LockKind,
@@ -168,6 +168,12 @@ pub mod support {
     }
 
     impl Profile {
+        // A bounded synthetic voice is independent of the authored timeline.
+        // S requires five minutes of voice; M/L retain their full project duration.
+        fn voice_fixture_seconds(self) -> i64 {
+            300
+        }
+
         fn named(label: &str) -> Result<Self> {
             match label {
                 "S" => Ok(Self {
@@ -268,6 +274,10 @@ pub mod support {
         json!({
             "source_sha_compiled": compile_sha,
             "source_sha_runtime": runtime_sha,
+            "reference_profile_raw": env::var("MOTIONWRIGHT_REFERENCE_PROFILE").ok(),
+            "reference_profile_effective": env::var("MOTIONWRIGHT_REFERENCE_PROFILE").unwrap_or_else(|_| "S,M,L".into()),
+            "responsiveness_profile_raw": env::var("MOTIONWRIGHT_RESPONSIVENESS_PROFILE").ok(),
+            "responsiveness_profile_effective": env::var("MOTIONWRIGHT_RESPONSIVENESS_PROFILE").unwrap_or_else(|_| "S".into()),
             "source_binding_scope": "compile-time/runtime equality, independent runner checkout required",
             "independent_checkout_verification": "NOT_PERFORMED_BY_BENCHMARK",
             "compiler_version": option_env!("RUSTC_VERSION").unwrap_or("NOT_CAPTURED"),
@@ -535,11 +545,11 @@ pub mod support {
                 "reference variant count differs after persisted readback",
             )?;
         }
-        let seconds = RationalTime::new(profile.seconds, 1)?;
+        let voice_seconds = RationalTime::new(profile.voice_fixture_seconds(), 1)?;
         verify_persisted_timeline(project, profile.seconds)?;
         require(
-            project.audio.voice_tracks[0].measured_duration == seconds,
-            "measured WAV duration differs from reference timeline",
+            project.audio.voice_tracks[0].measured_duration == voice_seconds,
+            "measured WAV duration differs from the declared bounded voice fixture",
         )?;
         require(
             project.audio.voice_tracks[0].sample_rate_hz == SAMPLE_RATE,
@@ -612,6 +622,213 @@ pub mod support {
         Ok(
             json!({"kind": "event_history_only", "pages": pages, "events": events,
             "scene_object_projection_claim": false}),
+        )
+    }
+
+    fn retain_projection<T: serde::Serialize>(
+        folder: &Path,
+        name: &str,
+        value: &T,
+        service_micros: u128,
+        pages: &mut Vec<Value>,
+    ) -> Result<()> {
+        let raw = serde_json::to_vec(value)?;
+        require(
+            raw.len() <= motionwright_service::MAX_PROJECTION_RESPONSE_BYTES,
+            "project projection response exceeds its public byte budget",
+        )?;
+        let path = folder.join(name);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        file.write_all(&raw)?;
+        file.sync_all()?;
+        pages.push(json!({"path": path, "bytes": raw.len(),
+            "sha256": hex::encode(Sha256::digest(&raw)), "service_micros": service_micros}));
+        Ok(())
+    }
+
+    fn paged_project(
+        service: &StudioService,
+        project: &Project,
+        folder: &Path,
+        scene_limit: u16,
+        node_limit: u16,
+    ) -> Result<Value> {
+        require(
+            scene_limit > 0 && scene_limit <= motionwright_service::MAX_SCENE_PAGE_ITEMS,
+            "scene page limit is outside the public contract",
+        )?;
+        require(
+            node_limit > 0 && node_limit <= motionwright_service::MAX_NODE_PAGE_ITEMS,
+            "node page limit is outside the public contract",
+        )?;
+        fs::create_dir(folder)?;
+        let mut originals = Vec::new();
+        let started = Instant::now();
+        let head = service.project_projection_head(project.id)?;
+        let head_micros = started.elapsed().as_micros();
+        require(
+            head.identity.project_id == project.id
+                && head.identity.generation == project.generation
+                && head.identity.revision == project.revision.to_string()
+                && head.scene_count as usize == project.scenes.len()
+                && head.title == project.title,
+            "projection head differs from the retained project snapshot",
+        )?;
+        retain_projection(folder, "head.json", &head, head_micros, &mut originals)?;
+        let mut scene_cursor = None;
+        let mut next_scene = 0_usize;
+        let mut scene_pages = 0_usize;
+        let mut node_pages = 0_usize;
+        let mut nodes_read = 0_usize;
+        loop {
+            let started = Instant::now();
+            let page =
+                service.project_scene_page(&head.identity, scene_cursor.as_ref(), scene_limit)?;
+            let micros = started.elapsed().as_micros();
+            require(
+                page.identity == head.identity
+                    && page.total_scenes == head.scene_count
+                    && page.start_ordinal as usize == next_scene
+                    && page.items.len() <= usize::from(scene_limit)
+                    && (!page.items.is_empty() || project.scenes.is_empty()),
+                "scene projection identity, order or bounds differ",
+            )?;
+            retain_projection(
+                folder,
+                &format!("scenes-{scene_pages:04}.json"),
+                &page,
+                micros,
+                &mut originals,
+            )?;
+            scene_pages += 1;
+            for summary in &page.items {
+                let expected = project
+                    .scenes
+                    .get(next_scene)
+                    .ok_or("unexpected projected scene")?;
+                require(
+                    summary.ordinal as usize == next_scene
+                        && summary.id == expected.id
+                        && summary.name == expected.name
+                        && summary.start == expected.start
+                        && summary.duration == expected.duration
+                        && summary.renderer == expected.renderer
+                        && summary.status == expected.status
+                        && summary.beat_count as usize == expected.beats.len()
+                        && summary.node_count as usize == expected.nodes.len(),
+                    "scene projection differs from the retained scene",
+                )?;
+                let scene_ref = summary.scene_ref();
+                let mut node_cursor = None;
+                let mut next_node = 0_usize;
+                let mut scene_node_pages = 0_usize;
+                loop {
+                    let started = Instant::now();
+                    let nodes = service.project_scene_nodes(
+                        &head.identity,
+                        &scene_ref,
+                        node_cursor.as_ref(),
+                        node_limit,
+                    )?;
+                    let micros = started.elapsed().as_micros();
+                    require(
+                        nodes.identity == head.identity
+                            && nodes.scene == scene_ref
+                            && nodes.total_nodes as usize == expected.nodes.len()
+                            && nodes.start_ordinal as usize == next_node
+                            && nodes.items.len() <= usize::from(node_limit)
+                            && (!nodes.items.is_empty() || expected.nodes.is_empty()),
+                        "node projection identity, order or bounds differ",
+                    )?;
+                    let end = next_node
+                        .checked_add(nodes.items.len())
+                        .ok_or("node count overflow")?;
+                    let expected_nodes = expected
+                        .nodes
+                        .get(next_node..end)
+                        .ok_or("unexpected projected nodes")?;
+                    require(
+                        nodes.items.as_slice() == expected_nodes,
+                        "node projection differs from retained node contents",
+                    )?;
+                    retain_projection(
+                        folder,
+                        &format!("nodes-{next_scene:04}-{scene_node_pages:04}.json"),
+                        &nodes,
+                        micros,
+                        &mut originals,
+                    )?;
+                    scene_node_pages += 1;
+                    node_pages += 1;
+                    nodes_read += nodes.items.len();
+                    require(
+                        end > next_node || expected.nodes.is_empty(),
+                        "node page made no progress",
+                    )?;
+                    next_node = end;
+                    match nodes.next_cursor {
+                        Some(cursor) => {
+                            require(
+                                cursor.identity == head.identity
+                                    && cursor.scene == scene_ref
+                                    && cursor.next_ordinal as usize == next_node
+                                    && next_node < expected.nodes.len(),
+                                "node cursor did not advance within the same snapshot",
+                            )?;
+                            node_cursor = Some(cursor);
+                        }
+                        None => {
+                            require(
+                                next_node == expected.nodes.len(),
+                                "node paging ended before all nodes",
+                            )?;
+                            break;
+                        }
+                    }
+                }
+                next_scene += 1;
+            }
+            match page.next_cursor {
+                Some(cursor) => {
+                    require(
+                        cursor.identity == head.identity
+                            && cursor.next_ordinal as usize == next_scene
+                            && next_scene < project.scenes.len(),
+                        "scene cursor did not advance within the same snapshot",
+                    )?;
+                    scene_cursor = Some(cursor);
+                }
+                None => {
+                    require(
+                        next_scene == project.scenes.len(),
+                        "scene paging ended before all scenes",
+                    )?;
+                    break;
+                }
+            }
+        }
+        require(
+            nodes_read
+                == project
+                    .scenes
+                    .iter()
+                    .map(|scene| scene.nodes.len())
+                    .sum::<usize>(),
+            "project paging lost or duplicated nodes",
+        )?;
+        let total_service_micros: u128 = originals
+            .iter()
+            .map(|page| u128::from(page["service_micros"].as_u64().unwrap()))
+            .sum();
+        Ok(
+            json!({"status": "PASS", "kind": "service_scene_and_node_pages",
+            "identity": head.identity, "scene_limit": scene_limit, "node_limit": node_limit,
+            "scenes_read": next_scene, "nodes_read": nodes_read, "scene_pages": scene_pages,
+            "node_pages": node_pages, "total_service_micros": total_service_micros,
+            "originals": originals, "scope": "Exact paged service readback; no UI latency or virtualization claim"}),
         )
     }
 
@@ -812,7 +1029,7 @@ pub mod support {
         write_json(&folder.join("imported-project.json"), &project)?;
         report["stage"] = json!("measure_and_import_wav");
         let wav = folder.join("reference-voice.wav");
-        write_wav(&wav, profile.seconds)?;
+        write_wav(&wav, profile.voice_fixture_seconds())?;
         project = service
             .import_voice_file(
                 project.id,
@@ -1080,6 +1297,14 @@ pub mod support {
             cas_snapshot(&final_service, &final_project)? == baseline_cas,
             "measured samples changed source CAS bytes",
         )?;
+        report["stage"] = json!("read_revision_bound_scene_and_node_pages");
+        report["scene_object_projection"] = paged_project(
+            &final_service,
+            &final_project,
+            &folder.join("project-projection"),
+            32,
+            16,
+        )?;
         let history = paged_history(&final_service, &final_project)?;
         report["event_count"] = json!(history["events"].as_array().ok_or("missing history")?.len());
         report["final_revision"] = json!(final_project.revision);
@@ -1189,8 +1414,6 @@ pub mod support {
                 "reason": "This process has no Studio event loop or selection-to-paint observation."},
             "studio_scrub_or_proxy_ui_blocking": {"status": "NOT_RUN", "required_limit_ms": 200,
                 "reason": "Service timings do not measure UI blocking or input-to-paint."},
-            "large_scene_object_projection_paging": {"status": "NOT_RUN",
-                "reason": "The available service APIs load a full Project. Event-history keyset paging is measured separately and does not satisfy this capability."},
             "installed_first_use": {"status": "NOT_RUN",
                 "reason": "Prepared project API editing does not measure installation or first human use."},
             "native_render_cache_avoided_work": {"status": "NOT_RUN",
@@ -1242,6 +1465,40 @@ pub mod support {
         }
     }
 
+    fn reference_cases(selected: Option<&str>) -> Result<Vec<(BriefSpec, Profile)>> {
+        let profiles = match selected {
+            None => vec![
+                Profile::named("S")?,
+                Profile::named("M")?,
+                Profile::named("L")?,
+            ],
+            Some(label) => vec![Profile::named(label)?],
+        };
+        Ok(REFERENCE_BRIEFS
+            .into_iter()
+            .flat_map(|brief| {
+                profiles
+                    .iter()
+                    .copied()
+                    .map(move |profile| (brief, profile))
+            })
+            .collect())
+    }
+
+    fn projection_coverage(results: &[Value]) -> Value {
+        let selected: Vec<_> = results.iter().filter(|case| case["size"] == "L").collect();
+        let completed = selected
+            .iter()
+            .filter(|case| {
+                case["status"] == "PASS" && case["scene_object_projection"]["status"] == "PASS"
+            })
+            .count();
+        json!({"status": if selected.is_empty() { "NOT_RUN" }
+            else if completed == selected.len() { "MEASURED_SERVICE_PAGES" } else { "INCOMPLETE" },
+            "selected_large_cases": selected.len(), "completed_large_cases": completed,
+            "scope": "Per-case service paging after full Project readback; no cold installed UI, virtualization or render evidence"})
+    }
+
     fn suite(responsiveness: bool) -> Result<ExitCode> {
         let negative = match env::var("MOTIONWRIGHT_BENCH_NEGATIVE") {
             Ok(value) if matches!(value.as_str(), "truncated-profile" | "uneditable-reopen") => Some(value),
@@ -1266,13 +1523,12 @@ pub mod support {
             };
             vec![(RESPONSIVENESS_BRIEF, Profile::named(&selected_name)?)]
         } else {
-            let mut cases = Vec::new();
-            for brief in REFERENCE_BRIEFS {
-                for profile in ["S", "M", "L"] {
-                    cases.push((brief, Profile::named(profile)?));
-                }
-            }
-            cases
+            let selected_profile = match env::var("MOTIONWRIGHT_REFERENCE_PROFILE") {
+                Ok(value) => Some(value),
+                Err(env::VarError::NotPresent) => None,
+                Err(error) => return Err(error.into()),
+            };
+            reference_cases(selected_profile.as_deref())?
         };
         let mut results = Vec::new();
         for (brief, profile) in selected {
@@ -1282,10 +1538,11 @@ pub mod support {
                 "brief": brief.slug, "size": profile.label, "requested_scene_count": profile.scenes,
                 "dataset_family": "normative_reference_profile", "normative_reference": false,
                 "required_shape": {"scenes": profile.scenes, "canvas_nodes": profile.nodes,
-                    "duration_seconds": profile.seconds, "beats": profile.required_beats,
+                    "duration_seconds": profile.seconds, "voice_fixture_seconds": profile.voice_fixture_seconds(),
+                    "beats": profile.required_beats,
                     "deliverable_variants": profile.required_variants,
                     "width": 1920, "height": 1080, "frame_rate": "30/1"},
-                "fixture_policy": "M/L beat counts are explicit fixture composition, not invented normative requirements. All profiles use measured synthetic PCM at 8000 Hz.",
+                "fixture_policy": "M/L beat counts and bounded300s voice are explicit fixture composition. Full timelines remain300/1800/7200s. All voices use measured synthetic PCM at8000Hz; no full-duration narration claim.",
                 "artifact_directory": folder, "status": "RUNNING", "stage": "starting",
                 "negative_fixture": negative,
                 "context_file": root.join("context-before.json"),
@@ -1313,6 +1570,7 @@ pub mod support {
         let source_sha = before["source_sha_compiled"]
             .as_str()
             .unwrap_or("unattributed");
+        let projection_coverage = projection_coverage(&results);
         let mut report = if responsiveness {
             results.first().cloned().ok_or("no responsiveness case")?
         } else {
@@ -1341,6 +1599,7 @@ pub mod support {
         report["retained_sources_after"] = sources_after;
         report["artifact_directory"] = json!(root);
         report["pending_capabilities"] = pending_capabilities();
+        report["service_projection_coverage"] = projection_coverage;
         report["human_feedback"] =
             json!("NOT_RUN: no human participants, ratings or consent are fabricated.");
         report["comparative_claims"] =
@@ -1405,6 +1664,159 @@ pub mod support {
             let reopened = store.load_project(project.id).unwrap();
             assert_eq!(reopened, project);
             reopened
+        }
+
+        #[test]
+        fn large_profile_prepares_real_voice_without_changing_two_hour_timeline() {
+            assert!(env::var_os("MOTIONWRIGHT_BENCH_NEGATIVE").is_none());
+            let root = tempfile::tempdir().unwrap();
+            let profile = Profile::named("L").unwrap();
+            let mut report = json!({});
+            let (service, project, _) =
+                prepare(profile, RESPONSIVENESS_BRIEF, root.path(), &mut report)
+                    .expect("large reference fixture must pass the existing real voice importer");
+            assert_eq!(project.scenes.len(), 500);
+            assert_eq!(
+                project
+                    .scenes
+                    .iter()
+                    .map(|scene| scene.nodes.len())
+                    .sum::<usize>(),
+                15_000
+            );
+            verify_persisted_timeline(&project, 7_200).unwrap();
+            assert_eq!(
+                project.audio.voice_tracks[0].measured_duration,
+                RationalTime::new(300, 1).unwrap()
+            );
+            assert_eq!(service.project(project.id).unwrap(), project);
+            validate_shape(profile, &project).unwrap();
+        }
+
+        #[test]
+        fn bounded_voice_and_full_reference_timelines_are_independent() {
+            let limit = motionwright_service::ImportLimits::default().audio_seconds();
+            for (label, timeline) in [("S", 300), ("M", 1800), ("L", 7200)] {
+                let profile = Profile::named(label).unwrap();
+                assert_eq!(profile.seconds, timeline);
+                assert_eq!(profile.voice_fixture_seconds(), 300);
+                assert!(u64::try_from(profile.voice_fixture_seconds()).unwrap() <= limit);
+            }
+        }
+
+        #[test]
+        fn reference_selection_keeps_all_three_authored_briefs_and_exact_shapes() {
+            assert_eq!(reference_cases(None).unwrap().len(), 9);
+            for (label, scenes, nodes, seconds) in [
+                ("S", 12, 300, 300),
+                ("M", 120, 3000, 1800),
+                ("L", 500, 15000, 7200),
+            ] {
+                let cases = reference_cases(Some(label)).unwrap();
+                assert_eq!(cases.len(), 3);
+                assert_eq!(
+                    cases
+                        .iter()
+                        .map(|(brief, _)| brief.slug)
+                        .collect::<BTreeSet<_>>()
+                        .len(),
+                    3
+                );
+                for (_, profile) in cases {
+                    assert_eq!(
+                        (profile.scenes, profile.nodes, profile.seconds),
+                        (scenes, nodes, seconds)
+                    );
+                }
+            }
+            for invalid in ["", "s", "S,M", "historical", "XL"] {
+                assert!(reference_cases(Some(invalid)).is_err());
+            }
+        }
+
+        #[test]
+        fn selected_or_incomplete_runs_do_not_claim_large_projection_coverage() {
+            let passed = |size| {
+                json!({"size":size,"status":"PASS",
+                "scene_object_projection":{"status":"PASS"}})
+            };
+            assert_eq!(
+                projection_coverage(&[passed("S"), passed("M")])["status"],
+                "NOT_RUN"
+            );
+            assert_eq!(
+                projection_coverage(&[json!({"size":"L","status":"FAIL"})])["status"],
+                "INCOMPLETE"
+            );
+            assert_eq!(
+                projection_coverage(&[passed("L"), json!({"size":"L","status":"PASS"})])["status"],
+                "INCOMPLETE"
+            );
+            let full = projection_coverage(&[passed("L")]);
+            assert_eq!(full["status"], "MEASURED_SERVICE_PAGES");
+            assert_eq!(full["selected_large_cases"], 1);
+            assert_eq!(full["completed_large_cases"], 1);
+        }
+
+        fn projection_fixture() -> (tempfile::TempDir, StudioService, Project) {
+            let root = tempfile::tempdir().unwrap();
+            let service = StudioService::open(root.path().join("pages.sqlite3")).unwrap();
+            let project = genesis(Profile::named("S").unwrap(), RESPONSIVENESS_BRIEF).unwrap();
+            service.store().lock().create_project(&project).unwrap();
+            (root, service, project)
+        }
+
+        #[test]
+        fn paged_scene_and_node_readback_retains_exact_current_contents() {
+            let (root, service, project) = projection_fixture();
+            let report =
+                paged_project(&service, &project, &root.path().join("pages"), 5, 7).unwrap();
+            assert_eq!(report["scene_pages"], 3);
+            assert_eq!(report["node_pages"], 48);
+            assert_eq!(report["scenes_read"], 12);
+            assert_eq!(report["nodes_read"], 300);
+            assert_eq!(report["identity"]["revision"], project.revision.to_string());
+            assert_eq!(service.project(project.id).unwrap(), project);
+            for original in report["originals"].as_array().unwrap() {
+                let raw = fs::read(original["path"].as_str().unwrap()).unwrap();
+                assert_eq!(
+                    hex::encode(Sha256::digest(&raw)),
+                    original["sha256"].as_str().unwrap()
+                );
+                assert_eq!(raw.len() as u64, original["bytes"].as_u64().unwrap());
+                assert!(raw.len() <= motionwright_service::MAX_PROJECTION_RESPONSE_BYTES);
+            }
+        }
+
+        #[test]
+        fn paged_readback_rejects_changed_expected_node_content() {
+            let (root, service, mut project) = projection_fixture();
+            project.scenes[0].nodes[0].id = Uuid::now_v7();
+            let error =
+                paged_project(&service, &project, &root.path().join("pages"), 5, 7).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("node projection differs from retained node contents")
+            );
+        }
+
+        #[test]
+        fn paged_readback_rejects_stale_reference_snapshot() {
+            let (root, service, project) = projection_fixture();
+            service
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    "projection-stale-fixture",
+                    &Change::RenameProject {
+                        title: "Newer snapshot".into(),
+                    },
+                )
+                .unwrap();
+            let error =
+                paged_project(&service, &project, &root.path().join("pages"), 5, 7).unwrap_err();
+            assert!(error.to_string().contains("projection head differs"));
         }
 
         // Labels, IDs, timestamps, order and repetition cannot forge diversity.

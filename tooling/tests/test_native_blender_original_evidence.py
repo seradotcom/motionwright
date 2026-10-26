@@ -789,5 +789,130 @@ class ProcessIdentityTests(unittest.TestCase):
                 evidence.unique_json(raw)
 
 
+class ProductProfileTests(unittest.TestCase):
+    """Synthetic custody/selection cases; no native Blender operation is run."""
+    @classmethod
+    def setUpClass(cls):
+        CustodyTests.setUpClass.__func__(cls)
+
+    def setUp(self):
+        CustodyTests.setUp(self)
+        self.custody = evidence.OriginalCustody(
+            self.owner, self.public, self.recipient, self.context, profile="product-scene")
+
+    def complete_observations(self):
+        source = {"source_sha": self.context["source_sha"], "source_bytes_bound": True,
+                  "source_bindings": [], "native_effects": 0}
+        self.custody.record.update(source_before=source, source_after=copy.deepcopy(source))
+        self.custody.record["product"] = {
+            "contexts": [
+                {"phase": phase, "runtime_bindings": {}, "capabilities_checked": [],
+                 "observer": {"complete": True},
+                 "context_cleanup": {"errors": [], "daemon_returncode": -15}}
+                for phase in evidence.PHASES
+            ],
+            "cycle_command": {"invocation_reserved": True,
+                              "terminal": {"status": "PROCESS_EXIT", "returncode": 0}},
+            "native_returned": {
+                "schema": "motionwright.blender.product-cycle-evidence/1",
+                "native_terminal": {"status": "ok", "value": {
+                    "schema": "motionwright.blender.product-cycle-caller/2"}},
+                "phase_contract_verified": True,
+                "custody": {"sqlite_reopened": True, "saved_source_and_lineage_verified": True,
+                            "production": {"complete": True}},
+            },
+            "seed_original_digest_verified": True, "caller_publication_bound": True,
+            "distinct_context_chain": {"three_distinct_live_native_contexts": True,
+                                       "same_native_binary": True},
+            "independent_surface_pixels": {
+                "schema": "motionwright.blender.product-decoded-surface-difference/1",
+                "decoded_pixel_difference_verified": True,
+                "native_terminal_modified": False, "human_acceptance": False,
+            },
+            "secondary_errors": [],
+        }
+
+    def test_product_profile_requires_original_cycle_pixels_cleanup_and_source_identity(self):
+        self.complete_observations()
+        self.custody.seal()
+        good = self.custody.public_summary(None)
+        self.assertEqual(good["status"], "PASS")
+        self.assertEqual(good["native_cycle_terminal"], "COMPLETED")
+        self.assertFalse(good["full_1200_frame_render"])
+        self.assertFalse(good["visual_acceptance"])
+        self.assertFalse(good["human_acceptance"])
+        evidence.check_public_summary(good, self.context, profile="product-scene",
+                                      expected_recipient_sha256=self.recipient["sha256"])
+        original = copy.deepcopy(self.custody.record)
+        mutations = (
+            lambda r: r["product"].update(seed_original_digest_verified=False),
+            lambda r: r["product"].update(caller_publication_bound=False),
+            lambda r: r["product"]["native_returned"]["custody"].update(saved_source_and_lineage_verified=False),
+            lambda r: r["product"]["independent_surface_pixels"].update(decoded_pixel_difference_verified=False),
+            lambda r: r["product"]["contexts"][1]["context_cleanup"].update(errors=["synthetic"]),
+            lambda r: r["source_after"].update(source_sha="c" * 40),
+        )
+        for mutate in mutations:
+            self.custody.record = copy.deepcopy(original)
+            mutate(self.custody.record)
+            self.assertEqual(self.custody.public_summary(None)["status"], "UNVERIFIED")
+
+    def test_product_unknown_terminal_is_not_completion_or_native_context_observation(self):
+        self.complete_observations()
+        self.custody.seal()
+        product = self.custody.record["product"]
+        product["cycle_command"]["terminal"] = {"status": "PROCESS_TIMEOUT", "outcome_known": False}
+        product.pop("native_returned")
+        for row in product["contexts"]:
+            row["observer"] = None
+        value = self.custody.public_summary(OSError("private original uncertain outcome"))
+        self.assertEqual(value["status"], "UNVERIFIED")
+        self.assertEqual(value["native_cycle_terminal"], "ERROR_OR_UNKNOWN")
+        self.assertEqual(value["native_contexts_provisioned"], 3)
+        self.assertEqual(value["native_contexts_observed"], 0)
+        self.assertFalse(value["native_source_cycle_observed"])
+        self.assertFalse(value["decoded_surface_difference_observed"])
+        self.assertNotIn("private original", json.dumps(value))
+        self.assertNotIn(str(self.owner), json.dumps(value))
+
+    def test_product_stage_preserves_the_exact_cipher_and_recipient_binding(self):
+        self.complete_observations()
+        self.custody.seal()
+        evidence.new_json(self.public / "public-evidence.json", self.custody.public_summary(None))
+        out = self.root / "product-stage"
+        staged = evidence.stage_public(
+            self.public, out, self.context, "success", profile="product-scene",
+            expected_recipient_sha256=self.recipient["sha256"])
+        self.assertEqual(staged["status"], "PASS")
+        self.assertEqual(staged["schema"], "motionwright.blender.product-scene-published/1")
+        self.assertFalse(staged["full_1200_frame_render"])
+        self.assertEqual((out / "private-evidence.mwseal").read_bytes(),
+                         (self.public / "private-evidence.mwseal").read_bytes())
+        wrong = evidence.stage_public(
+            self.public, self.root / "wrong-recipient", self.context, "success",
+            profile="product-scene", expected_recipient_sha256="c" * 64)
+        self.assertEqual(wrong["status"], "UNVERIFIED")
+        self.assertFalse(wrong["producer_projection_bound"])
+
+    def test_product_projection_cannot_inherit_original_profile_or_full_render_claims(self):
+        self.complete_observations()
+        self.custody.seal()
+        value = self.custody.public_summary(None)
+        edits = (
+            {"schema": "motionwright.blender.original-scene-public/1"},
+            {"full_1200_frame_render": True},
+            {"native_contexts_observed": True},
+            {"recipient_spki_sha256": "d" * 64},
+            {"diagnostic": str(self.owner) + "/private"},
+        )
+        for changed in edits:
+            with self.assertRaises(evidence.OriginalSceneUnverified):
+                evidence.check_public_summary(
+                    {**value, **changed}, self.context, profile="product-scene",
+                    expected_recipient_sha256=self.recipient["sha256"])
+        with self.assertRaises(evidence.OriginalSceneUnverified):
+            evidence.check_public_summary(value, self.context)
+
+
 if __name__ == "__main__":
     unittest.main()

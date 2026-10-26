@@ -11,6 +11,8 @@ export interface ReviewRaw {
   kind: ReviewKind; timeMode: "resource" | "playhead" | "range";
   rangeStart: string; rangeEnd: string; body: string; resolution: string;
   direction: "positive" | "negative"; rationale: string;
+  // Omitted in legacy copies; an explicit empty value anchors no deliverable.
+  profileId?: string;
 }
 export interface ReviewPending {
   id: string; revision: number; sequence: number; change: ReviewChange;
@@ -127,6 +129,24 @@ export function reviewTimes(project: Project, resource: string, raw: ReviewRaw, 
     throw new Error("Review time must stay within its resource; the end cannot precede the start.");
   return { start, end };
 }
+/** Graph reviews retain their saved graph profile. Other reviews opt in to an
+ * existing deliverable; absence is never a request to choose the first profile.
+ * The current revision supplies its language, while persisted reviews keep the
+ * original locale independently of later profile edits or removal.
+ */
+export function reviewProfileAnchor(project: Project, resource: string, raw: ReviewRaw): {
+  profile_id: string | null; locale: string | null;
+} {
+  if (isGraphReviewResource(resource)) {
+    const graph = graphReviewAnchor(project, resource);
+    if (!graph) throw new Error("The saved Graph review source is unavailable.");
+    return { profile_id: graph.profile_id, locale: graph.locale };
+  }
+  if (raw.profileId === undefined || raw.profileId === "") return { profile_id: null, locale: null };
+  const profile = project.deliverables.find(item => item.id === raw.profileId);
+  if (!profile) throw new Error("The selected review deliverable is no longer present. Its selection and comment were kept; choose a deliverable or explicitly select no deliverable.");
+  return { profile_id: profile.id, locale: profile.language };
+}
 export function prepareReviewSubmission(draft: ReviewDraft, project: Project, change: ReviewChange, id: string): ReviewDraft {
   const target = assertTarget(draft, project);
   if (!uuid(id)) throw new Error("A local original-attempt identity is required.");
@@ -149,8 +169,11 @@ export function prepareReviewSubmission(draft: ReviewDraft, project: Project, ch
     const exactRange = raw.timeMode !== "range" || (same(change.start, parseBeatTime(raw.rangeStart)) && same(change.end, parseBeatTime(raw.rangeEnd)));
     const resourceOnly = raw.timeMode !== "resource" || (same(change.start, graph?.start ?? null) && same(change.end, graph?.end ?? null));
     const pointOnly = raw.timeMode !== "playhead" || (change.start !== null && change.end === null);
-    if (!exactRange || !resourceOnly || !pointOnly || change.locale !== (graph?.locale ?? null) || change.profile_id !== (graph?.profile_id ?? null))
+    if (!exactRange || !resourceOnly || !pointOnly)
       throw new Error("The request does not preserve its exact authored review time.");
+    const profile = reviewProfileAnchor(project, change.resource, raw);
+    if (change.locale !== profile.locale || change.profile_id !== profile.profile_id)
+      throw new Error("The request does not preserve its selected review deliverable and language.");
   }
   const priorReview = change.type === "add_review" ? null : project.reviews.find(review => review.id === change.review_id) ?? null;
   if (change.type === "resolve_review" && priorReview?.status === "dismissed") throw new Error("A dismissed review cannot be resolved.");
@@ -248,6 +271,7 @@ export async function inspectReviewOutcome(draft: ReviewDraft, selected: Project
  */
 export function separateReviewedIntent(draft: ReviewDraft, project: Project, outcome: ReviewOutcome): ReviewDraft {
   if (!reviewOutcomeMatches(draft, project, outcome)) throw new Error("Read the current saved review and its complete history before starting a separate intent.");
+  if (project.revision <= draft.pending!.revision) throw new Error("The original review request could still commit on its base. Keep it UNKNOWN.");
   assertTarget(draft, project);
   const target = targetOf(draft), pending = draft.pending!;
   // An author may deliberately return to the submitted value after another
@@ -266,7 +290,9 @@ export interface ReviewCopy { schema: "motionwright.review-recovery/1"; scope: s
 export const reviewCopyKey = (scope: string, writerId: string) => REVIEW_RECOVERY_PREFIX + encodeURIComponent(scope) + ":" + writerId;
 export const reviewPointerKey = (scope: string) => REVIEW_POINTER_PREFIX + encodeURIComponent(scope);
 function validRaw(raw: unknown): raw is ReviewRaw {
-  return object(raw) && exactKeys(raw, fields) && fields.every(field => typeof raw[field] === "string")
+  return object(raw) && exactKeys(raw, Object.hasOwn(raw, "profileId") ? [...fields, "profileId"] : fields)
+    && (!Object.hasOwn(raw, "profileId") || (typeof raw.profileId === "string" && (raw.profileId === "" || uuid(raw.profileId))))
+    && fields.every(field => typeof raw[field] === "string")
     && ["creative", "technical", "editorial"].includes(String(raw.kind))
     && ["resource", "playhead", "range"].includes(String(raw.timeMode)) && ["positive", "negative"].includes(String(raw.direction))
     && ["rangeStart", "rangeEnd"].every(field => String(raw[field]).length <= 256)

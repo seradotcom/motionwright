@@ -37,6 +37,8 @@ pub mod production;
 mod semantic_graph_source_fixture;
 pub mod sfx_mix;
 
+pub use graph_store_provider::run_native_provider;
+
 pub const APP_ID: &str = "motionwright";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -3522,6 +3524,1039 @@ pub fn build_application(service: StudioService) -> NativeResult<Application> {
         )?;
     }
     Ok(app)
+}
+
+/// Native provider composition is intentionally separate from the public
+/// application-local builder. Only the private mounted-Store constructor below
+/// can install the Graph writer, and even that writer requires a live Host permit.
+mod graph_store_provider {
+    use super::*;
+    use motionwright_domain::{DomainError, SemanticGraph};
+    use motionwright_service::{
+        SemanticGraphAdmission, SemanticGraphWriteLease, SemanticGraphWriteScope,
+    };
+    use motionwright_storage::Result as StorageResult;
+    use semwright_native_sdk::{
+        NativeDriver,
+        driver_sdk::{OperationPermit, OperationPermitGuard, workspace_mount},
+        serve,
+    };
+    use std::{
+        cell::RefCell,
+        ffi::OsString,
+        path::{Path, PathBuf},
+    };
+
+    const DATA_MOUNT: &str = "motionwright-data";
+    const DATABASE_NAME: &str = "motionwright.sqlite3";
+    #[cfg(test)]
+    const GRAPH_COMMAND: &str = "driver.motionwright.graph.upsert";
+
+    fn database_override(
+        environment: Option<OsString>,
+        argument: Option<OsString>,
+    ) -> Option<PathBuf> {
+        environment.or(argument).map(PathBuf::from)
+    }
+
+    fn is_derived_database(requested: Option<&Path>, derived: &Path) -> bool {
+        // Path equality normalizes some component spellings. Admission requires
+        // the exact owner-derived spelling: no canonicalize, alias or case fold.
+        requested.is_none_or(|path| path.as_os_str() == derived.as_os_str())
+    }
+
+    /// Not serializable or publicly constructible. A database with equal
+    /// project UUID/generation/revision is not evidence of this Store binding.
+    struct GraphStoreBinding {
+        service: StudioService,
+    }
+
+    impl GraphStoreBinding {
+        fn open_if_derived(requested: Option<&Path>) -> NativeResult<Option<Self>> {
+            let derived = match workspace_mount(DATA_MOUNT) {
+                Ok(root) => root.join(DATABASE_NAME),
+                // Existing arbitrary overrides retain their ordinary application
+                // behavior even when no owner mount is available in this process.
+                Err(_) if requested.is_some() => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            if !is_derived_database(requested, &derived) {
+                return Ok(None);
+            }
+            // Open the path derived above, never the caller's equal-looking path.
+            // This is the only production construction site for this binding.
+            let service = StudioService::open(derived).map_err(storage_error)?;
+            Ok(Some(Self { service }))
+        }
+    }
+
+    enum ProviderDatabase {
+        Mounted(GraphStoreBinding),
+        Ordinary(StudioService),
+    }
+
+    impl ProviderDatabase {
+        fn open(requested: Option<PathBuf>) -> NativeResult<Self> {
+            if let Some(binding) = GraphStoreBinding::open_if_derived(requested.as_deref())? {
+                return Ok(Self::Mounted(binding));
+            }
+            let path = requested.ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Internal,
+                    "Default provider database lost its derived Store binding",
+                )
+            })?;
+            Ok(Self::Ordinary(
+                StudioService::open(path).map_err(storage_error)?,
+            ))
+        }
+
+        fn into_application(self) -> NativeResult<Application> {
+            match self {
+                Self::Mounted(binding) => {
+                    // The existing observer and the dedicated Graph handler share
+                    // clones of this one StudioService, hence the same Store mutex.
+                    let app = build_application(binding.service.clone())?;
+                    app.register(graph_contract(), Arc::new(GraphUpsertHandler { binding }))
+                }
+                Self::Ordinary(service) => {
+                    // Ordinary reads/operations survive an override; Graph writes
+                    // are a precise denial rather than an inferred Store binding.
+                    build_application(service)?
+                        .register(graph_contract(), Arc::new(GraphStoreDeniedHandler))
+                }
+            }
+        }
+    }
+
+    /// Run the canonical native provider using env, argv, then the owner mount.
+    ///
+    /// No caller-supplied StudioService, path, ready flag, or serialized authority
+    /// can install a Graph writer through this public entrypoint.
+    pub async fn run_native_provider() -> NativeResult<()> {
+        let requested = database_override(
+            std::env::var_os("MOTIONWRIGHT_DB"),
+            std::env::args_os().nth(1),
+        );
+        #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+        let requested = owner_fixture::database_request(requested)?;
+        let app = ProviderDatabase::open(requested)?.into_application()?;
+        serve(NativeDriver::new(app)?).await
+    }
+
+    fn graph_contract() -> OperationContract {
+        descriptor(
+            "graph.upsert",
+            "Save exact editable Semantic Graph source through the mounted Store and current Host operation",
+            schema(
+                json!({
+                    "ref": {"type":"string","minLength":1,"maxLength":512},
+                    "graph": {"type":"object"}
+                }),
+                &["ref", "graph"],
+            ),
+        )
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct GraphUpsertArgs {
+        #[serde(rename = "ref")]
+        reference: String,
+        graph: SemanticGraph,
+    }
+
+    struct GraphStoreDeniedHandler;
+
+    #[async_trait]
+    impl OperationHandler for GraphStoreDeniedHandler {
+        async fn invoke(&self, _args: Value, _context: &CallContext) -> Completion {
+            Completion::NotApplied(Error::new(
+                ErrorCode::PermissionDenied,
+                "Graph source saving requires the provider-bound motionwright-data Store",
+            ))
+        }
+    }
+
+    struct GraphUpsertHandler {
+        binding: GraphStoreBinding,
+    }
+
+    fn native_failure(error: Error) -> Completion {
+        if error.outcome_known {
+            Completion::NotApplied(error)
+        } else {
+            Completion::Uncertain(error)
+        }
+    }
+
+    fn genuine_project_ref(context: &CallContext) -> NativeResult<&ResourceVersion> {
+        let host = context.driver_context()?;
+        context.check_cancelled()?;
+        if host.native_target().is_none() {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "Graph source saving requires a genuine Motionwright Native Ref",
+            ));
+        }
+        let bound = context.expected().ok_or_else(|| {
+            Error::new(
+                ErrorCode::StaleReference,
+                "Graph source saving requires a current observed project",
+            )
+        })?;
+        bound.validate()?;
+        Ok(bound)
+    }
+
+    #[async_trait]
+    impl OperationHandler for GraphUpsertHandler {
+        async fn invoke(&self, args: Value, context: &CallContext) -> Completion {
+            let bound = match genuine_project_ref(context) {
+                Ok(value) => value,
+                Err(error) => return native_failure(error),
+            };
+            let input: GraphUpsertArgs = match serde_json::from_value(args) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Completion::NotApplied(Error::invalid(
+                        "Graph source saving requires ref and typed graph source only",
+                    ));
+                }
+            };
+            if input.reference.is_empty() {
+                return Completion::NotApplied(Error::invalid("Project ref is required"));
+            }
+            // The marker was resolved by NativeDriver. It is never parsed into
+            // an application resource or compared with a caller-provided UUID.
+            let project_id = match project_id_from_resource(&bound.resource) {
+                Ok(value) => value,
+                Err(error) => return Completion::NotApplied(error),
+            };
+            if input.graph.authorship.source_snapshot.project_id != project_id {
+                return Completion::NotApplied(Error::new(
+                    ErrorCode::StaleReference,
+                    "Graph source and the observed project differ",
+                ));
+            }
+            let change = Change::UpsertSemanticGraph {
+                graph: Box::new(input.graph),
+            };
+
+            // No project load, Store mutex, or local mutation precedes this await.
+            // The owner already selected the resource/mount for this invocation.
+            let permit = match context.acquire_operation_permit().await {
+                Ok(value) => value,
+                Err(error) => return native_failure(error),
+            };
+            if permit.logical_mount() != DATA_MOUNT {
+                return Completion::NotApplied(Error::new(
+                    ErrorCode::PermissionDenied,
+                    "Graph source saving requires the motionwright-data operation",
+                ));
+            }
+
+            #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+            let fixture = match owner_fixture::Checkpoint::load(context)
+                .and_then(|fixture| fixture.before_enter().map(|()| fixture))
+            {
+                Ok(value) => value,
+                Err(error) => return native_failure(error),
+            };
+
+            // A fresh adapter/error slot belongs to exactly this invocation.
+            // It never survives a retry or becomes part of the handler state.
+            let admission = NativeGraphAdmission {
+                context,
+                permit: &permit,
+                original_change: &change,
+                failure: RefCell::new(None),
+                #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+                fixture,
+            };
+            let result = self.binding.service.apply_semantic_graph_with_admission(
+                context.request_id(),
+                &change,
+                &admission,
+            );
+            // The Service seam returns StorageError. Preserve the original SDK
+            // error, including uncertainty, instead of recoding denial/cancellation.
+            if let Some(error) = admission.failure.take() {
+                return native_failure(error);
+            }
+            apply_completion(result)
+        }
+    }
+
+    struct NativeGraphAdmission<'a> {
+        context: &'a CallContext,
+        permit: &'a OperationPermit,
+        original_change: &'a Change,
+        failure: RefCell<Option<Error>>,
+        #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+        fixture: owner_fixture::Checkpoint,
+    }
+
+    fn retain_admission_error(slot: &RefCell<Option<Error>>, error: Error) -> StorageError {
+        let mut saved = slot.borrow_mut();
+        if saved.is_none() {
+            *saved = Some(error);
+        }
+        DomainError::Invalid(
+            "Native Graph admission failed before the Store mutation boundary".into(),
+        )
+        .into()
+    }
+
+    impl NativeGraphAdmission<'_> {
+        fn check_scope(&self, scope: &SemanticGraphWriteScope<'_>) -> NativeResult<()> {
+            let Change::UpsertSemanticGraph { graph: original } = self.original_change else {
+                return Err(Error::invalid(
+                    "Graph admission accepts UpsertSemanticGraph only",
+                ));
+            };
+            // Immutable same-object binding excludes reconstructed or substituted
+            // requests/changes. Explicit source comparisons document all four
+            // snapshot fields plus the scene and deliverable selected by the source.
+            let original_source = &original.authorship.source_snapshot;
+            let scoped_source = scope.source_snapshot();
+            if scope.request_id() != self.context.request_id()
+                || !std::ptr::eq(scope.change(), self.original_change)
+                || !std::ptr::eq(scope.graph(), original.as_ref())
+                || scoped_source.project_id != original_source.project_id
+                || scoped_source.generation != original_source.generation
+                || scoped_source.branch_id != original_source.branch_id
+                || scoped_source.revision != original_source.revision
+                || scope.scene_id() != original.scene_id
+                || scope.variant_profile_ref() != original.variant_profile_ref
+            {
+                return Err(Error::new(
+                    ErrorCode::PermissionDenied,
+                    "Graph Store scope differs from the original native invocation",
+                ));
+            }
+            let bound = genuine_project_ref(self.context)?;
+            let current = scope.current_project();
+            if bound.resource != current.resource_key()
+                || bound.generation != current.generation.to_string()
+                || current.id != original_source.project_id
+            {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Current Native Ref does not select this Store project generation",
+                ));
+            }
+            // Do not compare source revision/branch or reference revision with
+            // current here. Store.apply authenticates exact historical receipts
+            // before source freshness; a replay uses a fresh current Native Ref.
+            if self.permit.logical_mount() != DATA_MOUNT {
+                return Err(Error::new(
+                    ErrorCode::PermissionDenied,
+                    "Graph Store admission lost its owner-selected logical mount",
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl SemanticGraphAdmission for NativeGraphAdmission<'_> {
+        fn acquire<'a>(
+            &'a self,
+            scope: &'a SemanticGraphWriteScope<'a>,
+        ) -> StorageResult<Box<dyn SemanticGraphWriteLease + 'a>> {
+            // Service calls this synchronously under its actual Store mutex.
+            // No await, second Store lock, or service callback is permitted here.
+            self.check_scope(scope)
+                .map_err(|error| retain_admission_error(&self.failure, error))?;
+            let guard = self
+                .context
+                .enter_operation_permit(self.permit)
+                .map_err(|error| retain_admission_error(&self.failure, error))?;
+            #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+            self.fixture
+                .entered(&guard)
+                .map_err(|error| retain_admission_error(&self.failure, error))?;
+            Ok(Box::new(NativeGraphWriteLease {
+                guard,
+                failure: &self.failure,
+                #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+                fixture: &self.fixture,
+                #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+                current_passed: std::cell::Cell::new(false),
+            }))
+        }
+    }
+
+    struct NativeGraphWriteLease<'a> {
+        guard: OperationPermitGuard<'a>,
+        failure: &'a RefCell<Option<Error>>,
+        #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+        fixture: &'a owner_fixture::Checkpoint,
+        #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+        current_passed: std::cell::Cell<bool>,
+    }
+
+    impl SemanticGraphWriteLease for NativeGraphWriteLease<'_> {
+        fn check_current(&self) -> StorageResult<()> {
+            self.guard
+                .check_current()
+                .map_err(|error| retain_admission_error(self.failure, error))?;
+            #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+            {
+                self.fixture
+                    .after_current_check()
+                    .map_err(|error| retain_admission_error(self.failure, error))?;
+                self.current_passed.set(true);
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+    impl Drop for NativeGraphWriteLease<'_> {
+        fn drop(&mut self) {
+            if self.current_passed.get() {
+                if let Err(error) = self.fixture.after_store_returned() {
+                    // Store may already have committed. Retain uncertainty rather
+                    // than turn a custody failure into a known application refusal.
+                    let _ = retain_admission_error(self.failure, error.uncertain());
+                }
+            }
+            // The actual SDK guard field drops only after this method returns.
+        }
+    }
+
+    // This module is absent from normal builds. It supplies byte-limited
+    // observations and checked deadlines, not authority or a storage wall-time bound.
+    #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+    mod owner_fixture {
+        use super::*;
+        use std::{
+            fs::{self, File, OpenOptions},
+            io::{Read, Write},
+            os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+            time::{Duration, Instant},
+        };
+        const CONTROL: &str = "permit-fixture-control";
+
+        fn open_control_original(path: &Path, before: &fs::Metadata) -> NativeResult<File> {
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(path)?;
+            let actual = file.metadata()?;
+            if !actual.file_type().is_file()
+                || actual.permissions().mode() & 0o077 != 0
+                || before.dev() != actual.dev()
+                || before.ino() != actual.ino()
+                || before.len() != actual.len()
+                || before.mtime() != actual.mtime()
+                || before.mtime_nsec() != actual.mtime_nsec()
+            {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "Fixture control identity, kind or content metadata changed",
+                ));
+            }
+            Ok(file)
+        }
+
+        fn read_optional(path: &Path, limit: usize) -> NativeResult<Option<Vec<u8>>> {
+            let before = match fs::symlink_metadata(path) {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            if !before.file_type().is_file()
+                || before.permissions().mode() & 0o077 != 0
+                || before.len() > limit as u64
+            {
+                return Err(Error::invalid(
+                    "Fixture control is not a bounded private regular file",
+                ));
+            }
+            let mut file = open_control_original(path, &before)?;
+            let mut bytes = Vec::new();
+            Read::by_ref(&mut file)
+                .take(limit as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            let after = file.metadata()?;
+            let current = fs::symlink_metadata(path)?;
+            if bytes.len() > limit || bytes.len() as u64 != before.len() {
+                return Err(Error::invalid(
+                    "Fixture control length changed during its read",
+                ));
+            }
+            for observed in [&after, &current] {
+                if !observed.file_type().is_file()
+                    || observed.permissions().mode() & 0o077 != 0
+                    || observed.dev() != before.dev()
+                    || observed.ino() != before.ino()
+                    || observed.len() != before.len()
+                    || observed.mtime() != before.mtime()
+                    || observed.mtime_nsec() != before.mtime_nsec()
+                {
+                    return Err(Error::new(
+                        ErrorCode::Conflict,
+                        "Fixture control changed during its retained read",
+                    ));
+                }
+            }
+            Ok(Some(bytes))
+        }
+
+        fn publish(root: &Path, name: &str, value: &Value) -> NativeResult<()> {
+            let final_path = root.join(name);
+            let staging = root.join(format!("{name}.pending"));
+            let bytes = serde_json::to_vec(value)?;
+            if bytes.len() > 4096 {
+                return Err(Error::invalid("Fixture marker exceeded its byte budget"));
+            }
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .mode(0o600)
+                .open(&staging)?;
+            let opened = file.metadata()?;
+            if !opened.file_type().is_file()
+                || opened.permissions().mode() & 0o077 != 0
+                || opened.len() != 0
+            {
+                return Err(Error::invalid(
+                    "Fixture marker descriptor is not a new private file",
+                ));
+            }
+            file.write_all(&bytes)
+                .map_err(|error| Error::from(error).uncertain())?;
+            // Synchronous storage calls have no internal wall-time guarantee.
+            // The external owner observes setup/closure; a late completed
+            // publication cannot reset the original checkpoint deadline.
+            file.sync_all()
+                .map_err(|error| Error::from(error).uncertain())?;
+            let after = file.metadata()?;
+            let current = fs::symlink_metadata(&staging)?;
+            if !after.file_type().is_file()
+                || !current.file_type().is_file()
+                || after.dev() != opened.dev()
+                || after.ino() != opened.ino()
+                || current.dev() != opened.dev()
+                || current.ino() != opened.ino()
+                || after.len() != bytes.len() as u64
+                || current.len() != bytes.len() as u64
+            {
+                return Err(
+                    Error::new(ErrorCode::Conflict, "Fixture marker descriptor changed")
+                        .uncertain(),
+                );
+            }
+            fs::hard_link(&staging, &final_path).map_err(|error| Error::from(error).uncertain())?;
+            fs::remove_file(&staging).map_err(|error| Error::from(error).uncertain())?;
+            Ok(())
+        }
+
+        fn checkpoint_time_remaining(deadline: Instant) -> NativeResult<()> {
+            if Instant::now() >= deadline {
+                return Err(Error::new(
+                    ErrorCode::Timeout,
+                    "Original fixture checkpoint expired; no retry",
+                )
+                .uncertain());
+            }
+            Ok(())
+        }
+
+        fn observed_release(bytes: Option<&[u8]>, deadline: Instant) -> NativeResult<bool> {
+            // This check follows the actual read, before accepting even exact
+            // release bytes. A filesystem delay cannot turn a late go into admission.
+            checkpoint_time_remaining(deadline)?;
+            match bytes {
+                Some(b"go\n") => Ok(true),
+                Some(_) => Err(Error::invalid("Fixture release bytes differ")),
+                None => Ok(false),
+            }
+        }
+
+        fn wait(root: &Path, name: &str, deadline: Instant) -> NativeResult<()> {
+            loop {
+                checkpoint_time_remaining(deadline)?;
+                let bytes = read_optional(&root.join(name), 16)?;
+                if observed_release(bytes.as_deref(), deadline)? {
+                    return Ok(());
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(remaining.min(Duration::from_millis(2)));
+            }
+        }
+
+        pub(super) fn database_request(
+            requested: Option<PathBuf>,
+        ) -> NativeResult<Option<PathBuf>> {
+            // Ordinary env/argv selection always wins. DriverHost intentionally
+            // does not expose manifest-controlled launch args/environment, so the
+            // fixture uses this closed selector only in its instrumented binary.
+            if requested.is_some() {
+                return Ok(requested);
+            }
+            let control = workspace_mount(CONTROL)?;
+            match read_optional(&control.join("provider-mode"), 32)?.as_deref() {
+                None | Some(b"default\n") => Ok(None),
+                Some(b"equivalent\n") => Ok(Some(workspace_mount(DATA_MOUNT)?.join(DATABASE_NAME))),
+                Some(b"copied\n") => Ok(Some(
+                    workspace_mount(DATA_MOUNT)?.join("override-copy.sqlite3"),
+                )),
+                _ => Err(Error::invalid(
+                    "Unknown closed Graph provider fixture selection",
+                )),
+            }
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Mode {
+            Disabled,
+            BeforeEnter,
+            Commit,
+        }
+
+        pub(super) struct Checkpoint {
+            root: PathBuf,
+            mode: Mode,
+            request: String,
+        }
+        impl Checkpoint {
+            pub(super) fn load(context: &CallContext) -> NativeResult<Self> {
+                let root = workspace_mount(CONTROL)?;
+                let mode = match read_optional(&root.join("checkpoint-mode"), 32)?.as_deref() {
+                    None => Mode::Disabled,
+                    Some(b"before-enter\n") => Mode::BeforeEnter,
+                    Some(b"commit\n") => Mode::Commit,
+                    _ => return Err(Error::invalid("Unknown Graph fixture checkpoint")),
+                };
+                Ok(Self {
+                    root,
+                    mode,
+                    request: context.request_id().to_owned(),
+                })
+            }
+            fn marker(&self, name: &str, phase: &str) -> NativeResult<()> {
+                publish(
+                    &self.root,
+                    name,
+                    &json!({
+                        "schema":"motionwright.graph-owner-checkpoint/1",
+                        "phase":phase,"request_id":self.request,
+                        "provider_process_id":std::process::id(),
+                        "native_authority":false
+                    }),
+                )
+            }
+            pub(super) fn before_enter(&self) -> NativeResult<()> {
+                if self.mode == Mode::BeforeEnter {
+                    let deadline = Instant::now() + Duration::from_secs(8);
+                    self.marker("before-enter.json", "before-enter")?;
+                    wait(&self.root, "continue-enter", deadline)?;
+                }
+                Ok(())
+            }
+            pub(super) fn entered(&self, _actual: &OperationPermitGuard<'_>) -> NativeResult<()> {
+                if self.mode != Mode::Disabled {
+                    self.marker("entered.json", "entered")?;
+                }
+                Ok(())
+            }
+            pub(super) fn after_current_check(&self) -> NativeResult<()> {
+                if self.mode == Mode::Commit {
+                    // Real guard.check_current already succeeded. A later revoke
+                    // request may wait for this admitted operation to finish.
+                    let deadline = Instant::now() + Duration::from_secs(8);
+                    self.marker("current-checked.json", "current-checked")?;
+                    wait(&self.root, "continue-store", deadline)?;
+                }
+                Ok(())
+            }
+            pub(super) fn after_store_returned(&self) -> NativeResult<()> {
+                if self.mode == Mode::Commit {
+                    // This only reports the Drop boundary while the real guard is
+                    // still a live field. Independent SQLite readback proves commit.
+                    let deadline = Instant::now() + Duration::from_secs(8);
+                    self.marker("store-returned.json", "store-returned-guard-retained")?;
+                    wait(&self.root, "release-guard", deadline)?;
+                }
+                Ok(())
+            }
+        }
+
+        #[cfg(test)]
+        mod checkpoint_io_tests {
+            use super::*;
+            use std::os::unix::ffi::OsStrExt;
+            use std::sync::mpsc;
+
+            #[test]
+            fn expired_checkpoint_does_not_accept_an_existing_release() {
+                let root = tempfile::tempdir().unwrap();
+                fs::write(root.path().join("continue-enter"), b"go\n").unwrap();
+                fs::set_permissions(
+                    root.path().join("continue-enter"),
+                    fs::Permissions::from_mode(0o600),
+                )
+                .unwrap();
+                let error = wait(root.path(), "continue-enter", Instant::now()).unwrap_err();
+                assert_eq!(error.code, ErrorCode::Timeout);
+                assert!(!error.outcome_known);
+            }
+
+            #[test]
+            fn release_bytes_observed_after_the_original_deadline_remain_unknown() {
+                let error = observed_release(Some(b"go\n"), Instant::now()).unwrap_err();
+                assert_eq!(error.code, ErrorCode::Timeout);
+                assert!(!error.outcome_known);
+                assert!(
+                    observed_release(Some(b"go\n"), Instant::now() + Duration::from_secs(1))
+                        .unwrap()
+                );
+            }
+
+            #[test]
+            fn rebound_control_fifo_is_rejected_without_a_writer() {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("release-guard");
+                fs::write(&path, b"go\n").unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+                let before = fs::symlink_metadata(&path).unwrap();
+                fs::rename(&path, root.path().join("original-release")).unwrap();
+                let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+                // SAFETY: this CString is owned, NUL-terminated and alive for
+                // the call. The FIFO exists only in the private test directory.
+                let created = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+                assert_eq!(created, 0, "{}", std::io::Error::last_os_error());
+                let (tx, rx) = mpsc::sync_channel(1);
+                let reader_path = path.clone();
+                let reader = std::thread::spawn(move || {
+                    let result = open_control_original(&reader_path, &before).map(|_| ());
+                    let _ = tx.send(result);
+                });
+                let first = rx.recv_timeout(Duration::from_secs(5));
+                if matches!(&first, Err(mpsc::RecvTimeoutError::Timeout)) {
+                    let unblock = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                        .open(&path);
+                    let recovered = match &unblock {
+                        Ok(_) => rx.recv_timeout(Duration::from_secs(5)),
+                        Err(_) => Err(mpsc::RecvTimeoutError::Timeout),
+                    };
+                    drop(unblock);
+                    assert!(
+                        recovered.is_ok(),
+                        "Control FIFO regression cleanup remained unconfirmed"
+                    );
+                }
+                reader.join().unwrap();
+                assert!(
+                    first
+                        .expect("Control descriptor open blocked on a FIFO")
+                        .is_err()
+                );
+                fs::remove_file(path).unwrap();
+            }
+        }
+    }
+
+    // Dropping the Service lease drops the actual SDK guard only after
+    // Store.apply returns. Its SDK Drop performs the matching real release.
+    // There is no caller-owned release frame or synthetic permit implementation.
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use motionwright_storage::Store;
+        use semwright_native_sdk::Driver;
+
+        fn seed_database(path: &Path) -> Project {
+            let mut store = Store::open(path).unwrap();
+            let mut project = store
+                .create_named_project("Graph Store binding fixture")
+                .unwrap();
+            let expected = RevisionStamp {
+                resource: project.resource_key(),
+                generation: project.generation,
+                revision: project.revision,
+            };
+            project = store
+                .apply(
+                    project.id,
+                    &expected,
+                    "seed-graph-scene",
+                    &Change::AddScene {
+                        name: "Explanatory relationships".into(),
+                        objective: "Native Graph Store admission negative fixture".into(),
+                        duration_seconds: 6,
+                    },
+                )
+                .unwrap()
+                .project;
+            let expected = RevisionStamp {
+                resource: project.resource_key(),
+                generation: project.generation,
+                revision: project.revision,
+            };
+            let scene_id = project.scenes[0].id;
+            project = store
+                .apply(
+                    project.id,
+                    &expected,
+                    "seed-graph-renderer",
+                    &Change::SetSceneRenderer {
+                        scene_id,
+                        renderer: motionwright_domain::RendererKind::ManimCommunity,
+                    },
+                )
+                .unwrap()
+                .project;
+            // The connection closes before copying SQLite; no live WAL is copied.
+            drop(store);
+            project
+        }
+
+        fn assert_denied(completion: Completion) {
+            let error = completion.into_result().unwrap_err();
+            assert_eq!(error.code, ErrorCode::PermissionDenied);
+            assert!(error.outcome_known);
+        }
+
+        #[test]
+        fn default_and_exact_override_select_only_the_derived_spelling() {
+            let derived = Path::new("/workspace/motionwright-data/motionwright.sqlite3");
+            assert!(is_derived_database(None, derived));
+            assert!(is_derived_database(Some(derived), derived));
+            assert!(!is_derived_database(
+                Some(Path::new("/workspace/another/motionwright.sqlite3")),
+                derived
+            ));
+        }
+
+        #[test]
+        fn path_aliases_and_case_changes_never_select_the_graph_binding() {
+            for (derived, alias) in [
+                (
+                    "/workspace/motionwright-data/motionwright.sqlite3",
+                    "/workspace/motionwright-data/./motionwright.sqlite3",
+                ),
+                (
+                    "/workspace/motionwright-data/motionwright.sqlite3",
+                    "/workspace//motionwright-data/motionwright.sqlite3",
+                ),
+                (
+                    "/workspace/motionwright-data/motionwright.sqlite3",
+                    "/workspace/motionwright-data/child/../motionwright.sqlite3",
+                ),
+                (
+                    r"E:\mounted\motionwright-data\motionwright.sqlite3",
+                    r"e:\mounted\motionwright-data\motionwright.sqlite3",
+                ),
+                (
+                    r"E:\mounted\motionwright-data\motionwright.sqlite3",
+                    r"E:\mounted\motionwright-data\.\motionwright.sqlite3",
+                ),
+            ] {
+                assert!(
+                    !is_derived_database(Some(Path::new(alias)), Path::new(derived)),
+                    "alias cannot certify the opened Store: {alias}"
+                );
+            }
+        }
+
+        #[test]
+        fn environment_then_argument_then_default_preserves_empty_override() {
+            assert_eq!(
+                database_override(
+                    Some("environment.sqlite3".into()),
+                    Some("argument.sqlite3".into())
+                ),
+                Some(PathBuf::from("environment.sqlite3"))
+            );
+            assert_eq!(
+                database_override(None, Some("argument.sqlite3".into())),
+                Some(PathBuf::from("argument.sqlite3"))
+            );
+            assert_eq!(database_override(None, None), None);
+            assert_eq!(
+                database_override(Some(OsString::new()), Some("argument.sqlite3".into())),
+                Some(PathBuf::new())
+            );
+        }
+
+        #[tokio::test]
+        async fn generic_application_never_installs_a_graph_writer() {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("ordinary.sqlite3");
+            seed_database(&path);
+            let app = build_application(StudioService::open(&path).unwrap()).unwrap();
+            assert!(app.handler(GRAPH_COMMAND).is_none());
+            assert!(
+                app.contracts()
+                    .iter()
+                    .all(|contract| contract.descriptor.name != GRAPH_COMMAND)
+            );
+            let mut driver = NativeDriver::new(app).unwrap();
+            assert!(
+                driver
+                    .capabilities()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|capability| capability.descriptor.name != GRAPH_COMMAND)
+            );
+        }
+
+        #[tokio::test]
+        async fn copied_database_identity_preserves_reads_but_cannot_install_graph_writer() {
+            let root = tempfile::tempdir().unwrap();
+            let original_path = root.path().join("motionwright.sqlite3");
+            let copied_path = root.path().join("override-copy.sqlite3");
+            let original = seed_database(&original_path);
+            std::fs::copy(&original_path, &copied_path).unwrap();
+            let database = ProviderDatabase::open(Some(copied_path.clone())).unwrap();
+            let service = match &database {
+                ProviderDatabase::Ordinary(service) => service.clone(),
+                ProviderDatabase::Mounted(_) => panic!("Copied identity cannot bind a Store"),
+            };
+            let before = service.project(original.id).unwrap();
+            assert_eq!(
+                serde_json::to_value(&before).unwrap(),
+                serde_json::to_value(&original).unwrap()
+            );
+            let before_history =
+                serde_json::to_value(service.history(original.id, 0, 100).unwrap()).unwrap();
+            let observer = MotionwrightObserver::new(service.clone());
+            let query = Query {
+                resource: original.resource_key(),
+                scope: "summary".into(),
+                limit: 1,
+                cursor: None,
+            };
+            let page = observer
+                .observe(
+                    &query,
+                    &CallContext::application_local("copied-db-read").unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(page.version, resource_version(&original).unwrap());
+            let graph = crate::semantic_graph_source_fixture::graph_for(&before, false);
+            let app = database.into_application().unwrap();
+            let handler = app.handler(GRAPH_COMMAND).unwrap();
+            assert_denied(
+                handler
+                    .invoke(
+                        json!({"ref":"native:untrusted-test-marker","graph":graph}),
+                        &CallContext::application_local("copied-db-graph-denied").unwrap(),
+                    )
+                    .await,
+            );
+            assert_eq!(
+                serde_json::to_value(service.project(original.id).unwrap()).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(service.history(original.id, 0, 100).unwrap()).unwrap(),
+                before_history
+            );
+            drop(app);
+            drop(observer);
+            drop(service);
+            let reopened = StudioService::open(copied_path).unwrap();
+            assert_eq!(
+                serde_json::to_value(reopened.project(original.id).unwrap()).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+        }
+
+        #[tokio::test]
+        async fn private_handler_still_rejects_application_local_context_before_store_mutation() {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("negative-only.sqlite3");
+            let project = seed_database(&path);
+            let service = StudioService::open(path).unwrap();
+            let graph = crate::semantic_graph_source_fixture::graph_for(&project, false);
+            // A private unit-test arrangement supplies no authority. It verifies
+            // rejection, never the genuine mounted constructor or a successful write.
+            let handler = GraphUpsertHandler {
+                binding: GraphStoreBinding {
+                    service: service.clone(),
+                },
+            };
+            assert_denied(
+                handler
+                    .invoke(
+                        json!({"ref":"native:untrusted-test-marker","graph":graph}),
+                        &CallContext::application_local("local-graph-denied").unwrap(),
+                    )
+                    .await,
+            );
+            assert_eq!(
+                serde_json::to_value(service.project(project.id).unwrap()).unwrap(),
+                serde_json::to_value(project).unwrap()
+            );
+        }
+
+        #[test]
+        fn graph_arguments_reject_serialized_readiness_or_authority_fields() {
+            let graph = crate::semantic_graph_source_fixture::raw_graph(false);
+            let source = json!({"ref":"native:opaque-test-marker","graph":graph});
+            assert!(serde_json::from_value::<GraphUpsertArgs>(source.clone()).is_ok());
+            for key in [
+                "grant",
+                "ready",
+                "context",
+                "store_binding",
+                "operation_permit",
+            ] {
+                let mut changed = source.clone();
+                changed
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(key.into(), json!(true));
+                assert!(
+                    serde_json::from_value::<GraphUpsertArgs>(changed).is_err(),
+                    "serialized field cannot become native authority: {key}"
+                );
+            }
+        }
+
+        #[test]
+        fn uncertain_native_error_retains_its_original_outcome_and_code() {
+            let error = Error::new(ErrorCode::Cancelled, "original Host uncertainty").uncertain();
+            let observed = native_failure(error).into_result().unwrap_err();
+            assert_eq!(observed.code, ErrorCode::Cancelled);
+            assert_eq!(observed.message, "original Host uncertainty");
+            assert!(!observed.outcome_known);
+        }
+
+        #[test]
+        fn each_admission_slot_preserves_only_its_first_original_error() {
+            let first = RefCell::new(None);
+            let _ = retain_admission_error(
+                &first,
+                Error::new(ErrorCode::Cancelled, "first request original"),
+            );
+            let _ = retain_admission_error(
+                &first,
+                Error::new(ErrorCode::StaleReference, "later conversion"),
+            );
+            assert_eq!(first.take().unwrap().code, ErrorCode::Cancelled);
+            assert!(first.take().is_none());
+            let second = RefCell::new(None);
+            let _ = retain_admission_error(
+                &second,
+                Error::new(ErrorCode::PermissionDenied, "independent request"),
+            );
+            assert_eq!(second.take().unwrap().code, ErrorCode::PermissionDenied);
+            assert!(first.take().is_none());
+        }
+    }
 }
 
 #[cfg(test)]

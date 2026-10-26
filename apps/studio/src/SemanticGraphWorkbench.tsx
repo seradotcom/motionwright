@@ -351,7 +351,12 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
         <p>The original attempt and later input are retained. A matching saved value or history entry does not acknowledge the original Promise.</p>
         <button className="secondary-button" disabled={busy} onClick={() => void refresh()}>Refresh saved Project</button>
         <button className="secondary-button" disabled={busy || reviewing} onClick={() => void readOutcome()}>Inspect saved Graph outcome</button>
-        {review && <><p>Read current source at r{review.project.revision}. {review.events.length} history entries inspected; none is treated as an ACK.</p><button className="secondary-button" disabled={busy} onClick={continueEditing}>Continue Graph as a new reviewed intention</button></>}
+        {review && <><p>Read current source at r{review.project.revision}. {review.events.length} history entries inspected; none is treated as an ACK.</p>
+          {graphUnconfirmed(draft) && review.project.revision <= review.pending.revision && <p role="status">
+            The original Graph request can still commit on this revision. Keep it UNKNOWN and inspect again after the saved revision advances.
+          </p>}
+          <button className="secondary-button" disabled={busy || (graphUnconfirmed(draft) && review.project.revision <= review.pending.revision)}
+            onClick={continueEditing}>Continue Graph as a new reviewed intention</button></>}
       </section>}
       {inputIssue && <p role="status" className="production-error">{inputIssue}</p>}{lock && <p role="status">{lock}</p>}
       {session.backupError && <section aria-label="Graph recovery needs attention"><p role="alert">{session.backupError}</p><button className="secondary-button" disabled={busy} onClick={retryBackup}>Verify Graph recovery again</button>

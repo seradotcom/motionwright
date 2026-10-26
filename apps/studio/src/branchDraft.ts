@@ -201,11 +201,17 @@ export function readBranchCopies(storage: BranchStorage, scope: string) {
 }
 export function writeBranchCopy(storage: BranchStorage, tab: Pick<Storage, "getItem" | "setItem">, draft: BranchDraft, custody: BranchCustody): string {
   const key = branchCopyKey(draft.scope, custody.writerId), pointer = branchPointerKey(draft.scope);
-  assertBranchOrigins(storage, draft);
-  if (tab.getItem(pointer) !== custody.expectedPointer || storage.getItem(key) !== custody.expectedRaw)
-    throw new Error("This branch copy or writer pointer changed elsewhere. Earlier bytes were not replaced.");
+  const check = () => {
+    assertBranchOrigins(storage, draft);
+    if (tab.getItem(pointer) !== custody.expectedPointer || storage.getItem(key) !== custody.expectedRaw)
+      throw new Error("This branch copy or writer pointer changed elsewhere. Earlier bytes were not replaced.");
+  };
+  check();
+  const retainedRaw = custody.expectedRaw !== null && custody.expectedPointer === custody.writerId
+    && sameValue(decodeBranchCopy(custody.expectedRaw, draft.scope, custody.writerId).draft, draft)
+    ? custody.expectedRaw : null;
   const value: BranchCopy = { schema: "motionwright.branch-recovery/1", scope: draft.scope, writerId: custody.writerId, updatedAt: Date.now(), draft };
-  const raw = JSON.stringify(value); decodeBranchCopy(raw, draft.scope, custody.writerId);
+  const raw = retainedRaw ?? JSON.stringify(value); decodeBranchCopy(raw, draft.scope, custody.writerId);
   if (storage.length > MAX_KEYS) throw new Error("The recovery catalogue is too large to inspect safely.");
   let total = bytes(raw), count = 1;
   for (let index = 0; index < storage.length; index++) {
@@ -213,10 +219,8 @@ export function writeBranchCopy(storage: BranchStorage, tab: Pick<Storage, "getI
     count++; total += bytes(storage.getItem(other) ?? "");
   }
   if (count > MAX_BRANCH_COPIES || total > MAX_BRANCH_RECOVERY_BYTES) throw new Error("Branch recovery storage is full. Earlier copies are kept; export your input before closing Studio.");
-  if (custody.expectedRaw !== null && custody.expectedPointer === custody.writerId
-    && sameValue(decodeBranchCopy(custody.expectedRaw, draft.scope, custody.writerId).draft, draft)) {
-    assertBranchOrigins(storage, draft); return custody.expectedRaw;
-  }
+  check(); // Catalogue reads may interleave another writer, including on an unchanged-byte confirmation.
+  if (retainedRaw !== null) return retainedRaw;
   storage.setItem(key, raw);
   if (storage.getItem(key) !== raw) throw new Error("The branch recovery bytes were not confirmed. Creation is blocked.");
   custody.expectedRaw = raw;
@@ -259,6 +263,7 @@ export async function inspectBranchOutcome(draft: BranchDraft, selected: Project
 }
 export function separateBranchIntent(draft: BranchDraft, project: Project, outcome: BranchOutcome, origin: BranchOrigin): BranchDraft {
   if (!branchOutcomeMatches(draft, project, outcome)) throw new Error("Read the exact saved branch and its history before starting a separate intent.");
+  if (project.revision <= draft.pending!.revision) throw new Error("The original branch request could still commit on its base. Keep it UNKNOWN.");
   const writer = origin.key.slice(origin.key.lastIndexOf(":") + 1);
   if (origin.key !== branchCopyKey(draft.scope, writer) || !sameValue(decodeBranchCopy(origin.raw, draft.scope, writer).draft, draft))
     throw new Error("The original branch input must remain in its exact separate recovery copy.");

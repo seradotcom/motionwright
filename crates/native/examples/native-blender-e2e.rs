@@ -4,7 +4,11 @@ use motionwright_domain::{
 use motionwright_native::{
     multi_renderer::build_blender_original_scene_plan,
     production::{
-        BlenderOriginalJournal, BlenderOriginalRequest, ProductionConnection, ProductionCoordinator,
+        BLENDER_PRODUCT_RECIPE_MEDIA_TYPE, BlenderOriginalJournal, BlenderOriginalRequest,
+        BlenderProductAttemptProjection, BlenderProductAttemptRequest, BlenderProductAttemptState,
+        BlenderProductCycleJournal, BlenderProductCycleRequest, BlenderProductSourceScope,
+        BlenderProductSourceSnapshot, ProductionConnection, ProductionCoordinator,
+        decode_blender_product_recipe, read_blender_product_attempt, read_blender_product_source,
     },
 };
 use motionwright_service::StudioService;
@@ -19,7 +23,7 @@ use uuid::Uuid;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-blender-e2e <seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON | seed-original DATABASE OUTPUT_DIRECTORY | original DATABASE CONNECTION ATTEMPT_JSON EVIDENCE_JSON>"
+        "usage: native-blender-e2e <seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON | seed-original DATABASE OUTPUT_DIRECTORY | original DATABASE CONNECTION ATTEMPT_JSON EVIDENCE_JSON | recipe-product ORIGINAL_RECIPE_JSON NAMESPACE CAMERA_CURVE ANNOTATION_AFTER | seed-product DATABASE ORIGINAL_RECIPE_JSON OUTPUT_DIRECTORY | product-cycle DATABASE CREATE_CONNECTION EDIT_CONNECTION VERIFY_CONNECTION ATTEMPT_JSON EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -612,6 +616,555 @@ async fn original_phase(
     )
 }
 
+fn emit_product_recipe(
+    output: &Path,
+    namespace: &str,
+    camera_curve: &str,
+    annotation_after: &str,
+) -> EvidenceResult<serde_json::Value> {
+    use motionwright_native::blender_product_scene::{
+        CameraCurve, PRODUCT_PROFILE, ProductEdit, ProductScene,
+    };
+    use sha2::{Digest, Sha256};
+    let curve = match camera_curve {
+        "linear" => CameraCurve::Linear,
+        "bezier_auto_clamped" => CameraCurve::BezierAutoClamped,
+        _ => return Err("product recipe requires an explicit supported camera curve".into()),
+    };
+    let source = ProductScene::vessel(namespace, curve);
+    source.validate()?;
+    let edited = source.edited(&ProductEdit::Annotation(annotation_after.into()))?;
+    if edited.annotation == source.annotation {
+        return Err("product recipe requires a nontrivial annotation edit".into());
+    }
+    product_destination_absent(output)?;
+    let mut bytes = serde_json::to_vec_pretty(&source)?;
+    bytes.push(b'\n');
+    write_new_bytes(output, &bytes)?;
+    Ok(json!({
+        "schema": "motionwright.blender.product-recipe-original/1",
+        "source_constructor": "ProductScene::vessel",
+        "profile": PRODUCT_PROFILE,
+        "product_scene": source,
+        "annotation_after": edited.annotation,
+        "recipe": {
+            "path": output,
+            "bytes": bytes.len(),
+            "sha256": format!("{:x}", Sha256::digest(&bytes))
+        },
+        "native_execution": "NOT_RUN",
+        "sqlite_opened": false,
+        "source_acceptance_inherited": false,
+        "execution_grant_inherited": false,
+        "delivery_profile_selected": false,
+        "full_1200_frame_render": false,
+        "human_acceptance": false
+    }))
+}
+
+const PRODUCT_CALLER_RECIPE_MAX_BYTES: u64 = 64 * 1024;
+
+fn open_product_input_original(
+    path: &Path,
+    before: &std::fs::Metadata,
+) -> EvidenceResult<(std::fs::File, std::fs::Metadata)> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // The named input can change after symlink_metadata. Refuse a symlink
+        // during the actual open and never wait for a FIFO writer. The retained
+        // descriptor must still pass the original kind/identity checks below.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file()
+        || opened.len() != before.len()
+        || opened.modified()? != before.modified()?
+    {
+        return Err("product input changed before its bounded read".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Err("product input identity changed before its bounded read".into());
+        }
+    }
+    Ok((file, opened))
+}
+
+fn read_product_input(path: &Path, maximum: u64) -> EvidenceResult<Vec<u8>> {
+    use std::io::Read;
+    let before = std::fs::symlink_metadata(path)?;
+    if !before.is_file()
+        || before.file_type().is_symlink()
+        || before.len() == 0
+        || before.len() > maximum
+    {
+        return Err("product input must be a nonempty bounded regular file".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if before.file_attributes() & 0x400 != 0 {
+            return Err("product input cannot be a reparse point".into());
+        }
+    }
+    let (mut file, opened) = open_product_input_original(path, &before)?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(maximum + 1)
+        .read_to_end(&mut bytes)?;
+    let after = file.metadata()?;
+    let current = std::fs::symlink_metadata(path)?;
+    if bytes.len() as u64 != before.len()
+        || bytes.len() as u64 > maximum
+        || !current.is_file()
+        || current.file_type().is_symlink()
+        || after.len() != before.len()
+        || current.len() != before.len()
+        || after.modified()? != before.modified()?
+        || current.modified()? != before.modified()?
+    {
+        return Err("product input changed during its bounded read".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if current.dev() != opened.dev()
+            || current.ino() != opened.ino()
+            || after.dev() != opened.dev()
+            || after.ino() != opened.ino()
+        {
+            return Err("product input identity changed during its bounded read".into());
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if current.file_attributes() & 0x400 != 0 {
+            return Err("product input became a reparse point during its read".into());
+        }
+    }
+    Ok(bytes)
+}
+
+fn product_destination_absent(path: &Path) -> EvidenceResult<()> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+        Ok(_) => Err("product destination already exists and will not be reused".into()),
+    }
+}
+
+fn read_product_request(path: &Path) -> EvidenceResult<BlenderProductCycleRequest> {
+    Ok(serde_json::from_slice(&read_product_input(path, 16_384)?)?)
+}
+
+fn seed_product(
+    database: &Path,
+    recipe_path: &Path,
+    output: &Path,
+) -> EvidenceResult<serde_json::Value> {
+    use motionwright_domain::{Fidelity, FidelityReport, NativeCapsule};
+    use sha2::{Digest, Sha256};
+
+    product_destination_absent(database)?;
+    let directory = std::fs::symlink_metadata(output)?;
+    if !directory.is_dir()
+        || directory.file_type().is_symlink()
+        || output.read_dir()?.next().is_some()
+    {
+        return Err("product seed output must start as an empty regular directory".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if directory.file_attributes() & 0x400 != 0 {
+            return Err("product seed output cannot be a reparse point".into());
+        }
+    }
+    let recipe_bytes = read_product_input(recipe_path, PRODUCT_CALLER_RECIPE_MAX_BYTES)?;
+    let recipe = decode_blender_product_recipe(&recipe_bytes)?;
+    let recipe_sha256 = format!("{:x}", Sha256::digest(&recipe_bytes));
+    // Import the retained original bytes, not a serialization of the decoded recipe.
+    let retained_recipe = output.join("source-recipe.json");
+    write_new_bytes(&retained_recipe, &recipe_bytes)?;
+
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("product seed database did not remain empty".into());
+    }
+    let mut project = service.create_project("Editable Blender product source")?;
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "native-product-seed-scene",
+            &Change::AddScene {
+                name: "Editable product vessel".into(),
+                objective: "Persist the supplied fixed Blender product recipe".into(),
+                duration_seconds: 40,
+            },
+        )?
+        .project;
+    let scene_id = project.scenes[0].id;
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "native-product-seed-renderer",
+            &Change::SetSceneRenderer {
+                scene_id,
+                renderer: RendererKind::Blender,
+            },
+        )?
+        .project;
+    project = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "native-product-seed-recipe",
+            &retained_recipe,
+            "source-recipe.json".into(),
+            BLENDER_PRODUCT_RECIPE_MEDIA_TYPE.into(),
+        )?
+        .project;
+    if project.assets.len() != 1 {
+        return Err("product seed must have exactly one imported original recipe".into());
+    }
+    let asset = project.assets[0].clone();
+    if asset.content_sha256.as_deref() != Some(recipe_sha256.as_str())
+        || asset.media_type != BLENDER_PRODUCT_RECIPE_MEDIA_TYPE
+    {
+        return Err("product seed import differs from the retained original recipe".into());
+    }
+    let capsule_id = Uuid::now_v7();
+    project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "native-product-seed-capsule",
+            &Change::UpsertNativeCapsule {
+                capsule: NativeCapsule {
+                    id: capsule_id,
+                    scene_id,
+                    source_asset_id: asset.id,
+                    source_sha256: recipe_sha256.clone(),
+                    label: "Editable Blender product recipe".into(),
+                    fidelity: FidelityReport {
+                        renderer: "Blender".into(),
+                        renderer_version: "unobserved".into(),
+                        visual: Fidelity::Unavailable,
+                        temporal: Fidelity::Unavailable,
+                        structural: Fidelity::Unavailable,
+                        editable: Fidelity::Unavailable,
+                        losses: vec!["Recipe source only; no native execution.".into()],
+                        evidence_sha256: None,
+                    },
+                    editable_parameters: vec!["product.annotation.body".into()],
+                    native_editor_hint: "Blender".into(),
+                    property_fidelity: vec![],
+                },
+            },
+        )?
+        .project;
+    drop(service);
+
+    let reopened = StudioService::open(database)?;
+    if reopened.project(project.id)? != project {
+        return Err("product seed changed when its SQLite source was reopened".into());
+    }
+    let snapshot = read_blender_product_source(
+        &reopened,
+        &BlenderProductSourceScope {
+            project_id: project.id,
+            expected: project.stamp(),
+            scene_id,
+            capsule_id,
+        },
+    )?;
+    if snapshot.project != project
+        || snapshot.source_kind != "authored_recipe"
+        || snapshot.current_source.asset_id != asset.id
+        || snapshot.current_source.sha256 != recipe_sha256
+        || snapshot.original_recipe != snapshot.current_source
+        || snapshot.effective_recipe != recipe
+        || !snapshot.source_cas_verified
+        || snapshot.lineage.is_some()
+        || snapshot.attempt.is_some()
+        || snapshot.native_dispatch_performed
+        || snapshot.execution_grant_inherited
+        || snapshot.source_acceptance_inherited
+    {
+        return Err("product seed readback does not describe its saved original recipe".into());
+    }
+    let cas_bytes = {
+        let handle = reopened.store();
+        let store = handle.lock();
+        store.read_blob(&recipe_sha256, PRODUCT_CALLER_RECIPE_MAX_BYTES)?
+    };
+    if cas_bytes != recipe_bytes {
+        return Err("product seed CAS does not preserve the exact original recipe bytes".into());
+    }
+    let project_bytes = serde_json::to_vec(&project)?;
+    write_new_bytes(&output.join("source-project.json"), &project_bytes)?;
+    write_new_json(
+        &output.join("source-readback.json"),
+        &serde_json::to_value(&snapshot)?,
+    )?;
+    let seeded = json!({
+        "schema": "motionwright.blender.product-scene-seed/1",
+        "source_kind": "caller_supplied_fixed_product_recipe",
+        "project_id": project.id,
+        "resource": project.resource_key(),
+        "generation": project.generation,
+        "revision": project.revision,
+        "expected": project.stamp(),
+        "scene_id": scene_id,
+        "capsule_id": capsule_id,
+        "source_asset_id": asset.id,
+        "source_sha256": recipe_sha256,
+        "product_scene": recipe,
+        "recipe": {
+            "path": "source-recipe.json",
+            "sha256": recipe_sha256,
+            "bytes": recipe_bytes.len()
+        },
+        "project_json": {
+            "path": "source-project.json",
+            "sha256": format!("{:x}", Sha256::digest(&project_bytes)),
+            "bytes": project_bytes.len()
+        },
+        "source_readback_path": "source-readback.json",
+        "recipe_cas_verified": true,
+        "sqlite_reopened": true,
+        "native_execution": "NOT_RUN",
+        "source_acceptance_inherited": false,
+        "execution_grant_inherited": false,
+        "delivery_profile_selected": false,
+        "full_1200_frame_render": false,
+        "decoded_pixel_difference_verified": false,
+        "visual_acceptance": false,
+        "human_acceptance": false
+    });
+    write_new_json(&output.join("seed.json"), &seeded)?;
+    Ok(seeded)
+}
+
+fn product_completed_readback(
+    request: &BlenderProductCycleRequest,
+    project_before: &motionwright_domain::Project,
+    source: &BlenderProductSourceSnapshot,
+    attempt: &BlenderProductAttemptProjection,
+    native: &serde_json::Value,
+) -> EvidenceResult<()> {
+    let original_revision = request
+        .expected
+        .revision
+        .checked_add(1)
+        .ok_or("product original revision overflow")?;
+    let edited_revision = original_revision
+        .checked_add(1)
+        .ok_or("product edited revision overflow")?;
+    let original_stamp = RevisionStamp {
+        resource: request.expected.resource.clone(),
+        generation: request.expected.generation,
+        revision: original_revision,
+    };
+    let edited_stamp = RevisionStamp {
+        resource: request.expected.resource.clone(),
+        generation: request.expected.generation,
+        revision: edited_revision,
+    };
+    let lineage = source
+        .lineage
+        .as_ref()
+        .ok_or("completed product source has no durable lineage")?;
+    let capsule_before = project_before
+        .production_design
+        .capsules
+        .iter()
+        .find(|capsule| capsule.id == request.capsule_id)
+        .ok_or("product source was not present in the original Project")?;
+    if project_before.id != request.project_id
+        || project_before.stamp() != request.expected
+        || capsule_before.scene_id != request.scene_id
+        || capsule_before.source_asset_id != lineage.recipe.asset_id
+        || capsule_before.source_sha256 != lineage.recipe.sha256
+        || source.project.id != request.project_id
+        || source.project.stamp() != edited_stamp
+        || source.source_kind != "edited_native_source"
+        || !source.source_cas_verified
+        || lineage.original_request_id != request.request_id
+        || lineage.expected_before != request.expected
+        || lineage.original_attached != original_stamp
+        || lineage.expected_after != edited_stamp
+        || lineage.annotation.after != request.annotation_body
+        || source.effective_recipe.annotation != request.annotation_body
+        || source.original_recipe != lineage.recipe
+        || source.current_source.asset_id != lineage.edited.asset_id
+        || source.current_source.sha256 != lineage.edited.sha256
+        || attempt.project != source.project
+        || !attempt.current_source_matches
+        || !attempt.source_cas_verified
+        || attempt.effective_recipe.as_ref() != Some(&source.effective_recipe)
+        || attempt.attempt.state != BlenderProductAttemptState::Completed
+        || !attempt.attempt.native_outcome_known
+        || attempt.attempt.original_request_id != request.request_id
+        || attempt.attempt.expected_before != request.expected
+        || serde_json::to_value(&attempt.lineage)? != serde_json::to_value(&source.lineage)?
+        || native["schema"] != json!("motionwright.blender.product-cycle-caller/2")
+        || native["project_id"] != json!(request.project_id)
+        || native["scene_id"] != json!(request.scene_id)
+        || native["capsule_id"] != json!(request.capsule_id)
+        || native["expected_before"] != json!(request.expected)
+        || native["expected_after"] != json!(edited_stamp)
+        || native["recipe_asset_id"] != json!(lineage.recipe.asset_id)
+        || native["recipe_sha256"] != json!(lineage.recipe.sha256)
+        || native["original_source"]["sha256"] != json!(lineage.original.sha256)
+        || native["original_source"]["bytes"] != json!(lineage.original.bytes)
+        || native["edited_source"]["sha256"] != json!(lineage.edited.sha256)
+        || native["edited_source"]["bytes"] != json!(lineage.edited.bytes)
+    {
+        return Err(
+            "completed product terminal differs from its reopened CAS/SQLite lineage".into(),
+        );
+    }
+    Ok(())
+}
+
+fn product_read_observation<T: serde::Serialize>(
+    result: semwright_native_sdk::Result<T>,
+) -> serde_json::Value {
+    match result {
+        Ok(value) => json!({"status": "ok", "value": value}),
+        Err(error) => json!({"status": "error", "error": error}),
+    }
+}
+
+fn capture_product_custody(
+    database: &Path,
+    request: &BlenderProductCycleRequest,
+    project_before: &motionwright_domain::Project,
+    completed: Option<&serde_json::Value>,
+) -> EvidenceResult<serde_json::Value> {
+    let reopened = StudioService::open(database)?;
+    let project = reopened.project(request.project_id)?;
+    let watermark = reopened.production_receipt_watermark(project.id)?;
+    let scope = BlenderProductSourceScope {
+        project_id: project.id,
+        expected: project.stamp(),
+        scene_id: request.scene_id,
+        capsule_id: request.capsule_id,
+    };
+    let source = read_blender_product_source(&reopened, &scope);
+    let attempt = read_blender_product_attempt(
+        &reopened,
+        &BlenderProductAttemptRequest {
+            scope,
+            original_request_id: request.request_id.clone(),
+            receipt_id: None,
+        },
+    );
+    if let Some(native) = completed {
+        product_completed_readback(
+            request,
+            project_before,
+            source
+                .as_ref()
+                .map_err(|error| format!("product source readback: {error}"))?,
+            attempt
+                .as_ref()
+                .map_err(|error| format!("product attempt readback: {error}"))?,
+            native,
+        )?;
+    }
+    let receipts = complete_original_receipts(&reopened, project.id)?;
+    if reopened.project(project.id)? != project
+        || reopened.production_receipt_watermark(project.id)? != watermark
+    {
+        return Err("product custody changed during its read-only SQLite capture".into());
+    }
+    Ok(json!({
+        "sqlite_reopened": true,
+        "project": project,
+        "production": receipts,
+        "source_readback": product_read_observation(source),
+        "original_attempt_readback": product_read_observation(attempt),
+        "saved_source_and_lineage_verified": completed.is_some(),
+        "native_dispatch_performed_by_readback": false,
+        "automatic_retry": false
+    }))
+}
+
+async fn product_cycle_phase(
+    database: &Path,
+    connections: [&Path; 3],
+    attempt_path: &Path,
+    evidence_path: &Path,
+) -> EvidenceResult<serde_json::Value> {
+    product_destination_absent(evidence_path)?;
+    let request = read_product_request(attempt_path)?;
+    let metadata = std::fs::symlink_metadata(database)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("product cycle requires its existing regular SQLite source".into());
+    }
+    let service = StudioService::open(database)?;
+    let project_before = service.project(request.project_id)?;
+    let [create_path, edit_path, verify_path] = connections;
+    let create_connection = ProductionConnection::load(create_path)?;
+    let edit_connection = ProductionConnection::load(edit_path)?;
+    let verify_connection = ProductionConnection::load(verify_path)?;
+    // These coordinators use the three existing owner-created connections and
+    // one shared StudioService. They do not construct a Host or recover authority.
+    let create = ProductionCoordinator::new(service.clone(), create_connection)?;
+    let edit = ProductionCoordinator::new(service.clone(), edit_connection)?;
+    let verify = ProductionCoordinator::new(service.clone(), verify_connection)?;
+    let mut journal = BlenderProductCycleJournal::default();
+    let terminal = create
+        .realize_blender_product_cycle(&edit, &verify, &request, &mut journal)
+        .await;
+    let append_custody = json!({
+        "create": create.private_receipt_custody_snapshot(),
+        "edit": edit.private_receipt_custody_snapshot(),
+        "verify": verify.private_receipt_custody_snapshot()
+    });
+    drop((create, edit, verify, service));
+    let completed = terminal.as_ref().ok().cloned();
+    let evidence = json!({
+        "schema": "motionwright.blender.product-cycle-evidence/1",
+        "request": request,
+        "expected_before": project_before.stamp(),
+        "journal": journal,
+        "source_acceptance_inherited": false,
+        "execution_grant_inherited": false,
+        "delivery_profile_selected": false,
+        "full_1200_frame_render": false,
+        "decoded_pixel_difference_verified": false,
+        "visual_acceptance": false,
+        "human_acceptance": false,
+        "automatic_native_retry": false
+    });
+    // The shared publisher retains the whole original native Error before any
+    // readback/publication failure and never repeats a native operation.
+    finish_original_terminal(
+        terminal,
+        evidence,
+        || capture_product_custody(database, &request, &project_before, completed.as_ref()),
+        |value| {
+            write_new_json(
+                evidence_path,
+                &private_original_phase_snapshot(value, &append_custody),
+            )
+        },
+        &mut std::io::stderr().lock(),
+    )
+}
+
 fn print_json(value: &serde_json::Value) -> EvidenceResult<()> {
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer(&mut stdout, value)?;
@@ -662,6 +1215,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 usage();
             }
             let result = original_phase(&database, &connection, &attempt, &evidence).await?;
+            print_json(&result)
+        }
+        "recipe-product" => {
+            let output = path_arg(&mut args);
+            let namespace = args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| usage());
+            let curve = args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| usage());
+            let annotation = args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| usage());
+            if args.next().is_some() {
+                usage();
+            }
+            print_json(&emit_product_recipe(
+                &output,
+                &namespace,
+                &curve,
+                &annotation,
+            )?)
+        }
+        "seed-product" => {
+            let database = path_arg(&mut args);
+            let recipe = path_arg(&mut args);
+            let output = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            print_json(&seed_product(&database, &recipe, &output)?)
+        }
+        "product-cycle" => {
+            let database = path_arg(&mut args);
+            let create = path_arg(&mut args);
+            let edit = path_arg(&mut args);
+            let verify = path_arg(&mut args);
+            let attempt = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            let result =
+                product_cycle_phase(&database, [&create, &edit, &verify], &attempt, &evidence)
+                    .await?;
             print_json(&result)
         }
         _ => usage(),
@@ -969,5 +1570,288 @@ mod original_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod product_caller_tests {
+    use super::*;
+    use motionwright_native::blender_product_scene::{CameraCurve, ProductScene};
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        database: PathBuf,
+        recipe_path: PathBuf,
+        output: PathBuf,
+        original_bytes: Vec<u8>,
+    }
+
+    fn fixture() -> Fixture {
+        let root = tempfile::tempdir().unwrap();
+        let recipe = ProductScene::vessel("ProductCallerFixture", CameraCurve::BezierAutoClamped);
+        let mut original_bytes = serde_json::to_vec_pretty(&recipe).unwrap();
+        original_bytes.extend_from_slice(b"\n\n");
+        let database = root.path().join("product.sqlite3");
+        let recipe_path = root.path().join("original-recipe.json");
+        let output = root.path().join("seed");
+        std::fs::create_dir(&output).unwrap();
+        std::fs::write(&recipe_path, &original_bytes).unwrap();
+        Fixture {
+            _root: root,
+            database,
+            recipe_path,
+            output,
+            original_bytes,
+        }
+    }
+
+    #[test]
+    fn product_seed_preserves_original_bytes_in_cas_after_sqlite_reopen() {
+        let fixture = fixture();
+        for curve in ["linear", "bezier_auto_clamped"] {
+            let path = fixture
+                .output
+                .parent()
+                .unwrap()
+                .join(format!("{curve}.json"));
+            let emitted =
+                emit_product_recipe(&path, "SourceOnlyFixture", curve, "EDITED\nSURFACE").unwrap();
+            let raw = std::fs::read(&path).unwrap();
+            let decoded = decode_blender_product_recipe(&raw).unwrap();
+            assert_eq!(emitted["source_constructor"], "ProductScene::vessel");
+            assert_eq!(emitted["native_execution"], "NOT_RUN");
+            assert_eq!(emitted["sqlite_opened"], false);
+            assert_eq!(emitted["annotation_after"], "EDITED\nSURFACE");
+            assert_eq!(
+                emitted["product_scene"],
+                serde_json::to_value(&decoded).unwrap()
+            );
+            assert_eq!(emitted["product_scene"]["camera_curve"], curve);
+            assert!(!fixture.database.exists());
+        }
+        let refused = fixture.output.parent().unwrap().join("refused-recipe.json");
+        assert!(emit_product_recipe(&refused, "Fixture", "native_default", "EDITED").is_err());
+        assert!(!refused.exists());
+        assert!(emit_product_recipe(&refused, "Fixture", "linear", "EDITABLE\nSURFACE").is_err());
+        assert!(!refused.exists());
+        let seeded =
+            seed_product(&fixture.database, &fixture.recipe_path, &fixture.output).unwrap();
+        assert_eq!(
+            seeded["schema"],
+            "motionwright.blender.product-scene-seed/1"
+        );
+        assert_eq!(seeded["native_execution"], "NOT_RUN");
+        assert_eq!(seeded["recipe_cas_verified"], true);
+        assert_eq!(seeded["sqlite_reopened"], true);
+        assert_eq!(seeded["delivery_profile_selected"], false);
+        assert_eq!(seeded["full_1200_frame_render"], false);
+        assert_eq!(seeded["human_acceptance"], false);
+        assert_eq!(
+            std::fs::read(fixture.output.join("source-recipe.json")).unwrap(),
+            fixture.original_bytes
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(fixture.output.join("seed.json")).unwrap()
+            )
+            .unwrap(),
+            seeded
+        );
+        let reopened = StudioService::open(&fixture.database).unwrap();
+        let project_id: Uuid = serde_json::from_value(seeded["project_id"].clone()).unwrap();
+        let project = reopened.project(project_id).unwrap();
+        assert_eq!(project.scenes.len(), 1);
+        assert!(project.scenes[0].nodes.is_empty());
+        assert!(project.production_design.stages.is_empty());
+        assert_eq!(project.production_design.capsules.len(), 1);
+        assert_eq!(
+            reopened
+                .production_receipt_watermark(project_id)
+                .unwrap()
+                .count,
+            0
+        );
+        let handle = reopened.store();
+        let store = handle.lock();
+        assert_eq!(
+            store
+                .read_blob(
+                    seeded["source_sha256"].as_str().unwrap(),
+                    PRODUCT_CALLER_RECIPE_MAX_BYTES
+                )
+                .unwrap(),
+            fixture.original_bytes
+        );
+    }
+
+    #[test]
+    fn product_seed_rejects_unprojected_recipe_before_creating_canonical_source() {
+        for (field, value) in [
+            ("camera_curve", json!("native_default")),
+            ("samples", json!(15)),
+            ("execution_grant", json!({"allow": true})),
+        ] {
+            let fixture = fixture();
+            let mut recipe: serde_json::Value =
+                serde_json::from_slice(&fixture.original_bytes).unwrap();
+            recipe[field] = value;
+            std::fs::write(&fixture.recipe_path, serde_json::to_vec(&recipe).unwrap()).unwrap();
+            assert!(
+                seed_product(&fixture.database, &fixture.recipe_path, &fixture.output).is_err()
+            );
+            assert!(!fixture.database.exists());
+            assert!(fixture.output.read_dir().unwrap().next().is_none());
+        }
+    }
+
+    #[test]
+    fn product_seed_does_not_reuse_an_existing_database_or_seed_destination() {
+        let fixture = fixture();
+        let original = b"Existing source must remain untouched";
+        std::fs::write(&fixture.database, original).unwrap();
+        assert!(seed_product(&fixture.database, &fixture.recipe_path, &fixture.output).is_err());
+        assert_eq!(std::fs::read(&fixture.database).unwrap(), original);
+        assert!(fixture.output.read_dir().unwrap().next().is_none());
+
+        let second = self::fixture();
+        let retained = second.output.join("already-retained.json");
+        std::fs::write(&retained, original).unwrap();
+        assert!(seed_product(&second.database, &second.recipe_path, &second.output).is_err());
+        assert!(!second.database.exists());
+        assert_eq!(std::fs::read(retained).unwrap(), original);
+    }
+
+    #[test]
+    fn product_request_reader_is_closed_and_bounded_before_native_execution() {
+        let fixture = fixture();
+        let project = motionwright_domain::Project::new("Product request reader fixture").unwrap();
+        let request = json!({
+            "project_id": project.id,
+            "expected": {
+                "resource": project.resource_key(),
+                "generation": project.generation,
+                "revision": 7
+            },
+            "scene_id": Uuid::now_v7(),
+            "capsule_id": Uuid::now_v7(),
+            "request_id": "unit-reader",
+            "annotation_body": "EDITED"
+        });
+        std::fs::write(&fixture.recipe_path, serde_json::to_vec(&request).unwrap()).unwrap();
+        let parsed = read_product_request(&fixture.recipe_path).unwrap();
+        assert_eq!(parsed.request_id, "unit-reader");
+        assert_eq!(parsed.project_id, project.id);
+        assert_eq!(parsed.expected.resource, project.resource_key());
+        assert_eq!(parsed.expected.generation, project.generation);
+        assert_eq!(parsed.expected.revision, 7);
+        let mut missing_resource = request.clone();
+        missing_resource["expected"]
+            .as_object_mut()
+            .unwrap()
+            .remove("resource");
+        std::fs::write(
+            &fixture.recipe_path,
+            serde_json::to_vec(&missing_resource).unwrap(),
+        )
+        .unwrap();
+        assert!(read_product_request(&fixture.recipe_path).is_err());
+        for invalid_resource in [json!(null), json!(true), json!(7), json!([]), json!({})] {
+            let mut invalid = request.clone();
+            invalid["expected"]["resource"] = invalid_resource;
+            std::fs::write(&fixture.recipe_path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+            assert!(read_product_request(&fixture.recipe_path).is_err());
+        }
+        let mut extra = request;
+        extra["retry"] = json!(true);
+        std::fs::write(&fixture.recipe_path, serde_json::to_vec(&extra).unwrap()).unwrap();
+        assert!(read_product_request(&fixture.recipe_path).is_err());
+        std::fs::write(&fixture.recipe_path, vec![b' '; 16_385]).unwrap();
+        assert!(read_product_request(&fixture.recipe_path).is_err());
+        assert!(!fixture.database.exists());
+        assert!(fixture.output.read_dir().unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn product_seed_rejects_a_symlink_recipe_before_source_effects() {
+        let fixture = fixture();
+        let link = fixture.output.parent().unwrap().join("recipe-link.json");
+        std::os::unix::fs::symlink(&fixture.recipe_path, &link).unwrap();
+        assert!(seed_product(&fixture.database, &link, &fixture.output).is_err());
+        assert!(!fixture.database.exists());
+        assert!(fixture.output.read_dir().unwrap().next().is_none());
+        assert_eq!(
+            std::fs::read(&fixture.recipe_path).unwrap(),
+            fixture.original_bytes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn product_input_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open() {
+        use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let fixture = fixture();
+        let before = std::fs::symlink_metadata(&fixture.recipe_path).unwrap();
+        assert!(before.is_file());
+        let retired = fixture
+            .recipe_path
+            .with_file_name("retired-original-recipe.json");
+        std::fs::rename(&fixture.recipe_path, &retired).unwrap();
+        let path = fixture.recipe_path.clone();
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: this owned CString remains NUL-terminated and alive throughout
+        // the call. The FIFO is created only inside this test's private TempDir.
+        assert_eq!(
+            unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        let (tx, rx) = mpsc::sync_channel(1);
+        let reader_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            // Exercise the same actual open/fstat as read_product_input, after
+            // the original regular metadata has already been captured. Turning
+            // the result into a String keeps only test data across the thread.
+            let result = open_product_input_original(&reader_path, &before)
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        });
+        let first = rx.recv_timeout(Duration::from_secs(5));
+        if matches!(&first, Err(mpsc::RecvTimeoutError::Timeout)) {
+            // Release a regressed blocking open before joining/failing. This
+            // nonblocking private FIFO handle is neither a native dispatch nor
+            // a writer used by the passing case.
+            let unblock = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+                .open(&path);
+            let recovered = match &unblock {
+                Ok(_) => rx.recv_timeout(Duration::from_secs(5)),
+                Err(_) => Err(mpsc::RecvTimeoutError::Timeout),
+            };
+            drop(unblock);
+            if recovered.is_err() {
+                // Do not turn a failed recovery into an unbounded join. The
+                // failed test explicitly reports that this local waiter did not
+                // finish; no application/provider process was ever launched.
+                panic!("FIFO regression cleanup could not confirm the local reader terminal");
+            }
+        }
+        worker.join().expect("product input reader thread panicked");
+        let result = first.expect("product input open blocked on a FIFO without a writer");
+        assert!(
+            result.is_err(),
+            "rebound FIFO was accepted as a regular input"
+        );
+        assert!(!fixture.database.exists());
+        assert!(fixture.output.read_dir().unwrap().next().is_none());
+        assert_eq!(std::fs::read(retired).unwrap(), fixture.original_bytes);
+        std::fs::remove_file(path).unwrap();
     }
 }

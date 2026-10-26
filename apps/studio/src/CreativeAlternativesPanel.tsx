@@ -1,11 +1,19 @@
 import { useMemo, useState } from "react";
 import { ArrowLeftRight, GitCompareArrows, ShieldAlert } from "lucide-react";
-import type { Change, Project } from "./types";
+import type { Change, Project, SourceReference } from "./types";
 import { inspectCreativeAlternative } from "./creativeAlternativeEvidence";
 import { reviewHasWork, useReviewDraft } from "./reviewDraft";
 import "./creative-alternatives.css";
 
 type Commit=(change:Change)=>Promise<Project>;
+const DIFFERENCES_PER_PAGE=30;
+function sourceLabel(source:SourceReference|null):string {
+  if(!source)return "No declared source";
+  if(source.kind==="asset")return "Asset "+source.asset_id;
+  if(source.kind==="project_revision")return "Project revision r"+source.revision;
+  if(source.kind==="url")return "URL "+source.url;
+  return "Manual note: "+source.label;
+}
 export default function CreativeAlternativesPanel({
   project,commit,
 }:{
@@ -14,6 +22,7 @@ export default function CreativeAlternativesPanel({
   const candidates=project.branches.filter(branch=>branch.id!==project.active_branch &&
     project.branch_workspaces.some(snapshot=>snapshot.branch_id===branch.id));
   const [selection,setSelection]=useState<string|null>(null);
+  const [differencePage,setDifferencePage]=useState({key:"",index:0});
   const selected=candidates.some(b=>b.id===selection)?selection:candidates[0]?.id??null;
   const editor=useReviewDraft(project,{kind:"alternative",id:selected??project.active_branch},commit);
   const {direction,rationale}=editor.draft.raw;
@@ -28,6 +37,19 @@ export default function CreativeAlternativesPanel({
     catch(e){return {report:null,error:e instanceof Error?e.message:"The comparison cannot be assessed."};}
   },[project,selected]);
   const report=evaluated.report;
+  const comparisonKey=report?JSON.stringify([report.project_id,report.generation,report.observed_revision,
+    report.active_branch_id,report.active_base_revision,report.active_head_revision,
+    report.candidate_branch_id,report.candidate_base_revision,report.candidate_head_revision]):"";
+  // Remember each observed context change, including A -> B -> A, so an old
+  // page cannot reappear merely because a source identity is selected again.
+  if(differencePage.key!==comparisonKey)setDifferencePage({key:comparisonKey,index:0});
+  const pageCount=Math.max(1,Math.ceil((report?.differences.length??0)/DIFFERENCES_PER_PAGE));
+  const page=differencePage.key===comparisonKey?Math.min(differencePage.index,pageCount-1):0;
+  const pageStart=page*DIFFERENCES_PER_PAGE;
+  const showPage=(index:number)=>{
+    if(index<0 || index>=pageCount)return;
+    setDifferencePage({key:comparisonKey,index});
+  };
   const enabled=!!report && report.differences.length>0 && !editor.blocked &&
     rationale.trim().length>=15 && rationale.trim().length<=1200;
 
@@ -43,6 +65,7 @@ export default function CreativeAlternativesPanel({
       "Generation: "+report.generation,
       "Revision: "+report.observed_revision,
       "Compared active branch: "+(active?.name??"unknown")+" ("+report.active_branch_id+")",
+      "Active base/head: r"+report.active_base_revision+"/r"+report.active_head_revision,
       "Saved alternative: "+alternative.name+" ("+report.candidate_branch_id+")",
       "Alternative base/head: r"+report.candidate_base_revision+"/r"+report.candidate_head_revision,
       "Editable source differences: "+report.differences.length+" ("+exactKeys+")",
@@ -73,13 +96,15 @@ export default function CreativeAlternativesPanel({
     </p>:<>
       <div className="creative-alternatives-chooser">
         <label><span className="field-label">Current branch</span>
-          <strong>{active?.name??"Unknown current branch"}</strong></label>
+          <strong>{active?.name??"Unknown current branch"}</strong>
+          {report&&<small className="mono">Active base/head: r{report.active_base_revision}/r{report.active_head_revision}</small>}</label>
         <ArrowLeftRight size={17} aria-hidden="true"/>
         <label><span className="field-label">Compare against saved branch</span>
           <select aria-label="Creative alternative branch" value={selected??""}
-            onChange={e=>setSelection(e.target.value)}>
+            onChange={e=>{setSelection(e.target.value);setDifferencePage({key:"",index:0});}}>
             {candidates.map(b=><option value={b.id} key={b.id}>{b.name} · r{b.head_revision}</option>)}
-          </select></label>
+          </select>
+          {report&&<small className="mono">Alternative base/head: r{report.candidate_base_revision}/r{report.candidate_head_revision}</small>}</label>
       </div>
       {evaluated.error?<p className="creative-alternatives-error" role="alert">
         Alternative not assessed: {evaluated.error}
@@ -92,17 +117,27 @@ export default function CreativeAlternativesPanel({
         </div>
         {report.differences.length?
           <div className="creative-alternatives-diffs" aria-label="Source alternative differences">
-            {report.differences.slice(0,30).map((change,i)=><article key={change.kind+change.scene_id+change.node_id+i}>
+            {report.differences.slice(pageStart,pageStart+DIFFERENCES_PER_PAGE).map((change,i)=><article key={change.kind+change.scene_id+change.node_id+(pageStart+i)}>
               <strong>{change.kind.replaceAll("_"," ")}</strong>
               <p>{change.summary}</p>
-              <span className="mono">{change.scene_id?
+              <span className="mono">{change.claim_id?"claim:"+change.claim_id:change.scene_id?
                 "scene:"+change.scene_id.slice(0,8):"project"}
                 {change.node_id?" · node:"+change.node_id.slice(0,8):""}</span>
+              {change.changed_fields&&<p>Changed fields: {change.changed_fields.map(field=>field.replaceAll("_"," ")).join(", ")}.</p>}
+              {change.source_comparison&&<dl aria-label={"Claim source comparison "+change.claim_id}>
+                <dt>Current source</dt><dd>{sourceLabel(change.source_comparison.active.source)}</dd>
+                <dt>Current source revision</dt><dd>{change.source_comparison.active.source_revision??"Not declared"}</dd>
+                <dt>Alternative source</dt><dd>{sourceLabel(change.source_comparison.candidate.source)}</dd>
+                <dt>Alternative source revision</dt><dd>{change.source_comparison.candidate.source_revision??"Not declared"}</dd>
+              </dl>}
             </article>)}
-            {report.differences.length>30&&<p>
-              {report.differences.length-30} additional changes were counted but not shown.
-              Review the full branch before any human acceptance.
-            </p>}
+            <div role="group" aria-label="Alternative differences pagination">
+              <p role="status" aria-live="polite">Showing changes {pageStart+1}–{Math.min(pageStart+DIFFERENCES_PER_PAGE,report.differences.length)} of {report.differences.length}. Page {page+1} of {pageCount}.</p>
+              {pageCount>1&&<>
+                <button type="button" className="button compact" aria-disabled={page===0} onClick={()=>showPage(page-1)}>Previous changes</button>
+                <button type="button" className="button compact" aria-disabled={page===pageCount-1} onClick={()=>showPage(page+1)}>Next changes</button>
+              </>}
+            </div>
           </div>:<p className="creative-alternatives-empty">
             The two saved authoring states are structurally equivalent under the bounded
             properties inspected here. This does not mean their native pixels were compared.

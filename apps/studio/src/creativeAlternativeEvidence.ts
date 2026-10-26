@@ -4,7 +4,7 @@
  * authenticity, rights, distillation or branch-merge safety. Manual
  * positive/negative judgements remain ordinary revision-anchored reviews.
  */
-import type { BranchState, CanvasNode, Project, Scene } from "./types";
+import type { BranchState, CanvasNode, Claim, ClaimEditableFields, Project, Scene } from "./types";
 
 export type CreativeDifferenceKind =
   | "scene_added" | "scene_omitted" | "scene_copy" | "scene_timing"
@@ -12,12 +12,19 @@ export type CreativeDifferenceKind =
   | "node_added" | "node_omitted" | "node_copy" | "node_geometry"
   | "node_style" | "node_motion" | "node_structure"
   | "brief" | "narrative" | "audio" | "visual_language"
-  | "deliverables" | "production_design";
+  | "deliverables" | "production_design"
+  | "claim_added" | "claim_omitted" | "claim_changed";
 export interface CreativeDifference {
   kind: CreativeDifferenceKind;
   scene_id: string | null;
   node_id: string | null;
   summary: string;
+  claim_id?: string;
+  changed_fields?: Array<keyof ClaimEditableFields>;
+  source_comparison?: {
+    active: Pick<Claim, "source" | "source_revision">;
+    candidate: Pick<Claim, "source" | "source_revision">;
+  };
 }
 export interface CreativeAlternativeReport {
   schema: "motionwright.v05-creative-alternatives/1";
@@ -25,6 +32,8 @@ export interface CreativeAlternativeReport {
   generation: string;
   observed_revision: number;
   active_branch_id: string;
+  active_head_revision: number;
+  active_base_revision: number;
   candidate_branch_id: string;
   candidate_head_revision: number;
   candidate_base_revision: number;
@@ -70,6 +79,10 @@ function sourceState(project:Project):BranchState {
 export function inspectCreativeAlternative(
   project:Project,candidateBranchId:string,
 ):CreativeAlternativeReport {
+  const active=project.branches.find(b=>b.id===project.active_branch);
+  if(!active)throw new Error("The active creative branch metadata is unavailable.");
+  if(active.base_revision>project.revision || active.head_revision>project.revision)
+    throw new Error("Active branch has a future revision; source cannot be trusted.");
   const candidate=project.branches.find(b=>b.id===candidateBranchId);
   if(!candidate||candidate.id===project.active_branch)
     throw new Error("Select a different saved creative branch.");
@@ -87,6 +100,13 @@ export function inspectCreativeAlternative(
   // preview must still fail closed for forged duplicate identities instead
   // of silently reducing a scene/object list through a Map overwrite.
   for(const state of [current,other]) {
+    if(state.brief.claims.length>MAX_DIFFS)
+      throw new Error("The creative claim comparison exceeds its bounded source budget.");
+    const claims=new Set<string>();
+    for(const claim of state.brief.claims) {
+      if(claims.has(claim.id))throw new Error("Duplicate claim identity in saved branch state.");
+      claims.add(claim.id);
+    }
     const scenes=new Set<string>(),nodes=new Set<string>();
     for(const scene of state.scenes) {
       if(scenes.has(scene.id)) throw new Error("Duplicate scene identity in saved branch state.");
@@ -101,9 +121,10 @@ export function inspectCreativeAlternative(
   }
   const differences:CreativeDifference[]=[];
   const counts:Partial<Record<CreativeDifferenceKind,number>>={};
-  const add=(kind:CreativeDifferenceKind,summary:string,scene_id:string|null=null,node_id:string|null=null)=>{
+  const add=(kind:CreativeDifferenceKind,summary:string,scene_id:string|null=null,node_id:string|null=null,
+    detail:Pick<CreativeDifference,"claim_id"|"changed_fields"|"source_comparison">={})=>{
     if(differences.length>=MAX_DIFFS)throw new Error("The branch edit delta exceeds the bounded review budget.");
-    differences.push({kind,summary,scene_id,node_id});
+    differences.push({kind,summary,scene_id,node_id,...detail});
     counts[kind]=(counts[kind]??0)+1;
   };
   const byId=(scenes:Scene[])=>new Map(scenes.map(scene=>[scene.id,scene]));
@@ -134,7 +155,36 @@ export function inspectCreativeAlternative(
   }
   for(const [id] of candidateScenes)
     if(!sourceScenes.has(id))add("scene_added","Alternative-only source scene was created",id);
-  for(const field of ["brief","narrative","audio","visual_language","deliverables","production_design"] as const)
+  const currentClaims=new Map(current.brief.claims.map(claim=>[claim.id,claim]));
+  const candidateClaims=new Map(other.brief.claims.map(claim=>[claim.id,claim]));
+  const claimFields=["text","source","context","source_revision"] as const;
+  for(const [id,claim] of currentClaims) {
+    const alternative=candidateClaims.get(id);
+    if(!alternative) {
+      add("claim_omitted","An existing claim is absent from this alternative",null,null,{claim_id:id});
+      continue;
+    }
+    const fields=claimFields.filter(field=>!same(claim[field],alternative[field]));
+    if(!fields.length)continue;
+    const sourceChanged=fields.includes("source")||fields.includes("source_revision");
+    add("claim_changed","The identified claim has changed authored fields",null,null,{
+      claim_id:id,changed_fields:fields,
+      ...(sourceChanged?{source_comparison:{
+        active:structuredClone({source:claim.source,source_revision:claim.source_revision}),
+        candidate:structuredClone({source:alternative.source,source_revision:alternative.source_revision}),
+      }}:{}),
+    });
+  }
+  for(const [id] of candidateClaims)
+    if(!currentClaims.has(id))add("claim_added","An alternative-only claim was created",null,null,{claim_id:id});
+  const currentClaimOrder=current.brief.claims.filter(claim=>candidateClaims.has(claim.id)).map(claim=>claim.id);
+  const candidateClaimOrder=other.brief.claims.filter(claim=>currentClaims.has(claim.id)).map(claim=>claim.id);
+  if(!same(currentClaimOrder,candidateClaimOrder))
+    add("brief","The order of existing claim identities differs between branches");
+  const briefFields=["objective","audience","constraints","exclusions"] as const;
+  if(briefFields.some(field=>!same(current.brief[field],other.brief[field])))
+    add("brief","The editable brief state outside individual claims differs between branches");
+  for(const field of ["narrative","audio","visual_language","deliverables","production_design"] as const)
     if(!same(current[field],other[field]))
       add(field, "The editable "+field.replaceAll("_"," ")+" state differs between branches");
   return {
@@ -142,6 +192,8 @@ export function inspectCreativeAlternative(
     project_id:project.id,generation:project.generation,
     observed_revision:project.revision,
     active_branch_id:project.active_branch,candidate_branch_id: candidate.id,
+    active_head_revision:active.head_revision,
+    active_base_revision:active.base_revision,
     candidate_head_revision:candidate.head_revision,
     candidate_base_revision:workspace.base_revision,
     verdict:differences.length?"DIFFERENCES_PRESENT":"NO_AUTHORED_DIFFERENCE",

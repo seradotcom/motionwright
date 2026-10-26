@@ -569,3 +569,105 @@ test("a failed initial pointer read can recover an empty session without discard
     expect(applies(service)).toHaveLength(applyCount + 1);
   });
 });
+
+test("an unchanged SQLite branch base stays UNKNOWN until a real peer advances it, preserving later input without replay", async ({ page }, info) => {
+  await withBranch(page, info, async ({ service, baseline, applyCount, cleanup, observations, observe, restart }) => {
+    const grantCount = (instance: ScopedChangeService) => instance.transcript.filter(entry => entry.direction === "request"
+      && "command" in entry.payload && entry.payload.command === "issue_effect_grant").length;
+    const grants = grantCount(service), original = service.invoke.bind(service), intercepted: ApplyArgs[] = [];
+    cleanup.push(async () => { service.invoke = original; });
+    let armed = true;
+    // Only transport delivery is interrupted after the real grant. The App
+    // cannot know this request was not dispatched; no receipt is fabricated.
+    service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const request = args.request as ApplyArgs["request"] | undefined;
+      if (!armed || command !== "apply_change" || request?.change.type !== "create_branch") return original<T>(command, args);
+      armed = false; intercepted.push(structuredClone(args as ApplyArgs));
+      throw new Error("Injected Branch transport interruption before service dispatch");
+    };
+    const originalName = "Original uncertain branch without a receipt", laterName = "  Separately authored branch after peer revision  ";
+    await nameField(page).fill(originalName); await create(page).click();
+    await expect(page.getByRole("region", { name: "Unconfirmed branch creation" })).toBeVisible();
+    await expect(page.locator(".branch-recovery").getByRole("alert").filter({
+      hasText: "transport interruption before service dispatch",
+    })).toBeVisible();
+    service.invoke = original;
+    expect(intercepted).toHaveLength(1);
+    expect(intercepted[0].request).toMatchObject({ project_id: baseline.id, generation: baseline.generation,
+      revision: baseline.revision, change: { type: "create_branch", name: originalName } });
+    expect(intercepted[0].request.effect_grant).toBeTruthy();
+    expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
+    const before = await service.observeStoredProject(baseline);
+    expect(await service.history(baseline.id, baseline.revision)).toEqual([]);
+    await nameField(page).fill(laterName);
+    const retained = await branchCopy(page, baseline), retainedDraft = JSON.parse(retained.raw).draft;
+    expect(retainedDraft.pending.outcome).toBe("UNKNOWN"); expect(retainedDraft.pending.name).toBe(originalName);
+    expect(retainedDraft.name).toBe(laterName); expect(retainedDraft.sequence).toBeGreaterThan(retainedDraft.pending.sequence);
+    await button(page, "Read saved branches and history").click();
+    const inspected = page.getByRole("region", { name: "Saved branch outcome", exact: true });
+    const continuation = button(page, "Keep original attempt and start another branch");
+    await expect(inspected).toContainText("Read saved revision r" + baseline.revision + " and 0 committed changes.");
+    await expect(continuation, "BRANCH_UNCHANGED_SQLITE_BASE_REMAINS_UNKNOWN").toBeDisabled();
+    await expect(inspected.getByRole("status")).toContainText("original request can still commit");
+    await expect(create(page)).toBeDisabled();
+    expect(await branchCopy(page, baseline)).toEqual(retained);
+    expect(await observe("same saved revision cannot release UNKNOWN")).toEqual(baseline);
+    expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
+
+    const peer = await service.peer();
+    cleanup.push(async () => {
+      try { await peer.close(); }
+      finally { observations.independentPeer = { transcript: peer.transcript, processExits: peer.processExits, lifecycleTaints: peer.lifecycleTaints }; }
+    });
+    expect(await peer.project(baseline.id)).toEqual(baseline);
+    const peerChange: Change = { type: "rename_project", title: "Independent SQLite peer closes the Branch base" };
+    const advanced = await peer.apply(baseline, peerChange), peerJournal = await service.history(baseline.id, baseline.revision);
+    expect(advanced.revision).toBe(baseline.revision + 1);
+    expect(advanced.branches.map(branch => branch.id)).toEqual(baseline.branches.map(branch => branch.id));
+    expect(peerJournal.map(event => event.change)).toEqual([peerChange]);
+    expect(applies(peer)).toHaveLength(1); expect(grantCount(peer)).toBe(1);
+    await page.reload(); await revision(page, advanced.revision); await openChanges(page);
+    await expect(nameField(page)).toHaveValue(laterName); await expect(create(page)).toBeDisabled();
+    await expect(page.getByRole("region", { name: "Unconfirmed branch creation" })).toBeVisible();
+    await button(page, "Read saved branches and history").click();
+    await expect(inspected).toContainText("Read saved revision r" + advanced.revision + " and 1 committed changes.");
+    await expect(inspected).toContainText("do not identify or acknowledge the original request");
+    await expect(continuation).toBeEnabled(); await continuation.click();
+    await expect(page.getByRole("region", { name: "Unconfirmed branch creation" })).toHaveCount(0);
+    await expect(nameField(page)).toHaveValue(laterName); await expect(create(page)).toBeEnabled();
+    const separate = await branchCopy(page, advanced), separateDraft = JSON.parse(separate.raw).draft;
+    expect(separate.writerId).not.toBe(retained.writerId); expect(separateDraft.pending).toBeNull();
+    expect(separateDraft.baseRevision).toBe(advanced.revision); expect(separateDraft.name).toBe(laterName);
+    expect(separateDraft.origins).toContainEqual({ key: retained.key, raw: retained.raw });
+    for (const origin of separateDraft.origins as { key: string; raw: string }[])
+      expect(await page.evaluate(key => localStorage.getItem(key), origin.key)).toBe(origin.raw);
+    expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
+    expect(await observe("explicit separation did not create a branch or acknowledge the original")).toEqual(advanced);
+    const after = await service.observeStoredProject(advanced);
+    expect(after.journal).toEqual([...before.journal, ...peerJournal]);
+    expect([...applies(service), ...applies(peer)].filter(value => value.request.request_id === intercepted[0].request.request_id)).toEqual([]);
+    await restart(advanced);
+    await expect(nameField(page)).toHaveValue(laterName); await expect(create(page)).toBeEnabled();
+    expect(JSON.parse((await branchCopy(page, advanced)).raw).draft).toEqual(separateDraft);
+    expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+    expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
+
+    // Only this new explicit author action dispatches the later branch name.
+    await create(page).click(); await revision(page, advanced.revision + 1);
+    const saved = await observe("one explicit new branch from the independently advanced source"), actions = applies(service).slice(applyCount);
+    expect(actions).toHaveLength(1); expect(actions[0].request.change).toEqual({ type: "create_branch", name: laterName.trim() });
+    expect(actions[0].request.revision).toBe(advanced.revision);
+    expect(actions[0].request.request_id).not.toBe(intercepted[0].request.request_id);
+    expect(actions[0].request.effect_grant).not.toBe(intercepted[0].request.effect_grant);
+    expect(saved.branches.filter(branch => branch.name === laterName.trim())).toHaveLength(1);
+    expect(saved.branches.filter(branch => branch.name === originalName)).toEqual([]);
+    expect((await service.history(baseline.id, baseline.revision)).map(event => event.change.type)).toEqual(["rename_project", "create_branch"]);
+    expect(grantCount(service)).toBe(grants + 2); expect(applies(peer)).toHaveLength(1);
+    await restart(saved); await expect(nameField(page)).toHaveValue("");
+    expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+    for (const origin of separateDraft.origins as { key: string; raw: string }[])
+      expect(await page.evaluate(key => localStorage.getItem(key), origin.key)).toBe(origin.raw);
+    Object.assign(observations, { transportFault: "Only the original dispatch was interrupted; the editor retained UNKNOWN",
+      intercepted, before, after, retained, separate, peerJournal, newExplicitApply: actions[0] });
+  });
+});

@@ -314,8 +314,212 @@ test("an actual saved alternative retains raw rationale and records only an open
     expect(added).toHaveLength(1); expect(added[0]).toMatchObject({ kind: "creative", status: "open", resolution: null });
     expect(added[0].body).toContain("MANUAL NEGATIVE CREATIVE ALTERNATIVE REVIEW");
     expect(added[0].body).toContain("Human editorial reason: This specific saved alternative weakens the authored narrative contrast.");
+    expect(added[0].body).toContain("Active base/head: r" + baseline.branches.find(branch => branch.id === baseline.active_branch)!.base_revision + "/r" + baseline.branches.find(branch => branch.id === baseline.active_branch)!.head_revision);
+    expect(added[0].body).toContain("Alternative base/head: r" + baseline.branches.find(branch => branch.id === alternativeId)!.base_revision + "/r" + baseline.branches.find(branch => branch.id === alternativeId)!.head_revision);
     expect(saved.production_design).toEqual(baseline.production_design);
     expect((await service.history(baseline.id, baseline.revision)).map(event => event.change.type)).toEqual(["add_review"]);
     await restart(saved);
+  });
+});
+
+
+test("selected review deliverable, language and rational range persist through actual App reload and SQLite restart", async ({ page }, info) => {
+  await withReview(page, info, async ({ service, baseline, sceneName, applyCount, observe, restart }) => {
+    const profile = baseline.deliverables[0];
+    if (!profile) throw new Error("The real service fixture must provide a deliverable for review.");
+    await page.getByLabel("Review resource scope", { exact: true }).selectOption("project");
+    const selection = page.getByLabel("Review deliverable", { exact: true });
+    await expect(selection).toHaveValue("");
+    await selection.selectOption(profile.id); await comment(page).fill("  Review a particular delivered variant  ");
+    await page.getByLabel("Review time anchor", { exact: true }).selectOption("range");
+    await page.getByLabel("Review range start", { exact: true }).fill("1001/30000");
+    await page.getByLabel("Review range end", { exact: true }).fill("1/2");
+    await button(page, "Brief").click(); await openReview(page, sceneName);
+    await page.getByLabel("Review resource scope", { exact: true }).selectOption("project");
+    await expect(selection).toHaveValue(profile.id);
+    await page.reload(); await openReview(page, sceneName);
+    await page.getByLabel("Review resource scope", { exact: true }).selectOption("project");
+    await expect(selection).toHaveValue(profile.id);
+    await expect(comment(page)).toHaveValue("  Review a particular delivered variant  ");
+    expect(await observe("selected profile draft has no saved effect")).toEqual(baseline);
+    expect(applies(service)).toHaveLength(applyCount);
+    await button(page, "Add anchored review").click(); await revision(page, baseline.revision + 1);
+    const saved = await observe("selected deliverable and language committed with exact review time");
+    const added = saved.reviews.filter(item => !baseline.reviews.some(prior => prior.id === item.id));
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({ body: "Review a particular delivered variant", status: "open", anchor: {
+      resource: "project:" + baseline.id, branch_id: baseline.active_branch, revision: baseline.revision,
+      profile_id: profile.id, locale: profile.language,
+      start: { num: "1001", den: "30000" }, end: { num: "1", den: "2" },
+    } });
+    expect((await service.history(baseline.id, baseline.revision)).map(event => event.change)).toEqual([
+      { type: "add_review", kind: "creative", resource: "project:" + baseline.id,
+        body: "Review a particular delivered variant", profile_id: profile.id, locale: profile.language,
+        start: { num: "1001", den: "30000" }, end: { num: "1", den: "2" } },
+    ]);
+    await restart(saved); expect(applies(service)).toHaveLength(applyCount + 1);
+    const row = page.locator('.critique-copy[data-review-id="' + added[0].id + '"]');
+    await expect(row.getByLabel("Stored review deliverable and language", { exact: true })).toContainText(profile.id);
+    await expect(row.getByLabel("Stored review deliverable and language", { exact: true })).toContainText("stored language: " + profile.language);
+  });
+});
+test("later explicit empty review profile survives a held original reply and saves separately to SQLite", async ({ page }, info) => {
+  await withReview(page, info, async ({ service, baseline, applyCount, cleanup, observe, restart }) => {
+    const profile = baseline.deliverables[0];
+    if (!profile) throw new Error("The real service fixture must provide a deliverable for review.");
+    const selection = page.getByLabel("Review deliverable", { exact: true });
+    await selection.selectOption(profile.id); await comment(page).fill("Same review text with new authored scope");
+    const hold = holdReply(service, "add_review"); cleanup.push(hold.dispose);
+    await button(page, "Add anchored review").click(); await hold.observed;
+    await selection.selectOption(""); hold.release();
+    await revision(page, baseline.revision + 1);
+    await expect(selection).toHaveValue("");
+    await expect(comment(page)).toHaveValue("Same review text with new authored scope");
+    await button(page, "Add anchored review").click(); await revision(page, baseline.revision + 2);
+    const saved = await observe("explicitly distinct profile scope after original callback");
+    const added = saved.reviews.filter(item => !baseline.reviews.some(prior => prior.id === item.id));
+    expect(added).toHaveLength(2);
+    expect(added.find(item => item.anchor.revision === baseline.revision)?.anchor)
+      .toMatchObject({ profile_id: profile.id, locale: profile.language });
+    expect(added.find(item => item.anchor.revision === baseline.revision + 1)?.anchor)
+      .toMatchObject({ profile_id: null, locale: null });
+    const actions = applies(service).slice(applyCount);
+    expect(actions).toHaveLength(2); expect(actions[1].request.request_id).not.toBe(actions[0].request.request_id);
+    expect(actions[1].request.effect_grant).not.toBe(actions[0].request.effect_grant);
+    expect(actions.map(action => action.request.revision)).toEqual([baseline.revision, baseline.revision + 1]);
+    await restart(saved);
+  });
+});
+test("lost reply keeps original selected review profile UNKNOWN while a later empty selection survives actual SQLite recovery", async ({ page }, info) => {
+  await withReview(page, info, async ({ service, baseline, sceneId, sceneName, applyCount, observations, cleanup, observe, restart }) => {
+    const profile = baseline.deliverables[0];
+    if (!profile) throw new Error("The real service fixture must provide a deliverable for review.");
+    const original = service.invoke.bind(service); let armed = true;
+    cleanup.push(async () => { service.invoke = original; });
+    service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const request = args.request as ApplyArgs["request"] | undefined;
+      if (!armed || command !== "apply_change" || request?.change.type !== "add_review") return original<T>(command, args);
+      armed = false; observations.originalReturnedProject = await original<Project>(command, args);
+      throw new Error("Original selected-profile reply was lost after the real service committed");
+    };
+    const selection = page.getByLabel("Review deliverable", { exact: true });
+    await selection.selectOption(profile.id); await comment(page).fill("Original selected-profile comment");
+    await button(page, "Add anchored review").click();
+    await expect(page.getByRole("status").filter({ hasText: "Original review outcome UNKNOWN" })).toHaveCount(1);
+    await selection.selectOption(""); await comment(page).fill("Later explicit unscoped review");
+    await page.reload(); await openReview(page, sceneName);
+    await expect(selection).toHaveValue(""); await expect(comment(page)).toHaveValue("Later explicit unscoped review");
+    await expect(button(page, "Add anchored review")).toBeDisabled();
+    const prior = await ownCopy(page, baseline, "scene:" + sceneId);
+    expect(prior.value.draft.raw.profileId).toBe("");
+    expect(prior.value.draft.pending.raw.profileId).toBe(profile.id);
+    expect(prior.value.draft.pending.change).toMatchObject({ profile_id: profile.id, locale: profile.language });
+    expect(prior.value.draft.pending.outcome).toBe("UNKNOWN");
+    const before = await observe("original selected-profile review remains unacknowledged");
+    expect(before.revision).toBe(baseline.revision + 1); expect(applies(service)).toHaveLength(applyCount + 1);
+    await button(page, "Read saved review and history").click();
+    await expect(page.getByRole("region", { name: "Saved review outcome", exact: true })).toBeVisible();
+    await button(page, "Keep original attempt and start a separate review").click();
+    expect(await page.evaluate(key => localStorage.getItem(key), prior.key)).toBe(prior.raw);
+    await expect(selection).toHaveValue(""); await expect(comment(page)).toHaveValue("Later explicit unscoped review");
+    expect(applies(service)).toHaveLength(applyCount + 1);
+    await button(page, "Add anchored review").click(); await revision(page, before.revision + 1);
+    const saved = await observe("separate explicit empty profile saves without replaying UNKNOWN");
+    expect(saved.reviews.find(item => item.body === "Original selected-profile comment")?.anchor)
+      .toMatchObject({ profile_id: profile.id, locale: profile.language });
+    expect(saved.reviews.find(item => item.body === "Later explicit unscoped review")?.anchor)
+      .toMatchObject({ profile_id: null, locale: null });
+    const actions = applies(service).slice(applyCount);
+    expect(actions).toHaveLength(2); expect(actions[1].request.request_id).not.toBe(actions[0].request.request_id);
+    expect(actions[1].request.effect_grant).not.toBe(actions[0].request.effect_grant);
+    expect(await page.evaluate(key => localStorage.getItem(key), prior.key)).toBe(prior.raw);
+    observations.originalUnknownCopy = prior; await restart(saved);
+  });
+});
+
+test("pre-dispatch review transport interruption keeps the saved base UNKNOWN until an independent SQLite peer advances it without replay", async ({ page }, info) => {
+  await withReview(page, info, async ({ service, baseline, sceneId, sceneName, applyCount, observations, cleanup, observe, restart }) => {
+    const profile = baseline.deliverables[0];
+    if (!profile) throw new Error("The real service fixture must provide a deliverable for review.");
+    const grantCount = (instance: ScopedChangeService) => instance.transcript.filter(entry => entry.direction === "request"
+      && "command" in entry.payload && entry.payload.command === "issue_effect_grant").length;
+    const grants = grantCount(service), original = service.invoke.bind(service), intercepted: ApplyArgs[] = [];
+    cleanup.push(async () => { service.invoke = original; });
+    let armed = true;
+    // Inject only a transport interruption after the real grant, before native
+    // dispatch. No service rejection, receipt or saved Project is manufactured.
+    service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const request = args.request as ApplyArgs["request"] | undefined;
+      if (!armed || command !== "apply_change" || request?.change.type !== "add_review") return original<T>(command, args);
+      armed = false; intercepted.push(structuredClone(args as ApplyArgs));
+      throw new Error("Injected Review transport interruption before service dispatch");
+    };
+    const selection = page.getByLabel("Review deliverable", { exact: true });
+    await selection.selectOption(profile.id); await comment(page).fill("  Same words with later explicit profile scope  ");
+    await button(page, "Add anchored review").click();
+    await expect(page.getByRole("status").filter({ hasText: "Original review outcome UNKNOWN" })).toHaveCount(1);
+    await expect(page.getByRole("alert").filter({ hasText: "transport interruption before service dispatch" })).toHaveCount(1);
+    service.invoke = original;
+    expect(intercepted).toHaveLength(1);
+    expect(intercepted[0].request).toMatchObject({ project_id: baseline.id, generation: baseline.generation, revision: baseline.revision });
+    expect(intercepted[0].request.effect_grant).toBeTruthy();
+    expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
+    const before = await service.observeStoredProject(baseline);
+    expect(await service.history(baseline.id, baseline.revision)).toEqual([]);
+    await selection.selectOption("");
+    const retained = await ownCopy(page, baseline, "scene:" + sceneId);
+    expect(retained.value.draft.pending.outcome).toBe("UNKNOWN");
+    expect(retained.value.draft.pending.raw.profileId).toBe(profile.id); expect(retained.value.draft.raw.profileId).toBe("");
+    expect(retained.value.draft.pending.change).toEqual(intercepted[0].request.change);
+    await button(page, "Read saved review and history").click();
+    const inspected = page.getByRole("region", { name: "Saved review outcome", exact: true });
+    const continuation = button(page, "Keep original attempt and start a separate review");
+    await expect(inspected).toContainText("Read saved revision r" + baseline.revision + " and 0 contiguous history entries.");
+    await expect(continuation, "REVIEW_UNCHANGED_SQLITE_BASE_REMAINS_UNKNOWN").toBeDisabled();
+    await expect(inspected.getByRole("status")).toContainText("original request can still commit");
+    await expect(button(page, "Add anchored review")).toBeDisabled();
+    expect(await observe("unchanged SQLite base cannot release the original review")).toEqual(baseline);
+    expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+    expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
+
+    const peer = await service.peer();
+    cleanup.push(async () => {
+      try { await peer.close(); }
+      finally { observations.independentPeer = { transcript: peer.transcript, processExits: peer.processExits, lifecycleTaints: peer.lifecycleTaints }; }
+    });
+    expect(await peer.project(baseline.id)).toEqual(baseline);
+    const peerChange: Change = { type: "rename_project", title: "Independent SQLite peer closes the Review base" };
+    const advanced = await peer.apply(baseline, peerChange), peerJournal = await service.history(baseline.id, baseline.revision);
+    expect(advanced.revision).toBe(baseline.revision + 1); expect(advanced.reviews).toEqual(baseline.reviews);
+    expect(peerJournal.map(event => event.change)).toEqual([peerChange]);
+    expect(applies(peer)).toHaveLength(1); expect(grantCount(peer)).toBe(1);
+    await page.reload(); await revision(page, advanced.revision); await openReview(page, sceneName);
+    await expect(selection).toHaveValue(""); await expect(comment(page)).toHaveValue("  Same words with later explicit profile scope  ");
+    const reviewed = await ownCopy(page, advanced, "scene:" + sceneId);
+    expect(reviewed.value.draft.pending).toEqual(retained.value.draft.pending);
+    await button(page, "Read saved review and history").click();
+    await expect(inspected).toContainText("Read saved revision r" + advanced.revision + " and 1 contiguous history entries.");
+    await expect(inspected).toContainText("Matching authored values at revisions none"); await expect(continuation).toBeEnabled();
+    await continuation.click();
+    await expect(page.getByRole("status").filter({ hasText: "Original review outcome UNKNOWN" })).toHaveCount(0);
+    await expect(selection).toHaveValue(""); await expect(comment(page)).toHaveValue("  Same words with later explicit profile scope  ");
+    const separate = await ownCopy(page, advanced, "scene:" + sceneId);
+    expect(separate.key).not.toBe(reviewed.key); expect(separate.value.draft.pending).toBeNull();
+    expect(separate.value.draft.raw).toEqual(retained.value.draft.raw); expect(separate.value.draft.baseRevision).toBe(advanced.revision);
+    expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+    expect(await page.evaluate(key => localStorage.getItem(key), reviewed.key)).toBe(reviewed.raw);
+    expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
+    const after = await service.observeStoredProject(advanced);
+    expect(after.journal).toEqual([...before.journal, ...peerJournal]);
+    expect([...applies(service), ...applies(peer)].filter(value => value.request.request_id === intercepted[0].request.request_id)).toEqual([]);
+    await restart(advanced);
+    await expect(selection).toHaveValue(""); await expect(comment(page)).toHaveValue("  Same words with later explicit profile scope  ");
+    expect((await ownCopy(page, advanced, "scene:" + sceneId)).value.draft).toEqual(separate.value.draft);
+    expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+    expect(await page.evaluate(key => localStorage.getItem(key), reviewed.key)).toBe(reviewed.raw);
+    expect(applies(service)).toHaveLength(applyCount); expect(grantCount(service)).toBe(grants + 1);
+    expect(applies(peer)).toHaveLength(1); expect(grantCount(peer)).toBe(1);
+    Object.assign(observations, { transportFault: "Injected before original dispatch; original apply never observed by StudioService",
+      intercepted, before, after, retained, reviewed, separate, peerJournal, editorAppliesAfterFault: 0, editorGrantsAfterFault: 0 });
   });
 });

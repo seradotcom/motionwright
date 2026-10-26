@@ -15,7 +15,8 @@ from mlt_official_runtime_intake import capture_regular
 from native_mlt_loaded_module import _verified_binary
 from native_blender_product_pixels import observe_product_surface_pixels
 from native_blender_original_evidence import (
-    COMMANDS, MAX_JSON, LiveBlenderObserver, _plain_owned_directory,
+    COMMANDS, HEX, MAX_JSON, LiveBlenderObserver, _plain_owned_directory,
+    _require_empty_private_append_custody,
     captured_json, live_observation_scope, new_json, new_original_runtime_paths,
     require, same_original_chain, unique_json,
 )
@@ -33,10 +34,14 @@ PRODUCT_COMMANDS = COMMANDS | frozenset(
 def run_product_contexts(
     app: Any, *, owner: Path, recipe_path: Path, request_id: str,
     annotation_body: str, record: dict, ffmpeg: Path, ffmpeg_sha256: str,
+    expected_recipe_sha256: str,
 ) -> dict:
     """One explicit source cycle; the caller owns sealing this complete record."""
     require(type(record) is dict and not record, "product_context_record_must_be_new")
     _plain_owned_directory(owner)
+    require(type(expected_recipe_sha256) is str
+            and HEX.fullmatch(expected_recipe_sha256) is not None,
+            "product_context_original_recipe_digest_invalid")
     require(type(request_id) is str and 1 <= len(request_id) <= 48
             and request_id.isascii()
             and all(char.isalnum() or char in "-_" for char in request_id),
@@ -91,8 +96,11 @@ def run_product_contexts(
                 and seeded.get("native_execution") == "NOT_RUN"
                 and seeded.get("recipe_cas_verified") is True
                 and seeded.get("sqlite_reopened") is True
-                and seeded.get("delivery_profile_selected") is False,
+                and seeded.get("delivery_profile_selected") is False
+                and seeded.get("source_sha256") == expected_recipe_sha256,
                 "product_context_seed_not_bound_to_saved_recipe")
+        record["seed_original_digest_verified"] = True
+        record["expected_recipe_sha256"] = expected_recipe_sha256
         request = {
             "project_id": seeded["project_id"], "expected": seeded["expected"],
             "scene_id": seeded["scene_id"], "capsule_id": seeded["capsule_id"],
@@ -154,6 +162,9 @@ def run_product_contexts(
                         and returned.get("request") == request
                         and returned.get("native_terminal", {}).get("status") == "ok",
                         "product_context_private_publication_not_bound_to_original_terminal")
+                for scope in ("create", "edit", "verify"):
+                    _require_empty_private_append_custody({
+                        "coordinator_append_custody": private_custody[scope]})
                 record["caller_publication_bound"] = True
                 pixel_root = owner / "decoded-product-pixels"
                 pixel_root.mkdir(mode=0o700)

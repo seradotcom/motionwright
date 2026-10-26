@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Project, ProjectEvent } from "./types";
 import { fixtureBootstrap } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
@@ -157,11 +157,28 @@ describe("Graph verified copy-and-pointer custody", () => {
     local.onRead = readKey => { if (readKey.includes(":peer:") && !hit) { hit = true; local.data.set(key, "Peer replacement"); } };
     expect(() => writeGraphCopy(local, pointers, draft, custody)).toThrow(/changed/); expect(local.data.get(key)).toBe("Peer replacement");
   });
-  it("forks an uncertain attempt without altering its original bytes", async () => {
-    const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID()), held = copy(prepared.draft);
-    const review = await inspectGraphOutcome(prepared.draft, project, { readProject: async () => structuredClone(project), readHistory: async () => [] }), next = releaseGraphOutcome(prepared.draft, project, review), oldRaw = held.custody.expectedRaw;
-    const writer = forkGraphCopy(held.local, held.pointers, prepared.draft, next, held.custody, crypto.randomUUID());
-    expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(oldRaw); expect(writer.writerId).not.toBe(held.custody.writerId); assertGraphCustody(held.local, held.pointers, next, writer);
+  it("forks an uncertain attempt after an inspected peer revision without altering its original bytes", async () => {
+    const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
+    const peer = structuredClone(project); peer.revision++; peer.title = "Independent peer source";
+    const branch = peer.branches.find(item => item.id === peer.active_branch);
+    if (!branch) throw new Error("The peer source has no active branch");
+    branch.head_revision = peer.revision;
+    expect(branch.head_revision).toBe(project.revision + 1);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const held = copy(prepared.draft), oldRaw = held.custody.expectedRaw;
+      const review = await inspectGraphOutcome(prepared.draft, peer, { readProject: async () => structuredClone(peer),
+        readHistory: async () => [{ revision: peer.revision, change: { type: "rename_project", title: peer.title }, created_at: "2026-10-26T00:00:00Z" }] });
+      const next = releaseGraphOutcome(prepared.draft, peer, review);
+      clock.mockReturnValue(2000);
+      // The UI verifies the current backup before it forks a new intention.
+      writeGraphCopy(held.local, held.pointers, structuredClone(prepared.draft), held.custody);
+      expect(held.custody.expectedRaw).toBe(oldRaw);
+      const writer = forkGraphCopy(held.local, held.pointers, prepared.draft, next, held.custody, crypto.randomUUID());
+      expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(oldRaw);
+      expect(decodeGraphCopy(oldRaw!, draft.scope, held.custody.writerId).draft.pending?.outcome).toBe("UNKNOWN");
+      expect(writer.writerId).not.toBe(held.custody.writerId); assertGraphCustody(held.local, held.pointers, next, writer);
+    } finally { clock.mockRestore(); }
   });
   it("retains the exact original copy when the ACK custody fork fails", async () => {
     const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID()), held = copy(prepared.draft), oldRaw = held.custody.expectedRaw;
@@ -370,5 +387,88 @@ describe("Graph copy-list reads retain original observations even on later failu
     held.local.data.set(graphCopyKey(draft.scope, writer), JSON.stringify(replacement));
     expect(() => readGraphRecoverySource(held.local, held.pointers, draft.scope, observed)).toThrow(/bytes changed/);
     expect(observed.raw).toBe(original); expect(decodeGraphCopy(observed.raw!, draft.scope, writer).draft.pending?.outcome).toBe("UNKNOWN");
+  });
+});
+
+describe("Graph unchanged-base uncertainty and exact backup confirmation", () => {
+  for (const operation of ["save", "remove"] as const) {
+    it(`${operation} UNKNOWN cannot be released by unchanged saved values and empty history`, async () => {
+      const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID(), operation);
+      const later = change(prepared.draft, "/authorship/rationale", raw => { raw.authorship.rationale = "Later Graph input remains local"; });
+      const held = copy(later), key = graphCopyKey(later.scope, held.custody.writerId), original = held.custody.expectedRaw, owner = structuredClone(held.custody);
+      let reads = 0;
+      const review = await inspectGraphOutcome(later, project, {
+        readProject: async () => { reads++; return structuredClone(project); }, readHistory: async () => [],
+      });
+      expect(reads).toBe(2); expect(review.events).toEqual([]); expect(graphOutcomeMatches(later, project, review)).toBe(true);
+      expect(() => releaseGraphOutcome(later, project, review)).toThrow(/could still commit/);
+      await expect(prepareGraphSubmission(later, project, context, crypto.randomUUID(), operation)).rejects.toThrow(/cannot be replayed/);
+      expect(later.pending).toEqual(prepared.draft.pending); expect(later.input.authorship.rationale).toBe("Later Graph input remains local");
+      expect(held.local.getItem(key)).toBe(original); expect(held.custody).toEqual(owner);
+      expect(held.pointers.getItem(graphPointerKey(later.scope))).toBe(owner.writerId); assertGraphCustody(held.local, held.pointers, later, held.custody);
+    });
+    it(`${operation} live known NOT_SENT permits explicit same-base continuation without claiming an ACK`, async () => {
+      const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID(), operation);
+      const notSent = failGraphSubmission(prepared.draft, prepared.draft.pending!.id, "Recovery prevented the original callback", true), held = copy(notSent);
+      const original = held.custody.expectedRaw, key = graphCopyKey(draft.scope, held.custody.writerId);
+      const review = await inspectGraphOutcome(notSent, project, { readProject: async () => structuredClone(project), readHistory: async () => [] });
+      const next = releaseGraphOutcome(notSent, project, review);
+      expect(next.pending).toBeNull(); expect(next.input).toEqual(notSent.input); expect(next.baseRevision).toBe(project.revision);
+      expect(notSent.pending?.outcome).toBe("NOT_SENT");
+      const separate = forkGraphCopy(held.local, held.pointers, notSent, next, held.custody, crypto.randomUUID());
+      expect(held.local.getItem(key)).toBe(original); assertGraphCustody(held.local, held.pointers, next, separate);
+      const fresh = await prepareGraphSubmission(next, project, context, crypto.randomUUID(), operation);
+      expect(fresh.draft.pending?.id).not.toBe(notSent.pending?.id); expect(fresh.draft.pending?.revision).toBe(project.revision);
+    });
+    it(`${operation} recovered NOT_SENT is UNKNOWN and cannot release the unchanged saved base`, async () => {
+      const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID(), operation);
+      const notSent = failGraphSubmission(prepared.draft, prepared.draft.pending!.id, "The earlier runtime did not dispatch", true), held = copy(notSent);
+      const raw = held.custody.expectedRaw!, key = graphCopyKey(draft.scope, held.custody.writerId);
+      const recovered = decodeGraphCopy(raw, draft.scope, held.custody.writerId).draft;
+      expect(recovered.pending?.outcome).toBe("UNKNOWN"); expect(JSON.parse(raw).draft.pending.outcome).toBe("NOT_SENT");
+      const review = await inspectGraphOutcome(recovered, project, { readProject: async () => structuredClone(project), readHistory: async () => [] });
+      expect(() => releaseGraphOutcome(recovered, project, review)).toThrow(/could still commit/);
+      expect(held.local.getItem(key)).toBe(raw); expect(recovered.input).toEqual(notSent.input);
+    });
+  }
+  for (const outcome of ["UNKNOWN", "NOT_SENT"] as const) {
+    it(`${outcome} same-draft confirmation retains its exact bytes after the clock advances`, async () => {
+      const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
+      const retained = outcome === "NOT_SENT" ? failGraphSubmission(prepared.draft, prepared.draft.pending!.id, "Known before dispatch", true) : prepared.draft;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+      try {
+        const held = copy(retained), raw = held.custody.expectedRaw, key = graphCopyKey(draft.scope, held.custody.writerId), owner = structuredClone(held.custody);
+        const writes = held.local.writes; clock.mockReturnValue(2000);
+        writeGraphCopy(held.local, held.pointers, structuredClone(retained), held.custody);
+        expect(held.local.getItem(key)).toBe(raw); expect(held.local.writes).toBe(writes); expect(held.custody).toEqual(owner);
+        expect(JSON.parse(raw!).updatedAt).toBe(1000); expect(JSON.parse(raw!).draft.pending.outcome).toBe(outcome);
+        assertGraphCustody(held.local, held.pointers, retained, held.custody);
+      } finally { clock.mockRestore(); }
+    });
+  }
+  it("identical Graph bytes do not confirm a dropped pointer until an explicit successful publication", async () => {
+    const { project, draft, context } = source(), prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
+    const local = new Memory(), pointers = new Memory(), custody: GraphCustody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: null };
+    const key = graphCopyKey(draft.scope, custody.writerId), pointer = graphPointerKey(draft.scope), clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      pointers.drop = true;
+      expect(() => writeGraphCopy(local, pointers, prepared.draft, custody)).toThrow(/pointer write was not confirmed/);
+      const raw = local.getItem(key), writes = local.writes;
+      clock.mockReturnValue(2000);
+      expect(() => writeGraphCopy(local, pointers, structuredClone(prepared.draft), custody)).toThrow(/pointer write was not confirmed/);
+      expect(local.getItem(key)).toBe(raw); expect(local.writes).toBe(writes); expect(custody.expectedPointer).toBeNull();
+      expect(pointers.getItem(pointer)).toBeNull(); expect(() => assertGraphCustody(local, pointers, prepared.draft, custody)).toThrow();
+      pointers.drop = false; clock.mockReturnValue(3000);
+      writeGraphCopy(local, pointers, structuredClone(prepared.draft), custody);
+      expect(local.getItem(key)).toBe(raw); expect(local.writes).toBe(writes); assertGraphCustody(local, pointers, prepared.draft, custody);
+    } finally { clock.mockRestore(); }
+  });
+  it("same-draft confirmation rejects a lost previously confirmed Graph pointer without claiming it again", () => {
+    const { draft } = source(), held = copy(draft), key = graphCopyKey(draft.scope, held.custody.writerId), pointer = graphPointerKey(draft.scope);
+    const raw = held.custody.expectedRaw, owner = structuredClone(held.custody), writes = held.local.writes;
+    held.pointers.removeItem(pointer);
+    expect(() => writeGraphCopy(held.local, held.pointers, structuredClone(draft), held.custody)).toThrow(/changed the Graph pointer/);
+    expect(held.local.getItem(key)).toBe(raw); expect(held.local.writes).toBe(writes); expect(held.custody).toEqual(owner);
+    expect(held.pointers.getItem(pointer)).toBeNull();
   });
 });

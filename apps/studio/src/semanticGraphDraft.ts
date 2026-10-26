@@ -179,6 +179,8 @@ export async function inspectGraphOutcome(draft: GraphDraft, selected: Project, 
 }
 export function releaseGraphOutcome(draft: GraphDraft, project: Project, review: GraphOutcomeReview): GraphDraft {
   if (!graphOutcomeMatches(draft, project, review)) error("The Graph draft or selected source changed after inspection.");
+  if (graphUnconfirmed(draft) && project.revision <= draft.pending!.revision)
+    error("The original Graph request could still commit on its base. Keep it UNKNOWN.");
   const sent = draft.pending!, sameSubmitted = submittedGraphMatches(project, sent.submitted), without = { ...draft, pending: null };
   // A saved equality is context for a new human intention, never an ACK. If the
   // exact submitted value is current, rebase later edits onto it after review.
@@ -338,11 +340,15 @@ export function writeGraphCopy(storage: GraphStorage, pointers: Pick<Storage, "g
   const key = graphCopyKey(draft.scope, custody.writerId), pointerKey = graphPointerKey(draft.scope);
   const check = () => { const pointer = pointers.getItem(pointerKey); if (pointer !== custody.expectedPointer && pointer !== custody.writerId) error("Another runtime changed the Graph pointer. Earlier copies were retained.");
     if (storage.getItem(key) !== custody.expectedRaw) error("Another runtime changed the Graph copy. Earlier bytes were retained."); };
-  check(); const raw = encodeGraphCopy({ schema: "motionwright.semantic-graph-recovery/1", scope: draft.scope, writerId: custody.writerId, updatedAt: Date.now(), draft });
+  check(); let raw = encodeGraphCopy({ schema: "motionwright.semantic-graph-recovery/1", scope: draft.scope, writerId: custody.writerId, updatedAt: Date.now(), draft });
+  // Confirming identical input must preserve its original bytes, including a
+  // live caller's NOT_SENT. Recovery normalization belongs to recovery reads.
+  if (custody.expectedRaw !== null && graphSame(decodeGraphCopy(custody.expectedRaw, draft.scope, custody.writerId, false).draft, draft)) raw = custody.expectedRaw;
   let total = size(key) + size(raw), count = 1;
   for (let index = 0; index < storage.length; index++) { const other = storage.key(index); if (!other?.startsWith(GRAPH_RECOVERY_PREFIX) || other === key) continue; total += size(other) + size(storage.getItem(other) ?? ""); count++; }
   if (total > GRAPH_TOTAL_BYTES || count > GRAPH_COPY_COUNT) error("Graph recovery is full (64 copies / 4 MiB). Review and discard only obsolete copies.");
-  check(); storage.setItem(key, raw); if (storage.getItem(key) !== raw) error("Graph recovery data write was not confirmed."); custody.expectedRaw = raw;
+  check(); if (raw !== custody.expectedRaw) storage.setItem(key, raw);
+  if (storage.getItem(key) !== raw) error("Graph recovery data write was not confirmed."); custody.expectedRaw = raw;
   pointers.setItem(pointerKey, custody.writerId); if (pointers.getItem(pointerKey) !== custody.writerId) error("Graph recovery pointer write was not confirmed.");
   if (storage.getItem(key) !== raw) error("Graph recovery bytes changed during pointer publication."); custody.expectedPointer = custody.writerId; return custody;
 }

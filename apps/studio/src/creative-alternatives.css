@@ -39,6 +39,17 @@
 .creative-alternatives-diffs > article p { font-size:10px; color:var(--muted); line-height:1.6; margin:0; }
 .creative-alternatives-diffs > article span { font-size:9px; color:var(--dim); }
 .creative-alternatives-diffs > p { background:var(--surface-1); font-size:11px; color:var(--muted); padding:12px; margin:0; }
+.creative-alternatives-diffs > article > dl,
+.creative-alternatives-diffs > article > dl > dd {
+  min-width:0; max-width:100%; overflow-wrap:anywhere;
+}
+.creative-alternatives-diffs [aria-label="Alternative differences pagination"] button[aria-disabled="true"] {
+  color:var(--dim); opacity:0.55; cursor:not-allowed;
+}
+.creative-alternatives-diffs [aria-label="Alternative differences pagination"] button[aria-disabled="true"]:hover,
+.creative-alternatives-diffs [aria-label="Alternative differences pagination"] button[aria-disabled="true"]:active {
+  background:var(--surface-2); border-color:var(--border); transform:none;
+}
 .creative-alternatives-decision {
   border-top:1px solid var(--border); padding-top:18px; display:grid; gap:12px;
 }

@@ -1,10 +1,10 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { fixtureProject } from "./fixture";
 import type { Project } from "./types";
 import {
   acknowledgeBranchDraft, advanceBranchDraft, assertBranchOrigins, branchCopyKey, branchOutcomeMatches, branchPointerKey,
   branchScope, branchUnknown, BRANCH_RECOVERY_PREFIX, createBranchDraft, decodeBranchCopy, editBranchDraft,
-  inspectBranchOutcome, MAX_BRANCH_COPIES, prepareBranchSubmission, readBranchCopies, readBranchRecoveryPointer, recoverBranchAfterReadFailure, reconcileBranchDraft,
+  inspectBranchOutcome, MAX_BRANCH_COPIES, MAX_BRANCH_COPY_BYTES, MAX_BRANCH_RECOVERY_BYTES, prepareBranchSubmission, readBranchCopies, readBranchRecoveryPointer, recoverBranchAfterReadFailure, reconcileBranchDraft,
   retainBranchFailure, retainBranchOrigin, separateBranchIntent, validateBranchName, writeBranchCopy,
 } from "./branchDraft";
 import type { BranchCopy, BranchCustody, BranchDraft } from "./branchDraft";
@@ -97,10 +97,15 @@ describe("branch author intent and exact original result", () => {
 describe("branch copy readback and concurrent writers", () => {
   test("raw bytes and the tab pointer must both be confirmed", () => {
     const { draft } = pending(), store = new MemoryStorage(), tab = new MemoryStorage(), writer = custody();
-    const raw = writeBranchCopy(store, tab, draft, writer);
-    expect(decodeBranchCopy(raw, draft.scope, attempt).draft).toEqual(draft);
-    expect(tab.getItem(branchPointerKey(draft.scope))).toBe(attempt);
-    expect(writeBranchCopy(store, tab, draft, writer)).toBe(raw);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const raw = writeBranchCopy(store, tab, draft, writer);
+      expect(decodeBranchCopy(raw, draft.scope, attempt).draft).toEqual(draft);
+      expect(tab.getItem(branchPointerKey(draft.scope))).toBe(attempt);
+      clock.mockReturnValue(2000);
+      expect(writeBranchCopy(store, tab, draft, writer)).toBe(raw);
+      expect(store.getItem(branchCopyKey(draft.scope, attempt))).toBe(raw);
+    } finally { clock.mockRestore(); }
   });
   test("a restored UNKNOWN carries its exact source guard through a new writer and reload", () => {
     const { draft } = pending(), store = new MemoryStorage(), tab = new MemoryStorage(), writer = custody();
@@ -358,5 +363,147 @@ describe("branch recovery pointer observation", () => {
     expect(() => writeBranchCopy(local, session, recovered, custody(other, observation.expectedPointer))).toThrow(/pointer/);
     expect(local.getItem(key)).toBe(raw);
     expect(local.getItem(branchCopyKey(draft.scope, other))).toBeNull();
+  });
+});
+
+describe("UNKNOWN branch base must advance before a separate intent", () => {
+  const modes = ["unchanged", "clear", "later", "ABA"] as const;
+  function laterInput(draft: BranchDraft, mode: typeof modes[number]) {
+    if (mode === "unchanged") return draft;
+    if (mode === "clear") return editBranchDraft(draft, "");
+    const later = editBranchDraft(draft, "  Separately authored branch B  ");
+    return mode === "ABA" ? editBranchDraft(later, draft.name) : later;
+  }
+  function legacyCopy(draft: BranchDraft) {
+    const store = new MemoryStorage(), tab = new MemoryStorage();
+    // Existing v1 envelopes can have whitespace that differs from today's
+    // serializer. Validation does not authorize byte replacement.
+    const raw = " \n" + JSON.stringify(envelope(draft), null, 2) + "\n ";
+    const key = branchCopyKey(draft.scope, attempt), pointer = branchPointerKey(draft.scope);
+    store.setItem(key, raw); tab.setItem(pointer, attempt);
+    const writer: BranchCustody = { writerId: attempt, expectedPointer: attempt, expectedRaw: raw };
+    return { store, tab, writer, origin: { key, raw }, pointer };
+  }
+  test.each(modes)("same revision and empty history retain %s input and exact UNKNOWN custody", async mode => {
+    const { project, draft: submitted } = pending(), draft = laterInput(submitted, mode);
+    const before = structuredClone(draft), { store, tab, writer, origin, pointer } = legacyCopy(draft);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2000);
+    try {
+      const outcome = await inspectBranchOutcome(draft, project, {
+        readProject: async () => structuredClone(project), readHistory: async () => [],
+      });
+      expect(outcome.events).toEqual([]); expect(outcome.matchingRevisions).toEqual([]);
+      expect(branchOutcomeMatches(draft, project, outcome)).toBe(true);
+      expect(writeBranchCopy(store, tab, draft, writer)).toBe(origin.raw);
+      expect(() => separateBranchIntent(draft, project, outcome, origin)).toThrow(/could still commit/);
+      expect(() => prepareBranchSubmission(draft, project, other)).toThrow(/unconfirmed/);
+      expect(draft).toEqual(before); expect(branchUnknown(draft)).toBe(true);
+      expect([...store.data]).toEqual([[origin.key, origin.raw]]);
+      expect(tab.getItem(pointer)).toBe(attempt); expect(writer.expectedRaw).toBe(origin.raw);
+      expect(decodeBranchCopy(origin.raw, draft.scope, attempt).draft).toEqual(before);
+    } finally { clock.mockRestore(); }
+  });
+  test.each(modes)("a peer revision permits separate %s input without acknowledging or rewriting UNKNOWN", async mode => {
+    const { project, draft: submitted } = pending(), draft = laterInput(submitted, mode);
+    const advanced = structuredClone(project);
+    advanced.revision++; advanced.title = "Independent peer closes the source revision";
+    advanced.branches.find(branch => branch.id === advanced.active_branch)!.head_revision++;
+    expect(advanced.branches.find(branch => branch.id === advanced.active_branch)!.head_revision)
+      .toBe(project.branches.find(branch => branch.id === project.active_branch)!.head_revision + 1);
+    const { store, tab, writer, origin, pointer } = legacyCopy(draft);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2000);
+    try {
+      const outcome = await inspectBranchOutcome(draft, advanced, {
+        readProject: async () => structuredClone(advanced),
+        readHistory: async () => [{ revision: advanced.revision,
+          change: { type: "rename_project", title: advanced.title }, created_at: "2026-10-26T00:00:00Z" }],
+      });
+      expect(outcome.matchingRevisions).toEqual([]);
+      expect(writeBranchCopy(store, tab, draft, writer)).toBe(origin.raw);
+      const next = separateBranchIntent(draft, advanced, outcome, origin);
+      expect(next.pending).toBeNull(); expect(next.baseRevision).toBe(advanced.revision);
+      expect(next.name).toBe(mode === "unchanged" ? "" : draft.name);
+      expect(next.origins).toEqual([origin]); expect(branchUnknown(draft)).toBe(true);
+      clock.mockReturnValue(3000);
+      const raw = writeBranchCopy(store, tab, next, custody(other, attempt));
+      expect(store.getItem(origin.key)).toBe(origin.raw); expect(tab.getItem(pointer)).toBe(other);
+      expect(decodeBranchCopy(origin.raw, draft.scope, attempt).draft.pending).toEqual(submitted.pending);
+      expect(decodeBranchCopy(raw, draft.scope, other).draft).toEqual(next); assertBranchOrigins(store, next);
+      if (mode === "later" || mode === "ABA") {
+        const prepared = prepareBranchSubmission(next, advanced, branchId);
+        expect(prepared.draft.pending).toMatchObject({ id: branchId, revision: advanced.revision, outcome: "UNKNOWN" });
+        expect(prepared.change).toEqual({ type: "create_branch", name: draft.name.trim() });
+      } else expect(() => prepareBranchSubmission(next, advanced, branchId)).toThrow(/Enter a name/);
+    } finally { clock.mockRestore(); }
+  });
+  test("only the live caller may retry NOT_SENT on the same base; its recovered copy remains UNKNOWN", async () => {
+    const { project, draft: submitted, change } = pending();
+    const unsent = retainBranchFailure(submitted, attempt, "Local backup failed before dispatch", true);
+    expect(prepareBranchSubmission(unsent, project, branchId).change).toEqual(change);
+    const { store, tab, origin } = legacyCopy(unsent);
+    const decoded = decodeBranchCopy(origin.raw, unsent.scope, attempt).draft;
+    expect(decoded.pending?.outcome).toBe("NOT_SENT");
+    const recovered = recoverBranchAfterReadFailure(decoded, createBranchDraft(project), false, project);
+    expect(recovered.pending?.outcome).toBe("UNKNOWN");
+    const writer = custody(other, attempt), raw = writeBranchCopy(store, tab, recovered, writer);
+    const outcome = await inspectBranchOutcome(recovered, project, {
+      readProject: async () => structuredClone(project), readHistory: async () => [],
+    });
+    expect(() => separateBranchIntent(recovered, project, outcome, { key: branchCopyKey(recovered.scope, other), raw }))
+      .toThrow(/could still commit/);
+    expect(() => prepareBranchSubmission(recovered, project, branchId)).toThrow(/unconfirmed/);
+    expect(store.getItem(origin.key)).toBe(origin.raw);
+    expect(decodeBranchCopy(origin.raw, unsent.scope, attempt).draft.pending?.outcome).toBe("NOT_SENT");
+    expect(tab.getItem(branchPointerKey(recovered.scope))).toBe(other);
+  });
+});
+
+describe("branch reconfirmation rechecks custody after catalogue reads", () => {
+  test("legacy exact bytes remain subject to the complete recovery byte quota", () => {
+    const { draft } = pending(), store = new MemoryStorage(), tab = new MemoryStorage();
+    const size = (value: string) => new TextEncoder().encode(value).length;
+    const raw = JSON.stringify(envelope(draft), null, 2) + " ".repeat(1024);
+    const key = branchCopyKey(draft.scope, attempt), pointer = branchPointerKey(draft.scope);
+    const writer: BranchCustody = { writerId: attempt, expectedRaw: raw, expectedPointer: attempt };
+    store.setItem(key, raw); tab.setItem(pointer, attempt);
+    const regenerated = JSON.stringify({ ...envelope(draft), updatedAt: 2000 });
+    const otherBytes = MAX_BRANCH_RECOVERY_BYTES - size(regenerated);
+    let remaining = otherBytes, index = 0;
+    while (remaining > 0) {
+      const count = Math.min(remaining, MAX_BRANCH_COPY_BYTES);
+      store.setItem(BRANCH_RECOVERY_PREFIX + "retained-budget-" + index++, "x".repeat(count)); remaining -= count;
+    }
+    expect(size(raw) + otherBytes).toBeGreaterThan(MAX_BRANCH_RECOVERY_BYTES);
+    expect(size(regenerated) + otherBytes).toBe(MAX_BRANCH_RECOVERY_BYTES);
+    const before = [...store.data], beforeWriter = structuredClone(writer), clock = vi.spyOn(Date, "now").mockReturnValue(2000);
+    try {
+      expect(() => writeBranchCopy(store, tab, draft, writer)).toThrow(/full/);
+      expect([...store.data]).toEqual(before); expect(writer).toEqual(beforeWriter);
+      expect(tab.getItem(pointer)).toBe(attempt);
+    } finally { clock.mockRestore(); }
+  });
+  test.each(["bytes", "missing pointer", "peer pointer"] as const)("later-clock identical input cannot confirm changed %s", mode => {
+    const { draft } = pending(), store = new MemoryStorage(), tab = new MemoryStorage(), writer = custody();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const raw = writeBranchCopy(store, tab, draft, writer), before = structuredClone(writer);
+      const key = branchCopyKey(draft.scope, attempt), pointer = branchPointerKey(draft.scope);
+      const keyAt = store.key.bind(store); let interleaved = false;
+      clock.mockReturnValue(2000);
+      store.key = index => {
+        const value = keyAt(index);
+        if (!interleaved) {
+          interleaved = true;
+          if (mode === "bytes") store.setItem(key, raw + " ");
+          else if (mode === "missing pointer") tab.data.delete(pointer);
+          else tab.setItem(pointer, other);
+        }
+        return value;
+      };
+      expect(() => writeBranchCopy(store, tab, draft, writer)).toThrow(/changed elsewhere/);
+      expect(interleaved).toBe(true); expect(writer).toEqual(before);
+      expect(store.getItem(key)).toBe(mode === "bytes" ? raw + " " : raw);
+      expect(tab.getItem(pointer)).toBe(mode === "bytes" ? attempt : mode === "missing pointer" ? null : other);
+    } finally { clock.mockRestore(); }
   });
 });

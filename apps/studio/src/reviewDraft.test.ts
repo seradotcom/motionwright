@@ -1,5 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { fixtureProject } from "./fixture";
+import { emptyProductionDesign } from "./creativeProduction";
+import { graphReviewAnchor, newSemanticGraph } from "./semanticGraph";
+import type { GraphProject } from "./semanticGraph";
 import {
   acknowledgeReviewDraft, advanceReviewDraft, createReviewDraft, decodeReviewCopy, editReviewDraft,
   inspectReviewOutcome, separateReviewedIntent, reviewOutcomeMatches, retainSeparateReviewIntent,
@@ -362,11 +365,11 @@ describe("explicit UNKNOWN inspection and separate author intent", () => {
     expect(reviewOutcomeMatches(draft, { ...saved, generation: other }, outcome)).toBe(false);
     expect(() => separateReviewedIntent({ ...draft, pending: { ...draft.pending!, id: other } }, saved, outcome)).toThrow(/complete history/);
   });
-  test("a zero-event inspection of unchanged saved state still retains UNKNOWN", async () => {
+  test("a zero-event inspection of unchanged saved state cannot release UNKNOWN", async () => {
     const { project, draft } = pendingComment();
     const outcome = await inspectReviewOutcome(draft, project, { readProject: async () => project, readHistory: async () => [] });
     expect(outcome.events).toEqual([]); expect(outcome.matchingValueRevisions).toEqual([]);
-    expect(reviewUnknown(draft)).toBe(true); expect(separateReviewedIntent(draft, project, outcome).raw.body).toBe("");
+    expect(reviewUnknown(draft)).toBe(true); expect(() => separateReviewedIntent(draft, project, outcome)).toThrow(/could still commit/);
   });
   test("a separate writer retains the original exact UNKNOWN bytes and verifies the new pointer", async () => {
     const { draft, saved, outcome } = await inspect(true), store = new MemoryStorage(), tab = new MemoryStorage(), original = custody();
@@ -396,10 +399,14 @@ describe("explicit UNKNOWN inspection and separate author intent", () => {
   });
   test("verifying identical retained input never rewrites its original timestamp or bytes", () => {
     const draft = commentDraft(), store = new MemoryStorage(), tab = new MemoryStorage(), writer = custody();
-    writeReviewCopy(store, tab, draft, writer);
-    const original = store.getItem(reviewCopyKey(draft.scope, attempt));
-    writeReviewCopy(store, tab, structuredClone(draft), writer);
-    expect(store.getItem(reviewCopyKey(draft.scope, attempt))).toBe(original);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      writeReviewCopy(store, tab, draft, writer);
+      const original = store.getItem(reviewCopyKey(draft.scope, attempt));
+      clock.mockReturnValue(2000);
+      writeReviewCopy(store, tab, structuredClone(draft), writer);
+      expect(store.getItem(reviewCopyKey(draft.scope, attempt))).toBe(original);
+    } finally { clock.mockRestore(); }
   });
   test("a known unsent draft can be explicitly reviewed against a newer source without weakening UNKNOWN", () => {
     const { project, draft } = pendingComment(), later = { ...project, revision: project.revision + 1 };
@@ -419,4 +426,208 @@ describe("explicit UNKNOWN inspection and separate author intent", () => {
       .toThrow(/dismissed/);
     expect(draft.raw.resolution).toBe("Authored reason");
   });
+});
+
+
+describe("explicit review deliverable and language custody", () => {
+  const selected = (draft: ReviewDraft, profileId: string) => {
+    // Arrange a newer raw shape without requiring a new export in the RED test.
+    const next = editReviewDraft(draft, "body", draft.raw.body);
+    Object.assign(next.raw, { profileId }); return next;
+  };
+  const forProfile = (draft: ReviewDraft, project: Project, profileIndex = 0): Extract<ReviewChange, { type: "add_review" }> => {
+    const change = commentChange(draft, project), profile = project.deliverables[profileIndex];
+    if (change.type !== "add_review" || !profile) throw new Error("Missing review profile test arrangement");
+    return { ...change, profile_id: profile.id, locale: profile.language };
+  };
+  test("an explicitly selected existing deliverable binds its language and exact range", () => {
+    const project = source(), profile = project.deliverables[0]; profile.language = "es-MX";
+    const draft = selected(commentDraft(project), profile.id);
+    Object.assign(draft.raw, { timeMode: "range", rangeStart: "1001/30000", rangeEnd: "1/2" });
+    const change = { ...forProfile(draft, project), ...reviewTimes(project, "scene:" + project.scenes[0].id, draft.raw, 0) };
+    const pending = prepareReviewSubmission(draft, project, change, attempt);
+    expect(pending.pending?.change).toEqual(change);
+    expect(pending.pending?.change).toMatchObject({ profile_id: profile.id, locale: "es-MX",
+      start: { num: "1001", den: "30000" }, end: { num: "1", den: "2" } });
+    expect(decodeReviewCopy(encodeReviewCopy(copy(pending)), draft.scope, attempt).draft).toEqual(pending);
+  });
+  test("legacy absence and explicit empty selection both keep null profile and locale", () => {
+    const project = source();
+    for (const draft of [commentDraft(project), selected(commentDraft(project), "")]) {
+      const change = commentChange(draft, project);
+      expect(prepareReviewSubmission(draft, project, change, attempt).pending?.change).toMatchObject({ profile_id: null, locale: null });
+      expect(() => prepareReviewSubmission(draft, project, forProfile(draft, project), attempt)).toThrow();
+    }
+  });
+  test.each(["different profile", "different language", "missing language"])("rejects a %s without replacing authored selection", mode => {
+    const project = source(), draft = selected(commentDraft(project), project.deliverables[0].id);
+    const change = forProfile(draft, project);
+    if (mode === "different profile") change.profile_id = project.deliverables[1].id;
+    if (mode === "different language") change.locale = "fr";
+    if (mode === "missing language") change.locale = null;
+    expect(() => prepareReviewSubmission(draft, project, change, attempt)).toThrow();
+    expect(draft.raw).toHaveProperty("profileId", project.deliverables[0].id);
+  });
+  test("a changed deliverable language requires explicit review against the new revision", () => {
+    const project = source(), draft = selected(commentDraft(project), project.deliverables[0].id);
+    const changed = structuredClone(project); changed.revision++; changed.deliverables[0].language = "es-MX";
+    expect(() => prepareReviewSubmission(draft, changed, forProfile(draft, changed), attempt)).toThrow(/current revision/);
+    const retained = advanceReviewDraft(draft, changed);
+    expect(retained.raw).toEqual(draft.raw);
+    expect(() => prepareReviewSubmission(retained, changed, forProfile(draft, project), attempt)).toThrow();
+    expect(prepareReviewSubmission(retained, changed, forProfile(retained, changed), attempt).pending?.change)
+      .toMatchObject({ profile_id: project.deliverables[0].id, locale: "es-MX" });
+  });
+  test("a retired selected deliverable stays raw and blocks both a stale selection and fallback", () => {
+    const project = source(), draft = selected(commentDraft(project), project.deliverables[0].id);
+    const chosen = forProfile(draft, project), before = structuredClone(draft);
+    project.deliverables.shift();
+    expect(() => prepareReviewSubmission(draft, project, chosen, attempt)).toThrow(/no longer present/);
+    expect(() => prepareReviewSubmission(draft, project, commentChange(draft, project), attempt)).toThrow(/no longer present/);
+    expect(draft).toEqual(before);
+    const cleared = selected(draft, "");
+    expect(prepareReviewSubmission(cleared, project, commentChange(cleared, project), attempt).pending?.change)
+      .toMatchObject({ profile_id: null, locale: null });
+  });
+  test("a later profile edit survives an original exact reply and the stored anchor stays original", () => {
+    const project = source(), draft = selected(commentDraft(project), project.deliverables[0].id), change = forProfile(draft, project);
+    const pending = prepareReviewSubmission(draft, project, change, attempt);
+    const later = selected(pending, project.deliverables[1].id), savedProject = receipt(project, change);
+    const acknowledged = acknowledgeReviewDraft(later, attempt, savedProject);
+    expect(acknowledged.raw).toEqual(later.raw); expect(reviewHasInput(acknowledged)).toBe(true);
+    expect(savedProject.reviews.at(-1)?.anchor).toMatchObject({ profile_id: project.deliverables[0].id, locale: project.deliverables[0].language });
+    expect(acknowledged.pending).toBeNull();
+    expect(decodeReviewCopy(encodeReviewCopy(copy(acknowledged)), acknowledged.scope, attempt).draft).toEqual(acknowledged);
+  });
+  test("UNKNOWN recovery separates submitted profile from later explicit empty selection without replay", () => {
+    const project = source(), draft = selected(commentDraft(project), project.deliverables[0].id), change = forProfile(draft, project);
+    const pending = prepareReviewSubmission(draft, project, change, attempt);
+    const later = selected(retainReviewFailure(pending, attempt, "Original reply was lost"), "");
+    const recovered = decodeReviewCopy(encodeReviewCopy(copy(later)), later.scope, attempt).draft;
+    expect(recovered.raw).toHaveProperty("profileId", "");
+    expect(recovered.pending?.raw).toHaveProperty("profileId", project.deliverables[0].id);
+    expect(recovered.pending?.change).toMatchObject({ profile_id: project.deliverables[0].id, locale: project.deliverables[0].language });
+    expect(reviewUnknown(recovered)).toBe(true);
+    expect(() => prepareReviewSubmission(recovered, project, commentChange(recovered, project), other)).toThrow(/UNKNOWN/);
+  });
+  test("legacy v1 bytes and shape remain unchanged during recovery verification", () => {
+    const { draft } = pendingComment(), envelope = copy(draft), raw = JSON.stringify(envelope, null, 3);
+    const recovered = decodeReviewCopy(raw, draft.scope, attempt);
+    expect(recovered).toEqual(envelope);
+    expect(Object.hasOwn(recovered.draft.raw, "profileId")).toBe(false);
+    expect(Object.hasOwn(recovered.draft.clean, "profileId")).toBe(false);
+    expect(Object.hasOwn(recovered.draft.pending!.raw, "profileId")).toBe(false);
+    const storage = new MemoryStorage(), tab = new MemoryStorage(), key = reviewCopyKey(draft.scope, attempt);
+    storage.setItem(key, raw); tab.setItem(reviewPointerKey(draft.scope), attempt);
+    writeReviewCopy(storage, tab, recovered.draft, { writerId: attempt, expectedRaw: raw, expectedPointer: attempt });
+    expect(storage.getItem(key)).toBe(raw);
+  });
+  test("a later profile selection can coexist with an untouched legacy pending raw and clean copy", () => {
+    const { draft } = pendingComment();
+    const later = selected(draft, source().deliverables[0].id);
+    const recovered = decodeReviewCopy(encodeReviewCopy(copy(later)), later.scope, attempt).draft;
+    expect(recovered.raw).toHaveProperty("profileId", source().deliverables[0].id);
+    expect(Object.hasOwn(recovered.clean, "profileId")).toBe(false);
+    expect(Object.hasOwn(recovered.pending!.raw, "profileId")).toBe(false);
+    expect(recovered.pending).toEqual(draft.pending);
+  });
+  test.each([null, 1, {}, [], "missing", " ", " " + other, other + " "])("rejects malformed profile selection %j without migration", value => {
+    const draft = commentDraft(), envelope = copy(draft);
+    Object.assign(envelope.draft.raw, { profileId: value });
+    const raw = JSON.stringify(envelope);
+    expect(() => decodeReviewCopy(raw, draft.scope, attempt)).toThrow(/recovery draft/);
+    expect(JSON.stringify(envelope)).toBe(raw);
+  });
+  test.each(["raw", "clean", "pending"] as const)("does not allow extra new-shape keys in %s recovery", field => {
+    const { draft } = pendingComment(), envelope = copy(draft);
+    const raw = field === "pending" ? envelope.draft.pending!.raw : envelope.draft[field];
+    Object.assign(raw, { profileId: other, selectedLanguage: "forged" });
+    expect(() => decodeReviewCopy(JSON.stringify(envelope), draft.scope, attempt)).toThrow();
+  });
+  test("Graph review continues to bind its saved profile regardless of arbitrary draft selection", () => {
+    const project = source() as GraphProject, scene = project.scenes[0], profile = project.deliverables[0];
+    project.production_design = emptyProductionDesign();
+    const graph = newSemanticGraph(project, scene, profile, "causal_diagram");
+    project.production_design.semantic_graphs = [graph];
+    const resource = "graph:" + graph.id, anchor = graphReviewAnchor(project, resource)!;
+    const draft = selected(editReviewDraft(createReviewDraft(project, { kind: "comment", id: resource }), "body", "Graph-specific review"), project.deliverables[1].id);
+    const change: ReviewChange = { type: "add_review", kind: draft.raw.kind, resource, body: draft.raw.body,
+      start: anchor.start, end: anchor.end, locale: anchor.locale, profile_id: anchor.profile_id };
+    expect(prepareReviewSubmission(draft, project, change, attempt).pending?.change).toEqual(change);
+    expect(() => prepareReviewSubmission(draft, project, { ...change, profile_id: project.deliverables[1].id }, attempt)).toThrow();
+    expect(() => prepareReviewSubmission(draft, project, { ...change, profile_id: null, locale: null }, attempt)).toThrow();
+  });
+});
+
+describe("UNKNOWN review base must advance before a separate intent", () => {
+  function interrupted(kind: "legacy" | "profile") {
+    const project = source();
+    let initial = commentDraft(project);
+    if (kind === "profile") initial = editReviewDraft(initial, "profileId", project.deliverables[0].id);
+    const change = commentChange(initial, project);
+    if (change.type !== "add_review") throw new Error("Unexpected review base arrangement");
+    if (kind === "profile") Object.assign(change, { profile_id: project.deliverables[0].id, locale: project.deliverables[0].language });
+    const original = prepareReviewSubmission(initial, project, change, attempt);
+    const failed = retainReviewFailure(original, attempt, "Original delivery remains uncertain");
+    const draft = kind === "profile" ? editReviewDraft(failed, "profileId", "") : editReviewDraft(failed, "body", "  Later legacy review  ");
+    return { project, original, draft, change };
+  }
+  for (const kind of ["legacy", "profile"] as const) {
+    test(`${kind} same-revision empty history cannot release an original request that may still commit`, async () => {
+      const { project, original, draft } = interrupted(kind), store = new MemoryStorage(), tab = new MemoryStorage(), owner = custody();
+      writeReviewCopy(store, tab, draft, owner);
+      const key = reviewCopyKey(draft.scope, attempt), raw = store.getItem(key), before = structuredClone(owner);
+      let reads = 0;
+      const outcome = await inspectReviewOutcome(draft, project, {
+        readProject: async () => { reads++; return structuredClone(project); }, readHistory: async () => [],
+      });
+      expect(reads).toBe(2); expect(outcome.events).toEqual([]); expect(reviewOutcomeMatches(draft, project, outcome)).toBe(true);
+      expect(() => separateReviewedIntent(draft, project, outcome)).toThrow(/could still commit/);
+      expect(() => prepareReviewSubmission(draft, project, commentChange(draft, project), other)).toThrow(/UNKNOWN/);
+      expect(draft.pending?.raw).toEqual(original.raw); expect(draft.pending?.change).toEqual(original.pending?.change);
+      expect(store.getItem(key)).toBe(raw); expect(owner).toEqual(before); expect(tab.getItem(reviewPointerKey(draft.scope))).toBe(attempt);
+      expect(decodeReviewCopy(raw!, draft.scope, attempt).draft).toEqual(draft);
+    });
+    test(`${kind} an inspected peer revision permits separate intent while retaining exact UNKNOWN bytes`, async () => {
+      const { project, draft } = interrupted(kind), store = new MemoryStorage(), tab = new MemoryStorage(), owner = custody();
+      const advanced = structuredClone(project); advanced.revision++; advanced.title = "Independent peer review source";
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+      try {
+        writeReviewCopy(store, tab, draft, owner);
+        const key = reviewCopyKey(draft.scope, attempt), raw = store.getItem(key)!;
+        const outcome = await inspectReviewOutcome(draft, advanced, {
+          readProject: async () => structuredClone(advanced),
+          readHistory: async () => [{ revision: advanced.revision, change: { type: "rename_project", title: advanced.title }, created_at: "2026-10-26T00:00:00Z" }],
+        });
+        expect(outcome.matchingValueRevisions).toEqual([]);
+        const next = separateReviewedIntent(draft, advanced, outcome);
+        clock.mockReturnValue(2000);
+        // The UI confirms the existing copy before it forks the separate intent.
+        writeReviewCopy(store, tab, structuredClone(draft), owner);
+        expect(store.getItem(key)).toBe(raw);
+        const separate = retainSeparateReviewIntent(store, tab, draft, next, owner, other);
+        expect(store.getItem(key)).toBe(raw); expect(JSON.parse(raw).updatedAt).toBe(1000);
+        expect(decodeReviewCopy(raw, draft.scope, attempt).draft.pending?.outcome).toBe("UNKNOWN");
+        expect(next.raw).toEqual(draft.raw); expect(next.pending).toBeNull(); expect(next.baseRevision).toBe(advanced.revision);
+        expect(decodeReviewCopy(separate.expectedRaw!, draft.scope, other).draft).toEqual(next);
+        expect(tab.getItem(reviewPointerKey(draft.scope))).toBe(other);
+      } finally { clock.mockRestore(); }
+    });
+  }
+  for (const replacement of [null, other]) {
+    test(`identical review confirmation rejects pointer readback replaced by ${replacement ?? "missing"}`, () => {
+      const { draft } = pendingComment(), store = new MemoryStorage(), tab = new MemoryStorage(), owner = custody();
+      writeReviewCopy(store, tab, draft, owner);
+      const key = reviewCopyKey(draft.scope, attempt), pointer = reviewPointerKey(draft.scope), raw = store.getItem(key), before = structuredClone(owner);
+      const get = tab.getItem.bind(tab); let reads = 0;
+      tab.getItem = name => {
+        if (name === pointer && ++reads === 2) {
+          if (replacement === null) tab.data.delete(pointer); else tab.setItem(pointer, replacement);
+        }
+        return get(name);
+      };
+      expect(() => writeReviewCopy(store, tab, structuredClone(draft), owner)).toThrow(/existing bytes were being verified/);
+      expect(store.getItem(key)).toBe(raw); expect(owner).toEqual(before); expect(get(pointer)).toBe(replacement);
+    });
+  }
 });

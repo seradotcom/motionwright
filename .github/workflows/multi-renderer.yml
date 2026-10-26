@@ -50,7 +50,9 @@ jobs:
       - name: Source policy
         run: python3 tooling/source_policy.py
       - name: Renderer profile and provider contracts
-        run: cargo test --locked -p motionwright-manim-profile -p motionwright-manim-community-driver
+        run: |
+          cargo test --locked -p motionwright-manim-profile
+          cargo test --locked -p motionwright-manim-community-driver --bin motionwright-manim-community-driver
       - name: Compile Manim entrypoints and require projection, editable-source and clock contracts
         shell: bash
         run: |
@@ -58,10 +60,166 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           g1_logs="$RUNNER_TEMP/multi-renderer-source-g1"
           mkdir -m 700 "$g1_logs"
+          declare -A compiled_list_sha=()
+          admit_contract() {
+            python3 - "$@" <<'PY'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          mode, path, expected_count, label = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+          exit_code, capture_exit, auxiliary, expected_list_sha = int(sys.argv[5]), int(sys.argv[6]), Path(sys.argv[7]), sys.argv[8]
+          assert mode in {"list", "check-list", "execute"}
+          required_by_label = {'projections': ['multi_renderer::tests::blender_builders_reject_selected_scene_graph', 'multi_renderer::tests::blender_contribution_preserves_other_scene_graph_scope', 'multi_renderer::tests::blender_projection_is_bounded_geometry_with_revision_identity', 'multi_renderer::tests::blender_projection_negotiates_non_normal_blend_before_dispatch', 'multi_renderer::tests::blender_projection_refuses_text_instead_of_rasterizing_it_implicitly', 'multi_renderer::tests::blender_semantic_names_preserve_readable_identity_with_bounded_uniqueness', 'multi_renderer::tests::manim_compiler_emits_only_generated_declarative_scene_code', 'multi_renderer::tests::manim_legacy_projection_preserves_supported_sizes_and_refuses_clamping', 'multi_renderer::tests::manim_legacy_projection_rejects_authored_typography_without_rewriting_source', 'multi_renderer::tests::manim_projection_rejects_non_normal_blend_before_compiling_scene', 'multi_renderer::tests::original_blender_camera_uses_geometry_basis_without_inventing_a_canvas_uuid', 'multi_renderer::tests::original_blender_plan_binds_content_beyond_the_revision_label', 'multi_renderer::tests::original_blender_plan_preserves_the_existing_geometry_and_full_identity', 'multi_renderer::tests::original_blender_plan_refuses_unsupported_zoom_and_rotation', 'multi_renderer::tests::original_blender_plan_rejects_native_name_collision_between_distinct_full_uuids', 'multi_renderer::tests::original_blender_plan_rejects_non_finite_camera_and_foreign_renderer', 'multi_renderer::tests::original_blender_plan_rejects_unbounded_depth_and_camera_position', 'multi_renderer::tests::renderer_projection_fails_closed_on_foreign_renderer'], 'manim-static-projection': ['static_projection_preserves_offset_duration_full_ids_geometry_and_stacking', 'static_projection_refuses_every_unrepresented_property_without_rewriting_source', 'static_saved_package_import_edit_once_and_reopen_preserve_canonical_source', 'static_import_refuses_extra_edit_without_applying_any_change', 'normal_manim_profile_requires_one_saved_output_and_preserves_its_exact_clock'], 'manim-editable-projection': ['editable_projection_preserves_full_source_font_identity_clock_and_transform', 'editable_projection_refuses_unrepresentable_or_uncleared_data_without_rewriting_project', 'editable_text_import_is_one_service_change_and_survives_sqlite_reopen', 'editable_import_refuses_extra_style_change_and_locked_text_without_any_commit', 'editable_style_roundtrip_changes_font_metrics_through_existing_style_change', 'original_exported_input_is_the_exact_current_plan_without_font_replacement', 'original_input_contract_rejects_missing_changed_or_ungranted_carriers_before_dispatch'], 'brand-fonts': ['brand_fonts::tests::brand_font_source_preserves_digest_identity_and_owner_declaration', 'brand_fonts::tests::brand_font_source_never_promotes_unknown_or_restricted_rights', 'brand_fonts::tests::brand_font_source_rejects_paths_urls_noncanonical_and_foreign_assets', 'brand_fonts::tests::brand_font_source_rejects_wrong_type_digest_alias_or_duplicate', 'brand_fonts::tests::brand_font_cas_checks_revision_and_survives_fresh_service_readback'], 'native-manim-example': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'graph_profile_tests::original_binary_custody_preserves_unknown_and_refuses_overwrite', 'graph_profile_tests::seed_reopens_a_real_empty_graph_scene_without_native_receipts', 'graph_profile_tests::stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'fractional-rate-admission': ['production::tests::fractional_rate_conversion_is_refused_before_dispatch_and_exact_rate_runs'], 'partitioned-master-clock': ['film::tests::rational_frame_identity_preserves_partitioned_master_without_accumulated_error'], 'profile-rate-drift': ['film::tests::native_render_rejects_frame_rate_drift_from_profile'], 'manim-runtime-runner': ['graph_probe_custody::tests::directory_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open', 'graph_probe_custody::tests::failed_child_spawn_closes_both_prepared_reader_channels', 'graph_probe_custody::tests::interrupted_reads_resume_but_failed_reads_never_manufacture_eof', 'graph_probe_custody::tests::missing_reader_pipe_keeps_exit_and_does_not_invent_stderr', 'graph_probe_custody::tests::nonzero_exit_survives_original_stream_read_failure', 'graph_probe_custody::tests::original_directories_members_and_bytes_cannot_be_rebound', 'graph_probe_custody::tests::original_process_error_takes_precedence_over_custody_failure', 'graph_probe_custody::tests::overflow_is_bounded_and_drain_digest_is_not_misreported_as_original', 'graph_probe_custody::tests::panicked_reader_preserves_known_nonzero_process_terminal', 'graph_probe_custody::tests::raw_binary_streams_have_observed_eof_and_exact_originals', 'graph_probe_custody::tests::retained_directory_open_rejects_rebound_file_symlink_and_directory', 'graph_probe_custody::tests::successful_exit_cannot_admit_a_missing_original_stream', 'graph_probe_custody::tests::unobserved_process_terminal_keeps_its_original_error', 'tests::direct_components_reject_traversal_and_paths', 'tests::graph_custody_is_opt_in_and_records_the_same_child_binary_pipes', 'tests::graph_custody_reservation_refuses_a_second_child_dispatch', 'tests::graph_profile_probe_closes_command_and_argument_selection', 'tests::parser_rejects_extra_or_arbitrary_options', 'tests::runtime_probe_parser_distinguishes_observed_and_package_not_found', 'tests::runtime_probe_rejects_source_output_shell_and_duplicate_options', 'tests::synthetic_python_transport_observes_version_and_retains_render_guard', 'tests::synthetic_python_transport_reports_package_not_found_without_installing_or_rendering'], 'graph-projection21': ['a_different_deliverable_cannot_reuse_the_saved_graph_identity', 'all_four_current_snapshot_dimensions_are_required_before_source_preparation', 'an_absent_graph_is_not_invented_from_scene_contents', 'caption_burn_in_is_not_silently_omitted', 'first_graph_scene_output_does_not_discard_an_authored_camera', 'first_graph_scene_output_is_pure_and_requires_no_saved_graph', 'first_graph_scene_output_matches_the_saved_projection_clock_and_profile', 'first_graph_scene_output_preserves_explicit_scene_exclusion', 'first_graph_scene_output_rejects_absent_selection_without_mutation', 'first_graph_scene_output_rejects_captions_and_fractional_native_fps', 'first_graph_scene_output_rejects_other_renderers', 'first_graph_scene_output_rejects_unrepresented_native_formats', 'first_graph_scene_output_requires_all_four_current_snapshot_dimensions', 'first_graph_scene_output_requires_an_exact_integral_frame_clock', 'first_graph_scene_output_respects_native_writer_dimension_and_area_bounds', 'fractional_native_fps_is_not_rounded', 'resizing_the_output_does_not_rescale_the_authored_reference_frame', 'saved_canonical_source_reaches_the_existing_profile_unchanged', 'stale_bound_claim_is_rejected_even_when_the_current_snapshot_matches', 'the_saved_source_edit_uses_the_existing_domain_change', 'unrelated_canonical_edit_does_not_rewrite_historical_authorship'], 'graph-source-cycle12': ['manim_graph_projection::source_cycle_tests::changed_original_zip_and_false_byte_length_are_rejected', 'manim_graph_projection::source_cycle_tests::exact_original_zip_is_read_and_reconciled_with_its_own_source_closure', 'manim_graph_projection::source_cycle_tests::original_graph_carrier_rejects_escaped_names_wrong_formats_and_unbounded_bytes', 'manim_graph_projection::source_cycle_tests::original_graph_carrier_reuses_only_the_existing_output_mount', 'manim_graph_projection::source_cycle_tests::postrender_graph_input_matches_only_its_original_bundle_and_output_descriptor', 'manim_graph_projection::source_cycle_tests::preview_preserves_all_four_snapshot_fences', 'manim_graph_projection::source_cycle_tests::preview_produces_one_canonical_label_change_and_the_real_current_authorship_stamp', 'manim_graph_projection::source_cycle_tests::preview_rejects_a_noop_and_an_absent_target', 'manim_graph_projection::source_cycle_tests::preview_rejects_a_second_label_change_in_a_closed_valid_bundle', 'manim_graph_projection::source_cycle_tests::preview_rejects_changed_timing_even_when_both_bundles_are_closed', 'manim_graph_projection::source_cycle_tests::preview_rejects_style_or_historical_authorship_changes', 'manim_graph_projection::source_cycle_tests::preview_respects_the_existing_canonical_graph_vertex_content_lock'], 'graph-admission20': ['production::manim_graph::tests::actual_retained_roster_rejects_linked_or_nested_label_members', 'production::manim_graph::tests::actual_retained_roster_rejects_unindexed_or_missing_originals', 'production::manim_graph::tests::all_other_native_start_routes_refuse_silently_omitting_the_selected_graph', 'production::manim_graph::tests::current_saved_graph_preflight_is_pure_and_preserves_historical_authorship', 'production::manim_graph::tests::current_stamp_does_not_authorize_changed_unpersisted_graph_text', 'production::manim_graph::tests::digest_checked_original_read_rejects_content_changes_and_size_aliases', 'production::manim_graph::tests::each_current_snapshot_field_is_checked_before_graph_source_use', 'production::manim_graph::tests::graph_original_input_carrier_is_closed_before_dispatch', 'production::manim_graph::tests::graph_original_input_does_not_relax_the_current_plan_snapshot', 'production::manim_graph::tests::graph_start_rejects_profile_override_and_unknown_top_level_keys', 'production::manim_graph::tests::index_binds_all_original_identifiers_and_rejects_claimed_authority', 'production::manim_graph::tests::index_keeps_integer_types_and_both_byte_limits_strict', 'production::manim_graph::tests::index_rejects_omitted_duplicate_traversal_and_undeclared_original_roles', 'production::manim_graph::tests::index_rejects_unknown_duplicate_and_missing_schema_fields', 'production::manim_graph::tests::matching_zip_metadata_does_not_make_noncompiler_bytes_editable_graph_source', 'production::manim_graph::tests::missing_graph_originals_cannot_be_replaced_by_success_metadata', 'production::manim_graph::tests::native_graph_paths_bind_one_lowercase_job_and_exact_profile', 'production::manim_graph::tests::selected_graph_blocks_other_profiles_only_for_its_scene_and_deliverable', 'production::manim_graph::tests::stale_graph_branch_is_rejected_before_touching_any_output_path', 'production::manim_graph::tests::typed_index_parser_fixture_confers_no_native_evidence'], 'graph-profile11': ['production::manim_graph_profile::tests::changed_provider_or_doctor_identity_is_not_admitted_or_retried', 'production::manim_graph_profile::tests::consumer_runs_the_current_fixed_profile_parser', 'production::manim_graph_profile::tests::disconnected_registry_and_registry_unknown_never_dispatch_graph_probe', 'production::manim_graph_profile::tests::first_graph_observation_uses_original_transport_without_creating_a_graph', 'production::manim_graph_profile::tests::original_graph_unknown_survives_peer_commit_without_another_dispatch', 'production::manim_graph_profile::tests::parser_accepts_fixed_sample_without_promoting_legacy_or_admission', 'production::manim_graph_profile::tests::parser_rejects_missing_expanded_or_forged_doctor_contracts', 'production::manim_graph_profile::tests::provenance_rejects_forged_route_generation_catalog_and_request', 'production::manim_graph_profile::tests::scope_and_selection_fail_before_any_dispatch', 'production::manim_graph_profile::tests::successful_graph_probe_is_rejected_after_peer_commit', 'production::manim_graph_profile::tests::unobserved_probe_is_distinct_and_cannot_carry_native_evidence'], 'graph-transport8': ['production::transport_custody::tests::binary_streams_are_retained_without_utf8_or_json_interpretation', 'production::transport_custody::tests::cancellation_preserves_partial_bytes_without_inventing_a_terminal', 'production::transport_custody::tests::existing_transport_retains_original_unknown_envelope_and_stderr_once', 'production::transport_custody::tests::malformed_json_is_retained_before_existing_parser_rejects_it', 'production::transport_custody::tests::output_limit_retains_the_same_overflow_sentinel_without_claiming_eof', 'production::transport_custody::tests::oversize_argv_is_rejected_before_reserving_a_dispatch', 'production::transport_custody::tests::poisoning_blocks_new_dispatch_but_preserves_existing_material_and_error', 'production::transport_custody::tests::reservations_are_bounded_and_never_evict_an_original_attempt'], 'native-film180-example30': ['fixed_text_v4::tests::compiler_members_cannot_escape_the_original_directory', 'fixed_text_v4::tests::conflicting_assets_for_same_managed_family_are_rejected', 'fixed_text_v4::tests::duplicate_original_descriptor_fields_are_rejected', 'fixed_text_v4::tests::native_return_requires_fresh_checked_provenance', 'fixed_text_v4::tests::one_managed_digest_cannot_alias_distinct_family_joins', 'fixed_text_v4::tests::pins_require_exact_lowercase_sha256', 'fixed_text_v4::tests::repeated_managed_family_with_same_asset_has_one_join', 'fixed_text_v4::tests::samples_cover_all_twelve_cases_and_caption_boundaries', 'stdin_readback::tests::absent_terminal_does_not_turn_capture_into_delivery', 'stdin_readback::tests::another_parents_complete_capture_does_not_end_publication_wait', 'stdin_readback::tests::changed_original_stdin_or_length_is_rejected', 'stdin_readback::tests::completed_write_without_input_is_not_accepted', 'stdin_readback::tests::crossed_parent_or_session_never_matches', 'stdin_readback::tests::crossed_provider_or_tool_is_rejected', 'stdin_readback::tests::duplicate_or_invalid_retained_metadata_stops_publication_wait', 'stdin_readback::tests::duplicate_parent_captures_are_not_selected_arbitrarily', 'stdin_readback::tests::failed_write_retains_original_io_details', 'stdin_readback::tests::interrupted_delivery_is_preserved_without_completion', 'stdin_readback::tests::not_observed_remains_uncertain_after_matching', 'stdin_readback::tests::observer_close_schema_and_scope_are_strict', 'stdin_readback::tests::observer_closure_does_not_erase_losses_or_discarded_captures', 'stdin_readback::tests::provider_process_transition_is_not_same_owner_lifetime', 'stdin_readback::tests::publication_waits_for_delayed_original_terminal_without_upgrading_its_state', 'stdin_readback::tests::selected_capture_joins_original_parent_session_and_bytes', 'stdin_readback::tests::terminal_unknown_duplicate_missing_or_extra_fields_are_rejected', 'stdin_readback::tests::unavailable_terminal_formats_remain_distinct', 'tests::changed_saved_source_intent_or_caption_boundaries_fail_before_native_dispatch', 'tests::editable_second_revision_uses_distinct_native_identity_and_requires_original_result', 'tests::original_av_requires_single_bounded_source_wav_and_exact_digest', 'tests::six_second_saved_source_reopens_and_retains_original_clock']}
+          required = required_by_label[label]
+          assert len(required) == len(set(required)) == expected_count
+          raw = path.read_bytes()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace").replace("\r\n", "\n"))
+          def observed_contract(text, expected):
+              """Admit the serial libtest terminals; diagnostics never count as a result."""
+              headers = list(re.finditer(r"(?m)^running ([0-9]+) (tests?)$", text))
+              endings = list(re.finditer(
+                  r"(?m)^test result: (ok|FAILED)\. ([0-9]+) passed; ([0-9]+) failed; "
+                  r"([0-9]+) ignored; ([0-9]+) measured; ([0-9]+) filtered out; "
+                  r"finished in [0-9]+(?:\.[0-9]+)?s$", text))
+              rows = [list(match.groups()) for match in endings]
+              actual, diagnostics = [], []
+              def need(value, message):
+                  if not value:
+                      raise ValueError(message)
+              try:
+                  need(len(headers) == len(endings) == 1, "Missing/ambiguous libtest bounds")
+                  need(headers[0].group(1) == str(len(expected))
+                       and headers[0].group(2) == ("test" if len(expected) == 1 else "tests")
+                       and headers[0].end() < endings[0].start(),
+                       "Wrong or reordered libtest count")
+                  need(not text[endings[0].end():].strip(), "Unexpected trailing result data")
+                  need(not re.search(r"(?m)^(?:test |test result: |running )", text[:headers[0].start()]),
+                       "A result precedes its execution header")
+                  need(rows[0][:5] == ["ok", str(len(expected)), "0", "0", "0"],
+                       "Failed/ignored/incomplete libtest footer")
+                  body = text[headers[0].end() + 1:endings[0].start()].splitlines()
+                  need(body and body[-1] == "", "Missing separator before libtest footer")
+                  body, index = body[:-1], 0
+                  while index < len(body):
+                      match = re.fullmatch(r"test ([A-Za-z_][A-Za-z0-9_:]*) \.\.\. (.*)", body[index])
+                      need(match is not None, "Orphan libtest terminal or diagnostic")
+                      case, result = match.groups()
+                      need(case in expected, "Unexpected test identity")
+                      if result != "ok":
+                          need(result not in ("FAILED", "ignored") and not result.startswith("ignored,"),
+                               "Failed/ignored test")
+                          pending = [result]
+                          index += 1
+                          while index < len(body) and body[index] != "ok":
+                              line = body[index]
+                              need(not line.startswith(("test ", "test result:", "running ")),
+                                   "Test terminal is missing before another result")
+                              pending.append(line)
+                              index += 1
+                          need(index < len(body) and body[index] == "ok", "Missing actual terminal ok")
+                          diagnostics.append({"test_id": case, "diagnostic_lines": len(pending),
+                                              "diagnostic_evidence_credit": False})
+                      actual.append((case, "ok"))
+                      index += 1
+                  need(actual == [(case, "ok") for case in sorted(expected)],
+                       "Omitted/duplicated/out-of-order terminal identity")
+                  return actual, rows, diagnostics, None
+              except ValueError as error:
+                  return actual, rows, diagnostics, str(error)
+
+          if mode == "execute":
+              actual, rows, diagnostics, parse_error = observed_contract(text, required)
+          else:
+              lines = text.split("\n")
+              listed = lines[:-1] if lines and lines[-1] == "" else []
+              valid = (bool(listed) and all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_:]*: test", item) for item in listed)
+                       and [item[:-6] for item in listed] == sorted(required))
+              actual = [(item[:-6], "listed") for item in listed] if valid else []
+              rows, diagnostics = [], []
+              parse_error = None if valid else "Compiled listing is truncated, omitted, duplicated, renamed or foreign"
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
+          def bound_compiled_list(receipt_path):
+              receipt_raw = receipt_path.read_bytes()
+              if not re.fullmatch(r"[0-9a-f]{64}", expected_list_sha) or hashlib.sha256(receipt_raw).hexdigest() != expected_list_sha:
+                  raise SystemExit("Compiled-list receipt changed before execution/readback")
+              prior = json.loads(receipt_raw)
+              required_context = {"source_sha": head, "tree_sha": tree,
+                                  "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                                  "job": os.environ["GITHUB_JOB"], "label": label, "required": sorted(required)}
+              if (prior.get("schema") != "motionwright.native.closed-compiled-list/1"
+                      or prior.get("status") != "PASS_COMPILED_LIST" or prior.get("phase") != "list"
+                      or prior.get("executed_test_count") != 0
+                      or any(prior.get(key) != value for key, value in required_context.items())):
+                  raise SystemExit("Compiled-list context is foreign or incomplete")
+              for key, basename in (("log", label + ".list.stdout.log"), ("stderr", label + ".list.stderr.log")):
+                  item = prior[key]
+                  if item.get("file") != basename:
+                      raise SystemExit("Compiled-list original path is foreign")
+                  original = receipt_path.parent / basename
+                  if original.is_symlink() or not original.is_file():
+                      raise SystemExit("Compiled-list original is absent or aliased")
+                  value = original.read_bytes()
+                  if len(value) != item.get("bytes") or hashlib.sha256(value).hexdigest() != item.get("sha256"):
+                      raise SystemExit("Compiled-list original changed before execution/readback")
+              return expected_list_sha
+
+          compiled_list_sha = None
+          if mode != "list":
+              list_receipt = path.with_suffix(".receipt.json") if mode == "check-list" else auxiliary
+              compiled_list_sha = bound_compiled_list(list_receipt)
+          complete = (exit_code == 0 and capture_exit == 0 and head == os.environ["GITHUB_SHA"] and not dirty
+                      and parse_error is None and len(actual) == len(required))
+          if mode == "execute":
+              complete = (complete and sorted(actual) == sorted((name, "ok") for name in required)
+                          and len(rows) == 1 and rows[0][:5] == ["ok", str(expected_count), "0", "0", "0"])
+          receipt = {"schema": "motionwright.native.closed-source-roster/1" if mode == "execute" else "motionwright.native.closed-compiled-list/1",
+                     "phase": mode, "executed_test_count": len(actual) if mode == "execute" and complete else 0,
+                     "compiled_list_receipt_sha256": compiled_list_sha, "source_sha": head, "tree_sha": tree,
+                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                     "job": os.environ["GITHUB_JOB"], "label": label, "required": sorted(required),
+                     "observed": actual, "terminal_rows": rows, "exit_code": exit_code, "capture_exit_code": capture_exit,
+                     "parse_error": parse_error, "diagnostics": diagnostics,
+                     "log": {"file": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+                     "stream_representation": "Original process stdout/stderr merged by shell" if mode == "execute" else "Original compiled-list stdout; separate original stderr",
+                     "status": ("PASS" if mode == "execute" else "PASS_COMPILED_LIST") if complete else "FAIL", "native_execution": False,
+                     "formal_acceptance": False}
+          if mode != "execute":
+              original_stderr = auxiliary.read_bytes()
+              receipt["stderr"] = {"file": auxiliary.name, "bytes": len(original_stderr),
+                                   "sha256": hashlib.sha256(original_stderr).hexdigest()}
+          if mode != "check-list":
+              with path.with_suffix(".receipt.json").open("x", encoding="utf-8") as stream:
+                  json.dump(receipt, stream, indent=2, sort_keys=True)
+                  stream.write("\n")
+          print(json.dumps({"label": label, "status": receipt["status"], "source_sha": head,
+                            "required_count": expected_count, "observed_count": len(actual), "exit_code": exit_code}))
+          if not complete:
+              raise SystemExit("Exact source roster omitted, renamed, duplicated, skipped, failed or source changed")
+          PY
+          }
           run_contract() {
             label="$1"
             expected="$2"
             shift 2
+            list_stdout="$g1_logs/$label.list.stdout.log"
+            list_stderr="$g1_logs/$label.list.stderr.log"
+            list_receipt="$g1_logs/$label.list.stdout.receipt.json"
+            if [ "$contract_phase" = list ]; then
+              set +e
+              "$@" --list --format terse >"$list_stdout" 2>"$list_stderr"
+              list_exit="$?"
+              set -e
+              admit_contract list "$list_stdout" "$expected" "$label" "$list_exit" 0 "$list_stderr" -
+              list_hash=$(sha256sum "$list_receipt")
+              list_hash="${list_hash%% *}"
+              [[ "$list_hash" =~ ^[0-9a-f]{64}$ ]]
+              compiled_list_sha["$label"]="$list_hash"
+              return
+            fi
+            test "$contract_phase" = execute
+            list_hash="${compiled_list_sha[$label]}"
+            admit_contract check-list "$list_stdout" "$expected" "$label" 0 0 "$list_stderr" "$list_hash"
             set +e
             "$@" 2>&1 | tee "$g1_logs/$label.log"
             contract_statuses=("${PIPESTATUS[@]}")
@@ -72,62 +230,49 @@ jobs:
             fi
             contract_exit="${contract_statuses[0]}"
             capture_exit="${contract_statuses[1]}"
-            python3 - "$g1_logs/$label.log" "$expected" "$label" "$contract_exit" "$capture_exit" <<'PY'
-          import hashlib, json, os, re, subprocess, sys
-          from pathlib import Path
-          path, expected_count, label, exit_code = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
-          capture_exit = int(sys.argv[5])
-          required_by_label = {'projections': ['multi_renderer::tests::blender_projection_is_bounded_geometry_with_revision_identity', 'multi_renderer::tests::blender_projection_negotiates_non_normal_blend_before_dispatch', 'multi_renderer::tests::manim_projection_rejects_non_normal_blend_before_compiling_scene', 'multi_renderer::tests::blender_semantic_names_preserve_readable_identity_with_bounded_uniqueness', 'multi_renderer::tests::blender_projection_refuses_text_instead_of_rasterizing_it_implicitly', 'multi_renderer::tests::manim_legacy_projection_rejects_authored_typography_without_rewriting_source', 'multi_renderer::tests::manim_legacy_projection_preserves_supported_sizes_and_refuses_clamping', 'multi_renderer::tests::manim_compiler_emits_only_generated_declarative_scene_code', 'multi_renderer::tests::renderer_projection_fails_closed_on_foreign_renderer', 'multi_renderer::tests::original_blender_plan_preserves_the_existing_geometry_and_full_identity', 'multi_renderer::tests::original_blender_camera_uses_geometry_basis_without_inventing_a_canvas_uuid', 'multi_renderer::tests::original_blender_plan_refuses_unsupported_zoom_and_rotation', 'multi_renderer::tests::original_blender_plan_rejects_native_name_collision_between_distinct_full_uuids', 'multi_renderer::tests::original_blender_plan_binds_content_beyond_the_revision_label', 'multi_renderer::tests::original_blender_plan_rejects_unbounded_depth_and_camera_position', 'multi_renderer::tests::original_blender_plan_rejects_non_finite_camera_and_foreign_renderer'], 'manim-static-projection': ['static_projection_preserves_offset_duration_full_ids_geometry_and_stacking', 'static_projection_refuses_every_unrepresented_property_without_rewriting_source', 'static_saved_package_import_edit_once_and_reopen_preserve_canonical_source', 'static_import_refuses_extra_edit_without_applying_any_change', 'normal_manim_profile_requires_one_saved_output_and_preserves_its_exact_clock'], 'manim-editable-projection': ['editable_projection_preserves_full_source_font_identity_clock_and_transform', 'editable_projection_refuses_unrepresentable_or_uncleared_data_without_rewriting_project', 'editable_text_import_is_one_service_change_and_survives_sqlite_reopen', 'editable_import_refuses_extra_style_change_and_locked_text_without_any_commit', 'editable_style_roundtrip_changes_font_metrics_through_existing_style_change', 'original_exported_input_is_the_exact_current_plan_without_font_replacement', 'original_input_contract_rejects_missing_changed_or_ungranted_carriers_before_dispatch'], 'brand-fonts': ['brand_fonts::tests::brand_font_source_preserves_digest_identity_and_owner_declaration', 'brand_fonts::tests::brand_font_source_never_promotes_unknown_or_restricted_rights', 'brand_fonts::tests::brand_font_source_rejects_paths_urls_noncanonical_and_foreign_assets', 'brand_fonts::tests::brand_font_source_rejects_wrong_type_digest_alias_or_duplicate', 'brand_fonts::tests::brand_font_cas_checks_revision_and_survives_fresh_service_readback'], 'native-manim-example': ['camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed'], 'fractional-rate-admission': ['production::tests::fractional_rate_conversion_is_refused_before_dispatch_and_exact_rate_runs'], 'partitioned-master-clock': ['film::tests::rational_frame_identity_preserves_partitioned_master_without_accumulated_error'], 'profile-rate-drift': ['film::tests::native_render_rejects_frame_rate_drift_from_profile']}
-          required = required_by_label[label]
-          assert len(required) == len(set(required)) == expected_count
-          raw = path.read_bytes()
-          text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace").replace("\r\n", "\n"))
-          actual = re.findall(r"(?m)^test (\S+) \.\.\. (ok|FAILED|ignored)$", text)
-          rows = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;", text)
-          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
-          dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"]).strip()
-          complete = (exit_code == 0 and capture_exit == 0 and head == os.environ["GITHUB_SHA"] and not dirty
-                      and len(actual) == len(required) and sorted(actual) == sorted((name, "ok") for name in required)
-                      and len(rows) == 1 and rows[0][:5] == ("ok", str(expected_count), "0", "0", "0"))
-          receipt = {"schema": "motionwright.native.closed-source-roster/1", "source_sha": head, "tree_sha": tree,
-                     "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-                     "job": os.environ["GITHUB_JOB"], "label": label, "required": sorted(required),
-                     "observed": actual, "terminal_rows": rows, "exit_code": exit_code, "capture_exit_code": capture_exit,
-                     "log": {"file": path.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
-                     "stream_representation": "Original process stdout/stderr merged by shell",
-                     "status": "PASS" if complete else "FAIL", "native_execution": False,
-                     "formal_acceptance": False}
-          with path.with_suffix(".receipt.json").open("x", encoding="utf-8") as stream:
-              json.dump(receipt, stream, indent=2, sort_keys=True)
-              stream.write("\n")
-          print(json.dumps({"label": label, "status": receipt["status"], "source_sha": head,
-                            "required_count": expected_count, "observed_count": len(actual), "exit_code": exit_code}))
-          if not complete:
-              raise SystemExit("Exact source roster omitted, renamed, duplicated, skipped, failed or source changed")
-          PY
+            admit_contract execute "$g1_logs/$label.log" "$expected" "$label" "$contract_exit" "$capture_exit" "$list_receipt" "$list_hash"
           }
           cargo build --locked -p motionwright-manim-community-driver --bins
           cargo build --locked -p motionwright-native --example native-manim-e2e
-          run_contract projections 16 cargo test --locked -p motionwright-native \
-            --lib multi_renderer::tests:: -- --nocapture
-          run_contract native-manim-example 12 cargo test --locked -p motionwright-native \
-            --example native-manim-e2e -- --nocapture
-          run_contract manim-static-projection 5 cargo test --locked -p motionwright-native \
-            --test manim_static_projection -- --nocapture
-          run_contract manim-editable-projection 7 cargo test --locked -p motionwright-native \
-            --test manim_editable_projection -- --nocapture
-          run_contract fractional-rate-admission 1 cargo test --locked -p motionwright-native \
-            --lib production::tests::fractional_rate_conversion_is_refused_before_dispatch_and_exact_rate_runs \
-            -- --exact --nocapture
-          run_contract partitioned-master-clock 1 cargo test --locked -p motionwright-native \
-            --lib film::tests::rational_frame_identity_preserves_partitioned_master_without_accumulated_error \
-            -- --exact --nocapture
-          run_contract profile-rate-drift 1 cargo test --locked -p motionwright-native \
-            --lib film::tests::native_render_rejects_frame_rate_drift_from_profile \
-            -- --exact --nocapture
-          run_contract brand-fonts 5 cargo test --locked -p motionwright-service \
-            --lib brand_fonts::tests:: -- --nocapture
+          # Reconcile every compiled scope before executing any test method.
+          for contract_phase in list execute; do
+            run_contract projections 18 cargo test --locked -p motionwright-native \
+              --lib multi_renderer::tests:: -- --nocapture --test-threads=1
+            run_contract native-manim-example 19 cargo test --locked -p motionwright-native \
+              --example native-manim-e2e -- --nocapture --test-threads=1
+            # The runner was removed from the earlier package-wide invocation so
+            # these exact 22 cases execute once. Graph coordinator tests already run
+            # in the existing Production driver boundaries step below.
+            run_contract manim-runtime-runner 22 cargo test --locked -p motionwright-manim-community-driver \
+              --bin motionwright-manim-runner -- --nocapture --test-threads=1
+            run_contract graph-projection21 21 cargo test --locked -p motionwright-native \
+              --test manim_graph_projection -- --nocapture --test-threads=1
+            run_contract graph-source-cycle12 12 cargo test --locked -p motionwright-native \
+              --lib manim_graph_projection::source_cycle_tests:: -- --nocapture --test-threads=1
+            run_contract graph-admission20 20 cargo test --locked -p motionwright-native \
+              --lib production::manim_graph::tests:: -- --nocapture --test-threads=1
+            run_contract graph-profile11 11 cargo test --locked -p motionwright-native \
+              --lib production::manim_graph_profile::tests:: -- --nocapture --test-threads=1
+            run_contract graph-transport8 8 cargo test --locked -p motionwright-native \
+              --lib production::transport_custody::tests:: -- --nocapture --test-threads=1
+            run_contract native-film180-example30 30 cargo test --locked -p motionwright-native \
+              --example native-film180-e2e -- --nocapture --test-threads=1
+            run_contract manim-static-projection 5 cargo test --locked -p motionwright-native \
+              --test manim_static_projection -- --nocapture --test-threads=1
+            run_contract manim-editable-projection 7 cargo test --locked -p motionwright-native \
+              --test manim_editable_projection -- --nocapture --test-threads=1
+            run_contract fractional-rate-admission 1 cargo test --locked -p motionwright-native \
+              --lib production::tests::fractional_rate_conversion_is_refused_before_dispatch_and_exact_rate_runs \
+              -- --exact --nocapture --test-threads=1
+            run_contract partitioned-master-clock 1 cargo test --locked -p motionwright-native \
+              --lib film::tests::rational_frame_identity_preserves_partitioned_master_without_accumulated_error \
+              -- --exact --nocapture --test-threads=1
+            run_contract profile-rate-drift 1 cargo test --locked -p motionwright-native \
+              --lib film::tests::native_render_rejects_frame_rate_drift_from_profile \
+              -- --exact --nocapture --test-threads=1
+            run_contract brand-fonts 5 cargo test --locked -p motionwright-service \
+              --lib brand_fonts::tests:: -- --nocapture --test-threads=1
+          done
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git diff --exit-code --quiet
       - name: Retain multi-renderer source G1 originals

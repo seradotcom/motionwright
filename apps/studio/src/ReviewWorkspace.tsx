@@ -1,7 +1,7 @@
 import { CircleDashed, Clock3, MessageSquareText, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
 import CreativeAlternativesPanel from "./CreativeAlternativesPanel";
-import { reviewHasWork, reviewTimes, useReviewDraft } from "./reviewDraft";
+import { reviewHasWork, reviewProfileAnchor, reviewTimes, useReviewDraft } from "./reviewDraft";
 import type { Change, CreativeReview, Project, RationalTime, ReviewKind, ReviewStatus, Scene } from "./types";
 import { seconds } from "./types";
 import { graphReviewAnchor } from "./semanticGraph";
@@ -30,7 +30,7 @@ export default function ReviewWorkspace({
   const graphAnchor = anchorScope === "graph" && externalResource ? graphReviewAnchor(project, externalResource) : null;
   const graphUnavailable = anchorScope === "graph" && !graphAnchor;
   const editor = useReviewDraft(project, { kind: "comment", id: resource }, commit);
-  const { kind, timeMode, rangeStart, rangeEnd, body } = editor.draft.raw;
+  const { kind, timeMode, rangeStart, rangeEnd, body, profileId = "" } = editor.draft.raw;
   const setKind = (value: ReviewKind) => editor.edit("kind", value);
   const setTimeMode = (value: "resource" | "playhead" | "range") => editor.edit("timeMode", value);
   const setRangeStart = (value: string) => editor.edit("rangeStart", value);
@@ -54,6 +54,10 @@ export default function ReviewWorkspace({
     ? seconds(scene.start) + seconds(scene.duration) : projectDuration;
   let times: { start: RationalTime | null; end: RationalTime | null } | null = null;
   try { times = reviewTimes(project, resource, editor.draft.raw, playhead); } catch { /* Keep incomplete author input unchanged. */ }
+  let profileAnchor: ReturnType<typeof reviewProfileAnchor> | null = null, profileError: string | null = null;
+  try { profileAnchor = reviewProfileAnchor(project, resource, editor.draft.raw); }
+  catch (reason) { profileError = reason instanceof Error ? reason.message : String(reason); }
+  const selectedProfileMissing = !!profileId && !project.deliverables.some(profile => profile.id === profileId);
   const pointValid = timeMode !== "playhead" || times !== null;
   const rangeValid = timeMode !== "range" || times !== null;
 
@@ -95,6 +99,24 @@ export default function ReviewWorkspace({
               </label>
             </div>
             {graphUnavailable && <p role="alert">This saved Graph identity or profile is unavailable. Your review input is retained.</p>}
+            {anchorScope === "graph" ? <p className="review-time-hint">
+              Saved Graph deliverable: <span className="mono">{graphAnchor?.profile_id ?? "unavailable"}</span>
+              {" · language: "}{graphAnchor?.locale ?? "unavailable"}. This anchor belongs to the saved Graph.
+            </p> : <label>
+              <span className="field-label">Deliverable and language</span>
+              <select aria-label="Review deliverable" value={profileId}
+                onChange={event => editor.edit("profileId", event.target.value)}>
+                <option value="">No deliverable or language anchor</option>
+                {selectedProfileMissing && <option value={profileId}>Unavailable deliverable · {profileId}</option>}
+                {project.deliverables.map(profile => <option key={profile.id} value={profile.id}>
+                  {profile.name} · {profile.language}
+                </option>)}
+              </select>
+              <span className="review-time-hint">{profileAnchor?.profile_id
+                ? "Review language: " + profileAnchor.locale + ". Saved with this revision's deliverable."
+                : "No deliverable or language will be inferred from the current preview."}</span>
+            </label>}
+            {profileError && !graphUnavailable && <p role="alert">{profileError}</p>}
             <div className="review-time-form">
               <label>
                 <span className="field-label">Time anchor</span>
@@ -162,12 +184,12 @@ export default function ReviewWorkspace({
               <button
                 className="button button-primary"
                 type="button"
-                disabled={editor.blocked || graphUnavailable || !times || !body.trim() || (timeMode === "range" && !rangeValid) || (timeMode === "playhead" && !pointValid)}
+                disabled={editor.blocked || graphUnavailable || !profileAnchor || !times || !body.trim() || (timeMode === "range" && !rangeValid) || (timeMode === "playhead" && !pointValid)}
                 onClick={() => {
-                  if (!times) return;
+                  if (!times || !profileAnchor) return;
                   void editor.submit({
                     type: "add_review", kind, resource, body: body.trim(),
-                    start: times.start, end: times.end, locale: graphAnchor?.locale ?? null, profile_id: graphAnchor?.profile_id ?? null,
+                    start: times.start, end: times.end, locale: profileAnchor.locale, profile_id: profileAnchor.profile_id,
                   });
                 }}
               >
@@ -212,6 +234,11 @@ export default function ReviewWorkspace({
                   <span>{branch?.name ?? review.anchor.branch_id.slice(0, 8)} · r{review.anchor.revision}</span>
                   <span className="mono">{review.anchor.resource}</span>
                 </div>
+                <p className="review-history-note" aria-label="Stored review deliverable and language">
+                  Stored deliverable: <span className="mono">{review.anchor.profile_id ?? "none"}</span>
+                  {" · stored language: "}{review.anchor.locale ?? "none"}
+                  {" · values recorded at r"}{review.anchor.revision}; current deliverable settings do not update this anchor.
+                </p>
                 {review.anchor.start && (
                   <div className="review-time-actions">
                     <span className="mono">
@@ -267,7 +294,11 @@ export function ReviewRecoveryStatus({ editor }: { editor: ReturnType<typeof use
       <p>Read saved revision r{editor.outcome.project.revision} and {editor.outcome.events.length} contiguous history entries.</p>
       <p>Matching authored values at revisions {editor.outcome.matchingValueRevisions.join(", ") || "none"} do not identify or acknowledge the original request.</p>
       <p>The original UNKNOWN copy will remain. Later author input is kept; unchanged submitted text starts blank to prevent replay.</p>
-      <button type="button" className="button compact" disabled={editor.saving || editor.reviewing}
+      {editor.outcome.project.revision <= editor.outcome.pending.revision && <p role="status">
+        The original request can still commit on this revision. Keep it UNKNOWN and inspect again after the saved revision advances.
+      </p>}
+      <button type="button" className="button compact" disabled={editor.saving || editor.reviewing
+        || editor.outcome.project.revision <= editor.outcome.pending.revision}
         onClick={editor.separateIntent}>Keep original attempt and start a separate review</button>
     </section>}
     {editor.storageError && <div role="alert"><p>{editor.storageError}</p>

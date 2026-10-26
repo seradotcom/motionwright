@@ -27,7 +27,8 @@ def _object(value: object, code: str) -> dict:
 
 def _stamp(value: object) -> dict:
     value = _object(value, "product_pixels_stamp")
-    require(set(value) == {"generation", "revision"}
+    require(set(value) == {"resource", "generation", "revision"}
+            and type(value["resource"]) is str and bool(value["resource"])
             and type(value["generation"]) is str and bool(value["generation"])
             and type(value["revision"]) is int and 0 <= value["revision"] < 2**64,
             "product_pixels_stamp")
@@ -60,7 +61,7 @@ def bound_surface_pair(seed: dict, native: dict) -> tuple[dict, dict, dict]:
     terminal = _object(native.get("native_terminal"), "product_pixels_terminal")
     require(terminal.get("status") == "ok", "product_pixels_native_not_completed")
     value = _object(terminal.get("value"), "product_pixels_cycle_value")
-    require(value.get("schema") == "motionwright.blender.product-cycle-caller/1",
+    require(value.get("schema") == "motionwright.blender.product-cycle-caller/2",
             "product_pixels_cycle_schema")
     request = _object(native.get("request"), "product_pixels_request")
     create = _object(value.get("create"), "product_pixels_create")
@@ -82,7 +83,14 @@ def bound_surface_pair(seed: dict, native: dict) -> tuple[dict, dict, dict]:
             "product_pixels_before_stamp_join")
     require(_stamp(verify.get("expected")) == _stamp(value.get("expected_after")),
             "product_pixels_after_stamp_join")
-    _stamp(edit.get("expected"))
+    original_attached = _stamp(edit.get("expected"))
+    edited_attached = _stamp(value.get("expected_after"))
+    require(expected["revision"] <= 2**64 - 3
+            and original_attached["resource"] == edited_attached["resource"] == expected["resource"]
+            and original_attached["generation"] == edited_attached["generation"] == expected["generation"]
+            and original_attached["revision"] == expected["revision"] + 1
+            and edited_attached["revision"] == expected["revision"] + 2,
+            "product_pixels_atomic_revision_chain")
     recipe_sha = _digest(seed.get("source_sha256"))
     require(recipe_sha == value.get("recipe_sha256") == create.get("recipe_source_sha256")
             and type(seed.get("source_asset_id")) is str and bool(seed["source_asset_id"])
@@ -180,7 +188,8 @@ def bound_surface_pair(seed: dict, native: dict) -> tuple[dict, dict, dict]:
         "project_id": seed["project_id"], "scene_id": seed["scene_id"],
         "capsule_id": seed["capsule_id"], "request_id": request["request_id"],
         "recipe_asset_id": seed["source_asset_id"], "recipe_sha256": recipe_sha,
-        "expected_before": expected, "expected_after": value["expected_after"],
+        "expected_before": expected, "original_attached": original_attached,
+        "expected_after": edited_attached,
         "original_source": original_source, "edited_source": edited_source,
         "annotation_edit": edit["edit"], "native_frame": SURFACE_FRAME,
         "source_local_frame_zero_based": SURFACE_FRAME - 1,

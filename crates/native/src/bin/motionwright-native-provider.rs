@@ -1,27 +1,9 @@
-use motionwright_native::build_application;
-use motionwright_service::StudioService;
-use semwright_native_sdk::{NativeDriver, serve};
+use motionwright_native::run_native_provider;
 
 #[tokio::main]
 async fn main() {
-    if let Err(error) = run().await {
+    if let Err(error) = run_native_provider().await {
         eprintln!("motionwright native provider failed: {error}");
         std::process::exit(1);
     }
-}
-
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let path = if let Some(path) = std::env::var_os("MOTIONWRIGHT_DB")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::args_os().nth(1).map(std::path::PathBuf::from))
-    {
-        path
-    } else {
-        semwright_native_sdk::driver_sdk::workspace_mount("motionwright-data")?
-            .join("motionwright.sqlite3")
-    };
-    let service = StudioService::open(path)?;
-    let app = build_application(service)?;
-    serve(NativeDriver::new(app)?).await?;
-    Ok(())
 }

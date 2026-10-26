@@ -116,7 +116,7 @@ fn selected_graph_blocks_other_profiles_only_for_its_scene_and_deliverable() {
     let (mut project, plan) = prepared();
     let mut independent = project.deliverables[0].clone();
     independent.id = Uuid::new_v4();
-    independent.profile_name = format!("{} independent", independent.profile_name);
+    independent.name = format!("{} independent", independent.name);
     let other_id = independent.id;
     project.deliverables.push(independent);
     project.validate().unwrap();

@@ -354,3 +354,117 @@ for (const mode of ["resource", "playhead"] as const) {
     });
   }
 }
+
+
+test("review deliverable selection is explicit and retains exact profile through remount and reload", async ({ page }) => {
+  const profile = (await page.evaluate(() => window.__REVIEW_AUTHORITY__.project())).deliverables[1];
+  const selection = page.getByLabel("Review deliverable", { exact: true });
+  await expect(selection).toHaveValue("");
+  await selection.selectOption(profile.id); await comment(page).fill("  Review the selected variant  ");
+  await remount(page); await expect(selection).toHaveValue(profile.id);
+  await page.reload(); await expect(selection).toHaveValue(profile.id);
+  await expect(comment(page)).toHaveValue("  Review the selected variant  ");
+  const request = await submit(page);
+  expect(request.change).toMatchObject({ type: "add_review", profile_id: profile.id, locale: profile.language,
+    body: "Review the selected variant" });
+  await page.evaluate(id => window.__REVIEW_AUTHORITY__.resolve(id), request.id);
+  const saved = await page.evaluate(() => window.__REVIEW_AUTHORITY__.project());
+  const review = saved.reviews.find(item => item.body === "Review the selected variant")!;
+  const row = page.locator('.critique-copy[data-review-id="' + review.id + '"]');
+  await expect(row.getByLabel("Stored review deliverable and language", { exact: true })).toContainText(profile.id);
+  await expect(row.getByLabel("Stored review deliverable and language", { exact: true })).toContainText("stored language: " + profile.language);
+});
+test("a later review profile choice survives the original callback without changing its saved anchor", async ({ page }) => {
+  const profiles = (await page.evaluate(() => window.__REVIEW_AUTHORITY__.project())).deliverables;
+  const selection = page.getByLabel("Review deliverable", { exact: true });
+  await selection.selectOption(profiles[0].id); await comment(page).fill("Same words with separately authored scope");
+  const request = await submit(page);
+  await selection.selectOption(profiles[1].id);
+  await page.evaluate(id => window.__REVIEW_AUTHORITY__.resolve(id), request.id);
+  await expect(selection).toHaveValue(profiles[1].id);
+  await expect(comment(page)).toHaveValue("Same words with separately authored scope");
+  await remount(page); await expect(selection).toHaveValue(profiles[1].id);
+  const stored = (await page.evaluate(() => window.__REVIEW_AUTHORITY__.project())).reviews
+    .find(item => item.body === "Same words with separately authored scope")!;
+  expect(stored.anchor).toMatchObject({ profile_id: profiles[0].id, locale: profiles[0].language });
+  expect(await requests(page)).toHaveLength(1);
+});
+test("a removed selected deliverable retains the draft and blocks save until an explicit replacement or empty choice", async ({ page }) => {
+  const profile = (await page.evaluate(() => window.__REVIEW_AUTHORITY__.project())).deliverables[1];
+  const selection = page.getByLabel("Review deliverable", { exact: true });
+  await selection.selectOption(profile.id); await comment(page).fill("  Preserve the removed variant selection  ");
+  await page.evaluate(profile_id => window.__REVIEW_AUTHORITY__.externalChange({ type: "remove_deliverable", profile_id }), profile.id);
+  await expect(selection).toHaveValue(profile.id);
+  await expect(selection.locator("option:checked")).toHaveText("Unavailable deliverable · " + profile.id);
+  await expect(page.getByRole("alert").filter({ hasText: "selected review deliverable is no longer present" })).toHaveCount(1);
+  await button(page, "Review draft on current revision").click();
+  await expect(button(page, "Add anchored review")).toBeDisabled();
+  await expect(comment(page)).toHaveValue("  Preserve the removed variant selection  ");
+  await page.reload(); await expect(selection).toHaveValue(profile.id);
+  await expect(button(page, "Add anchored review")).toBeDisabled(); expect(await requests(page)).toEqual([]);
+  await selection.selectOption("");
+  const request = await submit(page);
+  expect(request.change).toMatchObject({ profile_id: null, locale: null, body: "Preserve the removed variant selection" });
+});
+test("review history keeps its recorded language when the current deliverable language changes", async ({ page }) => {
+  const profile = (await page.evaluate(() => window.__REVIEW_AUTHORITY__.project())).deliverables[1];
+  await page.getByLabel("Review deliverable", { exact: true }).selectOption(profile.id);
+  await comment(page).fill("Historical variant language");
+  const request = await submit(page); await page.evaluate(id => window.__REVIEW_AUTHORITY__.resolve(id), request.id);
+  const saved = await page.evaluate(() => window.__REVIEW_AUTHORITY__.project());
+  const review = saved.reviews.find(item => item.body === "Historical variant language")!;
+  await page.evaluate(profile => window.__REVIEW_AUTHORITY__.externalChange({ type: "upsert_deliverable", profile }),
+    { ...profile, language: "es-MX", name: "Renamed current deliverable" });
+  const row = page.locator('.critique-copy[data-review-id="' + review.id + '"]');
+  await expect(row.getByLabel("Stored review deliverable and language", { exact: true })).toContainText("stored language: " + profile.language);
+  await expect(row.getByLabel("Stored review deliverable and language", { exact: true })).not.toContainText("es-MX");
+  await expect(row.getByLabel("Stored review deliverable and language", { exact: true })).not.toContainText("Renamed current deliverable");
+  expect((await page.evaluate(() => window.__REVIEW_AUTHORITY__.project())).reviews.find(item => item.id === review.id)?.anchor)
+    .toEqual(review.anchor);
+});
+
+test("same-revision review inspection keeps UNKNOWN until a peer advances the base, preserving the original selected-profile copy", async ({ page }) => {
+  // Arrange canonical browser-demo state through its existing change boundary.
+  // This component scenario does not claim StudioService or SQLite evidence.
+  await page.evaluate(() => window.__REVIEW_AUTHORITY__.externalChange({ type: "rename_project", title: "Review same-base source" }));
+  const initial = await page.evaluate(() => window.__REVIEW_AUTHORITY__.project()), profile = initial.deliverables[0];
+  const selection = page.getByLabel("Review deliverable", { exact: true });
+  await selection.selectOption(profile.id); await comment(page).fill("  Same review words with a later empty profile  ");
+  const first = await submit(page);
+  await page.evaluate(id => window.__REVIEW_AUTHORITY__.reject(id, "Injected uncertain delivery without an observed commit"), first.id);
+  await selection.selectOption("");
+  const retained = await page.evaluate(() => {
+    const project = window.__REVIEW_AUTHORITY__.project(), scope = JSON.stringify([
+      project.id, project.generation, project.active_branch, "comment", "scene:" + window.__REVIEW_AUTHORITY__.sceneId(),
+    ]);
+    const writer = sessionStorage.getItem("motionwright.review-writer.v1:" + encodeURIComponent(scope));
+    const key = "motionwright.review-recovery.v1:" + encodeURIComponent(scope) + ":" + writer, raw = localStorage.getItem(key);
+    if (!raw) throw new Error("The actual Review editor did not retain its UNKNOWN copy");
+    return { key, raw, value: JSON.parse(raw) };
+  });
+  expect(retained.value.draft.pending.outcome).toBe("UNKNOWN");
+  expect(retained.value.draft.pending.raw.profileId).toBe(profile.id); expect(retained.value.draft.raw.profileId).toBe("");
+  await button(page, "Read saved review and history").click();
+  const inspected = page.getByRole("region", { name: "Saved review outcome", exact: true });
+  const continuation = button(page, "Keep original attempt and start a separate review");
+  await expect(inspected).toContainText("Read saved revision r" + initial.revision + " and 0 contiguous history entries.");
+  await expect(continuation, "REVIEW_UNCHANGED_BASE_REMAINS_UNKNOWN").toBeDisabled();
+  await expect(inspected.getByRole("status")).toContainText("original request can still commit");
+  await expect(button(page, "Add anchored review")).toBeDisabled(); expect(await requests(page)).toHaveLength(1);
+  expect(await page.evaluate(() => window.__REVIEW_AUTHORITY__.project())).toEqual(initial);
+  expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+  await page.evaluate(() => window.__REVIEW_AUTHORITY__.externalChange({ type: "rename_project", title: "Independent peer closes the Review base" }));
+  const advanced = await page.evaluate(() => window.__REVIEW_AUTHORITY__.project());
+  expect(advanced.revision).toBe(initial.revision + 1); expect(advanced.reviews).toEqual(initial.reviews);
+  await button(page, "Read saved review and history").click();
+  await expect(inspected).toContainText("Read saved revision r" + advanced.revision + " and 1 contiguous history entries.");
+  await expect(inspected).toContainText("Matching authored values at revisions none"); await expect(continuation).toBeEnabled();
+  await continuation.click(); await expect(inspected).toHaveCount(0);
+  await expect(selection).toHaveValue(""); await expect(comment(page)).toHaveValue("  Same review words with a later empty profile  ");
+  expect(await requests(page)).toHaveLength(1); expect(await page.evaluate(() => window.__REVIEW_AUTHORITY__.project())).toEqual(advanced);
+  expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+  await page.reload(); await expect(selection).toHaveValue("");
+  await expect(comment(page)).toHaveValue("  Same review words with a later empty profile  ");
+  await expect(page.getByRole("status").filter({ hasText: "Original review outcome UNKNOWN" })).toHaveCount(0);
+  expect(await requests(page)).toEqual([]); expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+});

@@ -10,13 +10,29 @@ name: Native Blender round-trip
         - source
         - original-scene
         - lit-still
+        - product-scene
         default: source
       expected_source_sha:
-        description: Exact Motionwright commit required for an original Scene or lit-still attempt
+        description: Exact Motionwright commit required for an explicit native attempt
         type: string
         required: false
       recovery_recipient:
         description: Admitted RSA3072 public recipient JSON; never a private key
+        type: string
+        required: false
+      product_namespace:
+        description: Original ProductScene namespace for one independently selected product fixture
+        type: string
+        required: false
+      product_camera_curve:
+        description: Explicit native camera interpolation for ProductScene::vessel
+        type: choice
+        options:
+        - linear
+        - bezier_auto_clamped
+        default: bezier_auto_clamped
+      product_annotation_after:
+        description: Original replacement annotation, one or two printable ASCII lines
         type: string
         required: false
   pull_request:
@@ -38,6 +54,9 @@ name: Native Blender round-trip
     - tooling/tests/test_native_blender_lit_still_oracle.py
     - tooling/tests/test_native_blender_lit_seed_policy.py
     - tooling/native_blender_original_evidence.py
+    - tooling/native_blender_product_contexts.py
+    - tooling/native_blender_product_pixels.py
+    - tooling/tests/test_native_blender_product_pixels.py
     - tooling/blender_original_scene_contract.py
     - tooling/ci_private_evidence.py
     - tooling/ci_test_runner.py
@@ -53,9 +72,9 @@ name: Native Blender round-trip
 permissions:
   contents: read
 concurrency:
-  group: ${{ inputs.verification_scope == 'lit-still' && 'native-blender-lit-exclusive' || inputs.verification_scope == 'original-scene' && 'native-blender-original-exclusive' || format('native-blender-roundtrip-{0}-{1}',
+  group: ${{ inputs.verification_scope == 'product-scene' && 'native-blender-product-exclusive' || inputs.verification_scope == 'lit-still' && 'native-blender-lit-exclusive' || inputs.verification_scope == 'original-scene' && 'native-blender-original-exclusive' || format('native-blender-roundtrip-{0}-{1}',
     github.event_name, github.head_ref || github.ref_name) }}
-  cancel-in-progress: ${{ inputs.verification_scope != 'original-scene' && inputs.verification_scope != 'lit-still' }}
+  cancel-in-progress: ${{ inputs.verification_scope != 'original-scene' && inputs.verification_scope != 'lit-still' && inputs.verification_scope != 'product-scene' }}
 defaults:
   run:
     shell: bash
@@ -69,7 +88,7 @@ jobs:
   native-blender-roundtrip:
     if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'lit-still'
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.verification_scope == 'original-scene' && 60 || 45 }}
+    timeout-minutes: ${{ inputs.verification_scope == 'product-scene' && 90 || inputs.verification_scope == 'original-scene' && 60 || 45 }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -82,7 +101,7 @@ jobs:
         import os
         event = os.environ["GITHUB_EVENT_NAME"]
         scope = os.environ["VERIFICATION_SCOPE"]
-        allowed = {"source", "static-glb", "original-scene"}
+        allowed = {"source", "static-glb", "original-scene", "product-scene"}
         if event == "workflow_dispatch":
             if scope not in allowed:
                 raise SystemExit("Unknown Blender verification scope")
@@ -94,11 +113,15 @@ jobs:
             raise SystemExit("Unsupported Blender verification event")
         print(f"Blender verification scope: {scope}")
         PY
-    - name: Bind the explicit original Scene attempt
-      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'original-scene'
+    - name: Bind the explicit original Scene or product attempt
+      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene')
       env:
         EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
         RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+        SELECTED_SCOPE: ${{ inputs.verification_scope }}
+        PRODUCT_NAMESPACE: ${{ inputs.product_namespace }}
+        PRODUCT_CAMERA_CURVE: ${{ inputs.product_camera_curve }}
+        PRODUCT_ANNOTATION_AFTER: ${{ inputs.product_annotation_after }}
       run: |
         python3 - <<'PY'
         import json, os, re
@@ -110,6 +133,10 @@ jobs:
         assert 0 < len(raw) <= 4096
         recipient = json.loads(raw)
         assert set(recipient) == {'spki_der_base64', 'sha256'}
+        if os.environ['SELECTED_SCOPE'] == 'product-scene':
+            assert 0 < len(os.environ['PRODUCT_NAMESPACE'].encode('utf-8')) <= 128
+            assert os.environ['PRODUCT_CAMERA_CURVE'] in {'linear', 'bezier_auto_clamped'}
+            assert 0 < len(os.environ['PRODUCT_ANNOTATION_AFTER'].encode('utf-8')) <= 256
         PY
     - name: Verify original Scene source and custody contracts
       run: |
@@ -129,9 +156,9 @@ jobs:
         receipt = json.loads(report.read_bytes())
         expected = {
             "discovery:test_blender_original_scene_contract.py": 35,
-            "discovery:test_native_blender_original_evidence.py": 51,
+            "discovery:test_native_blender_original_evidence.py": 55,
             "dotted:tooling.tests.test_blender_original_scene_contract": 35,
-            "dotted:tooling.tests.test_native_blender_original_evidence": 51,
+            "dotted:tooling.tests.test_native_blender_original_evidence": 55,
         }
         compact = {
             "test_default_runtime_path_is_unchanged",
@@ -157,7 +184,7 @@ jobs:
                     or counts.get("tests_run") != count or counts.get("passed") != count
                     or any(counts.get(k) != 0 for k in
                            ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
-                raise SystemExit("Incomplete Blender 35+51 source roster")
+                raise SystemExit("Incomplete Blender 35+55 source roster")
             if "test_native_blender_original_evidence" in step["entry_point"]:
                 original = report.with_name(step["stderr"]["file"]).read_bytes()
                 if hashlib.sha256(original).hexdigest() != step["stderr"]["sha256"]:
@@ -166,9 +193,75 @@ jobs:
                 observed = re.findall(r"^(test_\w+) \([^\n]*\.CompactRuntimeTests\.\1\) \.\.\. ok$", view, re.M)
                 if len(observed) != 9 or set(observed) != compact:
                     raise SystemExit("Every Linux compact-runtime case must actually pass")
-        print(json.dumps({"distinct_Blender_source_cases":86, "case_executions":172,
+                product_expected = ['test_product_profile_requires_original_cycle_pixels_cleanup_and_source_identity', 'test_product_projection_cannot_inherit_original_profile_or_full_render_claims', 'test_product_stage_preserves_the_exact_cipher_and_recipient_binding', 'test_product_unknown_terminal_is_not_completion_or_native_context_observation']
+                product_observed = re.findall(r"^(test_\w+) \([^\n]*\.ProductProfileTests\.\1\) \.\.\. ok$", view, re.M)
+                if len(product_observed) != 4 or set(product_observed) != set(product_expected):
+                    raise SystemExit("Every product custody profile case must actually pass")
+        print(json.dumps({"distinct_Blender_source_cases":90, "case_executions":180,
                           "compact_runtime_cases":9, "skipped":0,
                           "native_effects":False}, sort_keys=True))
+        PY
+    - name: Install decoder for exact product pixel source tests
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y ffmpeg
+        ffmpeg -version
+    - name: Require all 15 product pixel cases through both real test entrypoints
+      run: |
+        "$RUNNER_TEMP/blender-original-venv/bin/python" tooling/ci_test_runner.py \
+          --pattern test_native_blender_product_pixels.py \
+          --mode both --require-complete --expected-source "$GITHUB_SHA" \
+          --report "$RUNNER_TEMP/blender-product-pixels-tests.json"
+        "$RUNNER_TEMP/blender-original-venv/bin/python" - <<'PY'
+        import hashlib, json, os, pathlib, re
+        expected = {
+            "discovery:test_native_blender_product_pixels.py",
+            "dotted:tooling.tests.test_native_blender_product_pixels",
+        }
+        roster = [
+            "PngTransportTests.test_complete_rgba_png_is_validated_without_decoding",
+            "PngTransportTests.test_metadata_crc_corruption_truncation_and_trailing_bytes_are_rejected",
+            "PngTransportTests.test_dimensions_oversize_depth_and_animation_fail_before_process",
+            "PngTransportTests.test_independent_decoder_rejects_bad_header_before_starting",
+            "SourceBindingTests.test_caller_join_allows_legitimate_extra_ack_fields_and_keeps_native_flags",
+            "SourceBindingTests.test_wrong_artifact_source_camera_frame_or_edit_does_not_join",
+            "SourceBindingTests.test_duration_and_rate_keep_their_distinct_real_wire_types",
+            "SourceBindingTests.test_legacy_cycle_schema_is_not_inherited_by_the_atomic_reader",
+            "SourceBindingTests.test_atomic_source_revisions_reject_skips_foreign_generations_and_overflow",
+            "SourceBindingTests.test_actual_png_digest_mismatch_stops_before_decoder",
+            "PixelAndCustodyTests.test_exact_delta_and_opacity_are_narrow_claims",
+            "PixelAndCustodyTests.test_original_decoder_failure_survives_both_stream_custody_failures",
+            "RealSyntheticDecoderTests.test_metadata_only_png_changes_do_not_establish_a_pixel_edit",
+            "RealSyntheticDecoderTests.test_real_decoder_preserves_one_changed_synthetic_rgb_sample",
+            "RealSyntheticDecoderTests.test_real_decoder_transparency_does_not_pass_opaque_profile"
+        ]
+        if len(roster) != 15 or len(set(roster)) != 15:
+            raise SystemExit("Product pixel roster differs from the reviewed 15 cases")
+        path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "blender-product-pixels-tests.json"
+        report = json.loads(path.read_bytes())
+        steps = report.get("steps", [])
+        if (report.get("status") != "PASS" or report.get("exit_code") != 0
+                or report.get("executed_source_sha") != os.environ["GITHUB_SHA"]
+                or len(steps) != 2 or {step.get("entry_point") for step in steps} != expected):
+            raise SystemExit("Missing product pixel entrypoint or original source identity")
+        for step in steps:
+            counts = step.get("counts", {})
+            if (step.get("status") != "PASS" or step.get("exit_code") != 0
+                    or counts.get("tests_run") != 15 or counts.get("passed") != 15
+                    or any(counts.get(key) != 0 for key in
+                           ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
+                raise SystemExit("Every product pixel case must execute without an omission")
+            stream = step["stderr"]
+            raw = path.with_name(stream["file"]).read_bytes()
+            if hashlib.sha256(raw).hexdigest() != stream["sha256"]:
+                raise SystemExit("Original product test stream changed")
+            rows = re.findall(r"^(test_\w+) \([^\n]*\.(\w+)\.\1\) \.\.\. ok$",
+                              raw.decode("utf-8", "strict").replace("\r\n", "\n"), re.M)
+            names = [owner + "." + method for method, owner in rows]
+            if len(names) != 15 or set(names) != set(roster):
+                raise SystemExit("Product pixel stdout/stderr did not observe the exact roster")
+        print(json.dumps({"product_pixel_cases": 15, "case_executions": 30,
+                          "skipped": 0, "native_blender_effects": False}, sort_keys=True))
         PY
     - name: Verify affected lit producer contracts on source requests
       id: lit_source
@@ -271,10 +364,10 @@ jobs:
         ref: ${{ steps.pin.outputs.sha }}
         path: _semwright
         persist-credentials: false
-      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene')
+      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene')
     - name: Verify immutable source identities
       env:
-        VERIFY_SEMWRIGHT_CHECKOUT: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene') }}
+        VERIFY_SEMWRIGHT_CHECKOUT: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene') }}
       run: |
         test "$(git rev-parse HEAD)" = "${{ github.sha }}"
         if [[ "$VERIFY_SEMWRIGHT_CHECKOUT" == "true" ]]; then
@@ -315,7 +408,14 @@ jobs:
             paths = ["crates/native/src/production.rs", "crates/native/src/production/receipt_custody.rs",
                      "crates/native/src/production/blender_original.rs", "crates/native/src/multi_renderer.rs",
                      "crates/native/examples/native-blender-e2e.rs", "Cargo.lock", "SOURCE_LOCK.json",
-                     ".github/workflows/native-blender-e2e.yml"]
+                     ".github/workflows/native-blender-e2e.yml",
+                     "crates/native/src/blender_product_scene.rs",
+                     "crates/native/src/production/blender_product_cycle.rs",
+                     "crates/native/src/production/blender_product_consumer.rs",
+                     "crates/native/src/production/blender_product_lineage.rs",
+                     "tooling/native_blender_product_contexts.py",
+                     "tooling/native_blender_product_pixels.py",
+                     "tooling/native_blender_original_evidence.py"]
             return {"sha": head, "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
                     "files": {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}}
         ROSTER = [
@@ -476,6 +576,59 @@ jobs:
             "name": "production::tests::completed_mutation_replay_cannot_change_original_project_revision"
           }
         ]
+        PRODUCT_ROSTER = [
+          {
+            "target": "--lib",
+            "name": "production::tests::blender_product_selected_commands_reach_the_existing_driver_transport"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::blender_product_selection_keeps_unselected_neighbors_before_spawn"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::blender_product_effects_preserve_unknown_transport_despite_false_hint"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::blender_product_unknown_receipts_survive_restart_without_redispatch"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::blender_product_added_commands_reject_foreign_or_missing_provenance"
+          },
+          {
+            "target": "--lib",
+            "name": "production::tests::blender_product_typed_policy_denial_stays_known_without_redispatch"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "product_caller_tests::product_seed_preserves_original_bytes_in_cas_after_sqlite_reopen"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "product_caller_tests::product_seed_rejects_unprojected_recipe_before_creating_canonical_source"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "product_caller_tests::product_seed_does_not_reuse_an_existing_database_or_seed_destination"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "product_caller_tests::product_request_reader_is_closed_and_bounded_before_native_execution"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "product_caller_tests::product_seed_rejects_a_symlink_recipe_before_source_effects"
+          },
+          {
+            "target": "--example native-blender-e2e",
+            "name": "product_caller_tests::product_input_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open"
+          }
+        ]
+        if len(PRODUCT_ROSTER) != 12 or len({row['name'] for row in PRODUCT_ROSTER}) != 12:
+            raise ValueError("The exact six Unix and six caller cases changed")
+        ROSTER += PRODUCT_ROSTER
         out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "blender-required-rust"
         out.mkdir(exist_ok=False)
         before = source_state()
@@ -486,7 +639,7 @@ jobs:
             (out / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         retain()
         try:
-            if len(ROSTER) != 39 or len({r["name"] for r in ROSTER}) != 39:
+            if len(ROSTER) != 51 or len({r["name"] for r in ROSTER}) != 51:
                 raise ValueError("required Rust roster differs")
             for index, row in enumerate(ROSTER):
                 argv = ["cargo", "test", "--locked", "-p", "motionwright-native"] + shlex.split(row["target"]) + [row["name"], "--", "--exact", "--nocapture"]
@@ -743,12 +896,12 @@ jobs:
         sudo tar -xJf /tmp/blender.tar.xz -C /usr/local
         test "$("$SEMWRIGHT_TEST_BLENDER_ROOT/blender" --version | head -1)" = "Blender 4.5.14 LTS"
         bwrap --version
-      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene')
+      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene')
     - name: Configure disposable-runner Driver Host sandbox
       run: |
         bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh \
           "$GITHUB_WORKSPACE/verification/native-blender-e2e/sandbox-profile.txt"
-      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene')
+      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene')
     - name: Build exact Semwright Broker, sandbox and Blender provider
       working-directory: _semwright
       run: |
@@ -758,7 +911,7 @@ jobs:
           -p semwright-driver-blender \
           --bin semwright-blender-driver \
           --bin semwright-blender-session-runner
-      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene')
+      if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'static-glb' || inputs.verification_scope == 'original-scene' || inputs.verification_scope == 'product-scene')
     - name: Realize application-owned scene through real Broker and Blender Driver Host
       if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'static-glb'
       env:
@@ -773,6 +926,19 @@ jobs:
         MOTIONWRIGHT_BLENDER_SCOPE: original-scene
         MOTIONWRIGHT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
         MOTIONWRIGHT_PRIVATE_EVIDENCE_RECIPIENT: ${{ inputs.recovery_recipient }}
+        SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
+        SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
+      run: |
+        "$RUNNER_TEMP/blender-original-venv/bin/python" tooling/native_blender_e2e.py
+    - name: Run one explicit fixed product create-save-edit-reopen attempt
+      if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'product-scene'
+      env:
+        MOTIONWRIGHT_BLENDER_SCOPE: product-scene
+        MOTIONWRIGHT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+        MOTIONWRIGHT_PRIVATE_EVIDENCE_RECIPIENT: ${{ inputs.recovery_recipient }}
+        MOTIONWRIGHT_PRODUCT_NAMESPACE: ${{ inputs.product_namespace }}
+        MOTIONWRIGHT_PRODUCT_CAMERA_CURVE: ${{ inputs.product_camera_curve }}
+        MOTIONWRIGHT_PRODUCT_ANNOTATION_AFTER: ${{ inputs.product_annotation_after }}
         SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
         SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
       run: |
@@ -840,6 +1006,39 @@ jobs:
           verification/native-blender-original-staged/private-evidence.mwseal
         if-no-files-found: error
         retention-days: 14
+    - name: Stage closed product metadata and its exact sealed originals
+      id: product_public
+      if: always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'product-scene'
+      env:
+        NATIVE_CI_JOB_STATUS: ${{ job.status }}
+        EXACT_SEMWRIGHT_SHA: ${{ steps.pin.outputs.sha }}
+        RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
+      run: |
+        recipient_sha="$("$RUNNER_TEMP/blender-original-venv/bin/python" - <<'PY'
+        import os, sys
+        sys.path.insert(0, "tooling")
+        from ci_private_evidence import public_key, strict
+        recipient = strict(os.environ["RECOVERY_RECIPIENT"].encode("utf-8"))
+        public_key(recipient)
+        print(recipient["sha256"])
+        PY
+        )"
+        "$RUNNER_TEMP/blender-original-venv/bin/python" tooling/native_blender_original_evidence.py \
+          --profile product-scene \
+          --source verification/native-blender-product-public \
+          --output verification/native-blender-product-staged \
+          --expected-source "$GITHUB_SHA" --expected-semwright "$EXACT_SEMWRIGHT_SHA" \
+          --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+          --expected-recipient-sha256 "$recipient_sha" --job-status "$NATIVE_CI_JOB_STATUS"
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      if: always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'product-scene' && steps.product_public.outcome == 'success'
+      with:
+        name: motionwright-blender-product-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          verification/native-blender-product-staged/public-evidence.json
+          verification/native-blender-product-staged/private-evidence.mwseal
+        if-no-files-found: error
+        retention-days: 14
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       if: always()
       with:
@@ -848,6 +1047,8 @@ jobs:
           ${{ runner.temp }}/blender-original-source-tests.json
           ${{ runner.temp }}/blender-original-source-tests-*.log
           ${{ runner.temp }}/blender-required-rust
+          ${{ runner.temp }}/blender-product-pixels-tests.json
+          ${{ runner.temp }}/blender-product-pixels-tests-*.log
           ${{ runner.temp }}/blender-lit-source-rust
           ${{ runner.temp }}/blender-lit-source-tests.json
           ${{ runner.temp }}/blender-lit-source-tests-*.log

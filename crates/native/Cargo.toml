@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 license-file.workspace = true
 
+[features]
+# Checkpoints in the actual Core/Host9 subprocess fixture only.
+# Synchronous storage timing is observed by the external owner.
+# No release/default feature enables these observations or waits.
+native-graph-owner-fixture = []
+
 [dependencies]
 base64 = "0.23"
 motionwright-domain = { path = "../domain" }
@@ -33,3 +39,9 @@ rusqlite.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 semwright-effect-conformance.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.190"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2.190"

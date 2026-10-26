@@ -251,3 +251,87 @@ test("Graph v1 editorial overflow retains every space without wrapping clipping 
   await page.reload(); await expect(field(page, "Vertex 1 label")).toHaveValue(literal); expect(await requestCount(page)).toBe(0);
   // This component fixture demonstrates retention and vector coordinates; native face/overflow admission is a separate real-consumer oracle.
 });
+
+test("Graph same-revision UNKNOWN remains blocked until an explicit newer-source review preserves its original copy", async ({ page }) => {
+  await open(page); await valid(page);
+  const initial = await page.evaluate(() => window.__GRAPH_AUTHORITY__.project());
+  await field(page, "Vertex 1 label").fill("Original Graph concept");
+  await button(page, "Save semantic Graph").click(); await expect.poll(() => requestCount(page)).toBe(1);
+  await page.evaluate(() => window.__GRAPH_AUTHORITY__.reject(1, "Synthetic uncertain delivery without an observed commit"));
+  await field(page, "Vertex 1 label").fill("Later Graph concept retained");
+  const retained = await currentGraphCopy(page), pending = page.getByRole("region", { name: "Unconfirmed Graph submission" });
+  expect(JSON.parse(retained.raw).draft.pending.outcome).toBe("UNKNOWN");
+  await button(page, "Inspect saved Graph outcome").click();
+  const continuation = button(page, "Continue Graph as a new reviewed intention");
+  await expect(pending).toContainText("Read current source at r" + initial.revision + ". 0 history entries inspected");
+  await expect(continuation, "GRAPH_UNCHANGED_BASE_REMAINS_UNKNOWN").toBeDisabled();
+  await expect(pending.getByRole("status")).toContainText("original Graph request can still commit");
+  await expect(button(page, "Save semantic Graph")).toBeDisabled(); expect(await requestCount(page)).toBe(1);
+  expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).toEqual(initial);
+  expect(await page.evaluate(key => localStorage.getItem(key), retained.copyKey)).toBe(retained.raw);
+  // This existing component fixture explicitly publishes synthetic props. It
+  // does not stand in for Graph service, SQLite, renderer or native evidence.
+  await page.evaluate(async () => {
+    const peer = window.__GRAPH_AUTHORITY__.project(); peer.revision++; peer.title = "Independent component-fixture Graph revision";
+    const branch = peer.branches.find(item => item.id === peer.active_branch);
+    if (!branch) throw new Error("The component peer source has no active branch");
+    branch.head_revision = peer.revision;
+    await window.__GRAPH_AUTHORITY__.publish(peer);
+  });
+  const advanced = await page.evaluate(() => window.__GRAPH_AUTHORITY__.project());
+  expect(advanced.revision).toBe(initial.revision + 1);
+  expect(advanced.branches.find(item => item.id === advanced.active_branch)?.head_revision).toBe(advanced.revision);
+  await button(page, "Inspect saved Graph outcome").click();
+  await expect(pending).toContainText("Read current source at r" + advanced.revision + "."); await expect(continuation).toBeEnabled();
+  await continuation.click(); await expect(pending).toHaveCount(0);
+  await expect(field(page, "Vertex 1 label")).toHaveValue("Later Graph concept retained");
+  expect(await page.evaluate(key => localStorage.getItem(key), retained.copyKey)).toBe(retained.raw);
+  expect(await requestCount(page)).toBe(1); expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).toEqual(advanced);
+  await expect(button(page, "Save semantic Graph")).toBeDisabled();
+  await button(page, "Review current Graph and keep unrelated changes").click();
+  await button(page, "Inspect current Graph support and sources").click();
+  await expect(button(page, "Save semantic Graph")).toBeEnabled(); expect(await requestCount(page)).toBe(1);
+  expect(await page.evaluate(key => localStorage.getItem(key), retained.copyKey)).toBe(retained.raw);
+  await page.reload(); await expect(field(page, "Vertex 1 label")).toHaveValue("Later Graph concept retained");
+  await expect(pending).toHaveCount(0); expect(await requestCount(page)).toBe(1);
+  expect(await page.evaluate(key => localStorage.getItem(key), retained.copyKey)).toBe(retained.raw);
+});
+
+for (const recovered of [false, true]) {
+  test("Graph known NOT_SENT " + (recovered ? "becomes UNKNOWN after reload and cannot release the same base" : "can explicitly continue on its same base in the live caller"), async ({ page }) => {
+    await open(page); await valid(page);
+    const initial = await page.evaluate(() => window.__GRAPH_AUTHORITY__.project());
+    await page.evaluate(() => {
+      const set = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (this === localStorage && key.startsWith("motionwright.semantic-graph-recovery.v1:") && JSON.parse(value).draft.pending) return;
+        set.call(this, key, value);
+      };
+      window.__GRAPH_RESTORE_STORAGE__ = () => { Storage.prototype.setItem = set; };
+    });
+    await button(page, "Save semantic Graph").click();
+    const pending = page.getByRole("region", { name: "Unconfirmed Graph submission" });
+    await expect(pending).toContainText("Graph change was not sent"); expect(await requestCount(page)).toBe(0);
+    await page.evaluate(() => window.__GRAPH_RESTORE_STORAGE__?.());
+    await button(page, "Verify Graph recovery again").click();
+    await expect(page.getByRole("region", { name: "Graph recovery needs attention" })).toHaveCount(0);
+    const original = await currentGraphCopy(page); expect(JSON.parse(original.raw).draft.pending.outcome).toBe("NOT_SENT");
+    if (recovered) {
+      await page.reload(); await expect(pending).toContainText("Graph save outcome is unconfirmed");
+      expect(JSON.parse((await currentGraphCopy(page)).raw).draft.pending.outcome).toBe("UNKNOWN");
+    }
+    await button(page, "Inspect saved Graph outcome").click();
+    await expect(pending).toContainText("Read current source at r" + initial.revision + ". 0 history entries inspected");
+    const continuation = button(page, "Continue Graph as a new reviewed intention");
+    if (recovered) {
+      await expect(continuation, "RECOVERED_GRAPH_NOT_SENT_REMAINS_UNKNOWN").toBeDisabled();
+      await expect(pending.getByRole("status")).toContainText("original Graph request can still commit");
+      await expect(button(page, "Save semantic Graph")).toBeDisabled();
+    } else {
+      await expect(continuation).toBeEnabled(); await continuation.click(); await expect(pending).toHaveCount(0);
+      await expect(button(page, "Save semantic Graph")).toBeEnabled();
+    }
+    expect(await requestCount(page)).toBe(0); expect(await page.evaluate(() => window.__GRAPH_AUTHORITY__.saved())).toEqual(initial);
+    expect(await page.evaluate(key => localStorage.getItem(key), original.copyKey)).toBe(original.raw);
+  });
+}

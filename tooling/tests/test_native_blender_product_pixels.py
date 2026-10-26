@@ -42,8 +42,9 @@ def synthetic_source_pair():
     """Wire fixture only: no Broker authority or native witness is constructed."""
     ids = {key: f"{i:08x}-0000-4000-8000-000000000000"
            for i, key in enumerate(("project_id", "scene_id", "capsule_id"), 1)}
-    expected = {"generation": "00000004-0000-4000-8000-000000000000", "revision": 6}
-    after = {**expected, "revision": 10}
+    expected = {"resource": "project:" + ids["project_id"],
+                "generation": "00000004-0000-4000-8000-000000000000", "revision": 6}
+    after = {**expected, "revision": 8}
     recipe_id = "00000005-0000-4000-8000-000000000000"
     recipe_sha = "a" * 64
     seed = {"schema": "motionwright.blender.product-scene-seed/1", **ids,
@@ -69,7 +70,7 @@ def synthetic_source_pair():
               "recipe_source_sha256": recipe_sha, "output": original_file,
               "cut_probes": [cut(600, "f" * 64), first]}
     edit = {"schema": "motionwright.blender.product-editable-cycle/1", "project_id": ids["project_id"],
-            "expected": {**expected, "revision": 8}, "input_source": original_file, "output": edited_file,
+            "expected": {**expected, "revision": 7}, "input_source": original_file, "output": edited_file,
             "edit": {"parameter": "product.annotation.body", "before": "ORIGINAL", "after": "EDITED"},
             "one_field_edit_readback_verified": True}
     verify = {"schema": "motionwright.blender.product-editable-cycle/1", "project_id": ids["project_id"],
@@ -82,7 +83,7 @@ def synthetic_source_pair():
               "native_frame_origin": 1, "native_frame_count": 1200, "rate": {"num": 30, "den": 1},
               "internal_cuts": [{"camera": "camera_form", "first_native_frame": 1},
                                 {"camera": "camera_surface", "first_native_frame": 601}]}
-    value = {"schema": "motionwright.blender.product-cycle-caller/1", **ids,
+    value = {"schema": "motionwright.blender.product-cycle-caller/2", **ids,
              "expected_before": expected, "expected_after": after,
              "recipe_asset_id": recipe_id, "recipe_sha256": recipe_sha,
              "original_source": original_file, "edited_source": edited_file,
@@ -145,6 +146,10 @@ class SourceBindingTests(unittest.TestCase):
         self.assertEqual(original["sha256"], "d" * 64)
         self.assertEqual(edited["sha256"], "e" * 64)
         self.assertEqual(binding["native_frame"], 601)
+        self.assertEqual(binding["original_attached"],
+                         {**seed["expected"], "revision": 7})
+        self.assertEqual(binding["expected_after"],
+                         {**seed["expected"], "revision": 8})
         self.assertFalse(binding["geometry_or_camera_recertified_by_pixel_reader"])
         self.assertEqual(native, before)
 
@@ -176,6 +181,63 @@ class SourceBindingTests(unittest.TestCase):
             native["journal"]["create"]["source_binding"][key] = value
             with self.assertRaises(Exception):
                 pixels.bound_surface_pair(seed, native)
+
+    def test_legacy_cycle_schema_is_not_inherited_by_the_atomic_reader(self):
+        seed, native = synthetic_source_pair()
+        native["native_terminal"]["value"]["schema"] = "motionwright.blender.product-cycle-caller/1"
+        with self.assertRaisesRegex(Exception, "cycle_schema"):
+            pixels.bound_surface_pair(seed, native)
+
+    def test_atomic_source_revisions_reject_skips_foreign_generations_and_overflow(self):
+        # The real domain stamp has exactly resource, generation and revision.
+        # Exercise each retained phase through the existing complete reader.
+        for phase in ("before", "original_attached", "edited_attached"):
+            for defect in ("missing", "empty", "null", "integer", "boolean", "object", "array", "extra"):
+                with self.subTest(phase=phase, resource_defect=defect):
+                    seed, native = synthetic_source_pair()
+                    value = native["native_terminal"]["value"]
+                    stamp = {
+                        "before": seed["expected"],
+                        "original_attached": value["edit"]["expected"],
+                        "edited_attached": value["expected_after"],
+                    }[phase]
+                    if defect == "missing":
+                        del stamp["resource"]
+                    elif defect == "extra":
+                        stamp["authority"] = "synthetic-never-admitted"
+                    else:
+                        stamp["resource"] = {
+                            "empty": "", "null": None, "integer": 7,
+                            "boolean": True, "object": {}, "array": [],
+                        }[defect]
+                    with self.assertRaisesRegex(Exception, "product_pixels_stamp"):
+                        pixels.bound_surface_pair(seed, native)
+        cases = ("edit_skip", "final_skip", "edit_generation", "final_generation",
+                 "edit_resource", "final_resource", "overflow")
+        for case in cases:
+            with self.subTest(case=case):
+                seed, native = synthetic_source_pair()
+                value = native["native_terminal"]["value"]
+                if case == "edit_skip":
+                    value["edit"]["expected"]["revision"] += 1
+                elif case == "final_skip":
+                    value["expected_after"]["revision"] += 1
+                elif case == "edit_generation":
+                    value["edit"]["expected"]["generation"] = "foreign-generation"
+                elif case == "final_generation":
+                    value["expected_after"]["generation"] = "foreign-generation"
+                elif case == "edit_resource":
+                    value["edit"]["expected"]["resource"] = "project:000000ff-0000-4000-8000-000000000000"
+                elif case == "final_resource":
+                    value["expected_after"]["resource"] = "project:000000ff-0000-4000-8000-000000000000"
+                else:
+                    # Existing before/after joins remain equal so the specific
+                    # atomic bound, rather than an unrelated join, rejects this.
+                    seed["expected"]["revision"] = 2**64 - 2
+                    value["edit"]["expected"]["revision"] = 2**64 - 1
+                    value["expected_after"]["revision"] = 2**64 - 1
+                with self.assertRaisesRegex(Exception, "atomic_revision_chain"):
+                    pixels.bound_surface_pair(seed, native)
 
     def test_actual_png_digest_mismatch_stops_before_decoder(self):
         seed, native = synthetic_source_pair()

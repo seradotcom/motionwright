@@ -172,3 +172,94 @@ describe("MW05-E05-04 author-reviewed positive/negative saved source alternative
     expect(project).toEqual(prior);
   });
 });
+
+
+describe("complete, source-identified creative comparisons",()=>{
+  it("records the exact base and head of both compared branches without changing source",()=>{
+    const {project,other}=setup();
+    const active=project.branches.find(branch=>branch.id===project.active_branch)!;
+    const before=structuredClone(project), report=inspectCreativeAlternative(project,other.id);
+    expect(report).toMatchObject({active_branch_id:active.id,active_base_revision:active.base_revision,
+      active_head_revision:active.head_revision,candidate_branch_id:other.id,
+      candidate_base_revision:other.base_revision,candidate_head_revision:other.head_revision,
+      observed_revision:project.revision});
+    expect(project).toEqual(before);
+  });
+  it.each(["missing","future"] as const)("rejects %s active-branch context",problem=>{
+    const {project,other}=setup();
+    if(problem==="missing")project.branches=project.branches.filter(branch=>branch.id!==project.active_branch);
+    else project.branches.find(branch=>branch.id===project.active_branch)!.head_revision=project.revision+1;
+    expect(()=>inspectCreativeAlternative(project,other.id)).toThrow(/active/i);
+  });
+  function claimSetup(){
+    const value=setup();
+    value.stored.current_state.scenes[1].objective=value.project.scenes[1].objective;
+    const claim={id:"e0000001-0000-4000-8000-000000000001",text:"The same explicitly authored claim",
+      source:{kind:"project_revision" as const,revision:3},context:"Synthetic comparison fixture",source_revision:"source-r3"};
+    value.project.brief.claims=[structuredClone(claim)];
+    value.stored.current_state.brief.claims=[structuredClone(claim)];
+    return {...value,claim};
+  }
+  it("identifies a changed source reference with identical claim copy and retains both exact references",()=>{
+    const {project,other,stored,claim}=claimSetup();
+    stored.current_state.brief.claims[0].source={kind:"project_revision",revision:7};
+    const before=structuredClone(project), report=inspectCreativeAlternative(project,other.id);
+    expect(report.differences).toEqual([expect.objectContaining({kind:"claim_changed",claim_id:claim.id,
+      changed_fields:["source"],source_comparison:{
+        active:{source:{kind:"project_revision",revision:3},source_revision:"source-r3"},
+        candidate:{source:{kind:"project_revision",revision:7},source_revision:"source-r3"},
+      }})]);
+    expect(stored.current_state.brief.claims[0].text).toBe(project.brief.claims[0].text);
+    expect(project).toEqual(before);
+    stored.current_state.brief.claims[0].source={kind:"project_revision",revision:8};
+    expect(report.differences).toEqual([expect.objectContaining({source_comparison:expect.objectContaining({
+      candidate:{source:{kind:"project_revision",revision:7},source_revision:"source-r3"},
+    })})]);
+  });
+  it("identifies a source revision change without silently treating identical copy as unchanged",()=>{
+    const {project,other,stored,claim}=claimSetup();
+    stored.current_state.brief.claims[0].source_revision="source-r4";
+    const report=inspectCreativeAlternative(project,other.id);
+    expect(report.differences).toEqual([expect.objectContaining({kind:"claim_changed",claim_id:claim.id,
+      changed_fields:["source_revision"],source_comparison:{
+        active:{source:claim.source,source_revision:"source-r3"},candidate:{source:claim.source,source_revision:"source-r4"},
+      }})]);
+  });
+  it("identifies changed claim context without copying the private context or claim text into summaries",()=>{
+    const {project,other,stored,claim}=claimSetup();
+    stored.current_state.brief.claims[0].context="Private author context must not enter a summary";
+    const report=inspectCreativeAlternative(project,other.id);
+    expect(report.differences).toEqual([expect.objectContaining({kind:"claim_changed",claim_id:claim.id,changed_fields:["context"]})]);
+    expect(JSON.stringify(report)).not.toContain(stored.current_state.brief.claims[0].context);
+    expect(JSON.stringify(report)).not.toContain(claim.text);
+  });
+  it("identifies claim replacement through stable IDs rather than matching text",()=>{
+    const {project,other,stored,claim}=claimSetup();
+    const replacement="e0000002-0000-4000-8000-000000000002";
+    stored.current_state.brief.claims[0].id=replacement;
+    expect(inspectCreativeAlternative(project,other.id).differences).toEqual([
+      expect.objectContaining({kind:"claim_omitted",claim_id:claim.id}),
+      expect.objectContaining({kind:"claim_added",claim_id:replacement}),
+    ]);
+  });
+  it.each(["active","candidate"] as const)("fails closed on duplicate %s claim identities",side=>{
+    const {project,other,stored,claim}=claimSetup();
+    (side==="active"?project.brief.claims:stored.current_state.brief.claims).push(structuredClone(claim));
+    expect(()=>inspectCreativeAlternative(project,other.id)).toThrow("Duplicate claim identity");
+  });
+  it("continues to report changes to relative claim order",()=>{
+    const {project,other,stored,claim}=claimSetup();
+    const second={...claim,id:"e0000002-0000-4000-8000-000000000002",text:"Second authored claim"};
+    project.brief.claims.push(structuredClone(second));stored.current_state.brief.claims.unshift(structuredClone(second));
+    expect(inspectCreativeAlternative(project,other.id).differences).toEqual([
+      expect.objectContaining({kind:"brief",summary:"The order of existing claim identities differs between branches"}),
+    ]);
+  });
+  it("keeps the delta budget fail-closed when many claims change",()=>{
+    const {project,other,stored,claim}=claimSetup();
+    project.brief.claims=Array.from({length:4096},(_,index)=>({...structuredClone(claim),id:crypto.randomUUID()}));
+    stored.current_state.brief.claims=project.brief.claims.map(item=>({...structuredClone(item),source_revision:"changed-source"}));
+    stored.current_state.scenes[0].objective="One additional difference beyond the claim budget";
+    expect(()=>inspectCreativeAlternative(project,other.id)).toThrow("delta exceeds");
+  });
+});

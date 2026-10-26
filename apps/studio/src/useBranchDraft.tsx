@@ -175,7 +175,7 @@ export function useBranchDraft(project: Project, commit: (change: Change) => Pro
     finally { if (alive.current && started === epoch.current) setReviewing(false); }
   }
   function separate() {
-    if (busy || !outcome) return;
+    if (busy || !outcome || current.current.revision <= (session.draft.pending?.revision ?? Number.POSITIVE_INFINITY)) return;
     try {
       if (!backup(session)) return;
       const next = separateBranchIntent(session.draft, current.current, outcome, {
@@ -232,6 +232,8 @@ export function useBranchDraft(project: Project, commit: (change: Change) => Pro
   if (session.draft.name !== "") { try { validateBranchName(session.draft.name, project); } catch (reason) { nameError = message(reason); } }
   const conflict = session.draft.baseRevision !== project.revision;
   return { session, busy, nameError, conflict, outcome, reviewing, edit, save, retry, advance, inspect, separate, restore, download,
+    canSeparate: !busy && branchOutcomeMatches(session.draft, project, outcome)
+      && project.revision > (session.draft.pending?.revision ?? Number.POSITIVE_INFINITY),
     canSave: !busy && !session.backupError && !session.recoveryProblem && !branchUnknown(session.draft) && !conflict && !nameError && !!session.draft.name.trim() };
 }
 export function BranchRecovery({ editor }: { editor: ReturnType<typeof useBranchDraft> }) {
@@ -250,7 +252,10 @@ export function BranchRecovery({ editor }: { editor: ReturnType<typeof useBranch
     {editor.outcome && <section aria-label="Saved branch outcome">
       <p>Read saved revision r{editor.outcome.project.revision} and {editor.outcome.events.length} committed changes.
         Matching names do not identify or acknowledge the original request.</p>
-      <button type="button" className="button compact" disabled={editor.busy || !branchOutcomeMatches(session.draft, editor.outcome.project, editor.outcome)}
+      {session.draft.pending && editor.outcome.project.revision <= session.draft.pending.revision && <p role="status">
+        The original request can still commit on this revision. Keep it UNKNOWN and inspect again after the saved revision advances.
+      </p>}
+      <button type="button" className="button compact" disabled={!editor.canSeparate}
         onClick={editor.separate}>Keep original attempt and start another branch</button>
     </section>}
     {editor.conflict && !branchUnknown(session.draft) && <p>
