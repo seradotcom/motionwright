@@ -156,7 +156,7 @@ fn cycle_connection_roots(
 fn cycle_imported_asset(
     before: &motionwright_domain::Project,
     after: &motionwright_domain::Project,
-    witness: &ProductNativeSourceWitness,
+    file: &BlenderOriginalFile,
 ) -> NativeResult<Uuid> {
     if after.id != before.id
         || after.generation != before.generation
@@ -182,9 +182,9 @@ fn cycle_imported_asset(
         .filter(|asset| !ids.contains(&asset.id))
         .collect::<Vec<_>>();
     if added.len() != 1
-        || added[0].name != witness.file.relative_path
+        || added[0].name != file.relative_path
         || added[0].media_type != BLENDER_PRODUCT_NATIVE_MEDIA_TYPE
-        || added[0].content_sha256.as_deref() != Some(witness.file.sha256.as_str())
+        || added[0].content_sha256.as_deref() != Some(file.sha256.as_str())
     {
         return Err(backend(
             "Product file import did not return one exact saved native source asset",
@@ -192,6 +192,51 @@ fn cycle_imported_asset(
         .uncertain());
     }
     Ok(added[0].id)
+}
+
+fn cycle_import_verified_source(
+    service: &motionwright_service::StudioService,
+    request: &BlenderProductReopenRequest,
+    source_root: &Path,
+    file: &BlenderOriginalFile,
+    spec: &motionwright_domain::NativeCapsuleSourceSpec,
+    actions: &mut Vec<Value>,
+) -> NativeResult<motionwright_storage::ApplyOutcome> {
+    let phase = cycle_phase_name(&request.phase);
+    // This operation cannot reuse a historical import-only/attach request.
+    // The unchanged root source-attempt barrier still rejects old UNKNOWN work.
+    let import_id = format!("{}:product-source-v2-{phase}", request.request_id);
+    let expected_source = motionwright_storage::BlobDescriptor {
+        sha256: file.sha256.clone(),
+        size_bytes: file.bytes,
+    };
+    let intent = motionwright_service::FileImportIntent::NativeCapsuleSource { spec: spec.clone() };
+    let import_index = actions.len();
+    actions.push(json!({
+        "stage": "source_import_and_capsule_bind",
+        "request_id": import_id,
+        "expected": request.expected,
+        "source": file,
+        "intent": intent,
+        "atomic_revision": true,
+        "source_acceptance_inherited": false,
+        "execution_grant_inherited": false,
+        "terminal": {"status": "reserved"},
+    }));
+    let imported = service
+        .import_file_verified(
+            request.project_id,
+            &request.expected,
+            &import_id,
+            source_root.join(&file.relative_path),
+            &expected_source,
+            intent,
+        )
+        .map_err(|error| storage_error(error).uncertain());
+    // Retain the complete mutation outcome before the caller qualifies its
+    // Project, asset and capsule. A later rejection must not erase its receipt.
+    cycle_record_terminal(actions, import_index, &imported, |outcome| json!(outcome));
+    imported
 }
 
 fn cycle_import_and_attach(
@@ -223,42 +268,9 @@ fn cycle_import_and_attach(
         editable_parameters: vec!["product.annotation.body".into()],
         native_editor_hint: "Blender".into(),
     };
-    let phase = cycle_phase_name(&request.phase);
-    // This operation cannot reuse a historical import-only/attach request.
-    // The unchanged root source-attempt barrier still rejects old UNKNOWN work.
-    let import_id = format!("{}:product-source-v2-{phase}", request.request_id);
-    let import_index = actions.len();
-    actions.push(json!({
-        "stage": "source_import_and_capsule_bind",
-        "request_id": import_id,
-        "expected": request.expected,
-        "source": witness.file,
-        "intent": motionwright_service::FileImportIntent::NativeCapsuleSource {
-            spec: spec.clone(),
-        },
-        "atomic_revision": true,
-        "source_acceptance_inherited": false,
-        "execution_grant_inherited": false,
-        "terminal": {"status": "reserved"},
-    }));
-    let imported = service
-        .import_native_capsule_source_file(
-            request.project_id,
-            &request.expected,
-            &import_id,
-            source_root.join(&witness.file.relative_path),
-            spec.clone(),
-        )
-        .map_err(|error| storage_error(error).uncertain());
-    // Preserve the mutation terminal before validating its returned source.
-    cycle_record_terminal(
-        actions,
-        import_index,
-        &imported,
-        |outcome| json!({"project": outcome.project}),
-    );
-    let imported = imported?;
-    let asset_id = cycle_imported_asset(&before, &imported.project, witness)?;
+    let imported =
+        cycle_import_verified_source(service, request, source_root, &witness.file, &spec, actions)?;
+    let asset_id = cycle_imported_asset(&before, &imported.project, &witness.file)?;
     let asset = imported
         .project
         .assets
@@ -697,5 +709,262 @@ mod tests {
         assert_eq!(next.editable_parameters, vec!["product.annotation.body"]);
         assert_eq!(next.native_editor_hint, "Blender");
         next.fidelity.validate().unwrap();
+    }
+
+    // Synthetic bytes exercise the existing Service/CAS boundary. They are
+    // not .blend parser, renderer, provider or fidelity observations.
+    struct SourceImportFixture {
+        root: tempfile::TempDir,
+        service: motionwright_service::StudioService,
+        before: motionwright_domain::Project,
+        request: BlenderProductReopenRequest,
+        spec: motionwright_domain::NativeCapsuleSourceSpec,
+        original_sha256: String,
+    }
+
+    const SYNTHETIC_ORIGINAL_SOURCE: &[u8] =
+        b"BLENDER-v450 SYNTHETIC UNIT ORIGINAL; NOT A NATIVE BLEND";
+    const SYNTHETIC_EDITED_SOURCE: &[u8] =
+        b"BLENDER-v450 SYNTHETIC UNIT EDITED A; NOT A NATIVE BLEND";
+    const SYNTHETIC_SUBSTITUTED_SOURCE: &[u8] =
+        b"BLENDER-v450 SYNTHETIC UNIT SUBSTITUTED B; NOT A NATIVE BLEND";
+
+    fn source_import_fixture() -> SourceImportFixture {
+        let root = tempfile::tempdir().unwrap();
+        let service =
+            motionwright_service::StudioService::open(root.path().join("source-import.sqlite3"))
+                .unwrap();
+        let mut project = service
+            .create_project("Synthetic source import controls")
+            .unwrap();
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "source-import-fixture-scene",
+                &motionwright_domain::Change::AddScene {
+                    name: "Saved product source".into(),
+                    objective: "Synthetic importer controls only".into(),
+                    duration_seconds: 40,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = project.scenes[0].id;
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "source-import-fixture-renderer",
+                &motionwright_domain::Change::SetSceneRenderer {
+                    scene_id,
+                    renderer: motionwright_domain::RendererKind::Blender,
+                },
+            )
+            .unwrap()
+            .project;
+        let prior_spec = motionwright_domain::NativeCapsuleSourceSpec {
+            name: ORIGINAL_FILE.into(),
+            media_type: BLENDER_PRODUCT_NATIVE_MEDIA_TYPE.into(),
+            capsule_id: Uuid::from_u128(42),
+            scene_id,
+            label: "Synthetic capsule with prior declarations".into(),
+            editable_parameters: vec!["product.annotation.body".into()],
+            native_editor_hint: "Blender".into(),
+        };
+        let original_path = root.path().join(ORIGINAL_FILE);
+        fs::write(&original_path, SYNTHETIC_ORIGINAL_SOURCE).unwrap();
+        project = service
+            .import_native_capsule_source_file(
+                project.id,
+                &project.stamp(),
+                "source-import-fixture-original",
+                &original_path,
+                prior_spec.clone(),
+            )
+            .unwrap()
+            .project;
+        let mut prior_capsule = project.production_design.capsules[0].clone();
+        let original_sha256 = prior_capsule.source_sha256.clone();
+        // These are intentionally unverified authored claims, used to check
+        // that importing different source bytes never inherits their values.
+        prior_capsule.fidelity = FidelityReport {
+            renderer: "Synthetic declared renderer".into(),
+            renderer_version: "not-observed".into(),
+            visual: Fidelity::Native,
+            temporal: Fidelity::Native,
+            structural: Fidelity::Native,
+            editable: Fidelity::Native,
+            losses: vec![],
+            evidence_sha256: Some("b".repeat(64)),
+        };
+        prior_capsule.property_fidelity = vec![NativePropertyFidelity {
+            path: "product.annotation.body".into(),
+            fidelity: Fidelity::Native,
+            loss_note: None,
+        }];
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "source-import-fixture-prior-declarations",
+                &motionwright_domain::Change::UpsertNativeCapsule {
+                    capsule: prior_capsule,
+                },
+            )
+            .unwrap()
+            .project;
+        let request = BlenderProductReopenRequest {
+            project_id: project.id,
+            expected: project.stamp(),
+            scene_id,
+            capsule_id: prior_spec.capsule_id,
+            request_id: "synthetic-source-import".into(),
+            phase: BlenderProductReopenPhase::VerifyEdited,
+        };
+        let spec = motionwright_domain::NativeCapsuleSourceSpec {
+            name: EDITED_FILE.into(),
+            ..prior_spec
+        };
+        SourceImportFixture {
+            root,
+            service,
+            before: project,
+            request,
+            spec,
+            original_sha256,
+        }
+    }
+
+    #[test]
+    fn product_source_import_verifies_sha_and_count_before_commit() {
+        let fixture = source_import_fixture();
+        let source_path = fixture.root.path().join(EDITED_FILE);
+        let original_history = fixture.service.history(fixture.before.id, 0, 128).unwrap();
+        for wrong_count in [false, true] {
+            fs::write(&source_path, SYNTHETIC_EDITED_SOURCE).unwrap();
+            let mut observed = inspect_original_file(fixture.root.path(), EDITED_FILE).unwrap();
+            let actual_bytes = if wrong_count {
+                // The SHA is correct; the common import must also check count.
+                observed.bytes += 1;
+                SYNTHETIC_EDITED_SOURCE
+            } else {
+                // Substitute the pathname AFTER the earlier capture supplied
+                // its descriptor. The importer must check its own capture.
+                fs::write(&source_path, SYNTHETIC_SUBSTITUTED_SOURCE).unwrap();
+                SYNTHETIC_SUBSTITUTED_SOURCE
+            };
+            let actual_sha256 = hex::encode(sha2::Sha256::digest(actual_bytes));
+            let mut request = fixture.request.clone();
+            request.request_id = format!("synthetic-source-import-{wrong_count}");
+            let mut actions = Vec::new();
+            let error = cycle_import_verified_source(
+                &fixture.service,
+                &request,
+                fixture.root.path(),
+                &observed,
+                &fixture.spec,
+                &mut actions,
+            )
+            .unwrap_err();
+            assert_eq!(actions.len(), 1);
+            assert_eq!(actions[0]["terminal"]["status"], json!("error"));
+            assert_eq!(actions[0]["terminal"]["error"], json!(&error));
+            assert!(actions[0]["terminal"].get("value").is_none());
+            assert_eq!(
+                fixture.service.project(fixture.before.id).unwrap(),
+                fixture.before
+            );
+            assert_eq!(
+                fixture.service.history(fixture.before.id, 0, 128).unwrap(),
+                original_history
+            );
+            let handle = fixture.service.store();
+            let store = handle.lock();
+            assert!(store.read_blob(&actual_sha256, 1024 * 1024).is_err());
+            assert_eq!(
+                store
+                    .read_blob(&fixture.original_sha256, 1024 * 1024)
+                    .unwrap(),
+                SYNTHETIC_ORIGINAL_SOURCE
+            );
+        }
+    }
+
+    #[test]
+    fn product_source_import_retains_full_outcome_before_postcheck_rejection() {
+        let fixture = source_import_fixture();
+        let source_path = fixture.root.path().join(EDITED_FILE);
+        fs::write(&source_path, SYNTHETIC_EDITED_SOURCE).unwrap();
+        let observed = inspect_original_file(fixture.root.path(), EDITED_FILE).unwrap();
+        let mut actions = Vec::new();
+        let imported = cycle_import_verified_source(
+            &fixture.service,
+            &fixture.request,
+            fixture.root.path(),
+            &observed,
+            &fixture.spec,
+            &mut actions,
+        )
+        .unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0]["terminal"]["status"], json!("ok"));
+        assert_eq!(actions[0]["terminal"]["value"], json!(&imported));
+        assert_eq!(imported.previous_revision, fixture.before.revision);
+        assert_eq!(imported.project.revision, fixture.before.revision + 1);
+        assert_eq!(
+            imported.request_id,
+            "synthetic-source-import:product-source-v2-edited"
+        );
+        assert!(!imported.replayed);
+        let asset_id = cycle_imported_asset(&fixture.before, &imported.project, &observed).unwrap();
+        let capsule = imported
+            .project
+            .production_design
+            .capsules
+            .iter()
+            .find(|capsule| capsule.id == fixture.request.capsule_id)
+            .unwrap();
+        assert_eq!(capsule.source_asset_id, asset_id);
+        assert_eq!(capsule.source_sha256, observed.sha256);
+        assert_eq!(capsule.fidelity.renderer, "source-import");
+        assert_eq!(capsule.fidelity.renderer_version, "unverified");
+        assert_eq!(
+            [
+                capsule.fidelity.visual,
+                capsule.fidelity.temporal,
+                capsule.fidelity.structural,
+                capsule.fidelity.editable,
+            ],
+            [Fidelity::Unavailable; 4]
+        );
+        assert_eq!(capsule.fidelity.evidence_sha256, None);
+        assert!(!capsule.fidelity.losses.is_empty());
+        assert!(capsule.property_fidelity.is_empty());
+        assert_eq!(capsule.editable_parameters, vec!["product.annotation.body"]);
+        let retained = actions[0]["terminal"].clone();
+        // Exercise the real existing postcheck against a contradictory return
+        // value after the complete original receipt has already been retained.
+        let mut contradictory = imported.project.clone();
+        contradictory.revision += 1;
+        assert!(cycle_imported_asset(&fixture.before, &contradictory, &observed).is_err());
+        assert_eq!(actions[0]["terminal"], retained);
+        assert_eq!(actions[0]["terminal"]["value"], json!(&imported));
+        assert_eq!(
+            fixture.service.project(fixture.before.id).unwrap(),
+            imported.project
+        );
+        let handle = fixture.service.store();
+        let store = handle.lock();
+        assert_eq!(
+            store.read_blob(&observed.sha256, 1024 * 1024).unwrap(),
+            SYNTHETIC_EDITED_SOURCE
+        );
+        assert_eq!(
+            store
+                .read_blob(&fixture.original_sha256, 1024 * 1024)
+                .unwrap(),
+            SYNTHETIC_ORIGINAL_SOURCE
+        );
     }
 }

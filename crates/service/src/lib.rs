@@ -790,6 +790,33 @@ impl StudioService {
             request_id,
             source.as_ref(),
             FileImportIntent::Asset { name, media_type },
+            None,
+        )
+    }
+
+    /// Canonical import bound to an independently observed source descriptor.
+    ///
+    /// The existing capture is checked before immutable publication or apply.
+    /// Voice and native-capsule admission retain their existing interpretation
+    /// and guards. A known replay verifies the supplied source in one read;
+    /// it does not ingest, repair CAS or remeasure a voice take. This method
+    /// grants no provider operation and never retries an unknown mutation.
+    pub fn import_file_verified(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        source: impl AsRef<Path>,
+        expected_source: &BlobDescriptor,
+        intent: FileImportIntent,
+    ) -> StorageResult<ApplyOutcome> {
+        self.import_file_with_identity(
+            project_id,
+            expected,
+            request_id,
+            source.as_ref(),
+            intent,
+            Some(expected_source),
         )
     }
 
@@ -976,6 +1003,7 @@ impl StudioService {
                 media_type: metadata.media_type,
                 label: metadata.label,
             },
+            None,
         )
     }
 
