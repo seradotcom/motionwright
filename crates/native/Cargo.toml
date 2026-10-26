@@ -40,7 +40,7 @@ tempfile.workspace = true
 tokio.workspace = true
 semwright-effect-conformance.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
 
 [target.'cfg(unix)'.dev-dependencies]

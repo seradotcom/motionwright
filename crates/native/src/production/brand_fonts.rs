@@ -5,6 +5,29 @@ use motionwright_service::VerifiedBrandFont;
 use semwright_motion_authoring::Film;
 use std::{collections::BTreeSet, fs::OpenOptions, io::Write};
 
+fn open_staged_font(path: &Path, expected_len: u64) -> NativeResult<fs::File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // The earlier path metadata cannot prevent a leaf replacement before
+        // open. A substituted FIFO must not wait for a writer; a substituted
+        // symlink must not be followed. The opened handle is checked below.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| backend("Staged brand font could not be opened"))?;
+    let opened = file
+        .metadata()
+        .map_err(|_| backend("Staged brand font metadata could not be read"))?;
+    if !opened.is_file() || opened.len() != expected_len {
+        return Err(backend("Staged brand font changed before its bounded read"));
+    }
+    Ok(file)
+}
+
 fn verify_staged_font(path: &Path, font: &VerifiedBrandFont) -> NativeResult<()> {
     let expected_len = font.bytes.len() as u64;
     let metadata = safe_metadata(path)?;
@@ -13,14 +36,7 @@ fn verify_staged_font(path: &Path, font: &VerifiedBrandFont) -> NativeResult<()>
             "Staged brand font is not the expected bounded regular file",
         ));
     }
-    let mut file =
-        fs::File::open(path).map_err(|_| backend("Staged brand font could not be opened"))?;
-    let opened = file
-        .metadata()
-        .map_err(|_| backend("Staged brand font metadata could not be read"))?;
-    if !opened.is_file() || opened.len() != expected_len {
-        return Err(backend("Staged brand font changed before its bounded read"));
-    }
+    let mut file = open_staged_font(path, expected_len)?;
     let mut bytes = Vec::with_capacity(font.bytes.len());
     Read::by_ref(&mut file)
         .take(expected_len + 1)
@@ -391,6 +407,108 @@ mod tests {
         symlink(target, temp.path().join(relative)).unwrap();
         assert!(stage_font(temp.path(), &font).is_err());
     }
+    #[cfg(unix)]
+    #[test]
+    fn brand_font_handoff_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::process::{Child, ExitStatus, Stdio};
+        use std::time::Instant;
+
+        const CHILD_MARKER: &str = "MOTIONWRIGHT_TEST_BRAND_FONT_FIFO_CHILD_MARKER";
+        const TEST_NAME: &str = "production::brand_fonts::tests::brand_font_handoff_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open";
+
+        // The same test binary isolates a potentially blocking regression. No
+        // detached thread or product executor is created. A marker proves that
+        // the exact child case ran, rather than an empty successful filter.
+        if let Some(marker) = std::env::var_os(CHILD_MARKER) {
+            let marker = PathBuf::from(marker);
+            assert!(marker.is_absolute());
+            let path = marker.parent().unwrap().join("font.ttf");
+            let font = font();
+            fs::write(&path, &font.bytes).unwrap();
+            let before = safe_metadata(&path).unwrap();
+            assert!(before.is_file());
+            assert_eq!(before.len(), font.bytes.len() as u64);
+
+            // This is the actual pre-open race: the regular file was already
+            // observed. Do not call the initial metadata guard again afterward.
+            fs::remove_file(&path).unwrap();
+            let fifo = CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: the NUL-terminated path is live for this call; this test
+            // owns the parent and the removed leaf. No writer is ever opened.
+            assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+            let error = open_staged_font(&path, before.len()).unwrap_err();
+            assert_eq!(
+                error.message,
+                "Staged brand font changed before its bounded read"
+            );
+            let mut observed = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(marker)
+                .unwrap();
+            writeln!(observed, "{}:rejected-before-read", std::process::id()).unwrap();
+            return;
+        }
+
+        fn observe_until(
+            child: &mut Child,
+            deadline: Instant,
+        ) -> std::io::Result<Option<ExitStatus>> {
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    return Ok(Some(status));
+                }
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(10)),
+                );
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let marker = root.join("fifo-rejection.observed");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env(CHILD_MARKER, &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let original_pid = child.id();
+        let first = observe_until(&mut child, Instant::now() + Duration::from_secs(10));
+        let status = match first {
+            Ok(Some(status)) => status,
+            original => {
+                // Kill this same child once and observe its terminal with one
+                // bounded cleanup allowance. No second test dispatch or join.
+                let kill_result = child.kill();
+                let terminal = observe_until(&mut child, Instant::now() + Duration::from_secs(5));
+                panic!(
+                    "font FIFO control did not finish: pid={original_pid}, original={original:?}, kill={kill_result:?}, cleanup_terminal={terminal:?}"
+                );
+            }
+        };
+        assert!(
+            status.success(),
+            "font FIFO child failed: pid={original_pid}, terminal={status:?}"
+        );
+        assert_eq!(
+            fs::read(&marker).unwrap(),
+            format!("{original_pid}:rejected-before-read\n").as_bytes()
+        );
+        println!(
+            "font FIFO control: pid={original_pid}, terminal={status:?}, rejected_before_read=true"
+        );
+    }
+
     #[test]
     fn brand_font_seed_request_digest_survives_reconstruction_without_new_identity() {
         // Source-only seed serialization: no renderer or physical font evidence.
