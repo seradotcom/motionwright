@@ -56,8 +56,9 @@ GATE_FILES = tuple(dict.fromkeys((WORKFLOW, HELPER, TEST, *GATE_PINS,
 # A dispatch input or a self-authored lease is never sufficient authority.
 REVIEWED_AUTHORITIES = MappingProxyType({})
 
-FIXED = {'sha': 'c00a811a5d47b2f1505f2815d0d8b2eb68fb8ab2',
- 'tree': '5e152d3f3230c20a7ccce08b2417d1f22de09731',
+FIXED = {'sha': 'dac1f5886b97efb4cd7a9351e817f4b7321b79c9',
+ 'tree': '564852515f37f2ba7fad537a26c8085db338e3e3',
+ 'listing': '7ec70ebd978bfdaa3a98772aa35140fba04e3fc0451ef9b34271c0944cc7ee15',
  'pins': {'Cargo.lock': '69a2746b64e96d4fd39f3aaa900692b7ac55b54032303785f816f92cf2802a7e',
           'crates/backend-api/src/provider.rs': '7b865194957a046c915744dc2c326da5ca876a936614d0cf03755f69deb1aea1',
           'crates/core/src/lib.rs': '3d0d20d5132f10bc4d229c244beaed1c5f45c9180bc0dbdffb67fb8cd57f1457',
@@ -76,7 +77,10 @@ FIXED = {'sha': 'c00a811a5d47b2f1505f2815d0d8b2eb68fb8ab2',
           'crates/daemon/src/host_stdin_custody_bridge_tests.rs': '06d3559bb5c25049b84863cc2d5a22424394d35a9353f50433b7e7ec39b4b8c5',
           'crates/native-sdk/Cargo.toml': '9614711e1d3cb30dc207dde8c27e4269e7195e83ceefefa2a3aa68deeea0f6b5',
           'examples/native/owner_operation_fixture.rs': '498fccc2332d23e2064f91bc5e6f69ae0b7e51ad58f278173db7fdf70f489896',
-          'crates/core/src/owner_operation_process_tests.rs': 'ba64b1bacdbf2fea74f5c0af68245e045125007a9ff87bac82152680113c0d85'}}
+          'crates/core/src/owner_operation_process_tests.rs': 'ba64b1bacdbf2fea74f5c0af68245e045125007a9ff87bac82152680113c0d85',
+          'crates/platform-windows-sys/src/launch.rs': '1e826d859a0ecd8313f2217f8e6516f774399dae9792c719e00f5076f90142f4',
+          'crates/platform-windows-sys/src/launch/workspace_mount_binding.rs': '009fa3ad9c8d176791ddaad596fc911b1c71c8d267625ac7e86e54f6d08d8332',
+          'docs/commands.md': '23b03db7d5e68d7340247b00b710d644e533b83a5bb9ac55d43f853c39aecf12'}}
 
 CAUSALS = ({'id': 'pending-original-red',
   'sha': '1d5ba2a0bf2307ec7b0a0d4deae59888520ee233',

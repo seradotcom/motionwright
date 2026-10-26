@@ -90,10 +90,30 @@ class SDKFoundationCandidateTests(unittest.TestCase):
                                 self.binary, self.binary if after is None else after, listed, argv, self.context)
 
     def test_empty_authority_stops_before_paths_or_product_commands(self):
+        # The exact public source profile still cannot grant an execution slot.
         self.assertEqual(dict(gate.REVIEWED_AUTHORITIES), {})
-        with patch.object(gate.observer, "command") as command, self.assertRaisesRegex(ValueError, "authority"):
-            gate.run("windows-g1", gate.FIXED["sha"], "self-issued", self.repo, {}, self.root / "new", environment={})
+        self.assertEqual(gate.FIXED["sha"], "dac1f5886b97efb4cd7a9351e817f4b7321b79c9")
+        self.assertEqual(gate.FIXED["tree"], "564852515f37f2ba7fad537a26c8085db338e3e3")
+        self.assertEqual(gate.FIXED["listing"], "7ec70ebd978bfdaa3a98772aa35140fba04e3fc0451ef9b34271c0944cc7ee15")
+        self.assertEqual(hashlib.sha256(json.dumps(gate.FIXED["pins"], sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest(), "291667adc19acb1c18ebdda51f336374d84d631af7182a7ee67c1bda8ff8c124")
+        for catalogue in ({}, {"reviewed": self.local_authority()}):
+            with self.subTest(authority_entries=len(catalogue)), \
+                    patch.object(gate, "REVIEWED_AUTHORITIES", catalogue), \
+                    patch.object(gate.observer, "command") as command, \
+                    patch.object(gate, "full_snapshot") as reader, \
+                    self.assertRaisesRegex(ValueError, "authority"):
+                gate.run("windows-g1", gate.FIXED["sha"], "self-issued", self.repo, {}, self.root / "new", environment={})
+            command.assert_not_called()
+            reader.assert_not_called()
+            self.assertFalse((self.root / "new").exists())
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"reviewed": self.local_authority()}), \
+                patch.object(gate.observer, "command") as command, \
+                patch.object(gate, "full_snapshot") as reader, \
+                self.assertRaisesRegex(ValueError, "unknown source profile"):
+            gate.run("windows-g1", "c00a811a5d47b2f1505f2815d0d8b2eb68fb8ab2", "reviewed", self.repo, {}, self.root / "new", environment={})
         command.assert_not_called()
+        reader.assert_not_called()
         self.assertFalse((self.root / "new").exists())
 
     def test_local_context_is_truthful_and_requires_the_reviewed_mode(self):
