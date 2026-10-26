@@ -9,7 +9,7 @@ const scene = fixtureBootstrap.project.scenes[0];
 const target = scene.nodes.find(node => node.kind === "text")!;
 const second = scene.nodes.find(node => node.id !== target.id)!;
 const button = (page: Page, name: string) => page.getByRole("button", { name, exact: true });
-const xInput = (page: Page) => page.getByRole("spinbutton", { name: /^(Patch )?x$/ });
+const xInput = (page: Page) => page.getByLabel("Patch x", { exact: true });
 async function openProposal(page: Page, sceneId = scene.id) {
   await button(page, "Production").click();
   await page.getByLabel("Production working scene").selectOption(sceneId);
@@ -127,15 +127,39 @@ test("uncommitted inputs survive changing fields, objects, tabs and reloading", 
   await expect(page.getByLabel("Patch replacement text")).toHaveValue("Author input kept before it enters the queue.");
   await page.getByLabel("Patch edit kind").selectOption("transform");
   await expect(xInput(page)).toHaveValue(String(target.x + 23));
+
+  // Keep the incomplete browser input itself, not a coerced zero or a
+  // pre-populated storage fixture. It stays outside the numeric proposal.
+  const rawX = "1e";
+  await xInput(page).fill(rawX);
+  await expect(xInput(page)).toHaveValue(rawX);
+  await expect(xInput(page)).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator("#scoped-transform-error")).toHaveText("Complete x with a finite number before adding this transform.");
+  await expect(page.locator("#scoped-transform-error")).toBeVisible();
+  await expect(button(page, "Add to proposal")).toBeDisabled();
+  await page.getByLabel("Patch target object").selectOption(second.id);
+  await page.getByLabel("Patch edit kind").selectOption("text");
+  await expect(page.getByLabel("Patch replacement text")).toHaveValue("A second object's independent input.");
+  await page.getByLabel("Patch target object").selectOption(target.id);
+  await expect(page.getByLabel("Patch replacement text")).toHaveValue("Author input kept before it enters the queue.");
+  await expect(button(page, "Add to proposal")).toBeEnabled();
+  await page.getByLabel("Patch edit kind").selectOption("transform");
+  await expect(xInput(page)).toHaveValue(rawX);
+  await expect(button(page, "Add to proposal")).toBeDisabled();
   await button(page, "Components").click();
   await button(page, "Scoped changes").click();
   await expect(page.getByLabel("Patch edit kind")).toHaveValue("transform");
-  await expect(xInput(page)).toHaveValue(String(target.x + 23));
+  await expect(xInput(page)).toHaveValue(rawX);
+  await expect(button(page, "Add to proposal")).toBeDisabled();
   await page.reload();
   await openProposal(page);
-  await expect(xInput(page)).toHaveValue(String(target.x + 23));
+  await expect(xInput(page)).toHaveValue(rawX);
+  await expect(xInput(page)).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator("#scoped-transform-error")).toBeVisible();
+  await expect(button(page, "Add to proposal")).toBeDisabled();
   await page.getByLabel("Patch edit kind").selectOption("text");
   await expect(page.getByLabel("Patch replacement text")).toHaveValue("Author input kept before it enters the queue.");
+  await expect(button(page, "Add to proposal")).toBeEnabled();
   await page.getByLabel("Patch target object").selectOption(second.id);
   await expect(page.getByLabel("Patch replacement text")).toHaveValue("A second object's independent input.");
   await expect(page.getByRole("region", { name: "Proposed edits", exact: true })).toContainText("No edits queued");

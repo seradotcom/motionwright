@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { fixtureProject } from "./fixture";
 import {
   continueDraftManually, createScopedDraft, decodeScopedDraft, draftPatch, encodeScopedDraft,
+  draftEditorDirty, draftTransformInput, draftTransformInvalidFields,
   keepCurrentDraftValue, MAX_DRAFT_BYTES, nodeTransform, queueDraftEdit,
   rebaseScopedDraft, removeDraftEdit, retainUnqueuedInputs, reviewedChangeWasCommitted,
   scopedDraftConflicts, scopedDraftHasWork, scopedDraftScope, scopedReviewKey,
-  selectDraftNode, unqueuedInputCount,
+  selectDraftNode, unqueuedInputCount, updateDraftTransformInput,
 } from "./scopedChangeDraft";
 import type { ReviewedScopedChange, ScopedChangeDraft } from "./scopedChangeDraft";
+import type { CanvasTransform } from "./types";
 
 // Pure editor-state tests. These fixtures are not evidence of service persistence,
 // native rendering, IPC, or permission enforcement; those require integration tests.
@@ -23,6 +25,9 @@ function copyInput(draft: ScopedChangeDraft, text: string): ScopedChangeDraft {
 }
 function transformInput(draft: ScopedChangeDraft, x: number): ScopedChangeDraft {
   return { ...draft, editor: { ...draft.editor, kind: "transform", transform: { ...draft.editor.transform, x } } };
+}
+function rawTransformInput(draft: ScopedChangeDraft, field: keyof CanvasTransform, raw: string): ScopedChangeDraft {
+  return updateDraftTransformInput({ ...draft, editor: { ...draft.editor, kind: "transform" } }, field, raw);
 }
 function queuedCopy() {
   const fixture = source();
@@ -50,6 +55,162 @@ function matchingReceipt() {
   });
   return { project, draft, reviewed, committed };
 }
+function matchingTransformReceipt() {
+  const { project, scene, first, second } = source();
+  const draft = { ...queueDraftEdit(transformInput(createScopedDraft(project, scene), 100)), rationale: "Move this object only." };
+  const before = [structuredClone(first)];
+  const after = [{ ...structuredClone(first), x: 100 }];
+  const reviewed: ReviewedScopedChange = {
+    key: scopedReviewKey(project, scene, draft, null), projectId: project.id,
+    generation: project.generation, branchId: project.active_branch, revision: project.revision,
+    change: { type: "apply_creative_patch", patch: draftPatch(draft, scene.id) },
+    preview: { source_revision: project.revision, scene_id: scene.id, before, after },
+  };
+  const committed = structuredClone(project);
+  committed.revision++;
+  committed.scenes[0].nodes[0].x = 100;
+  committed.production_design!.patches!.push({
+    id: "stored-transform-patch", scene_id: scene.id, source_revision: project.revision,
+    rationale: draft.rationale, before: structuredClone(before), after: structuredClone(after), reverts: null,
+  });
+  return { project, scene, first, second, draft, reviewed, committed };
+}
+
+describe("raw scoped transform recovery", () => {
+  it.each(["1e", "1.", "-", "", " ", "Infinity", "1e309"])("retains incomplete or non-finite input %j without replacing the queued transform or blocking independent copy", raw => {
+    const { project, scene, first } = source();
+    const queued = queueDraftEdit(transformInput(createScopedDraft(project, scene), first.x + 23));
+    const draft = rawTransformInput(queued, "x", raw);
+    const before = structuredClone(draft);
+    expect(draftTransformInput(draft, "x")).toBe(raw);
+    expect(draftTransformInvalidFields(draft)).toEqual(["x"]);
+    expect(draftEditorDirty(draft)).toBe(true);
+    expect(unqueuedInputCount(draft)).toBe(1);
+    expect(scopedDraftConflicts(draft, scene)).toEqual([]);
+    expect(() => queueDraftEdit(draft)).toThrow();
+    expect(draft).toEqual(before);
+    expect(draftPatch(draft, scene.id)).toEqual(draftPatch(queued, scene.id));
+
+    const copy = queueDraftEdit(copyInput({ ...draft, editor: { ...draft.editor, kind: "text" } }, "Independent copy"));
+    expect(copy.edits).toEqual([...queued.edits, { kind: "text", node_id: first.id, text: "Independent copy" }]);
+    expect(draftTransformInput(copy, "x")).toBe(raw);
+    expect(unqueuedInputCount(copy)).toBe(1);
+  });
+
+  it.each([["1e2", 100], [".5", 0.5]] as const)("queues complete input %s as a finite numeric edit without raw fields in the proposal", (raw, expected) => {
+    const { project, scene, first } = source();
+    const draft = rawTransformInput(createScopedDraft(project, scene), "x", raw);
+    expect(draftTransformInvalidFields(draft)).toEqual([]);
+    const queued = queueDraftEdit(draft);
+    expect(queued.edits).toEqual([{ kind: "transform", node_id: first.id, transform: { ...nodeTransform(first), x: expected } }]);
+    expect(unqueuedInputCount(queued)).toBe(0);
+    expect(JSON.stringify(draftPatch(queued, scene.id))).not.toContain("transformRaw");
+    expect(draftTransformInput(draft, "x")).toBe(raw);
+  });
+
+  it("preserves active and parked raw input through object changes, recovery and an independent revision", () => {
+    const { project, scene, first, second } = source();
+    let draft = rawTransformInput(createScopedDraft(project, scene), "x", "1e");
+    draft = rawTransformInput(draft, "width", "");
+    expect(scopedDraftHasWork(draft)).toBe(true);
+    draft = selectDraftNode({ ...draft, editor: { ...draft.editor, kind: "text" } }, second);
+    draft = rawTransformInput(draft, "y", "-");
+    expect(unqueuedInputCount(draft)).toBe(2);
+    const restored = decodeScopedDraft(encodeScopedDraft(draft), draft.scope);
+    expect(restored).toEqual(draft);
+    expect(restored.schema).toBe("motionwright.scoped-change-draft/2");
+    expect(draftTransformInput(restored, "y")).toBe("-");
+
+    const current = structuredClone(project);
+    current.revision++;
+    current.scenes[0].nodes[0].style.fill = "#E0C080";
+    const rebased = rebaseScopedDraft(restored, current, current.scenes[0]);
+    expect(rebased.baseRevision).toBe(current.revision);
+    const back = selectDraftNode(rebased, structuredClone(first));
+    expect(draftTransformInput(back, "x")).toBe("1e");
+    expect(draftTransformInput(back, "width")).toBe("");
+    expect(back.editor.transform).toEqual(nodeTransform(first));
+    expect(unqueuedInputCount(back)).toBe(2);
+    expect(selectDraftNode(back, structuredClone(first))).toBe(back);
+    expect(draftTransformInput(selectDraftNode(back, second), "y")).toBe("-");
+    expect(back.edits).toEqual([]);
+  });
+
+  it("migrates a numeric schema-1 backup without losing its queue, parked input or numeric editing compatibility", () => {
+    const { project, scene, first, second } = source();
+    let draft = queueDraftEdit(transformInput(createScopedDraft(project, scene), first.x + 19));
+    draft = copyInput(selectDraftNode(draft, second), "Legacy parked copy");
+    const legacy = JSON.parse(encodeScopedDraft(draft));
+    legacy.schema = "motionwright.scoped-change-draft/1";
+    delete legacy.editor.transformRaw;
+    for (const editor of legacy.parkedEditors) delete editor.transformRaw;
+    const restored = decodeScopedDraft(JSON.stringify(legacy), draft.scope);
+    expect(restored.schema).toBe("motionwright.scoped-change-draft/2");
+    expect(restored.baseRevision).toBe(draft.baseRevision);
+    expect(restored.edits).toEqual(draft.edits);
+    expect(restored.origins).toEqual(draft.origins);
+    expect(restored.editor.text).toBe("Legacy parked copy");
+    const edited = queueDraftEdit(transformInput(selectDraftNode(restored, first), first.x + 47));
+    expect(edited.edits).toEqual([{ kind: "transform", node_id: first.id, transform: { ...nodeTransform(first), x: first.x + 47 } }]);
+    expect(selectDraftNode(edited, second).editor.text).toBe("Legacy parked copy");
+    expect(decodeScopedDraft(encodeScopedDraft(edited), edited.scope)).toEqual(edited);
+  });
+
+  it("resolves text independently of incomplete transform input and explicitly retires raw input when keeping the current transform", () => {
+    const { project, draft: initial } = queuedCopy();
+    let draft = rawTransformInput(initial, "x", "1e");
+    const current = structuredClone(project);
+    current.revision++;
+    current.scenes[0].nodes[0].text = "Keep this peer copy";
+    current.scenes[0].nodes[0].x += 7;
+    let conflicts = scopedDraftConflicts(draft, current.scenes[0]);
+    expect(conflicts.map(conflict => conflict.kind).sort()).toEqual(["text", "transform"]);
+    draft = keepCurrentDraftValue(draft, conflicts.find(conflict => conflict.kind === "text")!, current.scenes[0]);
+    expect(draft.editor.text).toBe("Keep this peer copy");
+    expect(draftTransformInput(draft, "x")).toBe("1e");
+    conflicts = scopedDraftConflicts(draft, current.scenes[0]);
+    expect(conflicts).toEqual([expect.objectContaining({ kind: "transform", reason: "value" })]);
+    expect(() => rebaseScopedDraft(draft, current, current.scenes[0])).toThrow("overlapping");
+    const resolved = keepCurrentDraftValue(draft, conflicts[0], current.scenes[0]);
+    expect(draftTransformInvalidFields(resolved)).toEqual([]);
+    expect(unqueuedInputCount(resolved)).toBe(0);
+    expect(draftTransformInput(resolved, "x")).toBe(String(current.scenes[0].nodes[0].x));
+    const rebased = rebaseScopedDraft(resolved, current, current.scenes[0]);
+    expect(queueDraftEdit(rebased).edits).toEqual([{ kind: "transform", node_id: rebased.editor.nodeId, transform: nodeTransform(current.scenes[0].nodes[0]) }]);
+  });
+
+  it("keeps a later incomplete transform after the earlier transform receives its matching receipt", () => {
+    const { project, scene, first, second, draft: initial, reviewed, committed } = matchingTransformReceipt();
+    let draft = rawTransformInput(initial, "x", "1e");
+    draft = copyInput(selectDraftNode(draft, second), "Another object's later text");
+    expect(scopedReviewKey(project, scene, draft, null)).toBe(reviewed.key);
+    expect(reviewedChangeWasCommitted(committed, reviewed)).toBe(true);
+    const retained = retainUnqueuedInputs(draft, committed, committed.scenes[0]);
+    expect(retained.baseRevision).toBe(committed.revision);
+    expect(retained.edits).toEqual([]);
+    expect(retained.origins).toEqual([]);
+    expect(retained.editor.text).toBe("Another object's later text");
+    expect(unqueuedInputCount(retained)).toBe(2);
+    const restored = decodeScopedDraft(encodeScopedDraft(retained), retained.scope);
+    const back = selectDraftNode(restored, committed.scenes[0].nodes.find(node => node.id === first.id));
+    expect(back.editor.source?.x).toBe(100);
+    expect(draftTransformInput(back, "x")).toBe("1e");
+    expect(draftTransformInvalidFields(back)).toEqual(["x"]);
+    expect(() => queueDraftEdit(back)).toThrow();
+    expect(draftPatch(back, scene.id).edits).toEqual([]);
+  });
+
+  it("clears a fully committed equivalent numeric spelling without leaving phantom work after the receipt", () => {
+    const { draft: initial, reviewed, committed } = matchingTransformReceipt();
+    const draft = rawTransformInput(initial, "x", "1e2");
+    expect(unqueuedInputCount(draft)).toBe(0);
+    expect(reviewedChangeWasCommitted(committed, reviewed)).toBe(true);
+    const retained = retainUnqueuedInputs(draft, committed, committed.scenes[0]);
+    expect(scopedDraftHasWork(retained)).toBe(false);
+    expect(retained.rationale).toBe("");
+    expect(retained.editor.transform.x).toBe(100);
+  });
+});
 
 describe("scoped change editing conservation", () => {
   it("keeps both unqueued properties when changing editing mode and target object", () => {
@@ -415,7 +576,7 @@ describe("a matching stored receipt clears only reviewed work", () => {
 describe("untrusted session draft decoding", () => {
   it("restores typed editing fields and discards injected previews, commands and grants at every depth", () => {
     const { project, scene, draft } = queuedCopy();
-    const injected = JSON.parse(encodeScopedDraft(draft));
+    const injected = JSON.parse(encodeScopedDraft(updateDraftTransformInput(draft, "x", String(draft.editor.transform.x))));
     const authority = { preview: { approved: true }, effect_grants: ["forged"], command: "apply_change" };
     Object.assign(injected, authority);
     Object.assign(injected.edits[0], authority);
@@ -423,6 +584,7 @@ describe("untrusted session draft decoding", () => {
     Object.assign(injected.editor, authority);
     Object.assign(injected.editor.source, authority);
     Object.assign(injected.editor.transform, authority);
+    Object.assign(injected.editor.transformRaw, authority);
     injected.parkedEditors = [{ ...structuredClone(injected.editor), nodeId: scene.nodes[1].id,
       source: { ...structuredClone(injected.editor.source), id: scene.nodes[1].id } }];
     injected.nativeSource = {
@@ -439,6 +601,21 @@ describe("untrusted session draft decoding", () => {
     expect(raw).not.toContain("approved");
     expect(raw).not.toContain("apply_change");
     expect(raw).not.toContain("preview");
+  });
+
+  it.each(["active null field", "parked numeric field", "active array"])("rejects a malformed raw transform backup: %s", problem => {
+    const { project, scene, second } = source();
+    const draft = rawTransformInput(createScopedDraft(project, scene), "x", "1e");
+    const bad = JSON.parse(encodeScopedDraft(draft));
+    if (problem === "active null field") bad.editor.transformRaw.x = null;
+    if (problem === "active array") bad.editor.transformRaw = ["1e"];
+    if (problem === "parked numeric field") {
+      bad.parkedEditors = [{ ...structuredClone(bad.editor), nodeId: second.id,
+        source: { ...structuredClone(bad.editor.source), id: second.id } }];
+      bad.parkedEditors[0].transformRaw.x = 7;
+    }
+    expect(() => decodeScopedDraft(JSON.stringify(bad), draft.scope)).toThrow("unsupported shape");
+    expect(draftTransformInput(draft, "x")).toBe("1e");
   });
 
   it.each(["negative revision", "fractional revision", "invalid transform", "wrong source", "excess edits", "malformed source"])("rejects %s without silently constructing an empty replacement", problem => {
