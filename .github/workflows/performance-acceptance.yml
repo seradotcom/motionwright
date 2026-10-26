@@ -27,12 +27,18 @@ on:
   workflow_dispatch:
     inputs:
       selection:
-        description: "Historical four-job compatibility, or the reviewed cache consumer only"
+        description: "Historical compatibility, reviewed cache consumer, or normative reference profiles"
         type: choice
-        options: [historical, cache-consumer]
+        options: [historical, cache-consumer, normative]
         default: historical
+      normative_profile:
+        description: "Normative only: one profile retains all three briefs; all preserves nine datasets"
+        required: true
+        type: choice
+        options: [all, S, M, L]
+        default: all
       reviewed_source:
-        description: "Required for cache-consumer: exact reviewed 40-character SHA of this workflow"
+        description: "Required for cache-consumer or normative: exact reviewed 40-character workflow SHA"
         type: string
         default: ""
   schedule:
@@ -47,13 +53,15 @@ env:
 
 jobs:
   revision-ten:
+    needs: cache-source-g0
     if: >-
       ${{ (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/performance-cache-consumer-')) &&
-          (github.event_name != 'workflow_dispatch' || inputs.selection == 'historical') }}
+          (github.event_name != 'workflow_dispatch' || (inputs.selection == 'historical' && inputs.normative_profile == 'all') || inputs.selection == 'normative') }}
     runs-on: ubuntu-24.04
     env:
       MOTIONWRIGHT_BENCH_ARTIFACT_ROOT: ${{ github.workspace }}/verification/performance/originals
-      MOTIONWRIGHT_REFERENCE_PROFILES: "historical"
+      MOTIONWRIGHT_REFERENCE_PROFILES: ${{ github.event_name == 'workflow_dispatch' && inputs.selection == 'normative' && 'normative' || 'historical' }}
+      MW_NORMATIVE_PROFILE: ${{ inputs.normative_profile || 'all' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -90,7 +98,7 @@ jobs:
             sha256sum --check verification/performance/cargo-lock-before.sha256
           fi
           exit "$status"
-      - name: S M L × three unrelated briefs × revision ten
+      - name: Measure the selected three-brief revision-ten roster
         env:
           MOTIONWRIGHT_LATENCY_BUDGET_MS: "2000"
         run: |
@@ -98,13 +106,356 @@ jobs:
           sha256sum target/release/examples/acceptance_bench > verification/performance/benchmark-sha256.txt
           cp target/release/examples/acceptance_bench verification/performance/acceptance_bench
           status=0
+          if [ "$MOTIONWRIGHT_REFERENCE_PROFILES" = normative ]; then
+            unset MOTIONWRIGHT_REFERENCE_PROFILE MOTIONWRIGHT_RESPONSIVENESS_PROFILE MOTIONWRIGHT_BENCH_NEGATIVE
+            unset MOTIONWRIGHT_SMALL_COMMIT_P95_BUDGET_MS MOTIONWRIGHT_S_REOPEN_BUDGET_MS MOTIONWRIGHT_M_REOPEN_BUDGET_MS
+            case "$MW_NORMATIVE_PROFILE" in
+              all) ;;
+              S|M|L) export MOTIONWRIGHT_REFERENCE_PROFILE="$MW_NORMATIVE_PROFILE" ;;
+              *) exit 2 ;;
+            esac
+          fi
           /usr/bin/time -v -o verification/performance/resource-usage.txt \
             target/release/examples/acceptance_bench \
             > verification/performance/report.json 2> verification/performance/stderr.log || status=$?
           printf '%s\n' "$status" > verification/performance/exit-code.txt
           cat verification/performance/stderr.log >&2
           exit "$status"
+      - name: Validate normative source, selected roster and physical service pages
+        if: ${{ env.MOTIONWRIGHT_REFERENCE_PROFILES == 'normative' }}
+        run: |
+          python3 -I -B - <<'PY_NORMATIVE_REFERENCE'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+          import sys
+          from fractions import Fraction
+
+          sys.path.insert(0, str(Path.cwd() / "tooling"))
+          import performance_cache_consumer as contract
+
+          REFERENCE_PROFILES = {"S": (12, 300, 300, 80, None, 2000),
+                                "M": (120, 3000, 1800, None, 5, 5000),
+                                "L": (500, 15000, 7200, None, None, None)}
+          REFERENCE_BRIEFS = ("harbor-safety", "museum-night", "bike-route")
+          REFERENCE_OPERATIONS = ("01-scene-objective", "02-project-title", "03-narrative-premise",
+              "04-scene-status", "05-marker", "06-renderer-choice", "07-retained-style-lock",
+              "08-second-status", "09-second-objective", "10-final-objective")
+
+
+          def exact(value, expected, label):
+              if json.dumps(value, sort_keys=True, allow_nan=False) != json.dumps(expected, sort_keys=True, allow_nan=False):
+                  raise ValueError(label + " differs")
+
+
+          def integer(value, label, minimum=0):
+              if type(value) is not int or value < minimum:
+                  raise ValueError(label + " must be a bounded nonnegative integer")
+              return value
+
+
+          def validate_normative_report(report, profile, bindings):
+              if profile not in ("all", "S", "M", "L"):
+                  raise ValueError("unsupported normative profile")
+              selected = list(REFERENCE_PROFILES) if profile == "all" else [profile]
+              for key, expected in (("schema", "motionwright.performance.reference.v1"),
+                  ("generated_by", "motionwright-service/examples/acceptance_bench"),
+                  ("dataset_family", "normative_reference_profile"), ("source_sha", bindings["source_sha"]),
+                  ("source_binding_consistent", True), ("source_attribution_verified", False),
+                  ("status", "PASS"), ("briefs", 3), ("datasets", 3 * len(selected))):
+                  exact(report[key], expected, key)
+              expected_rows = {(brief, label) for brief in REFERENCE_BRIEFS for label in selected}
+              rows = report["results"]
+              if type(rows) is not list or len(rows) != len(expected_rows):
+                  raise ValueError("normative row count differs")
+              if {(row["brief"], row["size"]) for row in rows} != expected_rows:
+                  raise ValueError("normative row identities omit, duplicate or substitute a selected case")
+              for when in ("before", "after"):
+                  context = report["source_context_" + when]
+                  for key, expected in (("source_sha_compiled", bindings["source_sha"]),
+                      ("source_sha_runtime", bindings["source_sha"]),
+                      ("compiler_version", bindings["compiler_version"]),
+                      ("reference_profile_raw", None if profile == "all" else profile),
+                      ("reference_profile_effective", "S,M,L" if profile == "all" else profile),
+                      ("hardware_description_verified", False)):
+                      exact(context[key], expected, "context." + key)
+                  for key in ("sha256", "size_bytes"):
+                      exact(context["executable"][key], bindings["executable"][key], "executable." + key)
+                  retained = report["retained_sources_" + when]
+                  exact(sorted(retained), sorted(bindings["sources"]), "retained source roster")
+                  for name, expected in bindings["sources"].items():
+                      for key in ("sha256", "bytes"):
+                          exact(retained[name][key], expected[key], "retained " + name + "." + key)
+              for row in rows:
+                  scenes, nodes, seconds, beats, variants, reopen_budget = REFERENCE_PROFILES[row["size"]]
+                  required = {"scenes": scenes, "canvas_nodes": nodes, "duration_seconds": seconds,
+                      "voice_fixture_seconds": 300, "beats": beats, "deliverable_variants": variants,
+                      "width": 1920, "height": 1080, "frame_rate": "30/1"}
+                  exact(row["required_shape"], required, "required shape")
+                  for key, expected in (("requested_scene_count", scenes), ("scene_count", scenes),
+                      ("status", "PASS"), ("stage", "complete"), ("normative_reference", True),
+                      ("dataset_family", "normative_reference_profile"), ("reference_shape_verified", True),
+                      ("negative_fixture", None), ("budget_failures", []), ("revision_delta", 10),
+                      ("first_editable_scene_preserved_after_revision_ten", True),
+                      ("full_project_equal_after_reopen", True), ("claims_ids_and_all_locks_equal_after_reopen", True),
+                      ("cas_bytes_equal_after_reopen", True)):
+                      exact(row[key], expected, "case." + key)
+                  dataset = row["dataset"]
+                  for key, expected in (("scenes", scenes), ("canvas_nodes", nodes),
+                      ("scene_duration", {"num": seconds, "den": 1}), ("contiguous_scene_timeline", True),
+                      ("voice_seconds", 300), ("voice_duration", {"num": 300, "den": 1}),
+                      ("voice_sample_rate_hz", 8000), ("width", 1920), ("height", 1080), ("frame_rate", "30/1")):
+                      exact(dataset[key], expected, "dataset." + key)
+                  if beats is not None:
+                      exact(dataset["beats"], beats, "normative beats")
+                  if variants is not None:
+                      exact(dataset["deliverable_variants"], variants, "normative variants")
+                  operations = row["operations"]
+                  exact([item["name"] for item in operations], list(REFERENCE_OPERATIONS), "operation roster")
+                  samples = [integer(item["micros"], "operation micros") for item in operations]
+                  revision = integer(row["revision_start"], "starting revision")
+                  for item in operations:
+                      exact(item["previous_revision"], revision, "previous revision")
+                      revision += 1
+                      exact(item["revision"], revision, "operation revision")
+                  exact(row["revision_end"], revision, "revision ten")
+                  exact(row["post_reopen_edit"]["status"], "PASS", "post reopen edit")
+                  exact(row["post_reopen_edit"]["previous_revision"], revision, "post reopen previous revision")
+                  exact(row["post_reopen_edit"]["revision"], revision + 1, "post reopen revision")
+                  exact(row["final_revision"], revision + 1, "final revision")
+                  metric = row["small_commit"]
+                  commit_budget = 250 if row["size"] == "S" else None
+                  for key, expected in (("samples", 10), ("samples_micros", samples),
+                      ("p95_micros", sorted(samples)[9]), ("max_micros", max(samples)),
+                      ("budget_ms", commit_budget), ("required_budget_ms", commit_budget),
+                      ("percentile_method", "nearest-rank"), ("outliers_removed", 0)):
+                      exact(metric[key], expected, "small commit." + key)
+                  if commit_budget is not None and metric["p95_micros"] >= commit_budget * 1000:
+                      raise ValueError("normative small commit budget exceeded")
+                  exact(row["reopen_budget_ms"], reopen_budget, "reopen budget")
+                  exact(row["required_reopen_budget_ms"], reopen_budget, "required reopen budget")
+                  for key in ("reference_open_micros", "reopen_micros", "final_reopen_micros"):
+                      value = integer(row[key], key)
+                      if reopen_budget is not None and value >= reopen_budget * 1000:
+                          raise ValueError("normative reopen budget exceeded")
+                  projection = row["scene_object_projection"]
+                  exact(projection["scope"], "Exact paged service readback; no UI latency or virtualization claim", "projection scope")
+                  for key, expected in (("status", "PASS"), ("kind", "service_scene_and_node_pages"),
+                      ("scene_limit", 32), ("node_limit", 16), ("scenes_read", scenes), ("nodes_read", nodes),
+                      ("scene_pages", (scenes + 31) // 32), ("node_pages", scenes * ((nodes // scenes + 15) // 16))):
+                      exact(projection[key], expected, "projection." + key)
+                  originals = projection["originals"]
+                  if type(originals) is not list or len(originals) != 1 + projection["scene_pages"] + projection["node_pages"]:
+                      raise ValueError("projection original roster is incomplete")
+              large = 3 if "L" in selected else 0
+              coverage = report["service_projection_coverage"]
+              exact(coverage["scope"], "Per-case service paging after full Project readback; no cold installed UI, virtualization or render evidence", "large coverage scope")
+              for key, expected in (("status", "MEASURED_SERVICE_PAGES" if large else "NOT_RUN"),
+                  ("selected_large_cases", large), ("completed_large_cases", large)):
+                  exact(coverage[key], expected, "large projection coverage." + key)
+              for key in ("studio_selection_s_p95", "studio_scrub_or_proxy_ui_blocking",
+                          "installed_first_use", "native_render_cache_avoided_work"):
+                  exact(report["pending_capabilities"][key]["status"], "NOT_RUN", "pending " + key)
+              if not report["human_feedback"].startswith("NOT_RUN") or not report["comparative_claims"].startswith("NONE"):
+                  raise ValueError("unsupported human or comparative claim")
+              return {"status": "NORMATIVE_REPORT_CONSISTENT_ONLY", "source_sha": bindings["source_sha"],
+                      "selected_profiles": selected, "datasets": len(rows), "formal_acceptance": False,
+                      "original_admission": "REQUIRED", "release_authorized": False}
+
+
+          def stable_stat(value):
+              return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
+                      value.st_mtime_ns, value.st_ctime_ns)
+
+
+          def original_bytes(root, value, limit):
+              if (sys.platform != "linux" or os.open not in os.supports_dir_fd
+                      or not all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC"))):
+                  raise ValueError("original readback requires the Linux component-dirfd backend")
+              root, path = Path(root).absolute(), Path(value)
+              if (root.anchor != "/" or path.anchor != "/" or ".." in root.parts or ".." in path.parts
+                      or not path.is_relative_to(root) or path == root or str(path) != str(value)):
+                  raise ValueError("original path escapes retained root")
+              directories, descriptor, raw, failure, close_failure = [], None, None, None, None
+              try:
+                  directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+                  parent = os.open("/", directory_flags)
+                  directories.append(parent)
+                  # Hold every directory from / through the declared root and the leaf's
+                  # parent. No component is resolved through a mutable absolute pathname.
+                  relative = path.relative_to(root).parts
+                  for component in (*root.parts[1:], *relative[:-1]):
+                      parent = os.open(component, directory_flags, dir_fd=parent)
+                      directories.append(parent)
+                  descriptor = os.open(relative[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+                  before = os.fstat(descriptor)
+                  if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= limit:
+                      raise ValueError("original is nonregular, empty or outside its read bound")
+                  observed_name = os.stat(relative[-1], dir_fd=parent, follow_symlinks=False)
+                  if stable_stat(observed_name) != stable_stat(before):
+                      raise ValueError("original identity changed while opening")
+                  chunks, total = [], 0
+                  while total <= limit:
+                      chunk = os.read(descriptor, min(1024**2, limit + 1 - total))
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                      total += len(chunk)
+                  after_read = os.fstat(descriptor)
+                  after = os.stat(relative[-1], dir_fd=parent, follow_symlinks=False)
+                  raw = b"".join(chunks)
+                  if (len(raw) != before.st_size or stable_stat(before) != stable_stat(after_read)
+                          or stable_stat(before) != stable_stat(after)):
+                      raise ValueError("original changed during readback")
+              except BaseException as error:
+                  failure = error
+              finally:
+                  if descriptor is not None:
+                      directories.append(descriptor)
+                  while directories:
+                      owned = directories.pop()  # Retire ownership before its one close attempt.
+                      try:
+                          os.close(owned)
+                      except BaseException as error:
+                          if close_failure is None:
+                              close_failure = error
+              if failure is not None:
+                  if close_failure is not None:
+                      failure.add_note("An owned descriptor also had an uncertain close; no close was retried.")
+                  raise failure
+              if close_failure is not None:
+                  raise ValueError("original descriptor close was not observed; no retry") from close_failure
+              return raw
+
+
+          def original_json(root, path, limit=128 * 1024**2):
+              raw = original_bytes(root, path, limit)
+              return json.loads(raw, object_pairs_hook=contract.json_pairs,
+                                parse_constant=contract.nonfinite, parse_float=contract.finite_float)
+
+
+          def verify_normative_originals(report, artifact_root):
+              root = Path(report["artifact_directory"])
+              exact(original_json(artifact_root, root / "report.json", 16 * 1024**2), report, "retained report")
+              for when in ("before", "after"):
+                  for info in report["retained_sources_" + when].values():
+                      raw = original_bytes(root, info["retained"], 8 * 1024**2)
+                      exact(len(raw), info["bytes"], "retained source byte count")
+                      exact(hashlib.sha256(raw).hexdigest(), info["sha256"], "retained source digest")
+              total_pages = 0
+              for row in report["results"]:
+                  folder = root / (row["brief"] + "-" + row["size"])
+                  exact(str(folder), row["artifact_directory"], "case original directory")
+                  exact(original_json(root, folder / "case-report.json"), row, "case original report")
+                  final = original_json(root, folder / "final-project.json")
+                  exact(original_json(root, folder / "project-after-ten.json"),
+                        original_json(root, folder / "project-after-reopen.json"), "whole project across reopen")
+                  exact(original_json(root, folder / "project-edited-after-reopen.json"), final, "persisted positive edit")
+                  scenes = final["scenes"]
+                  exact(len(scenes), row["scene_count"], "physical scene count")
+                  exact(sum(len(scene["nodes"]) for scene in scenes), row["dataset"]["canvas_nodes"], "physical node count")
+                  end = Fraction(0)
+                  for scene in scenes:
+                      start, duration = scene["start"], scene["duration"]
+                      exact(Fraction(start["num"], start["den"]) == end, True, "physical contiguous timeline")
+                      length = Fraction(duration["num"], duration["den"])
+                      if length <= 0:
+                          raise ValueError("physical scene duration is not positive")
+                      end += length
+                  exact(end == row["required_shape"]["duration_seconds"], True, "physical timeline duration")
+                  projection = row["scene_object_projection"]
+                  identity = {"project_id": final["id"], "generation": final["generation"], "revision": str(final["revision"])}
+                  exact(projection["identity"], identity, "projection identity")
+                  pages = {}
+                  for original in projection["originals"]:
+                      path = Path(original["path"])
+                      if path.parent != folder / "project-projection" or path.name in pages:
+                          raise ValueError("duplicate or foreign projection original")
+                      raw = original_bytes(root, path, 1_048_576)
+                      exact(len(raw), original["bytes"], "projection original byte count")
+                      exact(hashlib.sha256(raw).hexdigest(), original["sha256"], "projection original digest")
+                      pages[path.name] = contract.decode_json(raw)
+                      exact(pages[path.name]["identity"], identity, "physical projection identity")
+                  expected_names = {"head.json"}
+                  exact(pages["head.json"]["scene_count"], len(scenes), "projection head scenes")
+                  exact(pages["head.json"]["title"], final["title"], "projection head title")
+                  for index, start in enumerate(range(0, len(scenes), 32)):
+                      name = f"scenes-{index:04}.json"
+                      expected_names.add(name)
+                      page = pages[name]
+                      selected = scenes[start:start + 32]
+                      expected_items = [{"ordinal": start + offset, **{key: scene[key] for key in
+                          ("id", "name", "start", "duration", "renderer", "status")},
+                          "beat_count": len(scene["beats"]), "node_count": len(scene["nodes"])}
+                          for offset, scene in enumerate(selected)]
+                      exact(page["items"], expected_items, "physical scene page contents")
+                      exact(page["start_ordinal"], start, "scene page start")
+                      exact(page["total_scenes"], len(scenes), "scene page total")
+                      following = start + len(selected)
+                      exact(page["next_cursor"], {"identity": identity, "next_ordinal": following}
+                            if following < len(scenes) else None, "scene page cursor")
+                  for ordinal, scene in enumerate(scenes):
+                      ref = {"ordinal": ordinal, "id": scene["id"]}
+                      for index, start in enumerate(range(0, len(scene["nodes"]), 16)):
+                          name = f"nodes-{ordinal:04}-{index:04}.json"
+                          expected_names.add(name)
+                          page = pages[name]
+                          selected = scene["nodes"][start:start + 16]
+                          exact(page["scene"], ref, "node page scene")
+                          exact(page["items"], selected, "physical node page contents")
+                          exact(page["start_ordinal"], start, "node page start")
+                          exact(page["total_nodes"], len(scene["nodes"]), "node page total")
+                          following = start + len(selected)
+                          exact(page["next_cursor"], {"identity": identity, "scene": ref, "next_ordinal": following}
+                                if following < len(scene["nodes"]) else None, "node page cursor")
+                  exact(sorted(pages), sorted(expected_names), "complete physical projection roster")
+                  total_pages += len(pages)
+              return total_pages
+
+
+          def main():
+              directory = Path("verification/performance").resolve()
+              if Path(contract.__file__).resolve() != Path("tooling/performance_cache_consumer.py").resolve():
+                  raise ValueError("normative checker imported a foreign contract module")
+              expected = os.environ["GITHUB_SHA"]
+              exact((directory / "exit-code.txt").read_text().strip(), "0", "original benchmark exit")
+              exact(subprocess.check_output(["git", "rev-parse", "HEAD"], timeout=30).decode().strip(), expected, "checkout")
+              exact((directory / "checkout-sha.txt").read_text().strip(), expected, "prebuild checkout")
+              binary = Path("target/release/examples/acceptance_bench")
+              binary_raw = binary.read_bytes()
+              if (directory / "acceptance_bench").read_bytes() != binary_raw:
+                  raise ValueError("retained executable differs")
+              sources = {}
+              for name in contract.SOURCES:
+                  raw = Path(name).read_bytes()
+                  exact(raw.hex(), subprocess.check_output(["git", "show", f"{expected}:{name}"], timeout=30).hex(), "exact source bytes")
+                  sources[name] = {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+              bindings = {"source_sha": expected, "compiler_version": (directory / "compiler-version.txt").read_text().strip(),
+                  "executable": {"sha256": hashlib.sha256(binary_raw).hexdigest(), "size_bytes": len(binary_raw)},
+                  "sources": sources}
+              exact(bindings["compiler_version"], os.environ["RUSTC_VERSION"], "compiler binding")
+              report_raw = original_bytes(directory, directory / "report.json", 16 * 1024**2)
+              report = contract.decode_json(report_raw)
+              result = validate_normative_report(report, os.environ["MW_NORMATIVE_PROFILE"], bindings)
+              exact(original_bytes(directory / "originals", Path(report["artifact_directory"]) / "report.json", 16 * 1024**2).hex(),
+                    report_raw.hex(), "untouched report stdout")
+              result["physical_projection_originals"] = verify_normative_originals(report, directory / "originals")
+              result.update(status="NORMATIVE_ORIGINALS_CONSISTENT_ONLY", run_id=os.environ["GITHUB_RUN_ID"],
+                  run_attempt=os.environ["GITHUB_RUN_ATTEMPT"], job=os.environ["GITHUB_JOB"],
+                  report_sha256=hashlib.sha256(report_raw).hexdigest(), bindings=bindings)
+              (directory / "normative-check.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+              print(json.dumps(result, sort_keys=True))
+
+
+          if __name__ == "__main__":
+              main()
+          PY_NORMATIVE_REFERENCE
       - name: Validate evidence shape
+        if: ${{ env.MOTIONWRIGHT_REFERENCE_PROFILES == 'historical' }}
         run: |
           python3 - <<'PY'
           import json
@@ -157,6 +508,7 @@ jobs:
           )
           PY
       - name: Retain all revision-ten measurements after a forced budget failure
+        if: ${{ env.MOTIONWRIGHT_REFERENCE_PROFILES == 'historical' }}
         run: |
           python3 - <<'PY'
           import json
@@ -220,6 +572,7 @@ jobs:
           print(f"expected-budget-failure=revision-ten exit={result.returncode} datasets=9 operations=90")
           PY
       - name: Account for measured creative stage costs without invented render savings
+        if: ${{ env.MOTIONWRIGHT_REFERENCE_PROFILES == 'historical' }}
         run: |
           python3 tooling/creative_stage_cost.py \
             --input verification/performance/report.json \
@@ -241,6 +594,7 @@ jobs:
           print("creative-stage-cost=verified nine_datasets=9 no_false_render_speedup")
           PY
       - name: Bind technical first editable scene and reuse to source revision
+        if: ${{ env.MOTIONWRIGHT_REFERENCE_PROFILES == 'historical' }}
         run: |
           python3 tooling/first_scene_reuse.py \
             --input verification/performance/report.json \
@@ -272,7 +626,7 @@ jobs:
   waveform-lazy:
     if: >-
       ${{ (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/performance-cache-consumer-')) &&
-          (github.event_name != 'workflow_dispatch' || inputs.selection == 'historical') }}
+          (github.event_name != 'workflow_dispatch' || (inputs.selection == 'historical' && inputs.normative_profile == 'all')) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -351,7 +705,7 @@ jobs:
   responsiveness-service:
     if: >-
       ${{ (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/performance-cache-consumer-')) &&
-          (github.event_name != 'workflow_dispatch' || inputs.selection == 'historical') }}
+          (github.event_name != 'workflow_dispatch' || (inputs.selection == 'historical' && inputs.normative_profile == 'all')) }}
     runs-on: ubuntu-24.04
     env:
       MOTIONWRIGHT_BENCH_ARTIFACT_ROOT: ${{ github.workspace }}/verification/responsiveness/originals
@@ -534,7 +888,7 @@ jobs:
   ui-selection:
     if: >-
       ${{ (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/performance-cache-consumer-')) &&
-          (github.event_name != 'workflow_dispatch' || inputs.selection == 'historical') }}
+          (github.event_name != 'workflow_dispatch' || (inputs.selection == 'historical' && inputs.normative_profile == 'all')) }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -582,13 +936,16 @@ jobs:
           if-no-files-found: ignore
 
   cache-source-g0:
-    name: Cache consumer source controls
+    name: Performance source controls
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       CARGO_HOME: ${{ github.workspace }}/.cache-g0-tools/cargo
       RUSTUP_HOME: ${{ github.workspace }}/.cache-g0-tools/rustup
       TMPDIR: ${{ github.workspace }}/.cache-g0-tmp
+      MW_PERFORMANCE_SELECTION: ${{ inputs.selection }}
+      MW_NORMATIVE_PROFILE: ${{ inputs.normative_profile }}
+      MW_PERFORMANCE_REVIEWED_SOURCE: ${{ inputs.reviewed_source }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -596,6 +953,74 @@ jobs:
           persist-credentials: false
       - name: Create isolated source-control directories
         run: mkdir -p "$CARGO_HOME" "$RUSTUP_HOME" "$TMPDIR" cache-source-g0-evidence
+      - name: Reject unsupported selections before a benchmark can start
+        working-directory: source
+        run: |
+          python3 -I -B - <<'PY_PERFORMANCE_SELECTION'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+
+          def performance_selection(event, selection, profile, reviewed_source, source_sha):
+              if event not in ("push", "pull_request", "schedule", "workflow_dispatch"):
+                  raise ValueError("unsupported performance event")
+              if event != "workflow_dispatch":
+                  if selection not in ("", "historical") or profile not in ("", "all"):
+                      raise ValueError("automatic events must preserve historical selection")
+                  return {"selection": "historical", "profile": "all", "normative_datasets": 0}
+              if selection not in ("historical", "cache-consumer", "normative"):
+                  raise ValueError("unsupported performance selection")
+              if profile not in ("all", "S", "M", "L"):
+                  raise ValueError("unsupported normative profile")
+              if selection != "normative" and profile != "all":
+                  raise ValueError("individual profiles require normative selection")
+              if selection in ("cache-consumer", "normative"):
+                  if not re.fullmatch(r"[0-9a-f]{40}", reviewed_source) or reviewed_source != source_sha:
+                      raise ValueError("explicit reviewed source must equal the workflow source")
+              return {"selection": selection, "profile": profile,
+                      "normative_datasets": (9 if profile == "all" else 3) if selection == "normative" else 0}
+
+
+          def main():
+              receipt = {"schema": "motionwright.performance-selection/1", "status": "FAIL",
+                         "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+                         "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "formal_acceptance": False,
+                         "release_authorized": False}
+              try:
+                  selection = performance_selection(os.environ["GITHUB_EVENT_NAME"],
+                      os.environ["MW_PERFORMANCE_SELECTION"], os.environ["MW_NORMATIVE_PROFILE"],
+                      os.environ["MW_PERFORMANCE_REVIEWED_SOURCE"], receipt["source_sha"])
+                  receipt.update(selection)
+                  if selection["selection"] == "normative":
+                      actual = subprocess.check_output(["git", "rev-parse", "HEAD"], timeout=30).decode().strip()
+                      if actual != receipt["source_sha"]:
+                          raise ValueError("normative checkout differs from the requested source")
+                      expected = {
+                          "crates/service/examples/acceptance_bench.rs":
+                              "96d00ee1f7fd04b53720d04332ea975f4c460eed111c4ad6d5e249ae085decfa",
+                          "crates/service/examples/responsiveness_bench.rs":
+                              "baec2bcffe0e1eaa24ec463b70dfa562804110e6e992691237a7a1f54e25ae92",
+                      }
+                      observed = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in expected}
+                      if observed != expected:
+                          raise ValueError("normative producer source is outside the reviewed report contract")
+                      receipt["producer_sha256"] = observed
+                  receipt["status"] = "SELECTION_SOURCE_CONSISTENT_ONLY"
+              except Exception as error:
+                  receipt["error"] = str(error) or type(error).__name__
+              target = Path("../cache-source-g0-evidence/selection.json")
+              target.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+              print(json.dumps(receipt, sort_keys=True))
+              raise SystemExit(0 if receipt["status"] == "SELECTION_SOURCE_CONSISTENT_ONLY" else 1)
+
+
+          if __name__ == "__main__":
+              main()
+          PY_PERFORMANCE_SELECTION
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: 1.98.1
@@ -608,7 +1033,8 @@ jobs:
           python3 -B tooling/creative_status_policy.py
           python3 -B tooling/public_surface_policy.py
           cargo fmt --all -- --check
-      - name: Require complete source-bound cache helper controls in both entry modes
+      - name: Require complete source-bound performance helper controls in both entry modes
+        if: ${{ !cancelled() }}
         working-directory: source
         run: >-
           python3 -B tooling/ci_test_runner.py --repo . --mode both
@@ -647,7 +1073,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: 1.98.1
-      - name: Capture the exact 15 source tests and one historical cache-consumer invocation
+      - name: Capture the exact source-profile tests and one historical cache-consumer invocation
         run: |
           python3 -B - <<'PY_CACHE_CONSUMER'
           import hashlib
@@ -828,6 +1254,8 @@ jobs:
               before = snapshot()
               write(output / "source-before.json", before)
               assert before["source_sha"] == expected and not before["git_status_porcelain"], "source checkout is not exact and clean"
+              selected_contract = contract.source_test_contract(source_sha=expected, sources=before["sources"])
+              write(output / "source-test-contract.json", selected_contract)
               free = shutil.disk_usage(workspace).free
               write(output / "machine.json", {"platform": platform.platform(), "machine": platform.machine(),
                   "cpu_count": os.cpu_count(), "free_disk_bytes": free, "operational_disk_minimum_bytes": 1024**3,
@@ -863,7 +1291,8 @@ jobs:
                   write(output / "capture.json", state)
                   contract.require_complete_execution(receipt, argv, str(source))
                   if label == "source-g1":
-                      roster = contract.source_test_roster((output / label / "stdout.log").read_text(encoding="utf-8"))
+                      roster = contract.source_test_roster((output / label / "stdout.log").read_text(encoding="utf-8"),
+                          source_sha=expected, sources=before["sources"])
                       write(output / "source-test-roster.json", roster)
               after_build = snapshot()
               write(output / "source-after-build.json", after_build)
@@ -901,7 +1330,8 @@ jobs:
               assert before == after, "source changed during benchmark"
               assert digest(binary) == info, "executed binary bytes changed"
               state.update(status="CAPTURE_COMPLETE_REPORT_CONSISTENT_ONLY", expected_datasets=9,
-                           source_tests=15, historical_warm_requests=9, measured_phase_requests=36,
+                           source_tests=roster["actual_tests"], source_test_profile=roster["source_profile"],
+                           historical_warm_requests=9, measured_phase_requests=36,
                            separate_control_setup_requests=9)
           except (Exception, KeyboardInterrupt) as error:
               state.update(status="UNKNOWN" if any(item["execution"]["status"] == "UNKNOWN"

@@ -189,6 +189,31 @@ SOURCE_TESTS = tuple("reference_profiles::support::fixture_tests::" + name for n
     "physical_corruption_rejects_exact_cause_without_build_or_repair",
     "wrong_warm_oracle_is_rejected_by_timed_consumer_without_rebuild",
 ))
+PROJECTION_SOURCE_TESTS = SOURCE_TESTS + tuple(
+    "reference_profiles::support::fixture_tests::" + name for name in (
+        "large_profile_prepares_real_voice_without_changing_two_hour_timeline",
+        "bounded_voice_and_full_reference_timelines_are_independent",
+        "reference_selection_keeps_all_three_authored_briefs_and_exact_shapes",
+        "selected_or_incomplete_runs_do_not_claim_large_projection_coverage",
+        "paged_scene_and_node_readback_retains_exact_current_contents",
+        "paged_readback_rejects_changed_expected_node_content",
+        "paged_readback_rejects_stale_reference_snapshot",
+    )
+)
+# Closed source profiles; an unreviewed input cannot select a shorter roster.
+# These hashes identify the test-bearing example bytes, not a product verdict.
+SOURCE_ROSTER_PROFILES = {
+    "retained-reference-v1": {
+        "acceptance": ("96d00ee1f7fd04b53720d04332ea975f4c460eed111c4ad6d5e249ae085decfa", 42728),
+        "reference": ("cd88ab9e23cdef912d9868de3a1b63360c71a3f80a5ae14f7065517a07d14acb", 74458),
+        "tests": SOURCE_TESTS,
+    },
+    "paged-reference-v2": {
+        "acceptance": ("96d00ee1f7fd04b53720d04332ea975f4c460eed111c4ad6d5e249ae085decfa", 42728),
+        "reference": ("baec2bcffe0e1eaa24ec463b70dfa562804110e6e992691237a7a1f54e25ae92", 92652),
+        "tests": PROJECTION_SOURCE_TESTS,
+    },
+}
 OPERATIONS = ("01-rename", "02-narrative-premise", "03-scene-objective",
               "04-scene-status", "05-ripple-duration", "06-second-renderer",
               "07-marker", "08-project-lock", "09-project-unlock", "10-final-objective")
@@ -236,18 +261,49 @@ def same(first, second):
         return len(first) == len(second) and all(same(a, b) for a, b in zip(first, second))
     return first == second
 
-def source_test_roster(stdout):
+def source_test_contract(*, source_sha, sources):
+    require(isinstance(source_sha, str) and re.fullmatch(r"[0-9a-f]{40}", source_sha) is not None,
+            "exact checkout source SHA is required for the test roster")
+    require(isinstance(sources, dict) and set(sources) == set(SOURCES),
+            "complete source input identity is required for the test roster")
+    for name, original in sources.items():
+        require(isinstance(original, dict) and set(original) == {"sha256", "bytes"}
+                and isinstance(original["sha256"], str)
+                and re.fullmatch(r"[0-9a-f]{64}", original["sha256"]) is not None
+                and type(original["bytes"]) is int and original["bytes"] > 0,
+                "invalid source input identity for the test roster: " + name)
+    acceptance = sources["crates/service/examples/acceptance_bench.rs"]
+    reference = sources["crates/service/examples/responsiveness_bench.rs"]
+    matches = [(version, profile) for version, profile in SOURCE_ROSTER_PROFILES.items()
+               if (acceptance["sha256"], acceptance["bytes"]) == profile["acceptance"]
+               and (reference["sha256"], reference["bytes"]) == profile["reference"]]
+    require(len(matches) == 1, "source test roster has no exact reviewed source profile")
+    version, profile = matches[0]
+    return {"schema": "motionwright.performance-source-test-contract/1",
+            "status": "SOURCE_INPUTS_REVIEWED_ONLY", "source_sha": source_sha,
+            "scope": "exact test-bearing source profile; no product source admission",
+            "source_profile": version,
+            "source_inputs": {name: dict(value) for name, value in sources.items()},
+            "test_names": sorted(profile["tests"]), "benchmark_executed_by_this_check": False}
+
+
+def source_test_roster(stdout, *, source_sha, sources):
+    selected = source_test_contract(source_sha=source_sha, sources=sources)
+    expected = selected["test_names"]
+    total = len(expected)
     rows = re.findall(r"^test ([A-Za-z0-9_:]+) \.\.\. ([^\r\n]+)$", stdout, re.MULTILINE)
-    require(len(rows) == len(SOURCE_TESTS) and {name for name, _ in rows} == set(SOURCE_TESTS)
+    require(len(rows) == total and {name for name, _ in rows} == set(expected)
             and all(result == "ok" for _, result in rows),
-            "acceptance_bench must execute all exact15 tests with no omission")
+            "acceptance_bench must execute the exact source-profile test names with no omission")
     summaries = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; "
                            r"(\d+) measured; (\d+) filtered out;", stdout, re.MULTILINE)
-    require(len(summaries) == 1 and tuple(map(int, summaries[0])) == (15, 0, 0, 0, 0),
+    require(len(summaries) == 1 and tuple(map(int, summaries[0])) == (total, 0, 0, 0, 0),
             "test summary contains failure, skip, filter or an incomplete roster")
-    return {"status": "SOURCE_TEST_ROSTER_COMPLETE", "actual_tests": 15,
+    return {**selected, "schema": "motionwright.performance-source-test-roster/2",
+            "status": "SOURCE_TEST_ROSTER_COMPLETE", "actual_tests": total,
             "original_contract_tests": 10, "cache_consumer_tests": 5,
-            "test_names": sorted(SOURCE_TESTS), "failed": 0, "ignored": 0, "filtered": 0,
+            "reference_fixture_tests": total - 5, "added_reference_fixture_tests": total - 15,
+            "test_names": sorted(expected), "failed": 0, "ignored": 0, "filtered": 0,
             "benchmark_executed_by_this_check": False}
 
 def absolute_posix(value):
