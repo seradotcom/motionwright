@@ -207,8 +207,6 @@ jobs:
     timeout-minutes: 15
     env:
       PRODUCT_SOURCE_SHA: ${{ inputs.expected_source_sha }}
-      LINUX_PATH_EVIDENCE: ${{ runner.temp }}/linux-path-source-${{ github.run_id }}-${{ github.run_attempt }}
-      LINUX_PATH_VENV: ${{ runner.temp }}/linux-path-venv-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -226,7 +224,10 @@ jobs:
           set -euo pipefail
           python3 -B - <<'PY'
           import hashlib, json, os, pathlib, re, subprocess, sys
-          root = pathlib.Path(os.environ['LINUX_PATH_EVIDENCE'])
+          temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+          attempt = os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']
+          root = temporary / ('linux-path-source-' + attempt)
+          venv = temporary / ('linux-path-venv-' + attempt)
           root.mkdir(exist_ok=False)
           (root / 'tmp').mkdir()
           expected = os.environ['PRODUCT_SOURCE_SHA']
@@ -252,6 +253,8 @@ jobs:
           }
           (root / 'gate-admission.json').write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              stream.write('LINUX_PATH_EVIDENCE=' + str(root) + '\n')
+              stream.write('LINUX_PATH_VENV=' + str(venv) + '\n')
               stream.write('TMPDIR=' + str(root / 'tmp') + '\n')
           PY
 

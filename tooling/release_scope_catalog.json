@@ -6869,7 +6869,7 @@
     },
     {
       "path": ".github/workflows/native-reader-contracts.yml",
-      "sha256": "db21f62fd1a6b3bfc8bd7778d6b0faa2ab1b020ac4209dbd2ff367db6d07131b",
+      "sha256": "e026ce101a4aa51b4175ceb2bcffb8752e1deac7781cb985db93e7b5bd6db9aa",
       "preamble_sha256": "4842276e8de03d3ba9567e48bf00e1ec8b95b2e1dad810ab66e5878ba2931350",
       "evidence_class": "synthetic_decode",
       "purpose": "Existing source-bound reader suites, plus a separately reviewed post-d4db Linux source-only profile that binds its workflow gate and requested product checkout independently.",
@@ -6977,7 +6977,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "333ea3724eec55eab46e9cf2bb349e1c8f7ff70a17d9d8f9fd68dbd87a9a3d65",
+          "source_sha256": "51a9833772ea4cf54d2acd14c6072785801cea723fbf552cb263f0afd0425162",
           "instance_sets": {
             "linux-path-source": [
               {}
@@ -6989,7 +6989,7 @@
               "name": "Bind the workflow gate and admit a full immutable product source",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "f508c613abe1b407287e816722683424d3879fcaa595b89edd828b66a2d91a55",
+              "source_block_sha256": "4d60fb22878140ec1e22e2d25490a2be2df9bd6ec96e239579b4bf214029393b",
               "api_binding": "EXPLICIT_NAME"
             },
             {
