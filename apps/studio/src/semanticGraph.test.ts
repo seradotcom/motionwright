@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { fixtureBootstrap } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
+import { stepEditorialFrame } from "./timecode";
 import { graphAddTime, graphAdmissionIssue, graphAuthoredNumber, graphEdgeLabelBox, graphEdgePoints, graphExactFrame, graphFraction, graphFrameTime,
-  graphFromRaw, graphReviewAnchor, graphSourceSnapshot, graphToRaw, isGraphReviewResource, newSemanticGraph, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
+  graphFromRaw, graphPreviewClock, graphReviewAnchor, graphSourceSnapshot, graphToRaw, isGraphReviewResource, newSemanticGraph, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphProject, SemanticGraph } from "./semanticGraph";
 
 function source(kind: "causal_diagram" | "system_flow" = "causal_diagram") {
@@ -256,5 +257,71 @@ describe("Graph current-source write preflight is not authority", () => {
     const { project, graph, context } = source(); project.production_design!.brand_profile = { id: crypto.randomUUID(), label: "Test brand", version: 1, rules: [{ id: "no-claim", kind: "forbidden_phrase", phrase: "guaranteed" }] };
     if (graph.content.kind !== "causal_diagram" || graph.content.edges[0].basis.kind !== "author_hypothesis") throw new Error("Fixture kind");
     graph.content.edges[0].basis.disclosure = "Guaranteed effect"; await expect(validateSemanticGraphForWrite(project, graph, context)).rejects.toThrow(/BrandProfile/);
+  });
+});
+
+
+describe("semantic Graph timing on the shared project clock", () => {
+  it("enters and leaves a one-frame event exactly after shifted scene and Graph starts", () => {
+    const { graph, profile } = source("system_flow");
+    graph.time_range.start = { num: "1", den: "30" }; graph.motion = "off";
+    const before = structuredClone(graph), at = { num: "1", den: "15" }, duration = { num: "1", den: "30" };
+    for (const start of [0, 5, 10, 15, 3600]) {
+      const sceneStart = { num: String(start), den: "1" };
+      const clock = (frame: number) => graphPreviewClock(graph, sceneStart,
+        stepEditorialFrame((start * 30 + frame - 1) / 30, profile.frame_rate, 1, start + 6), profile.frame_rate);
+      expect(clock(2).contains(at, duration)).toBe(false);
+      expect(clock(3).contains(at, duration)).toBe(true);
+      expect(clock(4).contains(at, duration)).toBe(false);
+      expect(clock(4).contains({ num: "1", den: "10" }, duration)).toBe(true);
+      expect(clock(151).contains({ num: "5", den: "1" }, duration)).toBe(false);
+      expect(clock(2).opacity({ at, duration })).toBe(0);
+      expect(clock(3).opacity({ at, duration })).toBe(1);
+      expect(graphPreviewClock(graph, sceneStart, start, profile.frame_rate).inInterval).toBe(false);
+      expect(clock(1).inInterval).toBe(true);
+      expect(clock(151).inInterval).toBe(false);
+    }
+    expect(graph).toEqual(before);
+  });
+
+  it("recognizes actual fractional-rate frame steps without late entry or exit", () => {
+    const { graph } = source("system_flow");
+    for (const num of ["24000", "30000", "60000"]) {
+      const rate = { num, den: "1001" }, fps = Number(num) / 1001;
+      const sceneStart = graphFrameTime(5, rate);
+      graph.time_range.start = graphFrameTime(1, rate);
+      const at = graphFrameTime(3, rate), duration = graphFrameTime(1, rate);
+      const clock = (frame: number) => graphPreviewClock(graph, sceneStart,
+        stepEditorialFrame((frame - 1) / fps, rate, 1, 10), rate);
+      expect(clock(8).contains(at, duration)).toBe(false);
+      expect(clock(9).contains(at, duration)).toBe(true);
+      expect(clock(10).contains(at, duration)).toBe(false);
+      expect(clock(9).opacity({ at, duration })).toBe(0);
+      expect(clock(10).opacity({ at, duration })).toBe(1);
+    }
+  });
+
+  it("preserves continuous playhead positions and the exclusive boundary without a tolerance", () => {
+    const { graph, profile } = source("system_flow");
+    graph.time_range.start = { num: "1", den: "30" }; graph.motion = "full";
+    const sceneStart = { num: "5", den: "1" }, at = { num: "1", den: "15" }, duration = { num: "1", den: "30" };
+    const clock = (time: number) => graphPreviewClock(graph, sceneStart, time, profile.frame_rate);
+    expect(clock(153 / 30 - 1e-9).contains(at, duration)).toBe(false);
+    expect(clock(153 / 30).contains(at, duration)).toBe(true);
+    expect(clock(154 / 30 - 1e-9).contains(at, duration)).toBe(true);
+    expect(clock(154 / 30).contains(at, duration)).toBe(false);
+    expect(clock(153 / 30).opacity({ at, duration })).toBe(0);
+    expect(clock(307 / 60).opacity({ at, duration })).toBeCloseTo(.5, 10);
+    expect(clock(154 / 30).opacity({ at, duration })).toBe(1);
+    expect(clock(Infinity).inInterval).toBe(false);
+    expect(clock(NaN).contains(at, duration)).toBe(false);
+  });
+
+  it("keeps complete topology independent from the active-event study", () => {
+    const { graph } = source("system_flow"), at = { num: "1", den: "15" }, duration = { num: "1", den: "30" };
+    const clock = graphPreviewClock(graph, { num: "5", den: "1" });
+    expect(clock.inInterval).toBe(true);
+    expect(clock.contains(at, duration)).toBe(false);
+    expect(clock.opacity({ at, duration })).toBe(1);
   });
 });
