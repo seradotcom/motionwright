@@ -377,6 +377,104 @@ for (const target of ["author", "review"] as const) {
   });
 }
 
+for (const target of ["author", "review"] as const) {
+  test(`Distillation ${target} pre-dispatch transport interruption keeps UNKNOWN at the saved base until a real peer advances it, without replay`, async ({ page }, info) => {
+    const service = await setup(info), peers: ScopedChangeService[] = [], observations: Record<string, unknown> = { target };
+    const original = service.invoke.bind(service), intercepted: ApplyArgs[] = [];
+    let final: Project | undefined, primary: Failure | undefined;
+    try {
+      const seed = target === "author" ? { project: await sources(service), ids: [] } : await withProposals(service, 1);
+      const initial = seed.project; final = initial; observations.initial = initial;
+      await attach(page, service, initial);
+      if (target === "author") await author(page, initial); else await reviewer(page, seed.ids[0]);
+      const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+      // An injected transport interruption after the actual grant, before the
+      // original apply reaches the service. This is no native error or receipt.
+      // All subsequent reads and the independent peer change use real SQLite.
+      let armed = true;
+      service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+        const request = args.request as ApplyArgs["request"] | undefined;
+        if (!armed || command !== "apply_change" || request?.change.type !== changeTypes[target]) return original<T>(command, args);
+        armed = false; intercepted.push(structuredClone(args as ApplyArgs));
+        throw new Error("Injected Distillation transport interruption before service dispatch.");
+      };
+      await button(page, saveNames[target]).click();
+      const unknown = page.getByRole("region", { name: "Unconfirmed Distillation " + target, exact: true });
+      await expect(unknown).toBeVisible();
+      await expect(page.getByRole("alert").filter({ hasText: "transport interruption before service dispatch" })).toBeVisible();
+      service.invoke = original;
+      expect(intercepted).toHaveLength(1);
+      expect(intercepted[0].request).toMatchObject({ project_id: initial.id, generation: initial.generation, revision: initial.revision });
+      expect(intercepted[0].request.effect_grant).toBeTruthy();
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+      const before = await service.observeStoredProject(initial);
+      expect(await service.history(initial.id, initial.revision)).toEqual([]);
+      const editorTarget: DistillationTarget = target === "author" ? { kind: "author" } : { kind: "review", proposalId: seed.ids[0] };
+      const originalAttempt = (await activeCopy(page, initial, editorTarget)).draft.pending;
+      const input = target === "author" ? label(page) : note(page), later = "  Later input after interrupted delivery  ";
+      await input.fill(later);
+      const retained = await activeCopy(page, initial, editorTarget);
+      expect(retained.draft.pending?.outcome).toBe("UNKNOWN");
+      expect(retained.draft.pending).toEqual(originalAttempt);
+      expect(retained.draft.pending?.submitted).toEqual(intercepted[0].request.change);
+      expect(retained.draft.pending?.revision).toBe(initial.revision);
+      const firstReadStart = service.transcript.length;
+      await button(page, "Read saved Distillation " + target + " and history").click();
+      const outcome = page.getByLabel("Distillation " + target + " outcome review", { exact: true });
+      const continuation = button(page, "Keep earlier Distillation " + target + " attempt and continue editing");
+      await expect(outcome).toContainText("Read r" + initial.revision + " and 0 consecutive history records.");
+      await expect(outcome).toContainText("Matching value records: none.");
+      await expect(continuation, "DISTILLATION_UNCHANGED_BASE_REMAINS_UNKNOWN").toBeDisabled();
+      await expect(outcome.getByRole("status")).toContainText("original attempt can still commit");
+      await expect(button(page, saveNames[target])).toBeDisabled(); await expect(input).toHaveValue(later);
+      expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+      expect((await activeCopy(page, initial, editorTarget)).draft).toEqual(retained.draft);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+      expect(await service.project(initial.id)).toEqual(initial); expect(await service.history(initial.id, initial.revision)).toEqual([]);
+      observations.unchangedBaseInspection = service.transcript.slice(firstReadStart);
+
+      const peer = await service.peer(); peers.push(peer);
+      expect(await peer.project(initial.id)).toEqual(initial);
+      const peerChange: Change = { type: "rename_project", title: "Independent peer closes the original Distillation base" };
+      final = await peer.apply(initial, peerChange);
+      expect(final.revision).toBe(initial.revision + 1); expect(final.production_design).toEqual(initial.production_design);
+      expect(final.scenes).toEqual(initial.scenes); expect(await service.project(initial.id)).toEqual(final);
+      const peerJournal = await service.history(initial.id, initial.revision);
+      expect(peerJournal.map(event => event.change)).toEqual([peerChange]);
+      expect(applies(peer)).toHaveLength(1); expect(requests(peer, "issue_effect_grant")).toHaveLength(1);
+      await page.reload(); await revision(page, final.revision); await open(page);
+      if (target === "review") await page.getByLabel("Distillation review candidate").selectOption(seed.ids[0]);
+      await expect(unknown).toBeVisible(); await expect(input).toHaveValue(later);
+      await button(page, "Read saved Distillation " + target + " and history").click();
+      await expect(outcome).toContainText("Read r" + final.revision + " and 1 consecutive history records.");
+      await expect(outcome).toContainText("Matching value records: none."); await expect(continuation).toBeEnabled();
+      await continuation.click(); await expect(unknown).toHaveCount(0); await expect(input).toHaveValue(later);
+      const separate = await activeCopy(page, final, editorTarget);
+      expect(separate.writer).not.toBe(retained.writer); expect(separate.draft.pending).toBeNull();
+      expect(separate.draft.baseRevision).toBe(final.revision); expect(separate.draft.raw).toEqual(retained.draft.raw);
+      expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+      await page.reload(); await revision(page, final.revision); await open(page);
+      if (target === "review") await page.getByLabel("Distillation review candidate").selectOption(seed.ids[0]);
+      await expect(unknown).toHaveCount(0); await expect(input).toHaveValue(later);
+      expect((await activeCopy(page, final, editorTarget)).draft).toEqual(separate.draft);
+      expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+      expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+      expect(applies(peer)).toHaveLength(1); expect(requests(peer, "issue_effect_grant")).toHaveLength(1);
+      const after = await service.observeStoredProject(final);
+      expect(after.journal).toEqual([...before.journal, ...peerJournal]);
+      expect([...applies(service), ...applies(peer)].filter(value => value.request.request_id === intercepted[0].request.request_id)).toEqual([]);
+      await service.close(); await service.start();
+      expect(await service.project(final.id)).toEqual(final); expect(await service.history(final.id, 0)).toEqual(after.journal);
+      Object.assign(observations, { transportFault: "Injected before original dispatch; no original apply observed by StudioService",
+        intercepted, originalAttempt, before, after, retained, separate, peerJournal, editorAppliesAfterFault: 0, editorGrantsAfterFault: 0 });
+      await page.screenshot({ path: info.outputPath("distillation-unchanged-base-unknown-separated.png"), fullPage: true });
+    } catch (reason) { primary = { reason }; }
+    finally { service.invoke = original; await finish(page, info, service, peers, final, observations, [], primary); }
+  });
+}
+
+
 for (const fault of ["data", "pointer"] as const) {
   test(`Distillation ${fault} recovery failure sends no actual grant or write; healthy explicit retry retains source choices`, async ({ page }, info) => {
     const service = await setup(info), observations: Record<string, unknown> = { fault };

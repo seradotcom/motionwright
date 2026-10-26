@@ -267,9 +267,11 @@ export async function prepareBrandSubmission(draft: BrandDraft, project: Project
       } };
     } else if (operation === "exception") {
       if (!profile) throw new Error("Save a brand policy before recording a scene exception.");
+      if (!raw.ruleId || !profile.rules.some(rule => rule.id === raw.ruleId))
+        throw new Error("Choose a saved brand rule before recording a scene exception.");
       change = { type: "set_brand_governance", profile: clone(profile), exceptions: [
         ...clone(design?.brand_exceptions ?? []),
-        { id: crypto.randomUUID(), rule_id: raw.ruleId || profile.rules[0]?.id || "", scene_id: raw.sceneId, brand_sha256: await brandDigest(profile),
+        { id: crypto.randomUUID(), rule_id: raw.ruleId, scene_id: raw.sceneId, brand_sha256: await brandDigest(profile),
           campaign: raw.campaign, author: raw.author, rationale: raw.rationale },
       ] };
     } else {

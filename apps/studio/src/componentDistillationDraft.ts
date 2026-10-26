@@ -217,6 +217,7 @@ export async function inspectDistillationOutcome(draft: DistillationDraft, selec
 }
 export function releaseDistillationOutcome(draft: DistillationDraft, project: Project, review: DistillationOutcomeReview): DistillationDraft {
   if (!distillationOutcomeMatches(draft, project, review)) throw new Error("Read the current project and its complete history before a separate intent.");
+  if (project.revision <= draft.pending!.revision) throw new Error("The original Distillation request could still commit on its base. Keep it UNKNOWN.");
   return { ...draft, baseRevision: project.revision, baseProposal: clone(proposal(project, draft.pending!.expected.input.id)), pending: null, intent: true };
 }
 
@@ -328,10 +329,13 @@ export function writeDistillationCopy(storage: DistillationStorage, session: Pic
     if (storage.getItem(key) !== custody.expectedRaw) throw new Error("The distillation copy changed in another window. Earlier bytes were retained.");
   };
   check();
-  const raw = encodeDistillationCopy({ schema: "motionwright.component-distillation-recovery/1", scope: draft.scope, writerId: custody.writerId, updatedAt: Date.now(), draft });
+  let raw = encodeDistillationCopy({ schema: "motionwright.component-distillation-recovery/1", scope: draft.scope, writerId: custody.writerId, updatedAt: Date.now(), draft });
   if (custody.expectedRaw !== null) {
     const previous = decodeDistillationCopy(custody.expectedRaw, draft.scope, custody.writerId).draft;
     if (!distillationHasWork(previous) && !sameValue(previous, draft)) throw new Error("A clean distillation checkpoint is immutable. Use a separate writer.");
+    // Recovery decoding normalizes NOT_SENT. Compare the validated stored draft
+    // itself so confirming unchanged input preserves its original exact bytes.
+    if (sameValue((JSON.parse(custody.expectedRaw) as DistillationCopy).draft, draft)) raw = custody.expectedRaw;
   }
   let total = bytes(key) + bytes(raw), count = 1;
   for (let index = 0; index < storage.length; index++) {
@@ -340,7 +344,8 @@ export function writeDistillationCopy(storage: DistillationStorage, session: Pic
   }
   if (total > MAX_DISTILLATION_RECOVERY_BYTES || count > MAX_DISTILLATION_COPIES) throw new Error("Distillation recovery is full (64 copies / 4 MiB). Discard only copies you no longer need.");
   check(); // Recheck custody after enumeration can interleave another writer.
-  storage.setItem(key, raw); if (storage.getItem(key) !== raw) throw new Error("The distillation data write was not confirmed.");
+  if (raw !== custody.expectedRaw) storage.setItem(key, raw);
+  if (storage.getItem(key) !== raw) throw new Error("The distillation data write was not confirmed.");
   custody.expectedRaw = raw;
   session.setItem(pointerKey, custody.writerId); if (session.getItem(pointerKey) !== custody.writerId) throw new Error("The distillation writer pointer was not confirmed.");
   if (storage.getItem(key) !== raw) throw new Error("The distillation data changed while its pointer was published.");

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { DeliverableProfile, Project, ReviewAnchor, Scene } from "./types";
+import { graphPreviewFontFamily, graphPreviewFontLicense, graphPreviewMissingCodepoints, graphPreviewText, loadGraphPreviewFont } from "./semanticGraphFonts";
 import { graphAdmissionIssue, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphReviewAnchor,
   graphSame, graphSourceSnapshot, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphContent, GraphRaw, GraphTargetBinding, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
@@ -267,6 +268,7 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
       <p>Line breaks are preserved. Text does not wrap automatically; adjust its text, box or font size to fit.</p>
       <fieldset><legend>Graph style · fixed font weight 400</legend>
         <label className="production-field"><span>Graph font family</span><select aria-label="Graph font family" value={raw.style.font_family} onChange={e => edit(next => { next.style.font_family = e.target.value as GraphRaw["style"]["font_family"]; }, "/style/font_family")}><option>Instrument Sans Variable</option><option>IBM Plex Mono</option></select></label>
+        {preview && <small><a href={graphPreviewFontLicense(preview.style.font_family)} target="_blank" rel="noreferrer">Preview font license</a></small>}
         {(["background", "vertex_fill", "text_color", "edge_color", "accent_color", "font_size", "edge_width"] as const).map(key => <TextField key={key} label={"Graph " + key} value={raw.style[key]} onChange={value => edit(next => { next.style[key] = value; }, "/style/" + key)} />)}
         <BoxFields label="Graph disclosure box" value={raw.style.disclosure_box} onChange={(key, value) => edit(next => { next.style.disclosure_box[key] = value; }, "/style/disclosure_box/" + key)} />
       </fieldset>
@@ -385,6 +387,24 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
 }
 
 function GraphPreview({ graph, time }: { graph: SemanticGraph; time?: number }) {
+  const family = graph.style.font_family;
+  const [fontAttempt, retryFont] = useState(0);
+  const [fontState, setFontState] = useState<{ family: typeof family; ready: boolean; error: string | null }>({ family, ready: false, error: null });
+  useEffect(() => {
+    let current = true;
+    setFontState({ family, ready: false, error: null });
+    void loadGraphPreviewFont(family).then(() => {
+      if (current) setFontState({ family, ready: true, error: null });
+    }, reason => {
+      if (current) setFontState({ family, ready: false, error: message(reason) });
+    });
+    return () => { current = false; };
+  }, [family, fontAttempt]);
+  const missing = graphPreviewMissingCodepoints(family, graphPreviewText(graph));
+  if (missing.length) return <p role="status" className="production-help">Preview paused: {family} does not include {missing.slice(0, 8).join(", ")}{missing.length > 8 ? " and more characters" : ""}. Choose another supported font or edit the labels. The Graph input is preserved.</p>;
+  if (fontState.family !== family || !fontState.ready) return fontState.family === family && fontState.error
+    ? <div className="production-help"><p role="alert">Preview unavailable: {fontState.error} The Graph input is preserved.</p><button className="secondary-button" onClick={() => retryFont(value => value + 1)}>Retry Graph preview fonts</button></div>
+    : <p role="status">Loading Graph preview fonts...</p>;
   const t = time ?? Number(graph.time_range.duration.num) / Number(graph.time_range.duration.den), w = graph.reference_frame.width, h = graph.reference_frame.height;
   const inInterval = time === undefined || (t >= 0 && t < Number(graph.time_range.duration.num) / Number(graph.time_range.duration.den));
   const activeEvents = graph.content.kind === "system_flow" ? graph.content.events.filter(event => {
@@ -401,7 +421,7 @@ function GraphPreview({ graph, time }: { graph: SemanticGraph; time?: number }) 
     return <g key={key} data-graph-label={key}>{lines.map((line, index) => <text key={index} data-graph-label-line={index}
       x={box.x + box.width / 2} y={box.y + box.height / 2 + (index - (lines.length - 1) / 2) * lineHeight + .35 * fontSize}
       textAnchor="middle" dominantBaseline="alphabetic" xmlSpace="preserve" fill={graph.style.text_color}
-      style={{ fontFamily: graph.style.font_family, fontWeight: 400, fontSize, fontStyle: "normal", fontStretch: "normal",
+      style={{ fontFamily: graphPreviewFontFamily(family), fontWeight: 400, fontSize, fontStyle: "normal", fontStretch: "normal",
         fontKerning: "normal", fontVariantLigatures: "normal", fontSynthesis: "none", letterSpacing: 0, wordSpacing: 0, whiteSpace: "pre" }}>{line}</text>)}</g>;
   };
   return <svg className="production-study" role="img" aria-label="Editorial semantic Graph vector study" viewBox={`0 0 ${w} ${h}`} style={{ background: graph.style.background }}>
@@ -417,6 +437,6 @@ function GraphPreview({ graph, time }: { graph: SemanticGraph; time?: number }) 
       const edge = graph.content.edges.find(item => item.id === event.edge_id)!; return <g key={event.id}><polyline points={graphEdgePoints(graph, edge).map(point => `${point.x},${point.y}`).join(" ")} stroke={graph.style.accent_color} strokeWidth={graph.style.edge_width * 2} fill="none" /></g>;
     })}
     </g>
-    {!inInterval && <text x={w / 2} y={h / 2} textAnchor="middle" fill={graph.style.text_color} fontSize={graph.style.font_size}>Outside the authored Graph interval</text>}
+    {!inInterval && <text x={w / 2} y={h / 2} textAnchor="middle" fill={graph.style.text_color} fontSize={graph.style.font_size} style={{ fontFamily: graphPreviewFontFamily(family), fontWeight: 400, fontSynthesis: "none" }}>Outside the authored Graph interval</text>}
   </svg>;
 }

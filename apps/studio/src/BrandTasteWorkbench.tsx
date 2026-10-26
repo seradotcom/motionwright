@@ -51,7 +51,7 @@ export default function BrandTasteWorkbench({ project, commit, busy }: Props) {
           {missingScene && <option value={raw.sceneId}>Retained unavailable scene · {raw.sceneId}</option>}
           {project.scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.name}</option>)}
         </select></label>
-        <label className="production-field"><span>Brand rule</span><select value={raw.ruleId || stored?.rules[0]?.id || ""} onChange={event => patch({ ruleId: event.target.value })}>
+        <label className="production-field"><span>Brand rule</span><select value={raw.ruleId} onChange={event => patch({ ruleId: event.target.value })}>
           <option value="">Choose a saved rule</option>
           {missingRule && <option value={raw.ruleId}>Retained unavailable rule · {raw.ruleId}</option>}
           {stored?.rules.map(rule => <option key={rule.id} value={rule.id}>{rule.kind} · {rule.id.slice(0, 8)}</option>)}
@@ -61,7 +61,7 @@ export default function BrandTasteWorkbench({ project, commit, busy }: Props) {
         <label className="production-field"><span>Reason for exception</span><textarea rows={2} value={raw.rationale} onChange={event => patch({ rationale: event.target.value })}/></label>
       </div>
       <button className="secondary-button"
-        disabled={disabled || !stored || !raw.sceneId || !(raw.ruleId || stored.rules[0]?.id) || missingScene || missingRule || !raw.campaign.trim() || !raw.author.trim() || !raw.rationale.trim()}
+        disabled={disabled || !stored || !raw.sceneId || !raw.ruleId || missingScene || missingRule || !raw.campaign.trim() || !raw.author.trim() || !raw.rationale.trim()}
         onClick={() => void editor.submit("exception")}>Record scene-scoped exception</button>
     </section>
     <section className="production-approval">

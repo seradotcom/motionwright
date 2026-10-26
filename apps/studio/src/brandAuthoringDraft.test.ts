@@ -621,3 +621,26 @@ describe("uncertain brand outcomes remain observations", () => {
     })).rejects.toThrow(/changed during/);
   });
 });
+
+describe("explicit brand exception rule selection", () => {
+  it.each(["", id(999)])("rejects an empty or unavailable rule without replacing the user's selection: %s", async ruleId => {
+    const source = project(), original = clone(source);
+    const draft = governanceDraft(source, { ruleId, campaign: "Scoped test", author: "Test author", rationale: "Retain my explicit choice." });
+    const before = clone(draft);
+    await expect(prepareBrandSubmission(draft, source, ATTEMPT, "exception")).rejects.toThrow(/saved brand rule/);
+    expect(draft).toEqual(before); expect(source).toEqual(original);
+    expect((decodeBrandCopy(encodeBrandCopy(draft, WRITER, 10), draft.scope, WRITER).draft.raw as GovernanceRaw).ruleId).toBe(ruleId);
+  });
+
+  it("prepares the exact explicitly selected second rule and retains the source policy", async () => {
+    const source = project(), original = clone(source), ruleId = source.production_design!.brand_profile!.rules[1].id;
+    const draft = governanceDraft(source, { ruleId, campaign: "Scoped test", author: "Test author", rationale: "Use my selected rule only." });
+    const prepared = await prepareBrandSubmission(draft, source, ATTEMPT, "exception");
+    expect(prepared.change.type).toBe("set_brand_governance");
+    if (prepared.change.type !== "set_brand_governance") throw new Error("Wrong prepared change.");
+    expect(prepared.change.profile).toEqual(source.production_design!.brand_profile);
+    expect(prepared.change.exceptions.at(-1)!.rule_id).toBe(ruleId);
+    expect((prepared.draft.pending!.raw as GovernanceRaw).ruleId).toBe(ruleId);
+    expect(source).toEqual(original);
+  });
+});

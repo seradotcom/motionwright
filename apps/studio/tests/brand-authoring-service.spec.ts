@@ -720,3 +720,42 @@ for (const target of ["governance", "campaign"] as const) {
     } : undefined);
   });
 }
+
+test("an explicitly cleared brand rule issues zero grants and remains empty after a real SQLite restart", async ({ page }, info) => {
+  await withBrand(page, info, async ({ service, baseline, initialCounts, observe, restart }) => {
+    const root = governance(page), rule = root.getByRole("combobox", { name: "Brand rule", exact: true });
+    const submit = button(root, "Record scene-scoped exception");
+    const selected = baseline.production_design!.brand_profile!.rules[1].id;
+    await rule.selectOption(selected);
+    await field(root, "Campaign").fill("Retained explicit rule choice");
+    await field(root, "Recorded author").fill("Test author");
+    await field(root, "Reason for exception").fill("Only my chosen saved rule may receive this exception.");
+    await expect(submit).toBeEnabled();
+    await rule.selectOption("");
+    await expect(rule).toHaveValue(""); await expect(submit).toBeDisabled();
+    const copy = await ownCopy(page, baseline);
+    expect((copy.value.draft.raw as GovernanceRaw).ruleId).toBe("");
+    expect(mutationCounts(service)).toEqual(initialCounts);
+    expect(await observe("empty selection performs no mutation")).toEqual(baseline);
+    await button(page, "Production plan").click(); await button(page, "Brand & taste").click();
+    await expect(rule).toHaveValue(""); await expect(submit).toBeDisabled();
+    await restart(baseline);
+    await expect(rule).toHaveValue(""); await expect(submit).toBeDisabled();
+    expect(mutationCounts(service)).toEqual(initialCounts);
+    await rule.selectOption(selected);
+    await submit.click(); await revision(page, baseline.revision + 1);
+    const saved = await observe("only the explicit second rule receives the exception");
+    expect(saved.production_design!.brand_exceptions).toHaveLength(baseline.production_design!.brand_exceptions.length + 1);
+    expect(saved.production_design!.brand_exceptions.at(-1)!.rule_id).toBe(selected);
+    expect(saved.production_design!.brand_profile).toEqual(baseline.production_design!.brand_profile);
+    expect(applies(service).slice(initialCounts.apply)).toHaveLength(1);
+    await restart(saved);
+    expect(await observe("selected exception persists after reopen")).toEqual(saved);
+  }, async (service, source) => {
+    const profile = source.production_design!.brand_profile!;
+    return service.apply(source, { type: "set_brand_governance", profile: {
+      ...profile, version: profile.version + 1,
+      rules: [...profile.rules, { kind: "forbidden_phrase", id: randomUUID(), phrase: "unobserved_second_rule_" + randomUUID() }],
+    }, exceptions: [] });
+  });
+});

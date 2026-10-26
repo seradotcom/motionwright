@@ -100,6 +100,50 @@ test("Distillation later rationale remains available after an immutable review A
 });
 
 for(const target of ["author","review"]as const){
+  test(`Distillation ${target} same-revision inspection preserves UNKNOWN until the original base advances`,async({page})=>{
+    if(target==="author")await author(page);else await reviewer(page);
+    const initial=await page.evaluate(()=>window.__DISTILLATION_AUTHORITY__.project());
+    const request=await submit(page,target==="author"?"Propose original component":"Record review only");
+    await page.evaluate(id=>window.__DISTILLATION_AUTHORITY__.reject(id,"The original result was not observed"),request.id);
+    const field=target==="author"?label(page):note(page),later="  Later input retained while the original outcome is unknown  ";
+    await field.fill(later);
+    const originalCopies=await page.evaluate(target=>Object.entries(localStorage).flatMap(([key,raw])=>{
+      if(!key.startsWith("motionwright.component-distillation-recovery.v1:"))return [];
+      const copy=JSON.parse(raw) as {draft?:{target?:{kind?:string};pending?:{outcome?:string}}};
+      return copy.draft?.target?.kind===target&&copy.draft.pending?.outcome==="UNKNOWN"?[{key,raw}]:[];
+    }),target);
+    expect(originalCopies.length).toBeGreaterThan(0);
+    const region=page.getByRole("region",{name:"Unconfirmed Distillation "+target,exact:true});
+    await expect(region).toBeVisible();
+    await button(page,"Read saved Distillation "+target+" and history").click();
+    await expect(page.getByLabel("Distillation "+target+" outcome review",{exact:true})).toContainText("Read r"+initial.revision+" and 0 consecutive history records.");
+    const continueButton=button(page,"Keep earlier Distillation "+target+" attempt and continue editing");
+    await expect(continueButton).toBeDisabled();
+    await expect(region).toContainText("The original attempt can still commit on this revision.");
+    await expect(field).toHaveValue(later);
+    expect((await requests(page)).length).toBe(1);
+    expect(await page.evaluate(()=>window.__DISTILLATION_AUTHORITY__.project())).toEqual(initial);
+    expect(await page.evaluate(entries=>entries.every(entry=>localStorage.getItem(entry.key)===entry.raw),originalCopies)).toBe(true);
+
+    await page.evaluate(()=>window.__DISTILLATION_AUTHORITY__.externalChange({type:"rename_project",title:"Independent peer revision after an uncertain result"}));
+    const advanced=await page.evaluate(()=>window.__DISTILLATION_AUTHORITY__.project());
+    expect(advanced.revision).toBe(initial.revision+1);
+    await button(page,"Read saved Distillation "+target+" and history").click();
+    await expect(page.getByLabel("Distillation "+target+" outcome review",{exact:true})).toContainText("Read r"+advanced.revision+" and 1 consecutive history records.");
+    await expect(continueButton).toBeEnabled();
+    await continueButton.click();
+    await expect(region).not.toBeVisible();
+    await expect(field).toHaveValue(later);
+    expect((await requests(page)).length).toBe(1);
+    expect(await page.evaluate(()=>window.__DISTILLATION_AUTHORITY__.project())).toEqual(advanced);
+    expect(await page.evaluate(entries=>entries.every(entry=>localStorage.getItem(entry.key)===entry.raw),originalCopies)).toBe(true);
+    await page.reload();await open(page);
+    await expect(field).toHaveValue(later);
+    await expect(region).not.toBeVisible();
+    expect(await requests(page)).toEqual([]);
+    expect(await page.evaluate(()=>window.__DISTILLATION_AUTHORITY__.project())).toEqual(advanced);
+    expect(await page.evaluate(entries=>entries.every(entry=>localStorage.getItem(entry.key)===entry.raw),originalCopies)).toBe(true);
+  });
   test(`Distillation ${target} matching observed values cannot acknowledge a lost original reply or replay on reload`,async({page})=>{
     if(target==="author")await author(page);else await reviewer(page);
     const request=await submit(page,target==="author"?"Propose original component":"Record review only");

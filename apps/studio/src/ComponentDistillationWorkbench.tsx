@@ -247,7 +247,8 @@ function DraftFeedback({ editor }: { editor: ReturnType<typeof useDraft> }) {
       {review && <div aria-label={label + " outcome review"}>
         <p>Read r{review.project.revision} and {review.events.length} consecutive history records. Matching value records: {review.matchingValueRevisions.join(", ") || "none"}. This is comparison, not an acknowledgement.</p>
         <details><summary>Inspect the submitted source decision</summary><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(draft.pending.raw, null, 2)}</pre></details>
-        <button type="button" className="secondary-button" disabled={busy || reviewing || !distillationOutcomeMatches(draft, review.project, review)} onClick={editor.continueEditing}>Keep earlier {label} attempt and continue editing</button>
+        {review.project.revision <= draft.pending.revision && <p role="status">The original attempt can still commit on this revision. Keep it UNKNOWN and inspect again after the saved revision advances.</p>}
+        <button type="button" className="secondary-button" disabled={busy || reviewing || !distillationOutcomeMatches(draft, review.project, review) || review.project.revision <= draft.pending.revision} onClick={editor.continueEditing}>Keep earlier {label} attempt and continue editing</button>
       </div>}
     </section>}
     {conflict && !distillationUnconfirmed(draft) && <section className="production-notice" aria-label={label + " revision conflict"}>

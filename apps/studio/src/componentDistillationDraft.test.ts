@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
@@ -301,6 +301,62 @@ describe("Distillation raw author/reviewer scope and original response authority
 });
 
 describe("Distillation verified durable custody and current unknown-outcome review", () => {
+  for (const kind of ["author", "review"] as const) {
+    for (const outcome of ["UNKNOWN", "NOT_SENT"] as const) {
+      it(`${kind} ${outcome} confirmation preserves the exact same draft bytes when the clock advances`, async () => {
+        const { prepared } = await armed(kind), store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody();
+        const draft = outcome === "NOT_SENT" ? retainDistillationFailure(prepared.draft, requestId, "Local dispatch was not confirmed", true) : prepared.draft;
+        const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+        try {
+          writeDistillationCopy(store, pointers, draft, owner);
+          const key = distillationCopyKey(draft.scope, writer), pointer = distillationPointerKey(draft.scope), raw = store.getItem(key)!;
+          const before = structuredClone(owner), writes = vi.spyOn(store, "setItem");
+          expect(JSON.parse(raw).updatedAt).toBe(1000); expect(JSON.parse(raw).draft.pending.outcome).toBe(outcome);
+          clock.mockReturnValue(2000);
+          writeDistillationCopy(store, pointers, structuredClone(draft), owner);
+          expect(store.getItem(key)).toBe(raw); expect(owner).toEqual(before); expect(writes).not.toHaveBeenCalled();
+          expect(pointers.getItem(pointer)).toBe(writer);
+        } finally { clock.mockRestore(); }
+      });
+    }
+  }
+  it("same-draft confirmation still rejects a missing publication and repairs only a successful pointer retry", async () => {
+    const { prepared } = await armed(), store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody();
+    const pointer = distillationPointerKey(prepared.draft.scope), key = distillationCopyKey(prepared.draft.scope, writer);
+    const publish = pointers.setItem.bind(pointers), clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      pointers.setItem = () => {};
+      expect(() => writeDistillationCopy(store, pointers, prepared.draft, owner)).toThrow("pointer was not confirmed");
+      const raw = store.getItem(key)!, writes = vi.spyOn(store, "setItem");
+      expect(owner.expectedRaw).toBe(raw); expect(owner.expectedPointer).toBeNull(); expect(pointers.getItem(pointer)).toBeNull();
+      clock.mockReturnValue(2000);
+      expect(() => writeDistillationCopy(store, pointers, structuredClone(prepared.draft), owner)).toThrow("pointer was not confirmed");
+      expect(store.getItem(key)).toBe(raw); expect(owner.expectedRaw).toBe(raw); expect(owner.expectedPointer).toBeNull();
+      expect(writes).not.toHaveBeenCalled(); expect(pointers.getItem(pointer)).toBeNull();
+      pointers.setItem = publish; clock.mockReturnValue(3000);
+      writeDistillationCopy(store, pointers, structuredClone(prepared.draft), owner);
+      expect(store.getItem(key)).toBe(raw); expect(writes).not.toHaveBeenCalled();
+      expect(owner.expectedRaw).toBe(raw); expect(owner.expectedPointer).toBe(writer); expect(pointers.getItem(pointer)).toBe(writer);
+    } finally { clock.mockRestore(); }
+  });
+  for (const replacement of [null, fork]) {
+    it(`same-draft confirmation rejects a previously confirmed pointer replaced by ${replacement ?? "missing"}`, async () => {
+      const { prepared } = await armed(), store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+      try {
+        writeDistillationCopy(store, pointers, prepared.draft, owner);
+        const key = distillationCopyKey(prepared.draft.scope, writer), pointer = distillationPointerKey(prepared.draft.scope);
+        const raw = store.getItem(key), before = structuredClone(owner), writes = vi.spyOn(store, "setItem");
+        if (replacement === null) pointers.removeItem(pointer); else pointers.setItem(pointer, replacement);
+        clock.mockReturnValue(2000);
+        expect(() => writeDistillationCopy(store, pointers, structuredClone(prepared.draft), owner)).toThrow("writer pointer");
+        expect(store.getItem(key)).toBe(raw); expect(owner).toEqual(before); expect(writes).not.toHaveBeenCalled();
+        expect(pointers.getItem(pointer)).toBe(replacement);
+      } finally { clock.mockRestore(); }
+    });
+  }
+
+
   for (const fault of ["data", "pointer"] as const) {
     it(`requires ${fault} readback before an armed recovery copy can permit dispatch`, async () => {
       const { prepared } = await armed(), store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody(), affected = fault === "data" ? store : pointers;
@@ -342,6 +398,60 @@ describe("Distillation verified durable custody and current unknown-outcome revi
     expect(() => decodeDistillationCopy(JSON.stringify({ ...copy, draft: { ...draft, raw: { ...draft.raw, acknowledged: true } } }), draft.scope, writer)).toThrow();
     expect(() => decodeDistillationCopy(JSON.stringify({ ...copy, draft: { ...draft, pending: { ...draft.pending, effect_grant: "forged" } } }), draft.scope, writer)).toThrow();
   });
+  for (const kind of ["author", "review"] as const) {
+    it(`${kind} same-revision inspection cannot release an original attempt that may still commit`, async () => {
+      const { project, prepared } = await armed(kind);
+      const later = edit(prepared.draft, "  Later input while the original result is unknown  ");
+      const { storage, pointers, owner, key, pointer } = recoverySource(later);
+      const original = storage.getItem(key), pending = structuredClone(later.pending);
+      let reads = 0;
+      const review = await inspectDistillationOutcome(later, project, {
+        readProject: async () => { reads++; return structuredClone(project); },
+        readHistory: async () => [],
+      });
+      expect(reads).toBe(2);
+      expect(review.project.revision).toBe(pending!.revision);
+      expect(review.events).toEqual([]);
+      expect(distillationOutcomeMatches(later, project, review)).toBe(true);
+      expect(() => releaseDistillationOutcome(later, project, review)).toThrow("could still commit");
+      expect(() => prepareDistillationSubmission(later, project, fork)).toThrow("uncertain attempt");
+      expect(later.pending).toEqual(pending);
+      expect(storage.getItem(key)).toBe(original);
+      expect(pointers.getItem(pointer)).toBe(writer);
+      expect(owner.expectedRaw).toBe(original);
+      const reopened = decodeDistillationCopy(original!, later.scope, writer).draft;
+      expect(reopened.raw).toEqual(later.raw);
+      expect(reopened.pending).toEqual(pending);
+      expect(distillationUnconfirmed(reopened)).toBe(true);
+    });
+    it(`${kind} an advanced inspected revision permits separate intent without acknowledging or deleting the original`, async () => {
+      const { project, prepared } = await armed(kind);
+      const later = edit(prepared.draft, "  Later input retained after a peer revision  ");
+      const { storage, pointers, owner, key } = recoverySource(later), original = storage.getItem(key);
+      const peer: Change = { type: "rename_project", title: "Independent peer change closes the original base" };
+      const saved = await applyChange(project, peer);
+      const review = await inspectDistillationOutcome(later, saved, {
+        readProject: async () => structuredClone(saved), readHistory: async () => journal(saved, peer),
+      });
+      expect(saved.revision).toBe(project.revision + 1);
+      expect(review.matchingValueRevisions).toEqual([]);
+      const next = releaseDistillationOutcome(later, saved, review);
+      expect(next.baseRevision).toBe(saved.revision);
+      expect(next.raw).toEqual(later.raw);
+      expect(next.pending).toBeNull();
+      expect(next.intent).toBe(true);
+      expect(later.pending).toEqual(prepared.draft.pending);
+      const newer = retainReviewedDistillationIntent(storage, pointers, later, next, owner, fork);
+      expect(storage.getItem(key)).toBe(original);
+      const retained = decodeDistillationCopy(original!, later.scope, writer).draft;
+      expect(retained.pending).toEqual(prepared.draft.pending);
+      expect(retained.raw).toEqual(later.raw);
+      const reopened = decodeDistillationCopy(newer.expectedRaw!, next.scope, fork).draft;
+      expect(reopened.pending).toBeNull();
+      expect(reopened.raw).toEqual(later.raw);
+      expect(pointers.getItem(distillationPointerKey(next.scope))).toBe(fork);
+    });
+  }
   it("requires fresh read-history-read while matching history remains comparison only", async () => {
     const { project, prepared } = await armed(), saved = await applyChange(project, prepared.change); let reads = 0;
     const review = await inspectDistillationOutcome(prepared.draft, saved, { readProject: async () => { reads++; return saved; }, readHistory: async () => journal(saved, prepared.change) });
