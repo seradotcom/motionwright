@@ -427,10 +427,10 @@ def sdk_g0(repo, snapshot, tools, env, logs, context, call, stage=None):
     verify_tools(tools)
     python = tools["python"]["absolute_path"]
     specs = (
-        ("g0-prerequisites", [python, "-I", "-B", "-c",
+        ("g0-prerequisites", [python, "-I", "-B", "-X", "utf8", "-c",
           "import sys,tomllib,jsonschema,yaml; assert sys.version_info >= (3,11); print('SDK_G0_PREREQUISITES_AVAILABLE')"]),
-        ("g0-hygiene", [python, "-I", "-B", str(repo / "scripts/verify-oss-hygiene.py")]),
-        ("g0-source", [python, "-I", "-B", str(repo / "scripts/verify-source.py")]),
+        ("g0-hygiene", [python, "-I", "-B", "-X", "utf8", str(repo / "scripts/verify-oss-hygiene.py")]),
+        ("g0-source", [python, "-I", "-B", "-X", "utf8", str(repo / "scripts/verify-source.py")]),
         ("g0-format", [tools["cargo-fmt"]["absolute_path"], "fmt", "--all", "--", "--check"]),
     )
     stage = {} if stage is None else stage

@@ -186,6 +186,8 @@ class SDKFoundationCandidateTests(unittest.TestCase):
              patch.object(gate, "verify_tools"), patch.object(gate.observer, "original_stream", side_effect=stream):
             result = gate.sdk_g0(self.repo, self.g0_snapshot(), self.g0_tools(), {}, self.logs, self.context, call)
         self.assertEqual([r[0] for r in calls], ["g0-prerequisites", "g0-hygiene", "g0-source", "g0-format"])
+        for _, argv, _ in calls[:3]:
+            self.assertEqual(argv[:5], [str(self.root / "python"), "-I", "-B", "-X", "utf8"])
         self.assertIn(str(self.repo / "scripts/verify-source.py"), calls[2][1])
         self.assertEqual(calls[-1][1], [str(self.root / "cargo-fmt"), "fmt", "--all", "--", "--check"])
         self.assertEqual(result["status"], "PASS_G0_SDK_FOCAL")
