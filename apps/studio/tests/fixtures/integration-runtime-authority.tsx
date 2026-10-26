@@ -7,7 +7,8 @@ import "../../src/styles.css";
 
 // Real Integration component and API wrappers, explicitly synthetic deferred IPC.
 // These requests do not inspect/install a runtime or mutate canonical projects.
-type Command = "production_runtime_status" | "choose_semwright_connection" | "clear_saved_semwright_connection";
+type Command = "production_runtime_status" | "choose_semwright_connection" |
+  "clear_saved_semwright_connection" | "choose_brand_font_media_root";
 type Request = Record<string, unknown>;
 type Pending = { id: number; command: Command; request: Request; settled: boolean;
   resolve(value: unknown): void; reject(error: Error): void };
@@ -27,11 +28,16 @@ const runtime = window as unknown as Record<string, unknown>;
 runtime.__TAURI_INTERNALS__ = {
   invoke(command: string, args: { request?: Request }): Promise<unknown> {
     if (!(["production_runtime_status", "choose_semwright_connection",
-      "clear_saved_semwright_connection"] as string[]).includes(command) || !args.request) {
+      "clear_saved_semwright_connection", "choose_brand_font_media_root"] as string[]).includes(command) || !args.request) {
       unexpectedCommands.push(command);
       return Promise.reject(new Error("Unrelated command in synthetic runtime fixture: " + command));
     }
     const request = structuredClone(args.request);
+    if (command === "choose_brand_font_media_root" &&
+        JSON.stringify(Object.keys(request).sort()) !== JSON.stringify(["generation", "project_id", "revision"])) {
+      unexpectedCommands.push(command + ": unexpected request fields");
+      throw new Error("Font folder selection may send only the exact project source, without a path or grant.");
+    }
     const project = projects.get(String(request.project_id));
     const generation = command === "production_runtime_status" ? request.expected_generation : request.generation;
     const revision = command === "production_runtime_status" ? request.expected_revision : request.revision;
