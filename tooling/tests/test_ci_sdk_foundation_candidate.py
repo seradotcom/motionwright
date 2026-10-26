@@ -476,10 +476,28 @@ class SDKFoundationCandidateTests(unittest.TestCase):
 
     def test_local_gate_g0_positive_remains_separate_from_sdk_credit(self):
         path, snapshot, python, _ = self.gate_receipt_fixture()
-        def call(argv, cwd, env, output, label, timeout, context):
+        now = [0]
+        budget = gate.Budget(500, lambda: now[0])
+        original_deadline = budget.deadline
+        requested, observed = [], []
+        elapsed = {"gate-source_policy": 40, "gate-public_surface_policy": 20,
+                   "gate-acceptance_policy": 400, "gate-creative_status_policy": 30,
+                   "gate-contracts": 1}
+        def delegate(argv, cwd, env, output, label, timeout, context):
+            observed.append((label, timeout))
+            now[0] += elapsed[label] * 1_000_000_000
             return {"exit_code": 0, "argv": argv, "context": context}
+        def call(argv, cwd, env, output, label, timeout, context):
+            requested.append((label, timeout))
+            return budget.call(delegate, argv, cwd, env, output, label, timeout, context)
         with patch.object(gate, "source_unchanged"), patch.object(gate, "verify_tools"):
             result = gate.local_gate_g0(self.repo, snapshot, {"python": python}, {}, path.parent, self.context, call)
+        labels = ["gate-source_policy", "gate-public_surface_policy", "gate-acceptance_policy",
+                  "gate-creative_status_policy", "gate-contracts"]
+        self.assertEqual(requested, list(zip(labels, (480, 480, 480, 480, 300))))
+        self.assertEqual(observed, list(zip(labels, (480.0, 460.0, 440.0, 40.0, 10.0))))
+        self.assertEqual(budget.deadline, original_deadline)
+        self.assertEqual(budget.remaining(480), 9.0)
         self.assertEqual(result["status"], "PASS_EXACT_LOCAL_GATE_G0")
         self.assertEqual(result["executed_source_sha"], snapshot["sha"])
         self.assertEqual(result["sdk_g0_credit"], "NONE")

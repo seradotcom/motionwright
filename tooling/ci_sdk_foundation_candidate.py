@@ -47,6 +47,7 @@ GATE_PINS = {
     "tooling/ci_test_runner.py": "b7d39ad4c94be70abcac75880f92d00cf3c8d49eb0198b404a962ce5ab1a712f",
 }
 GATE_POLICIES = ("source_policy", "public_surface_policy", "acceptance_policy", "creative_status_policy")
+LOCAL_GATE_POLICY_SECONDS = 480
 GATE_PATTERNS = ("test_ci_sdk_foundation_candidate.py", "test_ci_foundation_causal.py", "test_ci_storage_apply_recovery.py")
 GATE_FILES = tuple(dict.fromkeys((WORKFLOW, HELPER, TEST, *GATE_PINS,
     *("tooling/" + p + ".py" for p in GATE_POLICIES), "tooling/source_lock_admission.py",
@@ -856,7 +857,7 @@ def local_gate_g0(gate, snapshot, tools, env, logs, context, call):
     policies = []
     for name in GATE_POLICIES:
         row = call([python, "-I", "-B", "-c", bootstrap, str(gate / "tooling" / (name + ".py"))],
-                   gate, env, logs, "gate-" + name, 180, frame)
+                   gate, env, logs, "gate-" + name, LOCAL_GATE_POLICY_SECONDS, frame)
         policies.append(row)
     report_path = logs / "gate-unittest.json"
     argv = [python, "-I", "-B", str(gate / "tooling/ci_test_runner.py"), "--repo", str(gate),
