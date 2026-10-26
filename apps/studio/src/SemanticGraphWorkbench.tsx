@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { DeliverableProfile, Project, ReviewAnchor, Scene } from "./types";
+import type { DeliverableProfile, Project, RationalTime, ReviewAnchor, Scene } from "./types";
 import { graphPreviewFontFamily, graphPreviewFontLicense, graphPreviewMissingCodepoints, graphPreviewText, loadGraphPreviewFont } from "./semanticGraphFonts";
-import { graphAdmissionIssue, graphEdgeLabelBox, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphReviewAnchor,
+import { graphAdmissionIssue, graphEdgeLabelBox, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphPreviewClock, graphReviewAnchor,
   graphSame, graphSourceSnapshot, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphContent, GraphRaw, GraphTargetBinding, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
 import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, createGraphDraft, decodeGraphCopy, discardGraphCopy, editGraphDraft, failGraphSubmission,
@@ -397,14 +397,14 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
     </section>
     <section className="production-viewer" aria-label="Graph editorial preview"><h3>Editorial vector study</h3><p>Uncommitted source preview · no native render, SQLite save or fidelity acceptance is asserted.</p>
       <label className="production-field"><span>Graph editorial view</span><select aria-label="Graph editorial view" value={previewMode} onChange={e => setPreviewMode(e.target.value as "complete" | "playhead")}><option value="complete">Complete topology</option><option value="playhead">Follow the scene playhead</option></select></label>
-      {preview ? <div className="production-preview-mat"><GraphPreview graph={preview} time={previewMode === "playhead" && props.playhead !== undefined
-        ? props.playhead - Number(props.scene!.start.num) / Number(props.scene!.start.den) - Number(preview.time_range.start.num) / Number(preview.time_range.start.den) : undefined} /></div>
+      {preview ? <div className="production-preview-mat"><GraphPreview graph={preview} sceneStart={props.scene!.start}
+        playhead={previewMode === "playhead" ? props.playhead : undefined} displayRate={props.displayProfile?.frame_rate} /></div>
         : <p role="status">Finish the current geometric and timing fields to view the editorial study. Every raw input remains retained.</p>}
     </section>
   </div>;
 }
 
-function GraphPreview({ graph, time }: { graph: SemanticGraph; time?: number }) {
+function GraphPreview({ graph, sceneStart, playhead, displayRate }: { graph: SemanticGraph; sceneStart: RationalTime; playhead?: number; displayRate?: RationalTime }) {
   const family = graph.style.font_family;
   const [fontAttempt, retryFont] = useState(0);
   const [fontState, setFontState] = useState<{ family: typeof family; ready: boolean; error: string | null }>({ family, ready: false, error: null });
@@ -423,15 +423,11 @@ function GraphPreview({ graph, time }: { graph: SemanticGraph; time?: number }) 
   if (fontState.family !== family || !fontState.ready) return fontState.family === family && fontState.error
     ? <div className="production-help"><p role="alert">Preview unavailable: {fontState.error} The Graph input is preserved.</p><button className="secondary-button" onClick={() => retryFont(value => value + 1)}>Retry Graph preview fonts</button></div>
     : <p role="status">Loading Graph preview fonts...</p>;
-  const t = time ?? Number(graph.time_range.duration.num) / Number(graph.time_range.duration.den), w = graph.reference_frame.width, h = graph.reference_frame.height;
-  const inInterval = time === undefined || (t >= 0 && t < Number(graph.time_range.duration.num) / Number(graph.time_range.duration.den));
-  const activeEvents = graph.content.kind === "system_flow" ? graph.content.events.filter(event => {
-    const at = Number(event.at.num) / Number(event.at.den), end = at + Number(event.duration.num) / Number(event.duration.den); return t >= at && t < end;
-  }) : [];
-  const opacity = (appearance: { at: { num: string; den: string }; duration: { num: string; den: string } }) => {
-    const at = Number(appearance.at.num) / Number(appearance.at.den), duration = Number(appearance.duration.num) / Number(appearance.duration.den);
-    return graph.motion === "off" ? t >= at ? 1 : 0 : Math.max(0, Math.min(1, (t - at) / duration));
-  };
+  const w = graph.reference_frame.width, h = graph.reference_frame.height;
+  const clock = graphPreviewClock(graph, sceneStart, playhead, displayRate);
+  const { inInterval, opacity } = clock;
+  const activeEvents = graph.content.kind === "system_flow"
+    ? graph.content.events.filter(event => clock.contains(event.at, event.duration)) : [];
   const textBox = (label: string, box: { x: number; y: number; width: number; height: number }, key: string) => {
     // Fixed v1 positions; this editorial SVG does not attest native font availability or fit.
     // Preserve literal LF, spaces and empty lines; never wrap, normalize, clip or scale the source.

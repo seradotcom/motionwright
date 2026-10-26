@@ -236,11 +236,56 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
       const preview = page.getByRole("img", { name: "Editorial semantic Graph vector study", exact: true });
       const edgeText = preview.locator(`[data-graph-label="${edge.id}-label"] [data-graph-label-line="0"]`);
       const edgeLine = edgeText.locator("xpath=../..").locator(":scope > polyline");
+      const assertFlowInterval = async (stage: string, expectedProject: Project, x: number, singleLineY: number) => {
+        if (kind !== "system_flow") return;
+        // These authored fixtures use 30 fps: the retained event occupies frame
+        // two through the exclusive boundary at frame three. Only actual App
+        // transport controls move the playhead; no Graph adapter supplies time.
+        expect(Number(profile!.frame_rate.num) / Number(profile!.frame_rate.den)).toBe(30);
+        const beforeSeek = await service.observeStoredProject(expectedProject);
+        const mutationCount = graphRequests(service).length;
+        await field(page, "Editor preview timebase").selectOption(setup.profileId);
+        await field(page, "Production working scene").selectOption(setup.sceneId);
+        await field(page, "Graph editorial view").selectOption("playhead");
+        const label = preview.locator('[data-graph-label="' + edge.id + '-label"]');
+        const lines = label.locator("[data-graph-label-line]");
+        await button(page, "Step forward one frame").click();
+        await expect(lines).toHaveCount(1);
+        await expect(lines.nth(0)).toHaveText("Route \u00b7 data");
+        await expect(lines.nth(0)).toHaveAttribute("x", String(x));
+        await expect(lines.nth(0)).toHaveAttribute("y", String(singleLineY));
+        await button(page, "Step forward one frame").click();
+        await expect(lines).toHaveCount(2);
+        await expect(lines.nth(0)).toHaveText("Route \u00b7 data");
+        await expect(lines.nth(1)).toHaveText("Retained synthetic transfer");
+        // Fixed 20px type with a 24px baseline interval: a two-line label
+        // stays centered around the same independently authored box.
+        await expect(lines.nth(0)).toHaveAttribute("x", String(x));
+        await expect(lines.nth(0)).toHaveAttribute("y", String(singleLineY - 12));
+        await expect(lines.nth(1)).toHaveAttribute("x", String(x));
+        await expect(lines.nth(1)).toHaveAttribute("y", String(singleLineY + 12));
+        await expect(lines.nth(1)).toBeVisible();
+        await button(page, "Step forward one frame").click();
+        await expect(lines).toHaveCount(1);
+        await expect(lines.nth(0)).toHaveText("Route \u00b7 data");
+        await expect(lines.nth(0)).toHaveAttribute("x", String(x));
+        await expect(lines.nth(0)).toHaveAttribute("y", String(singleLineY));
+        const afterSeek = await service.observeStoredProject(expectedProject);
+        expect(afterSeek.project).toEqual(beforeSeek.project);
+        expect(afterSeek.journal).toEqual(beforeSeek.journal);
+        expect(graphRequests(service)).toHaveLength(mutationCount);
+        observations.push({ stage, eventId: first.content.kind === "system_flow" ? first.content.events[0].id : null,
+          relativeFrames: [1, 2, 3], beforeAndAfter: { x, y: singleLineY },
+          activeLines: [{ x, y: singleLineY - 12 }, { x, y: singleLineY + 12 }],
+          sourceUnchanged: true, graphMutations: mutationCount, editorialOnly: true });
+        await field(page, "Graph editorial view").selectOption("complete");
+      };
       await expect(edgeText).toBeVisible(); await expect(edgeText).toHaveAttribute("x", "624"); await expect(edgeText).toHaveAttribute("y", "411");
       await expect(edgeLine).toHaveAttribute("points", "280,220 600,220 600,540 1000,540");
       expect(graphRequests(service)).toHaveLength(1);
       observations.push({ stage: "automatic_saved", project: saved, graph: first, independentMidpoint: { x: 600, y: 420 },
         resolvedBox: { x: 504, y: 368, width: 240, height: 72 }, svgText: { x: 624, y: 411 }, editorialOnly: true });
+      await assertFlowInterval("automatic_saved_active_interval", saved, 624, 411);
 
       await vertices.nth(1).locator("summary").click(); await field(page, "Vertex 2 box x").fill("1200");
       // Lengths 320+320+600 move the midpoint to (600,520), not the
@@ -277,6 +322,7 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
       expect(graphRequests(service)).toHaveLength(2);
       observations.push({ stage: "automatic_reopened", oracle: automaticReopened,
         independentMidpoint: { x: 600, y: 520 }, resolvedBox: { x: 504, y: 468, width: 240, height: 72 }, svgText: { x: 624, y: 511 } });
+      await assertFlowInterval("automatic_reopened_active_interval", moved, 624, 511);
 
       await field(page, "Edge 1 label placement").selectOption("manual");
       await expect(field(page, "Edge 1 label offset X")).toHaveCount(0);
@@ -311,6 +357,7 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
       observations.push({ stage: "manual_reopened", oracle: manualReopened, initialInvalidRecoverySnapshot: retained[0],
         manualBox, waypoints, graphId: first.id, vertexIds: first.content.vertices.map(vertex => vertex.id), edgeId: edge.id,
         svgText: { x: 820, y: 743 }, graphMutations: 3, sqliteRestarts: 2 });
+      await assertFlowInterval("manual_reopened_active_interval", manual, 820, 743);
     } catch (error) {
       bodyFailed = true; primaryFailure = error; throw error;
     } finally {

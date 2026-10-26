@@ -5,6 +5,7 @@
  */
 import type { DeliverableProfile, Project, RationalTime, ReviewAnchor, Scene } from "./types";
 import { brandDigest } from "./brandGovernance";
+import { validEditorRate } from "./timecode";
 
 export const SEMANTIC_GRAPH_COMPONENT_VERSION = 1 as const;
 
@@ -284,6 +285,65 @@ export function graphFrameTime(frames: number, rate: RationalTime): RationalTime
   const n = BigInt(frames) * r.den, d = r.num, divisor = gcd(n, d);
   const result = { num: (n / divisor).toString(), den: (d / divisor).toString() }; graphFraction(result); return result;
 }
+
+/** Editorial timing against the shared project clock; never changes authored times. */
+export function graphPreviewClock(
+  graph: Pick<SemanticGraph, "time_range" | "motion">,
+  sceneStart: RationalTime,
+  playhead?: number,
+  displayRate?: RationalTime | null,
+) {
+  type Fraction = { num: bigint; den: bigint };
+  const add = (a: Fraction, b: Fraction): Fraction => {
+    const num = a.num * b.den + b.num * a.den, den = a.den * b.den, divisor = gcd(num, den);
+    return { num: num / divisor, den: den / divisor };
+  };
+  const seconds = (value: Fraction) => Number(value.num) / Number(value.den);
+  // Sum authored fractions before projecting into the numeric clock. Subtracting
+  // a scene start from that clock can move both ends of a one-frame event.
+  const origin = add(graphFraction(sceneStart), graphFraction(graph.time_range.start));
+  const boundary = (at: RationalTime, duration?: RationalTime) => {
+    const start = add(origin, graphFraction(at));
+    return duration === undefined ? start : add(start, graphFraction(duration));
+  };
+  const complete = playhead === undefined, finite = playhead !== undefined && Number.isFinite(playhead);
+  let exactPlayhead: Fraction | null = null;
+  if (finite && validEditorRate(displayRate)) {
+    const fps = Number(displayRate.num) / Number(displayRate.den), frame = Math.round(playhead! * fps);
+    if (Number.isSafeInteger(frame) && frame >= 0) {
+      const moment = { num: BigInt(frame) * BigInt(displayRate.den), den: BigInt(displayRate.num) };
+      // Recognize only exact projections emitted by the frame clock or rational
+      // scene seeks. Other continuous times are not snapped or given a tolerance.
+      if (playhead === frame / fps || playhead === seconds(moment)) exactPlayhead = moment;
+    }
+  }
+  const compare = (value: Fraction) => {
+    if (exactPlayhead) {
+      const delta = exactPlayhead.num * value.den - value.num * exactPlayhead.den;
+      return delta < 0n ? -1 : delta > 0n ? 1 : 0;
+    }
+    const projected = seconds(value);
+    return playhead! < projected ? -1 : playhead! > projected ? 1 : 0;
+  };
+  const inInterval = complete || (finite && compare(origin) >= 0 && compare(boundary(graph.time_range.duration)) < 0);
+  return {
+    inInterval,
+    contains: (at: RationalTime, duration: RationalTime) => !complete && inInterval
+      && compare(boundary(at)) >= 0 && compare(boundary(at, duration)) < 0,
+    opacity: (appearance: GraphAppearance) => {
+      if (complete) return 1;
+      if (!finite) return 0;
+      const start = boundary(appearance.at);
+      if (compare(start) < 0) return 0;
+      if (graph.motion === "off" || compare(boundary(appearance.at, appearance.duration)) >= 0) return 1;
+      const elapsed = exactPlayhead
+        ? seconds({ num: exactPlayhead.num * start.den - start.num * exactPlayhead.den, den: exactPlayhead.den * start.den })
+        : playhead! - seconds(start);
+      return Math.max(0, Math.min(1, elapsed / seconds(graphFraction(appearance.duration))));
+    },
+  };
+}
+
 export function graphExactFrame(time: RationalTime, rate: RationalTime, label = "Graph time"): bigint {
   const t = graphFraction(time, label), r = graphFraction(rate, "Frame rate");
   if (r.num <= 0n || (t.num * r.num) % (t.den * r.den) !== 0n) fail(label + " must lie on an exact frame; no rounding is applied.");
