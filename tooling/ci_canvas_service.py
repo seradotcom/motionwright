@@ -80,6 +80,321 @@ CAMERA_TITLES = (
     "a late saved-Camera read for scene A preserves the exact visible author copy of scene B",
     "a successful original Camera reply closes only scene A while scene B keeps its exact author bytes",
 )
+
+
+# The product inputs are nominated independently of this verification proposal.
+# A source review and G0 do not fill this runtime profile automatically.
+CAMERA_EIGHT_SCOPE = "camera-with-v2"
+CAMERA_EIGHT_REVIEWED_PROFILE = None
+CAMERA_EIGHT_HISTORICAL_SOURCE = "4cc2cd42e293f11986d4dfda9c9658e884618316"
+CAMERA_EIGHT_HISTORICAL_TREE = "0ce41c8d7904e2f4afe434058dc0655f85996885"
+CAMERA_EIGHT_GATE_PATHS = ("tooling/ci_canvas_service.py", "tooling/tests/test_ci_canvas_service.py",
+                           ".github/workflows/studio-service-verification.yml")
+CAMERA_EIGHT_HISTORICAL_INPUT_PINS = (
+    ("apps/studio/tests/camera-reframe-service.spec.ts", "5c9a6cd336786baa7fd22e871205c7515265b877dcdda9324378b46426a6536e"),
+    ("apps/studio/tests/camera-reframe-v2-service.spec.ts", "08ae282be69784e085a7be73ae233146843e0ee156f7e27c332ace2ea50089da"),
+    ("apps/studio/tests/support/scopedChangeService.ts", "2fba83ace30c032e11f3c108203c0d7a0e98821d79d081717281194108138f1d"),
+    ("SOURCE_LOCK.json", "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"),
+)
+CAMERA_EIGHT_SELECTIONS = (
+    ("camera", "camera-reframe-service.spec.ts", CAMERA_TITLES),
+    ("camera-v2", "camera-reframe-v2-service.spec.ts", (
+        "saved Manim v2 Camera preserves its authored pair through raw recovery, two UI edits and SQLite reopen",)),
+)
+CAMERA_EIGHT_CATALOG_SHA256 = "9deb9db56f3854b0e3c7aefe139a64c379616e9d83340bf2cd007048ad408c4a"
+CAMERA_EIGHT_TIMEOUTS = {"camera": 1200, "camera-v2": 300}
+CAMERA_EIGHT_DATABASES = (
+    ("camera", CAMERA_TITLES[0], "camera.sqlite3", 1),
+    ("camera", CAMERA_TITLES[1], "camera-lost-reply.sqlite3", 1),
+    ("camera", CAMERA_TITLES[2], "camera-held-upsert.sqlite3", 2),
+    ("camera", CAMERA_TITLES[3], "camera-held-detach.sqlite3", 2),
+    ("camera", CAMERA_TITLES[4], "camera-held-same-revision.sqlite3", 1),
+    ("camera", CAMERA_TITLES[5], "camera-late-read-scene-scope.sqlite3", 1),
+    ("camera", CAMERA_TITLES[6], "camera-late-ack-scene-scope.sqlite3", 1),
+    ("camera-v2", CAMERA_EIGHT_SELECTIONS[1][2][0], "camera-v2.sqlite3", 1),
+)
+
+
+def camera_eight_selections():
+    rows = CAMERA_EIGHT_SELECTIONS
+    require(isinstance(rows, tuple) and len(rows) == 2
+            and tuple((label, filename, len(titles)) for label, filename, titles in rows) == (
+                ("camera", "camera-reframe-service.spec.ts", 7),
+                ("camera-v2", "camera-reframe-v2-service.spec.ts", 1))
+            and rows[0][2] == CAMERA_TITLES
+            and all(isinstance(titles, tuple) and all(isinstance(title, str) and title for title in titles)
+                    for _, _, titles in rows)
+            and len({(filename, title) for _, filename, titles in rows for title in titles}) == 8
+            and hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                == CAMERA_EIGHT_CATALOG_SHA256, "Camera eight catalogue differs")
+    return rows
+
+
+def camera_eight_profile():
+    """Require a later explicit source nomination; historical inputs cannot activate it."""
+    profile = CAMERA_EIGHT_REVIEWED_PROFILE
+    require(isinstance(profile, dict) and set(profile) == {"schema", "source_commit", "source_tree",
+                "product_paths", "runner", "minimum_available_memory_bytes", "minimum_target_free_bytes",
+                "cargo_jobs", "job_seconds"}
+            and profile.get("schema") == "motionwright.camera-eight-runtime-profile/1",
+            "Camera runtime source/resource profile is not designated")
+    require(all(isinstance(profile.get(key), str) and re.fullmatch(r"[0-9a-f]{40}", profile[key])
+                for key in ("source_commit", "source_tree"))
+            and profile["source_commit"] != CAMERA_EIGHT_HISTORICAL_SOURCE,
+            "Camera needs a later nominated source; historical 4cc is not a runtime target")
+    require(isinstance(profile.get("product_paths"), dict)
+            and set(profile["product_paths"]) == {name for name, _ in CAMERA_EIGHT_HISTORICAL_INPUT_PINS}
+            and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                    for value in profile["product_paths"].values())
+            and profile["runner"] == "ubuntu-24.04"
+            and profile["minimum_available_memory_bytes"] == 4 * 1024**3
+            and profile["minimum_target_free_bytes"] == 18 * 1024**3
+            and profile["cargo_jobs"] == 1 and profile["job_seconds"] == 5400
+            and all(type(profile[key]) is int for key in ("minimum_available_memory_bytes",
+                    "minimum_target_free_bytes", "cargo_jobs", "job_seconds")),
+            "Camera nominated input or resource profile differs")
+    camera_eight_selections()
+    return dict(profile)
+
+
+def camera_eight_source_binding(repo, observation):
+    profile = camera_eight_profile()
+    require(isinstance(observation, dict) and isinstance(observation.get("files"), dict),
+            "Camera source observation missing")
+    for name, expected in profile["product_paths"].items():
+        require(observation["files"].get(name, {}).get("sha256") == expected,
+                "Camera product source bytes differ: " + name)
+    tree = subprocess.check_output(["git", "rev-parse", profile["source_commit"] + "^{tree}"],
+                                   cwd=repo, timeout=30).decode("ascii").strip()
+    require(tree == profile["source_tree"], "Camera nominated source tree differs")
+    changed = subprocess.check_output(["git", "diff", "--name-only", "-z", profile["source_commit"],
+                                       observation["checkout"], "--"], cwd=repo, timeout=30)
+    require(changed == b"" or changed.endswith(b"\0"), "Camera source delta is not closed")
+    names = changed.decode("utf-8").split("\0")[:-1] if changed else []
+    require(len(names) == len(set(names)) and set(names) <= set(CAMERA_EIGHT_GATE_PATHS),
+            "Camera gate changed nominated product outside its verification paths")
+    for name, expected in profile["product_paths"].items():
+        original = subprocess.check_output(["git", "show", profile["source_commit"] + ":" + name],
+                                           cwd=repo, timeout=30)
+        require(hashlib.sha256(original).hexdigest() == expected, "Camera nominated input blob differs")
+    return {"nominated_input": {"commit": profile["source_commit"], "tree": tree},
+            "executed_source": {"commit": observation["checkout"], "tree": observation["tree"]},
+            "verification_path_delta": names, "result_transfer": False, "source_profile": profile}
+
+
+def camera_eight_resources(repo, target, *, phase):
+    profile = camera_eight_profile()
+    require(phase in ("preflight", "build", "list-camera", "list-camera-v2", "execute-camera", "execute-camera-v2"),
+            "Camera resource phase differs")
+    require(sys.platform.startswith("linux") and os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and os.environ.get("GITHUB_JOB") == "real-service"
+            and os.environ.get("RUNNER_OS") == "Linux" and os.environ.get("ImageOS") == "ubuntu24"
+            and os.environ.get("ImageVersion") and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+            and re.fullmatch(r"[1-9][0-9]*", os.environ.get("GITHUB_RUN_ID", "")) is not None
+            and re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")) is not None,
+            "Camera requires its genuine first hosted Linux job")
+    require(repo.name == "g" and target == repo.parent / "v/t"
+            and Path(os.environ.get("GITHUB_WORKSPACE", "")) == repo.parent,
+            "Camera requires its isolated existing g/v layout")
+    memory = Path("/proc/meminfo").read_text(encoding="ascii")
+    rows = re.findall(r"^MemAvailable:\s+([0-9]+) kB$", memory, re.MULTILINE)
+    require(len(rows) == 1, "Camera memory observation is absent")
+    available = int(rows[0]) * 1024
+    free = shutil.disk_usage(target.parent).free
+    require(available >= profile["minimum_available_memory_bytes"]
+            and type(free) is int and free >= profile["minimum_target_free_bytes"],
+            "Camera source build or case resource floor is unavailable")
+    return {"phase": phase, "available_memory_bytes": available, "target_free_bytes": free,
+            "minimum_available_memory_bytes": profile["minimum_available_memory_bytes"],
+            "minimum_target_free_bytes": profile["minimum_target_free_bytes"],
+            "cargo_jobs": 1, "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1",
+            "job": "real-service", "executed_source": os.environ["GITHUB_SHA"],
+            "image_os": os.environ["ImageOS"], "image_version": os.environ["ImageVersion"],
+            "boundary": "PRE_COMMAND_OBSERVATION_NOT_CONTINUOUS_RESOURCE_WATCHDOG"}
+
+
+def camera_eight_preflight(arguments):
+    parser = argparse.ArgumentParser(description="Bind the closed Camera source before dependencies.")
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    camera_eight_profile()  # A missing runtime nomination refuses before filesystem/Git queries.
+    repo, target, output = (path.resolve() for path in (args.repo, args.target, args.output))
+    require(output == repo.parent / "v/tools/camera-preflight.json" and not output.exists(),
+            "Camera preflight requires its fresh original path")
+    source = source_observation(repo, CAMERA_EIGHT_SCOPE)
+    resources = camera_eight_resources(repo, target, phase="preflight")
+    value = {"schema": "motionwright.camera-eight-preflight/1", "source": source,
+             "resources": resources, "execution": "NOT_RUN", "formal_acceptance": False}
+    write_new(output, value)
+    require(json.loads(output.read_bytes()) == value, "Camera preflight original readback differs")
+    print(json.dumps({"status": "SOURCE_INPUTS_BOUND_NO_RUNTIME", "source": source["checkout"],
+                      "receipt": str(output)}))
+    return 0
+
+
+def camera_eight_report(document, filename, titles, *, listing, expected=None):
+    require(type(listing) is bool and (filename, titles) in {(name, names) for _, name, names in camera_eight_selections()},
+            "Camera file selection differs")
+    require(isinstance(document, dict) and document.get("errors") == [], "Camera original report errors")
+    stats = document.get("stats", {})
+    require(all(type(stats.get(key)) is int for key in ("expected", "skipped", "unexpected", "flaky")),
+            "Camera report counters are not integers")
+    if listing:
+        require(stats["expected"] == 0 and stats["skipped"] == len(titles)
+                and stats["unexpected"] == stats["flaky"] == 0,
+                "Camera discovery contains executed or unexpected results")
+    else:
+        validate_browser_execution(document, filename, titles)
+    actual = browser_result_identities(document)
+    require(len(actual) == len(titles) and {pair for pair, _ in actual} == {(filename, title) for title in titles},
+            "Camera exact title inventory differs")
+    specs = []
+    def visit(suites):
+        for suite in suites:
+            specs.extend(suite.get("specs", []))
+            visit(suite.get("suites", []))
+    visit(document["suites"])
+    require(len(specs) == len(titles), "Camera original spec inventory differs")
+    identities = []
+    for spec in specs:
+        case = spec["tests"][0]
+        require(case.get("expectedStatus") == "passed" and case.get("annotations", []) == []
+                and type(case.get("timeout")) is int and case["timeout"] == 120000,
+                "Camera skip or original case timeout differs")
+        require(isinstance(spec.get("id"), str) and 0 < len(spec["id"]) <= 512
+                and all(ord(char) >= 33 for char in spec["id"])
+                and type(spec.get("line")) is int and spec["line"] > 0
+                and type(spec.get("column")) is int and spec["column"] > 0,
+                "Camera original Playwright identity is missing")
+        require(not listing or case.get("results") == [], "Camera list contains a test result")
+        if not listing:
+            require(type(case["results"][0].get("retry")) is int and case["results"][0]["retry"] == 0,
+                    "Camera original retry counter is not zero")
+        identities.append({key: spec[key] for key in ("file", "title", "id", "line", "column")})
+    require(len({row["id"] for row in identities}) == len(titles), "Camera original case ID is repeated")
+    identities.sort(key=lambda row: titles.index(row["title"]))
+    if not listing:
+        require(isinstance(expected, dict) and expected.get("status") == "LISTED_NOT_EXECUTED"
+                and expected.get("identities") == identities, "Camera execution differs from its original list")
+    return {"status": "LISTED_NOT_EXECUTED" if listing else "PASSED_ORIGINAL_SELECTED_CASES",
+            "listed": len(titles), "executed": 0 if listing else len(titles),
+            "identities": identities, "skips": 0, "retries": 0}
+
+
+def camera_eight_intent(label, titles, argv, cwd, source, binary):
+    return {"schema": "motionwright.camera-eight-selection-intent/1", "label": label,
+            "expected_cases": len(titles), "argv": argv, "cwd": str(cwd),
+            "source_commit": source["checkout"], "source_tree": source["tree"], "service_binary": binary,
+            "execution": "NOT_STARTED", "retry": "FORBIDDEN"}
+
+
+def camera_eight_record_attempt(selection, command):
+    pid = command.get("pid")
+    selection.update(command=command, attempted=type(pid) is int and pid > 0,
+                     original_pid=pid if type(pid) is int and pid > 0 else None,
+                     original_exit=command.get("exit_code"),
+                     status="UNKNOWN" if execution_unknown(command) else "FAIL", validated_cases=0)
+
+
+def camera_eight_archive_lists(root, inventory, receipt, source, command_closed):
+    rows = camera_eight_selections()
+    observed = receipt.get("camera_discovery", [])
+    require(isinstance(observed, list) and [row.get("label") for row in observed] == [row[0] for row in rows],
+            "Camera original two-list inventory differs")
+    preflight = archive_json(root, inventory, "tools/camera-preflight.json")
+    require(preflight.get("schema") == "motionwright.camera-eight-preflight/1"
+            and preflight.get("source") == source and preflight.get("execution") == "NOT_RUN"
+            and preflight.get("formal_acceptance") is False
+            and preflight.get("resources", {}).get("phase") == "preflight"
+            and receipt.get("camera_preflight") == {key: inventory["entries"]["tools/camera-preflight.json"][key]
+                                                     for key in ("bytes", "sha256")},
+            "Camera preflight original differs")
+    resource_rows = receipt.get("camera_resource_observations", [])
+    expected_phases = ["build", "list-camera", "list-camera-v2", "execute-camera", "execute-camera-v2"]
+    require(isinstance(resource_rows, list) and [row.get("phase") for row in resource_rows] == expected_phases,
+            "Camera resource observation roster differs")
+    for row in [preflight.get("resources", {}), *resource_rows]:
+        require(row.get("run_id") == receipt.get("run_id") and row.get("run_attempt") == receipt.get("run_attempt") == "1"
+                and row.get("job") == receipt.get("job") == "real-service"
+                and row.get("executed_source") == source["checkout"]
+                and row.get("image_os") == "ubuntu24" and isinstance(row.get("image_version"), str)
+                and row["image_version"] and type(row.get("cargo_jobs")) is int and row["cargo_jobs"] == 1
+                and row.get("minimum_available_memory_bytes") == 4 * 1024**3
+                and row.get("minimum_target_free_bytes") == 18 * 1024**3
+                and type(row.get("available_memory_bytes")) is int and row["available_memory_bytes"] >= 4 * 1024**3
+                and type(row.get("target_free_bytes")) is int and row["target_free_bytes"] >= 18 * 1024**3,
+                "Camera original resource/context observation differs")
+    repo, target = root.parent / "g", root / "t"
+    node = receipt["node"]["path"]
+    cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+    result = {}
+    for observed_row, selection in zip(observed, rows):
+        label, filename, titles = selection
+        command = observed_row.get("command", {})
+        command_closed(command, label + "-discovery")
+        env = service_environment_binding(target, root / "e", label, target / "debug/examples/studio_review_session")
+        env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(root / "e" / (label + "-discovery.json"))
+        require(command.get("argv") == service_command(node, cli, root / "e", selection,
+                                                       listing=True, scope=CAMERA_EIGHT_SCOPE)
+                and command.get("cwd") == str(repo / "apps/studio")
+                and command.get("selected_environment") == env,
+                "Camera original list invocation differs")
+        path = "e/" + label + "-discovery.json"
+        actual = camera_eight_report(archive_json(root, inventory, path), filename, titles, listing=True)
+        require(observed_row.get("status") == "LISTED_NOT_EXECUTED" and observed_row.get("verified") == actual
+                and observed_row.get("original_report") == {key: inventory["entries"][path][key] for key in ("bytes", "sha256")},
+                "Camera original list report differs")
+        result[label] = actual
+    all_ids = [identity["id"] for item in result.values() for identity in item["identities"]]
+    require(len(all_ids) == len(set(all_ids)) == 8, "Camera two-list original IDs are not eight distinct identities")
+    def original_time(value):
+        require(isinstance(value, str) and value, "Camera original command time is absent")
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        require(instant.tzinfo is not None and instant.utcoffset() is not None,
+                "Camera original command time has no timezone")
+        return instant
+    lists_end = [original_time(row["command"].get("finished_utc")) for row in observed]
+    executions = receipt.get("selections", [])
+    require(len(executions) == 2 and all(max(lists_end) <= original_time(row.get("command", {}).get("started_utc"))
+                                       for row in executions),
+            "Camera execution started before both original lists closed")
+    return result
+
+
+def camera_eight_capture_bindings(root, inventory, captures):
+    """Bind eight distinct source-declared databases; do not claim archive reopen."""
+    require(len(captures) == 8 and len({row.get("manifest") for row in captures}) == 8,
+            "Camera requires all eight original closed stores")
+    layout = {database: (label, title, participants) for label, title, database, participants in CAMERA_EIGHT_DATABASES}
+    require(len(layout) == 8, "Camera source database inventory differs")
+    used, roots, bound = set(), set(), []
+    for capture in captures:
+        name = capture.get("manifest")
+        require(isinstance(name, str) and name.endswith("/closed-camera-store/manifest.json"),
+                "Camera original store path differs")
+        parts = name.split("/")
+        require(len(parts) == 5 and parts[0] == "e", "Camera closed store path is not a direct case output")
+        manifest = archive_json(root, inventory, name)
+        database = manifest.get("databaseRelativePath")
+        require(database in layout and database not in used, "Camera database is foreign or repeated")
+        label, title, participants = layout[database]
+        require(parts[1] == label + "-test-results", "Camera database belongs to another selection")
+        case_root = "/".join(parts[:3])
+        require(case_root not in roots, "Camera original cases share a store root")
+        roots.add(case_root); used.add(database)
+        _manifest, oracle, _outcome = partial_closed_store(root, inventory, case_root + "/closed-camera-store",
+                                                         root / case_root / "store", database, participants, 1)
+        bound.append({"label": label, "title": title, "manifest": name, "database": database,
+                      "project_id": oracle["project"]["id"], "participants": participants,
+                      "basis": "SOURCE_PINNED_DATABASE_AND_COMPLETE_HELPER_ORIGINALS",
+                      "independent_archive_reopen": False, "additional_oracle_reexecution": False})
+    require(used == set(layout), "Camera original database inventory is incomplete")
+    return bound
+
+
 GESTURE_TITLES = (
     "rapid pointer move and release commits one exact Canvas transform without losing the final delta",
     "pointercancel discards the transient delta and later pointerup cannot apply it",
@@ -1891,7 +2206,1006 @@ REVIEW_UNITS = (('src/reviewDraft.test.ts',
     'a dismissed review cannot become a submitted resolution attempt'))),)
 
 
+
+
+# Separate frontend-only cohort; no native, service or release acceptance.
+WINDOW_FRONTEND_SCOPE = 'window-frontend'
+WINDOW_FRONTEND_UNITS = (('src/nativeWindowPreview.test.ts',
+  ('native Window authority uses source frames and the original bounded response keeps original source, '
+   'reordered cut, realized segment and token-local clocks distinct',
+   'native Window authority uses source frames and the original bounded response keeps cut time exact across '
+   "another renderer without deriving that renderer's duration as segment offset",
+   'native Window authority uses source frames and the original bounded response uses exact rational scene '
+   'boundaries at 30000/1001 and never rounds a fractional source boundary',
+   'native Window authority uses source frames and the original bounded response retains separate source, '
+   'selected-count and prefix limits, including a late source in a short cut',
+   'native Window authority uses source frames and the original bounded response invalidates old scope, '
+   'selected profile, scene and intent while owning copies of the original request and reply',
+   'native Window authority uses source frames and the original bounded response rejects foreign, unbounded '
+   'or promoted replies without manufacturing a Full receipt',
+   'native Window authority uses source frames and the original bounded response preserves an observed PASS '
+   'or stored receipt replay while keeping Window authority preview-only',
+   'native Window authority uses source frames and the original bounded response requires explicit warm '
+   'identity and the same original token, with no cold operation hidden in reuse',
+   'native Window authority uses source frames and the original bounded response retains independent '
+   'unresolved attempts and refuses peer races, unconfirmed writes or changed original bytes')),
+ ('src/nativeFrameSelection.test.ts',
+  ('native frame selection follows authored scene timing maps the selected scene and next scene into the '
+   'same canonical segment',
+   'native frame selection follows authored scene timing fails closed on stale revision, profile mismatch, '
+   'missing or forged grants',
+   'native frame selection follows authored scene timing uses exact render fps instead of assuming 24 or '
+   'display NDF rounding')),
+ ('src/nativeProgressivePreview.test.ts',
+  ('v0.5 progressive source-verified native preview request policy distinguishes sparse scrub frames from '
+   'exact settled source frames',
+   'v0.5 progressive source-verified native preview request policy limits active scrub to one read start per '
+   'quarter second',
+   'v0.5 progressive source-verified native preview request policy waits 120ms after the exact paused '
+   'playhead target settles',
+   'v0.5 progressive source-verified native preview request policy does not request a frame already '
+   'presented as current',
+   'v0.5 progressive source-verified native preview request policy does not initiate a second native read '
+   'while another is outstanding',
+   'v0.5 progressive source-verified native preview request policy never automatically retries an '
+   'unsuccessful source frame',
+   'v0.5 progressive source-verified native preview request policy uses a source-scoped cached frame instead '
+   'of issuing another grant readback',
+   'v0.5 progressive source-verified native preview request policy never uses cache as proof if the precise '
+   'frame is already visible',
+   'v0.5 progressive source-verified native preview request policy rejects an invalid frame index or '
+   'reversed clock',
+   'source-lifetime bounded native PNG byte cache has explicit small frame and byte budgets',
+   'source-lifetime bounded native PNG byte cache accepts real-sized frames only within a bounded lifetime',
+   'source-lifetime bounded native PNG byte cache evicts the oldest frame when a fourth verified image '
+   'arrives',
+   'source-lifetime bounded native PNG byte cache reads update LRU precedence before eviction',
+   'source-lifetime bounded native PNG byte cache evicts by total byte budget without unbounded renderer '
+   'media accumulation',
+   'source-lifetime bounded native PNG byte cache rejects empty, invalid indexes and oversized media',
+   'source-lifetime bounded native PNG byte cache owns copies of source bytes so callers cannot mutate an '
+   'admitted cache entry',
+   'source-lifetime bounded native PNG byte cache supports replacement and scoped removal with exact byte '
+   'accounting',
+   'native pixels stay from the actual checked PNG data requires the exact PNG signature without '
+   'synthesizing a frame',
+   'native pixels stay from the actual checked PNG data rejects too short or unbounded PNG containers')),
+ ('src/previewRecovery.test.ts',
+  ('decoded preview recovery envelope preserves bytes independently and hashes scope, source revision and '
+   'metadata as well as PNG',
+   'decoded preview recovery envelope rejects a different projectId and does not mutate its input',
+   'decoded preview recovery envelope rejects a different generation and does not mutate its input',
+   'decoded preview recovery envelope rejects a different branchId and does not mutate its input',
+   'decoded preview recovery envelope rejects a different sceneId and does not mutate its input',
+   'decoded preview recovery envelope rejects a different profileId and does not mutate its input',
+   'decoded preview recovery envelope rejects future revisions and incomplete source metadata',
+   'decoded preview recovery envelope rejects changed pixels with an otherwise intact envelope',
+   'decoded preview recovery envelope rejects metadata corruption in sceneName',
+   'decoded preview recovery envelope rejects metadata corruption in sourceRevision',
+   'decoded preview recovery envelope rejects metadata corruption in frameIndex',
+   'decoded preview recovery envelope rejects metadata corruption in pixelWidth',
+   'decoded preview recovery envelope rejects metadata corruption in capturedAt',
+   'decoded preview recovery envelope rejects authority fields instead of serializing a token or authorized '
+   'path',
+   'decoded preview recovery envelope bounds raw bytes, dimensions, frame count and numeric entry')),
+ ('src/renderReceipt.test.ts',
+  ('scene-bound native render receipt metadata exposes a current receipt only for the same project, '
+   'generation and profile',
+   "scene-bound native render receipt metadata does not turn another delivery profile into this program's "
+   'frame evidence',
+   'scene-bound native render receipt metadata preserves original revision and marks receipts stale after a '
+   'creative edit',
+   'scene-bound native render receipt metadata does not attach another project or generation, another scene, '
+   'or another renderer',
+   'scene-bound native render receipt metadata fails closed on unlinked or missing job receipts')),
+ ('src/programMaster.test.ts',
+  ('source-bound Program AV monitor clock projection maps current visual and audio masters to both eligible '
+   'source scenes',
+   'source-bound Program AV monitor clock projection rejects stale revisions, changed output profiles, '
+   'unknown tokens and unrelated renderers',
+   'source-bound Program AV monitor clock projection rejects silently reinterpreting a different frame rate, '
+   'scene cut or master length',
+   'source-bound Program AV monitor clock projection maps explicitly selected noncontiguous cuts onto '
+   'authored project offsets')))
+WINDOW_FRONTEND_UNITS_SHA256 = 'd4f8fb34a69988e4a87990656737d6ead1bf7054f98b47da2e6df2725c2e24a1'
+WINDOW_DELIVERY_UNIT_FULL_NAMES = ('Film render keeps otherwise-ready admission blocked until the own copy is actually read',
+ 'Film render local admission dispatches once with the original source, request and grant when the gesture '
+ 'stays current',
+ 'Film render local admission preserves an original failure after dispatch instead of relabeling it as local '
+ 'cancellation or retrying',
+ 'Film render local admission refuses pending input before requesting any effect grant',
+ 'Film render local admission rereads the same gesture after a deferred grant and never dispatches changed '
+ 'input',
+ 'explicit local cut mode accepts old array-only recovery copies with their existing full/custom meanings',
+ 'explicit local cut mode does not inherit a peer custom scene list over a locally empty cut from full '
+ 'sequence',
+ 'explicit local cut mode does not let a peer full-sequence revision reinterpret a pinned empty custom cut',
+ 'explicit local cut mode keeps an empty edit made after a custom selection was sent through the matching '
+ 'ACK',
+ 'explicit local cut mode requires an explicit full choice without dropping unrelated raw input',
+ 'explicit local cut mode retains a custom empty selection separately from the canonical full sequence',
+ 'explicit local cut mode reviews the mode and scene list together and never adds local mode to the '
+ 'canonical wire',
+ 'explicit saved profile and journal inspection does not admit a separate intent from unverified source or '
+ 'history: changed-final',
+ 'explicit saved profile and journal inspection does not admit a separate intent from unverified source or '
+ 'history: changed-initial',
+ 'explicit saved profile and journal inspection does not admit a separate intent from unverified source or '
+ 'history: empty-history',
+ 'explicit saved profile and journal inspection does not admit a separate intent from unverified source or '
+ 'history: gap',
+ 'explicit saved profile and journal inspection does not admit a separate intent from unverified source or '
+ 'history: invalid-profile',
+ 'explicit saved profile and journal inspection does not admit a separate intent from unverified source or '
+ 'history: other-owner',
+ 'explicit saved profile and journal inspection does not admit a separate intent from unverified source or '
+ 'history: oversized-history',
+ 'explicit saved profile and journal inspection legacy same-spelling causal: retains later A-B-A input when '
+ 'the historical capture has no original edit versions',
+ 'explicit saved profile and journal inspection permits legacy UNKNOWN inspection while preserving its old '
+ 'raw and later unsent spelling',
+ 'explicit saved profile and journal inspection rejects a previously inspected capture after its scope or '
+ 'pending identity changes',
+ 'explicit saved profile and journal inspection reports a matching saved value without acknowledging or '
+ 'mutating the retained original',
+ 'frame rate property order acknowledges all submitted fields from Rust JSON while preserving later '
+ 'frame-rate and incomplete input',
+ 'frame rate property order keeps distinct i64 values exact rather than comparing rounded numbers or equal '
+ 'ratios',
+ 'frame rate property order projects Rust JSON property order without changing the received exact integers',
+ 'frame rate property order recovers historical den-num bases and pending targets without rewriting their '
+ 'original bytes',
+ 'frame rate property order rejects malformed saved or pending rate {"den":"0","num":"30"}',
+ 'frame rate property order rejects malformed saved or pending rate {"den":"1","num":"0"}',
+ 'frame rate property order rejects malformed saved or pending rate {"den":"1","num":"030"}',
+ 'frame rate property order rejects malformed saved or pending rate {"den":"1","num":"241"}',
+ 'frame rate property order rejects malformed saved or pending rate {"den":"1","num":"30","approved":true}',
+ 'frame rate property order rejects malformed saved or pending rate {"den":"1","num":30}',
+ 'frame rate property order rejects malformed saved or pending rate {"den":"9223372036854775808","num":"30"}',
+ 'frame rate property order rejects malformed saved or pending rate {"den":1,"num":"30"}',
+ 'frame rate property order rejects malformed saved or pending rate {"num":"24","num":"30","den":"1"}',
+ 'frame rate property order rejects malformed saved or pending rate {"num":"30","den":"1","den":"1"}',
+ 'frame rate property order rejects malformed saved or pending rate {"num":"30"}',
+ 'multi-segment master keeps otherwise-ready admission blocked until the own copy is actually read',
+ 'multi-segment master local admission dispatches once with the original source, request and grant when the '
+ 'gesture stays current',
+ 'multi-segment master local admission preserves an original failure after dispatch instead of relabeling it '
+ 'as local cancellation or retrying',
+ 'multi-segment master local admission refuses pending input before requesting any effect grant',
+ 'multi-segment master local admission rereads the same gesture after a deferred grant and never dispatches '
+ 'changed input',
+ 'original profile authority causal regressions causal: explicit field resolution cannot consume an UNKNOWN '
+ 'attempt',
+ 'original profile authority causal regressions causal: matching incoming values cannot acknowledge the '
+ 'original attempt',
+ 'original profile reply authority cannot acknowledge another original capture ID even when scope, base and '
+ 'profile match',
+ 'original profile reply authority keeps an original receipt UNKNOWN when the retained comparison source is '
+ 'already newer',
+ 'original profile reply authority rejects a modified persisted original capture: capture-id',
+ 'original profile reply authority rejects a modified persisted original capture: capture-profile',
+ 'original profile reply authority rejects a modified persisted original capture: capture-version',
+ 'original profile reply authority rejects a modified persisted original capture: unknown-member',
+ 'original profile reply authority retains an A-B-A spelling edit and unrelated incomplete fields on the '
+ 'original acknowledgement',
+ 'original profile reply authority retains the complete UNKNOWN capture after an original reply with branch',
+ 'original profile reply authority retains the complete UNKNOWN capture after an original reply with '
+ 'generation',
+ 'original profile reply authority retains the complete UNKNOWN capture after an original reply with '
+ 'late-revision',
+ 'original profile reply authority retains the complete UNKNOWN capture after an original reply with '
+ 'missing-profile',
+ 'original profile reply authority retains the complete UNKNOWN capture after an original reply with '
+ 'old-revision',
+ 'original profile reply authority retains the complete UNKNOWN capture after an original reply with project',
+ 'original profile reply authority retains the complete UNKNOWN capture after an original reply with '
+ 'unsent-field',
+ 'profile metadata recovery preserves original bytes does not overwrite a changed same-window key and does '
+ 'not discard later typing when its blocked copy is explicitly removed',
+ 'profile metadata recovery preserves original bytes keeps later raw in memory after a quota failure without '
+ 'changing the original recovery bytes',
+ 'profile metadata recovery preserves original bytes keeps oversized raw in memory without claiming that a '
+ 'recovery copy was saved',
+ 'profile metadata recovery preserves original bytes marks a mismatched recovery write as blocked while '
+ 'retaining both the observed bytes and input',
+ 'profile metadata recovery preserves original bytes preserves invalid raw values in a strict recovery '
+ 'roundtrip',
+ 'profile metadata recovery preserves original bytes recovers only an explicitly chosen same-scope copy '
+ 'without rewriting its original',
+ 'profile metadata recovery preserves original bytes refuses boolean revision while retaining the original '
+ 'copy and later typing',
+ 'profile metadata recovery preserves original bytes refuses duplicate JSON key while retaining the original '
+ 'copy and later typing',
+ 'profile metadata recovery preserves original bytes refuses extra field while retaining the original copy '
+ 'and later typing',
+ 'profile metadata recovery preserves original bytes refuses fractional revision while retaining the '
+ 'original copy and later typing',
+ 'profile metadata recovery preserves original bytes refuses mismatched sent target while retaining the '
+ 'original copy and later typing',
+ 'profile metadata recovery preserves original bytes refuses sent field missing from edits while retaining '
+ 'the original copy and later typing',
+ 'profile metadata recovery preserves original bytes refuses unknown edit key while retaining the original '
+ 'copy and later typing',
+ 'profile metadata recovery preserves original bytes refuses wrong field shape while retaining the original '
+ 'copy and later typing',
+ 'profile metadata recovery preserves original bytes rejects a cross-scope cache or persistence key before '
+ 'replacing any copy',
+ 'profile metadata recovery preserves original bytes retains inaccessible original storage and all new raw '
+ 'input when read access fails',
+ 'profile metadata recovery preserves original bytes returns A and B separately after A-B-A selection and a '
+ 'later revision',
+ 'profile recovery admission after a failed own read admits a stable absence only after explicit reading and '
+ 'preserves later raw without writing it',
+ 'profile recovery admission after a failed own read blocks a failed postwrite own read and never removes '
+ 'the now-observed different copy automatically',
+ 'profile recovery admission after a failed own read blocks a failed prewrite own read and releases only the '
+ 'same original bytes on explicit reading',
+ 'profile recovery admission after a failed own read keeps a changing re-read unknown and forbids discarding '
+ 'either unverified observation',
+ 'profile recovery admission after a failed own read keeps a known prewrite quota failure distinct from an '
+ 'unknown own read',
+ 'profile recovery admission after a failed own read keeps an unread own copy blocked when storage becomes '
+ 'available without an explicit read',
+ 'profile recovery admission after a failed own read keeps later memory input separate from an explicitly '
+ 'observed malformed own copy',
+ 'profile recovery admission after a failed own read keeps later memory input separate from an explicitly '
+ 'observed valid own copy',
+ 'profile recovery admission after a failed own read recovers a previously unread valid own copy only when '
+ 'no later input would be replaced',
+ 'raw output metadata continuity adds or deletes one text override without replacing the latest unrelated '
+ 'override',
+ 'raw output metadata continuity captures an explicit note-line edit even when a saved single note has the '
+ 'same display text',
+ 'raw output metadata continuity converts optional blanks and note lines only for explicit submission while '
+ 'retaining the authored spelling',
+ 'raw output metadata continuity distinguishes typed arrays with identical textarea display when detecting a '
+ 'changed base',
+ 'raw output metadata continuity does not confirm pending input from different generation',
+ 'raw output metadata continuity does not confirm pending input from older revision',
+ 'raw output metadata continuity does not confirm pending input from same revision',
+ 'raw output metadata continuity does not drop authored note lines when a peer saves a different array with '
+ 'the same display text',
+ 'raw output metadata continuity keeps A restored while B is unconfirmed and after the original B '
+ 'acknowledgement',
+ 'raw output metadata continuity keeps C typed after B was sent and rebases C only to the original reply '
+ 'without replay',
+ 'raw output metadata continuity keeps equivalent numeric spelling until explicit review or the original '
+ 'confirmed reply',
+ 'raw output metadata continuity keeps input and source revision while the visible project is behind a '
+ 'recovered draft',
+ 'raw output metadata continuity merges only edited fields into the latest profile and preserves an '
+ 'ambiguous saved notes array',
+ 'raw output metadata continuity rejects incomplete or invalid pixel input "" without replacing it',
+ 'raw output metadata continuity rejects incomplete or invalid pixel input "-" without replacing it',
+ 'raw output metadata continuity rejects incomplete or invalid pixel input "0" without replacing it',
+ 'raw output metadata continuity rejects incomplete or invalid pixel input "0x10" without replacing it',
+ 'raw output metadata continuity rejects incomplete or invalid pixel input "16385" without replacing it',
+ 'raw output metadata continuity rejects incomplete or invalid pixel input "1e" without replacing it',
+ 'raw output metadata continuity rejects incomplete or invalid pixel input "2.5" without replacing it',
+ 'raw output metadata continuity rejects incomplete or invalid pixel input "Infinity" without replacing it',
+ 'raw output metadata continuity requires separate outcome review for UNKNOWN while keeping unsent field '
+ 'resolution independent',
+ 'raw output metadata continuity requires the exact original full upsert reply and rejects partial or '
+ 'matching observed values',
+ 'raw output metadata continuity retains raw adaptation_notes across an unrelated saved revision',
+ 'raw output metadata continuity retains raw audio_codec across an unrelated saved revision',
+ 'raw output metadata continuity retains raw audio_sample_rate_hz across an unrelated saved revision',
+ 'raw output metadata continuity retains raw brand_profile across an unrelated saved revision',
+ 'raw output metadata continuity retains raw burn_in_captions across an unrelated saved revision',
+ 'raw output metadata continuity retains raw caption_format across an unrelated saved revision',
+ 'raw output metadata continuity retains raw captions across an unrelated saved revision',
+ 'raw output metadata continuity retains raw color_space across an unrelated saved revision',
+ 'raw output metadata continuity retains raw container across an unrelated saved revision',
+ 'raw output metadata continuity retains raw crop_approved across an unrelated saved revision',
+ 'raw output metadata continuity retains raw cut_label across an unrelated saved revision',
+ 'raw output metadata continuity retains raw frame_rate across an unrelated saved revision',
+ 'raw output metadata continuity retains raw framing_strategy across an unrelated saved revision',
+ 'raw output metadata continuity retains raw height across an unrelated saved revision',
+ 'raw output metadata continuity retains raw included_scene_ids across an unrelated saved revision',
+ 'raw output metadata continuity retains raw language across an unrelated saved revision',
+ 'raw output metadata continuity retains raw name across an unrelated saved revision',
+ 'raw output metadata continuity retains raw protected_scene_ids across an unrelated saved revision',
+ 'raw output metadata continuity retains raw text:abcde000-1234-4234-8234-000000000444 across an unrelated '
+ 'saved revision',
+ 'raw output metadata continuity retains raw timing_locked across an unrelated saved revision',
+ 'raw output metadata continuity retains raw video_codec across an unrelated saved revision',
+ 'raw output metadata continuity retains raw voice_track_id across an unrelated saved revision',
+ 'raw output metadata continuity retains raw width across an unrelated saved revision',
+ 'raw output metadata continuity uses UTF-8 limits without trimming valid profile names',
+ 'retained metadata for removed profiles bounds the visible recovery inventory without evicting original '
+ 'copies',
+ 'retained metadata for removed profiles does not mix project, generation, branch or present-profile copies',
+ 'retained metadata for removed profiles does not present changing storage bytes as a stable recovery copy',
+ 'retained metadata for removed profiles keeps a newer window draft separate from a corrupt durable copy',
+ 'retained metadata for removed profiles keeps submitted input explicitly unconfirmed and does not create a '
+ 'retry',
+ 'retained metadata for removed profiles lists one exact durable copy after removal without rewriting '
+ 'storage, and hides it again after restoration',
+ 'retained metadata for removed profiles retains quota-failed raw input in memory and explains that it is '
+ 'not a durable copy',
+ 'retained metadata for removed profiles surfaces failed storage observation while preserving its in-memory '
+ 'snapshot',
+ 'saved Film font source selection at the existing API boundary forwards a uniform exact saved family '
+ 'spelling without trimming or claiming native rights or weight support',
+ 'saved Film font source selection at the existing API boundary forwards an explicitly saved IBM 400 style '
+ 'to preflight, Full and Window without changing the source or grant barriers',
+ 'saved Film font source selection at the existing API boundary rejects a whitespace-only explicit family '
+ 'before any preflight invoke, render grant or Window custody callback',
+ 'saved Film font source selection at the existing API boundary rejects an empty explicit family before any '
+ 'preflight invoke, render grant or Window custody callback',
+ 'saved Film font source selection at the existing API boundary rejects case-distinct family names before '
+ 'any preflight invoke, render grant or Window custody callback',
+ 'saved Film font source selection at the existing API boundary rejects null following an explicit '
+ 'nondefault family before any preflight invoke, render grant or Window custody callback',
+ 'saved Film font source selection at the existing API boundary rejects null preceding an explicit '
+ 'nondefault family before any preflight invoke, render grant or Window custody callback',
+ 'saved Film font source selection at the existing API boundary rejects stale proposed fonts before any call '
+ 'even when the saved uniform text now names another family',
+ 'saved Film font source selection at the existing API boundary rejects two explicit families before any '
+ 'preflight invoke, render grant or Window custody callback',
+ 'saved Film font source selection at the existing API boundary retains the existing default for no-text '
+ "without inheriting a non-text node's font",
+ 'saved Film font source selection at the existing API boundary retains the existing default for null-only '
+ "without inheriting a non-text node's font",
+ 'saved Film font source selection at the existing API boundary retains the existing default for '
+ "null-with-explicit-default without inheriting a non-text node's font",
+ 'saved Film font source selection at the existing API boundary uses only included Motion Canvas text and '
+ 'ignores excluded text, another renderer and non-text font metadata',
+ 'single-segment master keeps otherwise-ready admission blocked until the own copy is actually read',
+ 'single-segment master local admission dispatches once with the original source, request and grant when the '
+ 'gesture stays current',
+ 'single-segment master local admission preserves an original failure after dispatch instead of relabeling '
+ 'it as local cancellation or retrying',
+ 'single-segment master local admission refuses pending input before requesting any effect grant',
+ 'single-segment master local admission rereads the same gesture after a deferred grant and never dispatches '
+ 'changed input',
+ 'the current delivery gesture joins the existing Project actor compares stable values and accepts a newly '
+ 'allocated equivalent view',
+ 'the current delivery gesture joins the existing Project actor keeps an edited-then-restored input distinct '
+ 'from the original gesture',
+ 'the current delivery gesture joins the existing Project actor observes a failed creation without retrying '
+ 'it or replacing the active Project',
+ 'the current delivery gesture joins the existing Project actor observes an actual A-B-A open sequence even '
+ 'if React still shows the original source',
+ 'the current delivery gesture joins the existing Project actor observes failed edits through the same actor '
+ 'even when the Project never changed',
+ 'the current delivery gesture joins the existing Project actor refuses active branch changed during the '
+ 'grant',
+ 'the current delivery gesture joins the existing Project actor refuses active project changed during the '
+ 'grant',
+ 'the current delivery gesture joins the existing Project actor refuses completed actor operation changed '
+ 'during the grant',
+ 'the current delivery gesture joins the existing Project actor refuses delivery profile changed during the '
+ 'grant',
+ 'the current delivery gesture joins the existing Project actor refuses input after React renders changed '
+ 'during the grant',
+ 'the current delivery gesture joins the existing Project actor refuses input before React renders changed '
+ 'during the grant',
+ 'the current delivery gesture joins the existing Project actor refuses pending actor operation changed '
+ 'during the grant',
+ 'the current delivery gesture joins the existing Project actor refuses pending inputs on initial capture '
+ 'instead of creating a grant opportunity',
+ 'the current delivery gesture joins the existing Project actor refuses pending or conflicted draft changed '
+ 'during the grant',
+ 'the current delivery gesture joins the existing Project actor refuses rendered input serial changed during '
+ 'the grant',
+ 'the current delivery gesture joins the existing Project actor refuses rendered source changed during the '
+ 'grant',
+ 'the current delivery gesture joins the existing Project actor refuses restored generation changed during '
+ 'the grant',
+ 'the current delivery gesture joins the existing Project actor refuses saved revision changed during the '
+ 'grant',
+ 'the current delivery gesture joins the existing Project actor refuses source token or destination changed '
+ 'during the grant',
+ 'the current delivery gesture joins the existing Project actor refuses unavailable project changed during '
+ 'the grant',
+ 'the current delivery gesture joins the existing Project actor refuses unmounted view changed during the '
+ 'grant',
+ 'the current delivery gesture joins the existing Project actor refuses unready native intent changed during '
+ 'the grant',
+ 'verified master export keeps otherwise-ready admission blocked until the own copy is actually read',
+ 'verified master export local admission dispatches once with the original source, request and grant when '
+ 'the gesture stays current',
+ 'verified master export local admission preserves an original failure after dispatch instead of relabeling '
+ 'it as local cancellation or retrying',
+ 'verified master export local admission refuses pending input before requesting any effect grant',
+ 'verified master export local admission rereads the same gesture after a deferred grant and never '
+ 'dispatches changed input',
+ 'verified metadata pointer and UNKNOWN separation custody blocks a 65th profile copy without evicting or '
+ 'modifying any original copy',
+ 'verified metadata pointer and UNKNOWN separation custody keeps the original UNKNOWN capture and pointer '
+ 'when separation fails: new-copy-quota',
+ 'verified metadata pointer and UNKNOWN separation custody keeps the original UNKNOWN capture and pointer '
+ 'when separation fails: original-changed',
+ 'verified metadata pointer and UNKNOWN separation custody keeps the original UNKNOWN capture and pointer '
+ 'when separation fails: pointer-silent',
+ 'verified metadata pointer and UNKNOWN separation custody refuses a silently dropped own copy and does not '
+ 'claim a durable write',
+ 'verified metadata pointer and UNKNOWN separation custody refuses unverified writer publication: foreign',
+ 'verified metadata pointer and UNKNOWN separation custody refuses unverified writer publication: silent',
+ 'verified metadata pointer and UNKNOWN separation custody refuses unverified writer publication: throw',
+ 'verified metadata pointer and UNKNOWN separation custody requires explicit pointer rereading after an '
+ 'unreadable original pointer',
+ 'verified metadata pointer and UNKNOWN separation custody separates inspected later input without rewriting '
+ 'the original UNKNOWN bytes after an observation')
+WINDOW_DELIVERY_UNIT_CATALOG_SHA256 = '75a718d5f483403191850e99510f12bc369ca1490a4a9b204647d1775b47d683'
+WINDOW_FRONTEND_REVIEWED_PROFILE = {'schema': 'motionwright.window-frontend-source-profile/1',
+ 'source_commit': '085d12a947d4b15bd74d131e007fe908e925106f',
+ 'source_tree': '882e0ba3cec60ec5dfda911314d47c6620ff73ec',
+ 'product_paths': {'apps/studio/src/App.tsx': 'd3dc040880160652c697531f47bd305877fe7c8f83497c35ce0313150609aab0',
+                   'apps/studio/src/api.ts': '07cdc9b14138f4af523def764d6f0029a7cf5689675369db17262475e7d2803a',
+                   'apps/studio/src/types.ts': '83f2d7992d14744e6b05b53c548bedd3a8f18913fcfaf8864742f0b4308794e6',
+                   'apps/studio/src/NativeFrameStage.tsx': 'ba1f2b7f59e2de51640e89caf6478806bb8bb0975804d19a2c72e655bf007594',
+                   'apps/studio/src/nativeWindowPreview.ts': '9f254c26930aaf9397f8af8fca9b5b34da791489e264a20d6daa078df2cc98e3',
+                   'apps/studio/src/nativeWindowPreview.test.ts': 'a87ced6edd3d3ab5033c73856b4c34d16cb9d573f9bd179dd9811e95bf26b887',
+                   'apps/studio/tests/native-preview.spec.ts': '5696f73b076cc7a84275c279149a52004d8d43b8dfe0174b44707aeb1c907683',
+                   'apps/studio/src/DeliveryProfiles.tsx': 'dbc5700826dd2e19604e16e8ba139c95d55d7238eed3bc8d72f5ddf422e9740d',
+                   'apps/studio/src/deliveryProfileDraft.test.ts': '2f37e4ab4923b780b70dda7d2cb26b152725878da9828ca61598e57c6a2a5d10'},
+ 'runner': 'ubuntu-24.04',
+ 'node_heap_mib': 384,
+ 'build_node_heap_mib': 1024,
+ 'minimum_available_memory_bytes': 4294967296}
+WINDOW_FRONTEND_PRODUCT_PINS = (('apps/studio/src/App.tsx', 'd3dc040880160652c697531f47bd305877fe7c8f83497c35ce0313150609aab0'),
+ ('apps/studio/src/api.ts', '07cdc9b14138f4af523def764d6f0029a7cf5689675369db17262475e7d2803a'),
+ ('apps/studio/src/types.ts', '83f2d7992d14744e6b05b53c548bedd3a8f18913fcfaf8864742f0b4308794e6'),
+ ('apps/studio/src/NativeFrameStage.tsx', 'ba1f2b7f59e2de51640e89caf6478806bb8bb0975804d19a2c72e655bf007594'),
+ ('apps/studio/src/nativeWindowPreview.ts',
+  '9f254c26930aaf9397f8af8fca9b5b34da791489e264a20d6daa078df2cc98e3'),
+ ('apps/studio/src/nativeWindowPreview.test.ts',
+  'a87ced6edd3d3ab5033c73856b4c34d16cb9d573f9bd179dd9811e95bf26b887'),
+ ('apps/studio/tests/native-preview.spec.ts',
+  '5696f73b076cc7a84275c279149a52004d8d43b8dfe0174b44707aeb1c907683'),
+ ('apps/studio/src/DeliveryProfiles.tsx', 'dbc5700826dd2e19604e16e8ba139c95d55d7238eed3bc8d72f5ddf422e9740d'),
+ ('apps/studio/src/deliveryProfileDraft.test.ts',
+  '2f37e4ab4923b780b70dda7d2cb26b152725878da9828ca61598e57c6a2a5d10'))
+WINDOW_FRONTEND_DEPENDENCY_PINS = (('apps/studio/src/nativeFrameSelection.test.ts',
+  'ca6fdf0eca4e47394703de11bcaf80b3241314752f7e89f6de188a2e654dc1c0'),
+ ('apps/studio/src/nativeProgressivePreview.test.ts',
+  'dfa5c5ef2950293bb6ece50ed02bd0da90ee142c8b2a31ec43385bdaae097a1d'),
+ ('apps/studio/src/previewRecovery.test.ts',
+  '65aa390a90fe1f251e108ee9f7a2224ace047f5322b7db081d64ce0119c0b559'),
+ ('apps/studio/src/renderReceipt.test.ts',
+  'f26196a943d76a4e1f7a84ede0192d8356d49fe654d27e6a13175eb0491ed287'),
+ ('apps/studio/src/programMaster.test.ts',
+  '91ced453af763e990a760d811f8d5fcb7b5cc4b2b721a65831b97e6bb1a1736a'))
+WINDOW_FRONTEND_GATE_PATHS = ('tooling/ci_canvas_service.py',
+ 'tooling/tests/test_ci_canvas_service.py',
+ '.github/workflows/studio-service-verification.yml')
+WINDOW_FRONTEND_BROWSER_SELECTION = ('browser-window-frontend',
+ 'native-preview.spec.ts',
+ ('sampled native PNG readback uses only a session grant and follows the editorial playhead',
+  'invalid synthetic frame bytes display a truthful readback error and a retry',
+  'Window PNG opt-in keeps source, reordered cut and local indices distinct without promoting recovery or '
+  'master authority',
+  'a late Window outcome cannot clear a newer pending intent or overwrite later incomplete input',
+  'explicit Window reuse failure never dispatches a cold replacement or promotes its token',
+  'Window PNG browser decode failure retries only the selected frame on an explicit gesture'))
+WINDOW_FRONTEND_BROWSER_CATALOG_SHA256 = 'a3a5e1034ff130a63820645b92be1cf6571fd4439dec4b578fc73d83ade17435'
+WINDOW_FRONTEND_SOURCE_PATHS = tuple(dict.fromkeys(
+    [path for path, _sha in (*WINDOW_FRONTEND_PRODUCT_PINS, *WINDOW_FRONTEND_DEPENDENCY_PINS)]
+    + ["apps/studio/src/nativeFrameSelection.ts", "apps/studio/src/nativeProgressivePreview.ts",
+       "apps/studio/src/previewRecovery.ts", "apps/studio/src/renderReceipt.ts", "apps/studio/src/programMaster.ts"]))
+BROWSER_SCOPES[WINDOW_FRONTEND_SCOPE] = ("browser-window-frontend",)
+BROWSER_SELECTION_TIMEOUTS["browser-window-frontend"] = 360
+
+def window_frontend_inventory():
+    """The reviewed six-file Window cohort and the complete saved-font file."""
+    rows = WINDOW_FRONTEND_UNITS
+    require(isinstance(rows, tuple) and len(rows) == 6
+            and tuple(len(names) for _path, names in rows) == (9, 3, 19, 15, 5, 4)
+            and len({path for path, _names in rows}) == 6
+            and all(isinstance(names, tuple) and names
+                    and len(names) == len(set(names))
+                    and all(isinstance(name, str) and name for name in names)
+                    for _path, names in rows)
+            and hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                == WINDOW_FRONTEND_UNITS_SHA256,
+            "Window unit source inventory differs")
+    delivery = WINDOW_DELIVERY_UNIT_FULL_NAMES
+    require(isinstance(delivery, tuple) and len(delivery) == 195
+            and all(isinstance(name, str) and name for name in delivery)
+            and len(set(delivery)) == len(delivery)
+            and isinstance(WINDOW_DELIVERY_UNIT_CATALOG_SHA256, str)
+            and hashlib.sha256(json.dumps(delivery, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                == WINDOW_DELIVERY_UNIT_CATALOG_SHA256,
+            "complete saved-font unit inventory has not been reviewed")
+    return (*rows, ("src/deliveryProfileDraft.test.ts", delivery))
+
+
+def window_frontend_profile():
+    """A missing source/resource description is never runtime permission."""
+    profile = WINDOW_FRONTEND_REVIEWED_PROFILE
+    require(isinstance(profile, dict) and set(profile) == {
+                "schema", "source_commit", "source_tree", "product_paths", "runner",
+                "node_heap_mib", "build_node_heap_mib", "minimum_available_memory_bytes"}
+            and profile.get("schema") == "motionwright.window-frontend-source-profile/1",
+            "Window composition and hosted resource profile are not designated")
+    require(all(isinstance(profile.get(key), str)
+                and re.fullmatch("[0-9a-f]{40}", profile[key]) is not None
+                for key in ("source_commit", "source_tree")),
+            "Window source commit/tree is missing")
+    require(profile["product_paths"] == dict(WINDOW_FRONTEND_PRODUCT_PINS)
+            and profile["runner"] == "ubuntu-24.04"
+            and type(profile["node_heap_mib"]) is int and profile["node_heap_mib"] == 384
+            and type(profile["build_node_heap_mib"]) is int and profile["build_node_heap_mib"] == 1024
+            and type(profile["minimum_available_memory_bytes"]) is int
+            and profile["minimum_available_memory_bytes"] == 4 * 1024 ** 3,
+            "Window composed bytes or bounded hosted resource profile differs")
+    window_frontend_inventory()
+    return dict(profile)
+
+
+def window_frontend_source_binding(repo, observation):
+    """Bind the actual gate checkout and the nominated product input separately."""
+    profile = window_frontend_profile()
+    files = observation.get("files", {})
+    for path, expected in (*WINDOW_FRONTEND_PRODUCT_PINS, *WINDOW_FRONTEND_DEPENDENCY_PINS):
+        require(files.get(path, {}).get("sha256") == expected,
+                "Window reviewed source bytes differ: " + path)
+    reference = profile["source_commit"]
+    tree = subprocess.check_output(["git", "rev-parse", reference + "^{tree}"],
+                                   cwd=repo, timeout=30).decode("ascii").strip()
+    require(tree == profile["source_tree"], "Window nominated source tree differs")
+    changed = subprocess.check_output(
+        ["git", "diff", "--name-only", "-z", reference, observation["checkout"], "--"],
+        cwd=repo, timeout=30)
+    require(changed == b"" or changed.endswith(b"\0"), "Window source delta is not closed")
+    names = changed.decode("utf-8").split("\0")[:-1] if changed else []
+    require(len(names) == len(set(names)) and set(names) <= set(WINDOW_FRONTEND_GATE_PATHS),
+            "Window gate differs from the nominated product outside its verification paths")
+    for path, expected in WINDOW_FRONTEND_PRODUCT_PINS:
+        raw = subprocess.check_output(["git", "show", reference + ":" + path], cwd=repo, timeout=30)
+        require(hashlib.sha256(raw).hexdigest() == expected,
+                "Window nominated product blob differs: " + path)
+    return {"nominated_input": {"commit": reference, "tree": tree},
+            "executed_source": {"commit": observation["checkout"], "tree": observation["tree"]},
+            "verification_path_delta": names, "result_transfer": False,
+            "source_profile": profile}
+
+
+def window_frontend_environment(*, phase="unit"):
+    profile = window_frontend_profile()
+    require(phase in ("unit", "build", "browser"), "Window frontend resource phase differs")
+    require(sys.platform.startswith("linux") and os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and os.environ.get("RUNNER_OS") == "Linux"
+            and os.environ.get("ImageOS") == "ubuntu24" and os.environ.get("ImageVersion"),
+            "Window frontend requires the designated genuine hosted Linux context")
+    for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+        require(re.fullmatch(r"[1-9][0-9]*", os.environ.get(key, "")) is not None,
+                "Window actual run identity is missing")
+    require(os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+            and os.environ.get("GITHUB_JOB") == "creative-unit-build"
+            and re.fullmatch("[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")) is not None,
+            "Window frontend needs the first original attempt of its existing job")
+    require(os.environ.get("NODE_OPTIONS") == "--max-old-space-size=" + str(profile["node_heap_mib"])
+            and os.environ.get("CI") == "true"
+            and os.environ.get("MOTIONWRIGHT_CANDIDATE_BUILD") == "0",
+            "Window explicit frontend resource/build environment differs")
+    memory = Path("/proc/meminfo").read_text(encoding="ascii")
+    rows = re.findall(r"^MemAvailable:\s+([0-9]+) kB$", memory, re.MULTILINE)
+    require(len(rows) == 1 and int(rows[0]) * 1024 >= profile["minimum_available_memory_bytes"],
+            "Window frontend available memory is below its designated floor")
+    result = dict(os.environ)
+    heap = profile["build_node_heap_mib"] if phase == "build" else profile["node_heap_mib"]
+    result["NODE_OPTIONS"] = "--max-old-space-size=" + str(heap)
+    for variable in PROCESS_ENVIRONMENT_KEYS:
+        result.pop(variable, None)
+    return {"environment": result,
+            "observed": {"phase": phase, "available_memory_bytes": int(rows[0]) * 1024,
+                         "minimum_available_memory_bytes": profile["minimum_available_memory_bytes"],
+                         "node_options": result["NODE_OPTIONS"], "workers": 1, "retries": 0,
+                         "repeat_each": 1, "runner_os": result["RUNNER_OS"],
+                         "image_os": os.environ["ImageOS"], "image_version": os.environ["ImageVersion"],
+                         "boundary": "PRE_COMMAND_OBSERVATION_NOT_CONTINUOUS_RESOURCE_WATCHDOG"}}
+
+
+def validate_window_frontend_units(document, studio):
+    """Compare complete per-file full names without counting describe groups as files."""
+    rows = window_frontend_inventory()
+    expected_count = sum(len(names) for _path, names in rows)
+    require(isinstance(document, dict) and document.get("success") is True,
+            "Window unit report is missing or unsuccessful")
+    require(type(document.get("numTotalTests")) is int
+            and type(document.get("numPassedTests")) is int
+            and document["numTotalTests"] == document["numPassedTests"] == expected_count,
+            "Window unit census differs")
+    for key in ("numFailedTests", "numPendingTests", "numTodoTests", "numFailedTestSuites",
+                "numPendingTestSuites"):
+        require(type(document.get(key)) is int and document[key] == 0,
+                "Window unit omissions or failures: " + key)
+    require(document.get("wasInterrupted", False) is False
+            and not document.get("unhandledErrors") and not document.get("errors")
+            and not document.get("testExecError"), "Window unit global execution error")
+    expected = {str(studio / path): set(names) for path, names in rows}
+    suites = document.get("testResults")
+    require(isinstance(suites, list) and len(suites) == len(expected),
+            "Window unit file inventory differs")
+    files, assertions = set(), []
+    for suite in suites:
+        require(isinstance(suite, dict), "Window unit suite is not an object")
+        name = suite.get("name")
+        require(isinstance(name, str) and name in expected and name not in files
+                and suite.get("status") == "passed"
+                and not suite.get("message") and not suite.get("testExecError"),
+                "Window unit file identity or result differs")
+        files.add(name)
+        results = suite.get("assertionResults")
+        require(isinstance(results, list) and len(results) == len(expected[name]),
+                "Window unit assertion count differs")
+        seen = set()
+        for result in results:
+            require(isinstance(result, dict), "Window unit assertion is not an object")
+            parents, title, full = result.get("ancestorTitles"), result.get("title"), result.get("fullName")
+            require(isinstance(parents, list) and all(isinstance(part, str) and part for part in parents)
+                    and isinstance(title, str) and title and isinstance(full, str)
+                    and full == " ".join((*parents, title))
+                    and full in expected[name] and full not in seen,
+                    "Window unit full identity differs")
+            require(result.get("status") == "passed" and result.get("failureMessages") == []
+                    and not result.get("failureDetails") and not result.get("retryReasons")
+                    and type(result.get("retryCount", 0)) is int and result.get("retryCount", 0) == 0,
+                    "Window unit assertion is not an original ordinary pass")
+            seen.add(full)
+            assertions.append({"file": str(Path(name).relative_to(studio)), "full_name": full,
+                               "ancestor_titles": parents, "title": title})
+        require(seen == expected[name], "Window unit exact names differ")
+    require(files == set(expected), "Window unit file is missing")
+    return {"status": "PASS", "files": len(rows), "passed": expected_count,
+            "window_original_cohort": 55, "delivery_complete_file": len(WINDOW_DELIVERY_UNIT_FULL_NAMES),
+            "skipped": 0, "retries": 0, "assertions": assertions,
+            "evidence_scope": "FRONTEND_UNIT_ASSERTIONS_ONLY", "formal_acceptance": False}
+
+
+def window_frontend_unit_admission(repo, original, source, *, invoked_output=None):
+    """Recheck the original unit/build commands before starting the browser phase."""
+    invoked_output = original if invoked_output is None else invoked_output
+    receipt_identity, receipt = browser_report_original(original / "receipt.json")
+    if receipt.get("status") == "UNKNOWN":
+        raise UnknownObservation("Window original unit/build is UNKNOWN; no browser continuation",
+                                 receipt.get("unsealed_command", {}))
+    require(receipt.get("schema") == "motionwright.studio-unit-build-ci/1"
+            and receipt.get("status") == "PASS"
+            and receipt.get("requested_selection") == WINDOW_FRONTEND_SCOPE
+            and receipt.get("source_before") == receipt.get("source_after") == source,
+            "Window original unit/build source or outcome differs")
+    require(receipt.get("selection") == [{"file": path, "titles": list(names)}
+                                         for path, names in window_frontend_inventory()],
+            "Window declared unit/build identity inventory differs")
+    for field, variable in (("run_id", "GITHUB_RUN_ID"), ("run_attempt", "GITHUB_RUN_ATTEMPT"),
+                            ("job", "GITHUB_JOB")):
+        require(receipt.get(field) == os.environ.get(variable) and receipt.get(field),
+                "Window unit/build actual job identity differs")
+    require(receipt.get("service_runtime") == receipt.get("browser_runtime")
+            == receipt.get("native_render") == receipt.get("installed_tauri") == "NOT_RUN"
+            and receipt.get("human_acceptance") is False and receipt.get("formal_acceptance") is False,
+            "Window unit/build exceeded its frontend scope")
+    studio = repo / "apps/studio"
+    tools = receipt.get("tools", {})
+    require(set(tools) == {"node", "npm", "vitest_cli", "security_probe"},
+            "Window original unit/build tools are incomplete")
+    for value in tools.values():
+        require(isinstance(value, dict) and isinstance(value.get("path"), str)
+                and Path(value["path"]).is_absolute()
+                and digest(Path(value["path"])) == {key: value.get(key) for key in ("bytes", "sha256")},
+                "Window unit/build tool changed")
+    cli, probe = studio / "node_modules/vitest/vitest.mjs", repo / "tooling/vite_editor_security_probe.mjs"
+    require(tools["vitest_cli"]["path"] == str(cli)
+            and tools["security_probe"]["path"] == str(probe), "Window unit/build tool path differs")
+    wanted = (
+        ("security-probe", [tools["node"]["path"], str(probe)], 60),
+        ("vitest", [tools["node"]["path"], str(cli), "run",
+                    *(path for path, _names in window_frontend_inventory()),
+                    "--maxWorkers=1", "--no-file-parallelism", "--retry=0", "--reporter=json",
+                    "--outputFile=" + str(invoked_output / "vitest.json")], 300),
+        ("build", [tools["npm"]["path"], "run", "build"], 600),
+    )
+    commands = receipt.get("commands")
+    require(isinstance(commands, list) and len(commands) == len(wanted),
+            "Window original unit/build commands are incomplete")
+    previous = None
+    for row, (label, argv, _timeout) in zip(commands, wanted):
+        require(isinstance(row, dict) and row.get("label") == label, "Window command order differs")
+        command = {key: value for key, value in row.items() if key != "label"}
+        require_observed_command(command)
+        require(type(command.get("exit_code")) is int and command["exit_code"] == 0
+                and command.get("diagnostic_custody") == "DIRECT_PROCESS_EXIT_OBSERVED"
+                and not command.get("observation")
+                and command.get("argv") == argv and command.get("cwd") == str(studio),
+                "Window unit/build original command differs")
+        _identity, retained_command = browser_report_original(original / (label + ".command.json"))
+        require(retained_command == command, "Window unit/build command original changed")
+        for stream in ("stdout", "stderr"):
+            require(digest(original / (label + "." + stream + ".log")) == command.get(stream),
+                    "Window unit/build stream original changed")
+        start = datetime.fromisoformat(command.get("started_utc", ""))
+        end = datetime.fromisoformat(command.get("finished_utc", ""))
+        require(start.tzinfo is not None and end.tzinfo is not None and start <= end
+                and (previous is None or previous <= start), "Window unit/build command time order differs")
+        previous = end
+    phase_sources = receipt.get("phase_source_after")
+    require(isinstance(phase_sources, list) and len(phase_sources) == 3
+            and all(value == source for value in phase_sources),
+            "Window source was not checked after every unit/build phase")
+    observed_resources = receipt.get("frontend_resource_observations")
+    require(isinstance(observed_resources, list) and len(observed_resources) == 4
+            and all(isinstance(value, dict)
+                    and type(value.get("available_memory_bytes")) is int
+                    and value["available_memory_bytes"] >= 4 * 1024 ** 3
+                    and type(value.get("minimum_available_memory_bytes")) is int
+                    and value.get("minimum_available_memory_bytes") == 4 * 1024 ** 3
+                    and value.get("phase") == phase
+                    and value.get("node_options") == "--max-old-space-size=" + str(heap)
+                    and type(value.get("workers")) is int and value["workers"] == 1
+                    and type(value.get("retries")) is int and value["retries"] == 0
+                    and type(value.get("repeat_each")) is int and value["repeat_each"] == 1
+                    for value, phase, heap in zip(observed_resources,
+                        ("unit", "unit", "unit", "build"), (384, 384, 384, 1024))),
+            "Window unit/build resources were not retained")
+    identity, unit_report = browser_report_original(original / "vitest.json")
+    verified = validate_window_frontend_units(unit_report, studio)
+    require(receipt.get("vitest_original") == identity and receipt.get("vitest") == verified,
+            "Window retained unit report differs")
+    build = receipt.get("production_build", {})
+    require(build.get("status") == "PASS"
+            and build.get("scope") == "BUILD_OUTPUT_ONLY; NO_BROWSER_OR_SERVICE_EXECUTION"
+            and isinstance(build.get("files"), dict) and build["files"],
+            "Window production build is not retained")
+    for name, identity in build["files"].items():
+        prefix = "e/window-unit-build/production-build/"
+        require(isinstance(name, str) and archive_member_name(prefix + name) == prefix + name,
+                "Window retained build member name differs")
+        for root in (original / "production-build", studio / "dist"):
+            archive_ancestors(root / name)
+            require(digest(root / name) == identity, "Window production build changed")
+    require("index.html" in build["files"] and any(name.endswith(".js") for name in build["files"]),
+            "Window production build entrypoints are missing")
+    for root in (original / "production-build", studio / "dist"):
+        observed = {}
+        for path in root.rglob("*"):
+            archive_ancestors(path)
+            if path.is_file():
+                require(len(observed) < 2000, "Window complete build member bound")
+                observed[path.relative_to(root).as_posix()] = digest(path)
+        require(observed == build["files"], "Window complete production build inventory differs")
+    return {"receipt": receipt_identity, "units": verified, "last_command_finished_utc": previous.isoformat(),
+            "production_build": build, "actual_source": source["checkout"],
+            "run_id": receipt["run_id"], "run_attempt": receipt["run_attempt"], "job": receipt["job"]}
+
+
+def window_frontend_retain_units(repo, output, source):
+    original = output / "window-unit-build"
+    admitted = window_frontend_unit_admission(repo, original, source)
+    inventory = archive_inventory(output.parent)
+    entries = {name: value for name, value in inventory["entries"].items()
+               if name == "e/window-unit-build" or name.startswith("e/window-unit-build/")}
+    require(entries and entries.get("e/window-unit-build", {}).get("kind") == "directory",
+            "Window unit/build original inventory is missing")
+    return {"admission": admitted, "retained_prefix": "e/window-unit-build",
+            "original_member_entries": entries}
+
+
+def window_frontend_archive_units(root, inventory, source, receipt):
+    binding = receipt.get("window_unit_build_binding")
+    require(isinstance(binding, dict) and binding.get("retained_prefix") == "e/window-unit-build",
+            "Window browser is not bound to its original unit/build phase")
+    entries = {name: value for name, value in inventory["entries"].items()
+               if name == "e/window-unit-build" or name.startswith("e/window-unit-build/")}
+    require(entries == binding.get("original_member_entries"),
+            "Window archived unit/build original inventory differs")
+    admitted = window_frontend_unit_admission(root.parent / "g", root / "e/window-unit-build", source)
+    require(admitted == binding.get("admission"), "Window unit/build admission differs")
+    start = datetime.fromisoformat(receipt.get("discovery", {}).get("command", {}).get("started_utc", ""))
+    end = datetime.fromisoformat(admitted["last_command_finished_utc"])
+    require(start.tzinfo is not None and end <= start, "Window browser began before the build closed")
+    return admitted
+
+
+# The existing checkout action acquires HEAD and its parent in this hosted job.
+# This observer requires an ordinary single-parent child of the nominated
+# product object; it never fetches, checks out, resets or retries a substitute.
+WINDOW_FRONTEND_BASE_ACQUISITION = "SAME_JOB_CHECKOUT_DEPTH_2_DIRECT_SINGLE_PARENT"
+WINDOW_FRONTEND_BASE_SCHEMA = "motionwright.window-base-object-observation/1"
+WINDOW_FRONTEND_BASE_CAPS = (("head-before", 15), ("head-commit", 15),
+                             ("base-object", 15), ("head-after", 15))
+
+
+def window_frontend_base_commands(git):
+    window_frontend_profile()
+    require(isinstance(git, str) and Path(git).is_absolute(), "Window Git executable is not absolute")
+    prefix = [git, "--no-replace-objects"]
+    head = [*prefix, "rev-parse", "HEAD", "HEAD^{tree}"]
+    return (head,
+            [*prefix, "cat-file", "commit", "HEAD"],
+            [*prefix, "rev-parse", "HEAD^1^{commit}", "HEAD^1^{tree}"],
+            head)
+
+
+def window_frontend_base_originals(repo, output, receipt, source=None):
+    """Admit only these retained Git originals; no frontend result is admitted."""
+    profile = window_frontend_profile()
+    require(isinstance(receipt, dict) and receipt.get("schema") == WINDOW_FRONTEND_BASE_SCHEMA
+            and receipt.get("status") == "BASE_OBJECT_VERIFIED_NO_FRONTEND_EXECUTION"
+            and receipt.get("nominated_input") == {"commit": profile["source_commit"], "tree": profile["source_tree"]}
+            and receipt.get("base_acquisition") == WINDOW_FRONTEND_BASE_ACQUISITION
+            and receipt.get("result_transfer") is False and receipt.get("frontend_execution") == "NOT_RUN",
+            "Window base object receipt has a foreign or incomplete scope")
+    context = {key: os.environ.get(key) for key in (
+        "GITHUB_SHA", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}
+    require(receipt.get("context") == context and context["GITHUB_REPOSITORY"] == "seradotcom/motionwright"
+            and context["GITHUB_RUN_ATTEMPT"] == "1" and context["GITHUB_JOB"] == "creative-unit-build",
+            "Window base object receipt belongs to another source/job/attempt")
+    tool = receipt.get("git")
+    require(isinstance(tool, dict) and observed_tool(Path(tool.get("path", ""))) == tool,
+            "Window Git executable identity changed")
+    expected = window_frontend_base_commands(tool["path"])
+    commands = receipt.get("commands")
+    require(isinstance(commands, list) and len(commands) == len(WINDOW_FRONTEND_BASE_CAPS),
+            "Window base command roster is incomplete")
+    previous = None
+    stdout = {}
+    for row, (label, cap), argv in zip(commands, WINDOW_FRONTEND_BASE_CAPS, expected):
+        require(isinstance(row, dict) and set(row) == {"label", "cap_seconds", "command"}
+                and row["label"] == label and type(row["cap_seconds"]) is int and row["cap_seconds"] == cap,
+                "Window base command ordering or bound differs")
+        command = row["command"]
+        require_observed_command(command)
+        require(type(command.get("exit_code")) is int and command["exit_code"] == 0
+                and command.get("argv") == argv and command.get("cwd") == str(repo)
+                and command.get("selected_environment") == dict.fromkeys(PROCESS_ENVIRONMENT_KEYS),
+                "Window base command did not close with its exact invocation")
+        raw, _identity = studio68_original(output / (label + ".command.json"), 1024 * 1024)
+        require(json.loads(raw) == command, "Window base original command differs")
+        start = datetime.fromisoformat(command.get("started_utc", ""))
+        end = datetime.fromisoformat(command.get("finished_utc", ""))
+        require(start.tzinfo is not None and end.tzinfo is not None and end >= start
+                and (previous is None or start >= previous), "Window base command time ordering differs")
+        previous = end
+        for stream in ("stdout", "stderr"):
+            raw, identity = studio68_original(output / (label + "." + stream + ".log"), 16 * 1024 * 1024)
+            require(command.get(stream) == identity, "Window base original stream differs")
+            if stream == "stdout":
+                stdout[label] = raw
+    heads = []
+    for label in ("head-before", "base-object", "head-after"):
+        lines = stdout[label].decode("ascii").splitlines()
+        require(len(lines) == 2 and all(re.fullmatch("[0-9a-f]{40}", item) for item in lines),
+                "Window Git commit/tree stdout is not exact")
+        heads.append({"commit": lines[0], "tree": lines[1]})
+    before, base, after = heads
+    require(before == after == receipt.get("executed_source")
+            and before["commit"] == context["GITHUB_SHA"], "Window acquisition changed the executed checkout")
+    raw_commit = stdout["head-commit"]
+    header, separator, _message = raw_commit.partition(b"\n\n")
+    require(separator == b"\n\n" and len(raw_commit) <= 1024 * 1024,
+            "Window original commit header is malformed or exceeds its bound")
+    original_oid = hashlib.sha1(b"commit " + str(len(raw_commit)).encode() + b"\0" + raw_commit).hexdigest()
+    parents = [line[7:].decode("ascii") for line in header.splitlines() if line.startswith(b"parent ")]
+    trees = [line[5:].decode("ascii") for line in header.splitlines() if line.startswith(b"tree ")]
+    require(original_oid == before["commit"] and trees == [before["tree"]],
+            "Window original commit bytes do not identify the actual checkout")
+    require(parents == [profile["source_commit"]],
+            "Window gate must be an ordinary single-parent child of its exact nominated base")
+    require(base == receipt["nominated_input"], "Window original parent commit/tree differs from the nominated base")
+    if source is not None:
+        require(before == {"commit": source.get("checkout"), "tree": source.get("tree")},
+                "Window base receipt and actual source observation differ")
+    return {"nominated_input": base, "executed_source": before, "commands": len(commands),
+            "run_id": context["GITHUB_RUN_ID"], "run_attempt": context["GITHUB_RUN_ATTEMPT"],
+            "job": context["GITHUB_JOB"], "original_commit_oid": original_oid,
+            "original_parent": parents[0], "last_command_finished_utc": previous.isoformat(),
+            "result_transfer": False}
+
+
+def window_frontend_prepare_base(repo, output):
+    resources = window_frontend_environment(phase="unit")
+    repo, output = (Path(os.path.abspath(path)) for path in (repo, output))
+    require(os.environ.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
+            and repo.name == "g" and Path(os.environ.get("GITHUB_WORKSPACE", "")) == repo.parent
+            and output == repo.parent / "v/tools/window-base",
+            "Window base acquisition requires its own genuine hosted g/v layout")
+    archive_ancestors(repo)
+    archive_ancestors(output.parent.parent)
+    require(repo.is_dir() and output.parent.parent.is_dir() and not output.parent.exists()
+            and not output.parent.is_symlink(), "Window base originals require a fresh tools directory")
+    environment = dict(resources["environment"])
+    require(not any(key.startswith("GIT_") and value for key, value in environment.items()),
+            "Window base acquisition rejects inherited Git overrides")
+    environment.update(GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1",
+                       GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    git = shutil.which("git")
+    require(git is not None, "Window Git executable is missing")
+    tool = observed_tool(Path(git))
+    profile = window_frontend_profile()
+    output.mkdir(parents=True, exist_ok=False)
+    receipt = {"schema": WINDOW_FRONTEND_BASE_SCHEMA, "status": "PREPARATION_REJECTED",
+               "nominated_input": {"commit": profile["source_commit"], "tree": profile["source_tree"]},
+               "base_acquisition": WINDOW_FRONTEND_BASE_ACQUISITION, "git": tool,
+               "context": {key: os.environ.get(key) for key in (
+                   "GITHUB_SHA", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")},
+               "resources": resources["observed"], "commands": [],
+               "frontend_execution": "NOT_RUN", "result_transfer": False,
+               "limits": {"command_seconds": [cap for _label, cap in WINDOW_FRONTEND_BASE_CAPS],
+                          "workflow_step_seconds": 120,
+                          "boundary": "EXISTING_COMMAND_OBSERVER; NO_CONTINUOUS_FILESYSTEM_WATCHDOG"}}
+    code = 1
+    try:
+        for (label, cap), argv in zip(WINDOW_FRONTEND_BASE_CAPS, window_frontend_base_commands(tool["path"])):
+            command = execute(argv, repo, environment, output, label, cap)
+            receipt["commands"].append({"label": label, "cap_seconds": cap, "command": command})
+            require_observed_command(command)
+            require(type(command.get("exit_code")) is int and command["exit_code"] == 0,
+                    "Window base Git command failed: " + label)
+            if label == "head-before":
+                raw, identity = studio68_original(output / (label + ".stdout.log"), 1024)
+                require(identity == command["stdout"], "Window initial HEAD original changed")
+                lines = raw.decode("ascii").splitlines()
+                require(len(lines) == 2 and lines[0] == os.environ["GITHUB_SHA"]
+                        and all(re.fullmatch("[0-9a-f]{40}", value) for value in lines),
+                        "Window acquisition starts from a foreign checkout")
+                receipt["executed_source"] = {"commit": lines[0], "tree": lines[1]}
+        receipt["status"] = "BASE_OBJECT_VERIFIED_NO_FRONTEND_EXECUTION"
+        receipt["admission"] = window_frontend_base_originals(repo, output, receipt)
+        code = 0
+    except UnknownObservation as error:
+        receipt.update(status="UNKNOWN_NO_RETRY", error=str(error), uncertain_command=error.command)
+        code = 124
+    except BaseException as error:
+        receipt.update(status="PREPARATION_REJECTED", error=type(error).__name__ + ": " + str(error))
+    write_new(output / "receipt.json", receipt)
+    original, _identity = studio68_original(output / "receipt.json", 4 * 1024 * 1024)
+    require(json.loads(original) == receipt, "Window base receipt persistence readback differs")
+    return code, receipt
+
+
+def window_frontend_base_main(arguments):
+    parser = argparse.ArgumentParser(description="Verify the exact Window parent acquired by this existing hosted checkout.")
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    code, receipt = window_frontend_prepare_base(args.repo, args.output)
+    print(json.dumps({"status": receipt["status"], "receipt": str(args.output / "receipt.json"),
+                      "frontend_execution": "NOT_RUN"}))
+    return code
+
+
+def window_frontend_base_archive(root, inventory, source):
+    name = "tools/window-base/receipt.json"
+    receipt = archive_json(root, inventory, name)
+    result = window_frontend_base_originals(root.parent / "g", root / "tools/window-base", receipt, source)
+    expected = {"tools/window-base", name}
+    for label, _cap in WINDOW_FRONTEND_BASE_CAPS:
+        expected.update("tools/window-base/" + label + suffix for suffix in (
+            ".command.json", ".stdout.log", ".stderr.log"))
+    require({name for name in inventory["entries"] if name == "tools/window-base"
+             or name.startswith("tools/window-base/")} == expected,
+            "Window base original member roster differs")
+    units = archive_json(root, inventory, "e/window-unit-build/receipt.json")
+    first = datetime.fromisoformat(units.get("commands", [{}])[0].get("started_utc", ""))
+    require(first.tzinfo is not None
+            and datetime.fromisoformat(result["last_command_finished_utc"]) <= first,
+            "Window frontend began before base acquisition closed")
+    return {"receipt": {key: inventory["entries"][name][key] for key in ("bytes", "sha256")}, **result}
+
+
+def window_frontend_preflight_main(arguments):
+    parser = argparse.ArgumentParser(description="Check the exact Window frontend source and hosted inputs.")
+    parser.add_argument("--repo", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    environment = window_frontend_environment()
+    observed = source_observation(args.repo.resolve(), WINDOW_FRONTEND_SCOPE)
+    base_root = args.repo.resolve().parent / "v/tools/window-base"
+    raw, identity = studio68_original(base_root / "receipt.json", 4 * 1024 * 1024)
+    base = window_frontend_base_originals(args.repo.resolve(), base_root, json.loads(raw), observed)
+    print(json.dumps({"status": "SOURCE_INPUTS_OBSERVED_NOT_EXECUTED", "source": observed,
+                      "resources": environment["observed"], "base_acquisition": base,
+                      "base_receipt": identity}))
+    return 0
+
+
 def selected_unit_inventory(selection):
+    if selection == WINDOW_FRONTEND_SCOPE:
+        return window_frontend_inventory()
     require(selection in ("creative-production", "review", "workflow-preview", "branch-claim"), "unknown selected unit scope")
     rows, expected_files, expected_tests = {
         "creative-production": (CREATIVE_PRODUCTION_UNITS, 2, 67),
@@ -2288,6 +3602,8 @@ def selected_selections(selection):
     require(isinstance(selection, str), "selection must be a single named scope")
     if is_browser_scope(selection):
         return browser_selections(selection)
+    if selection == CAMERA_EIGHT_SCOPE:
+        return camera_eight_selections()
     if selection == PARTIAL_ORACLE_SCOPE:
         return partial_oracle_selections()
     require(SELECTIONS == (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS, *BRANCH_CLAIM_SELECTIONS)
@@ -2327,6 +3643,17 @@ def selected_selections(selection):
 def selection_plan(selection):
     chosen = selected_selections(selection)
     labels = {row[0] for row in chosen}
+    if selection == CAMERA_EIGHT_SCOPE:
+        return {"requested": selection, "scope": "CAMERA_SEVEN_PLUS_SAVED_MANIM_V2",
+                "required": [{"label": label, "file": filename, "titles": list(titles)}
+                             for label, filename, titles in chosen],
+                "not_selected": [{"label": label, "file": filename, "titles": list(titles),
+                                  "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                                 for label, filename, titles in SELECTIONS if label != "camera"],
+                "required_tests": 8, "full_default_tests": 184, "existing_camera_cases": 7,
+                "added_v2_cases": 1, "discovery_required_before_execution": True,
+                "execution_platform": "Linux", "independent_archive_reopen": False,
+                "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
     if selection == PARTIAL_ORACLE_SCOPE:
         return {"requested": selection, "scope": "EXPLICIT_PARTIAL_TECHNICAL_SERVICE_ORACLES",
                 "required": [{"label": label, "file": filename, "titles": list(titles)}
@@ -2426,8 +3753,10 @@ def write_new(path, value):
 
 
 def source_observation(repo, selection=None):
-    require(selection is None or is_browser_scope(selection) or selection == PARTIAL_ORACLE_SCOPE,
+    require(selection is None or is_browser_scope(selection) or selection in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE),
             "unknown source observation scope")
+    if selection == CAMERA_EIGHT_SCOPE:
+        camera_eight_profile()
     def git(*arguments):
         return subprocess.check_output(["git", *arguments], cwd=repo, timeout=30).decode().strip()
 
@@ -2571,6 +3900,11 @@ def source_observation(repo, selection=None):
     if selection == PARTIAL_ORACLE_SCOPE:
         partial_oracle_selections()
         paths = tuple(dict.fromkeys((*paths, *PARTIAL_ORACLE_SOURCE_PATHS)))
+    if selection == WINDOW_FRONTEND_SCOPE:
+        window_frontend_profile()
+        paths = tuple(dict.fromkeys((*paths, *WINDOW_FRONTEND_SOURCE_PATHS)))
+    if selection == CAMERA_EIGHT_SCOPE:
+        paths = tuple(dict.fromkeys((*paths, *(name for name, _ in CAMERA_EIGHT_HISTORICAL_INPUT_PINS))))
     files = {}
     for name in paths:
         original = subprocess.check_output(["git", "show", head + ":" + name], cwd=repo, timeout=30)
@@ -2580,7 +3914,12 @@ def source_observation(repo, selection=None):
         require(observed == {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()},
                 "source differs from Git: " + name)
         files[name] = observed
-    return {"checkout": head, "tree": git("rev-parse", "HEAD^{tree}"), "files": files}
+    result = {"checkout": head, "tree": git("rev-parse", "HEAD^{tree}"), "files": files}
+    if selection == WINDOW_FRONTEND_SCOPE:
+        result["window_frontend_binding"] = window_frontend_source_binding(repo, result)
+    if selection == CAMERA_EIGHT_SCOPE:
+        result["camera_eight_binding"] = camera_eight_source_binding(repo, result)
+    return result
 
 
 PROCESS_ENVIRONMENT_KEYS = ("CARGO_TARGET_DIR", "PLAYWRIGHT_JSON_OUTPUT_FILE",
@@ -2982,6 +4321,7 @@ def archive_closed_bindings(root, inventory, source):
     plan = receipt.get("selection_plan", {})
     require(plan == selection_plan(plan.get("requested")), "archive selection binding differs")
     required = selected_selections(plan["requested"])
+    camera_mode = plan["requested"] == CAMERA_EIGHT_SCOPE
     selections = receipt.get("selections", [])
     require([x.get("label") for x in selections] == [x[0] for x in required],
             "archive selected roster differs")
@@ -3058,7 +4398,7 @@ def archive_closed_bindings(root, inventory, source):
         build = receipt.get("build", {})
         command_closed(build, "build")
         require(build.get("argv") == [cargo, "build", "--locked", "-p", "motionwright-service",
-                                       "--example", "studio_review_session"]
+                                       "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode else [])]
                 and build.get("cwd") == str(repo)
                 and build.get("selected_environment") == service_environment_binding(target),
                 "service build invocation differs")
@@ -3081,6 +4421,7 @@ def archive_closed_bindings(root, inventory, source):
                         archive_json(root, inventory, "e/" + label + "-discovery.json"), filename, titles),
                     "partial oracle discovery original differs")
         partial_oracle_list_order(discovered, selections)
+    camera_lists = camera_eight_archive_lists(root, inventory, receipt, source, command_closed) if camera_mode else {}
     for selection, (_, filename, titles) in zip(selections, required):
         label = selection["label"]
         command_closed(selection.get("command", {}), label)
@@ -3094,7 +4435,7 @@ def archive_closed_bindings(root, inventory, source):
                 "browser selected command differs")
         else:
             require(selection["command"].get("argv") == service_command(
-                node, cli, root / "e", (label, filename, titles))
+                node, cli, root / "e", (label, filename, titles), scope=CAMERA_EIGHT_SCOPE if camera_mode else None)
                 and selection["command"].get("cwd") == cwd
                 and selection["command"].get("selected_environment") == service_environment_binding(
                     target, root / "e", label, binary_path), "service selected invocation differs")
@@ -3102,11 +4443,35 @@ def archive_closed_bindings(root, inventory, source):
         require(selection.get("status") == "PASS" and selection.get("expected_tests") == len(titles)
                 and selection.get("original_report") == {k: original.get(k) for k in ("bytes", "sha256")},
                 "archive report binding differs")
-        verify = validate_browser_execution if browser_mode or plan["requested"] == PARTIAL_ORACLE_SCOPE else validate_report
-        require(selection.get("verified") == verify(
-            archive_json(root, inventory, "e/" + label + ".json"), filename, titles),
-            "archive original selected results differ")
+        original_document = archive_json(root, inventory, "e/" + label + ".json")
+        if camera_mode:
+            verified = camera_eight_report(original_document, filename, titles, listing=False, expected=camera_lists[label])
+            intent_name = "e/" + label + "-intent.json"
+            intent = camera_eight_intent(label, titles, selection["command"]["argv"], Path(cwd), source, receipt["service_binary"])
+            require(archive_json(root, inventory, intent_name) == intent
+                    and selection.get("intent") == {key: inventory["entries"][intent_name][key] for key in ("bytes", "sha256")}
+                    and selection.get("launch_requested") is True and selection.get("attempted") is True
+                    and type(selection.get("original_pid")) is int and selection["original_pid"] > 0
+                    and selection["original_pid"] == selection["command"].get("pid")
+                    and type(selection.get("original_exit")) is int and selection["original_exit"] == 0
+                    and type(selection.get("validated_cases")) is int and selection["validated_cases"] == len(titles),
+                    "Camera original attempt or intent differs")
+        else:
+            verify = validate_browser_execution if browser_mode or plan["requested"] == PARTIAL_ORACLE_SCOPE else validate_report
+            verified = verify(original_document, filename, titles)
+        require(selection.get("verified") == verified, "archive original selected results differ")
+    if camera_mode:
+        require(receipt.get("camera_execution") == {"selected_cases": 8, "launch_requested_cases": 8,
+                "selected_cases_in_started_processes": 8, "validated_cases": 8, "state": "VALIDATED_ALL_SELECTED_ORIGINALS",
+                "retry": "FORBIDDEN", "formal_acceptance": False}, "Camera aggregate execution is not complete")
     if browser_mode:
+        window_units = None
+        window_base = None
+        if plan["requested"] == WINDOW_FRONTEND_SCOPE:
+            window_units = window_frontend_archive_units(root, inventory, source, receipt)
+            window_base = window_frontend_base_archive(root, inventory, source)
+            require(receipt.get("phase_source_after") == [source, source],
+                    "Window browser phase source readbacks differ")
         for name in inventory["entries"]:
             parts = name.split("/")
             require(not any(part.endswith("-stores") or part.startswith("executed-studio-service") for part in parts)
@@ -3118,7 +4483,7 @@ def archive_closed_bindings(root, inventory, source):
                         "browser archive contains a closed-service store claim")
         return {"receipt": {key: inventory["entries"]["e/receipt.json"][key] for key in ("bytes", "sha256")},
                 "selection_plan": plan, "discovery": discovery["verified"], "captures": [],
-                "service_runtime": "NOT_RUN"}
+                "service_runtime": "NOT_RUN", **({"window_units": window_units, "window_base": window_base} if window_units else {})}
     binary = receipt.get("retained_service_binary", {})
     require(binary.get("path") in ("executed-studio-service", "executed-studio-service.exe"),
             "archive retained executable name differs")
@@ -3174,6 +4539,8 @@ def archive_closed_bindings(root, inventory, source):
                          "evidence_scope": manifest.get("evidenceScope")})
     result = {"receipt": {k: inventory["entries"]["e/receipt.json"][k] for k in ("bytes", "sha256")},
               "selection_plan": plan, "captures": captures}
+    if camera_mode:
+        result["camera_eight_cases"] = camera_eight_capture_bindings(root, inventory, captures)
     if plan["requested"] == PARTIAL_ORACLE_SCOPE:
         result["partial_oracle_cases"] = partial_oracle_store_bindings(
             root, inventory, selections, captures, receipt["service_binary"], source)
@@ -3321,7 +4688,8 @@ def retain_closed_archive(repo, root):
                                      original_receipt.get("unsealed_command", {}))
         commands = [original_receipt.get("build", {}), original_receipt.get("discovery", {}).get("command", {}),
                     *(row.get("command", {}) for row in original_receipt.get("selections", [])),
-                    *(row.get("command", {}) for row in original_receipt.get("partial_discovery", []))]
+                    *(row.get("command", {}) for row in original_receipt.get("partial_discovery", [])),
+                    *(row.get("command", {}) for row in original_receipt.get("camera_discovery", []))]
         for command in commands:
             if execution_unknown(command):
                 raise UnknownObservation("original command is UNKNOWN; no source commands or archive copy", command)
@@ -3331,7 +4699,7 @@ def retain_closed_archive(repo, root):
                 and archive_json(root, before, receipt_name) == original_receipt,
                 "original receipt changed before archive admission")
         selected = original_receipt.get("selection_plan", {}).get("requested")
-        source_mode = selected if is_browser_scope(selected) or selected == PARTIAL_ORACLE_SCOPE else None
+        source_mode = selected if is_browser_scope(selected) or selected in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE) else None
         source = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source"] = source
         report["bindings"] = archive_closed_bindings(root, before, source)
@@ -3373,6 +4741,15 @@ def archive_main(arguments):
 
 
 def browser_selections(scope="browser-contracts"):
+    if scope == WINDOW_FRONTEND_SCOPE:
+        label, filename, titles = WINDOW_FRONTEND_BROWSER_SELECTION
+        require((label, filename) == ("browser-window-frontend", "native-preview.spec.ts")
+                and isinstance(titles, tuple) and len(titles) == len(set(titles)) == 6
+                and all(isinstance(title, str) and title for title in titles)
+                and hashlib.sha256(json.dumps(titles, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                    == WINDOW_FRONTEND_BROWSER_CATALOG_SHA256
+                and BROWSER_SCOPES.get(scope) == (label,), "Window browser catalogue differs")
+        return (WINDOW_FRONTEND_BROWSER_SELECTION,)
     require(BROWSER_SELECTIONS == (*HISTORICAL_BROWSER_SELECTIONS,
                                    *CREATIVE_PRODUCTION_BROWSER_SELECTIONS)
             and len(HISTORICAL_BROWSER_SELECTIONS) == 31
@@ -3516,9 +4893,17 @@ def service_environment_binding(target, output=None, label=None, binary=None):
             "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": str(output / (label + "-stores")) if label is not None else None}
 
 
-def service_command(node, cli, output, selection, *, listing=False):
+def service_command(node, cli, output, selection, *, listing=False, scope=None):
     label, filename, _titles = selection
     require(type(listing) is bool, "service list flag must be boolean")
+    require(scope in (None, CAMERA_EIGHT_SCOPE), "unknown closed service command scope")
+    if scope == CAMERA_EIGHT_SCOPE:
+        require(selection in camera_eight_selections(), "unknown Camera eight selection")
+        pattern = "^(?:" + "|".join(re.escape(" ".join(("chromium", filename, title))) for title in _titles) + ")$"
+        return [node, str(cli), "test", "tests/" + filename, "--project=chromium",
+                "--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only", "--reporter=json",
+                "--output=" + str(output / (label + "-test-results")), "--grep", pattern,
+                *(["--list"] if listing else [])]
     if label in {row[0] for row in PARTIAL_ORACLE_SELECTIONS}:
         require(selection in partial_oracle_selections(), "unknown partial oracle selection")
         pattern = "^(?:" + "|".join(re.escape(" ".join(("chromium", filename, title)))
@@ -3537,6 +4922,17 @@ def service_command(node, cli, output, selection, *, listing=False):
 
 
 def browser_command(node, cli, output, selection=None, *, scope="browser-contracts"):
+    if scope == WINDOW_FRONTEND_SCOPE:
+        rows = browser_selections(scope)
+        require(selection is None or selection == rows[0], "Window browser selection differs")
+        label, filename, titles = rows[0]
+        pattern = "^(?:" + "|".join(re.escape(" ".join(browser_full_title_path(filename, title)))
+                                   for title in titles) + ")$"
+        return [node, str(cli), "test", "tests/" + filename, "--project=chromium",
+                "--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only",
+                "--reporter=json" if selection is None else "--reporter=line,json",
+                "--output=" + str(output / (label + "-test-results")), "--grep", pattern,
+                *(["--list"] if selection is None else [])]
     if selection is None:
         return [node, str(cli), "test",
                 *("tests/" + filename for _, filename, _ in browser_selections(scope)),
@@ -3562,10 +4958,19 @@ def browser_report_original(path):
 def run_browser_selection(repo, output, target, scope="browser-contracts"):
     """Run synthetic browser contracts through the canonical process observer."""
     chosen = browser_selections(scope)
+    window_mode = scope == WINDOW_FRONTEND_SCOPE
+    window_environment = window_frontend_environment(phase="browser") if window_mode else None
     repo, output, target = (path.resolve() for path in (repo, output, target))
     require(repo.is_dir(), "repository missing")
-    require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
-    output.mkdir(parents=True, exist_ok=False)
+    if window_mode:
+        require(not target.exists() and output.is_dir()
+                and {path.name for path in output.iterdir()} == {"window-unit-build"},
+                "Window browser requires only its already-closed unit/build originals")
+        window_before = source_observation(repo, scope)
+        window_binding = window_frontend_retain_units(repo, output, window_before)
+    else:
+        require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
+        output.mkdir(parents=True, exist_ok=False)
     report = {"schema": "motionwright.canvas-service-ci/1", "status": "FAIL",
               "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
               "job": os.environ.get("GITHUB_JOB"), "selections": [],
@@ -3574,7 +4979,11 @@ def run_browser_selection(repo, output, target, scope="browser-contracts"):
               "service_runtime": "NOT_RUN", "service_build": "NOT_RUN",
               "installed_tauri": "NOT_RUN", "native_render": "NOT_RUN", "human_acceptance": "NOT_RUN"}
     try:
-        before = source_observation(repo, scope)
+        before = window_before if window_mode else source_observation(repo, scope)
+        if window_mode:
+            report["window_unit_build_binding"] = window_binding
+            report["frontend_resource_observations"] = [window_environment["observed"]]
+            report["phase_source_after"] = []
         report["source_before"] = before
         write_new(output / "source-before.json", before)
         node = shutil.which("node")
@@ -3582,7 +4991,7 @@ def run_browser_selection(repo, output, target, scope="browser-contracts"):
         cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
         report["playwright_cli"] = {"path": str(cli), **digest(cli)}
         report["node"] = {"path": node, **digest(Path(node))}
-        env = dict(os.environ)
+        env = dict(window_environment["environment"]) if window_mode else dict(os.environ)
         for variable in PROCESS_ENVIRONMENT_KEYS:
             env.pop(variable, None)
         report["service_environment"] = {"MOTIONWRIGHT_SERVICE_TEST_BIN": "ABSENT",
@@ -3597,7 +5006,14 @@ def run_browser_selection(repo, output, target, scope="browser-contracts"):
         original, document = browser_report_original(output / "browser-discovery.json")
         report["discovery"].update(original_report=original, verified=validate_browser_discovery(document, scope),
                                    status="LISTED_NOT_EXECUTED")
+        if window_mode:
+            after_phase = source_observation(repo, scope)
+            require(after_phase == before, "Window source changed during current browser listing")
+            report["phase_source_after"].append(after_phase)
         for selection in chosen:
+            if window_mode:
+                resources = window_frontend_environment(phase="browser")
+                report["frontend_resource_observations"].append(resources["observed"])
             label, filename, titles = selection
             case_env = dict(env)
             case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
@@ -3619,6 +5035,8 @@ def run_browser_selection(repo, output, target, scope="browser-contracts"):
                 break
         report["source_after"] = source_observation(repo, scope)
         require(report["source_after"] == before, "source changed during browser execution")
+        if window_mode:
+            report["phase_source_after"].append(report["source_after"])
         require(digest(cli) == {key: report["playwright_cli"][key] for key in ("bytes", "sha256")},
                 "Playwright CLI changed")
         require(digest(Path(node)) == {key: report["node"][key] for key in ("bytes", "sha256")},
@@ -3644,6 +5062,8 @@ def run_browser_selection(repo, output, target, scope="browser-contracts"):
 
 def validate_creative_production_units(document, studio, selection="creative-production"):
     """Admit only the exact selected original assertions from the locked CLI."""
+    if selection == WINDOW_FRONTEND_SCOPE:
+        return validate_window_frontend_units(document, studio)
     rows = selected_unit_inventory(selection)
     expected_count = sum(len(titles) for _, titles in rows)
     require(isinstance(document, dict) and document.get("success") is True,
@@ -3692,21 +5112,28 @@ def validate_creative_production_units(document, studio, selection="creative-pro
 def run_creative_production_units(repo, output, selection="creative-production"):
     """Run the selected Vitest files and production build once for a composed SHA."""
     units = selected_unit_inventory(selection)
+    window_mode = selection == WINDOW_FRONTEND_SCOPE
+    window_environment = window_frontend_environment() if window_mode else None
     source_scope = {"review": "review-browser", "creative-production": "creative-production-browser",
-                    "workflow-preview": "workflow-preview-browser", "branch-claim": None}[selection]
+                    "workflow-preview": "workflow-preview-browser", "branch-claim": None,
+                    WINDOW_FRONTEND_SCOPE: WINDOW_FRONTEND_SCOPE}[selection]
     repo, output = repo.resolve(), output.resolve()
+    window_before = source_observation(repo, source_scope) if window_mode else None
     require(repo.is_dir() and not output.exists(), "fresh unit evidence and existing source required")
     output.mkdir(parents=True, exist_ok=False)
     studio = repo / "apps/studio"
     report = {"schema": "motionwright.studio-unit-build-ci/1", "status": "FAIL",
               "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
               "job": os.environ.get("GITHUB_JOB"), "commands": [], "requested_selection": selection,
-              "selection": [{"file": name, "titles": [list(pair) for pair in titles]}
+              "selection": [{"file": name, "titles": list(titles) if window_mode else [list(pair) for pair in titles]}
                             for name, titles in units],
               "service_runtime": "NOT_RUN", "browser_runtime": "NOT_RUN", "native_render": "NOT_RUN",
               "installed_tauri": "NOT_RUN", "human_acceptance": False, "formal_acceptance": False}
     try:
-        before = source_observation(repo, source_scope)
+        before = window_before if window_mode else source_observation(repo, source_scope)
+        if window_mode:
+            report["frontend_resource_observations"] = [window_environment["observed"]]
+            report["phase_source_after"] = []
         report["source_before"] = before
         write_new(output / "source-before.json", before)
         node, npm = shutil.which("node"), shutil.which("npm")
@@ -3719,16 +5146,23 @@ def run_creative_production_units(repo, output, selection="creative-production")
         env = dict(os.environ)
         for variable in PROCESS_ENVIRONMENT_KEYS:
             env.pop(variable, None)
+        if window_mode:
+            env = dict(window_environment["environment"])
         # An existing output cannot be mistaken for a build of this source.
         dist = studio / "dist"
         require(not dist.exists(), "fresh production build output required")
         commands = (
             ("security-probe", [node, str(probe)], 60),
             ("vitest", [node, str(cli), "run", *(name for name, _ in units),
+                        *(["--maxWorkers=1", "--no-file-parallelism"] if window_mode else []),
                         "--retry=0", "--reporter=json", "--outputFile=" + str(output / "vitest.json")], 300),
             ("build", [npm, "run", "build"], 600),
         )
         for label, argv, timeout in commands:
+            if window_mode:
+                resources = window_frontend_environment(phase="build" if label == "build" else "unit")
+                report["frontend_resource_observations"].append(resources["observed"])
+                env = dict(resources["environment"])
             command = execute(argv, studio, env, output, label, timeout)
             report["commands"].append({"label": label, **command})
             require_observed_command(command)
@@ -3738,6 +5172,10 @@ def run_creative_production_units(repo, output, selection="creative-production")
                 original, document = browser_report_original(output / "vitest.json")
                 report["vitest_original"] = original
                 report["vitest"] = validate_creative_production_units(document, studio, selection)
+            if window_mode:
+                after_phase = source_observation(repo, source_scope)
+                require(after_phase == before, "Window source changed during unit/build phase")
+                report["phase_source_after"].append(after_phase)
         report["source_after"] = source_observation(repo, source_scope)
         require(report["source_after"] == before, "source changed during selected unit/build execution")
         for identity in report["tools"].values():
@@ -3881,7 +5319,7 @@ def unit_build_main(arguments):
     parser = argparse.ArgumentParser(description="Verify an exact selected unit inventory and production build.")
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--selection", choices=("creative-production", "review", "workflow-preview", "branch-claim"),
+    parser.add_argument("--selection", choices=("creative-production", "review", "workflow-preview", "branch-claim", WINDOW_FRONTEND_SCOPE),
                         default="creative-production")
     args = parser.parse_args(arguments)
     return run_creative_production_units(args.repo, args.output, args.selection)
@@ -3892,15 +5330,20 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--selection", default="all", choices=["all", PARTIAL_ORACLE_SCOPE, *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
+    parser.add_argument("--selection", default="all", choices=["all", PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
     args = parser.parse_args()
     if is_browser_scope(args.selection):
         return run_browser_selection(args.repo, args.output, args.target, args.selection)
     selections = selected_selections(args.selection)
-    partial_mode = args.selection == PARTIAL_ORACLE_SCOPE
-    require(not partial_mode or sys.platform.startswith("linux"),
+    partial_mode, camera_mode = args.selection == PARTIAL_ORACLE_SCOPE, args.selection == CAMERA_EIGHT_SCOPE
+    listed_mode = partial_mode or camera_mode
+    if camera_mode:
+        camera_eight_profile()  # No source/resource admission is inferred from this selector.
+    require(not listed_mode or sys.platform.startswith("linux"),
             "partial service verification requires its owned POSIX process boundary")
     repo, output, target = (p.resolve() for p in (args.repo, args.output, args.target))
+    if camera_mode:
+        require(output == repo.parent / "v/e", "Camera requires its original isolated evidence path")
     require(repo.is_dir(), "repository missing")
     require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
     output.mkdir(parents=True, exist_ok=False)
@@ -3909,10 +5352,20 @@ def main():
               "job": os.environ.get("GITHUB_JOB"), "selections": [],
               "selection_plan": selection_plan(args.selection),
               "installed_tauri": "NOT_RUN", "native_render": "NOT_RUN", "human_acceptance": "NOT_RUN"}
+    source_mode = args.selection if listed_mode else None
     try:
-        before = (source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo))
+        before = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source_before"] = before
         write_new(output / "source-before.json", before)
+        if camera_mode:
+            original, preflight = browser_report_original(output.parent / "tools/camera-preflight.json")
+            require(preflight.get("schema") == "motionwright.camera-eight-preflight/1"
+                    and preflight.get("source") == before and preflight.get("execution") == "NOT_RUN"
+                    and preflight.get("formal_acceptance") is False
+                    and preflight.get("resources", {}).get("phase") == "preflight",
+                    "Camera preflight original source differs")
+            report["camera_preflight"] = original
+            report["camera_resource_observations"] = [camera_eight_resources(repo, target, phase="build")]
         cargo, node = shutil.which("cargo"), shutil.which("node")
         require(cargo is not None and node is not None, "cargo and node are required")
         report["cargo"], report["node"] = observed_tool(Path(cargo)), observed_tool(Path(node))
@@ -3923,7 +5376,8 @@ def main():
             env.pop(variable, None)
         env["CARGO_TARGET_DIR"] = str(target)
         build = execute([cargo, "build", "--locked", "-p", "motionwright-service",
-                         "--example", "studio_review_session"], repo, env, output, "build", 1200)
+                         "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode else [])],
+                        repo, env, output, "build", 1200)
         report["build"] = build
         require_observed_command(build)
         require(build["exit_code"] == 0, "real service build failed")
@@ -3935,60 +5389,97 @@ def main():
         shutil.copyfile(binary, retained_binary)
         report["retained_service_binary"] = {"path": retained_binary.name, **digest(retained_binary)}
         require(digest(retained_binary) == digest(binary), "retained service binary differs")
-        require((source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo)) == before, "source changed during service compilation")
+        require((source_observation(repo, source_mode) if source_mode else source_observation(repo)) == before,
+                "source changed during service compilation")
         cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
         report["playwright_cli"] = digest(cli)
-        if partial_mode:
-            report["partial_discovery"] = []
-            # Admit every current list before any selected test body is launched.
+        discovery_key = "camera_discovery" if camera_mode else "partial_discovery"
+        if listed_mode:
+            report[discovery_key] = []
+            # Every current list closes before any selected test body is launched.
             for label, filename, titles in selections:
                 stores = output / (label + "-stores")
                 stores.mkdir()
                 discovery_env = dict(env)
                 discovery_env.update(service_environment_binding(target, output, label, binary))
                 discovery_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + "-discovery.json"))
-                command = execute(service_command(node, cli, output, (label, filename, titles), listing=True),
+                if camera_mode:
+                    report["camera_resource_observations"].append(camera_eight_resources(repo, target, phase="list-" + label))
+                command = execute(service_command(node, cli, output, (label, filename, titles), listing=True,
+                                                  scope=CAMERA_EIGHT_SCOPE if camera_mode else None),
                                   repo / "apps/studio", discovery_env, output, label + "-discovery", 60)
                 observed = {"label": label, "command": command, "status": "FAIL"}
-                report["partial_discovery"].append(observed)
+                report[discovery_key].append(observed)
                 require_observed_command(command)
                 require(command["exit_code"] == 0, "partial oracle discovery process failed")
                 original, document = browser_report_original(output / (label + "-discovery.json"))
-                observed.update(original_report=original,
-                                verified=partial_oracle_discovery(document, filename, titles),
-                                status="LISTED_NOT_EXECUTED")
-            require(source_observation(repo, PARTIAL_ORACLE_SCOPE) == before,
-                    "source changed during partial oracle listing")
+                verified = (camera_eight_report(document, filename, titles, listing=True) if camera_mode
+                            else partial_oracle_discovery(document, filename, titles))
+                observed.update(original_report=original, verified=verified, status="LISTED_NOT_EXECUTED")
+            if camera_mode:
+                all_ids = [identity["id"] for row in report[discovery_key] for identity in row["verified"]["identities"]]
+                require(len(all_ids) == len(set(all_ids)) == 8, "Camera two-list original IDs are not eight distinct identities")
+            require(source_observation(repo, source_mode) == before, "source changed during partial oracle listing")
             require(digest(binary) == {key: report["service_binary"][key] for key in ("bytes", "sha256")}
                     and digest(cli) == report["playwright_cli"], "partial oracle input changed during listing")
         for label, filename, titles in selections:
             case_env = dict(env)
             stores = output / (label + "-stores")
-            if not partial_mode:
+            if not listed_mode:
                 stores.mkdir()
             case_env["MOTIONWRIGHT_SERVICE_TEST_BIN"] = str(binary)
             case_env["MOTIONWRIGHT_SERVICE_TEST_TMPDIR"] = str(stores)
             case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
-            argv = service_command(node, cli, output, (label, filename, titles))
-            command = execute(argv, repo / "apps/studio", case_env, output, label,
-                              PARTIAL_ORACLE_TIMEOUTS[label] if partial_mode else SELECTION_TIMEOUTS[label])
-            selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
-            report["selections"].append(selection)
+            argv = service_command(node, cli, output, (label, filename, titles),
+                                   scope=CAMERA_EIGHT_SCOPE if camera_mode else None)
+            if camera_mode:
+                report["camera_resource_observations"].append(camera_eight_resources(repo, target, phase="execute-" + label))
+                intent = camera_eight_intent(label, titles, argv, repo / "apps/studio", before, report["service_binary"])
+                intent_path = output / (label + "-intent.json")
+                selection = {"label": label, "expected_tests": len(titles), "status": "PRE_LAUNCH",
+                             "attempted": False, "launch_requested": False, "original_pid": None,
+                             "original_exit": None, "validated_cases": 0}
+                report["selections"].append(selection)
+                write_new(intent_path, intent)
+                identity, retained_intent = browser_report_original(intent_path)
+                require(retained_intent == intent, "Camera pre-dispatch selection intent changed")
+                selection.update(intent=identity, launch_requested=True)
+            try:
+                command = execute(argv, repo / "apps/studio", case_env, output, label,
+                                  CAMERA_EIGHT_TIMEOUTS[label] if camera_mode else
+                                  PARTIAL_ORACLE_TIMEOUTS[label] if partial_mode else SELECTION_TIMEOUTS[label])
+            except UnknownObservation as error:
+                if camera_mode:
+                    camera_eight_record_attempt(selection, error.command)
+                raise
+            if camera_mode:
+                camera_eight_record_attempt(selection, command)
+            else:
+                selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
+                report["selections"].append(selection)
             require_observed_command(command)
             try:
                 result_path = output / (label + ".json")
                 selection["original_report"] = digest(result_path)
                 require(result_path.stat().st_size <= 64 * 1024 * 1024, "report exceeds bound")
                 document = json.loads(result_path.read_bytes())
-                verifier = validate_browser_execution if partial_mode else validate_report
-                selection["verified"] = verifier(document, filename, titles)
+                if camera_mode:
+                    discovered = next(row["verified"] for row in report[discovery_key] if row["label"] == label)
+                    selection["verified"] = camera_eight_report(document, filename, titles, listing=False, expected=discovered)
+                else:
+                    verifier = validate_browser_execution if partial_mode else validate_report
+                    selection["verified"] = verifier(document, filename, titles)
                 require(command["exit_code"] == 0, "selected process did not exit zero")
                 selection["status"] = "PASS"
+                if camera_mode:
+                    selection["validated_cases"] = len(titles)
             except Exception as error:
                 selection["error"] = str(error)
+            if camera_mode:
+                require(selection["status"] == "PASS", "Camera original execution or result admission failed")
             if command["exit_code"] is None:
                 break
-        report["source_after"] = (source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo))
+        report["source_after"] = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         require(report["source_after"] == before, "source changed during browser execution")
         require(digest(binary) == {k: report["service_binary"][k] for k in ("bytes", "sha256")},
                 "service executable changed")
@@ -4004,6 +5495,15 @@ def main():
                       terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
     except Exception as error:
         report["error"] = str(error)
+    if camera_mode:
+        started = sum(row["expected_tests"] for row in report["selections"] if row.get("attempted") is True)
+        report["camera_execution"] = {
+            "selected_cases": 8, "launch_requested_cases": sum(row["expected_tests"] for row in report["selections"]
+                                                                 if row.get("launch_requested") is True),
+            "selected_cases_in_started_processes": started, "validated_cases": sum(row.get("validated_cases", 0) for row in report["selections"]),
+            "state": ("UNKNOWN" if report["status"] == "UNKNOWN" else "VALIDATED_ALL_SELECTED_ORIGINALS"
+                      if report["status"] == "PASS" else "ATTEMPTED_NOT_VALIDATED" if started else "NOT_RUN"),
+            "retry": "FORBIDDEN", "formal_acceptance": False}
     write_new(output / "receipt.json", report)
     print(json.dumps({"status": report["status"],
                       "selected_tests": sum(x["expected_tests"] for x in report["selections"]),
@@ -5415,6 +6915,12 @@ def studio68_main(arguments):
     return exit_code
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["window-base"]:
+        raise SystemExit(window_frontend_base_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["camera-preflight"]:
+        raise SystemExit(camera_eight_preflight(sys.argv[2:]))
+    if sys.argv[1:2] == ["window-preflight"]:
+        raise SystemExit(window_frontend_preflight_main(sys.argv[2:]))
     if sys.argv[1:2] == ["studio68"]:
         raise SystemExit(studio68_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "claim-source-contracts":
