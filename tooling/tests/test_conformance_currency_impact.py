@@ -375,5 +375,215 @@ class CurrencyImpactTests(unittest.TestCase):
                          sorted(report["recorded_pass_criteria_requiring_reassessment"]))
 
 
+class SourceBatchTests(unittest.TestCase):
+    """Closed protocol negatives and real Git byte equivalence for batched reads."""
+
+    @staticmethod
+    def oid(data):
+        return hashlib.sha1(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
+
+    def frames(self, blobs):
+        return b"".join((self.oid(data) + " blob " + str(len(data)) + "\n").encode("ascii")
+                        + data + b"\n" for data in blobs)
+
+    def snapshot(self, blobs):
+        snap = object.__new__(impact.GitSnapshot)
+        snap.root, snap.source = Path("synthetic-batch-repository"), "a" * 40
+        snap.cache, snap.non_text = {}, {}
+        snap.modes = {name: "100644" for name in blobs}
+        snap.objects = {name: (self.oid(data), len(data)) for name, data in blobs.items()}
+        return snap
+
+    def test_batch_protocol_accepts_exact_empty_text_and_binary_objects(self):
+        blobs = [b"", b"source\r\n", b"\xff\x00\xfe"]
+        expected = [(self.oid(data), len(data)) for data in blobs]
+        self.assertEqual(impact.source_batch_blobs(self.frames(blobs), expected),
+                         {self.oid(data): data for data in blobs})
+
+    def test_batch_protocol_rejects_wrong_identity_kind_size_and_content(self):
+        data = b"abc\n"
+        wire = self.frames([data])
+        oid = self.oid(data)
+        for mutated in (wire.replace(oid.encode(), b"0" * 40),
+                        wire.replace(b" blob ", b" tree "),
+                        wire.replace(b" blob 4\n", b" blob 3\n"),
+                        wire.replace(b"abc\n", b"abd\n"), wire[:-1] + b"x"):
+            with self.subTest(wire=mutated), self.assertRaises(ValueError):
+                impact.source_batch_blobs(mutated, [(oid, len(data))])
+
+    def test_batch_protocol_rejects_truncation_extra_reordered_and_duplicate_frames(self):
+        blobs = [b"first", b"second"]
+        wire = self.frames(blobs)
+        expected = [(self.oid(data), len(data)) for data in blobs]
+        for mutated in (b"", wire[:8], wire[:-1], wire[:-3], wire + b"\n",
+                        wire + self.frames([b"extra"]), self.frames(list(reversed(blobs))),
+                        self.frames([blobs[0], blobs[0]])):
+            with self.subTest(length=len(mutated)), self.assertRaises(ValueError):
+                impact.source_batch_blobs(mutated, expected)
+        with self.assertRaises(ValueError):
+            impact.source_batch_blobs(self.frames([blobs[0], blobs[0]]), [expected[0], expected[0]])
+
+    def test_batch_prefetch_rejects_unsafe_paths_before_any_git_lookup(self):
+        snap = self.snapshot({"good.py": b"pass\n"})
+        for name in ("../private", "/absolute", "bad\\name", "a:b", "a//b", "./good.py", ""):
+            with self.subTest(name=name), mock.patch.object(impact, "git") as lookup:
+                with self.assertRaises(ValueError):
+                    snap.prefetch(["good.py", name])
+                lookup.assert_not_called()
+                self.assertEqual(snap.cache, {})
+
+    def test_batch_bounds_fail_before_process_and_never_drop_a_reference(self):
+        for constant, maximum in (("MAX_SOURCE_OBJECTS", 1), ("MAX_SOURCE_BLOB_BYTES", 2),
+                                  ("MAX_SOURCE_TOTAL_BYTES", 5)):
+            snap = self.snapshot({"a": b"one", "b": b"two"})
+            with self.subTest(constant=constant), mock.patch.object(impact, constant, maximum), \
+                    mock.patch.object(impact, "git") as lookup:
+                with self.assertRaises(ValueError):
+                    snap.prefetch(["a", "b"])
+                lookup.assert_not_called()
+                self.assertEqual(snap.cache, {})
+
+    def test_batch_prefetch_deduplicates_objects_chunks_and_uses_only_object_ids(self):
+        blobs = {"a.py": b"abc", "odd\nname.py": b"abc", "z.py": b"def"}
+        snap = self.snapshot(blobs)
+        by_oid = {self.oid(data): data for data in blobs.values()}
+        seen = []
+        def batch(root, *args, input_data=None):
+            self.assertEqual(root, snap.root)
+            self.assertEqual(args, ("cat-file", "--batch"))
+            requested = input_data.decode("ascii").splitlines()
+            self.assertTrue(all(impact.SHA.fullmatch(oid) for oid in requested))
+            seen.extend(requested)
+            return self.frames([by_oid[oid] for oid in requested])
+        with mock.patch.object(impact, "SOURCE_BATCH_BYTES", 3), \
+                mock.patch.object(impact, "git", side_effect=batch) as lookup:
+            snap.prefetch(list(blobs) + ["a.py"])
+            self.assertEqual(lookup.call_count, 2)
+            self.assertEqual(len(seen), len(set(seen)))
+            self.assertEqual(set(seen), set(by_oid))
+            for name, data in blobs.items():
+                self.assertEqual(snap.digest(name), digest(data))
+            snap.prefetch(list(blobs))
+            self.assertEqual(lookup.call_count, 2)
+
+    def test_batch_prefetch_preserves_missing_and_symlink_rejection(self):
+        snap = self.snapshot({"link": b"target"})
+        snap.modes["link"] = "120000"
+        with mock.patch.object(impact, "git") as lookup:
+            snap.prefetch(["link", "missing"])
+            self.assertIsNone(snap.digest("link"))
+            self.assertIsNone(snap.digest("missing"))
+            lookup.assert_not_called()
+
+    def test_batch_non_text_remains_invalid_without_aborting_other_records(self):
+        blobs = {"good.py": b"pass\r\n", "binary.zip": b"\xff\x00\xfe"}
+        snap = self.snapshot(blobs)
+        with mock.patch.object(impact, "git", return_value=self.frames([blobs[n] for n in sorted(blobs)])):
+            snap.prefetch(list(blobs))
+        self.assertEqual(snap.digest("good.py"), digest(b"pass\n"))
+        for _ in range(2):
+            with self.assertRaises(UnicodeDecodeError):
+                snap.digest("binary.zip")
+        record = {"id": "binary-must-not-pass", "source": {"motionwright_sha": snap.source,
+                  "source_lock_sha256": "c" * 64}, "source_inputs": [
+                  {"path": "binary.zip", "sha256": digest(blobs["binary.zip"])}],
+                  "definitions": [{"path": "good.py", "sha256": digest(b"pass\n")}],
+                  "criterion_ids": [], "complete_criterion_ids": [],
+                  "execution": {"kind": "unit", "profile": "synthetic", "status": "pass"}}
+        observed = impact.record_currency(record, snap.source, "c" * 64, snap)
+        self.assertEqual(observed["current_source_relation"], "current_source_invalidated")
+        self.assertEqual([item["status"] for item in observed["changed_references"]], ["non_text"])
+
+    def test_batch_late_corruption_keeps_preexisting_cache_and_admits_no_prefix(self):
+        snap = self.snapshot({"a": b"abc", "b": b"def"})
+        snap.cache["existing"] = "c" * 64
+        with mock.patch.object(impact, "SOURCE_BATCH_BYTES", 3), \
+                mock.patch.object(impact, "git", side_effect=[self.frames([b"abc"]), b"broken"]):
+            with self.assertRaises(ValueError):
+                snap.prefetch(["a", "b"])
+        self.assertEqual(snap.cache, {"existing": "c" * 64})
+        self.assertEqual(snap.non_text, {})
+
+    def test_batch_git_wrapper_keeps_environment_and_replacement_guards(self):
+        response = subprocess.CompletedProcess([], 0, b"closed-result", b"")
+        with mock.patch.dict(os.environ, {"GIT_DIR": "foreign", "GIT_CONFIG_COUNT": "1",
+                                        "GIT_REPLACE_REF_BASE": "refs/other/"}), \
+                mock.patch.object(impact.subprocess, "run", return_value=response) as call:
+            self.assertEqual(impact.git(Path("source"), "cat-file", "--batch", input_data=b"a" * 40 + b"\n"),
+                             b"closed-result")
+        args, kwargs = call.call_args
+        self.assertEqual(args[0], ["git", "--no-replace-objects", "-C", "source", "cat-file", "--batch"])
+        for forbidden in ("GIT_DIR", "GIT_CONFIG_COUNT", "GIT_REPLACE_REF_BASE"):
+            self.assertNotIn(forbidden, kwargs["env"])
+        self.assertEqual(kwargs["env"]["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(kwargs["env"]["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(kwargs["env"]["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(kwargs["timeout"], 80)
+        self.assertEqual(kwargs["input"], b"a" * 40 + b"\n")
+
+    def repository(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        root = Path(holder.name)
+        def command(*args):
+            completed = subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=40)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            return completed.stdout.decode("utf-8").strip()
+        command("init", "-q")
+        command("config", "user.email", "batch-fixture@example.invalid")
+        command("config", "user.name", "Synthetic batch source fixture")
+        command("config", "core.autocrlf", "false")
+        return root, command
+
+    def test_batch_real_git_matches_single_reads_ignores_worktree_and_preserves_non_text(self):
+        root, command = self.repository()
+        blobs = {"a.py": b"source = 1\r\n", "empty": b"", "oracle.py": b"assert source == 1\n",
+                 "binary": b"\xff\x00\xfe"}
+        for name, data in blobs.items():
+            (root / name).write_bytes(data)
+        command("add", ".")
+        command("commit", "-q", "-m", "exact batch fixture")
+        source = command("rev-parse", "HEAD")
+        old = impact.GitSnapshot(root, source)
+        expected = {name: old.digest(name) for name in blobs if name != "binary"}
+        for name in blobs:
+            (root / name).write_bytes(b"uncommitted replacement")
+        current = impact.GitSnapshot(root, source)
+        current.prefetch(list(blobs))
+        self.assertEqual({name: current.digest(name) for name in expected}, expected)
+        self.assertEqual(current.digest("a.py"), digest(b"source = 1\n"))
+        with self.assertRaises(UnicodeDecodeError):
+            current.digest("binary")
+
+    def test_batch_real_git_ignores_object_replacement_and_inherited_overrides(self):
+        root, command = self.repository()
+        (root / "source.py").write_bytes(b"original\n")
+        command("add", ".")
+        command("commit", "-q", "-m", "original object")
+        source = command("rev-parse", "HEAD")
+        original = command("rev-parse", source + ":source.py")
+        (root / "replacement.py").write_bytes(b"substituted\n")
+        replacement = command("hash-object", "-w", "replacement.py")
+        command("replace", original, replacement)
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(root / "foreign"), "GIT_CONFIG_COUNT": "1",
+                                        "GIT_CONFIG_KEY_0": "core.bare", "GIT_CONFIG_VALUE_0": "true"}):
+            snap = impact.GitSnapshot(root, source)
+            snap.prefetch(["source.py"])
+            self.assertEqual(snap.digest("source.py"), digest(b"original\n"))
+
+    def test_batch_same_inputs_on_new_commit_remain_historical(self):
+        snap = self.snapshot({"source.py": b"original\n"})
+        with mock.patch.object(impact, "git", return_value=self.frames([b"original\n"])):
+            snap.prefetch(["source.py"])
+        record = {"id": "old", "source": {"motionwright_sha": "b" * 40,
+                  "source_lock_sha256": "c" * 64}, "source_inputs": [
+                  {"path": "source.py", "sha256": digest(b"original\n")}], "definitions": [],
+                  "criterion_ids": [], "complete_criterion_ids": [],
+                  "execution": {"kind": "unit", "profile": "synthetic", "status": "pass"}}
+        result = impact.record_currency(record, snap.source, "c" * 64, snap)
+        self.assertEqual(result["current_source_relation"], "historical_same_inputs")
+
+
+
 if __name__ == "__main__":
     unittest.main()

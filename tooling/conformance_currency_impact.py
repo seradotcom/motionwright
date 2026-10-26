@@ -38,7 +38,7 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def git(root: Path, *args: str) -> bytes:
+def git(root: Path, *args: str, input_data: bytes | None = None) -> bytes:
     # A commit name alone is not a source boundary: inherited Git overrides
     # and repository-local replace refs can substitute another object database
     # or different bytes while preserving the requested commit label.
@@ -52,8 +52,9 @@ def git(root: Path, *args: str) -> bytes:
         "GIT_NO_LAZY_FETCH": "1",
     })
     command = ["git", "--no-replace-objects", "-C", str(root), *args]
+    options = {} if input_data is None else {"input": input_data}
     process = subprocess.run(command, capture_output=True, env=env,
-                             timeout=80, check=False)
+                             timeout=80, check=False, **options)
     if process.returncode:
         raise ValueError("Git source lookup failed: " + " ".join(args[:2]) +
                          ": " + process.stderr.decode("utf-8", "replace")[-180:])
@@ -91,6 +92,50 @@ def source_path(value: str) -> str:
     return value
 
 
+# One invocation is bounded before launching any batch process. The observed
+# canonical inventory is below 20 MiB over 1068 objects; these are fail-closed
+# resource bounds, not permission to omit a source or reuse a historical PASS.
+MAX_SOURCE_OBJECTS = 16384
+MAX_SOURCE_BLOB_BYTES = 16 * 1024 * 1024
+MAX_SOURCE_TOTAL_BYTES = 256 * 1024 * 1024
+SOURCE_BATCH_BYTES = 8 * 1024 * 1024
+
+
+def source_batch_blobs(data: bytes, expected: list[tuple[str, int]]) -> dict[str, bytes]:
+    """Verify closed cat-file framing and the raw Git object identity."""
+    if (len(expected) > MAX_SOURCE_OBJECTS or
+            len(expected) != len({oid for oid, _ in expected}) or
+            any(not SHA.fullmatch(oid) or type(size) is not int or
+                not 0 <= size <= MAX_SOURCE_BLOB_BYTES
+                for oid, size in expected)):
+        raise ValueError("invalid closed source batch inventory")
+    if sum(size for _, size in expected) > MAX_SOURCE_TOTAL_BYTES:
+        raise ValueError("source batch total exceeds bounded inventory")
+    headers = [(oid + " blob " + str(size) + "\n").encode("ascii")
+               for oid, size in expected]
+    wire_size = sum(len(header) + size + 1
+                    for header, (_, size) in zip(headers, expected))
+    if len(data) != wire_size:
+        raise ValueError("Git batch output is truncated or contains extra bytes")
+    result = {}
+    offset = 0
+    for header, (oid, size) in zip(headers, expected):
+        if data[offset:offset + len(header)] != header:
+            raise ValueError("Git batch object, type or size differs from source tree")
+        begin = offset + len(header)
+        end = begin + size
+        blob = data[begin:end]
+        if data[end:end + 1] != b"\n":
+            raise ValueError("Git batch object has no exact terminal delimiter")
+        actual = hashlib.sha1(b"blob " + str(size).encode("ascii") + b"\0" + blob).hexdigest()
+        if actual != oid:
+            raise ValueError("Git batch raw object identity differs from committed tree")
+        result[oid] = blob
+        offset = end + 1
+    return result
+
+
+
 class GitSnapshot:
     """Exact committed Git UTF-8 text; checkout state and symlinks cannot substitute."""
 
@@ -99,19 +144,85 @@ class GitSnapshot:
         self.source = commit_sha(self.root, source)
         self.modes: dict[str, str] = {}
         self.cache: dict[str, str | None] = {}
-        tree = git(self.root, "ls-tree", "-rz", "--full-tree", self.source)
+        self.non_text: dict[str, tuple] = {}
+        self.objects: dict[str, tuple[str, int]] = {}
+        tree = git(self.root, "ls-tree", "-rlz", "--full-tree", self.source)
         for row in tree.split(b"\0"):
             if not row:
                 continue
             descriptor, path = row.split(b"\t", 1)
-            mode, kind, _object = descriptor.decode("ascii").split(" ")
+            mode, kind, oid, size = descriptor.decode("ascii").split()
             if kind == "blob":
-                self.modes[path.decode("utf-8", "strict")] = mode
+                name = path.decode("utf-8", "strict")
+                self.modes[name] = mode
+                self.objects[name] = (oid, int(size))
+
+    def prefetch(self, names: list[str]) -> None:
+        """Read exact immutable blobs in bounded batches; publish no partial cache.
+
+        Each entry still passes the path/mode guard. Requests contain only the
+        object IDs read from this commit's tree, never caller-supplied revision
+        expressions. Bounds reject the operation instead of dropping references.
+        """
+        paths = {source_path(name) for name in names}
+        pending = sorted(name for name in paths
+                         if name not in self.cache and name not in self.non_text)
+        if len(pending) > MAX_SOURCE_OBJECTS:
+            raise ValueError("source batch reference count exceeds bounded inventory")
+        values: dict[str, str | None] = {}
+        errors: dict[str, tuple] = {}
+        objects: dict[str, tuple[int, list[str]]] = {}
+        for name in pending:
+            if self.modes.get(name) not in ("100644", "100755"):
+                values[name] = None
+                continue
+            oid, size = self.objects[name]
+            if not SHA.fullmatch(oid) or not 0 <= size <= MAX_SOURCE_BLOB_BYTES:
+                raise ValueError("source blob exceeds bounded exact-object contract")
+            if oid in objects:
+                if objects[oid][0] != size:
+                    raise ValueError("one source object has inconsistent sizes")
+                objects[oid][1].append(name)
+            else:
+                objects[oid] = (size, [name])
+        if sum(item[0] for item in objects.values()) > MAX_SOURCE_TOTAL_BYTES:
+            raise ValueError("source batch total exceeds bounded inventory")
+        batches: list[list[tuple[str, int]]] = []
+        current: list[tuple[str, int]] = []
+        size = 0
+        for oid, (length, _) in objects.items():
+            if current and size + length > SOURCE_BATCH_BYTES:
+                batches.append(current)
+                current, size = [], 0
+            current.append((oid, length))
+            size += length
+        if current:
+            batches.append(current)
+        for batch in batches:
+            request = b"".join((oid + "\n").encode("ascii") for oid, _ in batch)
+            output = git(self.root, "cat-file", "--batch", input_data=request)
+            for oid, data in source_batch_blobs(output, batch).items():
+                try:
+                    data.decode("utf-8", "strict")
+                except UnicodeDecodeError as error:
+                    for name in objects[oid][1]:
+                        errors[name] = error.args
+                else:
+                    value = sha256(data.replace(b"\r\n", b"\n"))
+                    for name in objects[oid][1]:
+                        values[name] = value
+        # A corrupt, truncated or extra frame invalidates the entire prefetch.
+        # Existing cached lookups remain intact, and no new prefix is admitted.
+        self.cache.update(values)
+        self.non_text.update(errors)
+
 
     def digest(self, name: str) -> str | None:
         name = source_path(name)
         if name in self.cache:
             return self.cache[name]
+        if name in self.non_text:
+            raise UnicodeDecodeError(*self.non_text[name])
         mode = self.modes.get(name)
         # Git symlink and submodule file contents are not an acceptable oracle.
         if mode not in ("100644", "100755"):
@@ -226,6 +337,9 @@ def inspect(root: Path, target_spec: str) -> dict:
         if actual != expected or len(actual) != len(fields):
             raise ValueError("assessed criterion identities do not equal canonical originals: " + rid)
 
+    snapshot.prefetch([ref["path"] for record in index["records"]
+                       for relation in ("source_inputs", "definitions")
+                       for ref in record[relation]])
     evidence = [record_currency(record, target, lock, snapshot) for record in index["records"]]
     by_evidence = {x["id"]: x for x in evidence}
     reviews_by_field: dict[str, list[dict]] = collections.defaultdict(list)
