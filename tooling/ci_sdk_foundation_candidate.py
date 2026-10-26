@@ -2422,6 +2422,7 @@ def transport_seal_parts(evidence, private_root, outgoing, rows, context, recipi
               "missing_or_unknown": plan["missing_or_unknown"],
               "upload_confirmed": False, "foundation_result_admitted": False,
               "selected_snapshot_completeness_is_foundation_completeness": False}
+    primary_error = None
     try:
         for part in plan["parts"]:
             check_budget()
@@ -2469,13 +2470,18 @@ def transport_seal_parts(evidence, private_root, outgoing, rows, context, recipi
                             and all(p["snapshot_complete"] and not p["copy_errors"] for p in result["parts"])
                             else "SEALED_INCOMPLETE_ORIGINALS_NO_RESULT_ADMISSION")
     except BaseException as error:
+        primary_error = error
         result.update(status="UNKNOWN_SEAL_CUSTODY_NO_RETRY", error_type=type(error).__name__, error=str(error),
                       originals_retained_in_place=True)
         raise
     finally:
-        # This one-shot terminal never overwrites a failed original or repairs a
-        # partial ciphertext. A second write is not attempted if it is uncertain.
-        crypto.new_json(private_root / "parts.original.json", result)
+        # A failed terminal write must not replace the original capture error.
+        # Neither failure permits a second write or another snapshot attempt.
+        try:
+            crypto.new_json(private_root / "parts.original.json", result)
+        except BaseException:
+            if primary_error is None:
+                raise
     return plan, result
 
 
@@ -3068,6 +3074,110 @@ def transport_dependency_argv(python, gate):
             "--only-binary=:all:", "--require-hashes", "--no-deps", "-r", str(gate / HOSTED_TRANSPORT_REQUIREMENTS)]
 
 
+def transport_data_public_terminal(context, environment, stage, status, parts_terminal,
+                                   secondary_custody_error):
+    """Publish only closed diagnostic tokens through the existing admission artifact."""
+    require(stage in ("LOAD_CRYPTO", "RETAIN_CONTROLLER", "INVENTORY", "PLAN", "PREPARE_OUTPUTS", "SEAL_PARTS",
+                      "COMPONENT_SNAPSHOT", "PUBLISH_PARTS"), "unknown data custody checkpoint")
+    require(status in ("COMPLETED_NO_RESULT_ADMISSION", "UNKNOWN_CUSTODY_NO_RETRY")
+            and parts_terminal in ("NOT_ATTEMPTED", "VERIFIED", "UNAVAILABLE_OR_REJECTED")
+            and type(secondary_custody_error) is bool, "unknown data custody terminal")
+    github = context["github"]
+    require(type(github["GITHUB_RUN_ID"]) is str and re.fullmatch(r"[1-9][0-9]*", github["GITHUB_RUN_ID"])
+            and github["GITHUB_RUN_ATTEMPT"] == "1"
+            and type(github["GITHUB_SHA"]) is str and SHA.fullmatch(github["GITHUB_SHA"]),
+            "public custody terminal has foreign execution identity")
+    workspace = Path(environment["GITHUB_WORKSPACE"]).absolute()
+    destination = workspace / "verification/sdk-foundation-hosted-admission"
+    for directory in (workspace, workspace / "verification", destination):
+        info = directory.lstat()
+        require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                and not getattr(info, "st_file_attributes", 0) & 0x400
+                and directory.resolve(strict=True) == directory,
+                "public custody terminal namespace is absent or linked")
+    value = {"schema": HOSTED_TRANSPORT_SCHEMA, "kind": "data-custody-terminal",
+             "source_sha": github["GITHUB_SHA"], "run_id": github["GITHUB_RUN_ID"], "run_attempt": "1",
+             "stage": stage, "status": status, "parts_terminal": parts_terminal,
+             "secondary_custody_error": secondary_custody_error,
+             "producer_result_observed": False, "foundation_result_admitted": False, "automatic_retry": False}
+    custody.write_new(destination / "transport-data.original.json", value)
+
+
+def transport_data(gate, root, evidence, private_root, outgoing, context, recipient,
+                   remaining, started, environment):
+    """Retain data-phase diagnostics without replay or replacing the first failure."""
+    stage = "LOAD_CRYPTO"
+    primary_error = None
+    primary_stage = None
+    sealing_started = False
+    parts_terminal = "NOT_ATTEMPTED"
+    secondary_custody_error = False
+    try:
+        crypto = transport_primitives(gate)
+        stage = "RETAIN_CONTROLLER"
+        hosted_retain_outer_originals(root, context, environment)
+        stage = "INVENTORY"
+        rows = transport_inventory(evidence, hosted_purpose(context))
+        stage = "PLAN"
+        transport_partition_plan(rows, hosted_purpose(context))  # Plan before any staging copy.
+        remaining(1)
+        stage = "PREPARE_OUTPUTS"
+        private_root.mkdir(mode=0o700); outgoing.mkdir(mode=0o700)
+        stage = "SEAL_PARTS"
+        sealing_started = True
+        transport_seal_parts(evidence, private_root, outgoing, rows, context, recipient, crypto, remaining)
+        stage = "COMPONENT_SNAPSHOT"
+        ack_path = root / "bootstrap/technical-ready.original.json"
+        if ack_path.is_file():
+            ack = custody.strict_json(transport_original(ack_path, root)[0])
+            sample = hosted_component_snapshot(root, context, started["original_deadline_monotonic_ns"], phase="custody",
+                initial=ack["prerequisites"]["initial_components"], environment=environment)
+            remaining(1)
+            crypto.new_json(private_root / "post-seal-components.original.json", sample)
+    except BaseException as error:
+        primary_error, primary_stage = error, stage
+        raise
+    finally:
+        try:
+            if sealing_started:
+                stage = "PUBLISH_PARTS"
+                parts_terminal = "UNAVAILABLE_OR_REJECTED"
+                # Complete parts may survive a later failure. Reading this
+                # terminal is one observation, never a reconstruction or retry.
+                remaining(1)
+                terminal_raw, _ = transport_original(private_root / "parts.original.json", root, 4 * 1024**2)
+                sealed = custody.strict_json(terminal_raw)
+                ready = set()
+                for part in sealed["parts"]:
+                    if part.get("status") not in ("SEALED_PRESENT_SNAPSHOT", "SEALED_PARTIAL_SNAPSHOT"): continue
+                    fingerprint = custody.fingerprint(outgoing / (part["id"] + ".bin"), outgoing)
+                    require((fingerprint["bytes"], fingerprint["sha256"]) ==
+                            (part["ciphertext_bytes"], part["ciphertext_sha256"]), "ready ciphertext changed")
+                    ready.add(part["id"])
+                remaining(1)
+                with Path(environment["GITHUB_OUTPUT"]).open("a", encoding="ascii", newline="\n") as stream:
+                    for number in range(1, HOSTED_TRANSPORT_DATA_PARTS + 1):
+                        name = "part-" + str(number).zfill(2)
+                        stream.write(name.replace("-", "_") + "=" + ("ready" if name in ready else "absent") + "\n")
+                parts_terminal = "VERIFIED"
+        except BaseException as error:
+            secondary_custody_error = primary_error is not None
+            if primary_error is None:
+                primary_error, primary_stage = error, stage
+                raise
+        finally:
+            try:
+                transport_data_public_terminal(context, environment, primary_stage or stage,
+                    "UNKNOWN_CUSTODY_NO_RETRY" if primary_error is not None else "COMPLETED_NO_RESULT_ADMISSION",
+                    parts_terminal, secondary_custody_error)
+            except BaseException:
+                # Do not retry a write whose result may be uncertain, and do
+                # not hide the private primary error behind a diagnostic error.
+                if primary_error is None:
+                    raise
+    return 0
+
+
 def transport_entry(action, admission_id, environment=None):
     environment = dict(os.environ) if environment is None else dict(environment)
     require(action in ("preflight", "data", "upload-data-check", "index", "upload-index-check", "descriptor"),
@@ -3122,44 +3232,12 @@ def transport_entry(action, admission_id, environment=None):
                 "transport preflight readback differs")
         remaining(1)
         return 0
-    crypto = transport_primitives(gate)
     private_root = root / "transport"
     outgoing = root / "outgoing"
     if action == "data":
-        hosted_retain_outer_originals(root, context, environment)
-        rows = transport_inventory(evidence, hosted_purpose(context))
-        plan = transport_partition_plan(rows, hosted_purpose(context))  # Full carrier planning before any staging copy.
-        remaining(1)
-        private_root.mkdir(mode=0o700); outgoing.mkdir(mode=0o700)
-        try:
-            transport_seal_parts(evidence, private_root, outgoing, rows, context, recipient, crypto, remaining)
-            ack_path = root / "bootstrap/technical-ready.original.json"
-            if ack_path.is_file():
-                ack = custody.strict_json(transport_original(ack_path, root)[0])
-                sample = hosted_component_snapshot(root, context, started["original_deadline_monotonic_ns"], phase="custody",
-                    initial=ack["prerequisites"]["initial_components"], environment=environment)
-                remaining(1)
-                crypto.new_json(private_root / "post-seal-components.original.json", sample)
-        finally:
-            # Earlier complete ciphertext parts may still be uploaded after a
-            # later capture failure. This never grants an index or a result.
-            remaining(1)
-            terminal_raw, _ = transport_original(private_root / "parts.original.json", root, 4 * 1024**2)
-            sealed = custody.strict_json(terminal_raw)
-            ready = set()
-            for part in sealed["parts"]:
-                if part.get("status") not in ("SEALED_PRESENT_SNAPSHOT", "SEALED_PARTIAL_SNAPSHOT"): continue
-                fingerprint = custody.fingerprint(outgoing / (part["id"] + ".bin"), outgoing)
-                require((fingerprint["bytes"], fingerprint["sha256"]) ==
-                        (part["ciphertext_bytes"], part["ciphertext_sha256"]), "ready ciphertext changed")
-                ready.add(part["id"])
-            remaining(1)
-            # Only opaque fixed identifiers cross into the public action interface.
-            with Path(environment["GITHUB_OUTPUT"]).open("a", encoding="ascii", newline="\n") as stream:
-                for number in range(1, HOSTED_TRANSPORT_DATA_PARTS + 1):
-                    name = "part-" + str(number).zfill(2)
-                    stream.write(name.replace("-", "_") + "=" + ("ready" if name in ready else "absent") + "\n")
-        return 0
+        return transport_data(gate, root, evidence, private_root, outgoing, context, recipient,
+                              remaining, started, environment)
+    crypto = transport_primitives(gate)
     plan_raw, _ = transport_original(private_root / "partition-plan.json", root, 4 * 1024**2)
     seal_raw, _ = transport_original(private_root / "parts.original.json", root, 4 * 1024**2)
     plan, sealed = custody.strict_json(plan_raw), custody.strict_json(seal_raw)

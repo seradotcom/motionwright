@@ -1704,6 +1704,196 @@ class SDKFoundationPrivateTransportTests(unittest.TestCase):
         self.assertTrue(original["originals_retained_in_place"])
         self.assertFalse(original["foundation_result_admitted"])
 
+    def data_entry_fixture(self):
+        root = self.root / "data-run"; root.mkdir()
+        evidence = root / "execution/evidence"; evidence.mkdir(parents=True)
+        (evidence / "controller").mkdir()
+        workspace = self.root / "workspace"; workspace.mkdir()
+        public = workspace / "verification/sdk-foundation-hosted-admission"; public.mkdir(parents=True)
+        outer = workspace / ("verification/foundation-controller-" + self.context["github"]["GITHUB_RUN_ID"] + "-1")
+        outer.mkdir()
+        for name in ("stdout.original", "stderr.original"):
+            (outer / name).write_bytes(b"PRIVATE-CANARY original shell stream\n")
+        terminal = {"schema": gate.HOSTED_BOOTSTRAP_SCHEMA,
+                    "run_id": self.context["github"]["GITHUB_RUN_ID"], "run_attempt": "1",
+                    "source_sha": self.context["github"]["GITHUB_SHA"], "exit_code": 1}
+        (outer / "exit.original.json").write_bytes(gate.transport_json(terminal))
+        (root / "review.original.json").write_bytes(b"private reviewed input")
+        (root / "recipient-public.original.json").write_bytes(b"public recipient fixture")
+        (root / "clock.original.json").write_bytes(gate.transport_json(self.started))
+        phase = {"observed_monotonic_ns": 1000000000, "phase_deadline_monotonic_ns": 301000000000}
+        (root / "transport-preflight.original.json").write_bytes(gate.transport_json(phase))
+        (evidence / "controller/original-failure.json").write_bytes(b"PRIVATE-CANARY controller failure")
+        env = {"GITHUB_WORKSPACE": str(workspace), "GITHUB_OUTPUT": str(root / "outputs")}
+        return root, evidence, public, phase, env
+
+    def execute_data_entry(self, fixture, crypto_error=None):
+        root, _evidence, _public, phase, env = fixture
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": self.auth}), \
+                patch.object(gate, "request_context", return_value=self.context), \
+                patch.object(gate, "hosted_private_root", return_value=root), \
+                patch.object(gate, "transport_review"), \
+                patch.object(gate, "transport_recipient", return_value=self.recipient), \
+                patch.object(gate, "transport_resume_phase", return_value=phase), \
+                patch.object(gate, "transport_phase_remaining", return_value=lambda *_args: 1), \
+                patch.object(gate, "verify_hosted_gate"), \
+                patch.object(gate, "transport_primitives", return_value=self.crypto, side_effect=crypto_error):
+            return gate.transport_entry("data", "remote", env)
+
+    def data_terminal(self, fixture):
+        path = fixture[2] / "transport-data.original.json"
+        self.assertTrue(path.is_file(), "data phase must retain its closed terminal in the existing public artifact")
+        raw = path.read_bytes()
+        self.assertNotIn(b"PRIVATE-CANARY", raw)
+        self.assertNotIn(str(self.root).encode(), raw)
+        value = json.loads(raw)
+        self.assertEqual(set(value), {"schema", "kind", "source_sha", "run_id", "run_attempt", "stage", "status",
+                                     "parts_terminal", "secondary_custody_error", "producer_result_observed",
+                                     "foundation_result_admitted", "automatic_retry"})
+        self.assertEqual(value["source_sha"], self.context["github"]["GITHUB_SHA"])
+        self.assertEqual(value["run_id"], self.context["github"]["GITHUB_RUN_ID"])
+        self.assertEqual(value["run_attempt"], "1")
+        self.assertFalse(value["producer_result_observed"])
+        self.assertFalse(value["foundation_result_admitted"])
+        self.assertFalse(value["automatic_retry"])
+        return value
+
+    def test_private_transport_data_crypto_load_failure_has_closed_terminal_before_private_copy(self):
+        fixture = self.data_entry_fixture()
+        original = ImportError("PRIVATE-CANARY crypto import failed")
+        with self.assertRaises(ImportError) as caught:
+            self.execute_data_entry(fixture, crypto_error=original)
+        self.assertIs(caught.exception, original)
+        value = self.data_terminal(fixture)
+        self.assertEqual((value["stage"], value["parts_terminal"]), ("LOAD_CRYPTO", "NOT_ATTEMPTED"))
+        self.assertEqual(value["status"], "UNKNOWN_CUSTODY_NO_RETRY")
+        self.assertFalse((fixture[1] / "controller/stdout.original").exists())
+        self.crypto.gather_snapshot.assert_not_called()
+
+    def test_private_transport_data_inventory_failure_has_closed_public_checkpoint_without_replay(self):
+        fixture = self.data_entry_fixture()
+        (fixture[1] / "PRIVATE-CANARY-unselected.json").write_bytes(b"private unselected evidence")
+        with self.assertRaisesRegex(ValueError, "unselected evidence file"):
+            self.execute_data_entry(fixture)
+        value = self.data_terminal(fixture)
+        self.assertEqual((value["stage"], value["status"], value["parts_terminal"]),
+                         ("INVENTORY", "UNKNOWN_CUSTODY_NO_RETRY", "NOT_ATTEMPTED"))
+        self.assertFalse(value["secondary_custody_error"])
+        self.crypto.gather_snapshot.assert_not_called()
+        self.crypto.encrypt_snapshot.assert_not_called()
+        self.assertFalse((fixture[0] / "transport").exists())
+        self.assertFalse((fixture[0] / "outgoing").exists())
+        self.assertFalse(Path(fixture[4]["GITHUB_OUTPUT"]).exists())
+
+    def test_private_transport_data_preserves_key_error_when_parts_terminal_was_never_created(self):
+        fixture = self.data_entry_fixture()
+        original = OSError("PRIVATE-CANARY key validation failure")
+        self.crypto.public_key.side_effect = original
+        with self.assertRaises(OSError) as caught:
+            self.execute_data_entry(fixture)
+        self.assertIs(caught.exception, original)
+        value = self.data_terminal(fixture)
+        self.assertEqual((value["stage"], value["parts_terminal"]), ("SEAL_PARTS", "UNAVAILABLE_OR_REJECTED"))
+        self.assertEqual(value["status"], "UNKNOWN_CUSTODY_NO_RETRY")
+        self.assertTrue(value["secondary_custody_error"])
+        self.crypto.public_key.assert_called_once()
+        self.crypto.gather_snapshot.assert_not_called()
+        self.assertFalse((fixture[0] / "transport/parts.original.json").exists())
+
+    def test_private_transport_data_preserves_capture_error_when_terminal_write_also_fails(self):
+        fixture = self.data_entry_fixture()
+        original = OSError("PRIVATE-CANARY original capture failure")
+        secondary = PermissionError("PRIVATE-CANARY terminal write failure")
+        self.crypto.gather_snapshot.side_effect = original
+        write = self.crypto.new_json.side_effect
+        def fail_terminal(path, value):
+            if path.name == "parts.original.json":
+                raise secondary
+            return write(path, value)
+        self.crypto.new_json.side_effect = fail_terminal
+        with self.assertRaises(OSError) as caught:
+            self.execute_data_entry(fixture)
+        self.assertIs(caught.exception, original)
+        value = self.data_terminal(fixture)
+        self.assertEqual(value["stage"], "SEAL_PARTS")
+        self.assertEqual(value["parts_terminal"], "UNAVAILABLE_OR_REJECTED")
+        self.assertTrue(value["secondary_custody_error"])
+        self.crypto.gather_snapshot.assert_called_once()
+        self.crypto.encrypt_snapshot.assert_not_called()
+        writes = [call for call in self.crypto.new_json.call_args_list if call.args[0].name == "parts.original.json"]
+        self.assertEqual(len(writes), 1)
+
+    def test_private_transport_data_failed_public_terminal_cannot_replace_primary_or_retry_write(self):
+        fixture = self.data_entry_fixture()
+        original = ValueError("PRIVATE-CANARY original inventory failure")
+        with patch.object(gate, "transport_inventory", side_effect=original), \
+                patch.object(gate.custody, "write_new", side_effect=PermissionError("PRIVATE-CANARY public failure")) as write:
+            with self.assertRaises(ValueError) as caught:
+                self.execute_data_entry(fixture)
+        self.assertIs(caught.exception, original)
+        write.assert_called_once()
+        self.assertEqual(write.call_args.args[0], fixture[2] / "transport-data.original.json")
+        self.assertNotIn("PRIVATE-CANARY", json.dumps(write.call_args.args[1]))
+        self.crypto.gather_snapshot.assert_not_called()
+
+    def test_private_transport_data_early_controller_failure_seals_missing_worker_without_result_credit(self):
+        fixture = self.data_entry_fixture()
+        self.assertEqual(self.execute_data_entry(fixture), 0)
+        value = self.data_terminal(fixture)
+        self.assertEqual((value["stage"], value["status"], value["parts_terminal"]),
+                         ("PUBLISH_PARTS", "COMPLETED_NO_RESULT_ADMISSION", "VERIFIED"))
+        self.assertFalse(value["secondary_custody_error"])
+        outputs = Path(fixture[4]["GITHUB_OUTPUT"]).read_text().splitlines()
+        self.assertEqual(outputs[0], "part_01=ready")
+        self.assertEqual(outputs[1:], ["part_" + str(i).zfill(2) + "=absent" for i in range(2, 16)])
+        sealed = json.loads((fixture[0] / "transport/parts.original.json").read_bytes())
+        self.assertEqual(sealed["status"], "SEALED_INCOMPLETE_ORIGINALS_NO_RESULT_ADMISSION")
+        self.assertTrue(sealed["missing_or_unknown"])
+        self.crypto.gather_snapshot.assert_called_once()
+        self.crypto.encrypt_snapshot.assert_called_once()
+
+    def test_private_transport_data_later_part_failure_preserves_ready_prefix_and_unknown(self):
+        fixture = self.data_entry_fixture()
+        binaries = fixture[1] / "binaries"; binaries.mkdir()
+        for data in (b"inert first binary", b"inert second binary"):
+            (binaries / hashlib.sha256(data).hexdigest()).write_bytes(data)
+        original = OSError("PRIVATE-CANARY second capture failed")
+        snapshot = self.crypto.gather_snapshot.side_effect
+        captured = []
+        def fail_second(*args, **kwargs):
+            captured.append(1)
+            if len(captured) == 2:
+                raise original
+            return snapshot(*args, **kwargs)
+        self.crypto.gather_snapshot.side_effect = fail_second
+        with self.assertRaises(OSError) as caught:
+            self.execute_data_entry(fixture)
+        self.assertIs(caught.exception, original)
+        value = self.data_terminal(fixture)
+        self.assertEqual((value["stage"], value["status"], value["parts_terminal"]),
+                         ("SEAL_PARTS", "UNKNOWN_CUSTODY_NO_RETRY", "VERIFIED"))
+        self.assertFalse(value["secondary_custody_error"])
+        outputs = Path(fixture[4]["GITHUB_OUTPUT"]).read_text().splitlines()
+        self.assertEqual(outputs[0], "part_01=ready")
+        self.assertTrue(all(row.endswith("=absent") for row in outputs[1:]))
+        self.assertEqual(self.crypto.gather_snapshot.call_count, 2)
+        self.crypto.encrypt_snapshot.assert_called_once()
+        self.assertEqual([path.name for path in (fixture[0] / "outgoing").iterdir()], ["part-01.bin"])
+
+    def test_private_transport_public_terminal_rejects_unbounded_values_and_existing_terminal(self):
+        fixture = self.data_entry_fixture()
+        arguments = (self.context, fixture[4], "INVENTORY", "UNKNOWN_CUSTODY_NO_RETRY", "NOT_ATTEMPTED", False)
+        for index, replacement in ((2, "PRIVATE-CANARY path/error"), (3, "PASS"), (4, "PRIVATE-CANARY"), (5, "false")):
+            changed = list(arguments); changed[index] = replacement
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                gate.transport_data_public_terminal(*changed)
+        self.assertFalse((fixture[2] / "transport-data.original.json").exists())
+        gate.transport_data_public_terminal(*arguments)
+        before = (fixture[2] / "transport-data.original.json").read_bytes()
+        with self.assertRaises(FileExistsError):
+            gate.transport_data_public_terminal(*arguments)
+        self.assertEqual((fixture[2] / "transport-data.original.json").read_bytes(), before)
+
     def test_private_transport_index_binds_every_artifact_and_excludes_its_own_descriptor(self):
         plan, sealed = self.seal_fixture()
         uploaded = self.uploaded(sealed)
