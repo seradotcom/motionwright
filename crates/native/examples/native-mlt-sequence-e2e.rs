@@ -425,6 +425,7 @@ async fn assemble(
         None
     };
     eprintln!("mlt-e2e-stage: audio-staged");
+    let owner_output_root = connection.output_root.clone();
     let coordinator = ProductionCoordinator::new(service, connection)?;
     let options = FilmBuildOptions {
         frame_rate: Rate::new(30, 1)?,
@@ -480,6 +481,51 @@ async fn assemble(
         std::env::var("MOTIONWRIGHT_MLT_MODE").as_deref(),
         Ok("video-only" | "final-mp4" | "captioned-mp4")
     );
+    // Closed destinations from the existing canonical preflight/recipe, saved
+    // before the first FFV1 call. This is not reconstructed Host stdin.
+    let checked = motionwright_native::assembly::preflight_multi_segment_mlt(
+        &project,
+        profile.id,
+        &options,
+        &render,
+        &owner_output_root,
+    )?;
+    let recipe = motionwright_native::mlt_edit_plan::mlt_native_video_recipe(&checked)?;
+    if recipe.clips.len() != 2 || recipe.total_frames != 33 {
+        return Err("Original FFV1 diagnostic recipe changed its closed two-slot shape".into());
+    }
+    let slots: Vec<_> = recipe
+        .clips
+        .iter()
+        .enumerate()
+        .map(|(index, clip)| {
+            json!({
+                "slot":index,"frame_count":clip.source_out_exclusive,
+                "args":{"root":"output","manifest_path":clip.source_manifest_path,
+                    "expected_manifest_sha256":clip.source_manifest_sha256,
+                    "output_path":clip.ffv1_output_path,"max_bytes":clip.ffv1_max_bytes}
+            })
+        })
+        .collect();
+    let plan = serde_json::to_vec_pretty(&json!({
+        "schema":"motionwright.native.ffv1-stage-plan/1",
+        "project_resource":recipe.project_resource,"generation":recipe.generation,
+        "revision":recipe.revision,"deliverable_id":recipe.deliverable_id,
+        "input_sha256":recipe.input_sha256,"owner_output_namespace":recipe.owner_output_namespace,
+        "total_frames":recipe.total_frames,"slots":slots,
+        "scope":"canonical-preflight-destinations-before-original-FFV1-call",
+        "original_host_stdin":false,"FFV1_call_started":false,
+        "native_operation_retried":false,"physical_acceptance":false
+    }))?;
+    if plan.len() > 65_536 {
+        return Err("Original FFV1 diagnostic plan exceeds its closed bound".into());
+    }
+    let mut plan_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(evidence_path.with_file_name("native-ffv1-stage-plan.original.json"))?;
+    plan_file.write_all(&plan)?;
+    plan_file.sync_all()?;
     eprintln!("mlt-e2e-stage: semantic-mlt-start");
     let evidence = if video_only {
         coordinator

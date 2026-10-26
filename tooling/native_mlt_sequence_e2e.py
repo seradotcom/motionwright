@@ -205,6 +205,67 @@ def run_json(argv: list[str], *, env: dict[str, str], timeout: int = 30) -> dict
     return run_sanitized_json(argv, env=env, timeout=timeout)
 
 
+
+def run_original_seed(argv, *, env, evidence, current):
+    """Capture the existing seed command once before parsing and before assemble."""
+    from native_mlt_g2_observation import new_bytes
+    import native_mlt_evidence_selection as selected
+    current=selected.checked_context(current,"repaired-g2")
+    selected.require(type(argv) is list and len(argv)==3 and argv[1]=="seed",
+                     "ffv1-seed-command-shape")
+    captures=[]
+    def retain(record):
+        selected.require(not captures,"ffv1-seed-capture-repeated")
+        captures.append(record)
+        selected.require(type(record) is dict and set(record)=={
+            "argv","timeout_seconds","stdout","stderr","exit_code","deadline_exceeded",
+            "error_class","error","automatic_retry"},"ffv1-seed-capture-fields")
+        selected.require(record["argv"]==argv and record["timeout_seconds"]==30
+            and record["automatic_retry"] is False,"ffv1-seed-capture-identity")
+        metadata={key:record[key] for key in ("argv","timeout_seconds","exit_code",
+            "deadline_exceeded","error_class","error","automatic_retry")}
+        metadata.update(schema=selected.FFV1_SEED_CAPTURE_SCHEMA,context=current,
+            capture_scope="existing-run-sanitized-json-callback-before-parse",
+            before_assemble=True,native_outcome_inferred=False)
+        failures=[]
+        for stream,maximum,relative in (
+                ("stdout",65536,selected.FFV1_SEED_STDOUT_PATH),
+                ("stderr",262144,selected.FFV1_SEED_STDERR_PATH)):
+            body=record[stream]
+            selected.require(type(body) is bytes,"ffv1-seed-stream-type")
+            prefix=body[:maximum]
+            item=dict(relative_path=relative,sha256=selected.sha(prefix),bytes=len(prefix),
+                returned_buffer_sha256=selected.sha(body),returned_buffer_bytes=len(body),
+                prefix_truncated=len(body)>maximum,retained=False,stream_eof_attested=False)
+            metadata[stream]=item
+            try:
+                new_bytes(evidence / Path(relative).name,prefix)
+                item["retained"]=True
+            except BaseException as error:
+                failures.append(error)
+            if len(body)>maximum:
+                failures.append(ValueError("ffv1-seed-stream-budget"))
+        try:
+            packed=selected.core.canonical(metadata)
+            selected.require(len(packed)<=65536,"ffv1-seed-terminal-budget")
+            new_bytes(evidence / Path(selected.FFV1_SEED_TERMINAL_PATH).name,packed)
+        except BaseException as error:
+            failures.append(error)
+        if failures:
+            raise failures[0]
+    # The shared guard preserves its original failure if stream custody fails.
+    # A successful seed with failed custody stops here, before any assemble call.
+    result=run_sanitized_json(argv,env=env,timeout=30,capture=retain)
+    selected.require(len(captures)==1,"ffv1-seed-original-capture-absent")
+    original=captures[0]["stdout"]
+    selected.require(0<len(original)<=65536,"ffv1-seed-original-stdout-budget")
+    admitted=selected.core.project(selected.core.strict(original),selected.FFV1_SEED,exact=True)
+    selected.require(admitted==result and admitted["resource"]=="project:"+admitted["project_id"],
+                     "ffv1-seed-original-input")
+    return result
+
+
+
 def exact_inputs() -> None:
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("native render E2E is GitHub-Actions-only")
@@ -353,7 +414,11 @@ def main(g2=None):
         elif any(key in env for key in ("MOTIONWRIGHT_MLT_ORIGINAL_WAV", "MOTIONWRIGHT_MLT_ORIGINAL_WAV_SHA256")):
             raise AssertionError("An original WAV requires the explicit G2 input envelope")
         database = paths["motionwright-data"] / "motionwright.sqlite3"
-        seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
+        seed_argv=[str(MW_BIN),"seed",str(database)]
+        seeded=(run_original_seed(seed_argv,env=env,evidence=EVIDENCE,
+                    current={"source_sha":GITHUB_SHA,"semwright_sha":PIN,
+                        "run_id":g2.inputs["run_id"],"run_attempt":g2.inputs["run_attempt"]})
+                if g2 is not None else run_json(seed_argv,env=env))
         if ((seeded["width"], seeded["height"]) != (CONTRACT.width, CONTRACT.height)
             or (seeded["fps_num"], seeded["fps_den"]) != (CONTRACT.fps_num, CONTRACT.fps_den)
             or seeded["scene_count"] != CONTRACT.scene_count
@@ -983,6 +1048,29 @@ def main(g2=None):
     return summary
 
 
+def run_g2_with_frozen_expectation(session):
+    """Freeze existing preflight metadata before the CLI leaves this G2 session."""
+    original_error=None
+    try:
+        return main(session)
+    except BaseException as error:
+        original_error=error
+        raise
+    finally:
+        try:
+            from native_mlt_g2_custody import freeze_ffv1_preflight_expectation
+            freeze_ffv1_preflight_expectation(os.environ,session.evidence_dir)
+        except BaseException:
+            if original_error is None:
+                raise
+            # A failed/UNKNOWN original command remains primary even if the
+            # metadata writer or secondary-receipt writer also fails.
+            try:
+                session.secondary("ffv1_preflight_expectation_custody")
+            except BaseException:
+                pass
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--g2-inputs", type=Path)
@@ -994,6 +1082,6 @@ if __name__ == "__main__":
         with G2Session.prepare(
             args.g2_inputs, source_sha=GITHUB_SHA, semwright_sha=PIN, mode=MODE,
         ) as session:
-            summary = main(session)
+            summary = run_g2_with_frozen_expectation(session)
         # A secondary custody failure cannot print an overall success line.
         print(json.dumps(summary, sort_keys=True))

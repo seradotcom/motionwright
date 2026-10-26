@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Closed private /2 evidence for one existing native MLT G2 attempt.
+"""Closed private /2 and explicitly admitted /3 native MLT G2 evidence.
 
 Selection reads an explicit source-owned graph; it never walks an owner tree,
 starts a native operation, reconstructs a receipt, decrypts a key or uploads.
@@ -8,6 +8,7 @@ A complete selection is custody completeness, not AV or human acceptance.
 from __future__ import annotations
 import hashlib
 import io
+from pathlib import Path
 import re
 import struct
 import tarfile
@@ -251,6 +252,483 @@ FILM_CONTRACT_TESTS = (
 )
 
 
+
+# Optional private diagnostics do not promote an unknown producer terminal.
+# The producer fixes these two slots before effects; no directory is enumerated.
+FFV1_STAGES = ("zscale-help", "encode", "media-probe", "complete-probe", "decoder-version", "decode")
+FFV1_PLAN_PATH = "producer/native-ffv1-stage-plan.original.json"
+FFV1_ARGS = O(root=Literal("output"),
+    manifest_path=String(80, pattern=r"render-[0-9a-f]{32}/artifact-manifest\.json"),
+    expected_manifest_sha256=SHA, output_path=String(80, pattern=r"mw-mlt-[0-9a-f]{20}-s0[01]-ffv1\.mkv"),
+    max_bytes=Literal(512*1024*1024))
+FFV1_PLAN = O(schema=Literal("motionwright.native.ffv1-stage-plan/1"), **IDENTITY,
+    input_sha256=SHA, owner_output_namespace=String(27,pattern=r"mw-mlt-[0-9a-f]{20}"),
+    total_frames=Literal(33), slots=Array(O(slot=Number(0,1,integer=True),frame_count=POS,args=FFV1_ARGS),2,2),
+    scope=Literal("canonical-preflight-destinations-before-original-FFV1-call"),
+    original_host_stdin=FALSE,FFV1_call_started=FALSE,native_operation_retried=FALSE,physical_acceptance=FALSE)
+
+
+# Original sidecar JSON is admitted by an exact field policy, never by the
+# binary-original path. Limits agree with the producer's existing 64 KiB
+# metadata and bounded stream records; no original byte is reserialized.
+FFV1_OUTPUT = String(80, pattern=r"mw-mlt-[0-9a-f]{20}-s0[01]-ffv1\.mkv")
+FFV1_STDIN_PATH = String(160, pattern=r"mw-mlt-[0-9a-f]{20}-s0[01]-ffv1\.mkv\.ffv1-(?:host|catalog)\.stdin\.original\.bin")
+FFV1_HOST_STREAM_PATH = String(160, pattern=r"mw-mlt-[0-9a-f]{20}-s0[01]-ffv1\.mkv\.ffv1-(?:host|catalog)\.(?:stdout|stderr)\.original\.bin")
+FFV1_PROCESS_STREAM_PATH = String(160, pattern=r"mw-mlt-[0-9a-f]{20}-s0[01]-ffv1\.mkv\.ffv1-(?:zscale-help|encode|media-probe|complete-probe|decoder-version|decode)\.(?:stdout|stderr)\.original\.bin")
+FFV1_I32 = Number(-(2**31), 2**31-1, integer=True)
+FFV1_U64 = Number(0, 2**64-1, integer=True)
+FFV1_ERROR_CODES = (
+    "Unsupported", "Unavailable", "PermissionDenied", "ConsentRequired", "PolicyDenied",
+    "NotFound", "AmbiguousTarget", "StaleReference", "BackendFailed", "Timeout",
+    "InvalidArgument", "PluginProtocolError", "SandboxDenied", "Conflict", "Cancelled",
+    "Internal", "ProtocolMismatch", "ResourceExhausted",
+)
+FFV1_NATIVE_DIAGNOSTIC = O(
+    phase=String(values=("Startup", "NativeExchange", "HostRead", "HostWrite")),
+    reason=String(values=("ChildExit", "UnexpectedEof", "Timeout", "InvalidFrame", "IoFailure")),
+    exit_code=Nullable(Number(0,255,integer=True)),
+    signal=Nullable(Number(1,64,integer=True)),
+    stderr_tail_sha256=SHA, stderr_tail_bytes=Number(0,8192,integer=True),
+    stderr_tail_truncated=bool)
+FFV1_HOST_ERROR = O(
+    code=String(64,values=FFV1_ERROR_CODES), message=String(65536), outcome_known=bool,
+    candidates=optional(Array(String(65536),65536)),
+    progress=optional(O(completed_steps=FFV1_U64,failed_step=String(65536),
+        state=String(values=("partial_success_or_unknown","failed_before_confirmed_step")))),
+    native_diagnostic=optional(FFV1_NATIVE_DIAGNOSTIC))
+FFV1_PROCESS_ERROR = O(code=String(128,pattern=r"[A-Za-z][A-Za-z0-9_]*"),
+    message=String(65536),outcome_known=bool)
+FFV1_HOST_STREAM = O(
+    root=Literal("output"),path=FFV1_HOST_STREAM_PATH,sha256=SHA,
+    bytes=Number(0,262144,integer=True),delivered_buffer_bytes=FFV1_U64,
+    delivered_buffer_sha256=SHA,diagnostic_prefix_truncated=bool,
+    retained=bool,stream_eof_attested=FALSE)
+FFV1_PROCESS_STREAM = O(
+    root=Literal("output"),path=FFV1_PROCESS_STREAM_PATH,sha256=SHA,
+    bytes=Number(0,16384,integer=True),returned_buffer_bytes=Number(0,8*1024*1024,integer=True),
+    returned_buffer_sha256=SHA,diagnostic_prefix_truncated=bool,
+    retained=bool,upstream_stream_eof_attested=FALSE)
+FFV1_HOST_TERMINAL = O(
+    schema=Literal("semwright.ffv1-host-original/1"),
+    host_stage=String(values=("host","catalog")),
+    state=String(values=("start-returned-error","wait-returned-error","host-returned-error","completed")),
+    output_path=FFV1_OUTPUT,
+    runtime_job_id=Nullable(String(128,pattern=r"[A-Za-z0-9-]{1,128}")),
+    runtime_job_id_exposed=bool,host_exit_code=Nullable(FFV1_I32),
+    stdin=O(root=Literal("output"),path=FFV1_STDIN_PATH,sha256=SHA,
+        bytes=Number(0,65536,integer=True)),
+    stdin_scope=String(values=("same-empty-Vec-supplied-to-existing-discover-call",
+        "same-serialized-Vec-supplied-to-existing-AV-job-start")),
+    stdin_delivery_confirmed=Nullable(bool),
+    stdout=Nullable(FFV1_HOST_STREAM),stderr=Nullable(FFV1_HOST_STREAM),
+    original_error=Nullable(FFV1_HOST_ERROR),
+    stream_eof_attested=FALSE,native_execution_retried=FALSE,physical_acceptance=FALSE,
+    capture_scope=Literal("same-existing-Host-return-before-parse-and-public-redaction"))
+FFV1_PROCESS_SPEC = O(
+    encoding=Literal("unix-os-bytes-hex"),
+    executable=String(8192,pattern=r"(?:[0-9a-f]{2})*"),
+    argv=Array(String(8192,pattern=r"(?:[0-9a-f]{2})*"),128),
+    cwd=String(8192,pattern=r"(?:[0-9a-f]{2})*"),
+    timeout_millis=FFV1_U64,cpu_seconds=FFV1_U64,address_space_bytes=FFV1_U64,
+    environment_included=FALSE,native_execution_retried=FALSE)
+FFV1_PROCESS_TERMINAL = O(
+    schema=Literal("semwright.ffv1-process-original/1"),
+    stage=String(values=FFV1_STAGES),output_path=FFV1_OUTPUT,source_manifest_sha256=SHA,
+    source_capture_retained_limit=Number(1,8*1024*1024,integer=True),
+    source_capture_total_limit=Number(1,8*1024*1024,integer=True),
+    diagnostic_prefix_limit=Literal(16384),spec=Nullable(FFV1_PROCESS_SPEC),
+    terminal=O(process_result_received=bool,exit_code=Nullable(FFV1_I32),
+        term_signal=Nullable(FFV1_I32),cancelled=Nullable(bool),timed_out=Nullable(bool),
+        output_exceeded=Nullable(bool),stdout=Nullable(FFV1_PROCESS_STREAM),
+        stderr=Nullable(FFV1_PROCESS_STREAM),original_error=Nullable(FFV1_PROCESS_ERROR)),
+    native_execution_retried=FALSE,stream_eof_attested=FALSE,
+    capture_scope=Literal("existing-ProcessResult-before-checked-or-parse"),
+    physical_acceptance=FALSE)
+FFV1_PROCESS_CUSTODY = O(
+    schema=Literal("semwright.ffv1-process-custody/1"),
+    output_path=FFV1_OUTPUT,source_manifest_sha256=SHA,
+    observed_stages=Array(String(values=FFV1_STAGES),6),
+    secondary_failures=Array(String(values=("stream-retention","stage-order","spec-retention",
+        "terminal-serialization","terminal-retention","stage-coverage","summary-retention")),32),
+    original_operation_succeeded=bool,original_error=Nullable(FFV1_PROCESS_ERROR),
+    stream_eof_attested=FALSE,native_execution_retried=FALSE,physical_acceptance=FALSE)
+FFV1_SIDECAR_POLICY_BY_ROLE = {
+    "ffv1-host-terminal":"ffv1_host_terminal",
+    "ffv1-catalog-terminal":"ffv1_host_terminal",
+    "ffv1-process-terminal":"ffv1_process_terminal",
+    "ffv1-process-custody":"ffv1_process_custody",
+}
+
+
+def _ffv1_diagnostic_paths_for_outputs(outputs):
+    require(type(outputs) is list and len(outputs)==2,"ffv1-diagnostic-output-count")
+    paths=[]
+    for output in outputs:
+        core.project(output,FFV1_OUTPUT,exact=True)
+        for family in ("host","catalog"):
+            for stream,limit in (("stdin",65536),("stdout",262144),("stderr",262144)):
+                paths.append(("ffv1-"+family+"-"+stream,owner_output(f"{output}.ffv1-{family}.{stream}.original.bin"),limit))
+            paths.append(("ffv1-"+family+"-terminal",owner_output(f"{output}.ffv1-{family}.terminal.original.json"),65536))
+        for stage in FFV1_STAGES:
+            for stream in ("stdout","stderr"):
+                paths.append(("ffv1-process-"+stream,owner_output(f"{output}.ffv1-{stage}.{stream}.original.bin"),16384))
+            paths.append(("ffv1-process-terminal",owner_output(f"{output}.ffv1-{stage}.terminal.original.json"),65536))
+        paths.append(("ffv1-process-custody",owner_output(f"{output}.ffv1-process-custody.original.json"),65536))
+    require(len(paths)==54 and len({p for _,p,_ in paths})==54,"ffv1-closed-diagnostic-roster")
+    return paths
+
+
+def ffv1_diagnostic_paths(plan):
+    core.project(plan,FFV1_PLAN,exact=True)
+    namespace="mw-mlt-"+plan["input_sha256"][:20]
+    require(plan["owner_output_namespace"]==namespace,"ffv1-plan-namespace")
+    require([s["slot"] for s in plan["slots"]]==[0,1]
+            and [s["frame_count"] for s in plan["slots"]]==[32,1],"ffv1-plan-slot-order")
+    outputs=[slot["args"]["output_path"] for slot in plan["slots"]]
+    require(outputs==[f"{namespace}-s{index:02}-ffv1.mkv" for index in (0,1)],
+            "ffv1-plan-output")
+    return _ffv1_diagnostic_paths_for_outputs(outputs)
+
+def verify_ffv1_original_stdin(plan, slot, raw):
+    """Semantic binding only; byte custody and actual dispatch are separate facts."""
+    ffv1_diagnostic_paths(plan)
+    require(type(slot) is int and slot in (0,1) and type(raw) is bytes and len(raw)<=65536,"ffv1-stdin-bound")
+    value=core.strict(raw)
+    require(type(value) is dict and set(value)=={"command","descriptor_sha256","args"}
+            and value["command"]=="driver.mlt-video.frames.encode"
+            and type(value["descriptor_sha256"]) is str
+            and re.fullmatch(r"[0-9a-f]{64}",value["descriptor_sha256"]) is not None
+            and value["args"]==plan["slots"][slot]["args"],"ffv1-original-stdin-plan-binding")
+    return dict(sha256=sha(raw),bytes=len(raw),slot=slot,
+                actual_dispatch_verified=False,native_outcome_known=False,automatic_retry=False)
+
+
+# /3 authority is an external caller object frozen before selected TAR capture.
+# The source seed and the canonical plan remain separate originals; neither
+# object is inferred from a selected-evidence manifest.
+FFV1_ADMISSION_SCHEMA = "motionwright.native.ffv1-diagnostic-admission/2"
+FFV1_SEED_CAPTURE_SCHEMA = "motionwright.native.ffv1-seed-capture/1"
+FFV1_SEED_STDOUT_PATH = "producer/native-source-seed.stdout.original.bin"
+FFV1_SEED_STDERR_PATH = "producer/native-source-seed.stderr.original.bin"
+FFV1_SEED_TERMINAL_PATH = "producer/native-source-seed.terminal.original.json"
+FFV1_SELECTED_MAXIMUM = 3_997_696
+FFV1_DIAGNOSTIC_MAXIMUM = FFV1_SELECTED_MAXIMUM - 65_536
+# The existing FFV1 subgroup remains 54 diagnostics + one ordinary plan.
+# Seed carriers are an explicit additional subgroup, never relabelled as FFV1.
+FFV1_SEED_MAXIMUM = 393_216
+FFV1_CAPTURE_SELECTED_MAXIMUM = 4_390_912
+FFV1_CONTEXT = O(source_sha=SHA40, semwright_sha=Literal(SEM),
+    run_id=String(32,pattern=r"[1-9][0-9]*"),run_attempt=Literal("1"),
+    scenario=Literal("repaired-g2"))
+FFV1_REFERENCE_SOURCE = O(workflow_run_id=Literal(39054798740),run_attempt=Literal(1),
+    workflow_event=Literal("pull_request"),
+    workflow_head_sha=Literal("30f02fd0b744cda36035a4473c98e066f89d3d00"),
+    producer_checkout_sha=Literal("a31505e3c0884a419b0b3b1072af0ba4057f9442"),
+    artifact_id=Literal(12109323512),
+    artifact_zip_sha256=Literal("35ed8f9d2c840dd0d8702eaaf23454da87e49bdee2dd12f190b7be634806b27a"),
+    public_manifest_sha256=Literal("ca02511c2e7028a666d8c54f1494af096e19a47640d3cffe40865bfa7049f4b8"),
+    original_wav_sha256=SHA,source_is_synthetic_ci_fixture=TRUE,
+    historical_right_channel_failure_superseded=FALSE)
+FFV1_INPUT_CUSTODY = O(**MLT_INPUT.fields,original_source=FFV1_REFERENCE_SOURCE)
+FFV1_SEED = O(project_id=UUID,generation=UUID,revision=POS,resource=RESOURCE,
+    width=Literal(1280),height=Literal(720),fps_num=Literal(30),fps_den=Literal(1),
+    scene_count=Literal(33),deliverable_count=Literal(3),master_profile_id=UUID)
+FFV1_ORIGINAL_IDENTITY = O(root=Literal("observation"),relative_path=RELATIVE,
+    sha256=SHA,bytes=Number(0,262144,integer=True))
+FFV1_SEED_STREAM = O(relative_path=RELATIVE,sha256=SHA,
+    bytes=Number(0,262144,integer=True),returned_buffer_sha256=SHA,
+    returned_buffer_bytes=Number(0,2**63-1,integer=True),
+    prefix_truncated=bool,retained=bool,stream_eof_attested=FALSE)
+FFV1_SEED_CAPTURE = O(schema=Literal(FFV1_SEED_CAPTURE_SCHEMA),
+    context=FFV1_CONTEXT,argv=Array(String(4096),3,3),timeout_seconds=Literal(30),
+    stdout=FFV1_SEED_STREAM,stderr=FFV1_SEED_STREAM,
+    exit_code=Nullable(Number(-(2**31),2**31-1,integer=True)),
+    deadline_exceeded=bool,error_class=Nullable(String(128)),
+    error=Nullable(String(65536)),automatic_retry=FALSE,
+    capture_scope=Literal("existing-run-sanitized-json-callback-before-parse"),
+    before_assemble=TRUE,native_outcome_inferred=FALSE)
+FFV1_DIAGNOSTIC_ENTRY = O(root=Literal("owner"),relative_path=RELATIVE,
+    phase=Literal("original"),layer=Literal("attempt-custody"),role=LABEL,
+    type=String(values=("stdout","stderr","stdin","typed-terminal")),
+    maximum=Number(1,262144,integer=True),policy=Nullable(LABEL))
+FFV1_DIAGNOSTIC_CONTRACT = O(schema=Literal(core.DIAGNOSTIC_CONTRACT_SCHEMA),
+    context=FFV1_CONTEXT,entries=Array(FFV1_DIAGNOSTIC_ENTRY,54,54))
+FFV1_SEED_DIAGNOSTIC_ENTRY = O(root=Literal("observation"),relative_path=RELATIVE,
+    phase=Literal("original"),layer=Literal("attempt-custody"),role=LABEL,
+    type=String(values=("stdout","stderr","typed-terminal")),
+    maximum=Number(1,262144,integer=True),policy=Nullable(LABEL))
+FFV1_SEED_DIAGNOSTIC_CONTRACT = O(schema=Literal(core.DIAGNOSTIC_CONTRACT_SCHEMA),
+    context=FFV1_CONTEXT,entries=Array(FFV1_SEED_DIAGNOSTIC_ENTRY,3,3))
+FFV1_CAPTURE_DIAGNOSTIC_ENTRY = O(root=String(values=("owner","observation")),
+    relative_path=RELATIVE,phase=Literal("original"),layer=Literal("attempt-custody"),
+    role=LABEL,type=String(values=("stdout","stderr","stdin","typed-terminal")),
+    maximum=Number(1,262144,integer=True),policy=Nullable(LABEL))
+FFV1_CAPTURE_DIAGNOSTIC_CONTRACT = O(schema=Literal(core.DIAGNOSTIC_CONTRACT_SCHEMA),
+    context=FFV1_CONTEXT,entries=Array(FFV1_CAPTURE_DIAGNOSTIC_ENTRY,57,57))
+FFV1_PLAN_IDENTITY = O(**IDENTITY,input_sha256=SHA,
+    owner_output_namespace=String(27,pattern=r"mw-mlt-[0-9a-f]{20}"))
+FFV1_ADMISSION = O(schema=Literal(FFV1_ADMISSION_SCHEMA),context=FFV1_CONTEXT,
+    source_bindings=Array(O(path=RELATIVE,sha256=SHA),128,1),
+    fixture_identity=O(**IDENTITY),seed_stdout=FFV1_ORIGINAL_IDENTITY,
+    seed_stderr=FFV1_ORIGINAL_IDENTITY,seed_terminal=FFV1_ORIGINAL_IDENTITY,
+    input_custody=FFV1_ORIGINAL_IDENTITY,
+    stage_plan=O(original=FFV1_ORIGINAL_IDENTITY,identity=FFV1_PLAN_IDENTITY),
+    diagnostic_contract=FFV1_DIAGNOSTIC_CONTRACT,
+    seed_diagnostic_contract=FFV1_SEED_DIAGNOSTIC_CONTRACT,
+    capture_diagnostic_contract=FFV1_CAPTURE_DIAGNOSTIC_CONTRACT,
+    selected_optional_members=Literal(55),selected_maximum=Literal(FFV1_SELECTED_MAXIMUM),
+    seed_diagnostic_members=Literal(3),seed_diagnostic_maximum=Literal(FFV1_SEED_MAXIMUM),
+    capture_diagnostic_members=Literal(57),capture_selected_members=Literal(58),
+    capture_selected_maximum=Literal(FFV1_CAPTURE_SELECTED_MAXIMUM),
+    scope=Literal("external-source-run-fixture-and-original-plan-before-selected-capture"),
+    native_operation_retried=FALSE,physical_acceptance=FALSE)
+
+
+def ffv1_plan_identity(plan):
+    """Source-owned metadata projection; original plan bytes stay native."""
+    ffv1_diagnostic_paths(plan)
+    return {key:plan[key] for key in (*IDENTITY,"input_sha256","owner_output_namespace")}
+
+
+def ffv1_contract_for_identity(identity, current):
+    core.project(identity,FFV1_PLAN_IDENTITY,exact=True)
+    namespace="mw-mlt-"+identity["input_sha256"][:20]
+    require(identity["owner_output_namespace"]==namespace,"ffv1-plan-namespace")
+    context=checked_context(current,"repaired-g2")
+    outputs=[f"{namespace}-s{index:02}-ffv1.mkv" for index in (0,1)]
+    entries=[]
+    for role,path,maximum in _ffv1_diagnostic_paths_for_outputs(outputs):
+        policy=FFV1_SIDECAR_POLICY_BY_ROLE.get(role)
+        subtype="typed-terminal" if policy else role.rsplit("-",1)[1]
+        entries.append(dict(root="owner",relative_path=path,phase="original",
+            layer="attempt-custody",role=role,type=subtype,maximum=maximum,policy=policy))
+    require(sum(row["maximum"] for row in entries)==FFV1_DIAGNOSTIC_MAXIMUM,
+            "ffv1-diagnostic-total-bound")
+    return dict(schema=core.DIAGNOSTIC_CONTRACT_SCHEMA,context=context,entries=entries)
+
+
+def ffv1_contract_for_plan(plan, current):
+    return ffv1_contract_for_identity(ffv1_plan_identity(plan),current)
+
+def ffv1_seed_contract(current):
+    context=checked_context(current,"repaired-g2")
+    entries=[]
+    for role,path,kind,maximum,policy in (
+        ("ffv1-seed-stdout",FFV1_SEED_STDOUT_PATH,"stdout",65536,None),
+        ("ffv1-seed-stderr",FFV1_SEED_STDERR_PATH,"stderr",262144,None),
+        ("ffv1-seed-terminal",FFV1_SEED_TERMINAL_PATH,"typed-terminal",65536,"ffv1_seed_capture"),
+    ):
+        entries.append(dict(root="observation",relative_path=path,phase="original",
+            layer="attempt-custody",role=role,type=kind,maximum=maximum,policy=policy))
+    require(len(entries)==3 and sum(row["maximum"] for row in entries)==FFV1_SEED_MAXIMUM,
+            "ffv1-seed-closed-roster")
+    return dict(schema=core.DIAGNOSTIC_CONTRACT_SCHEMA,context=context,entries=entries)
+
+
+def ffv1_capture_contract_for_identity(identity, current):
+    ffv1=ffv1_contract_for_identity(identity,current)
+    seed=ffv1_seed_contract(current)
+    require(ffv1["context"]==seed["context"],"ffv1-capture-subgroup-context")
+    entries=ffv1["entries"]+seed["entries"]
+    require(len(entries)==57
+            and len({(row["root"],row["relative_path"]) for row in entries})==57
+            and sum(row["maximum"] for row in entries)+65536==FFV1_CAPTURE_SELECTED_MAXIMUM,
+            "ffv1-combined-capture-roster")
+    return dict(schema=core.DIAGNOSTIC_CONTRACT_SCHEMA,context=ffv1["context"],entries=entries)
+
+
+def ffv1_original_identity(path, raw):
+    require(type(raw) is bytes and len(raw)<=262144,"ffv1-admission-original-bound")
+    return dict(root="observation",relative_path=path,sha256=sha(raw),bytes=len(raw))
+
+
+def checked_ffv1_admission(admission, *, current, source_bindings=None):
+    """Validate a caller-supplied admission; never load it from a TAR."""
+    frozen = core.strict(core.canonical(admission))
+    core.project(frozen,FFV1_ADMISSION,exact=True)
+    require(frozen["context"]==checked_context(current,"repaired-g2"),
+            "ffv1-admission-context")
+    bindings = frozen["source_bindings"]
+    require(len(bindings)==len(SOURCE_PATHS)
+            and [row["path"] for row in bindings]==sorted(SOURCE_PATHS),
+            "ffv1-admission-source-closure")
+    if source_bindings is not None:
+        require(bindings==sorted(source_bindings,key=lambda row:row["path"]),
+                "ffv1-admission-source-bindings")
+    for name,path,minimum,maximum in (
+        ("seed_stdout",FFV1_SEED_STDOUT_PATH,1,65536),
+        ("seed_stderr",FFV1_SEED_STDERR_PATH,0,262144),
+        ("seed_terminal",FFV1_SEED_TERMINAL_PATH,1,65536),
+        ("input_custody","input-custody.json",1,262144),
+    ):
+        require(frozen[name]["relative_path"]==path
+                and minimum<=frozen[name]["bytes"]<=maximum,"ffv1-admission-original-layout")
+    original = frozen["stage_plan"]["original"]
+    require(original["relative_path"]==FFV1_PLAN_PATH and 0<original["bytes"]<=65536,
+            "ffv1-admission-plan-layout")
+    identity=frozen["stage_plan"]["identity"]
+    require(frozen["fixture_identity"]=={key:identity[key] for key in IDENTITY},
+            "ffv1-admission-fixture-identity")
+    require(frozen["diagnostic_contract"]==ffv1_contract_for_identity(identity,current),
+            "ffv1-admission-closed-diagnostic-contract")
+    require(frozen["seed_diagnostic_contract"]==ffv1_seed_contract(current),
+            "ffv1-admission-closed-seed-contract")
+    require(frozen["capture_diagnostic_contract"]==ffv1_capture_contract_for_identity(identity,current),
+            "ffv1-admission-closed-combined-contract")
+    return frozen
+
+
+def admit_ffv1_diagnostics(*, current, source_bindings, plan_original,
+                           seed_stdout_original, seed_stderr_original, seed_terminal_original,
+                           input_custody_original, expected_seed_argv):
+    """Admit named originals outside the archive, without reserializing any original."""
+    for raw,maximum in ((plan_original,65536),(seed_stdout_original,65536),
+                        (seed_terminal_original,65536),(input_custody_original,262144)):
+        require(type(raw) is bytes and 0<len(raw)<=maximum,"ffv1-admission-original-budget")
+    require(type(seed_stderr_original) is bytes and len(seed_stderr_original)<=262144,
+            "ffv1-admission-stderr-budget")
+    plan=core.project(core.strict(plan_original),FFV1_PLAN,exact=True)
+    seed=core.project(core.strict(seed_stdout_original),FFV1_SEED,exact=True)
+    terminal=core.project(core.strict(seed_terminal_original),FFV1_SEED_CAPTURE,exact=True)
+    inputs=core.project(core.strict(input_custody_original),FFV1_INPUT_CUSTODY,exact=True)
+    context=checked_context(current,"repaired-g2")
+    require(terminal["context"]==context
+            and terminal["exit_code"]==0 and type(terminal["exit_code"]) is int
+            and terminal["deadline_exceeded"] is False
+            and terminal["error_class"] is None and terminal["error"] is None,
+            "ffv1-seed-original-terminal")
+    require(type(expected_seed_argv) is list and len(expected_seed_argv)==3
+            and expected_seed_argv[1]=="seed" and terminal["argv"]==expected_seed_argv,
+            "ffv1-seed-original-command")
+    stdout=terminal["stdout"]
+    require(stdout["relative_path"]==FFV1_SEED_STDOUT_PATH
+            and stdout["retained"] is True and stdout["prefix_truncated"] is False
+            and (stdout["sha256"],stdout["bytes"])==(sha(seed_stdout_original),len(seed_stdout_original))
+            and (stdout["returned_buffer_sha256"],stdout["returned_buffer_bytes"])
+                ==(sha(seed_stdout_original),len(seed_stdout_original)),
+            "ffv1-seed-original-stdout")
+    stderr=terminal["stderr"]
+    require(stderr["relative_path"]==FFV1_SEED_STDERR_PATH
+            and stderr["retained"] is True and stderr["prefix_truncated"] is False
+            and (stderr["sha256"],stderr["bytes"])==(sha(seed_stderr_original),len(seed_stderr_original))
+            and (stderr["returned_buffer_sha256"],stderr["returned_buffer_bytes"])
+                ==(sha(seed_stderr_original),len(seed_stderr_original)),
+            "ffv1-seed-original-stderr-custody")
+    require((inputs["current_motionwright_sha"],inputs["semwright_sha"],
+             inputs["run_id"],inputs["run_attempt"])
+            ==tuple(current[name] for name in ("source_sha","semwright_sha","run_id","run_attempt"))
+            and inputs["native_effect_started"] is False
+            and inputs["original_source"]["original_wav_sha256"]==REFERENCE_WAV,
+            "ffv1-fixture-input-context")
+    fixture_identity=dict(project_resource=seed["resource"],generation=seed["generation"],
+        revision=seed["revision"],deliverable_id=seed["master_profile_id"])
+    require(seed["resource"]=="project:"+seed["project_id"]
+            and fixture_identity=={key:plan[key] for key in IDENTITY},
+            "ffv1-admission-fixture-identity")
+    result=dict(schema=FFV1_ADMISSION_SCHEMA,context=context,
+        source_bindings=sorted(source_bindings,key=lambda row:row["path"]),
+        fixture_identity=fixture_identity,
+        seed_stdout=ffv1_original_identity(FFV1_SEED_STDOUT_PATH,seed_stdout_original),
+        seed_stderr=ffv1_original_identity(FFV1_SEED_STDERR_PATH,seed_stderr_original),
+        seed_terminal=ffv1_original_identity(FFV1_SEED_TERMINAL_PATH,seed_terminal_original),
+        input_custody=ffv1_original_identity("input-custody.json",input_custody_original),
+        stage_plan=dict(original=ffv1_original_identity(FFV1_PLAN_PATH,plan_original),
+                        identity=ffv1_plan_identity(plan)),
+        diagnostic_contract=ffv1_contract_for_plan(plan,current),
+        seed_diagnostic_contract=ffv1_seed_contract(current),
+        capture_diagnostic_contract=ffv1_capture_contract_for_identity(ffv1_plan_identity(plan),current),
+        selected_optional_members=55,selected_maximum=FFV1_SELECTED_MAXIMUM,
+        seed_diagnostic_members=3,seed_diagnostic_maximum=FFV1_SEED_MAXIMUM,
+        capture_diagnostic_members=57,capture_selected_members=58,
+        capture_selected_maximum=FFV1_CAPTURE_SELECTED_MAXIMUM,
+        scope="external-source-run-fixture-and-original-plan-before-selected-capture",
+        native_operation_retried=False,physical_acceptance=False)
+    return checked_ffv1_admission(result,current=current,source_bindings=source_bindings)
+
+
+class Ffv1StagePlanAbsent(core.SelectionError):
+    """Fixed original plan returned ENOENT; native effects remain unknown."""
+
+
+def read_ffv1_admission(*, roots, current, source_bindings):
+    """Read fixed originals; distinguish only source-bound original-plan ENOENT."""
+    require("observation" in roots and "owner" in roots,"ffv1-admission-roots")
+    paths={name:str(path) for name,path in roots.items()}
+    core.verify_source_bindings(paths["source"],current["source_sha"],source_bindings)
+    handles=core.RootHandles(paths)
+    selected=((FFV1_PLAN_PATH,65536),(FFV1_SEED_STDOUT_PATH,65536),
+              (FFV1_SEED_STDERR_PATH,262144),(FFV1_SEED_TERMINAL_PATH,65536),
+              ("input-custody.json",262144))
+    originals,marks={},{}
+    plan_missing=None
+    try:
+        try:
+            initial_plan=handles.stat_member("observation",core.member_path(FFV1_PLAN_PATH))
+        except FileNotFoundError as error:
+            plan_missing=error
+            # Only the initial stat's ENOENT can enable early failure custody.
+            try:
+                handles.stat_member("observation",core.member_path(FFV1_PLAN_PATH))
+            except FileNotFoundError:
+                pass
+            else:
+                require(False,"ffv1-plan-appeared-during-admission")
+        else:
+            # Once observed regular, a vanished leaf/open/read failure is a
+            # changed original, never an absent-plan downgrade.
+            for path,maximum in selected:
+                raw,mark=handles.read("observation",core.member_path(path),maximum)
+                if path==FFV1_PLAN_PATH:
+                    require(mark==initial_plan,"ffv1-plan-changed-before-original-read")
+                originals[path]=raw;marks[path]=mark
+            for path,_ in selected:
+                require(handles.stat_member("observation",core.member_path(path))==marks[path],
+                        "ffv1-admission-original-changed")
+        require(handles.stable_roots(),"ffv1-admission-root-changed")
+    finally:
+        handles.close()
+    core.verify_source_bindings(paths["source"],current["source_sha"],source_bindings)
+    if plan_missing is not None:
+        # The caller must still obtain the unchanged Core /2 bilateral guard
+        # during capture. This exception grants no diagnostic namespace.
+        raise Ffv1StagePlanAbsent("ffv1-original-plan-absent") from plan_missing
+    return admit_ffv1_diagnostics(current=current,source_bindings=source_bindings,
+        plan_original=originals[FFV1_PLAN_PATH],seed_stdout_original=originals[FFV1_SEED_STDOUT_PATH],
+        seed_stderr_original=originals[FFV1_SEED_STDERR_PATH],
+        seed_terminal_original=originals[FFV1_SEED_TERMINAL_PATH],
+        input_custody_original=originals["input-custody.json"],
+        expected_seed_argv=[str(Path(paths["source"])/"target"/"debug"/"examples"/"native-mlt-sequence-e2e"),
+            "seed",str(Path(paths["owner"])/"motionwright-data"/"motionwright.sqlite3")])
+
+
+def checked_ffv1_plan_absence(manifest, *, current, source_bindings=None):
+    """Check the capture's fixed bilateral guard; this is not native intake."""
+    require(type(manifest) is dict and manifest.get("schema")==core.MANIFEST_SCHEMA
+            and manifest.get("context")==checked_context(current,"repaired-g2")
+            and manifest.get("source_bytes_bound") is True
+            and manifest.get("selected_namespace_stable") is True
+            and manifest.get("raw_diagnostics_included") is False
+            and manifest.get("lost_scope")==list(core.LOST_SCOPE),
+            "ffv1-plan-absence-capture-scope")
+    if source_bindings is not None:
+        require(sorted(manifest["source_bindings"],key=lambda row:row["path"])==
+                sorted(source_bindings,key=lambda row:row["path"]),
+                "ffv1-plan-absence-source-bindings")
+    require(type(manifest.get("members")) is list
+            and all(type(row) is dict and type(row.get("kind")) is str
+                    for row in manifest["members"]),"ffv1-plan-absence-member-types")
+    require(not any(row["kind"] in core.DIAGNOSTIC_KINDS
+                    or (row.get("root"),row.get("relative_path"))==
+                        ("observation",FFV1_PLAN_PATH)
+                    for row in manifest["members"]),"ffv1-plan-absence-selected-member")
+    expected=dict(root="observation",relative_path=FFV1_PLAN_PATH,phase="original",
+                  layer="attempt-custody",role="ffv1-stage-plan",
+                  absent_before=True,absent_after=True,opened=False,hashed=False)
+    guards=[row for row in manifest["absence_guards"]
+            if (row.get("root"),row.get("relative_path"))==("observation",FFV1_PLAN_PATH)]
+    require(guards==[expected],"ffv1-plan-absence-not-bilateral")
+    return manifest
+
 def source_contract_policy(tests):
     status = String(values=("PASS", "PASS_WITH_OMISSIONS", "FAIL", "UNKNOWN", "NOT_RUN"))
     counts = O(terminal_status=String(values=("OK", "FAILED")), tests_run=N,
@@ -289,6 +767,12 @@ def policies(scenario):
         decoded_stereo=MIDSTREAM, mlt_result=RESULT, live_mlt=LIVE, consumer_snapshot=CONSUMER_SNAPSHOT,
         compiled_mlt=COMPILED, installation=INSTALLATION, official_runtime=OFFICIAL, packets=PACKETS,
         aac_clock_carrier=clock_custody.carrier_policy(),
+        ffv1_stage_plan=FFV1_PLAN,
+        ffv1_seed_capture=FFV1_SEED_CAPTURE,
+        ffv1_input_custody=FFV1_INPUT_CUSTODY,
+        ffv1_host_terminal=FFV1_HOST_TERMINAL,
+        ffv1_process_terminal=FFV1_PROCESS_TERMINAL,
+        ffv1_process_custody=FFV1_PROCESS_CUSTODY,
         mlt_source_contracts=source_contract_policy(SOURCE_CONTRACT_TESTS),
         film_source_contracts=source_contract_policy(FILM_CONTRACT_TESTS),
         owner_custody=OWNER,owner_terminal=OWNER_TERMINAL,
@@ -328,8 +812,19 @@ def common_contract():
     return result
 
 
-def mlt_contract():
+def mlt_contract(*, seed_diagnostics=False):
+    require(type(seed_diagnostics) is bool,"ffv1-seed-role-contract-mode")
     result = common_contract()
+    if seed_diagnostics:
+        for role in ("ffv1-seed-stdout","ffv1-seed-stderr","ffv1-seed-terminal"):
+            result[("original","attempt-custody",role)]=(0,1)
+    result[("original","attempt-custody","ffv1-stage-plan")]=(0,1)
+    for family in ("host","catalog"):
+        for member in ("stdin","stdout","stderr","terminal"):
+            result[("original","attempt-custody","ffv1-"+family+"-"+member)]=(0,2)
+    for member in ("stdout","stderr","terminal"):
+        result[("original","attempt-custody","ffv1-process-"+member)]=(0,12)
+    result[("original","attempt-custody","ffv1-process-custody")]=(0,2)
     for role in ("timeline-receipt", "native-master-receipt", "native-timeline", "video-only-copy", "native-master",
                  "producer-master-copy", "original-master-copy", "source-wav", "producer-source-copy",
                  "native-decoded-wav", "decoded-pcm", "source-content", "decoded-stereo", "packets", "result", "audio-clock-carrier"):
@@ -342,7 +837,8 @@ def mlt_contract():
 
 class Selection:
     """One attempt, including failure. A second capture is never a recovery."""
-    def __init__(self, *, roots, current, scenario, source_bindings, role_contract, json_policies):
+    def __init__(self, *, roots, current, scenario, source_bindings, role_contract, json_policies,
+                 diagnostic_admission=None, ffv1_stage_plan_absent=False):
         self.context = checked_context(current, scenario)
         expected = FILM_SOURCE_PATHS if scenario == "film180-g2" else SOURCE_PATHS
         require(type(source_bindings) is list and {r.get("path") for r in source_bindings} == set(expected)
@@ -350,6 +846,16 @@ class Selection:
         self.roots = {k:str(v) for k,v in roots.items()}
         require(set(self.roots) <= {"source", "control", "observation", "owner", "contracts", "film-contracts"}
                 and {"source", "control"} <= set(self.roots), "native-roots")
+        require(scenario=="repaired-g2" or diagnostic_admission is None,
+                "ffv1-diagnostics-on-film")
+        self.admission=(None if diagnostic_admission is None else
+            checked_ffv1_admission(diagnostic_admission,current=current,
+                                   source_bindings=source_bindings))
+        require(type(ffv1_stage_plan_absent) is bool
+                and (not ffv1_stage_plan_absent or (scenario=="repaired-g2"
+                    and self.admission is None and "observation" in self.roots)),
+                "ffv1-plan-absence-mode")
+        self.ffv1_stage_plan_absent=ffv1_stage_plan_absent
         self.bindings = source_bindings
         self.contract = role_contract
         self.policies = json_policies
@@ -360,7 +866,7 @@ class Selection:
         core.verify_source_bindings(self.roots["source"], current["source_sha"], source_bindings)
 
     def add(self, handles, root, path, role, layer="readback", phase="original", policy=None,
-            identity=None, kind=None, maximum=None):
+            identity=None, kind=None, maximum=None, diagnostic_type=None):
         relative(path)
         actual = (root, path)
         require(actual not in self.cache, "native-duplicate-selected-path")
@@ -368,7 +874,12 @@ class Selection:
         require(key in self.contract, "native-role-unregistered")
         kind = kind or ("json-projection" if policy else "original")
         row = dict(root=root, relative_path=path, role=role, layer=layer, phase=phase,
-                   kind=kind, required=self.contract[key][0] > 0, expected_sha256=None, bytes=None, policy=policy)
+                   kind=kind, required=diagnostic_type is not None or self.contract[key][0] > 0,
+                   expected_sha256=None, bytes=None, policy=policy)
+        if diagnostic_type is not None:
+            require(self.admission is not None and kind in core.DIAGNOSTIC_KINDS,
+                    "ffv1-diagnostic-admission-required")
+            row["diagnostic_type"]=diagnostic_type
         value, raw = None, None
         if root in self.roots:
             try:
@@ -376,7 +887,7 @@ class Selection:
                 if identity is not None:
                     require(sha(raw) == identity[0] and (identity[1] is None or len(raw) == identity[1]), "native-linked-original-changed")
                 if policy:
-                    value = core.project(core.strict(raw), self.policies[policy], exact=kind == "json-original")
+                    value = core.project(core.strict(raw), self.policies[policy], exact=kind in ("json-original","diagnostic-json-original"))
                 row.update(expected_sha256=sha(raw), bytes=len(raw))
             except (FileNotFoundError, OSError, ValueError, TypeError, core.SelectionError):
                 raw, value = None, None
@@ -456,8 +967,69 @@ class Selection:
         self.add(handles,"observation",prefix+basename+".json","consumer-snapshot","attempt-custody",phase,"consumer_snapshot")
         self.add(handles,"observation",prefix+basename+".mp4","consumer-original","attempt-custody",phase,identity=identity)
 
+    def optional_ffv1_original(self, handles, root, path, role, *, policy=None, maximum,
+                               identity=None, diagnostic_type=None):
+        # Match the existing SQLite-companion absence contract: an absent
+        # optional member is a two-sided namespace guard, not a failed row.
+        # Stat errors and present-but-invalid originals remain failed rows.
+        if root not in self.roots:
+            return None
+        try:
+            handles.stat_member(root,core.member_path(path))
+        except FileNotFoundError:
+            self.absence.append(dict(root=root,relative_path=path,phase="original",
+                                     layer="attempt-custody",role=role))
+            return None
+        except (OSError,core.SelectionError):
+            pass
+        kind=("diagnostic-json-original" if policy else "diagnostic-original") if diagnostic_type else (
+            "json-original" if policy else "original")
+        return self.add(handles,root,path,role,"attempt-custody","original",policy,
+                         kind=kind,maximum=maximum,identity=identity,diagnostic_type=diagnostic_type)
+
+    def collect_ffv1_diagnostics(self, handles):
+        if self.ffv1_stage_plan_absent:
+            # Freeze the absence guard, even if the file appeared since admission.
+            # Core observes both sides and invalidates that late appearance.
+            self.absence.append(dict(root="observation",relative_path=FFV1_PLAN_PATH,
+                phase="original",layer="attempt-custody",role="ffv1-stage-plan"))
+            return
+        expected=None if self.admission is None else self.admission["stage_plan"]
+        if self.admission is not None:
+            # The three fixed seed carriers have their own admitted subgroup.
+            # They remain original bytes in the existing native capsule.
+            for entry in self.admission["seed_diagnostic_contract"]["entries"]:
+                self.optional_ffv1_original(handles,entry["root"],entry["relative_path"],entry["role"],
+                    policy=entry["policy"],maximum=entry["maximum"],diagnostic_type=entry["type"])
+        identity=None if expected is None else (
+            expected["original"]["sha256"],expected["original"]["bytes"])
+        plan=self.optional_ffv1_original(handles,"observation",FFV1_PLAN_PATH,"ffv1-stage-plan",
+                                         policy="ffv1_stage_plan",maximum=65536,identity=identity)
+        if expected is None:
+            require(plan is None,"ffv1-diagnostic-admission-required")
+            return
+        if plan is None or ffv1_plan_identity(plan)!=expected["identity"]:
+            # Only the independently admitted destinations are reserved. A changed
+            # plan cannot authorize any payload read, even within an owner root.
+            cached=self.cache.get(("observation",FFV1_PLAN_PATH))
+            if cached is not None:
+                cached[2].update(expected_sha256=None,bytes=None,required=True)
+            for entry in self.admission["diagnostic_contract"]["entries"]:
+                row={key:entry[key] for key in ("root","relative_path","phase","layer","role","policy")}
+                row.update(kind="diagnostic-json-original" if entry["type"]=="typed-terminal"
+                           else "diagnostic-original",diagnostic_type=entry["type"],
+                           required=True,expected_sha256=None,bytes=None)
+                self.members.append(row)
+                self.cache[(entry["root"],entry["relative_path"])]=(None,None,row)
+            return
+        self.cache[("observation",FFV1_PLAN_PATH)][2]["required"]=True
+        for entry in self.admission["diagnostic_contract"]["entries"]:
+            self.optional_ffv1_original(handles,entry["root"],entry["relative_path"],entry["role"],
+                policy=entry["policy"],maximum=entry["maximum"],diagnostic_type=entry["type"])
+
     def collect_mlt(self, handles):
         self.common(handles)
+        self.collect_ffv1_diagnostics(handles)
         fixed = (
             ("producer/native-multisegment-timeline-evidence.json","timeline-receipt","mlt_timeline"),
             ("producer/native-multisegment-av-master-evidence.json","native-master-receipt","mlt_master"),
@@ -472,7 +1044,11 @@ class Selection:
         for path,role,policy in (("input-custody.json","input-custody","mlt_input"),
                 ("native-terminal.json","native-terminal","mlt_terminal"),("final-custody.json","final-custody","mlt_final"),
                 ("original-live-module.json","live-module","live_mlt")):
-            docs[role] = self.add(handles,"observation",path,role,"attempt-custody","original",policy)
+            if role=="input-custody" and self.admission is not None:
+                docs[role]=self.add(handles,"observation",path,role,"attempt-custody","original",
+                    "ffv1_input_custody",kind="json-original",maximum=262144)
+            else:
+                docs[role] = self.add(handles,"observation",path,role,"attempt-custody","original",policy)
         timeline, master = docs["timeline-receipt"], docs["native-master-receipt"]
         for i in range(2):
             segment = timeline["source"]["verified_video_segments"][i] if timeline else None
@@ -508,28 +1084,103 @@ class Selection:
                            "observation":("observer-diagnostic.json",)}.items():
             if root in self.roots:
                 exclusions.extend(dict(root=root,relative_path=p,reason="outside-reviewed-scope") for p in paths)
-        spec = dict(schema=core.SPEC_SCHEMA, context=self.context, roots=self.roots, members=self.members,
+        spec = dict(schema=core.SPEC_SCHEMA_V3 if self.admission is not None else core.SPEC_SCHEMA,
+                    context=self.context, roots=self.roots, members=self.members,
                     absence_guards=self.absence, exclusions=exclusions, source_bindings=self.bindings,
                     origin=dict(kind="generated-first-party-fixture",fixture_id=self.context["scenario"],
                         producer_paths=["tooling/native_mlt_sequence_e2e.py"],private_data=True,
                         upload_authorization="NOT_GRANTED_BY_COLLECTOR"))
-        return core.capture_selected_originals(spec,policies=self.policies,role_contract=self.contract)
+        return core.capture_selected_originals(spec,policies=self.policies,role_contract=self.contract,
+            diagnostic_contract=None if self.admission is None else self.admission["capture_diagnostic_contract"])
 
 
 class Intake:
     """Authenticated memory-only readback; never extracts or opens SQLite."""
-    def __init__(self, raw, current, scenario, contract, json_policies):
+    def __init__(self, raw, current, scenario, contract, json_policies, *,
+                 expected_diagnostic_admission=None, require_complete=True):
+        require(type(require_complete) is bool,"native-intake-completeness-mode")
+        require(require_complete or (scenario=="repaired-g2"
+                and expected_diagnostic_admission is not None),"native-partial-needs-external-v3")
         self.context = checked_context(current,scenario)
-        self.manifest = core.inspect_selected_tar(raw,expected_context=self.context,role_contract=contract,policies=json_policies)
+        require(scenario=="repaired-g2" or expected_diagnostic_admission is None,
+                "ffv1-diagnostics-on-film")
+        self.admission=(None if expected_diagnostic_admission is None else
+            checked_ffv1_admission(expected_diagnostic_admission,current=current))
+        self.manifest = core.inspect_selected_tar(raw,expected_context=self.context,
+            role_contract=contract,policies=json_policies,
+            expected_diagnostic_contract=None if self.admission is None
+                else self.admission["capture_diagnostic_contract"],require_complete=require_complete)
         self.data = {}
         with tarfile.open(fileobj=io.BytesIO(raw),mode="r:") as archive:
             for row in self.manifest["members"]:
                 if row["state"] == "INCLUDED":
                     payload = archive.extractfile(row["member"]).read()
-                    value = core.strict(payload) if row["kind"] != "original" else payload
+                    value = (payload if row["kind"] in ("original","diagnostic-original")
+                             else core.strict(payload))
                     if row["kind"] == "json-projection": value = value["value"]
                     self.data.setdefault((row["phase"],row["layer"],row["role"]),[]).append((row,value,payload))
         self.contract = contract
+        if self.admission is not None:
+            self.verify_ffv1_admission()
+
+    def verify_ffv1_admission(self):
+        expected=self.admission
+        require(sorted(self.manifest["source_bindings"],key=lambda row:row["path"])
+                ==expected["source_bindings"],"ffv1-intake-source-bindings")
+        row,plan,raw=self.one("ffv1-stage-plan","original","attempt-custody")
+        identity=expected["stage_plan"]["original"]
+        require((row["root"],row["relative_path"],row["kind"],row["policy"])
+                ==("observation",FFV1_PLAN_PATH,"json-original","ffv1_stage_plan")
+                and row["original_bytes"] is True
+                and (sha(raw),len(raw))==(identity["sha256"],identity["bytes"])
+                and ffv1_plan_identity(plan)==expected["stage_plan"]["identity"]
+                and ffv1_contract_for_plan(plan,{key:self.context[key] for key in (
+                    "source_sha","semwright_sha","run_id","run_attempt")})==expected["diagnostic_contract"],
+                "ffv1-intake-original-plan")
+        input_row,inputs,input_raw=self.one("input-custody","original","attempt-custody")
+        identity=expected["input_custody"]
+        require((input_row["root"],input_row["relative_path"],input_row["kind"],input_row["policy"])
+                ==("observation","input-custody.json","json-original","ffv1_input_custody")
+                and input_row["original_bytes"] is True
+                and (sha(input_raw),len(input_raw))==(identity["sha256"],identity["bytes"]),
+                "ffv1-intake-original-input")
+        originals={}
+        for name,role,path,kind,policy in (
+            ("seed_stdout","ffv1-seed-stdout",FFV1_SEED_STDOUT_PATH,"diagnostic-original",None),
+            ("seed_stderr","ffv1-seed-stderr",FFV1_SEED_STDERR_PATH,"diagnostic-original",None),
+            ("seed_terminal","ffv1-seed-terminal",FFV1_SEED_TERMINAL_PATH,
+             "diagnostic-json-original","ffv1_seed_capture"),
+        ):
+            seed_row,seed_value,seed_raw=self.one(role,"original","attempt-custody")
+            identity=expected[name]
+            require((seed_row["root"],seed_row["relative_path"],seed_row["kind"],seed_row["policy"])
+                    ==("observation",path,kind,policy) and seed_row["original_bytes"] is True
+                    and (sha(seed_raw),len(seed_raw))==(identity["sha256"],identity["bytes"]),
+                    "ffv1-intake-original-seed")
+            originals[name]=(seed_value,seed_raw)
+        seed=core.project(core.strict(originals["seed_stdout"][1]),FFV1_SEED,exact=True)
+        terminal=originals["seed_terminal"][0]
+        require(seed["resource"]=="project:"+seed["project_id"]
+                and dict(project_resource=seed["resource"],generation=seed["generation"],
+                         revision=seed["revision"],deliverable_id=seed["master_profile_id"])
+                    ==expected["fixture_identity"],"ffv1-intake-seed-fixture-identity")
+        require(terminal["context"]==self.context and terminal["exit_code"]==0
+                and type(terminal["exit_code"]) is int and not terminal["deadline_exceeded"]
+                and terminal["error_class"] is None and terminal["error"] is None,
+                "ffv1-intake-seed-terminal")
+        for channel,name,path in (("stdout","seed_stdout",FFV1_SEED_STDOUT_PATH),
+                                  ("stderr","seed_stderr",FFV1_SEED_STDERR_PATH)):
+            stream=terminal[channel];payload=originals[name][1]
+            require(stream["relative_path"]==path and stream["retained"] is True
+                    and stream["prefix_truncated"] is False
+                    and (stream["sha256"],stream["bytes"])==(sha(payload),len(payload))
+                    and (stream["returned_buffer_sha256"],stream["returned_buffer_bytes"])
+                        ==(sha(payload),len(payload)),"ffv1-intake-seed-stream-closure")
+        require((inputs["current_motionwright_sha"],inputs["semwright_sha"],
+                 inputs["run_id"],inputs["run_attempt"])
+                ==tuple(self.context[key] for key in ("source_sha","semwright_sha","run_id","run_attempt"))
+                and inputs["original_source"]["original_wav_sha256"]==REFERENCE_WAV,
+                "ffv1-intake-input-fixture-context")
 
     def all(self,role,phase="original",layer="readback"):
         return self.data.get((phase,layer,role),[])
@@ -544,12 +1195,12 @@ class Intake:
 
     def original(self,role,phase="original",layer="readback"):
         row,value,_ = self.one(role,phase,layer)
-        require(row["kind"] in ("original","json-original") and row["original_bytes"] is True,"native-original-bytes-required")
+        require(row["kind"] in ("original","json-original","diagnostic-original","diagnostic-json-original") and row["original_bytes"] is True,"native-original-bytes-required")
         return value
 
     def linked(self,role,identity,phase="original",layer="readback"):
         row,_value,_raw = self.one(role,phase,layer)
-        require(row["kind"] in ("original","json-original") and row["original_bytes"] is True,"native-linked-original-bytes")
+        require(row["kind"] in ("original","json-original","diagnostic-original","diagnostic-json-original") and row["original_bytes"] is True,"native-linked-original-bytes")
         require((row["expected_sha256"],row["bytes"])==identity,"native-linked-identity")
         return row
 
@@ -706,8 +1357,10 @@ def pcm_shape(wav, pcm, expected_frames):
     return len(pcm)//4-expected_frames
 
 
-def verify_mlt_intake(raw, *, current):
-    intake=Intake(raw,current,"repaired-g2",mlt_contract(),policies("repaired-g2"))
+def verify_mlt_intake(raw, *, current, expected_diagnostic_admission=None):
+    intake=Intake(raw,current,"repaired-g2",
+                  mlt_contract(seed_diagnostics=expected_diagnostic_admission is not None),
+                  policies("repaired-g2"),expected_diagnostic_admission=expected_diagnostic_admission)
     official,install=intake.common()
     for role,path,policy in (("timeline-receipt","producer/native-multisegment-timeline-evidence.json","mlt_timeline"),
             ("native-master-receipt","producer/native-multisegment-av-master-evidence.json","mlt_master"),
@@ -735,6 +1388,11 @@ def verify_mlt_intake(raw, *, current):
     require(master["video"]==timeline,"native-timeline-master-link")
     identities=[{k:d[k] for k in IDENTITY} for d in (timeline,timeline["source"],master,master["measured_voice"])]
     require(all(x==identities[0] for x in identities),"native-project-revision-link")
+    if intake.admission is not None:
+        plan=intake.admission["stage_plan"]["identity"]
+        require({key:plan[key] for key in IDENTITY}==identities[0]
+                and plan["input_sha256"]==timeline["source"]["input_sha256"],
+                "ffv1-intake-native-source-identity")
     segments=timeline["source"]["verified_video_segments"]
     require([s["frame_count"] for s in segments]==[32,1] and [s["output_start_frame"] for s in segments]==[0,32],"native-two-segment-coverage")
     for index,(row,blob,_raw) in enumerate(intake.all("source-segment")):
@@ -797,7 +1455,8 @@ def verify_mlt_intake(raw, *, current):
         source_identity={"sha256":timeline_row["expected_sha256"],"bytes":timeline_row["bytes"]},
         original_wav=wave_bytes,master=intake.original("native-master"),decoded_pcm=pcm,
         packet_identity={"sha256":packet_row["expected_sha256"],"bytes":packet_row["bytes"]})
-    return dict(schema="motionwright.native.mlt-selected-intake/2",context=intake.context,
+    return dict(schema="motionwright.native.mlt-selected-intake/3" if intake.admission is not None
+                else "motionwright.native.mlt-selected-intake/2",context=intake.context,
         selected_layers_complete=True,original_native_media_bytes_retained=True,
         full_decoded_minus_source_samples=delta,source_bound_reported_native_success=True,
         native_reopen_performed=False,source_content_oracle_recomputed=True,
@@ -805,13 +1464,37 @@ def verify_mlt_intake(raw, *, current):
         native_operation_retried=False,physical_acceptance=False,human_acceptance=False,release_authorized=False)
 
 
-def verify_decrypted_selection(raw,*,current,scenario):
+def verify_mlt_diagnostic_intake(raw, *, current, expected_diagnostic_admission):
+    """Verify bounded /3 custody; missing native rows remain explicit."""
+    require(expected_diagnostic_admission is not None,"ffv1-partial-external-admission-required")
+    intake=Intake(raw,current,"repaired-g2",mlt_contract(seed_diagnostics=True),policies("repaired-g2"),
+        expected_diagnostic_admission=expected_diagnostic_admission,require_complete=False)
+    manifest=intake.manifest
+    return dict(schema="motionwright.native.mlt-diagnostic-intake/3",context=intake.context,
+        diagnostic_intake_verified=True,diagnostic_roster_complete=manifest["diagnostic_roster_complete"],
+        selected_layers_complete=manifest["required_layers_complete"],
+        required_missing_or_failed_members=sum(row["required"] and row["state"]!="INCLUDED"
+                                               for row in manifest["members"]),
+        selected_intake_verified=False,source_content_and_live_module_verified=False,
+        original_native_media_bytes_verified=False,source_bound_reported_native_success=False,
+        diagnostic_eof_claimed=False,diagnostic_history_complete_claimed=False,
+        native_reopen_performed=False,packet_PTS_and_AAC_priming_verified=False,
+        native_operation_retried=False,physical_acceptance=False,human_acceptance=False,
+        release_authorized=False)
+
+
+def verify_decrypted_selection(raw,*,current,scenario,expected_diagnostic_admission=None,
+                               require_complete=True):
+    require(type(require_complete) is bool,"native-intake-completeness-mode")
     if scenario=="film180-g2":
+        require(require_complete and expected_diagnostic_admission is None,"ffv1-diagnostics-on-film")
         from native_film180_evidence_selection import verify_film_intake
         return verify_film_intake(raw,current=current)
     require(scenario=="repaired-g2","native-intake-scenario")
-    return verify_mlt_intake(raw,current=current)
-
+    if not require_complete:
+        return verify_mlt_diagnostic_intake(raw,current=current,
+            expected_diagnostic_admission=expected_diagnostic_admission)
+    return verify_mlt_intake(raw,current=current,expected_diagnostic_admission=expected_diagnostic_admission)
 
 
 PUBLIC_V2_KEYS = {
@@ -848,10 +1531,84 @@ def validate_public_v2(public):
             if public["schema"]=="motionwright.native.film180-g2-public/2" else "source-content-and-live-module-only"),"native-public-scenario-scope")
     return public
 
-def verify_sealed_selection(envelope,private_key,public):
+
+PUBLIC_V3_KEYS = PUBLIC_V2_KEYS | {
+    "selected_evidence_schema","selected_lost_scope","diagnostic_status",
+    "diagnostic_admitted","diagnostic_plan_absence_verified",
+    "diagnostic_contract_sha256","diagnostic_admission_sha256",
+    "diagnostic_intake_verified","diagnostic_roster_complete","raw_diagnostics_included",
+    "diagnostic_eof_claimed","diagnostic_history_complete_claimed","diagnostic_payloads_redacted",
+}
+
+
+def validate_public_v3(public):
+    require(type(public) is dict and set(public)==PUBLIC_V3_KEYS,"native-public-v3-exact-fields")
+    require(public["schema"]=="motionwright.native.mlt-g2-public/3","native-public-v3-schema")
+    # The shared /2 fields keep their exact policy. This local normalized copy is
+    # never emitted, decrypted or used to select a capture schema.
+    common={key:public[key] for key in PUBLIC_V2_KEYS}
+    common.update(schema="motionwright.native.mlt-g2-public/2",
+                  custody_scope="explicit-source-bound-selected-layers/2")
+    validate_public_v2(common)
+    for name in ("diagnostic_admitted","diagnostic_plan_absence_verified",
+                 "diagnostic_intake_verified","diagnostic_roster_complete","raw_diagnostics_included"):
+        require(type(public[name]) is bool,"native-public-v3-diagnostic-boolean")
+    for name in ("diagnostic_eof_claimed","diagnostic_history_complete_claimed","diagnostic_payloads_redacted"):
+        require(public[name] is False,"native-public-v3-diagnostic-scope")
+    if public["diagnostic_status"]=="FFV1_DIAGNOSTICS_ADMITTED":
+        require(public["selected_evidence_schema"]==core.MANIFEST_SCHEMA_V3
+                and public["custody_scope"]=="explicit-source-bound-selected-layers/3"
+                and public["selected_lost_scope"]==list(core.LOST_SCOPE_V3)
+                and public["diagnostic_admitted"] is True
+                and public["diagnostic_plan_absence_verified"] is False,
+                "native-public-v3-admitted-scope")
+        for name in ("diagnostic_contract_sha256","diagnostic_admission_sha256"):
+            core.project(public[name],SHA,exact=True)
+        require(not public["diagnostic_intake_verified"] or public["source_unchanged"],
+                "native-public-v3-diagnostic-closure")
+        require(not public["selected_intake_verified"] or
+                (public["diagnostic_intake_verified"] and public["diagnostic_roster_complete"]),
+                "native-public-v3-complete-without-diagnostics")
+    elif public["diagnostic_status"]=="FFV1_DIAGNOSTIC_PLAN_ABSENT":
+        require(public["selected_evidence_schema"]==core.MANIFEST_SCHEMA
+                and public["custody_scope"]=="explicit-source-bound-selected-layers/2"
+                and public["selected_lost_scope"]==list(core.LOST_SCOPE)
+                and public["diagnostic_plan_absence_verified"] is True
+                and public["diagnostic_contract_sha256"] is None
+                and public["diagnostic_admission_sha256"] is None,
+                "native-public-v3-plan-absence-scope")
+        require(all(public[name] is False for name in (
+            "diagnostic_admitted","diagnostic_intake_verified","diagnostic_roster_complete",
+            "raw_diagnostics_included","selected_intake_verified","source_content_and_live_module_verified")),
+            "native-public-v3-plan-absence-escalation")
+    else:
+        require(False,"native-public-v3-diagnostic-status")
+    return public
+
+
+def validate_public_evidence(public):
+    require(type(public) is dict,"native-public-exact-fields")
+    if public.get("schema")=="motionwright.native.mlt-g2-public/3":
+        return validate_public_v3(public)
+    return validate_public_v2(public)
+
+
+def verify_sealed_selection(envelope,private_key,public,*,expected_diagnostic_admission=None,
+                            require_complete=True):
     """Explicit offline caller provides its key; no file/key lookup or network."""
     from ci_private_evidence import decrypt_snapshot, MAGIC
-    validate_public_v2(public)
+    validate_public_evidence(public)
+    require(type(require_complete) is bool,"native-intake-completeness-mode")
+    v3=public["schema"]=="motionwright.native.mlt-g2-public/3"
+    has_diagnostics=v3 and public["diagnostic_status"]=="FFV1_DIAGNOSTICS_ADMITTED"
+    require(require_complete or has_diagnostics,"native-partial-needs-external-v3")
+    require(has_diagnostics or expected_diagnostic_admission is None,"ffv1-admission-on-nondiagnostic-public")
+    admitted=(checked_ffv1_admission(expected_diagnostic_admission,current=public["context"])
+              if has_diagnostics else None)
+    if has_diagnostics:
+        require(public["diagnostic_admission_sha256"]==sha(core.canonical(admitted))
+                and public["diagnostic_contract_sha256"]==sha(core.canonical(admitted["capture_diagnostic_contract"])),
+                "ffv1-public-external-admission")
     require(sha(envelope)==public.get("sealed_originals_sha256") and len(envelope)==public.get("sealed_originals_bytes"),"native-public-ciphertext-identity")
     plaintext,authenticated_context=decrypt_snapshot(envelope,private_key)
     length=int.from_bytes(envelope[len(MAGIC):len(MAGIC)+4],"big")
@@ -861,8 +1618,34 @@ def verify_sealed_selection(envelope,private_key,public):
     with tarfile.open(fileobj=io.BytesIO(plaintext),mode="r:") as archive:
         manifest_bytes=archive.extractfile("selected-evidence-manifest.json").read(core.MAX_JSON+1)
     require(sha(manifest_bytes)==public["selected_manifest_sha256"],"native-public-selected-manifest")
+    if v3:
+        original_manifest=core.strict(manifest_bytes)
+        require(original_manifest["schema"]==public["selected_evidence_schema"]
+                and original_manifest["lost_scope"]==public["selected_lost_scope"]
+                and original_manifest["required_layers_complete"] is public["selected_layers_complete"],
+                "ffv1-public-selected-version-and-losses")
+        if not has_diagnostics:
+            checked_ffv1_plan_absence(original_manifest,current=authenticated_context)
+            # This API verifies a complete native success. A retained early
+            # failure capsule must never be promoted to that result.
+            require(False,"ffv1-plan-absence-is-not-complete-native-intake")
+        require(original_manifest["schema"]==core.MANIFEST_SCHEMA_V3
+                and original_manifest["diagnostic_contract_sha256"]==public["diagnostic_contract_sha256"]
+                and original_manifest["diagnostic_roster_complete"]==public["diagnostic_roster_complete"]
+                and original_manifest["raw_diagnostics_included"]==public["raw_diagnostics_included"],
+                "ffv1-public-selected-diagnostic-scope")
     scenario="film180-g2" if public["schema"]=="motionwright.native.film180-g2-public/2" else "repaired-g2"
-    result=verify_decrypted_selection(plaintext,current=authenticated_context,scenario=scenario)
+    result=verify_decrypted_selection(plaintext,current=authenticated_context,scenario=scenario,
+        expected_diagnostic_admission=admitted,require_complete=require_complete)
+    if not require_complete:
+        require(public["source_unchanged"] is True and public["diagnostic_intake_verified"] is True,
+                "ffv1-public-partial-custody-not-verified")
+        require(result["selected_layers_complete"] is public["selected_layers_complete"]
+                and result["diagnostic_roster_complete"] is public["diagnostic_roster_complete"],
+                "ffv1-public-partial-custody-completeness")
+        result.update(native_terminal=public["native_terminal"],
+                      producer_exit_code=public["producer_exit_code"])
+        return result
     require(public.get("source_unchanged") is True and public.get("selected_layers_complete") is True and public.get("selected_intake_verified") is True
             and public.get("source_content_and_live_module_verified") is True
             and public.get("native_terminal")=="SUCCESS_REPORTED"

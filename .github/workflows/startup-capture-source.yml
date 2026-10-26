@@ -12,6 +12,8 @@ on:
       - "tooling/tests/test_startup_capture_launcher.py"
       - "tooling/startup_capture_outer.py"
       - "tooling/tests/test_startup_capture_outer.py"
+      - "tooling/independent_startup.py"
+      - "tooling/tests/test_independent_startup_consumer.py"
       - ".github/workflows/startup-capture-source.yml"
   workflow_dispatch:
 
@@ -73,6 +75,7 @@ jobs:
                    "tooling/startup_capture_collector.py", "tooling/tests/test_startup_capture_collector.py",
                    "tooling/startup_capture_launcher.py", "tooling/tests/test_startup_capture_launcher.py",
                    "tooling/startup_capture_outer.py", "tooling/tests/test_startup_capture_outer.py",
+                   "tooling/independent_startup.py", "tooling/tests/test_independent_startup_consumer.py",
                    ".github/workflows/startup-capture-source.yml", "tooling/ci_test_runner.py")
           files = {name: {"bytes": (root/name).stat().st_size,
                           "sha256": hashlib.sha256((root/name).read_bytes()).hexdigest()}
@@ -95,7 +98,7 @@ jobs:
                      "scope": "Source controls, synthetic acyclic admission pairs, five-pipe custody and real Linux kernel fixtures only",
                      "installed_application_executed": False, "formal_acceptance": False}
           (output/"context-before.json").write_text(json.dumps(context, indent=2)+"\n")
-          for name in paths[:8]:
+          for name in paths[:10]:
               ast.parse((root/name).read_bytes(), filename=name)
           commands = (
               ("whitespace", ["git", "diff", "--check", "HEAD^", "HEAD"]),
@@ -175,6 +178,7 @@ jobs:
             --pattern test_startup_capture_collector.py \
             --pattern test_startup_capture_launcher.py \
             --pattern test_startup_capture_outer.py \
+            --pattern test_independent_startup_consumer.py \
             --mode both --expected-source "$GITHUB_SHA" \
             --report "$CAPTURE_EVIDENCE/kernel-controls/receipt.json" --require-complete
       - name: Retain final source identity without promoting a product verdict

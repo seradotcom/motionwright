@@ -598,7 +598,7 @@ jobs:
             production::tests::production_allowlist_binds_blender_to_the_native_driver \
             -- --nocapture
 
-      - name: Require named example19 and runtime-version Rust source contracts
+      - name: Require named example23 and runtime-version Rust source contracts
         if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'source-contracts'
         run: |
           python3 -B - <<'PY'
@@ -612,7 +612,7 @@ jobs:
           import time
 
           # Replaced with exact nominal names from the reviewed source export.
-          RUST_CASES = {'example19': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'graph_profile_tests::original_binary_custody_preserves_unknown_and_refuses_overwrite', 'graph_profile_tests::seed_reopens_a_real_empty_graph_scene_without_native_receipts', 'graph_profile_tests::stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
+          RUST_CASES = {'example23': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'graph_cycle::tests::pending_source_rejects_wrong_clock_extra_label_and_serialized_write_claims', 'graph_cycle::tests::rejected_source_destination_does_not_open_or_create_a_database', 'graph_cycle::tests::source_seed_keeps_graph_absent_until_the_original_bound_provider_save', 'graph_profile_tests::original_binary_custody_preserves_unknown_and_refuses_overwrite', 'graph_profile_tests::original_input_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open', 'graph_profile_tests::seed_reopens_a_real_empty_graph_scene_without_native_receipts', 'graph_profile_tests::stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
 
 
           def rust_need(value, message):
@@ -694,7 +694,7 @@ jobs:
               output = Path(os.environ["RUNNER_TEMP"]) / "manim-rust-source-contracts"
               output.mkdir(exist_ok=False)
               record = {"schema": "motionwright.manim.rust-source-contracts/1", "status": "FAIL_SOURCE_CONTRACTS",
-                        "scope": "19 example + 4 renderer-version + 3 runtime-version source contracts on Linux; no native Manim render",
+                        "scope": "23 example + 4 renderer-version + 3 runtime-version source contracts on Linux; no native Manim render",
                         "formal_acceptance": False, "automatic_retry": False, "commands": [], "scopes": []}
               uncertain = False
               def source_state():
@@ -754,7 +754,7 @@ jobs:
                   lib_names = rust_list(capture("lib-list", base + ["--lib", "--", "--list", "--format", "terse"]))
                   example_names = rust_list(capture("example-list", base + ["--example", "native-manim-e2e", "--", "--list", "--format", "terse"]))
                   plans = [
-                      ("example19", example_names, None, ["--example", "native-manim-e2e"]),
+                      ("example23", example_names, None, ["--example", "native-manim-e2e"]),
                       ("renderer4", lib_names, "production::renderer_versions::tests", ["--lib", "production::renderer_versions::tests"]),
                       ("runtime3", lib_names, "production::tests::manim_runtime_version_", ["--lib", "production::tests::manim_runtime_version_"]),
                   ]
@@ -772,7 +772,7 @@ jobs:
                   after = source_state()
                   record["source_after"] = after
                   rust_need(after == before, "Source changed while compiling/discovering/executing Rust contracts")
-                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=26)
+                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=30)
               except BaseException as exc:
                   if uncertain:
                       record["status"] = "UNKNOWN_NO_RETRY"
@@ -1105,7 +1105,7 @@ jobs:
             production::tests::production_allowlist_binds_blender_to_the_native_driver \
             -- --nocapture
 
-      - name: Require named example19 and runtime-version Rust source contracts
+      - name: Require named example23 and runtime-version Rust source contracts
         run: |
           python3 -B - <<'PY'
           import hashlib
@@ -1118,7 +1118,7 @@ jobs:
           import time
 
           # Replaced with exact nominal names from the reviewed source export.
-          RUST_CASES = {'example19': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'graph_profile_tests::original_binary_custody_preserves_unknown_and_refuses_overwrite', 'graph_profile_tests::seed_reopens_a_real_empty_graph_scene_without_native_receipts', 'graph_profile_tests::stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
+          RUST_CASES = {'example23': ['camera_custody_tests::broken_stderr_still_attempts_diagnostic_and_preserves_native_unknown', 'camera_custody_tests::changed_project_reopen_retains_native_completion_without_success', 'camera_custody_tests::database_reopen_failure_retains_native_completion_before_custody', 'camera_custody_tests::diagnostic_write_failure_preserves_original_native_unknown', 'camera_custody_tests::evidence_destination_collision_retains_native_completion_and_existing_bytes', 'camera_custody_tests::missing_durable_start_or_result_retains_native_completion', 'camera_custody_tests::receipt_read_failure_retains_opaque_result_without_publishing_pass', 'camera_custody_tests::write_or_sync_failure_retains_completion_and_does_not_overwrite_partial_custody', 'editable_cycle::tests::forged_native_pass_without_original_store_receipts_cannot_import_or_edit', 'editable_cycle::tests::preexisting_source_edit_intent_is_never_replayed', 'editable_seed_and_custody_tests::editable_unknown_is_preserved_and_known_completion_is_not_erased_by_custody_failure', 'editable_seed_and_custody_tests::modern_seed_reopens_real_font_cas_and_saved_profile_without_native_jobs', 'graph_cycle::tests::pending_source_rejects_wrong_clock_extra_label_and_serialized_write_claims', 'graph_cycle::tests::rejected_source_destination_does_not_open_or_create_a_database', 'graph_cycle::tests::source_seed_keeps_graph_absent_until_the_original_bound_provider_save', 'graph_profile_tests::original_binary_custody_preserves_unknown_and_refuses_overwrite', 'graph_profile_tests::original_input_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open', 'graph_profile_tests::seed_reopens_a_real_empty_graph_scene_without_native_receipts', 'graph_profile_tests::stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation', 'runtime_probe_custody_tests::original_probe_error_survives_partial_sidecar_write_and_retains_secondary_diagnostic', 'runtime_probe_custody_tests::original_probe_error_survives_sidecar_collision_and_secondary_custody_failures', 'runtime_probe_custody_tests::successful_probe_retains_exact_seven_field_sidecar_without_terminal_publication', 'runtime_probe_custody_tests::successful_probe_still_blocks_on_sidecar_failure_and_preserves_observation'], 'renderer4': ['production::renderer_versions::tests::manim_runtime_version_parser_preserves_four_distinct_outcomes', 'production::renderer_versions::tests::manim_runtime_version_parser_rejects_metadata_and_forged_observations', 'production::renderer_versions::tests::original_probe_error_is_preserved_after_peer_revision_commits', 'production::renderer_versions::tests::successful_probe_is_not_admitted_after_peer_revision_commits'], 'runtime3': ['production::tests::manim_runtime_version_scope_and_transport_error_never_claim_absence', 'production::tests::manim_runtime_version_transport_preserves_observation_and_project', 'production::tests::manim_runtime_version_transport_rejects_foreign_or_unbound_observations']}
 
 
           def rust_need(value, message):
@@ -1200,7 +1200,7 @@ jobs:
               output = Path(os.environ["RUNNER_TEMP"]) / "manim-rust-source-contracts"
               output.mkdir(exist_ok=False)
               record = {"schema": "motionwright.manim.rust-source-contracts/1", "status": "FAIL_SOURCE_CONTRACTS",
-                        "scope": "19 example + 4 renderer-version + 3 runtime-version source contracts on Linux; no native Manim render",
+                        "scope": "23 example + 4 renderer-version + 3 runtime-version source contracts on Linux; no native Manim render",
                         "formal_acceptance": False, "automatic_retry": False, "commands": [], "scopes": []}
               uncertain = False
               def source_state():
@@ -1260,7 +1260,7 @@ jobs:
                   lib_names = rust_list(capture("lib-list", base + ["--lib", "--", "--list", "--format", "terse"]))
                   example_names = rust_list(capture("example-list", base + ["--example", "native-manim-e2e", "--", "--list", "--format", "terse"]))
                   plans = [
-                      ("example19", example_names, None, ["--example", "native-manim-e2e"]),
+                      ("example23", example_names, None, ["--example", "native-manim-e2e"]),
                       ("renderer4", lib_names, "production::renderer_versions::tests", ["--lib", "production::renderer_versions::tests"]),
                       ("runtime3", lib_names, "production::tests::manim_runtime_version_", ["--lib", "production::tests::manim_runtime_version_"]),
                   ]
@@ -1278,7 +1278,7 @@ jobs:
                   after = source_state()
                   record["source_after"] = after
                   rust_need(after == before, "Source changed while compiling/discovering/executing Rust contracts")
-                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=26)
+                  record.update(status="PASS_SOURCE_CONTRACTS", unique_selected_tests=30)
               except BaseException as exc:
                   if uncertain:
                       record["status"] = "UNKNOWN_NO_RETRY"

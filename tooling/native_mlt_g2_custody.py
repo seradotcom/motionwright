@@ -602,9 +602,426 @@ def projection(current, final, exit_code, job_status, encrypted, recipient, *,
 
 
 
+FFV1_PREFLIGHT_ADMISSION = "records/ffv1-diagnostic-admission.json"
+FFV1_PREFLIGHT_FREEZE = "records/ffv1-diagnostic-freeze.json"
+FFV1_PREFLIGHT_SCHEMA = "motionwright.native.ffv1-preflight-freeze/1"
+FFV1_PREFLIGHT_METADATA_MAX = 65536
+
+
+def checked_owner_workspace(env, current, session):
+    """The same declared owner identity used by the existing native seal."""
+    owner=strict(regular(session/"owner-workspace.json",MAX_JSON)[0])
+    path=Path(owner["path"])
+    info=path.lstat()
+    require(owner["schema"]=="motionwright.native.mlt-g2-owner-workspace/1"
+            and owner["motionwright_sha"]==current["source_sha"]
+            and owner["semwright_sha"]==current["semwright_sha"]
+            and owner["run_id"]==current["run_id"] and owner["run_attempt"]=="1"
+            and path.parent==runner_root(env)
+            and path.name.startswith("motionwright-native-av-g2-")
+            and path.resolve(strict=True)==path
+            and stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode)==0o700
+            and (info.st_dev,info.st_ino,info.st_uid,info.st_gid)==
+                (owner["device"],owner["inode"],owner["uid"],owner["gid"])
+            and info.st_uid==os.getuid(),"owner_workspace_custody_identity")
+    return path
+
+
+def _ffv1_preflight_root(env, current):
+    root=runner_root(env)/("mw-mlt-preflight-custody-"+current["run_id"]+"-"+current["run_attempt"])
+    for path in (root,root/"records"):
+        info=path.lstat()
+        require(path.resolve(strict=True)==path
+                and not path.is_symlink() and not any(item.is_symlink() for item in path.parents)
+                and stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode)==0o700
+                and info.st_uid==os.geteuid(),"ffv1-preflight-private-root")
+    return root
+
+
+def _ffv1_exact_absence(path):
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    return False
+
+
+def _ffv1_preflight_inputs(env, current, root):
+    raw_initial=regular(root/"records/initial.json",MAX_JSON)[0]
+    raw_before=regular(root/"records/source-before.json",MAX_JSON)[0]
+    raw_dispatch=regular(root/"records/dispatch.original.json",MAX_JSON)[0]
+    initial=strict(raw_initial);before=strict(raw_before)
+    require(initial.get("schema")=="motionwright.native.mlt-preflight-initial/1"
+            and initial.get("context")==current and initial.get("github_job")==env.get("GITHUB_JOB")
+            and initial.get("scope")=="repaired-g2"
+            and initial.get("effect_namespaces_initially_absent") is True
+            and initial.get("dispatch_input_sha256")==sha(raw_dispatch)
+            and initial.get("admission_granted") is False
+            and initial.get("native_effect_started") is False
+            and initial.get("automatic_retry") is False,"ffv1-preflight-original-input")
+    dispatch=validate_dispatch(raw_dispatch,current,scenario="repaired-g2")
+    public_key(dispatch["recipient"])
+    physical=selected_core.project(before.get("physical"),selected.policies("repaired-g2")["source_binding"],
+                                   exact=True)
+    require(physical["context"]==current,"ffv1-preflight-source-context")
+    bindings=[dict(path=path,sha256=digest) for path,digest in sorted(physical["files"].items())]
+    return raw_before,physical,bindings
+
+
+def checked_ffv1_freeze(value, *, current, expected_bindings=None):
+    fields={"schema","context","scenario","state","admission_sha256","admission_bytes",
+        "source_before_sha256","source_bindings_sha256","input_sha256",
+        "diagnostic_contract_admitted","before_producer_return","before_preflight_seal",
+        "native_originals_claimed","native_effects_absent_claimed","automatic_retry"}
+    require(type(value) is dict and set(value)==fields
+            and value["schema"]==FFV1_PREFLIGHT_SCHEMA and value["context"]==current
+            and value["scenario"]=="repaired-g2","ffv1-preflight-freeze-fields")
+    selected_core.project(current,selected.FOUR_CONTEXT,exact=True)
+    require(type(value["state"]) is str and value["state"] in ("FROZEN","PLAN_ABSENT"),
+            "ffv1-preflight-freeze-state")
+    require(value["before_producer_return"] is True and value["before_preflight_seal"] is True
+            and value["native_originals_claimed"] is False
+            and value["native_effects_absent_claimed"] is False
+            and value["automatic_retry"] is False,"ffv1-preflight-freeze-scope")
+    for name in ("source_before_sha256","source_bindings_sha256"):
+        selected_core.project(value[name],selected.SHA,exact=True)
+    if expected_bindings is not None:
+        require(value["source_bindings_sha256"]==sha(selected_core.canonical(
+            sorted(expected_bindings,key=lambda row:row["path"]))),"ffv1-preflight-freeze-source")
+    if value["state"]=="FROZEN":
+        require(value["diagnostic_contract_admitted"] is True
+                and type(value["admission_bytes"]) is int
+                and 0<value["admission_bytes"]<=FFV1_PREFLIGHT_METADATA_MAX,
+                "ffv1-preflight-freeze-admission")
+        for name in ("admission_sha256","input_sha256"):
+            selected_core.project(value[name],selected.SHA,exact=True)
+    else:
+        require(value["diagnostic_contract_admitted"] is False
+                and value["admission_sha256"] is None and value["admission_bytes"] is None
+                and value["input_sha256"] is None,"ffv1-preflight-absent-without-invented-contract")
+    return value
+
+
+def freeze_ffv1_preflight_expectation(env, evidence_dir):
+    """Freeze metadata once before returning the existing G2 producer."""
+    current=context(env)
+    require(env.get("MW_MLT_SCOPE")=="repaired-g2","ffv1-freeze-scenario")
+    control,_,session=names(env)
+    require(Path(evidence_dir)==session,"ffv1-freeze-same-native-session")
+    root=_ffv1_preflight_root(env,current)
+    require(all(_ffv1_exact_absence(path) for path in (
+        root/"records/seal-intent.json",root/"public/sealed-source-originals.bin",
+        root/"public/source-public-evidence.json",root/FFV1_PREFLIGHT_ADMISSION,
+        root/FFV1_PREFLIGHT_FREEZE)),"ffv1-freeze-must-precede-existing-preflight-seal")
+    raw_before,physical,bindings=_ffv1_preflight_inputs(env,current,root)
+    native_before=strict(regular(control/"records/source-before.json",MAX_JSON)[0])
+    require(native_before==physical,"ffv1-freeze-preflight-native-source-binding")
+    owner=checked_owner_workspace(env,current,session)
+    roots=dict(source=Path(env["GITHUB_WORKSPACE"]),control=control,observation=session,owner=owner)
+    admitted=None
+    try:
+        admitted=selected.read_ffv1_admission(roots=roots,current=current,source_bindings=bindings)
+    except selected.Ffv1StagePlanAbsent:
+        pass
+    packed=None if admitted is None else selected_core.canonical(admitted)
+    if packed is not None:
+        require(0<len(packed)<=FFV1_PREFLIGHT_METADATA_MAX,"ffv1-preflight-admission-size")
+        # Existing writer: exclusive, fsynced and read back. Only derived metadata
+        # is placed in source custody; raw seed/argv/plan remain native.
+        new_bytes(root/FFV1_PREFLIGHT_ADMISSION,packed)
+    status=dict(schema=FFV1_PREFLIGHT_SCHEMA,context=current,scenario="repaired-g2",
+        state="PLAN_ABSENT" if admitted is None else "FROZEN",
+        admission_sha256=None if packed is None else sha(packed),
+        admission_bytes=None if packed is None else len(packed),
+        source_before_sha256=sha(raw_before),
+        source_bindings_sha256=sha(selected_core.canonical(bindings)),
+        input_sha256=None if admitted is None else admitted["stage_plan"]["identity"]["input_sha256"],
+        diagnostic_contract_admitted=admitted is not None,before_producer_return=True,
+        before_preflight_seal=True,native_originals_claimed=False,
+        native_effects_absent_claimed=False,automatic_retry=False)
+    checked_ffv1_freeze(status,current=current,expected_bindings=bindings)
+    require(_ffv1_exact_absence(root/"records/seal-intent.json"),"ffv1-preflight-seal-started-during-freeze")
+    new_bytes(root/FFV1_PREFLIGHT_FREEZE,selected_core.canonical(status))
+    return status
+
+
+def consume_frozen_ffv1_expectation(env, *, roots, current, source_bindings):
+    """Consume the earlier freeze; never create authority while selecting a TAR."""
+    root=_ffv1_preflight_root(env,current)
+    raw_before,physical,bindings=_ffv1_preflight_inputs(env,current,root)
+    require(bindings==sorted(source_bindings,key=lambda row:row["path"]),
+            "ffv1-frozen-source-binding")
+    raw_status,status_observation=regular(root/FFV1_PREFLIGHT_FREEZE,FFV1_PREFLIGHT_METADATA_MAX)
+    status=checked_ffv1_freeze(strict(raw_status),current=current,expected_bindings=bindings)
+    require(status["source_before_sha256"]==sha(raw_before),"ffv1-frozen-source-original")
+    admitted=None
+    if status["state"]=="FROZEN":
+        raw,observation=regular(root/FFV1_PREFLIGHT_ADMISSION,FFV1_PREFLIGHT_METADATA_MAX)
+        require((sha(raw),len(raw))==(status["admission_sha256"],status["admission_bytes"]),
+                "ffv1-frozen-admission-bytes")
+        admitted=selected.checked_ffv1_admission(selected_core.strict(raw),current=current,
+                                                 source_bindings=source_bindings)
+        require(admitted["stage_plan"]["identity"]["input_sha256"]==status["input_sha256"],
+                "ffv1-frozen-input-identity")
+        # Re-read only the fixed originals to compare against already frozen C.
+        # The observed object cannot replace or extend the expected contract.
+        observed=selected.read_ffv1_admission(roots=roots,current=current,source_bindings=bindings)
+        require(observed==admitted,"ffv1-originals-differ-from-frozen-admission")
+        require(metadata_identity((root/FFV1_PREFLIGHT_ADMISSION).lstat())==
+                tuple(observation["namespace_after"][key] for key in (
+                    "device","inode","mode","uid","gid","size","mtime_ns","ctime_ns")),
+                "ffv1-frozen-admission-changed")
+    else:
+        require(_ffv1_exact_absence(root/FFV1_PREFLIGHT_ADMISSION),"ffv1-absent-freeze-has-contract")
+        try:
+            selected.read_ffv1_admission(roots=roots,current=current,source_bindings=bindings)
+        except selected.Ffv1StagePlanAbsent:
+            pass
+        else:
+            require(False,"ffv1-plan-present-after-absent-freeze")
+    require(metadata_identity((root/FFV1_PREFLIGHT_FREEZE).lstat())==
+            tuple(status_observation["namespace_after"][key] for key in (
+                "device","inode","mode","uid","gid","size","mtime_ns","ctime_ns")),
+            "ffv1-frozen-status-changed")
+    return admitted,status["state"]=="PLAN_ABSENT"
+
+
+FFV1_PREFLIGHT_PUBLIC_KEYS = {
+    "schema","context","github_job","scope","status","selected_source_bindings_unchanged",
+    "full_checkout_input_postcheck_at_final_seal","captured_source_originals_complete",
+    "native_terminal","native_dispatch_valid","sealed_originals_sha256","sealed_originals_bytes",
+    "recipient_spki_sha256","native_originals_claimed","source_test_pass_claimed",
+    "admission_granted","native_operation_retried","physical_AV_master_acceptance",
+    "human_acceptance","release_authorized",
+}
+
+
+def _ffv1_source_tar_framing(raw):
+    """The existing flat preflight writer emits only complete regular headers."""
+    require(type(raw) is bytes and len(raw)%512==0,"ffv1-source-tar-framing")
+    offset,count=0,0
+    while offset+512<=len(raw):
+        header=raw[offset:offset+512]
+        if header==b"\0"*512:
+            require(len(raw)-offset>=1024 and not any(raw[offset:]),"ffv1-source-tar-footer")
+            return count
+        try:
+            info=tarfile.TarInfo.frombuf(header,"utf-8","strict")
+        except (tarfile.HeaderError,UnicodeError,ValueError) as error:
+            raise CustodyRejected("ffv1-source-tar-header") from error
+        require(info.type==tarfile.REGTYPE and not info.linkname
+                and 0<=info.size<=MAX_FILE,"ffv1-source-tar-physical-kind")
+        count+=1
+        require(count<=MAX_FILES+1,"ffv1-source-tar-count")
+        end=offset+512+info.size
+        following=offset+512+((info.size+511)//512)*512
+        require(following<=len(raw) and not any(raw[end:following]),"ffv1-source-tar-padding")
+        offset=following
+    require(False,"ffv1-source-tar-footer")
+
+
+def recover_ffv1_preflight_admission(envelope, private_key, public, *, current):
+    """Recover C from the independent existing source capsule, entirely in memory."""
+    require(type(public) is dict and set(public)==FFV1_PREFLIGHT_PUBLIC_KEYS
+            and public["schema"]=="motionwright.native.mlt-preflight-public/1"
+            and public["context"]==current and public["scope"]=="source-preflight-originals-only",
+            "ffv1-source-public-contract")
+    selected_core.project(current,selected.FOUR_CONTEXT,exact=True)
+    require(type(public["github_job"]) is str and 0<len(public["github_job"])<=128,
+            "ffv1-source-public-job")
+    require(type(public["status"]) is str and public["status"] in (
+            "SOURCE_ORIGINALS_SEALED","PARTIAL_SOURCE_ORIGINALS_SEALED"),
+            "ffv1-source-public-status")
+    require(type(public["captured_source_originals_complete"]) is bool
+            and public["captured_source_originals_complete"] is
+                (public["status"]=="SOURCE_ORIGINALS_SEALED"),
+            "ffv1-source-public-completeness")
+    require(public["selected_source_bindings_unchanged"] is True
+            and public["native_dispatch_valid"] is True
+            and type(public["native_terminal"]) is str
+            and public["native_terminal"] in ("NOT_STARTED","ERROR_OR_UNKNOWN"),
+            "ffv1-source-public-binding")
+    require(all(public[name] is False for name in (
+        "full_checkout_input_postcheck_at_final_seal","native_originals_claimed",
+        "source_test_pass_claimed","admission_granted","native_operation_retried",
+        "physical_AV_master_acceptance","human_acceptance","release_authorized")),
+        "ffv1-source-public-scope")
+    require(type(envelope) is bytes and type(public["sealed_originals_bytes"]) is int
+            and (sha(envelope),len(envelope))==(public["sealed_originals_sha256"],
+                                              public["sealed_originals_bytes"]),
+            "ffv1-source-ciphertext-identity")
+    # Existing authenticated encryption checks key, complete ciphertext, canonical
+    # header, context, plaintext size and hash. No replacement crypto or key lookup.
+    plaintext,authenticated=decrypt_snapshot(envelope,private_key)
+    require(authenticated==current,"ffv1-source-authenticated-context")
+    length=int.from_bytes(envelope[len(MAGIC):len(MAGIC)+4],"big")
+    header=strict(envelope[len(MAGIC)+4:len(MAGIC)+4+length])
+    require(header["recipient_spki_sha256"]==public["recipient_spki_sha256"],
+            "ffv1-source-recipient-identity")
+    wanted={FFV1_PREFLIGHT_ADMISSION:FFV1_PREFLIGHT_METADATA_MAX,
+            FFV1_PREFLIGHT_FREEZE:FFV1_PREFLIGHT_METADATA_MAX,
+            "records/source-before.json":MAX_JSON,"snapshot-manifest.json":MAX_JSON}
+    originals={}
+    physical_members=_ffv1_source_tar_framing(plaintext)
+    with tarfile.open(fileobj=io.BytesIO(plaintext),mode="r:") as archive:
+        infos=archive.getmembers()
+        require(not archive.pax_headers and len(infos)==physical_members
+                and 1<=len(infos)<=MAX_FILES+1,
+                "ffv1-source-snapshot-budget")
+        names=[info.name for info in infos]
+        require(len(names)==len(set(names)) and set(wanted)<=set(names),
+                "ffv1-source-originals-missing-or-duplicate")
+        for info in infos:
+            # These are the existing flat preflight roots, never native owner
+            # roots. No member is extracted or treated as a filesystem path.
+            parts=info.name.split("/")
+            require(type(info.name) is str and 0<len(info.name)<=4096
+                    and "\\" not in info.name and all(part not in ("",".","..") for part in parts)
+                    and all(32<=ord(char)<127 for char in info.name)
+                    and (info.name=="snapshot-manifest.json"
+                         or len(parts)==2 and parts[0] in ("records","common","film","workflow"))
+                    and info.type==tarfile.REGTYPE and not info.linkname and not info.sparse
+                    and not info.pax_headers and 0<=info.size<=MAX_FILE,
+                    "ffv1-source-snapshot-member")
+            if info.name in wanted:
+                maximum=wanted[info.name]
+                require(0<info.size<=maximum,"ffv1-source-original-size")
+                stream=archive.extractfile(info)
+                require(stream is not None,"ffv1-source-original-stream")
+                raw=stream.read(maximum+1)
+                require(len(raw)==info.size,"ffv1-source-original-truncated")
+                originals[info.name]=raw
+    snapshot=strict(originals["snapshot-manifest.json"])
+    require(set(snapshot)=={"schema","scope","roots","selected_originals_complete",
+                             "complete_owner_state_claimed"}
+            and snapshot["schema"]=="motionwright.ci.private-snapshot/1"
+            and snapshot["scope"]=="selected-original-files-at-read-time"
+            and snapshot["complete_owner_state_claimed"] is False
+            and type(snapshot["selected_originals_complete"]) is bool
+            and type(snapshot["roots"]) is dict
+            and set(snapshot["roots"])=={"records","common","film","workflow"},
+            "ffv1-source-snapshot-contract")
+    require(not public["captured_source_originals_complete"]
+            or snapshot["selected_originals_complete"] is True,
+            "ffv1-source-snapshot-public-completeness")
+    records=snapshot["roots"]["records"]
+    require(type(records) is dict and type(records.get("status")) is str
+            and records["status"] in ("CAPTURED","PARTIAL")
+            and type(records.get("files")) is list and len(records["files"])<=MAX_FILES,
+            "ffv1-source-records-originals")
+    observation_keys={"path","sha256","size","before","after","namespace_after"}
+    mark_keys={"device","inode","size","mode","uid","gid","mtime_ns","ctime_ns"}
+    for path,raw in originals.items():
+        if path=="snapshot-manifest.json":
+            continue
+        rows=[row for row in records["files"]
+              if type(row) is dict and row.get("archive_path")==path]
+        require(len(rows)==1 and set(rows[0])=={"archive_path","observation"},
+                "ffv1-source-original-observation")
+        observation=rows[0]["observation"]
+        require(type(observation) is dict and set(observation)==observation_keys
+                and type(observation["path"]) is str and 0<len(observation["path"])<=4096
+                and type(observation["size"]) is int
+                and (observation["sha256"],observation["size"])==(sha(raw),len(raw)),
+                "ffv1-source-original-byte-binding")
+        before=observation["before"]
+        require(type(before) is dict and set(before)==mark_keys
+                and all(type(value) is int for value in before.values())
+                and before["size"]==len(raw) and stat.S_ISREG(before["mode"])
+                and before==observation["after"]==observation["namespace_after"],
+                "ffv1-source-original-stability")
+    status=checked_ffv1_freeze(strict(originals[FFV1_PREFLIGHT_FREEZE]),current=current)
+    require(status["state"]=="FROZEN","ffv1-source-has-no-frozen-diagnostic-admission")
+    raw=originals[FFV1_PREFLIGHT_ADMISSION]
+    require((sha(raw),len(raw))==(status["admission_sha256"],status["admission_bytes"]),
+            "ffv1-source-frozen-admission-bytes")
+    before_raw=originals["records/source-before.json"]
+    require(sha(before_raw)==status["source_before_sha256"],"ffv1-source-before-original")
+    before=strict(before_raw)
+    physical=selected_core.project(before.get("physical"),
+        selected.policies("repaired-g2")["source_binding"],exact=True)
+    require(physical["context"]==current,"ffv1-source-before-context")
+    bindings=[dict(path=path,sha256=digest) for path,digest in sorted(physical["files"].items())]
+    checked_ffv1_freeze(status,current=current,expected_bindings=bindings)
+    admitted=selected.checked_ffv1_admission(selected_core.strict(raw),current=current,
+                                             source_bindings=bindings)
+    require(admitted["stage_plan"]["identity"]["input_sha256"]==status["input_sha256"],
+            "ffv1-source-input-identity")
+    return admitted
+
+
+def recover_ffv1_preflight_artifact(source_artifact_zip, private_key, *, current,
+                                      expected_source_artifact):
+    """Bind the existing source artifact to an independently admitted descriptor.
+
+    The descriptor is the existing download_artifact/ARTIFACT_KEYS contract.
+    This offline reader checks its exact ZIP hash and current run/source; it
+    never obtains an expected descriptor from an archive or public receipt.
+    """
+    selected_core.project(current,selected.FOUR_CONTEXT,exact=True)
+    expected=artifact_descriptor(strict(json_bytes(expected_source_artifact)))
+    require(expected["source_sha"]==current["source_sha"]
+            and str(expected["run_id"])==current["run_id"]
+            and str(expected["run_attempt"])==current["run_attempt"],
+            "ffv1-source-artifact-current-run")
+    require(type(source_artifact_zip) is bytes and 0<len(source_artifact_zip)<=MAX_FILE
+            and sha(source_artifact_zip)==expected["zip_sha256"],
+            "ffv1-source-artifact-original-zip")
+    # The existing workflow uploads exactly these two flat originals. No
+    # replacement ZIP/container is written by this reader.
+    with zipfile.ZipFile(io.BytesIO(source_artifact_zip)) as archive:
+        entries=archive.infolist()
+        require(len(entries)==2 and {entry.filename for entry in entries}==
+                {"sealed-source-originals.bin","source-public-evidence.json"},
+                "ffv1-source-artifact-member-roster")
+        for entry in entries:
+            require(not entry.is_dir() and not entry.flag_bits&1
+                    and stat.S_IFMT(entry.external_attr>>16) in (0,stat.S_IFREG)
+                    and 0<entry.file_size<=(MAX_JSON if entry.filename.endswith(".json") else MAX_FILE),
+                    "ffv1-source-artifact-member")
+        require(archive.testzip() is None,"ffv1-source-artifact-crc")
+        public_raw=archive.read("source-public-evidence.json")
+    public=strict(public_raw)
+    # Reuse the existing bounded original-member reader for the exact cipher.
+    envelope=zip_member(source_artifact_zip,"sealed-source-originals.bin",
+                        public.get("sealed_originals_sha256"),MAX_FILE)
+    admitted=recover_ffv1_preflight_admission(envelope,private_key,public,current=current)
+    return admitted,public,expected
+
+
+def verify_ffv1_sealed_custody(source_artifact_zip, native_envelope, private_key,
+                               native_public, *, current, expected_source_artifact,
+                               require_complete=True):
+    """Use the independently admitted source artifact and existing native capsule."""
+    require(type(require_complete) is bool,"ffv1-offline-completeness-mode")
+    require(type(native_public) is dict and native_public.get("context")==current,
+            "ffv1-offline-native-context")
+    admitted,source_public,source_artifact=recover_ffv1_preflight_artifact(
+        source_artifact_zip,private_key,current=current,
+        expected_source_artifact=expected_source_artifact)
+    require(source_public["recipient_spki_sha256"]==native_public.get("recipient_spki_sha256"),
+            "ffv1-offline-same-recipient")
+    result=selected.verify_sealed_selection(native_envelope,private_key,native_public,
+        expected_diagnostic_admission=admitted,require_complete=require_complete)
+    result.update(expected_contract_recovered_from_independent_source_custody=True,
+                  source_artifact_zip_matches_independently_admitted_descriptor=True,
+                  source_artifact=source_artifact)
+    return result
+
+
 def selected_projection(current, final, exit_code, job_status, encrypted, recipient, manifest, *,
                         producer_started=False, source_unchanged=False, intake_verified=False,
-                        scenario="repaired-g2"):
+                        scenario="repaired-g2", diagnostic_admission=None,
+                        ffv1_stage_plan_absent=False, diagnostic_intake_verified=None):
+    require(type(ffv1_stage_plan_absent) is bool,"ffv1-public-absence-flag")
+    require(diagnostic_intake_verified is None or type(diagnostic_intake_verified) is bool,
+            "ffv1-public-diagnostic-intake-flag")
+    diagnostic_verified=(intake_verified if diagnostic_intake_verified is None
+                         else diagnostic_intake_verified)
+    if ffv1_stage_plan_absent:
+        require(scenario=="repaired-g2" and diagnostic_admission is None
+                and not intake_verified and not diagnostic_verified,"ffv1-public-absence-mode")
+        selected.checked_ffv1_plan_absence(manifest,current=current)
     complete = manifest.get("required_layers_complete") is True
     value = projection(current, final, exit_code, job_status, encrypted, recipient,
         producer_started=producer_started, source_unchanged=source_unchanged,
@@ -617,7 +1034,39 @@ def selected_projection(current, final, exit_code, job_status, encrypted, recipi
         selected_manifest_sha256=sha(selected_core.canonical(manifest)),
         full_original_json_claimed=False, atomic_sqlite_snapshot_claimed=False,
         upload_authorization="NOT_GRANTED_BY_COLLECTOR")
-    selected.validate_public_v2(value)
+    if manifest["schema"]==selected_core.MANIFEST_SCHEMA_V3:
+        require(scenario=="repaired-g2" and diagnostic_admission is not None,
+                "ffv1-public-admission-required")
+        admitted=selected.checked_ffv1_admission(diagnostic_admission,current=current,
+                                                 source_bindings=manifest["source_bindings"])
+        require(manifest["diagnostic_contract"]==admitted["capture_diagnostic_contract"],
+                "ffv1-public-manifest-contract")
+        value.update(schema="motionwright.native.mlt-g2-public/3",
+            custody_scope="explicit-source-bound-selected-layers/3",
+            selected_evidence_schema=selected_core.MANIFEST_SCHEMA_V3,
+            selected_lost_scope=list(selected_core.LOST_SCOPE_V3),
+            diagnostic_status="FFV1_DIAGNOSTICS_ADMITTED",
+            diagnostic_admitted=True,diagnostic_plan_absence_verified=False,
+            diagnostic_contract_sha256=sha(selected_core.canonical(admitted["capture_diagnostic_contract"])),
+            diagnostic_admission_sha256=sha(selected_core.canonical(admitted)),
+            diagnostic_intake_verified=diagnostic_verified,
+            diagnostic_roster_complete=manifest["diagnostic_roster_complete"],
+            raw_diagnostics_included=manifest["raw_diagnostics_included"],
+            diagnostic_eof_claimed=False,diagnostic_history_complete_claimed=False,
+            diagnostic_payloads_redacted=False)
+    elif ffv1_stage_plan_absent:
+        value.update(schema="motionwright.native.mlt-g2-public/3",
+            selected_evidence_schema=selected_core.MANIFEST_SCHEMA,
+            selected_lost_scope=list(selected_core.LOST_SCOPE),
+            diagnostic_status="FFV1_DIAGNOSTIC_PLAN_ABSENT",
+            diagnostic_admitted=False,diagnostic_plan_absence_verified=True,
+            diagnostic_contract_sha256=None,diagnostic_admission_sha256=None,
+            diagnostic_intake_verified=False,diagnostic_roster_complete=False,
+            raw_diagnostics_included=False,diagnostic_eof_claimed=False,
+            diagnostic_history_complete_claimed=False,diagnostic_payloads_redacted=False)
+    else:
+        require(diagnostic_admission is None,"ffv1-public-downgrade")
+    selected.validate_public_evidence(value)
     return value
 
 def seal(env, job_status):
@@ -682,21 +1131,7 @@ def seal(env, job_status):
     owner_marker = session / "owner-workspace.json"
     try:
         if owner_marker.exists():
-            owner = strict(regular(owner_marker, MAX_JSON)[0])
-            path = Path(owner["path"])
-            info = path.lstat()
-            require(owner["schema"] == "motionwright.native.mlt-g2-owner-workspace/1"
-                    and owner["motionwright_sha"] == current["source_sha"]
-                    and owner["semwright_sha"] == current["semwright_sha"]
-                    and owner["run_id"] == current["run_id"] and owner["run_attempt"] == "1"
-                    and path.parent == runner_root(env)
-                    and path.name.startswith("motionwright-native-av-g2-")
-                    and path.resolve(strict=True) == path
-                    and stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
-                    and (info.st_dev, info.st_ino, info.st_uid, info.st_gid) ==
-                        (owner["device"], owner["inode"], owner["uid"], owner["gid"])
-                    and info.st_uid == os.getuid(), "owner_workspace_custody_identity")
-            roots["owner"] = path
+            roots["owner"]=checked_owner_workspace(env,current,session)
         elif started:
             custody_valid = False
             retain_error("owner-marker-absent", CustodyRejected("original_owner_tree_not_observed"))
@@ -707,18 +1142,38 @@ def seal(env, job_status):
     source_before = strict(regular(control / "records/source-before.json", MAX_JSON)[0])
     bindings = [{"path": path, "sha256": digest}
                 for path, digest in sorted(source_before["files"].items())]
+    diagnostic_admission=None
+    ffv1_stage_plan_absent=False
+    if scenario=="repaired-g2":
+        diagnostic_admission,ffv1_stage_plan_absent=consume_frozen_ffv1_expectation(
+            env,roots=roots,current=current,source_bindings=bindings)
     if scenario == FILM_SCOPE:
         from native_film180_evidence_selection import FilmSelection
         collector = FilmSelection(roots=roots, current=current, source_bindings=bindings)
     else:
         collector = selected.Selection(roots=roots, current=current, scenario=scenario,
-            source_bindings=bindings, role_contract=selected.mlt_contract(),
-            json_policies=selected.policies(scenario))
+            source_bindings=bindings,
+            role_contract=selected.mlt_contract(seed_diagnostics=diagnostic_admission is not None),
+            json_policies=selected.policies(scenario),diagnostic_admission=diagnostic_admission,
+            ffv1_stage_plan_absent=ffv1_stage_plan_absent)
     raw, manifest = collector.capture()
-    intake_verified = False
-    if manifest["required_layers_complete"] and custody_valid:
+    if ffv1_stage_plan_absent:
+        selected.checked_ffv1_plan_absence(manifest,current=current,source_bindings=bindings)
+    diagnostic_intake_verified=False
+    if diagnostic_admission is not None and custody_valid and source_unchanged:
         try:
-            selected.verify_decrypted_selection(raw, current=current, scenario=scenario)
+            selected.verify_decrypted_selection(raw,current=current,scenario=scenario,
+                expected_diagnostic_admission=diagnostic_admission,require_complete=False)
+            diagnostic_intake_verified=True
+        except Exception:
+            # The same captured bytes remain sealed; no second capture or retry.
+            diagnostic_intake_verified=False
+    intake_verified = False
+    if (manifest["required_layers_complete"] and custody_valid and not ffv1_stage_plan_absent
+            and (diagnostic_admission is None or diagnostic_intake_verified)):
+        try:
+            selected.verify_decrypted_selection(raw, current=current, scenario=scenario,
+                expected_diagnostic_admission=diagnostic_admission)
             intake_verified = True
         except Exception:
             # Already captured originals remain sealed. An independent closure
@@ -727,7 +1182,10 @@ def seal(env, job_status):
     encrypted = encrypt_snapshot(raw, dispatch["recipient"], current)
     public = selected_projection(current, final, exit_code, job_status, encrypted, dispatch["recipient"],
                         manifest, producer_started=started, source_unchanged=source_unchanged,
-                        intake_verified=intake_verified, scenario=scenario)
+                        intake_verified=intake_verified, scenario=scenario,
+                        diagnostic_admission=diagnostic_admission,
+                        ffv1_stage_plan_absent=ffv1_stage_plan_absent,
+                        diagnostic_intake_verified=diagnostic_intake_verified)
     output = control / "public"
     require(not any(output.iterdir()), "public_output_preexists")
     new_bytes(output / "sealed-originals.bin", encrypted)
