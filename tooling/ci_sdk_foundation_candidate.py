@@ -1305,6 +1305,307 @@ def run(mode, source_sha, admission_id, sdk, baseline_paths, run_root, lease=Non
     return 0 if report["status"].startswith("PASS_") else (124 if report["status"].startswith("UNKNOWN") else 1)
 
 
+CAPACITY_SCHEMA = "motionwright.sdk-foundation-hosted-capacity/1"
+CAPACITY_SECONDS = 120
+CAPACITY_QUERY_SECONDS = 45
+CAPACITY_WORKER_SECONDS = 60
+CAPACITY_MAX_ENTRIES = 50000
+CAPACITY_MAX_LOGICAL_BYTES = 256 * 1024**3
+CAPACITY_MAX_RECORD = 512 * 1024
+CAPACITY_ROLES = ("runner_temp", "targets", "cargo_home", "gate_source", "image_cargo_home", "image_rustup_home")
+CAPACITY_MEMORY_SCRIPT = (
+    "$ErrorActionPreference='Stop'; $m=Get-CimInstance Win32_OperatingSystem -ErrorAction Stop; "
+    "$a=@(Get-Process -ErrorAction Stop | Where-Object {$_.ProcessName -in @('cargo','rustc','rustdoc')} | "
+    "Select-Object Id,ProcessName); "
+    "@{physical=[UInt64]$m.FreePhysicalMemory*1024; virtual=[UInt64]$m.FreeVirtualMemory*1024; "
+    "physical_total=[UInt64]$m.TotalVisibleMemorySize*1024; virtual_total=[UInt64]$m.TotalVirtualMemorySize*1024; "
+    "compilers=$a} | ConvertTo-Json -Compress -Depth 4")
+
+
+def capacity_context(environment):
+    """Read-only hosted observation does not consult or grant SDK authority."""
+    require(sys.platform == "win32" and environment.get("GITHUB_ACTIONS") == "true"
+            and environment.get("RUNNER_OS") == "Windows" and environment.get("RUNNER_ARCH") == "X64"
+            and environment.get("RUNNER_ENVIRONMENT") == "github-hosted"
+            and environment.get("ImageOS") == HOSTED_IMAGE_OS
+            and environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and environment.get("SDK_FOUNDATION_SCOPE") == HOSTED_SCOPE
+            and environment.get("GITHUB_JOB") == HOSTED_SCOPE, "capacity observation needs the actual standard hosted job")
+    keys = ("GITHUB_SHA", "GITHUB_WORKFLOW_SHA", "GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF",
+            "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_EVENT_NAME")
+    github = {key: environment.get(key, "") for key in keys}
+    require(all(type(github[key]) is str and SHA.fullmatch(github[key]) for key in ("GITHUB_SHA", "GITHUB_WORKFLOW_SHA"))
+            and github["GITHUB_SHA"] == github["GITHUB_WORKFLOW_SHA"]
+            and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", github["GITHUB_REPOSITORY"])
+            and github["GITHUB_WORKFLOW_REF"].startswith(github["GITHUB_REPOSITORY"] + "/" + WORKFLOW + "@refs/heads/")
+            and all(re.fullmatch(r"[1-9][0-9]*", github[key]) for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")),
+            "capacity workflow provenance differs")
+    version = environment.get("ImageVersion", "")
+    require(type(version) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", version), "hosted image version absent")
+    return {"schema": CAPACITY_SCHEMA, "scope": "READ_ONLY_STANDARD_HOSTED_CAPACITY",
+            "github": github, "runner_label": HOSTED_RUNNER, "image_os": HOSTED_IMAGE_OS,
+            "image_version": version, "gate_source_sha": github["GITHUB_SHA"],
+            "sdk_execution_authorized": False, "sdk_execution": "NOT_RUN",
+            "continuous_resource_watchdog": False, "process_tree_closed": False}
+
+
+def capacity_paths(environment, gate):
+    workspace = Path(environment["GITHUB_WORKSPACE"]).resolve(strict=True)
+    require(gate == (workspace / "gate").resolve(strict=True), "capacity gate checkout differs")
+    runner_temp = Path(environment["RUNNER_TEMP"])
+    profile = Path(environment["USERPROFILE"])
+    require(runner_temp.is_absolute() and profile.is_absolute() and runner_temp.is_dir() and profile.is_dir(),
+            "hosted capacity roots are not existing absolute directories")
+    planned = workspace / "verification/sdk-foundation-execution"
+    values = {"runner_temp": runner_temp, "targets": planned / "targets", "cargo_home": planned / "cargo-home",
+              "gate_source": gate, "image_cargo_home": Path(environment.get("CARGO_HOME") or str(profile / ".cargo")),
+              "image_rustup_home": Path(environment.get("RUSTUP_HOME") or str(profile / ".rustup"))}
+    require(all(path.is_absolute() and ".." not in path.parts for path in values.values()), "capacity path is not absolute")
+    return values
+
+
+def capacity_anchor(path):
+    """An absent planned path gets its real ancestor volume, never a fake cache."""
+    path = Path(path)
+    require(path.is_absolute() and ".." not in path.parts, "capacity path is not absolute")
+    anchor = path
+    missing = False
+    while True:
+        try:
+            info = anchor.lstat()
+            break
+        except FileNotFoundError:
+            missing = True
+            require(anchor.parent != anchor, "capacity path has no existing ancestor")
+            anchor = anchor.parent
+    require(stat.S_ISDIR(info.st_mode), "capacity anchor is not a directory")
+    physical = anchor.resolve(strict=True)
+    return {"requested_path": str(path), "path_exists": not missing,
+            "physical_anchor": str(physical), "ancestor_only": missing,
+            "root_device": physical.stat().st_dev, "root_inode": physical.stat().st_ino}
+
+
+def capacity_volume(physical_anchor):
+    """Use the volume mount/GUID APIs and caller-available 64-bit bytes."""
+    require(sys.platform == "win32", "Windows volume APIs required")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    mount = ctypes.create_unicode_buffer(32768)
+    guid = ctypes.create_unicode_buffer(64)
+    get_mount = kernel.GetVolumePathNameW
+    get_mount.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    get_mount.restype = ctypes.c_int
+    get_guid = kernel.GetVolumeNameForVolumeMountPointW
+    get_guid.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    get_guid.restype = ctypes.c_int
+    get_space = kernel.GetDiskFreeSpaceExW
+    get_space.argtypes = [ctypes.c_wchar_p, *([ctypes.POINTER(ctypes.c_uint64)] * 3)]
+    get_space.restype = ctypes.c_int
+    for function, arguments, name in (
+            (get_mount, (physical_anchor, mount, len(mount)), "GetVolumePathNameW"),
+            (get_guid, (mount, guid, len(guid)), "GetVolumeNameForVolumeMountPointW")):
+        require(bool(function(*arguments)), name + " failed: " + str(ctypes.get_last_error()))
+    available, total, free = ctypes.c_uint64(), ctypes.c_uint64(), ctypes.c_uint64()
+    require(bool(get_space(physical_anchor, ctypes.byref(available), ctypes.byref(total), ctypes.byref(free))),
+            "GetDiskFreeSpaceExW failed: " + str(ctypes.get_last_error()))
+    require(re.fullmatch(r"\\\\\?\\Volume\{[0-9a-fA-F-]{36}\}\\", guid.value)
+            and mount.value.endswith("\\") and 0 <= available.value <= total.value
+            and available.value <= free.value, "volume observation shape differs")
+    return {"mount_path": mount.value, "volume_guid_path": guid.value.lower(),
+            "caller_available_bytes": available.value, "caller_total_bytes": total.value,
+            "volume_free_bytes": free.value, "api": "GetVolumePathNameW/GetVolumeNameForVolumeMountPointW/GetDiskFreeSpaceExW"}
+
+
+def capacity_footprint(path, deadline_ns):
+    """Bounded metadata inventory, not allocated bytes or immutable content."""
+    result = {"state": "INCOMPLETE", "entries": 0, "files": 0, "logical_bytes": 0,
+              "excluded_reparse_entries": 0, "metadata_sha256": None, "complete": False,
+              "allocated_bytes": None, "content_hashes_measured": False,
+              "atomic_namespace_snapshot": False, "inventory_paths_published": False}
+    digest = hashlib.sha256()
+    started = time.monotonic_ns()
+    limit = min(deadline_ns, started + 5_000_000_000)
+    try:
+        require(time.monotonic_ns() < limit, "footprint original time budget exhausted")
+        try:
+            root_info = path.lstat()
+        except FileNotFoundError:
+            result.update(state="ABSENT_NOT_A_MEASURED_CACHE", logical_bytes=None, files=None,
+                          metadata_sha256=None, complete=True)
+            return result
+        require(stat.S_ISDIR(root_info.st_mode) and not path.is_symlink()
+                and not getattr(root_info, "st_file_attributes", 0) & 0x400, "footprint root is linked or non-directory")
+        pending = [path]
+        while pending:
+            require(time.monotonic_ns() < limit, "footprint original time budget exhausted")
+            directory = pending.pop()
+            info = directory.lstat()
+            require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                    and not getattr(info, "st_file_attributes", 0) & 0x400, "footprint directory changed or linked")
+            with os.scandir(directory) as scan:
+                entries = []
+                for entry in scan:
+                    require(time.monotonic_ns() < limit and result["entries"] + len(entries) < CAPACITY_MAX_ENTRIES,
+                            "footprint namespace or original time budget exhausted")
+                    entries.append(entry.name)
+            for name in sorted(entries):
+                require(time.monotonic_ns() < limit and result["entries"] < CAPACITY_MAX_ENTRIES,
+                        "footprint namespace or original time budget exhausted")
+                item = directory / name
+                info = item.lstat()
+                result["entries"] += 1
+                reparse = bool(stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400)
+                row = [item.relative_to(path).as_posix(), info.st_dev, info.st_ino, info.st_mode,
+                       info.st_size, info.st_mtime_ns, info.st_ctime_ns, reparse]
+                digest.update(json.dumps(row, ensure_ascii=True, separators=(",", ":")).encode() + b"\n")
+                if reparse:
+                    result["excluded_reparse_entries"] += 1
+                elif stat.S_ISDIR(info.st_mode):
+                    pending.append(item)
+                else:
+                    require(stat.S_ISREG(info.st_mode), "nonregular footprint entry")
+                    result["files"] += 1
+                    result["logical_bytes"] += info.st_size
+                    require(result["logical_bytes"] <= CAPACITY_MAX_LOGICAL_BYTES, "footprint logical byte budget exhausted")
+        result.update(state="METADATA_INVENTORY_OBSERVED", complete=result["excluded_reparse_entries"] == 0)
+    except (OSError, custody.VerificationError) as error:
+        result["error"] = type(error).__name__ + ": " + str(error)
+    finally:
+        result["elapsed_ns"] = time.monotonic_ns() - started
+        if result["state"] != "ABSENT_NOT_A_MEASURED_CACHE":
+            result["metadata_sha256"] = digest.hexdigest()
+    return result
+
+
+def capacity_worker(environment, deadline_ns):
+    context = capacity_context(environment)
+    require(type(deadline_ns) is int and 0 < deadline_ns - time.monotonic_ns() <= CAPACITY_SECONDS * 1_000_000_000,
+            "capacity worker has no original bounded deadline")
+    gate = Path(__file__).resolve().parents[1]
+    paths = capacity_paths(environment, gate)
+    source = custody.source_snapshot(gate, context["gate_source_sha"], GATE_FILES)
+    require(all(source["files"][p]["sha256"] == digest for p, digest in GATE_PINS.items()), "capacity provider source differs")
+    observations = {}
+    for role in CAPACITY_ROLES:
+        require(time.monotonic_ns() < deadline_ns, "capacity original deadline exhausted")
+        path = paths[role]
+        anchor = capacity_anchor(path)
+        volume = capacity_volume(anchor["physical_anchor"])
+        footprint = capacity_footprint(path, deadline_ns)
+        require(capacity_anchor(path) == anchor, "capacity root changed during measurement")
+        after = capacity_volume(anchor["physical_anchor"])
+        require(after["volume_guid_path"] == volume["volume_guid_path"] and after["mount_path"] == volume["mount_path"],
+                "capacity volume identity changed during measurement")
+        observations[role] = {**anchor, "before": volume, "after": after, "footprint": footprint}
+    source_unchanged(gate, source)
+    require(time.monotonic_ns() < deadline_ns, "capacity original deadline exhausted")
+    return {"schema": CAPACITY_SCHEMA, "context": context, "source": source, "paths": observations,
+            "source_postcheck": "EXACT_GATE_SOURCE_UNCHANGED", "sdk_sources": "NOT_MATERIALIZED_BY_PROBE",
+            "limits": {"entries_per_root": CAPACITY_MAX_ENTRIES, "seconds_per_root": 5,
+                       "logical_bytes_per_root": CAPACITY_MAX_LOGICAL_BYTES, "record_bytes": CAPACITY_MAX_RECORD},
+            "growth_reserve": {"status": "UNADMITTED_NO_COMPARABLE_BUILD_BASIS", "bytes": None,
+                               "compiled_configurations": 13, "estimated_from_free_space": False},
+            "observation_finished_ns": time.monotonic_ns()}
+
+
+def admit_capacity(memory, value, context):
+    require(type(memory) is dict and set(memory) == {"physical", "virtual", "physical_total", "virtual_total", "compilers"}
+            and all(type(memory[n]) is int and 0 <= memory[n] <= 1024**5 for n in ("physical", "virtual", "physical_total", "virtual_total"))
+            and memory["physical"] <= memory["physical_total"] and memory["virtual"] <= memory["virtual_total"]
+            and type(memory["compilers"]) is list, "hosted memory observation is incomplete")
+    for process in memory["compilers"]:
+        require(type(process) is dict and set(process) == {"Id", "ProcessName"}
+                and type(process["Id"]) is int and process["Id"] > 0
+                and process["ProcessName"] in ("cargo", "rustc", "rustdoc"), "compiler observation shape differs")
+    require(type(value) is dict and value.get("schema") == CAPACITY_SCHEMA and value.get("context") == context
+            and value.get("source_postcheck") == "EXACT_GATE_SOURCE_UNCHANGED"
+            and value.get("source", {}).get("sha") == context["gate_source_sha"]
+            and type(value.get("paths")) is dict and set(value["paths"]) == set(CAPACITY_ROLES),
+            "capacity source, context or path roster differs")
+    floors = {}
+    for role, item in value["paths"].items():
+        require(type(item) is dict and type(item.get("path_exists")) is bool and type(item.get("ancestor_only")) is bool
+                and item["path_exists"] is not item["ancestor_only"], "capacity path state differs")
+        for key in ("before", "after"):
+            volume = item[key]
+            require(type(volume) is dict and re.fullmatch(r"\\\\\?\\volume\{[0-9a-f-]{36}\}\\", volume.get("volume_guid_path", ""))
+                    and all(type(volume.get(n)) is int and volume[n] >= 0 for n in ("caller_available_bytes", "caller_total_bytes", "volume_free_bytes"))
+                    and volume["caller_available_bytes"] <= volume["caller_total_bytes"]
+                    and volume["caller_available_bytes"] <= volume["volume_free_bytes"], "capacity volume record differs")
+        require(item["before"]["volume_guid_path"] == item["after"]["volume_guid_path"], "capacity volume changed")
+        floors[role] = min(item[k]["caller_available_bytes"] for k in ("before", "after")) >= 18 * 1024**3
+        require(type(item.get("footprint")) is dict and type(item["footprint"].get("complete")) is bool,
+                "capacity footprint completion absent")
+    complete = all(item["footprint"]["complete"] for item in value["paths"].values())
+    initial = memory["physical"] >= 4 * 1024**3 and memory["virtual"] >= 8 * 1024**3 and not memory["compilers"]
+    return {**value, "memory": {**memory, "provider": "Win32_OperatingSystem", "unit": "bytes",
+                "physical_counter": "FreePhysicalMemory*1024", "virtual_counter": "FreeVirtualMemory*1024",
+                "process_virtual_address_space_used_as_ram": False},
+            "status": "CAPACITY_OBSERVED_NOT_ADMISSION" if complete else "CAPACITY_PARTIALLY_OBSERVED_NOT_ADMISSION",
+            "initial_4_8_18_floor_satisfied": initial and all(floors[r] for r in ("runner_temp", "targets", "cargo_home")),
+            "volume_floor_satisfied_by_role": floors, "between_commands_contract_gib": {"physical": 4, "virtual": 0, "disk": 18},
+            "growth_reserve_admitted": False, "sdk_execution_authorized": False, "sdk_execution": "NOT_RUN",
+            "full_process_tree_custody": False, "continuous_monitoring": False}
+
+
+def observe_hosted_capacity(environment=None):
+    environment = dict(os.environ) if environment is None else dict(environment)
+    context = capacity_context(environment)
+    budget = Budget(CAPACITY_SECONDS)
+    gate = Path(__file__).resolve().parents[1]
+    paths = capacity_paths(environment, gate)
+    workspace = Path(environment["GITHUB_WORKSPACE"]).resolve(strict=True)
+    output = workspace / "verification/sdk-foundation-hosted-admission/capacity"
+    require(output.parent.is_dir() and output.parent.resolve(strict=True) == output.parent and not output.exists(),
+            "capacity custody root must be fresh and canonical")
+    output.mkdir(mode=0o700)
+    observations = []
+    report = {"schema": CAPACITY_SCHEMA, "context": context, "status": "FAIL_CAPACITY_OBSERVATION",
+              "sdk_execution": "NOT_RUN", "sdk_execution_authorized": False,
+              "growth_reserve_admitted": False, "original_deadline_monotonic_ns": budget.deadline,
+              "budget_boundary": "COMMAND_TIMEOUTS_AND_PHASE_CHECKS_NOT_FILESYSTEM_INTERRUPTION",
+              "commands": observations, "process_tree_closed": False}
+    custody.write_new(output / "started.json", report)
+    def call(argv, label, cap):
+        return budget.call(lambda a, c, e, o, l, t, f: observer.command(a, c, e, o, l, t, f, (output, observations)),
+                           argv, gate, environment, output, label, cap, context)
+    try:
+        shell = shutil.which("powershell", path=environment.get("PATH"))
+        require(shell, "hosted capacity requires the observed Windows PowerShell")
+        tool = Path(shell).resolve(strict=True)
+        identity = custody.fingerprint(tool, tool.parent)
+        row = call([str(tool), "-NoProfile", "-NonInteractive", "-Command", CAPACITY_MEMORY_SCRIPT],
+                   "memory-and-compilers", CAPACITY_QUERY_SECONDS)
+        require(type(row["exit_code"]) is int and row["exit_code"] == 0, "capacity memory query failed")
+        memory_raw = observer.original_stream(output, row, "stdout")
+        require(0 < len(memory_raw) <= CAPACITY_MAX_RECORD, "capacity memory record exceeded bound")
+        memory = custody.strict_json(memory_raw.strip())
+        require(custody.fingerprint(tool, tool.parent) == identity, "capacity PowerShell changed")
+        python = Path(sys.executable).resolve(strict=True)
+        python_identity = custody.fingerprint(python, python.parent)
+        row = call([str(python), "-I", "-B", "-X", "utf8", str(gate / HELPER), "--mode", HOSTED_MODE,
+                    "--capacity-worker", "--capacity-deadline-ns", str(budget.deadline)],
+                   "volumes-and-footprints", CAPACITY_WORKER_SECONDS)
+        require(type(row["exit_code"]) is int and row["exit_code"] == 0, "capacity volume/source query failed")
+        raw = observer.original_stream(output, row, "stdout")
+        require(0 < len(raw) <= CAPACITY_MAX_RECORD, "capacity source record exceeded bound")
+        value = custody.strict_json(raw.strip())
+        require(custody.fingerprint(python, python.parent) == python_identity, "capacity Python changed")
+        report.update(admit_capacity(memory, value, context), powershell={"path": str(tool), "fingerprint": identity},
+                      python={"path": str(python), "fingerprint": python_identity})
+        require({name: row["requested_path"] for name, row in value["paths"].items()} ==
+                {name: str(path) for name, path in paths.items()}, "capacity locations differ from this job")
+        producer.verify_commands(output, observations)
+        budget.remaining(1)
+    except (observer.UnknownExecution, custody.UnknownObservation) as error:
+        report.update(status="UNKNOWN_CAPACITY_NO_RETRY", error=str(error), uncertain_command=error.command)
+    except BaseException as error:
+        report.update(status="FAIL_CAPACITY_OBSERVATION", error=type(error).__name__ + ": " + str(error))
+    report["commands"] = observations
+    custody.write_new(output / "receipt.json", report)
+    print(json.dumps({"status": report["status"], "receipt": str(output / "receipt.json"), "sdk_execution": "NOT_RUN"}))
+    return 0 if report["status"] == "CAPACITY_OBSERVED_NOT_ADMISSION" else (124 if report["status"].startswith("UNKNOWN") else 1)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=MODES, default="windows-g1")
@@ -1316,7 +1617,25 @@ def main(argv=None):
     parser.add_argument("--lease")
     parser.add_argument("--admit-only", action="store_true")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--observe-hosted-capacity", action="store_true")
+    parser.add_argument("--capacity-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--capacity-deadline-ns", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.observe_hosted_capacity or args.capacity_worker:
+        require(args.mode == HOSTED_MODE and not args.execute and not args.admit_only
+                and not args.authority and not args.sdk and not args.baseline and not args.run_root and not args.lease
+                and args.source_sha == FIXED["sha"]
+                and not (args.observe_hosted_capacity and args.capacity_worker),
+                "capacity-only observation cannot carry SDK execution or authority arguments")
+        if args.capacity_worker:
+            value = capacity_worker(dict(os.environ), args.capacity_deadline_ns)
+            raw = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+            require(len(raw.encode()) <= CAPACITY_MAX_RECORD, "capacity worker record exceeded bound")
+            print(raw)
+            return 0
+        require(args.capacity_deadline_ns is None, "only the observed worker inherits the original deadline")
+        return observe_hosted_capacity()
+    require(args.capacity_deadline_ns is None, "capacity deadline without its observation mode")
     if not args.execute and not args.admit_only:
         print(json.dumps(validate_catalogue(), sort_keys=True))
         return 0

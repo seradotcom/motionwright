@@ -1066,5 +1066,262 @@ class SDKFoundationHostedWorkflowTests(unittest.TestCase):
 
 
 
+class SDKFoundationHostedCapacityTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="hosted-capacity-controls-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.repo = self.root / "gate"; self.repo.mkdir()
+        (self.repo / "tooling").mkdir()
+        self.temp = self.root / "temporary"; self.temp.mkdir()
+        self.profile = self.root / "profile"; self.profile.mkdir()
+        self.output_parent = self.root / "verification/sdk-foundation-hosted-admission"
+        self.output_parent.mkdir(parents=True)
+        self.env = {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows", "RUNNER_ARCH": "X64",
+                    "RUNNER_ENVIRONMENT": "github-hosted", "ImageOS": "win25", "ImageVersion": "20261001.1",
+                    "GITHUB_EVENT_NAME": "workflow_dispatch", "SDK_FOUNDATION_SCOPE": gate.HOSTED_SCOPE,
+                    "GITHUB_JOB": gate.HOSTED_SCOPE, "GITHUB_SHA": "c" * 40, "GITHUB_WORKFLOW_SHA": "c" * 40,
+                    "GITHUB_RUN_ID": "12345", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_REPOSITORY": "example/repo",
+                    "GITHUB_WORKFLOW_REF": "example/repo/" + gate.WORKFLOW + "@refs/heads/review",
+                    "GITHUB_WORKSPACE": str(self.root), "RUNNER_TEMP": str(self.temp), "USERPROFILE": str(self.profile)}
+        with patch.object(gate.sys, "platform", "win32"):
+            self.context = gate.capacity_context(self.env)
+
+    def memory(self):
+        return {"physical": 4 * 1024**3, "virtual": 8 * 1024**3,
+                "physical_total": 16 * 1024**3, "virtual_total": 32 * 1024**3, "compilers": []}
+
+    def volume(self):
+        return {"mount_path": "D:\\", "volume_guid_path": "\\\\?\\volume{11111111-1111-1111-1111-111111111111}\\",
+                "caller_available_bytes": 18 * 1024**3, "caller_total_bytes": 64 * 1024**3,
+                "volume_free_bytes": 20 * 1024**3,
+                "api": "GetVolumePathNameW/GetVolumeNameForVolumeMountPointW/GetDiskFreeSpaceExW"}
+
+    def value(self):
+        paths = gate.capacity_paths(self.env, self.repo)
+        return {"schema": gate.CAPACITY_SCHEMA, "context": self.context,
+                "source": {"sha": "c" * 40}, "source_postcheck": "EXACT_GATE_SOURCE_UNCHANGED",
+                "paths": {name: {"requested_path": str(path), "path_exists": True, "ancestor_only": False,
+                                  "before": self.volume(), "after": self.volume(),
+                                  "footprint": {"complete": True}} for name, path in paths.items()},
+                "growth_reserve": {"status": "UNADMITTED_NO_COMPARABLE_BUILD_BASIS", "bytes": None}}
+
+    def test_capacity_context_does_not_turn_an_empty_catalogue_into_sdk_authority(self):
+        with patch.object(gate.sys, "platform", "win32"), patch.object(gate, "REVIEWED_AUTHORITIES", {}):
+            observed = gate.capacity_context(self.env)
+            self.assertEqual(observed["github"]["GITHUB_SHA"], "c" * 40)
+            self.assertFalse(observed["sdk_execution_authorized"])
+            self.assertEqual(observed["sdk_execution"], "NOT_RUN")
+            for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_EVENT_NAME", "push"),
+                               ("RUNNER_ENVIRONMENT", "self-hosted"), ("ImageOS", "win22"),
+                               ("GITHUB_JOB", "foreign"), ("GITHUB_WORKFLOW_SHA", "d" * 40),
+                               ("GITHUB_RUN_ID", "0"), ("ImageVersion", "")):
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    gate.capacity_context({**self.env, key: value})
+            with self.assertRaisesRegex(ValueError, "BLOCKED_PRIVATE_TRANSPORT"):
+                gate.require_hosted_transport_composition(observed)
+
+    def test_capacity_cli_refuses_execution_inputs_before_any_observer(self):
+        for suffix in (("--execute",), ("--admit-only",), ("--authority", "reviewed"),
+                       ("--sdk", "some-source"), ("--baseline", "fixed=source"),
+                       ("--lease", "lease.json"), ("--run-root", "run"),
+                       ("--source-sha", "a" * 40), ("--capacity-worker",)):
+            with self.subTest(suffix=suffix), patch.object(gate, "observe_hosted_capacity") as called, \
+                 patch.object(gate, "run") as product:
+                with self.assertRaises(ValueError):
+                    gate.main(["--mode", gate.HOSTED_MODE, "--observe-hosted-capacity", *suffix])
+                called.assert_not_called(); product.assert_not_called()
+        with patch.object(gate, "observe_hosted_capacity", return_value=0) as called:
+            self.assertEqual(gate.main(["--mode", gate.HOSTED_MODE, "--observe-hosted-capacity"]), 0)
+            called.assert_called_once_with()
+
+    def test_capacity_paths_use_real_temp_and_absent_target_ancestor_without_mkdir(self):
+        paths = gate.capacity_paths(self.env, self.repo)
+        self.assertEqual(tuple(paths), gate.CAPACITY_ROLES)
+        self.assertEqual(paths["runner_temp"], self.temp)
+        self.assertEqual(paths["targets"], self.root / "verification/sdk-foundation-execution/targets")
+        before = set(self.root.rglob("*"))
+        actual = gate.capacity_anchor(paths["targets"])
+        self.assertFalse(actual["path_exists"])
+        self.assertTrue(actual["ancestor_only"])
+        self.assertEqual(actual["physical_anchor"], str(self.root / "verification"))
+        self.assertEqual(before, set(self.root.rglob("*")))
+        linked_target = self.root / "file"; linked_target.write_bytes(b"not a directory")
+        with self.assertRaisesRegex(ValueError, "not a directory"):
+            gate.capacity_anchor(linked_target)
+
+    def test_volume_api_preserves_real_guid_and_full_width_available_bytes(self):
+        calls = []
+        class Function:
+            def __init__(self, callback): self.callback = callback
+            def __call__(self, *args): return self.callback(*args)
+        def mount(path, output, length):
+            calls.append(("mount", path)); output.value = "D:\\mounted\\"; return 1
+        def guid(path, output, length):
+            calls.append(("guid", path.value)); output.value = self.volume()["volume_guid_path"].replace("volume{", "Volume{"); return 1
+        def space(path, available, total, free):
+            calls.append(("space", path))
+            for pointer, value in ((available, 19 * 1024**3), (total, 80 * 1024**3), (free, 21 * 1024**3)):
+                gate.ctypes.cast(pointer, gate.ctypes.POINTER(gate.ctypes.c_uint64)).contents.value = value
+            return 1
+        kernel = Mock(GetVolumePathNameW=Function(mount), GetVolumeNameForVolumeMountPointW=Function(guid),
+                      GetDiskFreeSpaceExW=Function(space))
+        with patch.object(gate.sys, "platform", "win32"), \
+             patch.object(gate.ctypes, "WinDLL", return_value=kernel, create=True), \
+             patch.object(gate.ctypes, "get_last_error", return_value=0, create=True):
+            observed = gate.capacity_volume("D:\\mounted\\actual")
+            self.assertEqual(observed["caller_available_bytes"], 19 * 1024**3)
+            self.assertEqual(observed["volume_guid_path"], self.volume()["volume_guid_path"])
+            self.assertEqual(calls, [("mount", "D:\\mounted\\actual"), ("guid", "D:\\mounted\\"),
+                                     ("space", "D:\\mounted\\actual")])
+            kernel.GetVolumePathNameW = Function(lambda *args: 0)
+            calls.clear()
+            with self.assertRaisesRegex(ValueError, "GetVolumePathNameW failed"):
+                gate.capacity_volume("D:\\mounted\\actual")
+            self.assertEqual(calls, [])
+
+    def test_insufficient_or_shared_volume_capacity_is_preserved_without_admission(self):
+        result = gate.admit_capacity(self.memory(), self.value(), self.context)
+        self.assertTrue(result["initial_4_8_18_floor_satisfied"])
+        self.assertFalse(result["growth_reserve_admitted"])
+        self.assertFalse(result["sdk_execution_authorized"])
+        self.assertEqual(result["growth_reserve"]["bytes"], None)
+        self.assertNotIn("aggregate_free_bytes", result)
+        for role in ("runner_temp", "targets", "cargo_home"):
+            changed = self.value(); changed["paths"][role]["after"]["caller_available_bytes"] -= 1
+            observed = gate.admit_capacity(self.memory(), changed, self.context)
+            self.assertFalse(observed["initial_4_8_18_floor_satisfied"])
+            self.assertEqual(observed["paths"][role]["after"]["caller_available_bytes"], 18 * 1024**3 - 1)
+        for key in ("physical", "virtual"):
+            memory = self.memory(); memory[key] -= 1
+            self.assertFalse(gate.admit_capacity(memory, self.value(), self.context)["initial_4_8_18_floor_satisfied"])
+        occupied = self.memory(); occupied["compilers"] = [{"Id": 99, "ProcessName": "rustc"}]
+        self.assertFalse(gate.admit_capacity(occupied, self.value(), self.context)["initial_4_8_18_floor_satisfied"])
+
+    def test_capacity_rejects_boolean_memory_foreign_source_volume_or_path_roster(self):
+        memory = self.memory(); memory["physical"] = True
+        with self.assertRaises(ValueError): gate.admit_capacity(memory, self.value(), self.context)
+        for mutation in (lambda value: value["source"].update(sha="f" * 40),
+                         lambda value: value["paths"].pop("targets"),
+                         lambda value: value["paths"]["targets"]["after"].update(volume_guid_path="D:"),
+                         lambda value: value["paths"]["targets"]["after"].update(caller_available_bytes=True)):
+            value = self.value(); mutation(value)
+            with self.assertRaises(ValueError): gate.admit_capacity(self.memory(), value, self.context)
+        value = self.value(); value["paths"]["targets"]["footprint"]["complete"] = False
+        self.assertEqual(gate.admit_capacity(self.memory(), value, self.context)["status"],
+                         "CAPACITY_PARTIALLY_OBSERVED_NOT_ADMISSION")
+
+    def test_footprint_real_metadata_and_absence_do_not_claim_allocated_or_cold_bytes(self):
+        first = self.temp / "one"; first.write_bytes(b"abc")
+        (self.temp / "sub").mkdir(); (self.temp / "sub/two").write_bytes(b"de")
+        result = gate.capacity_footprint(self.temp, gate.time.monotonic_ns() + 10_000_000_000)
+        self.assertTrue(result["complete"])
+        self.assertEqual((result["entries"], result["files"], result["logical_bytes"]), (3, 2, 5))
+        self.assertIsNone(result["allocated_bytes"])
+        self.assertFalse(result["content_hashes_measured"])
+        first.write_bytes(b"changed")
+        changed = gate.capacity_footprint(self.temp, gate.time.monotonic_ns() + 10_000_000_000)
+        self.assertNotEqual(result["metadata_sha256"], changed["metadata_sha256"])
+        absent = gate.capacity_footprint(self.temp / "absent", gate.time.monotonic_ns() + 10_000_000_000)
+        self.assertEqual(absent["state"], "ABSENT_NOT_A_MEASURED_CACHE")
+        self.assertIsNone(absent["logical_bytes"])
+        self.assertIsNone(absent["metadata_sha256"])
+
+    def test_footprint_limits_preserve_partial_metadata_without_retry(self):
+        for index in range(3): (self.temp / str(index)).write_bytes(b"xx")
+        with patch.object(gate, "CAPACITY_MAX_ENTRIES", 2):
+            result = gate.capacity_footprint(self.temp, gate.time.monotonic_ns() + 10_000_000_000)
+            self.assertFalse(result["complete"])
+            self.assertIn("namespace", result["error"])
+            self.assertEqual(len(result["metadata_sha256"]), 64)
+        with patch.object(gate.os, "scandir") as scan:
+            result = gate.capacity_footprint(self.temp, 1)
+            scan.assert_not_called()
+            self.assertFalse(result["complete"])
+            self.assertIn("time budget", result["error"])
+        with patch.object(gate, "CAPACITY_MAX_LOGICAL_BYTES", 1):
+            result = gate.capacity_footprint(self.temp, gate.time.monotonic_ns() + 10_000_000_000)
+            self.assertFalse(result["complete"])
+            self.assertIn("byte budget", result["error"])
+            self.assertEqual(result["logical_bytes"], 2)
+
+    def test_capacity_worker_binds_source_and_rejects_changed_volume_before_publication(self):
+        snapshot = {"sha": "c" * 40, "files": {path: {"sha256": digest} for path, digest in gate.GATE_PINS.items()}}
+        changed = self.volume(); changed["volume_guid_path"] = "\\\\?\\volume{22222222-2222-2222-2222-222222222222}\\"
+        with patch.object(gate, "__file__", str(self.repo / gate.HELPER)), \
+             patch.object(gate.sys, "platform", "win32"), \
+             patch.object(gate.custody, "source_snapshot", return_value=snapshot) as source, \
+             patch.object(gate, "source_unchanged") as post, \
+             patch.object(gate, "capacity_volume", side_effect=[self.volume(), changed]) as volume, \
+             patch.object(gate, "capacity_footprint", return_value={"complete": True}):
+            with self.assertRaisesRegex(ValueError, "volume identity changed"):
+                gate.capacity_worker(self.env, gate.time.monotonic_ns() + 30_000_000_000)
+            source.assert_called_once_with(self.repo, "c" * 40, gate.GATE_FILES)
+            self.assertEqual(volume.call_count, 2)
+            post.assert_not_called()
+        with patch.object(gate.sys, "platform", "win32"), patch.object(gate.custody, "source_snapshot") as source:
+            with self.assertRaises(ValueError): gate.capacity_worker(self.env, 1)
+            source.assert_not_called()
+
+    def test_capacity_unknown_retains_original_command_and_never_runs_second_query_or_sdk(self):
+        tool = self.root / "powershell.exe"; tool.write_bytes(b"fixture tool")
+        original = {"label": "memory-and-compilers", "observation": "UNKNOWN_TIMEOUT_NO_RETRY", "exit_code": None}
+        with patch.object(gate, "__file__", str(self.repo / gate.HELPER)), \
+             patch.object(gate.sys, "platform", "win32"), patch.object(gate.shutil, "which", return_value=str(tool)), \
+             patch.object(gate.observer, "command", side_effect=gate.observer.UnknownExecution("original", original)) as called, \
+             patch.object(gate, "execute_selection") as sdk, patch.object(gate, "authority") as admission, patch("builtins.print"):
+            self.assertEqual(gate.observe_hosted_capacity(self.env), 124)
+            self.assertEqual(called.call_count, 1)
+            sdk.assert_not_called(); admission.assert_not_called()
+        receipt = json.loads((self.output_parent / "capacity/receipt.json").read_text())
+        self.assertEqual(receipt["status"], "UNKNOWN_CAPACITY_NO_RETRY")
+        self.assertEqual(receipt["uncertain_command"], original)
+        self.assertFalse(receipt["process_tree_closed"])
+        self.assertFalse(receipt["sdk_execution_authorized"])
+
+    def test_capacity_success_keeps_original_deadline_and_observed_arguments(self):
+        tool = self.root / "powershell.exe"; tool.write_bytes(b"fixture tool")
+        value = self.value()
+        calls = []
+        def observed(argv, cwd, env, output, label, timeout, context, observations):
+            calls.append((argv, timeout, label, context))
+            return {"exit_code": 0, "label": label}
+        def stream(output, row, which):
+            return json.dumps(self.memory() if row["label"] == "memory-and-compilers" else value).encode()
+        with patch.object(gate, "__file__", str(self.repo / gate.HELPER)), \
+             patch.object(gate.sys, "platform", "win32"), patch.object(gate.shutil, "which", return_value=str(tool)), \
+             patch.object(gate.observer, "command", side_effect=observed), \
+             patch.object(gate.observer, "original_stream", side_effect=stream), \
+             patch.object(gate.producer, "verify_commands") as readback, patch.object(gate, "execute_selection") as sdk, patch("builtins.print"):
+            self.assertEqual(gate.observe_hosted_capacity(self.env), 0)
+            readback.assert_called_once(); sdk.assert_not_called()
+        receipt = json.loads((self.output_parent / "capacity/receipt.json").read_text())
+        self.assertEqual([call[2] for call in calls], ["memory-and-compilers", "volumes-and-footprints"])
+        self.assertEqual([call[1] for call in calls], [45, 60])
+        self.assertEqual(calls[1][0][-2:], ["--capacity-deadline-ns", str(receipt["original_deadline_monotonic_ns"])])
+        self.assertIn("Get-Process -ErrorAction Stop", calls[0][0][-1])
+        self.assertEqual(receipt["status"], "CAPACITY_OBSERVED_NOT_ADMISSION")
+        self.assertFalse(receipt["growth_reserve_admitted"])
+
+    def test_capacity_workflow_observes_before_closed_admission_and_retains_originals(self):
+        text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text()
+        job = workflow_jobs(text)[gate.HOSTED_SCOPE]
+        capacity = job.index("      - name: Observe standard hosted capacity without SDK execution\n")
+        admission = job.index("      - name: Admit exact hosted gate and reject uncomposed private transport\n")
+        self.assertLess(capacity, admission)
+        block = job[capacity:admission]
+        self.assertIn("timeout-minutes: 3", block)
+        self.assertIn("--mode windows-hosted-g1 --observe-hosted-capacity", block)
+        self.assertIn("$actualExit = $LASTEXITCODE", block)
+        self.assertIn("if ($actualExit -ne 0)", block)
+        self.assertNotIn("--authority", block)
+        self.assertNotIn("--execute", job)
+        self.assertIn("if: always()", job)
+        self.assertIn("path: verification/sdk-foundation-hosted-admission", job)
+        restored = text.replace(block, "", 1)
+        self.assertEqual(hashlib.sha256(restored.encode()).hexdigest(),
+                         "2acac408724007c100f99506d1e24a73cbab55cc84ef427957bbb8271c741086")
+
+
 if __name__ == "__main__":
     unittest.main()
