@@ -335,7 +335,7 @@ class CasPortabilityContractTests(unittest.TestCase):
     def test_every_workflow_entrypoint_requires_g0_and_retains_cas_originals(self):
         text = (ROOT / ".github/workflows/project-portability.yml").read_text(encoding="utf-8")
         self.assertIn("  g0-source-controls:\n    runs-on: ubuntu-24.04\n", text)
-        self.assertEqual(text.count("    needs: g0-source-controls\n"), 2)
+        self.assertEqual(text.count("    needs: g0-source-controls\n"), 3)
         for policy in ("source_policy", "acceptance_policy", "creative_status_policy", "public_surface_policy"):
             self.assertIn("python -B tooling/" + policy + ".py", text)
         self.assertIn("--mode both --require-complete", text)
@@ -1188,7 +1188,7 @@ class GcProxyCandidateContractTests(unittest.TestCase):
         from types import SimpleNamespace
         text = (ROOT / ".github/workflows/project-portability.yml").read_text(encoding="utf-8")
         self.assertEqual(re.findall(r"(?m)^  ([a-z][a-z0-9-]*):\n    (?:needs:|runs-on:)", text),
-                         ["g0-source-controls", "storage-contracts", "file-import-platforms"])
+                         ["g0-source-controls", "storage-contracts", "file-import-platforms", "bundle-recovery-five"])
         job = text.split("\n  file-import-platforms:\n", 1)[1]
         expression = re.search(r"(?m)^        os: \$\{\{ fromJSON\((.*)\) \}\}$", job).group(1)
         expression = expression.replace("&&", " and ").replace("||", " or ")
@@ -1266,6 +1266,713 @@ class GcProxyCandidateContractTests(unittest.TestCase):
         self.assertIn("observer.original_stream(logs, formatted, 'stderr')", executor)
         self.assertLess(executor.index("gc-proxy-inherited-formatter-override-before-version"),
                         executor.index("formatters[name]['absolute_path'], '--version'"))
+
+
+class FiveRecoverySelectionContracts(unittest.TestCase):
+    """Portable source controls only; never compile or execute the Rust product."""
+
+    @classmethod
+    def setUpClass(cls):
+        import types
+        path = ROOT / "tooling/ci_project_portability_recovery.py"
+        cls.five = types.ModuleType("project_recovery_five_source_controls")
+        cls.five.__file__ = str(path)
+        exec(compile(path.read_bytes(), str(path), "exec"), cls.five.__dict__)
+
+    def profile(self):
+        f = self.five
+        return {"tree": "b" * 40, "tree_listing_sha256": "d" * 64,
+                "pins": {p: "d" * 64 for p in f.REQUIRED_INPUTS},
+                "review": {"authority": "A1", "status": "ADMITTED_PRODUCT_F", "reference_sha256": "e" * 64}}
+
+    def environment(self):
+        f = self.five
+        return {"GITHUB_EVENT_NAME": "workflow_dispatch", "MW_PP5_SCOPE": f.SCOPE,
+                "MW_PP5_OS_SCOPE": "linux", "MW_PP5_PRODUCT_SOURCE": "a" * 40,
+                "MW_PP5_CANDIDATE_MANIFEST": "", "MW_PP5_CANDIDATE_DIGEST": "",
+                "GITHUB_REPOSITORY": "seradotcom/motionwright", "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_RUN_ID": "12345", "GITHUB_SHA": "c" * 40, "MW_PP5_WORKFLOW_SHA": "c" * 40,
+                "GITHUB_REF": "refs/heads/verify/project-portability-recovery-fixture",
+                "GITHUB_WORKFLOW_REF": "seradotcom/motionwright/" + f.WORKFLOW +
+                                       "@refs/heads/verify/project-portability-recovery-fixture",
+                "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64", "GITHUB_JOB": f.JOB}
+
+    def admission(self):
+        from unittest import mock
+        return mock.patch.object(self.five, "REVIEWED_PRODUCTS", {"a" * 40: self.profile()})
+
+    def test_source543_preparation_does_not_admit_execution_or_call_an_observer(self):
+        from unittest import mock
+        f = self.five
+        with mock.patch.object(f.observer, "command") as command, \
+                mock.patch.object(f.custody, "git") as git:
+            with self.assertRaisesRegex(ValueError, "not admitted"):
+                f.admit_request({**self.environment(), "MW_PP5_PRODUCT_SOURCE":
+                                 "543e0f21493f6cdbdc7d8d8ff895f03798eb73aa"})
+            command.assert_not_called(); git.assert_not_called()
+
+    def test_exact_admitted_product_is_separate_from_gate_and_linux_only(self):
+        with self.admission():
+            result = self.five.execution_context(self.environment(), "linux")
+        self.assertEqual(result["product_source_sha"], "a" * 40)
+        self.assertEqual(result["gate_source_sha"], "c" * 40)
+        self.assertEqual(result["os_scope"], "linux")
+        self.assertEqual(result["admission_product_execution"], "NOT_RUN")
+        self.assertNotIn("product_execution", result)
+
+    def test_manual_admission_rejects_mixed_legacy_inputs_default_both_and_replays(self):
+        mutations = {"GITHUB_EVENT_NAME": "push", "MW_PP5_SCOPE": "full", "MW_PP5_OS_SCOPE": "both",
+                     "MW_PP5_CANDIDATE_MANIFEST": "{}", "MW_PP5_CANDIDATE_DIGEST": "d" * 64,
+                     "GITHUB_RUN_ATTEMPT": "2", "GITHUB_REPOSITORY": "foreign/repo",
+                     "MW_PP5_WORKFLOW_SHA": "d" * 40, "GITHUB_RUN_ID": "0",
+                     "GITHUB_WORKFLOW_REF": "other", "GITHUB_REF": "refs/pull/1/merge",
+                     "MW_PP5_PRODUCT_SOURCE": "main"}
+        with self.admission():
+            for key, value in mutations.items():
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    self.five.admit_request({**self.environment(), key: value})
+
+    def test_runtime_rejects_foreign_job_platform_and_architecture(self):
+        with self.admission():
+            for key, value in (("GITHUB_JOB", "file-import-platforms"), ("RUNNER_OS", "Windows"),
+                               ("RUNNER_ARCH", "ARM64")):
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    self.five.execution_context({**self.environment(), key: value}, "linux")
+            with self.assertRaises(ValueError):
+                self.five.execution_context(self.environment(), "win32")
+
+    def test_self_declared_or_incomplete_product_profile_cannot_authorize_source(self):
+        import copy
+        from unittest import mock
+        f = self.five
+        for mutation in ("review", "tree", "listing", "pin", "extra"):
+            profile = copy.deepcopy(self.profile())
+            if mutation == "review": profile["review"]["authority"] = "dispatch-input"
+            elif mutation == "tree": profile["tree"] = True
+            elif mutation == "listing": profile["tree_listing_sha256"] = "0"
+            elif mutation == "pin": profile["pins"].pop("Cargo.lock")
+            else: profile["unreviewed"] = True
+            with self.subTest(mutation=mutation), mock.patch.object(f, "REVIEWED_PRODUCTS", {"a" * 40: profile}), \
+                    self.assertRaises(ValueError):
+                f.admit_request(self.environment())
+
+    def raw_tree(self, extras=()):
+        return b"".join(b"100644 blob " + b"1" * 40 + b"\t" + p.encode() + b"\0"
+                        for p in sorted((*self.five.REQUIRED_INPUTS, *extras)))
+
+    def test_source_closure_keeps_every_tracked_blob_including_non_rust_fixture(self):
+        import hashlib
+        raw = self.raw_tree(("fixtures/opaque.dat", "crates/native/src/other.rs", "docs/example.json"))
+        profile = {**self.profile(), "tree_listing_sha256": hashlib.sha256(raw).hexdigest()}
+        result = self.five.source_paths(raw, profile)
+        self.assertEqual(len(result), len(self.five.REQUIRED_INPUTS) + 3)
+        self.assertIn("fixtures/opaque.dat", result)
+        self.assertIn("crates/native/src/other.rs", result)
+
+    def test_source_closure_rejects_missing_changed_duplicate_linked_or_unsafe_inputs(self):
+        import hashlib
+        raw = self.raw_tree()
+        changes = (raw[:-1], raw.replace(b"Cargo.lock", b"Cargo.lost"), raw + raw.split(b"\0")[0] + b"\0",
+                   raw.replace(b"100644", b"120000", 1), self.raw_tree(("../foreign",)),
+                   self.raw_tree(("CRATES/STORAGE/SRC/LIB.RS",)))
+        for changed in changes:
+            with self.subTest(changed=changed[:60]), self.assertRaises(ValueError):
+                self.five.source_paths(changed, {**self.profile(), "tree_listing_sha256": hashlib.sha256(changed).hexdigest()})
+        with self.assertRaises(ValueError):
+            self.five.source_paths(raw, self.profile())
+
+    def test_producer_plan_contains_only_two_compile_once_targets(self):
+        plan = self.five.producer_plan("/owned/cargo")
+        self.assertEqual([p[0] for p in plan], ["storage", "service"])
+        self.assertEqual([p[1] for p in plan], [
+            ["/owned/cargo", "test", "--locked", "-p", "motionwright-storage", "--lib", "--no-run", "--message-format=json"],
+            ["/owned/cargo", "test", "--locked", "-p", "motionwright-service", "--test", "project_portability_authority", "--no-run", "--message-format=json"],
+        ])
+        self.assertEqual([len(p[2]) for p in plan], [1, 1])
+
+    def cargo_rows(self, label):
+        import json
+        import tempfile
+        f = self.five; spec = f.TARGETS[label]
+        repo = Path(tempfile.gettempdir()).absolute() / "source-only-repo"
+        target = Path(tempfile.gettempdir()).absolute() / "source-only-target"
+        rows = [{"reason": "compiler-artifact", "manifest_path": str(repo / ("crates/" + spec["crate"] + "/Cargo.toml")),
+                 "target": {"name": spec["name"], "kind": [spec["kind"]], "src_path": str(repo / spec["source"])},
+                 "profile": {"test": True}, "executable": str(target / spec["name"])},
+                {"reason": "build-finished", "success": True}]
+        return repo, target, rows, lambda values: b"\n".join(json.dumps(r).encode() for r in values)
+
+    def test_cargo_selection_binds_each_binary_to_its_own_manifest_and_target(self):
+        f = self.five
+        for label, spec in f.TARGETS.items():
+            repo, target, rows, encode = self.cargo_rows(label)
+            found = f.producer.select_binary_paths(encode(rows), 0, repo, target, (spec,), testing=True)
+            self.assertEqual(found, {spec["name"]: str(target / spec["name"])})
+            for changed in ([rows[-1]], [rows[0], *rows], [{**rows[0], "manifest_path": str(repo / "foreign/Cargo.toml")}, rows[-1]],
+                            [rows[0], {"reason": "build-finished", "success": False}]):
+                with self.subTest(label=label, changed=changed), self.assertRaises(ValueError):
+                    f.producer.select_binary_paths(encode(changed), 0, repo, target, (spec,), testing=True)
+
+    def roster(self, label, extra=True):
+        names = (*self.five.CASES[label], *(("unrelated_method",) if extra else ()))
+        raw = ("".join(n + ": test\n" for n in names) + f"\n{len(names)} tests, 0 benchmarks\n").encode()
+        return raw, names
+
+    def test_real_roster_selects_exact_methods_and_assigns_no_credit_to_enumeration(self):
+        for label in self.five.TARGETS:
+            raw, names = self.roster(label)
+            listed = self.five.compiled_roster(raw, 0, label)
+            self.assertEqual(listed["selected"], self.five.CASES[label])
+            self.assertEqual(listed["all"], names)
+            self.assertEqual(listed["not_selected"], ("unrelated_method",))
+            self.assertEqual(listed["not_selected_credit"], 0)
+
+    def test_roster_rejects_missing_duplicate_false_summary_or_unrecognized_text(self):
+        raw, names = self.roster("storage")
+        changes = (raw.replace((names[0] + ": test\n").encode(), b""),
+                   raw + (names[0] + ": test\n").encode(), raw.replace(b"5 tests", b"4 tests"),
+                   raw + b"setup skipped\n", raw.replace(b"0 benchmarks", b"1 benchmark"))
+        for changed in changes:
+            with self.subTest(changed=changed[:60]), self.assertRaises(ValueError):
+                self.five.compiled_roster(changed, 0, "storage")
+        with self.assertRaises(ValueError): self.five.compiled_roster(raw, False, "storage")
+
+    def binary(self, name="motionwright_storage"):
+        import tempfile
+        return {"absolute_path": str(Path(tempfile.gettempdir()).absolute() / "target" / name),
+                "path": name, "bytes": 10, "sha256": "f" * 64, "identity": [1, 2, 10, 4, 1]}
+
+    def result_fixture(self, name=None):
+        f = self.five; name = name or f.CASES["storage"][0]
+        label = "storage" if name in f.CASES["storage"] else "service"
+        raw, names = self.roster(label)
+        listed = f.compiled_roster(raw, 0, label); binary = self.binary(f.TARGETS[label]["name"])
+        context = {"product_source_sha": "a" * 40}
+        row = {"argv": f.case_argv(binary, name), "context": context, "exit_code": 0,
+               "observation": "DIRECT_PROCESS_EXIT_OBSERVED", "log_custody": "VERIFIED_SNAPSHOT",
+               "owned_group_after_wait": "ABSENT"}
+        log = (f"test {name} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; {len(names)-1} filtered out;\n").encode()
+        return name, log, row, binary, listed, context
+
+    def test_exact_case_requires_original_terminal_and_one_unignored_method(self):
+        name, log, row, binary, listed, context = self.result_fixture()
+        result = self.five.admit_case(name, log, row, binary, dict(binary), listed, context)
+        self.assertEqual(result["status"], "PASS")
+        self.assertFalse(result["child_invocations_are_additional_cases"])
+        self.assertIs(result["command"], row)
+
+    def test_case_rejects_filtered_ignored_duplicate_panic_and_false_exit(self):
+        name, log, row, binary, listed, context = self.result_fixture()
+        for bad in (log.replace(b" ... ok", b" ... ignored"), log + log,
+                    log.replace(b"1 passed", b"0 passed"), log.replace(b"4 filtered out", b"0 filtered out"),
+                    log + (f"thread '{name}' panicked at source.rs:1:1:\n").encode()):
+            with self.subTest(log=bad[:80]), self.assertRaises(ValueError):
+                self.five.admit_case(name, bad, row, binary, binary, listed, context)
+        for patch in ({"exit_code": False}, {"exit_code": 101}, {"owned_group_after_wait": "PRESENT"},
+                      {"context": {}}, {"argv": ["foreign"]}):
+            with self.subTest(patch=patch), self.assertRaises(ValueError):
+                self.five.admit_case(name, log, {**row, **patch}, binary, binary, listed, context)
+
+    def test_unknown_case_remains_original_unknown_and_is_not_a_failed_rerun(self):
+        name, log, row, binary, listed, context = self.result_fixture()
+        unknown = {**row, "observation": "UNKNOWN_TIMEOUT_NO_RETRY"}
+        with self.assertRaises(self.five.observer.UnknownExecution) as caught:
+            self.five.admit_case(name, log, unknown, binary, binary, listed, context)
+        self.assertIs(caught.exception.command, unknown)
+
+    def test_producer_barrier_forbids_observation_before_seal_and_recompile_after(self):
+        from unittest import mock
+        f = self.five; delegate = mock.Mock(return_value={})
+        barrier = f.producer.ProducerBarrier(delegate, "/cargo")
+        with self.assertRaises(ValueError): barrier(["/test", "--list"])
+        barrier(["/cargo", "test", "--no-run"])
+        barrier.begin_sealing()
+        with self.assertRaises(ValueError): barrier(["/cargo", "test", "--no-run"])
+        barrier.begin_observation(); barrier(["/test", "--exact", "case"])
+        with self.assertRaises(ValueError): barrier(["/cargo", "test", "--no-run"])
+        self.assertEqual(delegate.call_count, 2)
+
+    def observe_fixture(self, command):
+        from contextlib import ExitStack
+        from unittest import mock
+        f = self.five; stack = ExitStack(); self.addCleanup(stack.close)
+        binaries = {s["name"]: self.binary(s["name"]) for s in f.TARGETS.values()}
+        listed = {label: f.compiled_roster(self.roster(label)[0], 0, label) for label in f.TARGETS}
+        stack.enter_context(mock.patch.object(f.producer, "verify_binaries"))
+        stack.enter_context(mock.patch.object(f, "case_environment", side_effect=lambda env, *args: (env, None)))
+        stack.enter_context(mock.patch.object(f, "physical_originals", return_value={"scope": "source-control"}))
+        stack.enter_context(mock.patch.object(f.observer, "original_stream", side_effect=lambda folder, row, stream:
+                        self.result_fixture(row["argv"][2])[1] if stream == "stdout" else b""))
+        stack.enter_context(mock.patch.object(f.custody, "fingerprint", side_effect=lambda path, target:
+                        {k:v for k,v in self.binary(path.name).items() if k != "absolute_path"}))
+        report = {"cases": []}
+        return report, (report, binaries, listed, Path("repo"), Path("target"), {}, Path("evidence/commands"),
+                        {"product_source_sha": "a" * 40}, command)
+
+    def test_all_five_execute_once_only_after_both_rosters(self):
+        from unittest import mock
+        command = mock.Mock(side_effect=lambda argv, *args: self.result_fixture(argv[2])[2])
+        report, args = self.observe_fixture(command)
+        self.five.observe_five(*args)
+        self.assertEqual(command.call_count, 5)
+        self.assertEqual([x["name"] for x in report["cases"]],
+                         [n for rows in self.five.CASES.values() for n in rows])
+        self.assertEqual(self.five.final_counts(report["cases"])["passed"], 5)
+
+    def test_unknown_after_one_case_preserves_it_and_stops_without_replay(self):
+        from unittest import mock
+        f = self.five; unknown = {"observation": "UNKNOWN_TIMEOUT_NO_RETRY", "pid": 12345}
+        def execute(argv, *args):
+            if argv[2] == f.CASES["storage"][1]: raise f.observer.UnknownExecution("original unknown", unknown)
+            return self.result_fixture(argv[2])[2]
+        command = mock.Mock(side_effect=execute); report, args = self.observe_fixture(command)
+        with self.assertRaises(f.observer.UnknownExecution) as caught: f.observe_five(*args)
+        self.assertIs(caught.exception.command, unknown)
+        self.assertEqual(command.call_count, 2)
+        self.assertEqual([x["name"] for x in report["cases"]], [f.CASES["storage"][0]])
+
+    def test_passing_stdout_cannot_hide_a_panic_in_original_stderr(self):
+        from unittest import mock
+        f = self.five
+        command = mock.Mock(side_effect=lambda argv, *args: self.result_fixture(argv[2])[2])
+        report, args = self.observe_fixture(command)
+        def stream(folder, row, name):
+            return (self.result_fixture(row["argv"][2])[1] if name == "stdout"
+                    else b"thread 'unjoined-worker' panicked at source.rs:1:1:\n")
+        with mock.patch.object(f.observer, "original_stream", side_effect=stream), self.assertRaises(ValueError):
+            f.observe_five(*args)
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(report["cases"], [])
+
+    def test_missing_second_roster_prevents_any_case_and_aggregate_cannot_hide_omission(self):
+        from unittest import mock
+        command = mock.Mock(); report, args = self.observe_fixture(command)
+        args[2].pop("service")
+        with self.assertRaises(ValueError): self.five.observe_five(*args)
+        command.assert_not_called()
+        results = [{"name": n, "status": "PASS"} for rows in self.five.CASES.values() for n in rows]
+        for changed in (results[:-1], results[:-1] + results[:1], [{**results[0], "status": "SKIPPED"}, *results[1:]]):
+            with self.subTest(changed=changed), self.assertRaises(ValueError): self.five.final_counts(changed)
+
+    def test_only_supported_fixture_hooks_are_injected_and_bundle_tempdirs_are_not_claimed(self):
+        import tempfile
+        f = self.five
+        with tempfile.TemporaryDirectory(prefix="pp-five-hooks-") as d:
+            root = Path(d).absolute(); base = {"sentinel": "same"}
+            for index, name in enumerate(n for rows in f.CASES.values() for n in rows):
+                env, folder = f.case_environment(base, name, root, index)
+                self.assertEqual(base, {"sentinel": "same"})
+                if name in f.CASES["storage"][2:]:
+                    self.assertIsNone(folder)
+                    self.assertFalse(f.physical_originals(folder, name)["db_cas_child_logs_retained"])
+                else:
+                    self.assertTrue(folder.is_dir())
+                    self.assertTrue(folder.is_relative_to(root))
+                    self.assertEqual(len(env), 2)
+
+    def test_inherited_actor_and_loader_controls_cannot_skip_product_parent_or_change_code(self):
+        from unittest import mock
+        f = self.five
+        for key in ("MOTIONWRIGHT_TEST_APPLY_CHILD", "MOTIONWRIGHT_TEST_PORTABILITY_PHASE",
+                    "MOTIONWRIGHT_TEST_BUNDLE_CHILD_MODE", "LD_AUDIT", "LD_PRELOAD", "SEMWRIGHT_TOOL",
+                    "CC", "AR", "CFLAGS_x86_64_unknown_linux_gnu", "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "RUSTFMT", "CARGO"):
+            with self.subTest(key=key), mock.patch.object(f.custody, "execute") as execute, self.assertRaises(ValueError):
+                f.build_environment({key: "forged"}, Path("target"), Path("tmp"), Path("root"))
+            execute.assert_not_called()
+
+    def test_empty_supported_physical_custody_is_rejected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pp-five-empty-") as d:
+            for name in (*self.five.CASES["storage"][:2], *self.five.CASES["service"]):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    self.five.physical_originals(Path(d), name)
+
+    def write_fixture_json(self, path, value):
+        import json
+        path.write_bytes(json.dumps(value, sort_keys=True).encode())
+
+    def concurrent_originals_fixture(self, folder, index=0):
+        import hashlib
+        phase = "before_commit" if index == 0 else "after_commit"
+        owned = folder / ("concurrent-" + phase + "-11111111-2222-4333-8444-555555555555")
+        owned.mkdir(parents=True)
+        fixed = ("before", "interrupted", "cleaned", "after_retry", "final", "case", "contention",
+                 "writer-ready", "writer-release", "terminal-results")
+        for name in fixed:
+            self.write_fixture_json(owned / (name + ".json"), {"synthetic_source_control": name})
+        files = [{"file": p.name, "bytes": len(p.read_bytes()), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+                 for p in sorted(owned.iterdir())]
+        manifest = {"schema": "motionwright.apply-phase-custody/1",
+                    "test_name": self.five.CASES["storage"][index].split("::")[-1], "checkpoint": phase,
+                    "status": "complete", "parent_unwinding": False, "errors": [], "case_identity": "case.json",
+                    "phases": [{"phase": p, "status": "captured", "reason": None}
+                               for p in ("before", "interrupted", "cleaned", "after_retry", "final")], "files": files}
+        self.write_fixture_json(owned / "custody.json", manifest)
+        return owned, manifest
+
+    def test_concurrent_original_readback_requires_real_files_and_their_exact_hashes(self):
+        import tempfile
+        f = self.five
+        with tempfile.TemporaryDirectory(prefix="pp-five-concurrent-") as d:
+            for index in (0, 1):
+                folder = Path(d) / str(index); self.concurrent_originals_fixture(folder, index)
+                actual = f.physical_originals(folder, f.CASES["storage"][index])
+                self.assertEqual(actual["status"], "VERIFIED_EXISTING_FIXTURE_ORIGINALS")
+                self.assertEqual(len(actual["files"]), 11)
+                self.assertIs(actual["independent_oracle_reexecution"], False)
+
+    def test_concurrent_phase_claim_cannot_replace_omitted_or_changed_originals(self):
+        import tempfile
+        f = self.five
+        with tempfile.TemporaryDirectory(prefix="pp-five-concurrent-negative-") as d:
+            for mutation in ("missing", "changed", "wrong_phase", "unwinding", "false_size", "missing_case_identity"):
+                folder = Path(d) / mutation; owned, manifest = self.concurrent_originals_fixture(folder)
+                if mutation == "missing":
+                    (owned / "before.json").unlink()
+                    manifest["files"] = [r for r in manifest["files"] if r["file"] != "before.json"]
+                elif mutation == "changed": (owned / "before.json").write_bytes(b"changed original")
+                elif mutation == "wrong_phase": manifest["checkpoint"] = "after_commit"
+                elif mutation == "unwinding": manifest["parent_unwinding"] = True
+                elif mutation == "false_size": manifest["files"][0]["bytes"] = True
+                else: manifest.pop("case_identity")
+                self.write_fixture_json(owned / "custody.json", manifest)
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    f.physical_originals(folder, f.CASES["storage"][0])
+
+    def service_originals_fixture(self, folder):
+        import hashlib
+        nonce = "11111111-2222-4333-8444-555555555555"
+        owned = folder / ("acc003-" + nonce); (owned / "portable").mkdir(parents=True)
+        manifest = b'{"synthetic_source_control":true}\n'
+        (owned / "portable/manifest.json").write_bytes(manifest)
+        checkpoint = {"schema": "motionwright.test.portability-checkpoint/1", "nonce": nonce,
+                      "fixture": {"bundle": str(owned / "portable"), "manifest_bytes": list(manifest)}}
+        self.write_fixture_json(owned / "checkpoint.json", checkpoint)
+        name = self.five.CASES["service"][0]
+        for phase in ("prepare", "continue"):
+            complete = {"schema": "motionwright.test.portability-phase/1", "selector": name,
+                        "nonce": nonce, "phase": phase,
+                        "checkpoint_sha256": hashlib.sha256((owned / "checkpoint.json").read_bytes()).hexdigest(),
+                        "manifest_sha256": hashlib.sha256(manifest).hexdigest()}
+            self.write_fixture_json(owned / (phase + ".completed.json"), complete)
+            (owned / (phase + ".stdout.log")).write_bytes(b"synthetic child stdout\n")
+            (owned / (phase + ".stderr.log")).write_bytes(b"")
+            status = {"schema": "motionwright.test.portability-child-status/2", "selector": name,
+                      "nonce": nonce, "phase": phase, "root": str(owned), "process_state": "EXITED",
+                      "exit_code": 0, "success": True, "timed_out": False, "cleanup_timed_out": False,
+                      "completion_receipt_verified": True, "errors": [],
+                      "stdout_path": str(owned / (phase + ".stdout.log")),
+                      "stderr_path": str(owned / (phase + ".stderr.log")),
+                      "status_path": str(owned / (phase + ".status.json")),
+                      "completion_receipt_path": str(owned / (phase + ".completed.json"))}
+            self.write_fixture_json(owned / (phase + ".status.json"), status)
+        return owned, checkpoint
+
+    def test_service_originals_bind_manifest_nonce_and_two_real_phase_log_rosters(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pp-five-service-") as d:
+            folder = Path(d); self.service_originals_fixture(folder)
+            actual = self.five.physical_originals(folder, self.five.CASES["service"][0])
+            self.assertEqual(actual["status"], "VERIFIED_EXISTING_FIXTURE_ORIGINALS")
+            self.assertEqual(len(actual["files"]), 10)
+            self.assertIs(actual["independent_oracle_reexecution"], False)
+
+    def test_service_self_consistent_claims_cannot_replace_bytes_logs_or_terminal_receipts(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pp-five-service-negative-") as d:
+            for mutation in ("unknown", "manifest_changed", "invented_matching_digest", "manifest_boolean",
+                             "wrong_nonce", "missing_log", "foreign_path", "foreign_bundle"):
+                folder = Path(d) / mutation; owned, checkpoint = self.service_originals_fixture(folder)
+                status_path = owned / "prepare.status.json"; status = json.loads(status_path.read_bytes())
+                if mutation == "unknown": status["process_state"] = "UNKNOWN"
+                elif mutation == "manifest_changed": (owned / "portable/manifest.json").write_bytes(b"changed")
+                elif mutation == "invented_matching_digest":
+                    for phase in ("prepare", "continue"):
+                        path = owned / (phase + ".completed.json"); complete = json.loads(path.read_bytes())
+                        complete["manifest_sha256"] = "f" * 64; self.write_fixture_json(path, complete)
+                elif mutation == "manifest_boolean":
+                    checkpoint["fixture"]["manifest_bytes"][0] = True
+                    self.write_fixture_json(owned / "checkpoint.json", checkpoint)
+                elif mutation == "wrong_nonce": status["nonce"] = "66666666-2222-4333-8444-555555555555"
+                elif mutation == "missing_log": (owned / "continue.stderr.log").unlink()
+                elif mutation == "foreign_path": status["stdout_path"] = str(owned.parent / "foreign.log")
+                else:
+                    checkpoint["fixture"]["bundle"] = str(owned.parent / "foreign")
+                    self.write_fixture_json(owned / "checkpoint.json", checkpoint)
+                self.write_fixture_json(status_path, status)
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    self.five.physical_originals(folder, self.five.CASES["service"][0])
+
+    def test_unknown_postcheck_never_queries_sources_or_promotes_result(self):
+        from unittest import mock
+        f = self.five; report = {"status": "UNKNOWN_NO_RETRY", "gate_before": {}}
+        with mock.patch.object(f.custody, "source_snapshot") as source:
+            f.source_postcheck(report, Path("gate"), Path("repo"), {}, ())
+        source.assert_not_called(); self.assertEqual(report["status"], "UNKNOWN_NO_RETRY")
+
+    def test_resource_budget_rejects_insufficient_memory_or_disk(self):
+        good = self.five.check_budget(b"MemAvailable: 6291456 kB\n", 20 * 1024**3)
+        self.assertEqual(good["cargo_jobs"], 2)
+        for memory, disk in ((b"MemAvailable: 1 kB\n", 20 * 1024**3), (b"MemAvailable: 6291456 kB\n", 1)):
+            with self.subTest(memory=memory), self.assertRaises(ValueError): self.five.check_budget(memory, disk)
+
+    def test_linux_prerequisites_require_closed_installed_c_packages_before_any_cargo_build(self):
+        raw = b"gcc\tinstall ok installed\t4:13.2.0-7\nlibc6-dev\tinstall ok installed\t2.39-1\nbinutils\tinstall ok installed\t2.42-1\n"
+        self.assertEqual(set(self.five.installed_c_packages(raw, 0)), {"gcc", "libc6-dev", "binutils"})
+        for changed, code in ((raw.split(b"\n", 1)[1], 0), (raw + raw, 0),
+                              (raw.replace(b"install ok installed", b"deinstall ok config-files", 1), 0),
+                              (raw, 1), (raw, False), (raw + b"pipewire\tinstall ok installed\t1\n", 0)):
+            with self.subTest(code=code, raw=changed[:80]), self.assertRaises(ValueError):
+                self.five.installed_c_packages(changed, code)
+        source = (ROOT / "tooling/ci_project_portability_recovery.py").read_text(encoding="utf-8")
+        run = source.split("def run(gate, repo, output):\n", 1)[1]
+        self.assertLess(run.index("linux_build_preflight("), run.index("producer_plan("))
+        self.assertNotIn("apt-get", source)
+
+    def test_linux_prerequisite_unknown_stops_observation_and_does_not_install_overrides(self):
+        from unittest import mock
+        f = self.five; env = {}; unknown = {"observation": "UNKNOWN_TIMEOUT_NO_RETRY", "label": "linux-c-package-versions"}
+        command = mock.Mock(side_effect=f.observer.UnknownExecution("original package query unknown", unknown))
+        with mock.patch.object(f.Path, "resolve", autospec=True, side_effect=lambda p, **kw: p), \
+                mock.patch.object(f.custody, "fingerprint", return_value={"path": "fixture", "bytes": 1,
+                                       "sha256": "f" * 64, "identity": [1, 2, 1, 4, 1]}), \
+                self.assertRaises(f.observer.UnknownExecution) as caught:
+            f.linux_build_preflight(Path("repo"), env, Path("logs"), {}, command)
+        self.assertIs(caught.exception.command, unknown)
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(env, {})
+
+    def product_g0_fixture(self, folder):
+        import hashlib
+        import json
+        f = self.five; folder.mkdir(parents=True, exist_ok=True)
+        path = folder / "receipt.json"
+        with self.admission(): context = f.execution_context(self.environment(), "linux")
+        context.update(verification_phase="PRODUCT_G0", executed_source_sha=context["product_source_sha"])
+        python = {"absolute_path": str(folder / "observed-python"), "sha256": "e" * 64}
+        source = {"checkout": str(folder / "product"), "tree": "b" * 40,
+                  "files": {p: {"sha256": "d" * 64} for p in f.REQUIRED_INPUTS}}
+        steps = []
+        for index, (label, argv, module) in enumerate(f.g0_entrypoints(python["absolute_path"])):
+            prefix = "tooling.tests." if label.startswith("dotted:") else ""
+            stderr = (f"test_first ({prefix}{module}.Synthetic.test_first) ... ok\n"
+                      f"test_second ({prefix}{module}.Synthetic.test_second) ... ok\n"
+                      "\nRan 2 tests in 0.001s\n\nOK\n").encode()
+            step = {"entry_point": label, "command": argv, "status": "PASS", "exit_code": 0,
+                    "duration_seconds": 0.001, "counts": {"terminal_status": "OK", "tests_run": 2,
+                    "passed": 2, "failures": 0, "errors": 0, "skipped": 0,
+                    "expected_failures": 0, "unexpected_successes": 0}}
+            for channel, raw in (("stdout", b"synthetic source-control output\n"), ("stderr", stderr)):
+                log = path.with_name(f"receipt-{index:02d}-{channel}.log"); log.write_bytes(raw)
+                step[channel] = {"file": log.name, "sha256": hashlib.sha256(raw).hexdigest()}
+            steps.append(step)
+        value = {"schema": "motionwright.unittest-execution/1", "status": "PASS", "exit_code": 0,
+                 "executed_source_sha": context["product_source_sha"], "tree_sha": source["tree"],
+                 "runner_sha256": source["files"]["tooling/ci_test_runner.py"]["sha256"],
+                 "python_executable_sha256": python["sha256"], "require_complete": True,
+                 "test_definition_sha256": {"tooling/tests/" + p: "d" * 64 for p in f.G0_PATTERNS},
+                 "source_locks": {"Cargo.lock": "d" * 64, "SOURCE_LOCK.json": "d" * 64},
+                 "github": {"GITHUB_SHA": context["gate_source_sha"], "GITHUB_WORKFLOW_REF": context["workflow_ref"],
+                            "GITHUB_RUN_ID": context["run_id"], "GITHUB_RUN_ATTEMPT": context["run_attempt"],
+                            "GITHUB_JOB": context["job_id"]}, "steps": steps}
+        self.write_fixture_json(path, value)
+        row = {"exit_code": 0, "context": context, "owned_group_after_wait": "ABSENT",
+               "observation": "DIRECT_PROCESS_EXIT_OBSERVED", "log_custody": "VERIFIED_SNAPSHOT",
+               "argv": f.product_g0_plan(python["absolute_path"], Path(source["checkout"]), context, path)[-1][1]}
+        raw = b"\n".join(json.dumps(s).encode() for s in steps)
+        return value, (path, folder, source, context, python, row, raw)
+
+    def test_product_g0_receipt_uses_its_own_f_roster_and_keeps_github_gate_source(self):
+        import tempfile
+        f = self.five
+        with tempfile.TemporaryDirectory(prefix="pp-five-product-g0-") as d:
+            value, args = self.product_g0_fixture(Path(d))
+            actual = f.product_g0_receipt(*args)
+            self.assertEqual(actual["status"], "PASS_CONTRACTS_ONLY")
+            self.assertEqual(actual["executed_source_sha"], "a" * 40)
+            self.assertEqual(actual["github_source_sha"], "c" * 40)
+            self.assertEqual(actual["unique_methods"], 8)
+            self.assertEqual(actual["method_observations"], 16)
+            self.assertEqual(actual["format"], "NOT_RUN")
+            self.assertEqual(len(actual["entry_points"]), 8)
+
+    def test_product_g0_rejects_foreign_source_gate_relabelling_omission_and_mistyped_counts(self):
+        import json
+        import tempfile
+        f = self.five
+        with tempfile.TemporaryDirectory(prefix="pp-five-product-g0-bindings-") as d:
+            for mutation in ("source", "tree", "runner", "definition", "lock", "github", "step_missing", "step_duplicate",
+                             "not_run", "omission", "boolean", "postcheck", "wrong_parent", "changed_stdout"):
+                value, args = self.product_g0_fixture(Path(d) / mutation); args = list(args)
+                if mutation == "source": value["executed_source_sha"] = "c" * 40
+                elif mutation == "tree": value["tree_sha"] = "f" * 40
+                elif mutation == "runner": value["runner_sha256"] = "f" * 64
+                elif mutation == "definition": value["test_definition_sha256"].pop("tooling/tests/" + f.G0_PATTERNS[0])
+                elif mutation == "lock": value["source_locks"]["Cargo.lock"] = "f" * 64
+                elif mutation == "github": value["github"]["GITHUB_SHA"] = "a" * 40
+                elif mutation == "step_missing": value["steps"].pop()
+                elif mutation == "step_duplicate": value["steps"][-1] = value["steps"][0]
+                elif mutation == "not_run": value["steps"][0]["status"] = "NOT_RUN"
+                elif mutation == "omission": value["require_complete"] = False
+                elif mutation == "boolean": value["steps"][0]["counts"]["errors"] = False
+                elif mutation == "postcheck": value["source_postcheck_error"] = "changed"
+                elif mutation == "wrong_parent": args[5] = {**args[5], "argv": ["foreign-command"]}
+                self.write_fixture_json(args[0], value)
+                args[-1] = b"\n".join(json.dumps(s).encode() for s in value["steps"])
+                if mutation == "changed_stdout": args[-1] = b"{}\n"
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError): f.product_g0_receipt(*args)
+
+    def test_product_g0_originals_and_actual_ids_cannot_be_replaced_by_matching_footer(self):
+        import hashlib
+        import json
+        import tempfile
+        f = self.five
+        with tempfile.TemporaryDirectory(prefix="pp-five-product-g0-logs-") as d:
+            for mutation in ("bytes", "duplicate_ids", "dotted_differs", "omitted_footer", "foreign_path"):
+                value, args = self.product_g0_fixture(Path(d) / mutation); args = list(args)
+                index = 4 if mutation == "dotted_differs" else 0
+                step = value["steps"][index]; log = args[0].with_name(step["stderr"]["file"])
+                if mutation == "foreign_path": step["stderr"]["file"] = "../foreign.log"
+                elif mutation == "bytes": log.write_bytes(log.read_bytes() + b"changed after receipt\n")
+                else:
+                    raw = log.read_bytes()
+                    if mutation == "duplicate_ids": raw = raw.replace(b"test_second", b"test_first")
+                    elif mutation == "dotted_differs": raw = raw.replace(b"test_second", b"test_other")
+                    else: raw = raw.replace(b"OK\n", b"OK (skipped=1)\n")
+                    log.write_bytes(raw); step["stderr"]["sha256"] = hashlib.sha256(raw).hexdigest()
+                self.write_fixture_json(args[0], value)
+                args[-1] = b"\n".join(json.dumps(s).encode() for s in value["steps"])
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError): f.product_g0_receipt(*args)
+
+    def test_product_g0_unknown_keeps_original_receipt_and_forbids_success(self):
+        import json
+        import tempfile
+        f = self.five
+        with tempfile.TemporaryDirectory(prefix="pp-five-product-g0-unknown-") as d:
+            value, args = self.product_g0_fixture(Path(d)); args = list(args)
+            value["status"] = "UNKNOWN"; value["steps"][0]["status"] = "UNKNOWN"
+            self.write_fixture_json(args[0], value)
+            args[-1] = b"\n".join(json.dumps(s).encode() for s in value["steps"])
+            with self.assertRaises(f.observer.UnknownExecution) as caught: f.product_g0_receipt(*args)
+            self.assertEqual(caught.exception.command["original_command"], args[5])
+            self.assertEqual(caught.exception.command["g0_receipt"]["path"], "receipt.json")
+
+    def test_product_g0_policy_failure_stops_before_contracts_or_rust_and_preserves_env(self):
+        import tempfile
+        from unittest import mock
+        f = self.five
+        with tempfile.TemporaryDirectory(prefix="pp-five-product-g0-order-") as d:
+            root = Path(d); env = {"GITHUB_SHA": "c" * 40}; report = {}
+            with self.admission(): context = f.execution_context(self.environment(), "linux")
+            def execute(argv, cwd, environment, logs, label, timeout, ctx):
+                return {"argv": argv, "context": ctx, "exit_code": 2, "owned_group_after_wait": "ABSENT"}
+            command = mock.Mock(side_effect=execute)
+            with mock.patch.object(f.observer, "original_stream", return_value=b"policy refused\n"), self.assertRaises(ValueError):
+                f.observe_product_g0(report, root / "product", root, {}, env, root, context,
+                                     {"absolute_path": "/observed/python"}, command)
+            self.assertEqual(command.call_count, 1)
+            self.assertEqual(env, {"GITHUB_SHA": "c" * 40})
+            self.assertNotIn("cargo", command.call_args.args[0])
+            self.assertEqual(command.call_args.args[-1]["executed_source_sha"], "a" * 40)
+
+    def test_product_g0_requires_format_and_source_postcheck_before_first_compiled_target(self):
+        import copy
+        f = self.five; stage = {"status": "PASS_POLICIES_AND_CONTRACTS_FORMAT_PENDING"}
+        row = {"exit_code": 0, "owned_group_after_wait": "ABSENT"}; source = {"sha": "a" * 40}
+        for formatted, after in (({**row, "exit_code": 1}, source), ({**row, "exit_code": False}, source),
+                                 ({**row, "owned_group_after_wait": "UNKNOWN"}, source), (row, {"sha": "b" * 40})):
+            current = copy.deepcopy(stage)
+            with self.subTest(formatted=formatted, after=after), self.assertRaises(ValueError):
+                f.finish_product_g0(current, formatted, source, after)
+            self.assertNotEqual(current["status"], "PASS_PRODUCT_G0")
+        f.finish_product_g0(stage, row, source, source); self.assertEqual(stage["status"], "PASS_PRODUCT_G0")
+        text = (ROOT / "tooling/ci_project_portability_recovery.py").read_text(encoding="utf-8")
+        body = text.split("def run(gate, repo, output):\n", 1)[1]
+        self.assertLess(body.index("observe_product_g0("), body.index('"product-format"'))
+        self.assertLess(body.index("finish_product_g0("), body.index("producer_plan("))
+        self.assertLess(body.index("verify_product_g0_originals("), body.index("final_counts("))
+
+    def test_product_g0_declares_exact_four_patterns_and_keeps_postexecution_originals(self):
+        import tempfile
+        f = self.five
+        self.assertEqual(f.G0_PATTERNS, ("test_project_portability_contracts.py", "test_ci_job_plan.py",
+                                       "test_source_policy_credentials.py", "test_conformance_policy.py"))
+        with tempfile.TemporaryDirectory(prefix="pp-five-product-g0-postcheck-") as d:
+            value, args = self.product_g0_fixture(Path(d)); stage = f.product_g0_receipt(*args)
+            stage["status"] = "PASS_PRODUCT_G0"
+            f.verify_product_g0_originals(stage, Path(d))
+            log = args[0].with_name(value["steps"][0]["stdout"]["file"])
+            log.write_bytes(b"late replacement")
+            with self.assertRaises(ValueError): f.verify_product_g0_originals(stage, Path(d))
+
+    def test_product_format_reuses_exact_existing_toolchain_policy_and_rejects_true_override(self):
+        import hashlib
+        import tempfile
+        from unittest import mock
+        f = self.five; workflow = ROOT / f.WORKFLOW
+        policy = f.existing_formatter_policy(workflow, hashlib.sha256(workflow.read_bytes()).hexdigest())
+        parent = Path(tempfile.gettempdir()).absolute() / "observed-toolchain"
+        tools = {"cargo": {"absolute_path": str(parent / "cargo")}}
+        formatters = {name: {"absolute_path": str(parent / name), "bytes": 1, "sha256": "f" * 64,
+                            "version": "rustfmt 1.8.0-source-control"} for name in ("cargo-fmt", "rustfmt")}
+        self.assertEqual(policy({}, tools, formatters)["RUSTFMT"], str(parent / "rustfmt"))
+        with self.assertRaises(ValueError): policy({"RUSTFMT": "/bin/true"}, tools, formatters)
+        with self.assertRaises(ValueError): f.existing_formatter_policy(workflow, "0" * 64)
+        command = mock.Mock()
+        with self.assertRaises(ValueError):
+            f.observed_formatters(ROOT, "f" * 64, tools, {"RUSTFMT": "/bin/true"}, Path("logs"), {}, command)
+        command.assert_not_called()
+
+    def workflow(self):
+        return (ROOT / ".github/workflows/project-portability.yml").read_text(encoding="utf-8")
+
+    def job_condition(self, text, job, event, scope, *, ref="refs/heads/main", head=""):
+        from types import SimpleNamespace
+        block = re.split(r"(?m)^  [a-z][a-z0-9-]*:\n", text.split("\n  " + job + ":\n", 1)[1], maxsplit=1)[0]
+        expr = re.search(r"(?m)^    if: \$\{\{ (.+) \}\}$", block).group(1)
+        expr = expr.replace("&&", " and ").replace("||", " or ").replace("!startsWith", "not startsWith")
+        return bool(eval(expr, {"__builtins__": {}, "startsWith": lambda value, prefix: value.startswith(prefix)},
+                         {"github": SimpleNamespace(event_name=event, ref=ref, head_ref=head),
+                          "inputs": SimpleNamespace(verification_scope=scope)}))
+
+    def test_source_review_push_and_pr_do_not_activate_either_legacy_job(self):
+        text = self.workflow()
+        self.assertIn('"verify/project-portability-recovery-**"', text)
+        for job in ("storage-contracts", "file-import-platforms"):
+            self.assertFalse(self.job_condition(text, job, "push", "full", ref=self.five.REVIEW_BRANCH + "fixture"))
+            self.assertFalse(self.job_condition(text, job, "pull_request", "full", ref="refs/pull/1/merge",
+                                               head="verify/project-portability-recovery-fixture"))
+
+    def test_manual_five_never_falls_into_legacy_full_or_platform_matrix(self):
+        text = self.workflow()
+        for job in ("storage-contracts", "file-import-platforms"):
+            self.assertFalse(self.job_condition(text, job, "workflow_dispatch", self.five.SCOPE))
+            self.assertTrue(self.job_condition(text, job, "workflow_dispatch", "full"))
+            self.assertTrue(self.job_condition(text, job, "push", "full"))
+        self.assertFalse(self.job_condition(text, "storage-contracts", "workflow_dispatch", "gc_proxy_candidate"))
+        self.assertTrue(self.job_condition(text, "file-import-platforms", "workflow_dispatch", "gc_proxy_candidate"))
+
+    def test_default_scopes_and_legacy_matrix_remain_unchanged(self):
+        text = self.workflow()
+        inputs = text.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("default: full", inputs); self.assertIn("default: both", inputs)
+        self.assertEqual(text.count("        os: ${{ fromJSON("), 1)
+        self.assertIn("--mode both --require-complete", text)
+        self.assertEqual(text.count('      - "tooling/ci_project_portability_recovery.py"'), 2)
+
+    def test_five_job_requires_g0_and_manual_scope_and_admission_before_product_checkout(self):
+        text = self.workflow(); job = text.split("\n  bundle-recovery-five:\n", 1)[1]
+        self.assertIn("    needs: g0-source-controls", job)
+        self.assertIn("github.event_name == 'workflow_dispatch'", job)
+        self.assertIn("inputs.verification_scope == 'bundle_recovery_five'", job)
+        self.assertIn("needs.g0-source-controls.result == 'success'", job)
+        self.assertIn("runs-on: ubuntu-24.04", job); self.assertNotIn("matrix:", job)
+        self.assertLess(job.index("Recheck admission"), job.index("ref: ${{ inputs.product_source_sha }}"))
+        self.assertEqual(job.count("ci_project_portability_recovery.py execute"), 1)
+        self.assertNotIn("cargo test", job)
+        self.assertIn("if: always()", job); self.assertIn("if-no-files-found: error", job)
+        self.assertIn("/run/evidence/", job); self.assertIn("/run/tmp/", job)
 
 
 if __name__ == "__main__":

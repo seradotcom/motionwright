@@ -2,7 +2,7 @@ name: Project Portability
 
 on:
   push:
-    branches: ["main", "feat/**"]
+    branches: ["main", "feat/**", "verify/project-portability-recovery-**"]
     paths:
       - "crates/domain/**"
       - "Cargo.toml"
@@ -14,6 +14,7 @@ on:
       - "docs/testing.md"
       - ".github/workflows/project-portability.yml"
       - "tooling/tests/test_project_portability_contracts.py"
+      - "tooling/ci_project_portability_recovery.py"
       - "tooling/ci_test_runner.py"
       - "tooling/tests/test_ci_test_runner.py"
       - "tooling/ci_foundation_causal.py"
@@ -32,6 +33,7 @@ on:
       - "docs/testing.md"
       - ".github/workflows/project-portability.yml"
       - "tooling/tests/test_project_portability_contracts.py"
+      - "tooling/ci_project_portability_recovery.py"
       - "tooling/ci_test_runner.py"
       - "tooling/tests/test_ci_test_runner.py"
       - "tooling/ci_foundation_causal.py"
@@ -41,11 +43,11 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Select portability, cache publication, desktop OTIO export, or bounded projection contracts
+        description: Select portability, cache publication, desktop OTIO export, bounded projection, or five admitted recovery methods
         required: true
         default: full
         type: choice
-        options: [full, derived_cache, otio_export, project_projection, cas_retention, cas_candidate, gc_proxy_candidate]
+        options: [full, derived_cache, otio_export, project_projection, cas_retention, cas_candidate, gc_proxy_candidate, bundle_recovery_five]
       os_scope:
         description: Explicit CAS operating systems; all is valid only for reviewed candidate source profiles
         required: true
@@ -53,7 +55,7 @@ on:
         options: [windows, macos, both, linux, all]
         default: both
       product_source_sha:
-        description: Reviewed product commit for project_projection or legacy cas_retention; empty for composed candidate profiles
+        description: Reviewed product commit for project_projection, legacy cas_retention, or admitted bundle_recovery_five; empty for composed candidate profiles
         required: false
         type: string
       candidate_source_manifest:
@@ -87,6 +89,19 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13'
+      - name: Admit the exact five-method product before allocating its runner
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'bundle_recovery_five'
+        env:
+          MW_PP5_SCOPE: ${{ inputs.verification_scope }}
+          MW_PP5_OS_SCOPE: ${{ inputs.os_scope }}
+          MW_PP5_PRODUCT_SOURCE: ${{ inputs.product_source_sha }}
+          MW_PP5_CANDIDATE_MANIFEST: ${{ inputs.candidate_source_manifest }}
+          MW_PP5_CANDIDATE_DIGEST: ${{ inputs.candidate_manifest_sha256 }}
+          MW_PP5_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: >-
+          python -I -B tooling/ci_project_portability_recovery.py admit
+          --report "$RUNNER_TEMP/portability-g0/recovery-five-admission.json"
       - name: Reject mixed CAS source bindings before selecting native jobs
         if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'cas_retention' || inputs.verification_scope == 'cas_candidate' || inputs.verification_scope == 'gc_proxy_candidate')
         shell: python
@@ -150,7 +165,7 @@ jobs:
 
   storage-contracts:
     needs: g0-source-controls
-    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export' && inputs.verification_scope != 'project_projection' && inputs.verification_scope != 'cas_retention' && inputs.verification_scope != 'cas_candidate' && inputs.verification_scope != 'gc_proxy_candidate') }}
+    if: ${{ !startsWith(github.ref, 'refs/heads/verify/project-portability-recovery-') && !startsWith(github.head_ref, 'verify/project-portability-recovery-') && (github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export' && inputs.verification_scope != 'project_projection' && inputs.verification_scope != 'cas_retention' && inputs.verification_scope != 'cas_candidate' && inputs.verification_scope != 'gc_proxy_candidate' && inputs.verification_scope != 'bundle_recovery_five')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -168,6 +183,7 @@ jobs:
 
   file-import-platforms:
     needs: g0-source-controls
+    if: ${{ !startsWith(github.ref, 'refs/heads/verify/project-portability-recovery-') && !startsWith(github.head_ref, 'verify/project-portability-recovery-') && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'bundle_recovery_five') }}
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && 'Bounded project projection' || 'File import authority and CAS' }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'gc_proxy_candidate' && 105 || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'cas_retention' || inputs.verification_scope == 'cas_candidate' || inputs.verification_scope == 'gc_proxy_candidate') && 60 || 45 }}
@@ -1672,5 +1688,75 @@ jobs:
             ${{ runner.temp }}/cas-retention-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/originals/
             ${{ runner.temp }}/cas-retention-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/sources/
             ${{ runner.temp }}/cas-retention-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/binaries/
+          if-no-files-found: error
+          retention-days: 14
+
+  bundle-recovery-five:
+    needs: g0-source-controls
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'bundle_recovery_five' && needs.g0-source-controls.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_PP5_SCOPE: ${{ inputs.verification_scope }}
+      MW_PP5_OS_SCOPE: ${{ inputs.os_scope }}
+      MW_PP5_PRODUCT_SOURCE: ${{ inputs.product_source_sha }}
+      MW_PP5_CANDIDATE_MANIFEST: ${{ inputs.candidate_source_manifest }}
+      MW_PP5_CANDIDATE_DIGEST: ${{ inputs.candidate_manifest_sha256 }}
+      MW_PP5_WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - name: Prepare isolated caches and output under the disposable runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          task_root="$RUNNER_TEMP/project-portability-five-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$task_root"
+          mkdir -m 700 "$task_root"
+          mkdir -m 700 "$task_root/cargo" "$task_root/rustup" "$task_root/setup-tmp"
+          printf 'MW_PP5_ROOT=%s\nCARGO_HOME=%s\nRUSTUP_HOME=%s\n' "$task_root" "$task_root/cargo" "$task_root/rustup" >> "$GITHUB_ENV"
+          printf 'TMPDIR=%s\nTEMP=%s\nTMP=%s\n' "$task_root/setup-tmp" "$task_root/setup-tmp" "$task_root/setup-tmp" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: g
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Recheck admission before recovering the separate product source
+        working-directory: g
+        shell: bash
+        run: >-
+          python -I -B tooling/ci_project_portability_recovery.py admit
+          --report "$MW_PP5_ROOT/admission.json"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.product_source_sha }}
+          path: p
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - name: Observe the five admitted methods once with original custody
+        working-directory: g
+        shell: bash
+        run: >-
+          python -I -B tooling/ci_project_portability_recovery.py execute
+          --gate "$GITHUB_WORKSPACE/g" --product "$GITHUB_WORKSPACE/p"
+          --output "$MW_PP5_ROOT/run"
+      - name: Retain original five-method commands, binaries and supported fixtures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: portability-five-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.MW_PP5_ROOT }}/admission.json
+            ${{ env.MW_PP5_ROOT }}/run/evidence/
+            ${{ env.MW_PP5_ROOT }}/run/tmp/
           if-no-files-found: error
           retention-days: 14
