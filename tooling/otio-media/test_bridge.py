@@ -16,6 +16,7 @@ import zipfile
 from bridge import (
     BridgeRefused, export_portable, file_probe, import_preview, rtc, trange, SCHEMA,
     _probe_output, preview_kdenlive_cut, KDENLIVE_REQUEST_SCHEMA, fingerprint, _nle_local_media,
+    inspect_external_otio,
 )
 
 ID=lambda number:f"00000000-0000-4000-8000-{number:012x}"
@@ -1313,6 +1314,274 @@ class ExternalALabOrchestrationTests(unittest.TestCase):
         self.assertIn("response",closures);self.assertIn("connection",closures)
         self.assertTrue(b"".join(raw_headers).startswith(b"HTTP/1.1 206 Partial Content"))
         self.assertEqual(raw_bodies,[])
+
+
+class ExternalOtioSourceInspectionTests(unittest.TestCase):
+    """Synthetic declarations only: no external media or NLE acceptance."""
+
+    @staticmethod
+    def source_document():
+        clips=[]
+        for start,duration in ((1002,52),(1008,182)):
+            clips.append({
+                "OTIO_SCHEMA":"Clip.2","name":"Repeated external label",
+                "enabled":True,"effects":[],"markers":[],
+                "metadata":{"foreign":{"id":"not-a-native-scene-id"}},
+                "source_range":trange(start,duration,24),
+                "active_media_reference_key":"DEFAULT_MEDIA",
+                "media_references":{"DEFAULT_MEDIA":{
+                    "OTIO_SCHEMA":"ExternalReference.1",
+                    "target_url":f"media/source-{start}.mov",
+                    "available_range":None,"available_image_bounds":None,
+                    "metadata":{},
+                }},
+            })
+        return {
+            "OTIO_SCHEMA":"Timeline.1","name":"Synthetic external timeline",
+            "metadata":{"foreign":{"id":"not-a-project-grant"}},
+            "global_start_time":rtc(86400,24),
+            "tracks":{"OTIO_SCHEMA":"Stack.1","children":[{
+                "OTIO_SCHEMA":"Track.1","kind":"Video","children":clips,
+            },{
+                "OTIO_SCHEMA":"Track.1","kind":"Audio","children":[],
+                "metadata":{"opaque_mixer":{"gain":0.7}},
+            }]},
+        }
+
+    def inspect(self,document=None,selection=None):
+        document=self.source_document()if document is None else document
+        raw=json.dumps(document,separators=(",",":")).encode("utf-8")
+        pointers=selection if selection is not None else [
+            "/tracks/children/0/children/0","/tracks/children/0/children/1"]
+        return inspect_external_otio(raw,hashlib.sha256(raw).hexdigest(),pointers)
+
+    @staticmethod
+    def codes(report):
+        return {row["code"]for row in report["blockers"]}
+
+    def test_original_ranges_pointers_and_global_clock_do_not_become_file_offsets(self):
+        report=self.inspect(selection=[
+            "/tracks/children/0/children/1","/tracks/children/0/children/0"])
+        self.assertEqual(report["status"],"SOURCE_INSPECTED_NOT_ADOPTED")
+        self.assertEqual(report["source"]["declared_global_start_time"],rtc(86400,24))
+        self.assertEqual([row["pointer"]for row in report["observations"]],[
+            "/tracks/children/0/children/0","/tracks/children/0/children/1"])
+        self.assertEqual([row["declared_source_range"]for row in report["observations"]],
+                         [trange(1002,52,24),trange(1008,182,24)])
+        self.assertTrue(all(row["range_supported_by_existing_cut_parser"]
+                            for row in report["observations"]))
+        self.assertEqual(report["observations"][0]["name"],
+                         report["observations"][1]["name"])
+        self.assertFalse(report["verified_media"])
+        self.assertEqual(report["media_origin"],"unknown")
+        self.assertIn("media_origin_unknown",self.codes(report))
+        self.assertNotIn("native_change_proposals",report)
+        self.assertNotIn("scene_id",json.dumps(report))
+        self.assertNotIn("file_offset",json.dumps(report))
+        self.assertNotIn("handles",json.dumps(report))
+
+    def test_source_hash_is_checked_before_parsing_and_bytes_are_not_mutable_input(self):
+        raw=json.dumps(self.source_document()).encode()
+        pointers=["/tracks/children/0/children/0"]
+        with patch("bridge.strict_json")as parse:
+            with self.assertRaisesRegex(BridgeRefused,"digest changed"):
+                inspect_external_otio(raw,"0"*64,pointers)
+        parse.assert_not_called()
+        for source in (bytearray(raw),memoryview(raw),raw.decode(),b""):
+            with self.subTest(kind=type(source).__name__):
+                with self.assertRaisesRegex(BridgeRefused,"immutable source bytes"):
+                    inspect_external_otio(source,hashlib.sha256(raw).hexdigest(),pointers)
+        with patch("bridge.MAX_JSON",len(raw)-1):
+            with self.assertRaisesRegex(BridgeRefused,"bounded immutable"):
+                inspect_external_otio(raw,hashlib.sha256(raw).hexdigest(),pointers)
+        for invalid in (b"\xff{}",raw.decode().encode("utf-16")):
+            with self.subTest(encoding=invalid[:4]),patch("bridge.strict_json")as parse:
+                with self.assertRaisesRegex(BridgeRefused,"source is not valid UTF-8"):
+                    inspect_external_otio(invalid,hashlib.sha256(invalid).hexdigest(),pointers)
+            parse.assert_not_called()
+
+    def test_inspection_never_opens_sources_follows_urls_or_starts_a_media_process(self):
+        document=self.source_document()
+        clips=document["tracks"]["children"][0]["children"]
+        targets=["https://example.invalid/private.mov","../../outside.mov",
+                 "file:///private.mov",r"C:\private\owner.mov","media/%2e%2e/secret.mov"]
+        for target in targets:
+            clips[0]["media_references"]["DEFAULT_MEDIA"]["target_url"]=target
+            raw=json.dumps(document).encode()
+            original=bytes(raw)
+            with self.subTest(target=target), \
+                 patch("bridge.file_probe",side_effect=AssertionError("media probe"))as probe, \
+                 patch("bridge.subprocess.Popen",side_effect=AssertionError("process"))as spawn, \
+                 patch.object(Path,"open",side_effect=AssertionError("file open"))as opened:
+                report=inspect_external_otio(raw,hashlib.sha256(raw).hexdigest(),
+                                            ["/tracks/children/0/children/0"])
+            probe.assert_not_called()
+            spawn.assert_not_called()
+            opened.assert_not_called()
+            self.assertEqual(raw,original)
+            self.assertEqual(report["source"]["sha256"],hashlib.sha256(original).hexdigest())
+            self.assertEqual(report["observations"][0]["active_reference"]["target_url"],target)
+            self.assertIn("media_requires_authorized_observation",self.codes(report))
+            self.assertFalse(report["verified_media"])
+
+    def test_metadata_unknown_controls_and_unselected_tracks_stay_addressed_and_opaque(self):
+        document=self.source_document()
+        document["opaque/key~"]={"command":"not executed"}
+        clip=document["tracks"]["children"][0]["children"][0]
+        clip["metadata"]={"motionwright":{"scene_id":ID(900),"generation":ID(901)}}
+        clip["effects"]=[{"OTIO_SCHEMA":"Effect.1","name":"Foreign effect"}]
+        document["tracks"]["children"][0]["source_range"]=trange(4,234,24)
+        report=self.inspect(document,["/tracks/children/0/children/0"])
+        opaque={row["pointer"]:row["reason"]for row in report["opaque_regions"]}
+        self.assertIn("/opaque~1key~0",opaque)
+        self.assertIn("/tracks/children/0/children/0/metadata",opaque)
+        self.assertIn("/tracks/children/0/children/0/effects",opaque)
+        self.assertIn("/tracks/children/0/source_range",opaque)
+        self.assertEqual(opaque["/tracks/children/1"],"unselected_track")
+        self.assertEqual(opaque["/tracks/children/0/children"],"unselected_occurrences")
+        self.assertIn("composition_range_requires_adoption_review",self.codes(report))
+        self.assertNotIn(ID(900),json.dumps(report))
+        self.assertNotIn(ID(901),json.dumps(report))
+
+    def test_active_clip2_reference_is_exact_and_never_falls_back_to_the_first(self):
+        document=self.source_document()
+        clip=document["tracks"]["children"][0]["children"][0]
+        clip["media_references"]["OTHER"]={
+            "OTIO_SCHEMA":"ExternalReference.1","target_url":"media/selected.mov",
+            "available_range":None}
+        clip["active_media_reference_key"]="OTHER"
+        report=self.inspect(document,["/tracks/children/0/children/0"])
+        observed=report["observations"][0]["active_reference"]
+        self.assertEqual(observed["target_url"],"media/selected.mov")
+        self.assertTrue(observed["pointer"].endswith("/media_references/OTHER"))
+        self.assertTrue(any(row["reason"]=="inactive_media_reference"
+                            for row in report["opaque_regions"]))
+        clip["active_media_reference_key"]="ABSENT"
+        report=self.inspect(document,["/tracks/children/0/children/0"])
+        self.assertIsNone(report["observations"][0]["active_reference"])
+        self.assertIn("active_reference_unavailable",self.codes(report))
+
+    def test_clip1_missing_reference_remains_missing_without_replacement_media(self):
+        document=self.source_document()
+        clip=document["tracks"]["children"][0]["children"][0]
+        clip["OTIO_SCHEMA"]="Clip.1"
+        clip.pop("media_references")
+        clip.pop("active_media_reference_key")
+        clip["media_reference"]={"OTIO_SCHEMA":"MissingReference.1","available_range":None}
+        report=self.inspect(document,["/tracks/children/0/children/0"])
+        ref=report["observations"][0]["active_reference"]
+        self.assertEqual(ref["schema"],"MissingReference.1")
+        self.assertIsNone(ref["target_url"])
+        self.assertIn("missing_reference_observed",self.codes(report))
+        self.assertFalse(report["verified_media"])
+
+    def test_declared_available_range_is_not_a_measured_origin_or_handle_count(self):
+        document=self.source_document()
+        ref=document["tracks"]["children"][0]["children"][0]["media_references"]["DEFAULT_MEDIA"]
+        ref["available_range"]=trange(1000,2000,24)
+        report=self.inspect(document,["/tracks/children/0/children/0"])
+        self.assertEqual(report["observations"][0]["active_reference"]["declared_available_range"],
+                         trange(1000,2000,24))
+        self.assertEqual(report["media_origin"],"unknown")
+        self.assertFalse(report["verified_media"])
+        self.assertNotIn("handles",json.dumps(report))
+
+    def test_fractional_or_unadmitted_declared_ranges_are_preserved_without_rounding(self):
+        for rate,value in ((23.976,52),(24,52.5),(0,52),(-24,52),(24,10**400)):
+            with self.subTest(rate=rate,value=value):
+                document=self.source_document()
+                interval=document["tracks"]["children"][0]["children"][0]["source_range"]
+                interval["start_time"]["rate"]=rate
+                interval["duration"].update(rate=rate,value=value)
+                report=self.inspect(document,["/tracks/children/0/children/0"])
+                observation=report["observations"][0]
+                self.assertEqual(observation["declared_source_range"],interval)
+                self.assertFalse(observation["range_supported_by_existing_cut_parser"])
+                self.assertIn("range_outside_existing_cut_profile",self.codes(report))
+
+    def test_unreadable_range_and_controls_do_not_silently_become_supported_defaults(self):
+        for replacement in (None,{},{"OTIO_SCHEMA":"UnknownRange.1"},trange(0,1,24)):
+            document=self.source_document()
+            clip=document["tracks"]["children"][0]["children"][0]
+            clip["source_range"]=replacement
+            if replacement and replacement.get("OTIO_SCHEMA")=="TimeRange.1":
+                replacement["duration"]["value"]=True
+            clip["effects"]={}
+            clip["enabled"]=False
+            report=self.inspect(document,["/tracks/children/0/children/0"])
+            observation=report["observations"][0]
+            self.assertIsNone(observation["declared_source_range"])
+            self.assertFalse(observation["range_supported_by_existing_cut_parser"])
+            self.assertIn("occurrence_or_composition_not_enabled",self.codes(report))
+            self.assertTrue(any(row["pointer"].endswith("/effects")
+                                for row in report["opaque_regions"]))
+
+    def test_gaps_transitions_and_nested_compositions_are_not_fabricated_clips(self):
+        for schema in ("Gap.1","Transition.1","Stack.1"):
+            with self.subTest(schema=schema):
+                document=self.source_document()
+                document["tracks"]["children"][0]["children"][0]["OTIO_SCHEMA"]=schema
+                report=self.inspect(document,["/tracks/children/0/children/0"])
+                self.assertEqual(report["observations"][0]["schema"],schema)
+                self.assertIsNone(report["observations"][0]["active_reference"])
+                self.assertIn("occurrence_outside_clip_profile",self.codes(report))
+
+    def test_canonical_occurrence_selection_cannot_alias_names_or_escape_the_tree(self):
+        selections=[[],["/tracks/children/0/children/0"]*2,
+                    ["/tracks/children/00/children/0"],["/tracks/children/0/children/-1"],
+                    ["/tracks/children/0/children/0/name"],["/tracks/children/9/children/0"],
+                    ["/tracks/children/0/children/999"],[ID(10)],[True]]
+        for selection in selections:
+            with self.subTest(selection=selection):
+                with self.assertRaises(BridgeRefused):
+                    self.inspect(selection=selection)
+        too_many=[f"/tracks/children/0/children/{index}"for index in range(33)]
+        with patch("bridge.strict_json")as parse:
+            with self.assertRaisesRegex(BridgeRefused,"selection must contain bounded"):
+                self.inspect(selection=too_many)
+        parse.assert_not_called()
+
+    def test_duplicate_json_and_nonfinite_values_even_in_opaque_metadata_are_refused(self):
+        raw=json.dumps(self.source_document()).encode()
+        duplicate=raw.replace(b'"OTIO_SCHEMA": "Timeline.1"',
+                              b'"OTIO_SCHEMA": "Timeline.1", "OTIO_SCHEMA": "Timeline.1"',1)
+        self.assertNotEqual(raw,duplicate)
+        with self.assertRaisesRegex(BridgeRefused,"Duplicate JSON key"):
+            inspect_external_otio(duplicate,hashlib.sha256(duplicate).hexdigest(),
+                                  ["/tracks/children/0/children/0"])
+        for value in (float("nan"),float("inf"),-float("inf")):
+            with self.subTest(value=value):
+                document=self.source_document()
+                document["metadata"]["uninterpreted_number"]=value
+                with self.assertRaisesRegex(BridgeRefused,"non-finite JSON number"):
+                    self.inspect(document)
+
+    def test_depth_node_and_diagnostic_budgets_fail_before_unbounded_projection(self):
+        document=self.source_document()
+        nested={}
+        document["metadata"]=nested
+        for _ in range(70):
+            nested["next"]={}
+            nested=nested["next"]
+        with self.assertRaisesRegex(BridgeRefused,"structural budget"):
+            self.inspect(document)
+        with patch("bridge._EXTERNAL_MAX_NODES",10):
+            with self.assertRaisesRegex(BridgeRefused,"structural budget"):
+                self.inspect()
+        with patch("bridge._EXTERNAL_MAX_ROWS",1):
+            with self.assertRaisesRegex(BridgeRefused,"inventory exceeds"):
+                self.inspect()
+
+    def test_audio_track_and_unknown_reference_schemas_stay_blocked(self):
+        document=self.source_document()
+        track=document["tracks"]["children"][0]
+        track["kind"]="Audio"
+        track["children"][0]["media_references"]["DEFAULT_MEDIA"]["OTIO_SCHEMA"]="GeneratorReference.1"
+        report=self.inspect(document,["/tracks/children/0/children/0"])
+        self.assertIn("selected_track_outside_video_cut_profile",self.codes(report))
+        self.assertIn("media_reference_outside_profile",self.codes(report))
+        self.assertIsNone(report["observations"][0]["active_reference"]["target_url"])
+        self.assertFalse(report["verified_media"])
 
 
 if __name__=="__main__":unittest.main()

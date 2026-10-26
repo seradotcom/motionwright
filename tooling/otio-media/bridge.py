@@ -1012,6 +1012,280 @@ def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:
                "Source capsule, RAW, Project or media changed during bounded cut inspection")
     return result
 
+EXTERNAL_OTIO_INSPECTION_SCHEMA="motionwright.external-otio-source-inspection/1"
+_EXTERNAL_MAX_DEPTH=64
+_EXTERNAL_MAX_NODES=65536
+_EXTERNAL_MAX_ROWS=1024
+_EXTERNAL_OCCURRENCE=re.compile(
+    r"/tracks/children/(0|[1-9][0-9]{0,3})/children/(0|[1-9][0-9]{0,5})"
+)
+
+
+def inspect_external_otio(source:bytes,expected_sha256:str,
+                          occurrence_pointers:list[str])->dict:
+    """Inspect owned CAS bytes without resolving references or adopting a cut.
+
+    The caller obtains bytes and expected digest from its existing CAS boundary.
+    Matching a supplied digest proves byte identity only, never caller authority.
+    Selected occurrences are returned in source order. Declared RationalTimes,
+    available ranges, names and foreign metadata never establish file offsets,
+    handles, observed media, native scene identity or permission to execute.
+    The complete source remains the caller's original immutable bytes; opaque
+    properties are addressed within those bytes and are not rewritten here.
+    """
+    insist(type(source)is bytes and 0<len(source)<=MAX_JSON,
+           "External OTIO requires bounded immutable source bytes")
+    insist(type(expected_sha256)is str and HEX.fullmatch(expected_sha256) is not None,
+           "External OTIO requires an expected source digest")
+    insist(sha_bytes(source)==expected_sha256,"External OTIO source digest changed")
+    insist(type(occurrence_pointers)is list
+           and 1<=len(occurrence_pointers)<=MAX_SCENES
+           and all(type(pointer)is str for pointer in occurrence_pointers),
+           "External OTIO selection must contain bounded occurrence pointers")
+    insist(len(set(occurrence_pointers))==len(occurrence_pointers),
+           "External OTIO selection repeats an occurrence")
+    selected=[]
+    for pointer in occurrence_pointers:
+        match=_EXTERNAL_OCCURRENCE.fullmatch(pointer)
+        insist(match is not None,"External OTIO occurrence pointer is not canonical")
+        selected.append((int(match[1]),int(match[2]),pointer))
+    selected.sort()
+    try:
+        decoded_source=source.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BridgeRefused("External OTIO source is not valid UTF-8")from None
+    try:
+        document=strict_json(decoded_source,"external OTIO")
+    except RecursionError:
+        raise BridgeRefused("External OTIO exceeds its structural budget")from None
+
+    pending=[(document,0)]
+    visited=0
+    while pending:
+        value,depth=pending.pop()
+        visited+=1
+        insist(depth<=_EXTERNAL_MAX_DEPTH and visited<=_EXTERNAL_MAX_NODES,
+               "External OTIO exceeds its structural budget")
+        if isinstance(value,(dict,list)):
+            children=value.values() if isinstance(value,dict) else value
+            insist(visited+len(pending)+len(value)<=_EXTERNAL_MAX_NODES,
+                   "External OTIO exceeds its structural budget")
+            pending.extend((child,depth+1)for child in children)
+        elif type(value)is float:
+            insist(value==value and abs(value)<=sys.float_info.max,
+                   "External OTIO contains a non-finite JSON number")
+
+    insist(document.get("OTIO_SCHEMA")=="Timeline.1",
+           "External OTIO inspector requires Timeline.1")
+    stack=document.get("tracks")
+    insist(isinstance(stack,dict) and stack.get("OTIO_SCHEMA")=="Stack.1",
+           "External OTIO inspector requires a tracks Stack.1")
+    tracks=stack.get("children")
+    insist(isinstance(tracks,list) and len(tracks)<=MAX_SCENES,
+           "External OTIO track collection exceeds the inspection profile")
+
+    opaque=[]
+    blockers=[]
+    seen_opaque=set()
+    seen_blockers=set()
+    def issue(pointer:str,code:str)->None:
+        key=(pointer,code)
+        if key not in seen_blockers:
+            insist(len(blockers)<_EXTERNAL_MAX_ROWS,
+                   "External OTIO diagnostic inventory exceeds its budget")
+            seen_blockers.add(key)
+            blockers.append({"pointer":pointer,"code":code})
+    def preserve(pointer:str,reason:str,**details:object)->None:
+        key=(pointer,reason)
+        if key not in seen_opaque:
+            insist(len(pointer)<=1024 and len(opaque)<_EXTERNAL_MAX_ROWS,
+                   "External OTIO opaque inventory exceeds its budget")
+            seen_opaque.add(key)
+            opaque.append({"pointer":pointer,"reason":reason,**details})
+    def child_pointer(pointer:str,key:str)->str:
+        return pointer+"/"+key.replace("~","~0").replace("/","~1")
+    def text(value:object,pointer:str,maximum:int=250)->str|None:
+        if value is None:return None
+        if isinstance(value,str) and len(value)<=maximum:
+            return value
+        preserve(pointer,"uninterpreted_text_property")
+        issue(pointer,"text_property_outside_profile")
+        return None
+    def properties(value:dict,pointer:str,known:set[str])->None:
+        for key in value:
+            if key not in known:
+                at=child_pointer(pointer,key)
+                preserve(at,"uninterpreted_property")
+                issue(at,"property_requires_adoption_review")
+        for key in ("metadata","effects","markers","color"):
+            if key not in value:continue
+            item=value[key]
+            empty=(isinstance(item,dict) and not item) if key=="metadata" else (
+                (isinstance(item,list) and not item) if key in ("effects","markers")
+                else item is None)
+            if not empty:
+                at=child_pointer(pointer,key)
+                preserve(at,"uninterpreted_metadata_or_control")
+                issue(at,"property_requires_adoption_review")
+        if "enabled" in value and value["enabled"]is not True:
+            at=child_pointer(pointer,"enabled")
+            preserve(at,"disabled_or_uninterpreted_state")
+            issue(at,"occurrence_or_composition_not_enabled")
+    def stamp(value:object,pointer:str)->dict|None:
+        if (isinstance(value,dict)
+                and set(value)=={"OTIO_SCHEMA","rate","value"}
+                and value["OTIO_SCHEMA"]=="RationalTime.1"
+                and type(value["rate"])in (int,float)
+                and type(value["value"])in (int,float)):
+            return value.copy()
+        preserve(pointer,"uninterpreted_rational_time")
+        issue(pointer,"rational_time_unavailable")
+        return None
+    def interval(value:object,pointer:str)->tuple[dict|None,bool]:
+        if value is None:
+            issue(pointer,"declared_range_unavailable")
+            return None,False
+        if (not isinstance(value,dict)
+                or set(value)!={"OTIO_SCHEMA","duration","start_time"}
+                or value.get("OTIO_SCHEMA")!="TimeRange.1"):
+            preserve(pointer,"uninterpreted_time_range")
+            issue(pointer,"declared_range_unavailable")
+            return None,False
+        start=stamp(value["start_time"],pointer+"/start_time")
+        duration=stamp(value["duration"],pointer+"/duration")
+        if start is None or duration is None:return None,False
+        declared={"OTIO_SCHEMA":"TimeRange.1","start_time":start,"duration":duration}
+        try:
+            read_time_range(declared,"External declared source range")
+        except (BridgeRefused,OverflowError):
+            issue(pointer,"range_outside_existing_cut_profile")
+            return declared,False
+        return declared,True
+
+    properties(document,"",{"OTIO_SCHEMA","name","metadata","tracks","global_start_time"})
+    common={"OTIO_SCHEMA","name","metadata","source_range","effects","markers",
+            "enabled","color","children"}
+    properties(stack,"/tracks",common)
+    if stack.get("source_range")is not None:
+        preserve("/tracks/source_range","composition_range_not_projected")
+        issue("/tracks/source_range","composition_range_requires_adoption_review")
+    global_time=document.get("global_start_time")
+    if global_time is not None:
+        global_time=stamp(global_time,"/global_start_time")
+    selected_by_track={}
+    for track_index,clip_index,pointer in selected:
+        insist(track_index<len(tracks),"External OTIO selected track is absent")
+        track=tracks[track_index]
+        insist(isinstance(track,dict) and isinstance(track.get("children"),list),
+               "External OTIO selected track has no inspectable children")
+        insist(clip_index<len(track["children"]),"External OTIO selected occurrence is absent")
+        selected_by_track.setdefault(track_index,set()).add(clip_index)
+    for track_index,track in enumerate(tracks):
+        at=f"/tracks/children/{track_index}"
+        if track_index not in selected_by_track:
+            preserve(at,"unselected_track")
+            continue
+        properties(track,at,common|{"kind"})
+        if track.get("OTIO_SCHEMA")!="Track.1" or track.get("kind")!="Video":
+            preserve(at,"track_outside_video_cut_profile")
+            issue(at,"selected_track_outside_video_cut_profile")
+        if track.get("source_range")is not None:
+            preserve(at+"/source_range","composition_range_not_projected")
+            issue(at+"/source_range","composition_range_requires_adoption_review")
+        omitted=len(track["children"])-len(selected_by_track[track_index])
+        if omitted:
+            preserve(at+"/children","unselected_occurrences",count=omitted)
+
+    observations=[]
+    for track_index,clip_index,pointer in selected:
+        track=tracks[track_index]
+        clip=track["children"][clip_index]
+        observation={"pointer":pointer,"track_pointer":f"/tracks/children/{track_index}",
+                     "track_kind":text(track.get("kind"),f"/tracks/children/{track_index}/kind"),
+                     "schema":None,"name":None,"declared_source_range":None,
+                     "range_supported_by_existing_cut_parser":False,
+                     "active_reference":None}
+        observations.append(observation)
+        if not isinstance(clip,dict):
+            preserve(pointer,"uninterpreted_occurrence")
+            issue(pointer,"occurrence_outside_clip_profile")
+            continue
+        schema=clip.get("OTIO_SCHEMA")
+        observation["schema"]=text(schema,pointer+"/OTIO_SCHEMA")
+        observation["name"]=text(clip.get("name"),pointer+"/name")
+        declared,supported=interval(clip.get("source_range"),pointer+"/source_range")
+        observation["declared_source_range"]=declared
+        observation["range_supported_by_existing_cut_parser"]=supported
+        if schema not in ("Clip.1","Clip.2"):
+            preserve(pointer,"uninterpreted_occurrence")
+            issue(pointer,"occurrence_outside_clip_profile")
+            continue
+        clip_fields={"OTIO_SCHEMA","name","metadata","source_range","effects",
+                     "markers","enabled","color"}
+        reference=None
+        reference_pointer=None
+        if schema=="Clip.1":
+            properties(clip,pointer,clip_fields|{"media_reference"})
+            reference=clip.get("media_reference")
+            reference_pointer=pointer+"/media_reference"
+        else:
+            properties(clip,pointer,clip_fields|{"media_references","active_media_reference_key"})
+            refs=clip.get("media_references")
+            active=clip.get("active_media_reference_key")
+            if (not isinstance(refs,dict) or not isinstance(active,str)
+                    or active not in refs or not 1<=len(active)<=250):
+                preserve(pointer+"/media_references","unresolved_active_reference")
+                issue(pointer+"/active_media_reference_key","active_reference_unavailable")
+                continue
+            reference=refs[active]
+            reference_pointer=child_pointer(pointer+"/media_references",active)
+            for key in refs:
+                if key!=active:
+                    preserve(child_pointer(pointer+"/media_references",key),
+                             "inactive_media_reference")
+        if not isinstance(reference,dict):
+            preserve(reference_pointer,"uninterpreted_media_reference")
+            issue(reference_pointer,"media_reference_unavailable")
+            continue
+        ref_schema=text(reference.get("OTIO_SCHEMA"),reference_pointer+"/OTIO_SCHEMA")
+        properties(reference,reference_pointer,{"OTIO_SCHEMA","name","metadata",
+                   "target_url","available_range","available_image_bounds"})
+        declared_available=None
+        if reference.get("available_range")is not None:
+            declared_available,_=interval(reference["available_range"],
+                                          reference_pointer+"/available_range")
+        if reference.get("available_image_bounds")is not None:
+            preserve(reference_pointer+"/available_image_bounds","image_bounds_not_projected")
+            issue(reference_pointer+"/available_image_bounds","property_requires_adoption_review")
+        target=None
+        if ref_schema=="ExternalReference.1":
+            target=text(reference.get("target_url"),reference_pointer+"/target_url",2048)
+            if not target:
+                issue(reference_pointer+"/target_url","external_target_unavailable")
+            issue(reference_pointer,"media_requires_authorized_observation")
+        elif ref_schema=="MissingReference.1":
+            issue(reference_pointer,"missing_reference_observed")
+        else:
+            preserve(reference_pointer,"uninterpreted_media_reference")
+            issue(reference_pointer,"media_reference_outside_profile")
+        observation["active_reference"]={
+            "pointer":reference_pointer,"schema":ref_schema,"target_url":target,
+            "declared_available_range":declared_available}
+    issue("/tracks","media_not_observed")
+    issue("/tracks","media_origin_unknown")
+    result={
+        "schema":EXTERNAL_OTIO_INSPECTION_SCHEMA,
+        "status":"SOURCE_INSPECTED_NOT_ADOPTED",
+        "source":{"sha256":expected_sha256,"bytes":len(source),
+                  "schema":"Timeline.1","name":text(document.get("name"),"/name"),
+                  "declared_global_start_time":global_time},
+        "observations":observations,"opaque_regions":opaque,"blockers":blockers,
+        "verified_media":False,"media_origin":"unknown"}
+    insist(len(json.dumps(result,ensure_ascii=True,allow_nan=False).encode("ascii"))<=MAX_JSON,
+           "External OTIO inspection output exceeds its byte budget")
+    return result
+
+
 def main()->None:
     parser=argparse.ArgumentParser()
     mode=parser.add_subparsers(dest="command",required=True)
