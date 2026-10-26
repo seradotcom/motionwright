@@ -92,6 +92,10 @@ class SDKFoundationCandidateTests(unittest.TestCase):
     def test_empty_authority_stops_before_paths_or_product_commands(self):
         # The exact public source profile still cannot grant an execution slot.
         self.assertEqual(dict(gate.REVIEWED_AUTHORITIES), {})
+        self.assertEqual(hashlib.sha256(json.dumps(gate.CAUSALS, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest(), "ed53462e48995d5bff38b8211f55efd3e98b2c1a97e5f17b001ff0acc1541484")
+        self.assertTrue(all(case["pins"]["docs/commands.md"] ==
+            "23b03db7d5e68d7340247b00b710d644e533b83a5bb9ac55d43f853c39aecf12" for case in gate.CAUSALS))
         self.assertEqual(gate.FIXED["sha"], "dac1f5886b97efb4cd7a9351e817f4b7321b79c9")
         self.assertEqual(gate.FIXED["tree"], "564852515f37f2ba7fad537a26c8085db338e3e3")
         self.assertEqual(gate.FIXED["listing"], "7ec70ebd978bfdaa3a98772aa35140fba04e3fc0451ef9b34271c0944cc7ee15")
