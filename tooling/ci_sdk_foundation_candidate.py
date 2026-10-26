@@ -41,6 +41,7 @@ HOSTED_MODE = "windows-hosted-g1"
 HOSTED_SCOPE = "sdk-foundation-windows-g1"
 HOSTED_RUNNER = "windows-2025"
 HOSTED_IMAGE_OS = "win25-vs2026"
+# Windows os.environ snapshots canonicalize environment names to uppercase.
 HOSTED_RUST = RUST + "-x86_64-pc-windows-gnu"
 MODES = ("windows-g1", "linux-g2", HOSTED_MODE)
 SCOPES = ("sdk-foundation-source-controls", "sdk-foundation-linux-two", HOSTED_SCOPE)
@@ -411,7 +412,7 @@ def request_context(environment, mode, source_sha, admission_id, runtime_platfor
         require(actual == "win32" and environment.get("RUNNER_OS") == "Windows"
                 and environment.get("RUNNER_ARCH") == "X64"
                 and environment.get("RUNNER_ENVIRONMENT") == "github-hosted"
-                and environment.get("ImageOS") == binding["runner_image_os"],
+                and environment.get("IMAGEOS") == binding["runner_image_os"],
                 "genuine hosted Windows x64 image required")
         require(environment.get("GITHUB_ACTIONS") == "true"
                 and github["GITHUB_EVENT_NAME"] == "workflow_dispatch"
@@ -424,8 +425,8 @@ def request_context(environment, mode, source_sha, admission_id, runtime_platfor
                 and github["GITHUB_REPOSITORY"] == binding["repository"]
                 and github["GITHUB_WORKFLOW_REF"] == binding["workflow_ref"],
                 "hosted run, gate SHA or reviewed workflow identity differs")
-        require(type(environment.get("ImageVersion")) is str
-                and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", environment["ImageVersion"]),
+        require(type(environment.get("IMAGEVERSION")) is str
+                and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", environment["IMAGEVERSION"]),
                 "hosted image version is unobserved")
     else:
         require(actual == "linux" and environment.get("RUNNER_OS") == "Linux"
@@ -451,8 +452,8 @@ def request_context(environment, mode, source_sha, admission_id, runtime_platfor
             "github": github, "max_total_seconds": selected["max_total_seconds"],
             "process_boundary": "DIRECT_PROCESS_ONLY" if windows_selection(mode) else "OWNED_POSIX_SESSION_GROUP",
             "escaped_descendants": "NOT_OBSERVED", "continuous_resource_watchdog": False,
-            **({"runner_label": HOSTED_RUNNER, "image_os": environment["ImageOS"],
-                "image_version": environment["ImageVersion"], "cold_growth": selected["binding"]["cold_growth"],
+            **({"runner_label": HOSTED_RUNNER, "image_os": environment["IMAGEOS"],
+                "image_version": environment["IMAGEVERSION"], "cold_growth": selected["binding"]["cold_growth"],
                 "private_transport_review_sha256": selected["binding"]["private_transport"]["review_sha256"]}
                if mode == HOSTED_MODE else {})}
 
@@ -1325,7 +1326,7 @@ CAPACITY_MEMORY_SCRIPT = (
 def capacity_context(environment):
     """Read-only hosted observation does not consult or grant SDK authority."""
     expected = {"sys.platform": "win32", "GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows",
-                "RUNNER_ARCH": "X64", "RUNNER_ENVIRONMENT": "github-hosted", "ImageOS": HOSTED_IMAGE_OS,
+                "RUNNER_ARCH": "X64", "RUNNER_ENVIRONMENT": "github-hosted", "IMAGEOS": HOSTED_IMAGE_OS,
                 "GITHUB_EVENT_NAME": "workflow_dispatch", "SDK_FOUNDATION_SCOPE": HOSTED_SCOPE,
                 "GITHUB_JOB": HOSTED_SCOPE}
     observed = {key: sys.platform if key == "sys.platform" else environment.get(key, "") for key in expected}
@@ -1342,7 +1343,7 @@ def capacity_context(environment):
             and github["GITHUB_WORKFLOW_REF"].startswith(github["GITHUB_REPOSITORY"] + "/" + WORKFLOW + "@refs/heads/")
             and all(re.fullmatch(r"[1-9][0-9]*", github[key]) for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")),
             "capacity workflow provenance differs")
-    version = environment.get("ImageVersion", "")
+    version = environment.get("IMAGEVERSION", "")
     require(type(version) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", version), "hosted image version absent")
     return {"schema": CAPACITY_SCHEMA, "scope": "READ_ONLY_STANDARD_HOSTED_CAPACITY",
             "github": github, "runner_label": HOSTED_RUNNER, "image_os": HOSTED_IMAGE_OS,

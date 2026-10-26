@@ -667,8 +667,8 @@ class SDKFoundationHostedTests(unittest.TestCase):
         self.repo = self.root / "gate"; self.repo.mkdir()
         self.env = {
             "GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows", "RUNNER_ARCH": "X64",
-            "RUNNER_ENVIRONMENT": "github-hosted", "ImageOS": gate.HOSTED_IMAGE_OS,
-            "ImageVersion": "20260101.1", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "RUNNER_ENVIRONMENT": "github-hosted", "IMAGEOS": gate.HOSTED_IMAGE_OS,
+            "IMAGEVERSION": "20260101.1", "GITHUB_EVENT_NAME": "workflow_dispatch",
             "SDK_FOUNDATION_SCOPE": gate.HOSTED_SCOPE, "GITHUB_JOB": gate.HOSTED_SCOPE,
             "GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": "12345",
             "GITHUB_SHA": "c" * 40, "GITHUB_WORKFLOW_SHA": "c" * 40,
@@ -703,6 +703,16 @@ class SDKFoundationHostedTests(unittest.TestCase):
         with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": self.auth if authority is None else authority}):
             return gate.request_context(self.env if environment is None else environment,
                                         gate.HOSTED_MODE, gate.FIXED["sha"], "remote", platform)
+
+    def test_hosted_context_accepts_windows_snapshot_keys_without_case_aliases(self):
+        observed = self.context(dict(self.env))
+        self.assertEqual(observed["image_os"], self.env["IMAGEOS"])
+        self.assertEqual(observed["image_version"], self.env["IMAGEVERSION"])
+        for canonical, other_case in (("IMAGEOS", "ImageOS"), ("IMAGEVERSION", "ImageVersion")):
+            changed = dict(self.env)
+            changed[other_case] = changed.pop(canonical)
+            with self.subTest(key=canonical), self.assertRaises(ValueError):
+                self.context(changed)
 
     def gate_fixture(self):
         context = self.context()
@@ -760,7 +770,7 @@ class SDKFoundationHostedTests(unittest.TestCase):
     def test_hosted_rejects_foreign_run_job_attempt_image_and_workflow(self):
         changes = (("GITHUB_ACTIONS", "false"), ("GITHUB_EVENT_NAME", "push"),
                    ("RUNNER_OS", "Linux"), ("RUNNER_ARCH", "ARM64"),
-                   ("RUNNER_ENVIRONMENT", "self-hosted"), ("ImageOS", "win22"), ("ImageVersion", ""),
+                   ("RUNNER_ENVIRONMENT", "self-hosted"), ("IMAGEOS", "win22"), ("IMAGEVERSION", ""),
                    ("GITHUB_RUN_ID", "0"), ("GITHUB_RUN_ATTEMPT", "2"),
                    ("GITHUB_JOB", "sdk-foundation-linux-two"), ("SDK_FOUNDATION_SCOPE", gate.SCOPES[1]),
                    ("GITHUB_SHA", "d" * 40), ("GITHUB_WORKFLOW_SHA", "d" * 40),
@@ -1078,7 +1088,7 @@ class SDKFoundationHostedCapacityTests(unittest.TestCase):
         self.output_parent = self.root / "verification/sdk-foundation-hosted-admission"
         self.output_parent.mkdir(parents=True)
         self.env = {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows", "RUNNER_ARCH": "X64",
-                    "RUNNER_ENVIRONMENT": "github-hosted", "ImageOS": "win25-vs2026", "ImageVersion": "20261001.1",
+                    "RUNNER_ENVIRONMENT": "github-hosted", "IMAGEOS": "win25-vs2026", "IMAGEVERSION": "20261001.1",
                     "GITHUB_EVENT_NAME": "workflow_dispatch", "SDK_FOUNDATION_SCOPE": gate.HOSTED_SCOPE,
                     "GITHUB_JOB": gate.HOSTED_SCOPE, "GITHUB_SHA": "c" * 40, "GITHUB_WORKFLOW_SHA": "c" * 40,
                     "GITHUB_RUN_ID": "12345", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_REPOSITORY": "example/repo",
@@ -1113,13 +1123,25 @@ class SDKFoundationHostedCapacityTests(unittest.TestCase):
             self.assertFalse(observed["sdk_execution_authorized"])
             self.assertEqual(observed["sdk_execution"], "NOT_RUN")
             for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_EVENT_NAME", "push"),
-                               ("RUNNER_ENVIRONMENT", "self-hosted"), ("ImageOS", "win22"),
+                               ("RUNNER_ENVIRONMENT", "self-hosted"), ("IMAGEOS", "win22"),
                                ("GITHUB_JOB", "foreign"), ("GITHUB_WORKFLOW_SHA", "d" * 40),
-                               ("GITHUB_RUN_ID", "0"), ("ImageVersion", "")):
+                               ("GITHUB_RUN_ID", "0"), ("IMAGEVERSION", "")):
                 with self.subTest(key=key), self.assertRaises(ValueError):
                     gate.capacity_context({**self.env, key: value})
             with self.assertRaisesRegex(ValueError, "BLOCKED_PRIVATE_TRANSPORT"):
                 gate.require_hosted_transport_composition({"mode": gate.HOSTED_MODE})
+
+    def test_capacity_accepts_windows_snapshot_keys_without_case_aliases(self):
+        with patch.object(gate.sys, "platform", "win32"):
+            observed = gate.capacity_context(dict(self.env))
+            self.assertEqual(observed["image_os"], self.env["IMAGEOS"])
+            self.assertEqual(observed["image_version"], self.env["IMAGEVERSION"])
+            self.assertFalse(observed["sdk_execution_authorized"])
+            for canonical, other_case in (("IMAGEOS", "ImageOS"), ("IMAGEVERSION", "ImageVersion")):
+                changed = dict(self.env)
+                changed[other_case] = changed.pop(canonical)
+                with self.subTest(key=canonical), self.assertRaises(ValueError):
+                    gate.capacity_context(changed)
 
     def test_capacity_cli_refuses_execution_inputs_before_any_observer(self):
         for suffix in (("--execute",), ("--admit-only",), ("--authority", "reviewed"),
@@ -1333,10 +1355,10 @@ class SDKFoundationHostedCapacityTests(unittest.TestCase):
             self.assertFalse(context["sdk_execution_authorized"])
             for image in ("win25", "win22", "win25-vs2026-other", "", "win25-vs2026\n"):
                 with self.subTest(image=image), self.assertRaisesRegex(ValueError, "actual standard hosted job"):
-                    gate.capacity_context({**self.env, "ImageOS": image})
+                    gate.capacity_context({**self.env, "IMAGEOS": image})
 
     def test_capacity_rejection_reports_only_bounded_public_provenance_keys(self):
-        environment = {**self.env, "ImageOS": "other" + "x" * 500,
+        environment = {**self.env, "IMAGEOS": "other" + "x" * 500,
                        "SECRET_UNRELATED": "NEVER-PRINT-THIS-SECRET"}
         with patch.object(gate.sys, "platform", "win32"):
             with self.assertRaises(ValueError) as caught:
@@ -1346,8 +1368,8 @@ class SDKFoundationHostedCapacityTests(unittest.TestCase):
         self.assertNotIn("NEVER-PRINT-THIS-SECRET", message)
         data = json.loads(message.split(": ", 1)[1])
         self.assertEqual(set(data["observed"]), set(data["expected"]))
-        self.assertEqual(len(data["observed"]["ImageOS"]), 128)
-        self.assertEqual(data["expected"]["ImageOS"], "win25-vs2026")
+        self.assertEqual(len(data["observed"]["IMAGEOS"]), 128)
+        self.assertEqual(data["expected"]["IMAGEOS"], "win25-vs2026")
 
     def test_hosted_checkout_preserves_exact_git_bytes_before_capacity_snapshot(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text()
