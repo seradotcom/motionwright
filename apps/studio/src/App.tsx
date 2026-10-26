@@ -1,6 +1,7 @@
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
 import SceneInspector from "./SceneInspector";
 import { isPaletteShortcut } from "./editorCommandSearch";
+import { resolveTimelineSelection, timelineSelectionScope, type TimelineSelection } from "./timelineSelection";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import type { NativeSourceSaveRequest } from "./NativeSourceWorkbench";
 import { graphReviewAnchor, graphSame } from "./semanticGraph";
@@ -1380,11 +1381,14 @@ function Timeline({
   onSelectProfile: (id: string) => void;
   onSelectMode: (mode: TimecodeMode) => void;
 }) {
-  const [selection, setSelection] = useState<{
-    kind: "transcript" | "beat" | "cue" | "marker";
-    id: string;
-    label: string;
-  } | null>(null);
+  const [selectionIdentity, setSelection] = useState<TimelineSelection | null>(null);
+  const selection = resolveTimelineSelection(project, selectionIdentity);
+  const selectionMissing = selectionIdentity !== null && selection === null;
+  useEffect(() => {
+    // Rendering already hides a removed resource. Clear its identity as well,
+    // without erasing a newer selection made before this effect is processed.
+    if (selectionMissing) setSelection(current => current === selectionIdentity ? null : current);
+  }, [selectionIdentity, selectionMissing]);
   const duration = projectTimelineDuration(project);
   const ticks = Array.from({ length: Math.ceil(duration / 5) + 1 }, (_, index) => index * 5);
   // The Audio ledger retains every take. The VO lane represents the active
@@ -1413,7 +1417,7 @@ function Timeline({
 
   const selectAt = (
     time: number,
-    nextSelection: { kind: "transcript" | "beat" | "cue" | "marker"; id: string; label: string },
+    nextSelection: TimelineSelection,
     sceneId?: string,
   ) => {
     const bounded = Math.max(0, Math.min(duration, time));
@@ -1581,7 +1585,7 @@ function Timeline({
                     aria-label={"Transcript: " + segment.text}
                     aria-pressed={selected}
                     onPointerDown={(event) => event.stopPropagation()}
-                    onClick={() => selectAt(start, { kind: "transcript", id: segment.id, label: segment.text })}
+                    onClick={() => selectAt(start, { kind: "transcript", id: segment.id })}
                     title={segment.text}
                   >
                     {segment.text}
@@ -1610,7 +1614,7 @@ function Timeline({
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={() => selectAt(
                       start,
-                      { kind: "beat", id: beat.id, label: beat.label },
+                      { kind: "beat", id: beat.id },
                       scene.id,
                     )}
                     title={beat.objective}
@@ -1655,7 +1659,7 @@ function Timeline({
                   aria-label={"Cue: " + cue.label}
                   aria-pressed={selected}
                   onPointerDown={(event) => event.stopPropagation()}
-                  onClick={() => selectAt(at, { kind: "cue", id: cue.id, label: cue.label })}
+                  onClick={() => selectAt(at, { kind: "cue", id: cue.id })}
                   title={cue.label + " · " + cue.evidence}
                 >
                   <i />
@@ -1675,7 +1679,7 @@ function Timeline({
                   aria-label={"Marker: " + marker.label}
                   aria-pressed={selected}
                   onPointerDown={(event) => event.stopPropagation()}
-                  onClick={() => selectAt(at, { kind: "marker", id: marker.id, label: marker.label })}
+                  onClick={() => selectAt(at, { kind: "marker", id: marker.id })}
                   title={marker.label}
                 >
                   <i />
@@ -2556,6 +2560,7 @@ export default function App() {
       </div>
 
       <Timeline
+        key={timelineSelectionScope(project)}
         project={project}
         selectedSceneId={selectedSceneId}
         selectScene={selectScene}

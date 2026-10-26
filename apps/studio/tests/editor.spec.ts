@@ -118,6 +118,19 @@ test("beat and cue selection share scene and playhead without mutating project s
   await expect(page.locator(".tree-row").filter({ hasText: "Semwright acts natively" })).toHaveClass(/selected/);
   await expect(page.locator(".timeline-selection-context")).toContainText("Broker handoff");
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+
+  // Selection itself is view-only. This next explicit edit does create a
+  // revision, and the already-selected beat must display its current label.
+  await page.getByRole("button", { name: "Beat: Pixel failure", exact: true }).click();
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
+  const selectedBeat = page.locator(".scene-beat-row").first();
+  await selectedBeat.getByRole("textbox", { name: "Beat label" }).fill("Pixel failure renamed while selected");
+  await selectedBeat.getByRole("button", { name: "Save beat", exact: true }).click();
+  await expect(page.locator(".revision-chip").first()).not.toHaveText(revision);
+  await expect(page.getByRole("button", { name: "Beat: Pixel failure renamed while selected", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".timeline-selection-context strong")).toHaveText("Pixel failure renamed while selected");
+  await expect(timelineTimecode).toHaveText("00:08:00");
 });
 
 test("design preview transport steps and plays without claiming a project edit", async ({ page }) => {
