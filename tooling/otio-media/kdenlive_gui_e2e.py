@@ -225,15 +225,36 @@ def extract_distribution(appimage: Path, appdir: Path, records: Recorder) -> Non
             (Path("/proc") / str(owned.pid) / "stat").read_bytes(), owned.pid)
     try:
         code = owned.process.wait(timeout=180)
-    except subprocess.TimeoutExpired:
-        records.emit({"step": "distribution-extract", "state": "UNKNOWN_STILL_RUNNING",
-                      "pid": owned.pid, "starttime": owned.start, "replayed": False})
+    except subprocess.TimeoutExpired as original:
+        try:
+            records.emit({"step": "distribution-extract", "state": "UNKNOWN_STILL_RUNNING",
+                          "pid": owned.pid, "starttime": owned.start, "replayed": False})
+        except BaseException as recording_error:
+            try:
+                original.add_note("native_terminal_custody_failed:" +
+                                  type(recording_error).__name__)
+            except BaseException:
+                pass
+            raise original from recording_error
         raise
-    records.emit({"step": "distribution-extract", "state": "TERMINAL_OBSERVED",
-                  "pid": owned.pid, "starttime": owned.start, "returncode": code})
-    for stream in owned.streams:
-        stream.close()
-    require(code == 0, "native_gui_distribution_extraction_failed")
+    original = (GuiRejected("native_gui_distribution_extraction_failed")
+                if code != 0 else None)
+    try:
+        records.emit({"step": "distribution-extract", "state": "TERMINAL_OBSERVED",
+                      "pid": owned.pid, "starttime": owned.start, "returncode": code})
+        for stream in owned.streams:
+            stream.close()
+    except BaseException as recording_error:
+        if original is not None:
+            try:
+                original.add_note("native_terminal_custody_failed:" +
+                                  type(recording_error).__name__)
+            except BaseException:
+                pass
+            raise original from recording_error
+        raise
+    if original is not None:
+        raise original
     require(appdir.is_dir() and appdir.resolve(strict=True) == appdir,
             "native_gui_distribution_extraction_output_invalid")
 
@@ -528,16 +549,37 @@ class NativeProcess(OwnedProcess):
         self.ui.quit(self.phase + ".quit")
         try:
             code = self.process.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self.records.emit({"step": self.phase + ".terminal",
-                               "state": "UNKNOWN_STILL_RUNNING", "pid": self.pid,
-                               "replayed": False})
+        except subprocess.TimeoutExpired as original:
+            try:
+                self.records.emit({"step": self.phase + ".terminal",
+                                   "state": "UNKNOWN_STILL_RUNNING", "pid": self.pid,
+                                   "replayed": False})
+            except BaseException as recording_error:
+                try:
+                    original.add_note("native_terminal_custody_failed:" +
+                                      type(recording_error).__name__)
+                except BaseException:
+                    pass
+                raise original from recording_error
             raise
-        self.records.emit({"step": self.phase + ".terminal", "state": "OBSERVED",
-                           "pid": self.pid, "starttime": self.start, "returncode": code})
-        for stream in self.streams:
-            stream.close()
-        require(code == 0, "native_gui_process_nonzero_terminal")
+        original = (GuiRejected("native_gui_process_nonzero_terminal")
+                    if code != 0 else None)
+        try:
+            self.records.emit({"step": self.phase + ".terminal", "state": "OBSERVED",
+                               "pid": self.pid, "starttime": self.start, "returncode": code})
+            for stream in self.streams:
+                stream.close()
+        except BaseException as recording_error:
+            if original is not None:
+                try:
+                    original.add_note("native_terminal_custody_failed:" +
+                                      type(recording_error).__name__)
+                except BaseException:
+                    pass
+                raise original from recording_error
+            raise
+        if original is not None:
+            raise original
 
 
 def run_route(appdir: Path, binary: Path, binary_sha: str,

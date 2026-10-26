@@ -1476,5 +1476,142 @@ class NativeVerifiedSnapshotContracts(unittest.TestCase):
         self.assertEqual(projection["status"], "CUSTODY_FAILED")
 
 
+
+class NativeTerminalCustodyPriorityContracts(unittest.TestCase):
+    """Portable flow checks; Popen/GUI/processes are mocks, not native evidence."""
+
+    def exercise(self, operation, terminal, recording_error, *, failure_point,
+                 wait_error=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records = Mock()
+            records.root = root
+            records.owned_processes = []
+            streams = [Mock(), Mock()]
+            process = Mock(pid=411)
+            process.poll.return_value = 0
+            appdir = root / "extract" / "squashfs-root"
+            timeout = 30 if operation == "close" else 180
+            native_error = actions.GuiRejected(
+                "native_gui_process_nonzero_terminal" if operation == "close"
+                else "native_gui_distribution_extraction_failed")
+            states = []
+
+            def emit(value):
+                states.append(value)
+                if (failure_point == "terminal-write"
+                        and value["state"] in (
+                            "OBSERVED", "TERMINAL_OBSERVED", "UNKNOWN_STILL_RUNNING")):
+                    raise recording_error
+
+            records.emit.side_effect = emit
+            if failure_point == "first-close":
+                streams[0].close.side_effect = recording_error
+            elif failure_point == "second-close":
+                streams[1].close.side_effect = recording_error
+
+            def wait(**_):
+                if wait_error is not None:
+                    raise wait_error
+                if operation == "extract" and terminal == 0:
+                    appdir.mkdir()
+                return terminal
+
+            process.wait.side_effect = wait
+            owned = runner.NativeProcess.__new__(runner.NativeProcess)
+            owned.ui, owned.process, owned.records = Mock(), process, records
+            owned.phase, owned.pid, owned.start = "reopen", 411, 1234
+            owned.streams = streams
+            with patch.object(runner.subprocess, "Popen", return_value=process) as start, \
+                    patch.object(Path, "open", side_effect=streams) as open_log, \
+                    patch.object(runner, "GuiRejected", return_value=native_error) as rejected:
+                observed = None
+                try:
+                    if operation == "close":
+                        owned.close()
+                    else:
+                        runner.extract_distribution(root / "official.AppImage", appdir, records)
+                except BaseException as error:
+                    observed = error
+                if operation == "close":
+                    start.assert_not_called()
+                    open_log.assert_not_called()
+                    owned.ui.quit.assert_called_once_with("reopen.quit")
+                else:
+                    start.assert_called_once()
+                    self.assertEqual(start.call_args.args[0],
+                                     [str(root / "official.AppImage"), "--appimage-extract"])
+                    self.assertEqual(start.call_args.kwargs["cwd"], appdir.parent)
+                    self.assertIs(start.call_args.kwargs["stdout"], streams[0])
+                    self.assertIs(start.call_args.kwargs["stderr"], streams[1])
+                    self.assertEqual(open_log.call_count, 2)
+                    self.assertEqual(len(records.owned_processes), 1)
+                    self.assertIs(records.owned_processes[0].process, process)
+                    owned.ui.quit.assert_not_called()
+                process.wait.assert_called_once_with(timeout=timeout)
+                process.kill.assert_not_called()
+                process.terminate.assert_not_called()
+                if wait_error is None and terminal != 0:
+                    rejected.assert_called_once()
+                else:
+                    rejected.assert_not_called()
+
+            if wait_error is not None or failure_point == "terminal-write":
+                self.assertEqual([stream.close.call_count for stream in streams], [0, 0])
+            elif failure_point == "first-close":
+                self.assertEqual([stream.close.call_count for stream in streams], [1, 0])
+            else:
+                self.assertEqual([stream.close.call_count for stream in streams], [1, 1])
+            terminals = [value for value in states
+                         if value["state"] in (
+                             "OBSERVED", "TERMINAL_OBSERVED", "UNKNOWN_STILL_RUNNING")]
+            self.assertEqual(len(terminals), 1)
+            self.assertEqual(records.emit.call_count, 1 if operation == "close" else 3)
+            return observed, native_error, terminals[0]
+
+    def test_original_timeout_survives_unknown_terminal_custody_failure(self):
+        for operation in ("close", "extract"):
+            for error_type in (OSError, KeyboardInterrupt, SystemExit):
+                with self.subTest(operation=operation, recording_error=error_type.__name__):
+                    original = subprocess.TimeoutExpired(
+                        ["kdenlive"] if operation == "close" else ["official.AppImage"],
+                        30 if operation == "close" else 180)
+                    recording_error = error_type("terminal record unavailable")
+                    observed, _, terminal = self.exercise(
+                        operation, 0, recording_error, failure_point="terminal-write",
+                        wait_error=original)
+                    self.assertIs(observed, original)
+                    self.assertIs(observed.__cause__, recording_error)
+                    self.assertEqual(terminal["state"], "UNKNOWN_STILL_RUNNING")
+                    self.assertIs(terminal["replayed"], False)
+                    self.assertNotIn("returncode", terminal)
+                    self.assertIn("native_terminal_custody_failed:" + error_type.__name__,
+                                  observed.__notes__)
+
+    def test_native_terminal_and_success_keep_custody_error_priority(self):
+        for operation in ("close", "extract"):
+            for terminal_code in (2, 0):
+                for failure_point in ("terminal-write", "first-close", "second-close"):
+                    for error_type in (OSError, KeyboardInterrupt, SystemExit):
+                        with self.subTest(operation=operation, terminal_code=terminal_code,
+                                          failure_point=failure_point,
+                                          recording_error=error_type.__name__):
+                            recording_error = error_type("terminal custody unavailable")
+                            observed, original, terminal = self.exercise(
+                                operation, terminal_code, recording_error,
+                                failure_point=failure_point)
+                            self.assertEqual(terminal["returncode"], terminal_code)
+                            self.assertEqual(
+                                terminal["state"],
+                                "OBSERVED" if operation == "close" else "TERMINAL_OBSERVED")
+                            if terminal_code:
+                                self.assertIs(observed, original)
+                                self.assertIs(observed.__cause__, recording_error)
+                                self.assertIn(
+                                    "native_terminal_custody_failed:" + error_type.__name__,
+                                    observed.__notes__)
+                            else:
+                                self.assertIs(observed, recording_error)
+
 if __name__ == "__main__":
     unittest.main()
