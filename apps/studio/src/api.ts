@@ -558,6 +558,22 @@ export async function clearSavedSemwrightConnection(project: Project): Promise<b
   });
 }
 
+/** The native folder picker records this project's configured font media root.
+ * Folder paths and native authority stay outside the WebView.
+ */
+export async function chooseBrandFontMediaRoot(project: Project): Promise<boolean> {
+  if (!isTauri()) throw new Error("Font media folder selection requires the installed desktop app.");
+  const result = await invoke<unknown>("choose_brand_font_media_root", {
+    request: {
+      project_id: project.id,
+      generation: project.generation,
+      revision: project.revision,
+    },
+  });
+  if (typeof result !== "boolean") throw new Error("The desktop runtime returned an invalid font folder selection result.");
+  return result;
+}
+
 export async function productionRuntimeCompatibility(
   project: Project,
 ): Promise<ProductionRuntimeCompatibility> {

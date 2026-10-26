@@ -6,6 +6,7 @@ import {integrationScope,integrationEmptyInput,integrationExtension,integrationH
   integrationExtensionInput,integrationHandoffInput,integrationSnapshot} from "./integrationAuthoringDraft";
 import {useIntegrationAuthoringDraft,IntegrationRecoveryFeedback} from "./useIntegrationAuthoringDraft";
 import {
+  chooseBrandFontMediaRoot,
   chooseSemwrightConnection,
   clearSavedSemwrightConnection,
   productionRuntimeCompatibility,
@@ -121,7 +122,7 @@ function IntegrationWorkspaceEditor({project,nativeSdk,commit}:IntegrationProps)
     };
   }, [project.id, project.generation, nativeSdk.mode]);
 
-  const updateRuntimeSelection = async (action: "choose" | "clear") => {
+  const updateRuntimeSelection = async (action: "choose" | "clear" | "font") => {
     if (runtimeBusy || nativeSdk.mode !== "tauri" || !mounted.current) return;
     // Initial compatibility reads and explicit owner actions share authority.
     // Starting an action revokes older reads; it does not cancel native work.
@@ -134,7 +135,9 @@ function IntegrationWorkspaceEditor({project,nativeSdk,commit}:IntegrationProps)
     try {
       const changed = action === "choose"
         ? await chooseSemwrightConnection(project)
-        : await clearSavedSemwrightConnection(project);
+        : action === "clear"
+          ? await clearSavedSemwrightConnection(project)
+          : await chooseBrandFontMediaRoot(project);
       if (!current()) return;
       // A canceled native chooser does not install/replace anything.
       // Revoking only the saved pointer never stops an existing provider job.
@@ -142,13 +145,17 @@ function IntegrationWorkspaceEditor({project,nativeSdk,commit}:IntegrationProps)
       if (!current()) return;
       setRuntimeCompatibility(status);
       setRuntimeProbeFailed(false);
-      setRuntimeActionNote(action === "choose"
+      setRuntimeActionNote(action === "font"
         ? (changed
-            ? "Owner-selected runtime saved for this project. All production commands still require native policy and one-time grants."
-            : "File selection canceled. The previous runtime selection was preserved.")
-        : (changed
-            ? "Saved project connection reference removed. Existing native jobs and the owner's original connection file were not touched."
-            : "No saved project connection was present. An explicit environment connection may still apply."));
+            ? "Font media folder recorded for this project. Font licensing, folder access and render checks still apply."
+            : "Folder selection canceled. The previous font folder selection was preserved.")
+        : action === "choose"
+          ? (changed
+              ? "Owner-selected runtime saved for this project. All production commands still require native policy and one-time grants."
+              : "File selection canceled. The previous runtime selection was preserved.")
+          : (changed
+              ? "Saved project connection reference removed. Existing native jobs and the owner's original connection file were not touched."
+              : "No saved project connection was present. An explicit environment connection may still apply."));
     } catch (error) {
       if (!current()) return;
       setRuntimeActionNote(error instanceof Error ? error.message : String(error));
@@ -322,6 +329,7 @@ function IntegrationWorkspaceEditor({project,nativeSdk,commit}:IntegrationProps)
             <strong>Connect an existing Semwright runtime</strong>
             <p>Choose an owner-provisioned JSON connection with the operating system's file picker. Motionwright validates its project binding, executable digest and supported version before saving a local reference. This does not install Semwright, grant execution permission or expose the connection file to the editor.</p>
             <p>Required resource: <code className="mono">project:{project.id}</code>. The owner-created connection must name this exact project.</p>
+            <p>For brand fonts, choose the media folder configured for the selected Motion Canvas runtime.</p>
           </div>
           <div className="integration-runtime-actions">
             <button
@@ -339,6 +347,14 @@ function IntegrationWorkspaceEditor({project,nativeSdk,commit}:IntegrationProps)
               onClick={() => void updateRuntimeSelection("clear")}
             >
               Remove saved selection
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              disabled={nativeSdk.mode !== "tauri" || runtimeBusy}
+              onClick={() => void updateRuntimeSelection("font")}
+            >
+              Choose font media folder
             </button>
           </div>
           <p className="integration-runtime-note" role="status" aria-live="polite">
