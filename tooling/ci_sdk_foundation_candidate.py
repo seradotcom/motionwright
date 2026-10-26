@@ -3584,6 +3584,45 @@ def hosted_prepare_custody_python(root, gate, context, budget, call, environment
     return python, python_identity, dependency, probe
 
 
+def hosted_custody_readiness(root, clock, clock_identity, preparation):
+    """Retained time is distinct from observed crypto capability and export."""
+    value = {"custody_clock_retained": False,
+             "custody_capability_observed": preparation is not None,
+             "custody_interpreter_unchanged": False,
+             "custody_readiness_errors": [],
+             "custody_export": "NOT_ATTEMPTED",
+             "custody_export_complete": False}
+    try:
+        raw, observed = transport_original(root / "clock.original.json", root)
+        require(clock_identity is not None and observed == clock_identity
+                and custody.strict_json(raw) == clock, "original custody clock bytes or identity differ")
+        value["custody_clock_retained"] = True
+        value["custody_clock_identity"] = observed
+    except BaseException as error:
+        value["custody_readiness_errors"].append(type(error).__name__ + ": " + str(error))
+    if preparation is not None:
+        python, identity, dependency, capability = preparation
+        # These receipts came from the verified prepare function; a later
+        # toolchain/SDK failure cannot create or substitute that observation.
+        value["custody_capability"] = {"python": identity,
+                                       "dependency_command": dependency,
+                                       "probe_command": capability}
+        try:
+            require(custody.fingerprint(python, root) == identity,
+                    "observed custody interpreter changed or disappeared")
+            value["custody_interpreter_unchanged"] = True
+        except BaseException as error:
+            value["custody_readiness_errors"].append(type(error).__name__ + ": " + str(error))
+    value["ended_monotonic_ns"] = time.monotonic_ns()
+    value["custody_reserve_intact"] = value["ended_monotonic_ns"] <= clock["work_deadline_monotonic_ns"]
+    value["custody_export_eligible"] = all(value[key] for key in (
+        "custody_reserve_intact", "custody_clock_retained",
+        "custody_capability_observed", "custody_interpreter_unchanged"))
+    value["custody_status"] = ("CAPABILITY_OBSERVED_EXPORT_NOT_ATTEMPTED"
+                               if value["custody_export_eligible"] else "INCOMPLETE_CUSTODY_NOT_EXPORTED")
+    return value
+
+
 def hosted_controller(admission_id, environment=None):
     environment = dict(os.environ) if environment is None else dict(environment)
     context = request_context(environment, HOSTED_MODE, FIXED["sha"], admission_id)
@@ -3605,6 +3644,8 @@ def hosted_controller(admission_id, environment=None):
                 "automatic_retry": False,
                 "process_boundary": "DIRECT_PROCESS_ONLY", "escaped_descendants": "NOT_OBSERVED"}
     observations = []
+    custody_preparation = None
+    clock_identity = None
     resource_number = 0
     def bounded(argv, cwd, env, output, label, cap, frame):
         row = observer.command(argv, cwd, env, output, label, budget.remaining(cap), frame,
@@ -3626,6 +3667,7 @@ def hosted_controller(admission_id, environment=None):
         hosted_write_original(root / "review.original.json", parsed["originals"]["review"])
         hosted_write_original(root / "recipient-public.original.json", parsed["originals"]["recipient"])
         custody.write_new(root / "clock.original.json", clock)
+        clock_identity = custody.fingerprint(root / "clock.original.json", root)
         selected = authority(admission_id, HOSTED_MODE, FIXED["sha"])
         gate_admission = verify_hosted_gate(gate, context, selected, budget)
         for name in ("targets", "temporary", "cargo-home", "pip-cache", "npm-cache", "config", "data", "cache", "state", "runtime"):
@@ -3643,6 +3685,7 @@ def hosted_controller(admission_id, environment=None):
         gate_api_environment = dict(env, GH_TOKEN=environment.get("GH_TOKEN", ""))
         gate_g0 = hosted_gate_job(gate, root, context, budget, call, gate_api_environment)
         python, python_identity, dependency, capability = hosted_prepare_custody_python(root, gate, context, budget, call, env)
+        custody_preparation = (python, python_identity, dependency, capability)
         resolver = shutil.which("rustup")
         require(resolver is not None, "observed Rust toolchain resolver unavailable")
         resolver = Path(resolver).resolve(strict=True)
@@ -3705,19 +3748,18 @@ def hosted_controller(admission_id, environment=None):
         terminal.update(status="FAIL_CONTROLLER_NO_RETRY", error=type(error).__name__ + ": " + str(error))
     finally:
         terminal["commands"] = observations
-        terminal["ended_monotonic_ns"] = time.monotonic_ns()
-        terminal["custody_reserve_intact"] = terminal["ended_monotonic_ns"] <= clock["work_deadline_monotonic_ns"]
+        terminal.update(hosted_custody_readiness(root, clock, clock_identity, custody_preparation))
         if not terminal["custody_reserve_intact"]:
             terminal["status"] = "UNKNOWN_ORIGINAL_RESERVE_CONSUMED_NO_RETRY"
         terminal = hosted_collect_controller(root, context, terminal)
         custody.write_new(root / "controller.original.json", terminal)
-        # The only public crossing is a fixed readiness token for ciphertext
-        # custody. It cannot claim source/SDK success or human authority.
-        if terminal["custody_reserve_intact"] and (root / "clock.original.json").is_file():
-            with Path(environment["GITHUB_OUTPUT"]).open("a", encoding="ascii", newline="\n") as stream:
-                stream.write("custody_ready=true\n")
+        # A retained reserve alone cannot launch ciphertext custody. The fixed
+        # token permits an attempt, never claims an export or source/SDK PASS.
+        with Path(environment["GITHUB_OUTPUT"]).open("a", encoding="ascii", newline="\n") as stream:
+            stream.write("custody_ready=" + ("true" if terminal["custody_export_eligible"] else "false") + "\n")
     return 124 if terminal["status"].startswith("UNKNOWN") else (
-        0 if terminal["status"] == "WORKER_EXIT_OBSERVED_NOT_RESULT_ADMISSION" and terminal["worker"]["exit_code"] == 0 else 1)
+        0 if terminal["status"] == "WORKER_EXIT_OBSERVED_NOT_RESULT_ADMISSION"
+        and terminal["worker"]["exit_code"] == 0 and terminal["custody_export_eligible"] else 1)
 
 
 def main(argv=None):

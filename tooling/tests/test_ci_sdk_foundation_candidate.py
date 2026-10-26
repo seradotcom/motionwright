@@ -2258,5 +2258,215 @@ class SDKFoundationHostedCompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "uncertain"):
                 gate.hosted_load_bootstrap(root, hashlib.sha256(raw).hexdigest(), context, self.env)
 
+class SDKFoundationEarlyCustodyTests(unittest.TestCase):
+    """Execute the real controller with inert provisioning and no SDK child."""
+    def setUp(self):
+        existing = SDKFoundationHostedCompositionTests()
+        existing.setUp()
+        self.addCleanup(existing.doCleanups)
+        self.fixture = existing
+        self.counter = 0
+
+    def observe(self, failure=None, mutation=None, worker=False):
+        self.counter += 1
+        existing = self.fixture
+        auth, context = existing.qualification()
+        raw, _review, _recipient = existing.public_input(auth, context)
+        root = existing.root / ("early-custody-" + str(self.counter))
+        output = existing.root / ("output-" + str(self.counter))
+        env = dict(existing.env, SDK_FOUNDATION_TRANSPORT=raw.decode(), GITHUB_OUTPUT=str(output))
+        python = root / "toolchain/custody-python/Scripts/python.exe"
+        calls = []
+        original_monotonic = gate.time.monotonic_ns
+        def change_after_capability():
+            if mutation == "interpreter-changed":
+                python.write_bytes(b"changed after the observed crypto probe")
+            elif mutation == "interpreter-absent":
+                python.unlink()
+            elif mutation == "clock-changed":
+                (root / "clock.original.json").write_bytes(b"null\n")
+            elif mutation == "clock-absent":
+                (root / "clock.original.json").unlink()
+            elif mutation == "clock-equivalent-number":
+                path = root / "clock.original.json"
+                clock = json.loads(path.read_bytes())
+                clock["budget_seconds"] = float(clock["budget_seconds"])
+                path.write_bytes(gate.transport_json(clock))
+            elif mutation == "clock-whitespace":
+                path = root / "clock.original.json"
+                path.write_bytes(path.read_bytes() + b"\n")
+            elif mutation == "reserve-consumed":
+                clock = json.loads((root / "clock.original.json").read_bytes())
+                monotonic.side_effect = lambda: clock["work_deadline_monotonic_ns"] + 1
+        def command(argv, cwd, environment, logs, label, timeout, frame, observation):
+            calls.append(label)
+            allowed = ("custody-python", "transport-dependencies", "custody-capability")
+            self.assertIn(label, allowed + (("owned-toolchain", "sdk-prerequisites", "sdk-worker") if worker else ()))
+            if failure == "unknown-" + label:
+                raise gate.observer.UnknownExecution("original provisioning uncertainty", {
+                    "label": label, "exit_code": None, "observation": "UNKNOWN_TIMEOUT_NO_RETRY"})
+            if label == "custody-python" and failure != label:
+                python.parent.mkdir(parents=True)
+                python.write_bytes(b"inert owned custody interpreter; never executed")
+            if label == "sdk-worker":
+                change_after_capability()
+                return {"label": label, "argv": argv, "context": frame, "pid": 12345, "exit_code": 0}
+            return {"label": label, "argv": argv, "context": frame,
+                    "exit_code": 1 if failure == label else 0}
+        def capability(*_args):
+            value = {"status": "EXISTING_CUSTODY_IMPORTS_AND_RECIPIENT_OBSERVED",
+                     "context": context, "source_pins": dict(gate.HOSTED_TRANSPORT_PINS),
+                     "recipient_sha256": gate.HOSTED_TRANSPORT_RECIPIENT_SHA256,
+                     "private_key_loaded": False, "python": gate.custody.fingerprint(python, root)}
+            if mutation == "foreign-recipient":
+                value["recipient_sha256"] = "f" * 64
+            if mutation == "foreign-probe-context":
+                value["context"] = dict(context, authority_id="foreign")
+            return gate.transport_json(value)
+        def resolver(name):
+            self.assertEqual(name, "rustup")
+            if worker:
+                tool = existing.root / ("rustup-inert-" + str(self.counter))
+                tool.write_bytes(b"inert resolver; never executed")
+                return str(tool)
+            change_after_capability()
+            # Unless testing the intercepted worker return, preparation ends
+            # here. None of the command fixtures ever starts a process.
+            return None
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": auth}), \
+                patch.object(gate, "request_context", return_value=context), \
+                patch.object(gate, "hosted_private_root", return_value=root), \
+                patch.object(gate, "verify_hosted_gate", side_effect=(ValueError("gate original rejected")
+                             if failure == "gate" else None), return_value={}), \
+                patch.object(gate, "clean_environment", return_value={}), \
+                patch.object(gate, "observe_resources", return_value={"disk": {}}), \
+                patch.object(gate, "hosted_growth_observation", return_value={}), \
+                patch.object(gate, "hosted_component_snapshot", return_value={}), \
+                patch.object(gate, "hosted_gate_job", return_value={}), \
+                patch.object(gate.observer, "command", side_effect=command), \
+                patch.object(gate.observer, "original_stream", side_effect=capability), \
+                patch.object(gate.shutil, "which", side_effect=resolver), \
+                patch.object(gate.time, "monotonic_ns", side_effect=original_monotonic) as monotonic, \
+                patch.object(gate, "observe_tools", return_value=({}, {})), \
+                patch.object(gate, "hosted_image_tool_roots", return_value={}), \
+                patch.object(gate, "hosted_load_bootstrap", side_effect=lambda *_args: {
+                    "ack": json.loads((root / "bootstrap/technical-ready.original.json").read_bytes())}), \
+                patch.object(gate, "hosted_fetch_sources", return_value={}) as incoming:
+            result = gate.hosted_controller("remote", env)
+            if worker:
+                incoming.assert_called_once()
+            else:
+                incoming.assert_not_called()
+        terminal = json.loads((root / "controller.original.json").read_bytes())
+        name = "terminal.original.json" if terminal["status"].startswith("WORKER_EXIT_OBSERVED") else "original-failure.json"
+        retained = json.loads((root / "execution/evidence/controller" / name).read_bytes())
+        self.assertEqual(terminal, retained)
+        self.assertIs(terminal["worker_started"], worker)
+        self.assertFalse(terminal["automatic_retry"])
+        self.assertFalse(terminal["foundation_result_admitted"])
+        self.assertEqual(terminal["custody_export"], "NOT_ATTEMPTED")
+        self.assertFalse(terminal["custody_export_complete"])
+        return result, terminal, output.read_text(encoding="ascii"), calls
+
+    def assert_incomplete(self, value, token):
+        self.assertFalse(value["custody_export_eligible"])
+        self.assertEqual(value["custody_status"], "INCOMPLETE_CUSTODY_NOT_EXPORTED")
+        self.assertEqual(token, "custody_ready=false\n")
+
+    def test_early_gate_failure_retains_clock_and_reserve_without_claiming_crypto_ready(self):
+        code, value, token, calls = self.observe(failure="gate")
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, [])
+        self.assertTrue(value["custody_clock_retained"])
+        self.assertTrue(value["custody_reserve_intact"])
+        self.assertFalse(value["custody_capability_observed"])
+        self.assert_incomplete(value, token)
+
+    def test_failed_venv_dependencies_or_probe_never_advertise_ciphertext_readiness(self):
+        labels = ("custody-python", "transport-dependencies", "custody-capability")
+        for index, label in enumerate(labels):
+            with self.subTest(label=label):
+                code, value, token, calls = self.observe(failure=label)
+                self.assertEqual(code, 1)
+                self.assertEqual(calls, list(labels[:index + 1]))
+                self.assertTrue(value["custody_reserve_intact"])
+                self.assertFalse(value["custody_capability_observed"])
+                self.assert_incomplete(value, token)
+
+    def test_foreign_crypto_probe_is_not_capability_even_after_successful_install(self):
+        for mutation in ("foreign-recipient", "foreign-probe-context"):
+            with self.subTest(mutation=mutation):
+                code, value, token, calls = self.observe(mutation=mutation)
+                self.assertEqual(code, 1)
+                self.assertEqual(calls[-1], "custody-capability")
+                self.assertFalse(value["custody_capability_observed"])
+                self.assert_incomplete(value, token)
+
+    def test_observed_crypto_after_later_failure_only_permits_an_unattempted_export(self):
+        code, value, token, calls = self.observe()
+        self.assertEqual(code, 1)
+        self.assertEqual(value["status"], "FAIL_CONTROLLER_NO_RETRY")
+        self.assertIn("Rust toolchain resolver unavailable", value["error"])
+        self.assertEqual(calls, ["custody-python", "transport-dependencies", "custody-capability"])
+        self.assertTrue(value["custody_capability_observed"])
+        self.assertTrue(value["custody_interpreter_unchanged"])
+        self.assertTrue(value["custody_export_eligible"])
+        self.assertEqual(value["custody_status"], "CAPABILITY_OBSERVED_EXPORT_NOT_ATTEMPTED")
+        self.assertEqual(token, "custody_ready=true\n")
+
+    def test_changed_or_missing_observed_interpreter_blocks_the_export_attempt(self):
+        for mutation in ("interpreter-changed", "interpreter-absent"):
+            with self.subTest(mutation=mutation):
+                code, value, token, _calls = self.observe(mutation=mutation)
+                self.assertEqual(code, 1)
+                self.assertTrue(value["custody_capability_observed"])
+                self.assertFalse(value["custody_interpreter_unchanged"])
+                self.assertTrue(value["custody_readiness_errors"])
+                self.assert_incomplete(value, token)
+
+    def test_changed_or_missing_retained_clock_never_renews_the_original_reserve(self):
+        for mutation in ("clock-changed", "clock-absent", "clock-equivalent-number", "clock-whitespace"):
+            with self.subTest(mutation=mutation):
+                code, value, token, _calls = self.observe(mutation=mutation)
+                self.assertEqual(code, 1)
+                self.assertTrue(value["custody_capability_observed"])
+                self.assertFalse(value["custody_clock_retained"])
+                self.assertTrue(value["custody_readiness_errors"])
+                self.assert_incomplete(value, token)
+
+    def test_lost_original_reserve_remains_unknown_despite_observed_crypto_capability(self):
+        code, value, token, _calls = self.observe(mutation="reserve-consumed")
+        self.assertEqual(code, 124)
+        self.assertEqual(value["status"], "UNKNOWN_ORIGINAL_RESERVE_CONSUMED_NO_RETRY")
+        self.assertTrue(value["custody_capability_observed"])
+        self.assertFalse(value["custody_reserve_intact"])
+        self.assert_incomplete(value, token)
+
+    def test_unknown_provisioning_preserves_its_original_and_never_retries_or_runs_sdk(self):
+        code, value, token, calls = self.observe(failure="unknown-transport-dependencies")
+        self.assertEqual(code, 124)
+        self.assertEqual(value["status"], "UNKNOWN_CONTROLLER_NO_RETRY")
+        self.assertEqual(value["uncertain_command"]["label"], "transport-dependencies")
+        self.assertEqual(calls, ["custody-python", "transport-dependencies"])
+        self.assertFalse(value["custody_capability_observed"])
+        self.assert_incomplete(value, token)
+
+    def test_worker_zero_cannot_make_missing_custody_a_successful_controller_exit(self):
+        code, value, token, calls = self.observe(mutation="interpreter-absent", worker=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(calls[-1], "sdk-worker")
+        self.assertEqual(value["worker"]["exit_code"], 0)
+        self.assertTrue(value["custody_capability_observed"])
+        self.assert_incomplete(value, token)
+
+    def test_worker_zero_with_eligible_custody_still_does_not_claim_export_or_result_admission(self):
+        code, value, token, calls = self.observe(worker=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[-1], "sdk-worker")
+        self.assertEqual(value["status"], "WORKER_EXIT_OBSERVED_NOT_RESULT_ADMISSION")
+        self.assertTrue(value["custody_export_eligible"])
+        self.assertEqual(token, "custody_ready=true\n")
+
+
 if __name__ == "__main__":
     unittest.main()
