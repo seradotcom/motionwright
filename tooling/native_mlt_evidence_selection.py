@@ -1656,13 +1656,14 @@ def verify_sealed_selection(envelope,private_key,public,*,expected_diagnostic_ad
     return result
 
 # Exact SDK source selection; these names are not execution evidence.
-AUDIO_SOURCE_SHA = "b4a71f0c10d3e1d49e71212de7cb5de02b72a9c6"
-AUDIO_SOURCE_TREE = "17c9b6e84b18bfe4d3816bbc65cd005c68bdb5fb"
-AUDIO_SOURCE_PARENT = "01d4a99a8473273fda5c61b7220d6da1bee94786"
+AUDIO_SOURCE_SHA = "7a31aab1419b803c93e6527bb4abb2bd59222bf2"
+AUDIO_SOURCE_TREE = "4b573cfd586a111d54d24b30b5e0892e4554717b"
+AUDIO_SOURCE_PARENT = "b4a71f0c10d3e1d49e71212de7cb5de02b72a9c6"
 AUDIO_SOURCE_SCOPE = "audio-source-g1"
 AUDIO_SOURCE_G0 = "audio-source-g0"
 AUDIO_PHYSICAL_CASE = 'real_mlt_video_driver_runs_inside_sandbox'
 AUDIO_SOURCE_PINS = {'Cargo.lock': 'ec7f3946d36a3e9e0a6054173220553bd652904cfa48a17daec66ce2e549a18c',
+ 'crates/driver-host/src/lib.rs': 'da69223ac6f7e1b2a4421349ac77fb9b4c85526889c0722631b030cd3ef65821',
  'crates/driver-mlt-video/Cargo.toml': '3cdb4d26892d2335d8111b845d72980a69b3bf1e647230fa4f582c8cc701c501',
  'crates/driver-mlt-video/fixtures/SHA256SUMS.json': '00c8369bf4536477a30b496ab879f5df6627cab58239569a1ab3c79b6929bb6a',
  'crates/driver-mlt-video/fixtures/expected/capabilities.json': '9efa18cb207381988ef6e5e7601cd0c25f9266e487765cfa589a0ccd860d4168',

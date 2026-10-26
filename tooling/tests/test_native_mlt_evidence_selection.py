@@ -1279,6 +1279,11 @@ class AudioSourceSelectionTests(unittest.TestCase):
         self.assertIn("runtime::audio_derivative_tests::audio_capture_child_fixture",
                       mlt.AUDIO_SOURCE_ROSTERS["semwright_mlt_video"])
         self.assertEqual(len(mlt.audio_source_normal_specs()),4)
+        self.assertEqual((mlt.AUDIO_SOURCE_SHA, mlt.AUDIO_SOURCE_TREE, mlt.AUDIO_SOURCE_PARENT),
+                         ("7a31aab1419b803c93e6527bb4abb2bd59222bf2", "4b573cfd586a111d54d24b30b5e0892e4554717b",
+                          "b4a71f0c10d3e1d49e71212de7cb5de02b72a9c6"))
+        self.assertEqual(mlt.AUDIO_SOURCE_PINS["crates/driver-host/src/lib.rs"],
+                         "da69223ac6f7e1b2a4421349ac77fb9b4c85526889c0722631b030cd3ef65821")
 
     def test_audio_pretty_lists_admit_all_targets_and_separate_physical_ignore(self):
         for target,names in mlt.AUDIO_SOURCE_ROSTERS.items():
@@ -1341,7 +1346,9 @@ class AudioSourceSelectionTests(unittest.TestCase):
              "GITHUB_WORKFLOW_REF":"seradotcom/motionwright/.github/workflows/native-mlt-sequence-e2e.yml@refs/heads/source",
              "GITHUB_RUN_ID":"123"}
         self.assertEqual(mlt.audio_source_context(env,"linux")["product_source_sha"],mlt.AUDIO_SOURCE_SHA)
-        for key,value in (("MW_EXPECTED_SDK_SHA","b"*40),("GITHUB_RUN_ATTEMPT","2"),
+        for key,value in (("MW_EXPECTED_SDK_SHA","b"*40),
+                          ("MW_EXPECTED_SDK_SHA","b4a71f0c10d3e1d49e71212de7cb5de02b72a9c6"),
+                          ("GITHUB_RUN_ATTEMPT","2"),
                           ("GITHUB_SHA","c"*40),("RUNNER_OS","Windows"),
                           ("GITHUB_JOB","native-mlt-sequence"),("MW_MLT_SCOPE","normal")):
             with self.subTest(key=key),self.assertRaises(core.SelectionError):
