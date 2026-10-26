@@ -8,7 +8,8 @@ mod linux {
     use semwright_driver_host::DriverProvider;
     use semwright_driver_sdk::Manifest;
     use semwright_policy::FilesystemGrant;
-    use serde::Deserialize;
+    use semwright_types::Error as NativeError;
+    use serde::{Deserialize, Serialize};
     use serde_json::{Value, json};
     use std::{
         fs,
@@ -18,8 +19,41 @@ mod linux {
     };
     use tokio_util::sync::CancellationToken;
 
-    type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-    const SDK: &str = "4849b3c1dcee9b37438801b4264f59480bff9e40";
+    type BoxedError = Box<dyn std::error::Error + Send + Sync>;
+    type Result<T> = std::result::Result<T, BoxedError>;
+
+    fn sdk_pin_from_source_lock(raw: &str) -> Result<String> {
+        let lock: Value = serde_json::from_str(raw)?;
+        let source = &lock["dependencies"]["semwright"];
+        let revision = source["revision"]
+            .as_str()
+            .ok_or("compiled SDK revision is absent")?;
+        require(
+            lock["schema_version"] == 1
+                && source["repository"] == "https://github.com/seradotcom/semwright"
+                && revision.len() == 40
+                && revision
+                    .bytes()
+                    .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
+                && source["verification"]["status"] == "verified"
+                && source["verification"]["revision"] == revision,
+            "compiled SDK source lock differs",
+        )?;
+        Ok(revision.to_owned())
+    }
+
+    fn compiled_sdk_pin() -> Result<String> {
+        // The existing source-policy/controller admit the evidence and Cargo pin.
+        // Bind this binary to its compile-time lock instead of a second manual pin.
+        sdk_pin_from_source_lock(include_str!("../../../SOURCE_LOCK.json"))
+    }
+
+    fn require_compiled_sdk_pin(candidate: &str) -> Result<()> {
+        require(
+            candidate == compiled_sdk_pin()?,
+            "direct SDK differs from the compiled source lock",
+        )
+    }
 
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -174,6 +208,206 @@ mod linux {
         Ok(())
     }
 
+    #[derive(Debug)]
+    enum DirectCallPrimary {
+        ConfirmedResponse(Value),
+        Provider(Box<NativeError>),
+        ObserverTimeout(tokio::time::error::Elapsed),
+    }
+
+    #[derive(Debug)]
+    struct DirectCallFailure {
+        primary: DirectCallPrimary,
+        call_custody_error: Option<NativeError>,
+        host_custody_error: Option<NativeError>,
+    }
+
+    impl std::fmt::Display for DirectCallFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match &self.primary {
+                DirectCallPrimary::ConfirmedResponse(_) => {
+                    formatter.write_str("native response observed; private result custody failed")
+                }
+                DirectCallPrimary::Provider(error) => std::fmt::Display::fmt(error, formatter),
+                DirectCallPrimary::ObserverTimeout(_) => {
+                    formatter.write_str("direct call timed out; original outcome unknown")
+                }
+            }
+        }
+    }
+
+    impl std::error::Error for DirectCallFailure {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match &self.primary {
+                DirectCallPrimary::ConfirmedResponse(_) => self
+                    .call_custody_error
+                    .as_ref()
+                    .map(|error| error as &(dyn std::error::Error + 'static)),
+                DirectCallPrimary::Provider(error) => Some(error.as_ref()),
+                DirectCallPrimary::ObserverTimeout(error) => Some(error),
+            }
+        }
+    }
+
+    #[derive(Serialize)]
+    struct ConfirmedResponse<'a> {
+        // The returned provider value is data, not a grant or a job-completion claim.
+        payload: &'a Value,
+    }
+
+    #[derive(Serialize)]
+    struct DirectCallFailureDetails<'a> {
+        origin: &'static str,
+        outcome_known: bool,
+        confirmed_response: Option<ConfirmedResponse<'a>>,
+        native_error: Option<&'a NativeError>,
+        observer_timeout: bool,
+        call_custody_error: Option<&'a NativeError>,
+        host_custody_error: Option<&'a NativeError>,
+        full_error_in_selected_capsule: bool,
+    }
+
+    impl DirectCallFailure {
+        fn code(&self) -> String {
+            match &self.primary {
+                DirectCallPrimary::ConfirmedResponse(_) => "NativeResultCustodyFailed".to_owned(),
+                DirectCallPrimary::Provider(error) => format!("{:?}", error.code),
+                DirectCallPrimary::ObserverTimeout(_) => "Timeout".to_owned(),
+            }
+        }
+
+        fn outcome_known(&self) -> bool {
+            match &self.primary {
+                DirectCallPrimary::ConfirmedResponse(_) => true,
+                DirectCallPrimary::Provider(error) => error.outcome_known,
+                DirectCallPrimary::ObserverTimeout(_) => false,
+            }
+        }
+
+        fn details(&self) -> DirectCallFailureDetails<'_> {
+            let (origin, native_error, observer_timeout, confirmed_response) = match &self.primary {
+                DirectCallPrimary::ConfirmedResponse(value) => (
+                    "confirmed-response",
+                    None,
+                    false,
+                    Some(ConfirmedResponse { payload: value }),
+                ),
+                DirectCallPrimary::Provider(error) => {
+                    ("provider-error", Some(error.as_ref()), false, None)
+                }
+                DirectCallPrimary::ObserverTimeout(_) => ("observer-timeout", None, true, None),
+            };
+            DirectCallFailureDetails {
+                origin,
+                outcome_known: self.outcome_known(),
+                confirmed_response,
+                native_error,
+                observer_timeout,
+                call_custody_error: self.call_custody_error.as_ref(),
+                host_custody_error: self.host_custody_error.as_ref(),
+                full_error_in_selected_capsule: false,
+            }
+        }
+    }
+
+    #[derive(Serialize)]
+    struct DirectCallFailureSnapshot<'a> {
+        schema: &'static str,
+        code: String,
+        outcome_known: bool,
+        automatic_retry: bool,
+        originals_retained: bool,
+        // The existing json-projection selects the five fields above. These
+        // complete typed details remain in the private original, not its TAR
+        // projection; selecting them requires an explicit collector contract.
+        private_original: DirectCallFailureDetails<'a>,
+    }
+
+    fn retain_call_failure(stem: &Path, primary: DirectCallPrimary) -> DirectCallFailure {
+        let mut failure = DirectCallFailure {
+            primary,
+            call_custody_error: None,
+            host_custody_error: None,
+        };
+        let snapshot = DirectCallFailureSnapshot {
+            schema: "motionwright.hyperframes.direct-call-failure/1",
+            code: failure.code(),
+            outcome_known: failure.outcome_known(),
+            automatic_retry: false,
+            originals_retained: true,
+            private_original: failure.details(),
+        };
+        let custody = store::fresh_json(&stem.with_extension("failure.json"), &snapshot);
+        failure.call_custody_error = custody.err();
+        // Keep the same owned native Error or Elapsed even when its snapshot
+        // could not be reserved, written, synced or read back.
+        failure
+    }
+
+    fn finish_call_observation(
+        stem: &Path,
+        observed: std::result::Result<
+            std::result::Result<Value, NativeError>,
+            tokio::time::error::Elapsed,
+        >,
+    ) -> Result<Value> {
+        match observed {
+            Ok(Ok(value)) => {
+                match store::fresh_json(&stem.with_extension("result.json"), &value) {
+                    Ok(()) => Ok(value),
+                    Err(custody_error) => Err(Box::new(DirectCallFailure {
+                        // A confirmed response is distinct from native failure or
+                        // UNKNOWN. Stop the caller while retaining its whole Value.
+                        primary: DirectCallPrimary::ConfirmedResponse(value),
+                        call_custody_error: Some(custody_error),
+                        host_custody_error: None,
+                    })),
+                }
+            }
+            Ok(Err(error)) => Err(Box::new(retain_call_failure(
+                stem,
+                DirectCallPrimary::Provider(Box::new(error)),
+            ))),
+            Err(error) => Err(Box::new(retain_call_failure(
+                stem,
+                DirectCallPrimary::ObserverTimeout(error),
+            ))),
+        }
+    }
+
+    #[derive(Serialize)]
+    struct DirectHostFailureSnapshot<'a> {
+        schema: &'static str,
+        state: &'static str,
+        original_outcome_may_be_unknown: bool,
+        automatic_retry: bool,
+        originals_retained: bool,
+        private_original: Option<DirectCallFailureDetails<'a>>,
+    }
+
+    fn retain_host_failure(path: &Path, error: &mut BoxedError) {
+        let custody = {
+            let snapshot = DirectHostFailureSnapshot {
+                schema: "motionwright.hyperframes.direct-host-failure/1",
+                state: "NOT_VERIFIED",
+                original_outcome_may_be_unknown: true,
+                automatic_retry: false,
+                originals_retained: true,
+                private_original: error
+                    .downcast_ref::<DirectCallFailure>()
+                    .map(DirectCallFailure::details),
+            };
+            store::fresh_json(path, &snapshot)
+        };
+        if let Err(custody_error) = custody
+            && let Some(failure) = error.downcast_mut::<DirectCallFailure>()
+        {
+            failure.host_custody_error = Some(custody_error);
+        }
+        // The caller returns the same Box. No new native call or cleanup is
+        // started after an error/UNKNOWN, including a failure of both snapshots.
+    }
+
     struct Calls<'a> {
         provider: &'a DriverProvider,
         capabilities: Vec<ProvidedCapability>,
@@ -211,32 +445,7 @@ mod linux {
                 Provider::execute(self.provider, &context, &cap.descriptor, &args),
             )
             .await;
-            match observed {
-                Ok(Ok(value)) => {
-                    store::fresh_json(&stem.with_extension("result.json"), &value)?;
-                    Ok(value)
-                }
-                Ok(Err(error)) => {
-                    store::fresh_json(
-                        &stem.with_extension("failure.json"),
-                        &json!({
-                        "schema":"motionwright.hyperframes.direct-call-failure/1",
-                        "code":format!("{:?}",error.code),"outcome_known":error.outcome_known,
-                        "automatic_retry":false,"originals_retained":true}),
-                    )?;
-                    Err(error.into())
-                }
-                Err(_) => {
-                    store::fresh_json(
-                        &stem.with_extension("failure.json"),
-                        &json!({
-                        "schema":"motionwright.hyperframes.direct-call-failure/1",
-                        "code":"Timeout","outcome_known":false,
-                        "automatic_retry":false,"originals_retained":true}),
-                    )?;
-                    Err("direct call timed out; original outcome unknown".into())
-                }
-            }
+            finish_call_observation(&stem, observed)
         }
     }
     async fn execute(config: &Config, request: &Request, manifest: Manifest) -> Result<Value> {
@@ -386,7 +595,7 @@ mod linux {
         .await??;
         let summary = json!({
             "schema":"motionwright.hyperframes.direct-host-reference/1",
-            "context":{"source_sha":config.source_sha,"semwright_sha":SDK,
+            "context":{"source_sha":config.source_sha,"semwright_sha":config.semwright_sha,
                 "run_id":std::env::var("GITHUB_RUN_ID")?,"run_attempt":"1",
                 "scenario":"hyperframes-first-party-direct-mediated-edit"},
             "phase":config.phase,"source":request.source,
@@ -432,10 +641,10 @@ mod linux {
                 && config
                     .source_sha
                     .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                && config.semwright_sha == SDK,
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
             "direct original Actions identity required",
         )?;
+        require_compiled_sdk_pin(&config.semwright_sha)?;
         let request = checked_request(&bytes(&config.request, 512 * 1024)?, &config.phase)?;
         for file in [&config.driver, &config.node, &config.sandbox_helper] {
             let _ = bytes(file, 512 * 1024 * 1024)?;
@@ -500,13 +709,10 @@ mod linux {
                 );
                 Ok(())
             }
-            Err(error) => {
-                let _ = store::fresh_json(
+            Err(mut error) => {
+                retain_host_failure(
                     &config.evidence.join("direct-host-failure.json"),
-                    &json!({
-                    "schema":"motionwright.hyperframes.direct-host-failure/1",
-                    "state":"NOT_VERIFIED","original_outcome_may_be_unknown":true,
-                    "automatic_retry":false,"originals_retained":true}),
+                    &mut error,
                 );
                 Err(error)
             }
@@ -544,6 +750,306 @@ mod linux {
                 "fingerprint":source.fingerprint,"runtime_lock_sha256":"9".repeat(64),
                 "attempt_id":format!("direct-original-{}",&source.fingerprint[..16]),
                 "source":source})
+        }
+
+        fn native_error(outcome_known: bool) -> NativeError {
+            serde_json::from_value(json!({
+                "code": "BackendFailed",
+                "message": "original native detail\nretained with escaped controls",
+                "candidates": ["original request", "original receipt"],
+                "outcome_known": outcome_known,
+                "progress": {
+                    "completed_steps": 2,
+                    "failed_step": "driver.hyperframes.render.start",
+                    "state": "original state"
+                },
+                "native_diagnostic": {
+                    "phase": "NativeExchange", "reason": "UnexpectedEof",
+                    "exit_code": null, "signal": null,
+                    "stderr_tail_sha256": "a".repeat(64),
+                    "stderr_tail_bytes": 8192, "stderr_tail_truncated": true
+                }
+            }))
+            .unwrap()
+        }
+
+        fn allocations(error: &NativeError) -> (*const u8, *const String, *const ()) {
+            (
+                error.message.as_ptr(),
+                error.candidates.as_ptr(),
+                error.native_diagnostic.as_deref().unwrap() as *const _ as *const (),
+            )
+        }
+
+        fn call_failure(
+            error: &(dyn std::error::Error + Send + Sync + 'static),
+        ) -> &DirectCallFailure {
+            error.downcast_ref::<DirectCallFailure>().unwrap()
+        }
+
+        fn assert_native_primary(
+            error: &(dyn std::error::Error + Send + Sync + 'static),
+            expected: &Value,
+            original_allocations: (*const u8, *const String, *const ()),
+        ) {
+            let DirectCallPrimary::Provider(original) = &call_failure(error).primary else {
+                panic!("original native error was replaced by an observer timeout");
+            };
+            assert_eq!(serde_json::to_value(original).unwrap(), *expected);
+            assert_eq!(allocations(original), original_allocations);
+            assert!(
+                std::error::Error::source(call_failure(error))
+                    .unwrap()
+                    .is::<NativeError>()
+            );
+        }
+
+        fn read_json(path: &Path) -> Value {
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+        }
+
+        #[test]
+        fn direct_call_failure_retains_complete_known_and_unknown_errors() {
+            for outcome_known in [true, false] {
+                let directory = tempfile::tempdir().unwrap();
+                let root = directory.path().canonicalize().unwrap();
+                let stem = root.join("004-start");
+                let original = native_error(outcome_known);
+                let expected = serde_json::to_value(&original).unwrap();
+                let original_allocations = allocations(&original);
+                let returned = finish_call_observation(&stem, Ok(Err(original))).unwrap_err();
+
+                assert_native_primary(returned.as_ref(), &expected, original_allocations);
+                assert!(call_failure(returned.as_ref()).call_custody_error.is_none());
+                let snapshot = read_json(&stem.with_extension("failure.json"));
+                assert_eq!(snapshot["code"], expected["code"]);
+                assert_eq!(snapshot["outcome_known"], outcome_known);
+                assert_eq!(snapshot["private_original"]["native_error"], expected);
+                assert_eq!(snapshot["private_original"]["origin"], "provider-error");
+                assert_eq!(snapshot["private_original"]["observer_timeout"], false);
+                assert_eq!(
+                    snapshot["private_original"]["full_error_in_selected_capsule"],
+                    false
+                );
+                assert_eq!(snapshot["automatic_retry"], false);
+                assert!(!stem.with_extension("result.json").exists());
+                assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+            }
+        }
+
+        #[test]
+        fn direct_call_failure_existing_snapshot_keeps_primary_in_host_fallback() {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let stem = root.join("003-apply");
+            let call_path = stem.with_extension("failure.json");
+            let host_path = root.join("direct-host-failure.json");
+            let prior = b"prior call original must not be overwritten\n";
+            fs::write(&call_path, prior).unwrap();
+            let original = native_error(false);
+            let expected = serde_json::to_value(&original).unwrap();
+            let original_allocations = allocations(&original);
+            let mut returned = finish_call_observation(&stem, Ok(Err(original))).unwrap_err();
+
+            assert_native_primary(returned.as_ref(), &expected, original_allocations);
+            let secondary = serde_json::to_value(
+                call_failure(returned.as_ref())
+                    .call_custody_error
+                    .as_ref()
+                    .unwrap(),
+            )
+            .unwrap();
+            retain_host_failure(&host_path, &mut returned);
+
+            assert_native_primary(returned.as_ref(), &expected, original_allocations);
+            assert_eq!(fs::read(&call_path).unwrap(), prior);
+            let fallback = read_json(&host_path);
+            assert_eq!(fallback["private_original"]["native_error"], expected);
+            assert_eq!(
+                fallback["private_original"]["call_custody_error"],
+                secondary
+            );
+            assert!(call_failure(returned.as_ref()).host_custody_error.is_none());
+            assert_eq!(fallback["state"], "NOT_VERIFIED");
+            assert_eq!(fallback["automatic_retry"], false);
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        }
+
+        #[test]
+        fn direct_call_failure_both_snapshots_blocked_keeps_primary_and_secondaries() {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let stem = root.join("004-start");
+            let call_path = stem.with_extension("failure.json");
+            let host_path = root.join("direct-host-failure.json");
+            let prior_call = b"original call reservation\n";
+            let prior_host = b"original host reservation\n";
+            fs::write(&call_path, prior_call).unwrap();
+            fs::write(&host_path, prior_host).unwrap();
+            let original = native_error(true);
+            let expected = serde_json::to_value(&original).unwrap();
+            let original_allocations = allocations(&original);
+            let mut returned = finish_call_observation(&stem, Ok(Err(original))).unwrap_err();
+
+            retain_host_failure(&host_path, &mut returned);
+
+            assert_native_primary(returned.as_ref(), &expected, original_allocations);
+            assert!(call_failure(returned.as_ref()).call_custody_error.is_some());
+            assert!(call_failure(returned.as_ref()).host_custody_error.is_some());
+            assert_eq!(fs::read(&call_path).unwrap(), prior_call);
+            assert_eq!(fs::read(&host_path).unwrap(), prior_host);
+            assert!(!stem.with_extension("result.json").exists());
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        }
+
+        #[tokio::test]
+        async fn direct_observer_timeout_keeps_elapsed_and_unknown_after_custody_failure() {
+            for block_custody in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let root = directory.path().canonicalize().unwrap();
+                let stem = root.join("004-start");
+                let call_path = stem.with_extension("failure.json");
+                let host_path = root.join("direct-host-failure.json");
+                if block_custody {
+                    fs::write(&call_path, b"prior call").unwrap();
+                    fs::write(&host_path, b"prior host").unwrap();
+                }
+                let observed = tokio::time::timeout(
+                    Duration::from_millis(1),
+                    std::future::pending::<std::result::Result<Value, NativeError>>(),
+                )
+                .await;
+                assert!(observed.is_err());
+                let mut returned = finish_call_observation(&stem, observed).unwrap_err();
+                retain_host_failure(&host_path, &mut returned);
+
+                let failure = call_failure(returned.as_ref());
+                assert!(matches!(
+                    &failure.primary,
+                    DirectCallPrimary::ObserverTimeout(_)
+                ));
+                assert!(!failure.outcome_known());
+                assert_eq!(failure.code(), "Timeout");
+                assert!(
+                    std::error::Error::source(failure)
+                        .unwrap()
+                        .is::<tokio::time::error::Elapsed>()
+                );
+                assert_eq!(failure.call_custody_error.is_some(), block_custody);
+                assert_eq!(failure.host_custody_error.is_some(), block_custody);
+                if block_custody {
+                    assert_eq!(fs::read(&call_path).unwrap(), b"prior call");
+                    assert_eq!(fs::read(&host_path).unwrap(), b"prior host");
+                } else {
+                    let snapshot = read_json(&call_path);
+                    assert_eq!(snapshot["code"], "Timeout");
+                    assert_eq!(snapshot["outcome_known"], false);
+                    assert!(snapshot["private_original"]["native_error"].is_null());
+                    assert_eq!(snapshot["private_original"]["origin"], "observer-timeout");
+                    assert_eq!(snapshot["automatic_retry"], false);
+                }
+                assert!(!stem.with_extension("result.json").exists());
+            }
+        }
+
+        #[test]
+        fn direct_success_retains_result_without_inventing_failure() {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let stem = root.join("004-start");
+            let observed = json!({"job_ref": "synthetic-source-contract", "state": "running"});
+            let returned = finish_call_observation(&stem, Ok(Ok(observed.clone()))).unwrap();
+            assert_eq!(returned, observed);
+            assert_eq!(read_json(&stem.with_extension("result.json")), observed);
+            assert!(!stem.with_extension("failure.json").exists());
+            assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+        }
+
+        #[test]
+        fn confirmed_response_survives_result_and_host_custody_failures_without_replay() {
+            for block_host in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let root = directory.path().canonicalize().unwrap();
+                let stem = root.join("004-start");
+                let result_path = stem.with_extension("result.json");
+                let host_path = root.join("direct-host-failure.json");
+                let prior_result = b"prior result reservation\n";
+                fs::write(&result_path, prior_result).unwrap();
+                if block_host {
+                    fs::write(&host_path, b"prior host reservation").unwrap();
+                }
+                let original = json!({
+                    "job_ref": "original-confirmed-response",
+                    "state": "running",
+                    "opaque": {"text": "original\nresponse", "values": [null, true, 18446744073709551615_u64]}
+                });
+                let expected = original.clone();
+                let pointer = original["job_ref"].as_str().unwrap().as_ptr();
+                let mut returned = finish_call_observation(&stem, Ok(Ok(original))).unwrap_err();
+                retain_host_failure(&host_path, &mut returned);
+
+                let failure = call_failure(returned.as_ref());
+                let DirectCallPrimary::ConfirmedResponse(value) = &failure.primary else {
+                    panic!("confirmed native response was changed into failure or UNKNOWN");
+                };
+                assert_eq!(*value, expected);
+                assert_eq!(value["job_ref"].as_str().unwrap().as_ptr(), pointer);
+                assert!(failure.outcome_known());
+                assert_eq!(failure.code(), "NativeResultCustodyFailed");
+                assert!(failure.call_custody_error.is_some());
+                assert_eq!(failure.host_custody_error.is_some(), block_host);
+                assert_eq!(fs::read(&result_path).unwrap(), prior_result);
+                assert!(!stem.with_extension("failure.json").exists());
+                if block_host {
+                    assert_eq!(fs::read(&host_path).unwrap(), b"prior host reservation");
+                } else {
+                    let snapshot = read_json(&host_path);
+                    assert_eq!(snapshot["state"], "NOT_VERIFIED");
+                    assert_eq!(
+                        snapshot["private_original"]["confirmed_response"]["payload"],
+                        expected
+                    );
+                    assert_eq!(snapshot["private_original"]["origin"], "confirmed-response");
+                    assert_eq!(snapshot["private_original"]["outcome_known"], true);
+                    assert_eq!(snapshot["private_original"]["observer_timeout"], false);
+                    assert!(snapshot["private_original"]["native_error"].is_null());
+                    assert_eq!(
+                        snapshot["private_original"]["full_error_in_selected_capsule"],
+                        false
+                    );
+                    assert_eq!(snapshot["automatic_retry"], false);
+                }
+                assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+            }
+        }
+
+        #[test]
+        fn compiled_sdk_pin_rejects_runtime_substitution() {
+            let original = compiled_sdk_pin().unwrap();
+            require_compiled_sdk_pin(&original).unwrap();
+            let replacement = if original == "0".repeat(40) {
+                "1".repeat(40)
+            } else {
+                "0".repeat(40)
+            };
+            assert!(require_compiled_sdk_pin(&replacement).is_err());
+            assert!(require_compiled_sdk_pin("unknown").is_err());
+        }
+
+        #[test]
+        fn compiled_sdk_pin_rejects_unverified_or_mismatched_lock() {
+            let original: Value =
+                serde_json::from_str(include_str!("../../../SOURCE_LOCK.json")).unwrap();
+            for field in ["status", "revision"] {
+                let mut changed = original.clone();
+                changed["dependencies"]["semwright"]["verification"][field] = json!("different");
+                assert!(
+                    sdk_pin_from_source_lock(&serde_json::to_string(&changed).unwrap()).is_err()
+                );
+            }
+            let mut changed = original;
+            changed["dependencies"]["semwright"]["repository"] = json!("https://other.invalid/sdk");
+            assert!(sdk_pin_from_source_lock(&serde_json::to_string(&changed).unwrap()).is_err());
         }
 
         #[test]
