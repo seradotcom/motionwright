@@ -204,13 +204,13 @@ class _BootObservations:
 
 
 def expected_storage_schema(storage_cohort, first_use_contract):
-    """Keep historical defaults while requiring source admission for schema4/5."""
+    """Keep historical defaults while requiring source admission for schema4/5/6."""
     _first_use_title(first_use_contract)
     historical = (LEGACY_EXPECTED_SCHEMA if first_use_contract == LEGACY_FIRST_USE_CONTRACT
                   else EXPECTED_SCHEMA)
     version = storage.expected_schema(storage_cohort, historical_default=historical)
     require((first_use_contract == LEGACY_FIRST_USE_CONTRACT and version == 2)
-            or (first_use_contract == CURRENT_FIRST_USE_CONTRACT and version in (3, 4, 5)),
+            or (first_use_contract == CURRENT_FIRST_USE_CONTRACT and version in (3, 4, 5, 6)),
             "SQLite cohort conflicts with the admitted first-use contract")
     return version
 

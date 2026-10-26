@@ -845,5 +845,86 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         self.assertFalse(output.exists())
 
 
+
+def schema_six_project(target, *, empty=False):
+    from test_storage_schema_contract import SCHEMA_SIX_V5_SQL, SCHEMA_SIX_MIGRATION_SQL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source = {"id": str(uuid.uuid4()), "generation": str(uuid.uuid4()),
+              "revision": 1, "title": TITLE, "schema_version": 2}
+    with closing(sqlite3.connect(target)) as db, db:
+        db.executescript(SCHEMA_SIX_V5_SQL)
+        if not empty:
+            db.execute("INSERT INTO projects(id,generation,revision,title,document_json,updated_at) "
+                       "VALUES(?,?,?,?,?,?)", (source["id"], source["generation"], source["revision"],
+                       source["title"], json.dumps(source), "synthetic"))
+        db.execute("INSERT INTO cas_store_identity VALUES(1,?)", (str(uuid.uuid4()),))
+        db.executescript(SCHEMA_SIX_MIGRATION_SQL)
+        db.execute("PRAGMA user_version=6")
+    return source
+
+
+class StorageSixColdStartControls(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-cold-six-", dir=ROOT)
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def test_explicit_six_snapshot_reads_original_and_preserves_historical_defaults(self):
+        path = self.root / "motionwright.sqlite3"
+        source = schema_six_project(path)
+        original = path.read_bytes()
+        selected = storage_cohort_fixture(6)
+        self.assertEqual(windows.read_project_snapshot(path, storage_cohort=selected)["project_id"],
+                         source["id"])
+        self.assertEqual(windows.expected_storage_schema(selected, windows.CURRENT_FIRST_USE_CONTRACT), 6)
+        with self.assertRaises(windows.ColdStartError):
+            windows.expected_storage_schema(selected, windows.LEGACY_FIRST_USE_CONTRACT)
+        with self.assertRaises(windows.ColdStartError):
+            windows.read_project_snapshot(path)
+        self.assertEqual(windows.expected_storage_schema(None, windows.CURRENT_FIRST_USE_CONTRACT), 3)
+        self.assertEqual(windows.expected_storage_schema(None, windows.LEGACY_FIRST_USE_CONTRACT), 2)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_six_empty_library_requires_budget_and_cas_writer_fences_before_create(self):
+        path = self.root / "motionwright.sqlite3"
+        schema_six_project(path, empty=True)
+        selected = storage_cohort_fixture(6)
+        self.assertTrue(windows._empty_library_ready(path, storage_cohort=selected))
+        self.assertFalse(windows._empty_library_ready(path))
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("DROP TRIGGER mw_writer_v6_cas_store_identity_insert")
+        original = path.read_bytes()
+        self.assertFalse(windows._empty_library_ready(path, storage_cohort=selected))
+        with self.assertRaisesRegex(windows.ColdStartError, "storage_schema6_writer_objects_differ"):
+            windows.read_project_snapshot(path, storage_cohort=selected)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_six_boot_passes_selected_cohort_to_actual_sqlite_reader(self):
+        path = self.root / "motionwright.sqlite3"
+        source = schema_six_project(path)
+        with mocked_boot() as (process, launch, create), \
+             patch.object(windows, "known_databases", return_value=[path]):
+            observed, repeated, _ = windows.boot_once(
+                self.root / "unused.exe", {}, [self.root], self.root / "six.log",
+                storage_cohort=storage_cohort_fixture(6))
+        self.assertEqual(observed["project_id"], source["id"])
+        self.assertEqual(repeated, path)
+        create.assert_not_called()
+        self.assertEqual(launch.call_count, 1)
+
+    def test_six_unknown_create_is_not_replayed(self):
+        path = self.root / "motionwright.sqlite3"
+        schema_six_project(path, empty=True)
+        original = windows.ColdStartError("synthetic original create UNKNOWN")
+        with mocked_boot(create_effect=original) as (process, launch, create), \
+             patch.object(windows, "known_databases", return_value=[path]):
+            with self.assertRaises(windows.ColdStartError) as caught:
+                windows.boot_once(self.root / "unused.exe", {}, [self.root], self.root / "unknown-six.log",
+                                  storage_cohort=storage_cohort_fixture(6))
+        self.assertIs(caught.exception, original)
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(launch.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
