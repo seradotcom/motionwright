@@ -3424,7 +3424,7 @@ jobs:
               ;;
             workflow_dispatch:audio-source-g1)
               test "$MW_EXPECTED_GATE_SHA" = "$GITHUB_SHA"
-              test "$MW_EXPECTED_SDK_SHA" = 7a31aab1419b803c93e6527bb4abb2bd59222bf2
+              test "$MW_EXPECTED_SDK_SHA" = ccc813e22f4b2d8ae112eb10a88abb8339a54d80
               ;;
             *) exit 2 ;;
           esac
@@ -3474,7 +3474,7 @@ jobs:
         if: ${{ success() && inputs.verification_scope == 'audio-source-g1' }}
         with:
           repository: seradotcom/semwright
-          ref: 7a31aab1419b803c93e6527bb4abb2bd59222bf2
+          ref: ccc813e22f4b2d8ae112eb10a88abb8339a54d80
           path: sdk
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -3502,7 +3502,7 @@ jobs:
           PY
           exit "$result"
       - name: Retain source originals for this exact attempt
-        if: always()
+        if: ${{ always() && env.MW_AUDIO_CONTROLS != '' && env.MW_AUDIO_ORIGINALS != '' }}
         timeout-minutes: 5
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
