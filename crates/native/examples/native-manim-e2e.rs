@@ -23,7 +23,7 @@ mod editable_cycle;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-manim-e2e <seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON [REQUEST_ID] | realize-bundle DATABASE CONNECTION EVIDENCE_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | source-cycle-edit DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT REQUEST_ID | source-cycle-readback DATABASE EDIT_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
+        "usage: native-manim-e2e <seed-graph-profile DATABASE | observe-graph-profile DATABASE CONNECTION SEED_JSON EVIDENCE_JSON | seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON [REQUEST_ID] | realize-bundle DATABASE CONNECTION EVIDENCE_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | source-cycle-edit DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT REQUEST_ID | source-cycle-readback DATABASE EDIT_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
     );
     std::process::exit(2);
 }
@@ -285,6 +285,488 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             "native_execution_performed": false
         }))?
     );
+    Ok(())
+}
+
+const GRAPH_PROFILE_SEED_SCHEMA: &str = "motionwright.manim.graph-profile-seed/1";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphProfileSeed {
+    schema: String,
+    project_id: Uuid,
+    resource: String,
+    source_snapshot: motionwright_domain::GraphSourceSnapshot,
+    scene_id: Uuid,
+    deliverable_id: Uuid,
+    asset_pins: serde_json::Value,
+    helper_pins: serde_json::Value,
+    graph_saved: bool,
+    native_execution_performed: bool,
+    profile_admitted: bool,
+}
+
+fn graph_profile_helper_pins() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let schema = motionwright_manim_profile::semantic_graph_profile_probe::
+        fixed_graph_profile_observation_schema_v1();
+    let pins = schema
+        .pointer("/properties/helper_pins/const")
+        .and_then(serde_json::Value::as_array)
+        .filter(|pins| pins.len() == 6)
+        .ok_or("Compiler Graph helper closure is absent")?;
+    Ok(json!(pins))
+}
+
+fn check_graph_profile_seed(
+    project: &motionwright_domain::Project,
+    seed: &GraphProfileSeed,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if seed.schema != GRAPH_PROFILE_SEED_SCHEMA
+        || seed.project_id != project.id
+        || seed.resource != project.resource_key()
+        || seed.source_snapshot != motionwright_domain::GraphSourceSnapshot::from_project(project)
+        || seed.graph_saved
+        || seed.native_execution_performed
+        || seed.profile_admitted
+        || !project.production_design.semantic_graphs.is_empty()
+        || seed.helper_pins != graph_profile_helper_pins()?
+        || seed.asset_pins
+            != serde_json::to_value(
+                motionwright_manim_profile::semantic_graph_source::graph_builtin_asset_pins(),
+            )?
+    {
+        return Err("Graph profile seed is not the original current source selection".into());
+    }
+    motionwright_native::manim_graph_projection::validate_manim_semantic_graph_scene_output(
+        project,
+        &seed.source_snapshot,
+        seed.scene_id,
+        seed.deliverable_id,
+    )?;
+    Ok(())
+}
+
+fn create_graph_profile_seed(
+    database: &Path,
+) -> Result<GraphProfileSeed, Box<dyn std::error::Error>> {
+    let service = StudioService::open(database)?;
+    if !service.projects(2)?.is_empty() {
+        return Err("Graph profile seed database must start empty".into());
+    }
+    let mut project = service.create_project("Initial native Graph profile observation")?;
+    project = service
+        .apply(
+            project.id,
+            &RevisionStamp::from(&project),
+            "graph-profile-seed-scene",
+            &Change::AddScene {
+                name: "Initial Graph scene".into(),
+                objective: "Observe the fixed native profile before creating any Graph".into(),
+                duration_seconds: 2,
+            },
+        )?
+        .project;
+    let scene_id = project.scenes[0].id;
+    project = service
+        .apply(
+            project.id,
+            &RevisionStamp::from(&project),
+            "graph-profile-seed-renderer",
+            &Change::SetSceneRenderer {
+                scene_id,
+                renderer: RendererKind::ManimCommunity,
+            },
+        )?
+        .project;
+    let mut output = project
+        .deliverables
+        .first()
+        .ok_or("Graph seed project has no saved output")?
+        .clone();
+    output.width = 640;
+    output.height = 360;
+    output.frame_rate = RationalTime::new(12, 1)?;
+    output.container = OutputContainer::Mp4;
+    output.video_codec = VideoCodec::H264;
+    output.color_space = OutputColorSpace::Rec709;
+    output.captions = false;
+    output.burn_in_captions = false;
+    output.included_scene_ids = vec![scene_id];
+    let deliverable_id = output.id;
+    project = service
+        .apply(
+            project.id,
+            &RevisionStamp::from(&project),
+            "graph-profile-seed-output",
+            &Change::UpsertDeliverable { profile: output },
+        )?
+        .project;
+    let seed = GraphProfileSeed {
+        schema: GRAPH_PROFILE_SEED_SCHEMA.into(),
+        project_id: project.id,
+        resource: project.resource_key(),
+        source_snapshot: motionwright_domain::GraphSourceSnapshot::from_project(&project),
+        scene_id,
+        deliverable_id,
+        asset_pins: serde_json::to_value(
+            motionwright_manim_profile::semantic_graph_source::graph_builtin_asset_pins(),
+        )?,
+        helper_pins: graph_profile_helper_pins()?,
+        graph_saved: false,
+        native_execution_performed: false,
+        profile_admitted: false,
+    };
+    check_graph_profile_seed(&project, &seed)?;
+    if !service.production_receipts(project.id, 1)?.is_empty() {
+        return Err("Source-only Graph seed unexpectedly contains a production receipt".into());
+    }
+    Ok(seed)
+}
+
+fn seed_graph_profile(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "{}",
+        serde_json::to_string(&create_graph_profile_seed(database)?)?
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn graph_profile_original_file(
+    path: &Path,
+    limit: u64,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use std::{io::Read, os::unix::fs::MetadataExt};
+    fn identity(metadata: &std::fs::Metadata) -> (u64, u64, u32, u64, u64, i64, i64, i64, i64) {
+        (
+            metadata.dev(),
+            metadata.ino(),
+            metadata.mode(),
+            metadata.nlink(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        )
+    }
+    let before = std::fs::symlink_metadata(path)?;
+    if !path.is_absolute()
+        || path.canonicalize()? != path
+        || !before.is_file()
+        || before.file_type().is_symlink()
+        || before.nlink() != 1
+        || limit == 0
+        || limit > 64 * 1024
+        || before.len() > limit
+    {
+        return Err("Graph profile original input is not a bounded canonical regular file".into());
+    }
+    let mut file = std::fs::File::open(path)?;
+    let opened = file.metadata()?;
+    if identity(&before) != identity(&opened) {
+        return Err("Graph profile original input changed before descriptor capture".into());
+    }
+    let mut bytes = Vec::new();
+    (&mut file).take(limit + 1).read_to_end(&mut bytes)?;
+    let after = file.metadata()?;
+    let final_path = std::fs::symlink_metadata(path)?;
+    if bytes.len() as u64 != opened.len()
+        || bytes.len() as u64 > limit
+        || identity(&opened) != identity(&after)
+        || identity(&after) != identity(&final_path)
+        || path.canonicalize()? != path
+    {
+        return Err("Graph profile original input changed during descriptor capture".into());
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn graph_profile_original_file(
+    _path: &Path,
+    _limit: u64,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    Err(semwright_native_sdk::Error::new(
+        semwright_native_sdk::ErrorCode::Unsupported,
+        "This physical Graph probe caller requires Unix descriptor identity for original inputs",
+    )
+    .into())
+}
+
+fn graph_profile_captured_bytes(
+    value: &serde_json::Value,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if value["encoding"] != "hex" {
+        return Err("Graph transport custody requires original binary bytes".into());
+    }
+    let bytes = hex::decode(
+        value["value"]
+            .as_str()
+            .ok_or("Graph custody bytes are absent")?,
+    )?;
+    if value["bytes"].as_u64() != Some(bytes.len() as u64)
+        || value["sha256"] != hex::encode(Sha256::digest(&bytes))
+    {
+        return Err("Graph transport original byte identity changed".into());
+    }
+    Ok(bytes)
+}
+
+fn retain_graph_profile_transport(
+    root: &Path,
+    capture: &serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    // The complete lossless snapshot is retained first, including error terminals.
+    // If a later convenience-file write fails, the snapshot still has every byte.
+    let mut snapshot_bytes = serde_json::to_vec_pretty(capture)?;
+    snapshot_bytes.push(b'\n');
+    retain_seed_fixture(
+        &root.join("graph-profile-transport.original.json"),
+        &snapshot_bytes,
+    )?;
+    let mut files = vec![json!({
+        "relative_path":"graph-profile-transport.original.json",
+        "sha256":hex::encode(Sha256::digest(&snapshot_bytes)),
+        "bytes":snapshot_bytes.len(),
+    })];
+    for (index, entry) in capture["entries"]
+        .as_array()
+        .ok_or("Graph transport entries are absent")?
+        .iter()
+        .enumerate()
+    {
+        for (name, value) in [
+            ("args.json", &entry["args_json"]),
+            ("stdout.bin", &entry["stdout"]["original"]),
+            ("stderr.bin", &entry["stderr"]["original"]),
+        ] {
+            let bytes = graph_profile_captured_bytes(value)?;
+            let relative = format!("graph-profile-transport-{index:02}.{name}");
+            retain_seed_fixture(&root.join(&relative), &bytes)?;
+            files.push(json!({
+                "relative_path":relative,
+                "sha256":hex::encode(Sha256::digest(&bytes)),
+                "bytes":bytes.len(),
+            }));
+        }
+    }
+    Ok(json!(files))
+}
+
+fn require_graph_profile_transport(
+    capture: &serde_json::Value,
+    observation: &motionwright_native::production::ManimGraphProfileObservation,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if capture["schema"] != "motionwright.production.private-transport-custody/1"
+        || capture["mutex_poisoned"] != false
+        || capture["authority"] != false
+    {
+        return Err("Graph original transport custody is incomplete".into());
+    }
+    let entries = capture["entries"]
+        .as_array()
+        .ok_or("Graph transport entries are absent")?;
+    if entries.len() != 2 {
+        return Err("Graph observation must retain one registry and one Graph doctor".into());
+    }
+    let projected = serde_json::to_value(observation)?;
+    for (index, (command, args)) in [
+        ("doctor", &b"{}"[..]),
+        (
+            "driver.manim-community.doctor",
+            &br#"{"probe_graph_profile":true}"#[..],
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let entry = &entries[index];
+        if entry["command"] != command
+            || entry["mutation"] != false
+            || entry["process_started"] != true
+            || entry["process_exit"]["success"] != true
+            || entry["transport_terminal"]["kind"] != "success"
+            || entry["connection_identity"] != observation.connection_identity()
+            || entry["executable_sha256"] != projected["transport_executable_sha256"]
+            || entry["stdin_mode"] != "null"
+            || entry["automatic_retry"] != false
+            || graph_profile_captured_bytes(&entry["args_json"])? != args
+        {
+            return Err(
+                "Graph transport attempt does not match the original selected request".into(),
+            );
+        }
+        for stream in ["stdout", "stderr"] {
+            if entry[stream]["eof_observed"] != true
+                || entry[stream]["read_error_observed"] != false
+                || entry[stream]["capture_limit_exceeded"] != false
+            {
+                return Err("Graph transport stream is incomplete".into());
+            }
+        }
+        let raw: serde_json::Value =
+            serde_json::from_slice(&graph_profile_captured_bytes(&entry["stdout"]["original"])?)?;
+        let expected_request = if index == 0 {
+            &projected["registry_broker_request_id"]
+        } else {
+            &projected["broker_request_id"]
+        };
+        if raw["ok"] != true || raw["command"] != command || &raw["request_id"] != expected_request
+        {
+            return Err("Graph original envelope lost its request binding".into());
+        }
+        if index == 1
+            && (raw["data"]["graph_profile_probe"]["observation"]
+                != serde_json::to_value(observation.fixed_profile())?
+                || raw["execution"]["provenance"]["provider_generation"]
+                    != json!(observation.provider_generation())
+                || raw["execution"]["provenance"]["descriptor_sha256"]
+                    != observation.descriptor_sha256())
+        {
+            return Err("Graph normalized observation differs from its original envelope".into());
+        }
+    }
+    Ok(())
+}
+
+async fn observe_graph_profile(
+    database: &Path,
+    connection_path: &Path,
+    seed_path: &Path,
+    evidence_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use motionwright_native::production::{ManimGraphProfileState, ProductionTransportCustody};
+    let seed_bytes = graph_profile_original_file(seed_path, 64 * 1024)?;
+    let seed: GraphProfileSeed = serde_json::from_slice(&seed_bytes)?;
+    let service = StudioService::open(database)?;
+    let project = service.project(seed.project_id)?;
+    check_graph_profile_seed(&project, &seed)?;
+    let connection_bytes = graph_profile_original_file(connection_path, 16 * 1024)?;
+    let connection = ProductionConnection::load(connection_path)?;
+    if connection.resource != project.resource_key()
+        || serde_json::from_slice::<serde_json::Value>(&connection_bytes)?
+            != serde_json::to_value(&connection)?
+    {
+        return Err("Graph profile connection does not match its retained original".into());
+    }
+    if !evidence_path.is_absolute() || evidence_path.try_exists()? {
+        return Err("Graph profile observation requires a fresh absolute evidence file".into());
+    }
+    let root = evidence_path
+        .parent()
+        .ok_or("Graph evidence has no owner directory")?;
+    // Exclusive retention also prevents repeating this caller in the same attempt directory.
+    retain_seed_fixture(&root.join("graph-profile-seed.original.json"), &seed_bytes)?;
+    retain_seed_fixture(
+        &root.join("graph-profile-connection.original.json"),
+        &connection_bytes,
+    )?;
+    write_camera_evidence(
+        &root.join("graph-profile-project.before.json"),
+        &json!(&project),
+    )?;
+    write_camera_evidence(
+        &root.join("graph-profile-invocation-intent.json"),
+        &json!({
+            "schema":"motionwright.manim.graph-profile-intent/1",
+            "source_snapshot":seed.source_snapshot,
+            "scene_id":seed.scene_id,
+            "deliverable_id":seed.deliverable_id,
+            "builtin_registry_requests":1,
+            "graph_profile_probe_requests":1,
+            "render_requests":0,
+            "automatic_retry":false,
+        }),
+    )?;
+    let custody = ProductionTransportCustody::default();
+    let coordinator =
+        ProductionCoordinator::new(service, connection)?.with_transport_custody(&custody);
+    let attempted = coordinator
+        .observe_manim_graph_profile(&seed.source_snapshot, seed.scene_id, seed.deliverable_id)
+        .await;
+    let capture = custody.private_snapshot();
+    let retained = retain_graph_profile_transport(root, &capture);
+    let mut evidence = json!({
+        "schema":"motionwright.manim.graph-profile-native-observation/1",
+        "status":"UNVERIFIED",
+        "source_snapshot":seed.source_snapshot,
+        "scene_id":seed.scene_id,
+        "deliverable_id":seed.deliverable_id,
+        "original_seed_sha256":hex::encode(Sha256::digest(&seed_bytes)),
+        "original_connection_sha256":hex::encode(Sha256::digest(&connection_bytes)),
+        "render_performed":false,
+        "decoder_performed":false,
+        "graph_saved":false,
+        "scene_mutation_performed":false,
+        "profile_admitted":false,
+        "future_label_coverage_verified":false,
+        "human_acceptance":false,
+        "automatic_retry":false,
+    });
+    let observation = match attempted {
+        Ok(observation) => observation,
+        Err(original_error) => {
+            match retained {
+                Ok(files) => evidence["transport_original_files"] = files,
+                Err(custody_error) => {
+                    evidence["custody_error"] = json!({"message":custody_error.to_string()});
+                }
+            }
+            return Err(retain_native_error_to(
+                evidence_path,
+                &mut evidence,
+                original_error,
+                None,
+                &mut std::io::stderr().lock(),
+                "native_manim_graph_profile_observation",
+            )
+            .into());
+        }
+    };
+    evidence["observation"] = json!(&observation);
+    let verification = (|| -> Result<(), Box<dyn std::error::Error>> {
+        evidence["transport_original_files"] = retained?;
+        if observation.state() != ManimGraphProfileState::Observed {
+            return Err(
+                "The fixed Graph profile was not observed; inspect the original doctor".into(),
+            );
+        }
+        require_graph_profile_transport(&capture, &observation)?;
+        if graph_profile_original_file(seed_path, 64 * 1024)? != seed_bytes
+            || graph_profile_original_file(connection_path, 16 * 1024)? != connection_bytes
+        {
+            return Err("Graph observation original input changed during dispatch".into());
+        }
+        let reopened = StudioService::open(database)?;
+        let current = reopened.project(project.id)?;
+        if current != project
+            || !current.production_design.semantic_graphs.is_empty()
+            || !reopened.production_receipts(project.id, 1)?.is_empty()
+        {
+            return Err("Graph observation changed the saved project or its receipt ledger".into());
+        }
+        write_camera_evidence(
+            &root.join("graph-profile-project.after.json"),
+            &json!(&current),
+        )?;
+        Ok(())
+    })();
+    if let Err(error) = verification {
+        evidence["failure_stage"] = json!("original_observation_verification");
+        evidence["verification_error"] = json!({"message":error.to_string()});
+        retain_camera_diagnostic_to(evidence_path, &evidence, &mut std::io::stderr().lock());
+        return Err(error);
+    }
+    evidence["status"] = json!("OBSERVED_FIXED_SAMPLE_REQUIRES_SEALED_CUSTODY");
+    evidence["project_unchanged_after_reopen"] = json!(true);
+    evidence["graph_absent_after_reopen"] = json!(true);
+    evidence["production_receipts_absent"] = json!(true);
+    evidence["builtin_registry_requests"] = json!(1);
+    evidence["graph_profile_probe_requests"] = json!(1);
+    evidence["render_requests"] = json!(0);
+    write_camera_evidence(evidence_path, &evidence)?;
+    println!("{}", serde_json::to_string(&evidence)?);
     Ok(())
 }
 
@@ -925,6 +1407,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 usage();
             }
             seed(&database)
+        }
+        "seed-graph-profile" => {
+            let database = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_graph_profile(&database)
+        }
+        "observe-graph-profile" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let seed = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            observe_graph_profile(&database, &connection, &seed, &evidence).await
         }
         "realize" => {
             let database = path_arg(&mut args);
@@ -1641,5 +2140,134 @@ mod runtime_probe_custody_tests {
         assert_eq!(retained["render_started"], false);
         assert!(!sidecar.with_extension("diagnostic.json").exists());
         assert!(!temporary.path().join("native-result.json").exists());
+    }
+}
+
+#[cfg(test)]
+mod graph_profile_tests {
+    use super::*;
+
+    #[test]
+    fn seed_reopens_a_real_empty_graph_scene_without_native_receipts() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("source.sqlite3");
+        let seed = create_graph_profile_seed(&database).unwrap();
+        let reopened = StudioService::open(&database).unwrap();
+        let project = reopened.project(seed.project_id).unwrap();
+        check_graph_profile_seed(&project, &seed).unwrap();
+        assert!(project.production_design.semantic_graphs.is_empty());
+        assert!(project.scenes[0].nodes.is_empty());
+        assert!(project.scenes[0].beats.is_empty());
+        assert_eq!(
+            project.scenes[0].camera,
+            motionwright_domain::CameraState::default()
+        );
+        assert_eq!(project.deliverables[0].width, 640);
+        assert_eq!(project.deliverables[0].height, 360);
+        assert_eq!(
+            project.deliverables[0].frame_rate,
+            RationalTime::new(12, 1).unwrap()
+        );
+        assert_eq!(seed.asset_pins.as_array().unwrap().len(), 9);
+        assert_eq!(seed.helper_pins.as_array().unwrap().len(), 6);
+        assert!(
+            reopened
+                .production_receipts(seed.project_id, 1)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(create_graph_profile_seed(&database).is_err());
+        assert_eq!(reopened.project(seed.project_id).unwrap(), project);
+    }
+
+    #[test]
+    fn stale_seed_foreign_scope_or_modified_pins_fail_before_native_observation() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("source.sqlite3");
+        let original = create_graph_profile_seed(&database).unwrap();
+        let service = StudioService::open(&database).unwrap();
+        let project = service.project(original.project_id).unwrap();
+        for case in 0..10 {
+            let mut seed = original.clone();
+            match case {
+                0 => seed.source_snapshot.project_id = Uuid::new_v4(),
+                1 => seed.source_snapshot.generation = Uuid::new_v4(),
+                2 => seed.source_snapshot.branch_id = Uuid::new_v4(),
+                3 => seed.source_snapshot.revision += 1,
+                4 => seed.scene_id = Uuid::new_v4(),
+                5 => seed.deliverable_id = Uuid::new_v4(),
+                6 => seed.asset_pins[0]["sha256"] = json!("00".repeat(32)),
+                7 => seed.profile_admitted = true,
+                8 => seed.resource.push_str("-foreign"),
+                _ => seed.helper_pins[0]["sha256"] = json!("00".repeat(32)),
+            }
+            assert!(check_graph_profile_seed(&project, &seed).is_err(), "{case}");
+        }
+        let mut extended = serde_json::to_value(&original).unwrap();
+        extended["ready"] = json!(true);
+        assert!(serde_json::from_value::<GraphProfileSeed>(extended).is_err());
+        assert_eq!(service.project(original.project_id).unwrap(), project);
+    }
+
+    #[test]
+    fn original_binary_custody_preserves_unknown_and_refuses_overwrite() {
+        fn original(bytes: &[u8]) -> serde_json::Value {
+            json!({
+                "encoding":"hex", "bytes":bytes.len(),
+                "sha256":hex::encode(Sha256::digest(bytes)), "value":hex::encode(bytes),
+            })
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let stdout = b"  {broken\xff\n";
+        let stderr = b"\x00original-stderr\r\n";
+        let capture = json!({
+            "entries":[{
+                "args_json":original(br#"{"probe_graph_profile":true}"#),
+                "stdout":{"original":original(stdout)},
+                "stderr":{"original":original(stderr)},
+                "transport_terminal":{"kind":"error","original_error":{
+                    "code":"timeout","message":"original UNKNOWN","outcome_known":false,
+                }},
+            }],
+        });
+        retain_graph_profile_transport(temp.path(), &capture).unwrap();
+        let snapshot = temp.path().join("graph-profile-transport.original.json");
+        let before = std::fs::read(&snapshot).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&before).unwrap(),
+            capture
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("graph-profile-transport-00.stdout.bin")).unwrap(),
+            stdout
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("graph-profile-transport-00.stderr.bin")).unwrap(),
+            stderr
+        );
+        assert!(retain_graph_profile_transport(temp.path(), &capture).is_err());
+        assert_eq!(std::fs::read(snapshot).unwrap(), before);
+        let mut altered = capture["entries"][0]["stdout"]["original"].clone();
+        altered["bytes"] = json!(1);
+        assert!(graph_profile_captured_bytes(&altered).is_err());
+        #[cfg(unix)]
+        {
+            let raw = temp
+                .path()
+                .join("graph-profile-transport-00.stdout.bin")
+                .canonicalize()
+                .unwrap();
+            assert_eq!(
+                graph_profile_original_file(&raw, 64 * 1024).unwrap(),
+                stdout
+            );
+            assert!(graph_profile_original_file(&raw, 1).is_err());
+            let symbolic = temp.path().join("symbolic-original");
+            std::os::unix::fs::symlink(&raw, &symbolic).unwrap();
+            assert!(graph_profile_original_file(&symbolic, 64 * 1024).is_err());
+            let alias = temp.path().join("hardlinked-original");
+            std::fs::hard_link(&raw, &alias).unwrap();
+            assert!(graph_profile_original_file(&raw, 64 * 1024).is_err());
+        }
     }
 }

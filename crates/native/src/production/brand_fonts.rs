@@ -417,7 +417,7 @@ mod tests {
                 "spacing": {}, "stroke": 0.0, "corner_radius": 0.0
             },
             "timing": {
-                "version": 1, "duration": {"num": 1, "den": 1},
+                "version": 1, "duration": {"num": "1", "den": "1"},
                 "spans": [], "constraints": []
             },
             "sequences": [], "cues": {"version": 1, "cues": []}, "assets": []

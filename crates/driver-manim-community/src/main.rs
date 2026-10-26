@@ -1,4 +1,8 @@
 use async_trait::async_trait;
+use graph_profile_probe::{
+    ensure_probe_outcome_known, graph_profile_probe_schema, runtime_probe_tool_args,
+    unobserved_graph_profile_probe,
+};
 use motionwright_manim_profile::{
     MAX_SOURCE_BUNDLE_BYTES_V2, ManimRenderProfile, ManimScenePlan, ManimSourceClosureV1,
     SCENE_CLASS, compile_manim_python,
@@ -27,6 +31,7 @@ use std::{
 use uuid::Uuid;
 
 mod editable_source;
+mod graph_profile_probe;
 mod graph_source;
 mod native_video_observation;
 mod static_source;
@@ -51,6 +56,8 @@ const RENDER_TIMEOUT: Duration = Duration::from_secs(300);
 struct DoctorArgs {
     #[serde(default)]
     probe_runtime: bool,
+    #[serde(default)]
+    probe_graph_profile: bool,
 }
 
 fn unobserved_runtime_probe(requested: bool, reason: &str) -> Value {
@@ -132,7 +139,10 @@ fn validated_runtime_probe(stdout: &[u8]) -> Result<Value> {
 fn doctor_input_schema() -> Value {
     json!({
         "type":"object",
-        "properties":{"probe_runtime":{"type":"boolean","default":false}},
+        "properties":{
+            "probe_runtime":{"type":"boolean","default":false},
+            "probe_graph_profile":{"type":"boolean","default":false},
+        },
         "additionalProperties":false,
     })
 }
@@ -149,6 +159,7 @@ fn doctor_output_schema() -> Value {
             "arbitrary_python":{"const":false},
             "network":{"const":false},
             "max_jobs":{"const":MAX_JOBS},
+            "graph_profile_probe":graph_profile_probe_schema(),
             "runtime_probe":{
                 "type":"object",
                 "properties":{
@@ -856,38 +867,10 @@ impl ManimCommunityDriver {
             report["runtime_probe"] = unobserved_runtime_probe(true, "host_tools_unavailable");
             return Ok(report);
         }
-        let literal = |value: &str| RuntimeToolArg::Literal {
-            value: value.into(),
-        };
         let output = context
             .execute_runtime_tool_args(
                 MANIM_TOOL,
-                vec![
-                    literal("probe"),
-                    literal("--runtime-root"),
-                    RuntimeToolArg::MountPath {
-                        mount: RUNTIME_MOUNT.into(),
-                        relative: String::new(),
-                    },
-                    literal("--python-sealed"),
-                    RuntimeToolArg::ToolPath {
-                        tool: PYTHON_TOOL.into(),
-                    },
-                    literal("--ffmpeg-sealed"),
-                    RuntimeToolArg::ToolPath {
-                        tool: FFMPEG_TOOL.into(),
-                    },
-                    literal("--fontconfig-root"),
-                    RuntimeToolArg::MountPath {
-                        mount: FONTCONFIG_MOUNT.into(),
-                        relative: String::new(),
-                    },
-                    literal("--work-root"),
-                    RuntimeToolArg::MountPath {
-                        mount: WORK_MOUNT.into(),
-                        relative: String::new(),
-                    },
-                ],
+                runtime_probe_tool_args("probe"),
                 Vec::new(),
                 Duration::from_secs(30),
                 Some(RuntimeToolCwd {
@@ -896,6 +879,7 @@ impl ManimCommunityDriver {
                 }),
             )
             .await;
+        ensure_probe_outcome_known(&output)?;
         context.check_cancelled()?;
         report["runtime_probe"] = match output {
             Ok(output) if output.exit_code == 0 => validated_runtime_probe(&output.stdout)
@@ -1508,6 +1492,10 @@ impl Driver for ManimCommunityDriver {
                 report["runtime_probe"] =
                     unobserved_runtime_probe(true, "host_context_unavailable");
             }
+            if args.probe_graph_profile {
+                report["graph_profile_probe"] =
+                    unobserved_graph_profile_probe("host_context_unavailable");
+            }
             return Ok(report);
         }
         Err(Error::new(
@@ -1527,7 +1515,11 @@ impl Driver for ManimCommunityDriver {
         context.check_cancelled()?;
         if command == "driver.manim-community.doctor" {
             let args: DoctorArgs = serde_json::from_value(args)?;
-            return self.doctor_with_runtime(args, &context).await;
+            let graph_requested = args.probe_graph_profile;
+            let report = self.doctor_with_runtime(args, &context).await?;
+            return self
+                .doctor_with_graph_profile(graph_requested, report, &context)
+                .await;
         }
         self.execute_with_runtime(command, args, &context).await
     }
@@ -2400,7 +2392,12 @@ mod tests {
         }
         let schema = doctor_input_schema();
         assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 2);
+        assert_eq!(schema["properties"]["probe_runtime"]["default"], false);
+        assert_eq!(
+            schema["properties"]["probe_graph_profile"]["default"],
+            false
+        );
         let output = doctor_output_schema();
         assert_eq!(output["additionalProperties"], false);
         assert_eq!(

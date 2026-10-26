@@ -2,7 +2,7 @@
 //! No native CLI, renderer, meter, model, voice input or retry is executed.
 use super::*;
 use motionwright_service::StudioService;
-use motionwright_storage::ProductionReceiptInput;
+use motionwright_storage::{ProductionReceiptInput, StorageError};
 
 fn history_fixture() -> (tempfile::TempDir, StudioService, SourceBinding) {
     let root = tempfile::tempdir().unwrap();
@@ -36,6 +36,96 @@ fn append_observation(
             payload,
         })
         .unwrap()
+}
+
+// Current writes forbid redispatching a retained request. Seed only the
+// synthetic historical row needed to exercise the read-only history consumer.
+fn append_historical_dispatching_observation(
+    database: &std::path::Path,
+    service: &StudioService,
+    original: &ProductionReceipt,
+    payload: Value,
+) -> ProductionReceipt {
+    let before = all_observations(service, original.project_id);
+    assert!(
+        before.contains(original),
+        "history seed must already be persisted"
+    );
+    let before_project = service.project(original.project_id).unwrap();
+    let before_watermark = service
+        .production_receipt_watermark(original.project_id)
+        .unwrap();
+    let expected = ProductionReceipt {
+        id: Uuid::now_v7(),
+        stage: "dispatching".into(),
+        payload,
+        ..original.clone()
+    };
+    assert!(matches!(
+        service.append_production_receipt(ProductionReceiptInput {
+            project_id: expected.project_id,
+            generation: expected.generation,
+            revision: expected.revision,
+            request_id: expected.request_id.clone(),
+            request_sha256: expected.request_sha256.clone(),
+            command: expected.command.clone(),
+            stage: expected.stage.clone(),
+            payload: expected.payload.clone(),
+        }),
+        Err(StorageError::RequestReuse)
+    ));
+    assert_eq!(all_observations(service, original.project_id), before);
+    assert_eq!(
+        service.project(original.project_id).unwrap(),
+        before_project
+    );
+    assert_eq!(
+        service
+            .production_receipt_watermark(original.project_id)
+            .unwrap(),
+        before_watermark
+    );
+
+    let conn = rusqlite::Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+    )
+    .unwrap();
+    // The existing AFTER INSERT trigger supplies the real commit ordinal.
+    // Copy the persisted binding; retain its timestamp because order is ordinal.
+    assert_eq!(
+        conn.execute(
+            "INSERT INTO production_receipts(
+                receipt_id,project_id,generation,revision,request_id,request_sha256,
+                command,stage,payload_json,created_at
+             ) SELECT ?1,project_id,generation,revision,request_id,request_sha256,
+                      command,?2,?3,created_at
+               FROM production_receipts WHERE receipt_id=?4 AND project_id=?5",
+            rusqlite::params![
+                expected.id.to_string(),
+                &expected.stage,
+                serde_json::to_string(&expected.payload).unwrap(),
+                original.id.to_string(),
+                original.project_id.to_string(),
+            ],
+        )
+        .unwrap(),
+        1
+    );
+    drop(conn);
+    let latest = service
+        .latest_production_receipt(original.project_id, &original.request_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest, expected);
+    let after = all_observations(service, original.project_id);
+    assert_eq!(after.first(), Some(&latest));
+    assert_eq!(&after[1..], before.as_slice());
+    assert_eq!(
+        service.project(original.project_id).unwrap(),
+        before_project
+    );
+    latest
 }
 
 fn all_observations(service: &StudioService, project_id: Uuid) -> Vec<ProductionReceipt> {
@@ -412,7 +502,15 @@ fn assert_noncompleted_audio_refusal(
     } else {
         json!({"mutation":command==MUX_COMMAND,"job_ref":null,"synthetic":true})
     };
-    let latest = append_observation(&service, &row, latest_stage, payload);
+    let latest = match (latest_stage, unknown.as_ref()) {
+        ("dispatching", Some(original_unknown)) => append_historical_dispatching_observation(
+            &root.path().join("history.sqlite3"),
+            &service,
+            original_unknown,
+            payload,
+        ),
+        _ => append_observation(&service, &row, latest_stage, payload),
+    };
     assert_eq!(
         service
             .latest_production_receipt(source.project_id, &row.request_id)
@@ -635,10 +733,19 @@ fn receipt_inventory_reads_candidates_before_the_latest_page() {
 fn receipt_inventory_latest_noncompletion_never_selects_an_older_completion() {
     for parent in [false, true] {
         for stage in ["outcome_unknown", "failed_known", "dispatching"] {
-            let (_root, service, source) = discovery_source();
+            let (root, service, source) = discovery_source();
             let (mux, decoded) = discovery_rows(&service, &source);
             let row = if parent { &mux } else { &decoded };
-            append_observation(&service, row, stage, row.payload.clone());
+            if stage == "dispatching" {
+                append_historical_dispatching_observation(
+                    &root.path().join("history.sqlite3"),
+                    &service,
+                    row,
+                    row.payload.clone(),
+                );
+            } else {
+                append_observation(&service, row, stage, row.payload.clone());
+            }
             let before = all_observations(&service, source.project_id);
             let inventory = discover(&service, &source).unwrap();
             assert!(inventory.items.is_empty(), "{parent}/{stage}");

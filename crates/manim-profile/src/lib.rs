@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub mod editable_scene;
 pub mod planar_camera;
 pub mod semantic_graph;
+pub mod semantic_graph_profile_probe;
 pub mod semantic_graph_readback;
 pub mod semantic_graph_source;
 pub mod semantic_graph_text;

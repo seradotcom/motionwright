@@ -2185,6 +2185,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "hex",
+ "libc",
  "motionwright-manim-profile",
  "semwright-driver-sdk",
  "semwright-types",

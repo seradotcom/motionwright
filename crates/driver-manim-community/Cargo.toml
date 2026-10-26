@@ -26,5 +26,8 @@ sha2.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.190"
+
 [dev-dependencies]
 tempfile.workspace = true

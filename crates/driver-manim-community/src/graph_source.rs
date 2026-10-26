@@ -746,8 +746,20 @@ mod tests {
         }
     }
 
+    // Production roots enter through canonical_root. Use that same path form
+    // for custody fixtures, including the Windows extended-length prefix.
+    fn canonical_tempdir() -> tempfile::TempDir {
+        let parent = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let directory = tempfile::tempdir_in(parent).unwrap();
+        assert_eq!(
+            directory.path(),
+            fs::canonicalize(directory.path()).unwrap()
+        );
+        directory
+    }
+
     fn runtime() -> tempfile::TempDir {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = canonical_tempdir();
         let root = temp.path().join("graph-profile-v1/fonts");
         fs::create_dir_all(&root).unwrap();
         // Synthetic bytes test custody, not font rendering or profile admission.
@@ -772,7 +784,7 @@ mod tests {
     }
 
     fn originals(labels: &[(&str, &[u8])]) -> tempfile::TempDir {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = canonical_tempdir();
         let stem = source_stem(SOURCE).unwrap();
         let directory = temp.path().join(format!("{stem}.graph-labels"));
         fs::create_dir(&directory).unwrap();
@@ -1084,7 +1096,7 @@ mod tests {
     #[test]
     fn malformed_raw_copy_is_retained_but_never_creates_a_verified_index() {
         let temp = originals(&[("text_block_0000.json", b"{bad")]);
-        let out = tempfile::tempdir().unwrap();
+        let out = canonical_tempdir();
         let (required, allowed) = roster(&["text_block_0000.json"], &["text_block_0000.json"]);
         let files = read_originals(temp.path(), SOURCE, &required, &allowed, 1024).unwrap();
         let directory = retain_originals(out.path(), SOURCE, &files).unwrap();
@@ -1105,7 +1117,7 @@ mod tests {
     #[test]
     fn an_existing_attempt_is_not_overwritten_or_removed() {
         let temp = originals(&[]);
-        let out = tempfile::tempdir().unwrap();
+        let out = canonical_tempdir();
         let (required, allowed) = roster(&[], &[]);
         let files = read_originals(temp.path(), SOURCE, &required, &allowed, 1024).unwrap();
         let directory = retain_originals(out.path(), SOURCE, &files).unwrap();
@@ -1119,7 +1131,7 @@ mod tests {
 
     #[test]
     fn exclusive_index_write_preserves_a_preexisting_file() {
-        let out = tempfile::tempdir().unwrap();
+        let out = canonical_tempdir();
         fs::write(out.path().join("index.json"), b"old-original").unwrap();
         assert!(write_original(out.path(), "index.json", b"new", 1024).is_err());
         assert_eq!(
@@ -1198,7 +1210,7 @@ mod tests {
 
     #[tokio::test]
     async fn graph_without_host_context_never_dispatches_or_alters_existing_source() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = canonical_tempdir();
         let original = temp.path().join("existing-source.py");
         fs::write(&original, b"retained source bytes").unwrap();
         let mut driver = ManimCommunityDriver {
@@ -1252,7 +1264,7 @@ mod tests {
         let (required, allowed) = roster(&[], &["label_0000.svg"]);
         assert!(read_originals(temp.path(), SOURCE, &required, &allowed, 1024).is_err());
 
-        let other = tempfile::tempdir().unwrap();
+        let other = canonical_tempdir();
         symlink(
             &directory,
             other.path().join(format!("{stem}.graph-labels")),
@@ -1323,7 +1335,7 @@ mod tests {
         let program = prepare(&args).unwrap();
         let assets = graph_input_test_assets();
         let bytes = graph_source_bundle_v1(&args.plan, &assets).unwrap();
-        let directory = tempfile::tempdir().unwrap();
+        let directory = canonical_tempdir();
         let root = directory.path().canonicalize().unwrap();
         let input = graph_input_test_descriptor("source-input.mwgraph.zip", &bytes);
         graph_input_test_write(&root, &input.relative_path, &bytes);

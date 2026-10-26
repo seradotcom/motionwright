@@ -371,12 +371,69 @@ fn current_execution_stamp_and_generated_source_are_bound_before_observations() 
 #[test]
 fn an_old_observation_cannot_be_reused_after_an_authored_text_edit() {
     let mut plan = fixture_plan();
-    let files = controlled_observation(&plan);
+    let original_plan = plan.clone();
+    let original_source = serde_json::to_value(&original_plan.source).unwrap();
+    let files = controlled_observation(&original_plan);
+    let original_files = files.clone();
+    let original_paths = graph_native_readback_paths_v1(&original_plan).unwrap();
     let GraphContent::SystemFlow { vertices, .. } = &mut plan.source.content else {
         unreachable!()
     };
-    vertices[0].label = "Edited".into();
+    assert_eq!(vertices[0].label, "Origin\nA");
+    vertices[0].label = "Edited\nA".into();
+
+    // Keep both authored lines so this case reaches the original header binding.
+    let edited_paths = graph_native_readback_paths_v1(&plan).unwrap();
+    assert_eq!(edited_paths.required, original_paths.required);
+    assert_eq!(edited_paths.allowed, original_paths.allowed);
+    let observed = files
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(edited_paths.required.is_subset(&observed));
+    assert!(observed.is_subset(&edited_paths.allowed));
+    assert_ne!(serde_json::to_value(&plan.source).unwrap(), original_source);
     rejected(&plan, &files, "graph_header_binding_or_scope");
+
+    assert_eq!(
+        serde_json::to_value(&original_plan.source).unwrap(),
+        original_source
+    );
+    assert_eq!(files, original_files);
+}
+
+#[test]
+fn shortening_an_authored_label_rejects_the_old_original_file_roster() {
+    let mut plan = fixture_plan();
+    let original_plan = plan.clone();
+    let original_source = serde_json::to_value(&original_plan.source).unwrap();
+    let files = controlled_observation(&original_plan);
+    let original_files = files.clone();
+    let original_paths = graph_native_readback_paths_v1(&original_plan).unwrap();
+    let observed = files
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(original_paths.required.is_subset(&observed));
+    assert!(observed.is_subset(&original_paths.allowed));
+    let GraphContent::SystemFlow { vertices, .. } = &mut plan.source.content else {
+        unreachable!()
+    };
+    assert_eq!(vertices[0].label, "Origin\nA");
+    vertices[0].label = "Edited".into();
+
+    // The old two-line originals must fail the roster guard before header parsing.
+    let edited_paths = graph_native_readback_paths_v1(&plan).unwrap();
+    assert!(
+        !edited_paths.required.is_subset(&observed) || !observed.is_subset(&edited_paths.allowed)
+    );
+    rejected(&plan, &files, "graph_original_file_roster");
+
+    assert_eq!(
+        serde_json::to_value(&original_plan.source).unwrap(),
+        original_source
+    );
+    assert_eq!(files, original_files);
 }
 
 #[test]

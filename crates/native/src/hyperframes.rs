@@ -308,11 +308,24 @@ mod tests {
         let mut graph = graph_source_guard_fixture::graph_for(&selected, false);
         graph.time_range.start = motionwright_domain::RationalTime::new(0, 1).unwrap();
         graph.time_range.duration = motionwright_domain::RationalTime::new(1, 1).unwrap();
-        project
-            .apply_change(&motionwright_domain::Change::UpsertSemanticGraph {
-                graph: Box::new(graph),
-            })
-            .unwrap();
+        let change = motionwright_domain::Change::UpsertSemanticGraph {
+            graph: Box::new(graph.clone()),
+        };
+        if selected.scenes[0].renderer == motionwright_domain::RendererKind::ManimCommunity {
+            project.apply_change(&change).unwrap();
+        } else {
+            // These consumer guards must also inspect historical snapshots.
+            // New Graph writes remain restricted to Manim Community.
+            let before = project.clone();
+            let error = project.apply_change(&change).unwrap_err();
+            assert!(matches!(
+                error,
+                motionwright_domain::DomainError::Invalid(message)
+                    if message == "Semantic Graph source requires the declared Manim Community scene"
+            ));
+            assert_eq!(*project, before);
+            project.production_design.semantic_graphs.push(graph);
+        }
         project.validate().unwrap();
     }
 

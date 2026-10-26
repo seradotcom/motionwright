@@ -318,7 +318,10 @@ pub fn compile_graph_program_source_only(
          # Canonical Graph data remains editable; imported Python is inert.\n\
          _DATA = {quoted}\n\
          {}",
-        include_str!("semantic_graph_loader.py"),
+        concat!(
+            include_str!("semantic_graph_helper_loader.py"),
+            include_str!("semantic_graph_loader.py"),
+        ),
     );
     if python_source.len() > MAX_SOURCE_ENTRY_BYTES_V2 {
         return Err(reject("graph_generated_source_budget"));

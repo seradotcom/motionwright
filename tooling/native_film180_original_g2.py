@@ -310,20 +310,33 @@ def wait_socket(daemon: subprocess.Popen, target: Path) -> None:
 
 @contextmanager
 def bound_broker(paths: dict[str, Path], evidence: Path, env: dict[str, str],
-                 seed: dict, attempt):
+                 seed: dict, attempt, *, stdin_custody: Path | None = None):
     manifest = closed_owner_setup(paths)
     socket = paths["runtime"] / "broker.sock"
     session = paths["runtime"] / "motionwright.session"
+    custody_identity = None
+    body_error = None
+    attempt.owner_shutdown_requested = False
+    attempt.owner_custody_close = None
+    if stdin_custody is not None:
+        info = stdin_custody.lstat()
+        require(stdin_custody.is_absolute() and stdin_custody.resolve(strict=True) == stdin_custody
+                and stdin_custody.is_dir() and not stdin_custody.is_symlink()
+                and info.st_mode & 0o777 == 0o700 and not any(stdin_custody.iterdir()),
+                "FixedTxt_original_owner_custody_directory_not_empty_private")
+        custody_identity = (info.st_dev, info.st_ino, info.st_uid, info.st_mode)
+    daemon_argv = [str(SW_BIN / "semwrightd"), "--config", str(manifest["owner"]), "--socket", str(socket)]
+    if stdin_custody is not None:
+        daemon_argv += ["--host-stdin-custody-dir", str(stdin_custody),
+                       "--host-stdin-custody-provider", "driver:motion-canvas",
+                       "--host-stdin-custody-tool", "motion-node"]
     daemonlog = (evidence / "semwrightd.original.private.log").open("xb")
     write_private_json(evidence / "broker-start.intent.json", {
         "executable": str(SW_BIN / "semwrightd"), "owner": str(manifest["owner"]),
-        "socket": str(socket), "automatic_retry": False,
+        "socket": str(socket), "argv": daemon_argv, "automatic_retry": False,
     })
     daemon = subprocess.Popen(
-        [
-            str(SW_BIN / "semwrightd"), "--config", str(manifest["owner"]),
-            "--socket", str(socket),
-        ],
+        daemon_argv,
         env=env, stdin=subprocess.DEVNULL, stdout=daemonlog,
         stderr=daemonlog, start_new_session=True,
     )
@@ -369,19 +382,38 @@ def bound_broker(paths: dict[str, Path], evidence: Path, env: dict[str, str],
             "output_root": str(paths["output"]), "resource": seed["resource"],
         })
         yield connection, manifest, daemon.pid
+    except BaseException as error:
+        body_error = error
+        raise
     finally:
+        close_error = None
+        if stdin_custody is not None:
+            try:
+                fixed_owner_close(daemon, stdin_custody, evidence, attempt, custody_identity)
+            except BaseException as error:
+                close_error = error
+                attempt.secondary("owner-receiver-close")
         # Keep the original owner and journals until the common seal completes.
         # Runner teardown follows custody; no uncertain provider is killed or retried.
         try:
             write_private_json(evidence / "broker-end-observation.json", {
                 "pid": daemon.pid, "observed_exit_code": daemon.poll(),
-                "termination_requested": False, "provider_cleanup_verified": False,
+                "termination_requested": attempt.owner_shutdown_requested, "provider_cleanup_verified": False,
             })
             daemonlog.flush()
             os.fsync(daemonlog.fileno())
         except BaseException:
             attempt.secondary("broker-end-custody")
-        daemonlog.close()
+        try:
+            daemonlog.close()
+        except BaseException as error:
+            if stdin_custody is None:
+                raise
+            attempt.secondary("broker-log-close")
+            if close_error is None:
+                close_error = error
+        if close_error is not None and body_error is None:
+            raise close_error
 
 
 def source_command(args: list[str], env: dict[str, str],
@@ -783,6 +815,7 @@ class FilmAttempt:
         self.completed_stages = {}
         self.completed = False
         self.error = None
+        self.fixed_text_v4 = None
 
     @classmethod
     def prepare(cls, path: Path):
@@ -817,7 +850,15 @@ class FilmAttempt:
 
     def secondary(self, label):
         self.secondary_failures.append(label)
-        observed.warn_secondary()
+        if self.fixed_text_v4 is None:
+            observed.warn_secondary()
+            return
+        try:
+            observed.warn_secondary()
+        except BaseException:
+            # A diagnostic must not replace the original V4 failure or prevent
+            # its native terminal from being aggregated by the parent attempt.
+            self.secondary_failures.append(label + ".warning")
 
     def capture(self, label):
         require(re.fullmatch(r"[a-z0-9.-]{1,64}", label) is not None,
@@ -944,6 +985,8 @@ class FilmAttempt:
             self.secondary("original-error-custody")
 
     def finish(self):
+        if self.fixed_text_v4 is not None:
+            return finish_fixed_text_v4(self)
         required = {"original.render", "original.master", "edited.render", "edited.master"}
         all_reported = (set(self.native_commands) == required and
                         set(self.native_commands.values()) == {"SUCCESS_REPORTED"})
@@ -1374,11 +1417,545 @@ def execute(input_path: Path) -> None:
     }, sort_keys=True))
 
 
+FIXED_TEXT_KEYS = (
+    "fixed-causal", "flow-control-base", "flow-control-with-fixed", "flow-text-control",
+    "fixed-multirun", "fixed-multirun-control", "fixed-transform-clip", "fixed-camera-scene",
+    "fixed-counter-captions", "fixed-layer-behind", "fixed-layer-equal", "fixed-layer-front",
+)
+FIXED_NATIVE_PATH = "integrations/composition/motion/native.ts"
+
+
+def fixed_relative(value):
+    return (type(value) is str and 0 < len(value) <= 320 and "\\" not in value and ":" not in value
+            and not value.startswith("/") and all(piece not in {"", ".", ".."} for piece in value.split("/"))
+            and all(ord(c) >= 32 and ord(c) != 127 for c in value))
+
+
+def fixed_original(value, limit):
+    require(type(value) is dict and set(value) == {"path", "bytes", "sha256"}
+            and type(value["path"]) is str and type(value["bytes"]) is int
+            and 0 < value["bytes"] <= limit and type(value["sha256"]) is str
+            and HEX64.fullmatch(value["sha256"]) is not None, "FixedTxt_original_descriptor")
+    raw = regular(Path(value["path"]), limit)[0]
+    require(len(raw) == value["bytes"] and hashlib.sha256(raw).hexdigest() == value["sha256"],
+            "FixedTxt_original_digest_or_length_changed")
+    return raw
+
+
+def fixed_descriptor(path, limit):
+    raw = regular(path, limit)[0]
+    require(raw, "FixedTxt_original_is_empty")
+    return {"path": str(path), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def fixed_json(raw):
+    return observed.strict_object(raw)
+
+
+def fixed_samples(key):
+    if key == "fixed-counter-captions":
+        return (0, 29, 30, 45, 119, 120, 179)
+    if key in {"flow-control-base", "flow-control-with-fixed", "fixed-transform-clip"}:
+        return (45, 120, 179)
+    return (0, 45, 120, 179)
+
+
+def fixed_cycle_inputs(path, attempt):
+    raw = regular(path, 1024 * 1024)[0]
+    value = fixed_json(raw)
+    require(set(value) == {"schema", "arm", "template_film", "managed_project", "caption_source",
+                           "project_files", "runtime", "compiler_binary_sha256", "decoder_sha256", "common_sources"}
+            and value["schema"] == "motionwright.fixed-text-native-cycle-inputs/4"
+            and value["arm"] in {"RED", "GREEN"}, "FixedTxt_cycle_input_shape")
+    runtime = value["runtime"]
+    require(type(runtime) is dict and set(runtime) == {"semwright_revision", "driver_sha256",
+            "node_sha256", "native_source_sha256", "render_helper", "dependency_lock", "core_package", "core_renderer"}
+            and runtime["semwright_revision"] == PIN, "FixedTxt_runtime_shape_or_revision")
+    pair = runtime["native_source_sha256"]
+    require(type(pair) is dict and set(pair) == {"RED", "GREEN"}
+            and all(type(x) is str and HEX64.fullmatch(x) for x in pair.values())
+            and pair["RED"] != pair["GREEN"]
+            and digest(SEM / FIXED_NATIVE_PATH) == pair[value["arm"]], "FixedTxt_actual_arm_source")
+    component = SEM / "target" / "debug" / "examples" / "fixed_text_compile_v4"
+    decoder = Path(shutil.which("ffmpeg") or "").resolve(strict=True)
+    for binary, wanted in [(component, value["compiler_binary_sha256"]), (decoder, value["decoder_sha256"]),
+                           (SW_BIN / "semwright-motion-canvas-driver", runtime["driver_sha256"]),
+                           (Path(shutil.which("node") or "").resolve(strict=True), runtime["node_sha256"])]:
+        require(type(wanted) is str and HEX64.fullmatch(wanted) and binary.is_file()
+                and not binary.is_symlink() and digest(binary) == wanted, "FixedTxt_actual_binary_pin")
+    fixed_original(value["template_film"], 4 * 1024 * 1024)
+    base_raw = fixed_original(value["managed_project"], 4 * 1024 * 1024)
+    base = fixed_json(base_raw)
+    require(fixed_original(value["caption_source"], 65536)
+            == b"An editable caption stays in place.", "FixedTxt_original_caption_bytes")
+    files = value["project_files"]
+    require(type(files) is list and len(files) <= 256, "FixedTxt_original_project_file_budget")
+    copied = {"semwright-motion.json": base_raw}
+    total = len(base_raw)
+    for item in files:
+        require(type(item) is dict and set(item) == {"relative", "original"}
+                and fixed_relative(item["relative"]) and item["relative"] not in copied,
+                "FixedTxt_original_project_member")
+        data = fixed_original(item["original"], 16 * 1024 * 1024)
+        total += len(data)
+        require(total <= 32 * 1024 * 1024, "FixedTxt_original_project_total_bound")
+        copied[item["relative"]] = data
+    assets = base.get("assets")
+    require(type(assets) is list and set(copied) == {"semwright-motion.json"} | {a["path"] for a in assets},
+            "FixedTxt_original_asset_roster")
+    for asset in assets:
+        data = copied[asset["path"]]
+        require(len(data) == asset["bytes"] and hashlib.sha256(data).hexdigest() == asset["sha256"],
+                "FixedTxt_original_asset_bytes")
+    runtime_paths = {
+        "render_helper": MOTION_RUNTIME / "render.mjs",
+        "dependency_lock": MOTION_RUNTIME / "package-lock.json",
+        "core_package": MOTION_RUNTIME / "node_modules/@motion-canvas/core/package.json",
+        "core_renderer": MOTION_RUNTIME / "node_modules/@motion-canvas/core/lib/app/Renderer.js",
+    }
+    for role, actual in runtime_paths.items():
+        fixed_original(runtime[role], 2 * 1024 * 1024)
+        require(Path(runtime[role]["path"]) == actual.resolve(strict=True), "FixedTxt_actual_runtime_member")
+    common = fixed_json(fixed_original(value["common_sources"], 4 * 1024 * 1024))
+    require(set(common) == {"schema", "semwright_revision", "files"}
+            and common["schema"] == "motionwright.fixed-text-common-compiler-sources/1"
+            and common["semwright_revision"] == PIN and type(common["files"]) is list
+            and 1 <= len(common["files"]) <= 4096, "FixedTxt_common_compiler_freeze")
+    actual_names = set()
+    for row in common["files"]:
+        require(type(row) is dict and set(row) == {"path", "bytes", "sha256"}
+                and fixed_relative(row["path"]) and row["path"] != FIXED_NATIVE_PATH
+                and row["path"] not in actual_names, "FixedTxt_common_compiler_member")
+        actual_names.add(row["path"])
+        fixed_original({**row, "path": str(SEM / row["path"])}, 16 * 1024 * 1024)
+    tracked = subprocess.check_output(["git", "-C", str(SEM), "ls-files", "-z"], timeout=20)
+    required = {p for p in tracked.decode("utf-8").split("\0") if p
+                and (p.endswith(".rs") or Path(p).name in {"Cargo.toml", "Cargo.lock"})}
+    require(required <= actual_names, "FixedTxt_common_Rust_and_Cargo_freeze_incomplete")
+    new_bytes(attempt.evidence_dir / "fixed-text-inputs.original.json", raw)
+    return value, copied, component, decoder
+
+
+def finish_fixed_text_v4(attempt):
+    scope = attempt.fixed_text_v4
+    expected = {key + ".render" for key in scope["fixtures"]}
+    all_reported = (set(attempt.native_commands) == expected
+                    and set(attempt.native_commands.values()) == {"SUCCESS_REPORTED"})
+    terminal = ("SUCCESS_REPORTED" if all_reported else
+                "ERROR_OR_UNKNOWN" if "ERROR_OR_UNKNOWN" in attempt.native_commands.values() else
+                "RESULT_REPORTED_UNVERIFIED" if attempt.native_commands else "NOT_STARTED")
+    complete = (attempt.completed and all_reported and attempt.error is None
+                and not attempt.secondary_failures and set(attempt.completed_stages) == set(scope["fixtures"]))
+    write_private_json(attempt.evidence_dir / "final-custody.json", {
+        "schema": "motionwright.native.fixed-text-cycle-custody/4", "arm": scope["arm"],
+        "expected_fixtures": scope["fixtures"], "native_terminal": terminal,
+        "native_command_terminals": attempt.native_commands, "completed_stages": attempt.completed_stages,
+        "original_sources_and_selected_decodes_observed": complete,
+        "secondary_failures": attempt.secondary_failures, "native_operation_retried": False,
+        "pair_comparison_performed": False, "formal_acceptance": False, "human_acceptance": False, "release_authorized": False,
+    })
+
+
+def fixed_environment(paths):
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}}
+    env.update(XDG_RUNTIME_DIR=str(paths["runtime"]), XDG_STATE_HOME=str(paths["state"]),
+               XDG_CONFIG_HOME=str(paths["config"]), XDG_CACHE_HOME=str(paths["scratch"]),
+               RUST_BACKTRACE="1", SEMWRIGHT_TEST_DRIVER_SANDBOX="1",
+               SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BIN / "semwright-sandbox"))
+    return env
+
+
+def fixed_component(attempt, label, component, wanted_sha, args, env):
+    require(digest(component) == wanted_sha, "FixedTxt_component_binary_changed_before")
+    result = attempt.run_argv(label, [str(component), *args], env=env, timeout=180)
+    require(digest(component) == wanted_sha, "FixedTxt_component_binary_changed_after")
+    return result
+
+
+def fixed_one_case(attempt, spec, project_files, component, decoder, fixture_root, key):
+    from native_mlt_sequence_e2e import native_owner_workspace
+    with native_owner_workspace(attempt) as temporary:
+        paths = closed_paths(Path(temporary))
+        env = fixed_environment(paths)
+        for relative, data in sorted(project_files.items()):
+            target = paths["project"] / relative
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            new_bytes(target, data)
+        database = paths["motionwright-data"] / "original-production.sqlite3"
+        source_wave = paths["motionwright-data"] / "original-context.wav"
+        source = attempt.command("source.seed", ["seed", str(database), str(source_wave),
+                                 str(attempt.evidence_dir / "saved-production-project.json")], env)
+        require(source.get("saved_reopen") is True and source.get("native_render_performed") is False,
+                "FixedTxt_existing_saved_production_context")
+        custody_dir = paths["state"] / "host-stdin-custody"
+        custody_dir.mkdir(mode=0o700)
+        with bound_broker(paths, attempt.evidence_dir, env,
+                          {**source, "resource": "project:" + source["project_id"]}, attempt,
+                          stdin_custody=custody_dir) as (connection, manifest, daemon_pid):
+            require(manifest["motion_driver_sha256"] == spec["runtime"]["driver_sha256"]
+                    and manifest["registered_node_sha256"] == spec["runtime"]["node_sha256"],
+                    "FixedTxt_original_registered_binary_pins")
+            argv = [str(SW_BIN / "semwright"), "--socket", str(paths["runtime"] / "broker.sock"),
+                    "--session-file", str(paths["runtime"] / "motionwright.session"), "--json",
+                    "execute", "driver.motion-canvas.project.inspect", "--args-json", "{}"]
+            attempt.run_argv("fixed.project-inspect", argv, env=env)
+            packet = attempt.evidence_dir / "canonical-component"
+            film = fixture_root / "fixtures" / key / "film.original.json"
+            expected = fixture_root / "fixtures" / key / "expectations.json"
+            fixed_component(attempt, "fixed.compile", component, spec["compiler_binary_sha256"],
+                            ["--film", str(film), "--managed-project", spec["managed_project"]["path"],
+                             "--output", str(packet)], env)
+            case = {
+                "schema": "motionwright.private-fixed-text-render-case/4", "arm": spec["arm"], "key": key,
+                "film": fixed_descriptor(film, 4 * 1024 * 1024), "managed_project": spec["managed_project"],
+                "expectations": fixed_descriptor(expected, 1024 * 1024),
+                "fixture_set": fixed_descriptor(fixture_root / "evidence/fixture-set-component.json", 1024 * 1024),
+                "snapshot": fixed_descriptor(attempt.evidence_dir / "fixed.project-inspect.stdout", 4 * 1024 * 1024),
+                "compiled_project": fixed_descriptor(packet / "evidence/project.derived.json", 4 * 1024 * 1024),
+                "compile_component": fixed_descriptor(packet / "evidence/compile-component.json", 1024 * 1024),
+                "generated_inventory": fixed_descriptor(packet / "evidence/generated-inventory.json", 1024 * 1024),
+                "generated_directory": str(packet / "generated"), "runtime": spec["runtime"],
+            }
+            case_path = attempt.evidence_dir / "fixed-text-case.json"
+            evidence = attempt.evidence_dir / "native-result.json"
+            write_private_json(case_path, case)
+            label = key + ".render"
+            result = attempt.command(label, ["render-fixed-text-v4", str(database), str(connection),
+                                     str(custody_dir), str(case_path), str(evidence)],
+                                     env, timeout=STAGE_TIMEOUT, native=True)
+            require(result.get("native_fixed_text_host") == "SUCCEEDED_REPORTED"
+                    and result.get("arm") == spec["arm"] and result.get("fixture") == key
+                    and result.get("frame_count") == 180, "FixedTxt_original_native_return")
+            attempt.confirm_native(label)
+            native = fixed_json(regular(evidence, 8 * 1024 * 1024)[0])
+            original_index = original_png_index(paths["output"], native, frames=180)
+            observation = fixed_readback_originals(attempt, spec, paths, native, evidence, key, decoder)
+            attempt.completed_stages[key] = {"native_result_sha256": digest(evidence),
+                "all180_original_pngs": original_index, "selected_originals": observation,
+                "owner_receiver_closure": "PENDING_EXISTING_OWNER_SHUTDOWN"}
+        require(attempt.owner_custody_close["loss_free_close_observed"] is True,
+                "FixedTxt_original_owner_receiver_close_not_observed")
+        attempt.completed_stages[key]["owner_receiver_closure"] = attempt.owner_custody_close
+        attempt.completed = True
+
+
+def fixed_readback_originals(attempt, spec, paths, native, evidence, key, decoder):
+    from native_direct_mediated_parity import decoded_rgba_png_capture
+    from native_motion_canvas_roundtrip import validate_png_crc_bytes
+    destination = attempt.evidence_dir / "fixed-text-original-readback"
+    destination.mkdir(mode=0o700)
+    artifact = native["segments"][0]["artifact"]
+    root = paths["output"] / artifact["directory"]
+    originals = {}
+    for name, bound in [("artifact-manifest.json", 1024 * 1024),
+                        ("native-observations.ndjson", 64 * 1024 * 1024),
+                        ("native-observations-receipt.json", 8192),
+                        ("canvas-color-observations.json", 16 * 1024 * 1024),
+                        ("font-readiness-receipt.json", 32768)]:
+        data = regular(root / name, bound)[0]
+        new_bytes(destination / name, data)
+        originals[name] = data
+    manifest = fixed_json(originals["artifact-manifest.json"])
+    require(hashlib.sha256(originals["artifact-manifest.json"]).hexdigest() == artifact["manifest_sha256"],
+            "FixedTxt_original_manifest_changed")
+    binding = fixed_json(regular(evidence.with_suffix(".fixed-text") / "host-binding.observation.json", 8 * 1024 * 1024)[0])
+    require(binding["arm"] == spec["arm"] and binding["fixture"] == key
+            and binding["original_sources_joined"] is True, "FixedTxt_original_Host_binding")
+    config = binding["original_config"]
+    receipt = fixed_json(originals["native-observations-receipt.json"])
+    observations = originals["native-observations.ndjson"]
+    require(receipt == manifest["native_observations"]
+            and receipt["sha256"] == hashlib.sha256(observations).hexdigest()
+            and receipt["bytes"] == len(observations) and receipt["frames"] == 180
+            and receipt["fps_num"] == 30 and receipt["fps_den"] == 1
+            and receipt["render_input_digest"] == config["renderInputDigest"]
+            and receipt["font_resources_sha256"] == config["fontResourcesDigest"],
+            "FixedTxt_original_native_observation_binding")
+    lines = observations.splitlines()
+    require(len(lines) == 180 and all(0 < len(line) <= 524288 for line in lines), "FixedTxt_native_observation_count_or_bound")
+    decoded_observations = [fixed_json(line) for line in lines]
+    require([row.get("frame") for row in decoded_observations] == list(range(180)), "FixedTxt_original_native_frame_sequence")
+    colors = fixed_json(originals["canvas-color-observations.json"])
+    color_pin = manifest["canvas_color_observation"]
+    require(color_pin["path"] == "canvas-color-observations.json"
+            and color_pin["bytes"] == len(originals["canvas-color-observations.json"])
+            and color_pin["sha256"] == hashlib.sha256(originals["canvas-color-observations.json"]).hexdigest()
+            and colors["schema"] == "semwright.motion-canvas-context-color/1"
+            and colors["render_input_digest"] == config["renderInputDigest"]
+            and len(colors["frames"]) == 180, "FixedTxt_original_canvas_binding")
+    for index, row in enumerate(colors["frames"]):
+        canvas = row["canvas"]
+        require(row["index"] == index and row["frame"] == index
+                and row["png_sha256"] == manifest["frames"][index]["sha256"]
+                and set(canvas) == {"api", "color_space", "alpha", "width", "height"}
+                and canvas["api"] == "CanvasRenderingContext2D.getContextAttributes"
+                and canvas["color_space"] == "srgb" and type(canvas["alpha"]) is bool
+                and canvas["width"] == 1920 and canvas["height"] == 1080, "FixedTxt_actual_canvas_profile")
+        if "canvas_color" in manifest["frames"][index]:
+            require(manifest["frames"][index]["canvas_color"] == canvas, "FixedTxt_canvas_manifest_binding")
+    fonts = fixed_json(originals["font-readiness-receipt.json"])
+    ready = fonts["readiness"]
+    require(fonts["version"] == 1 and fonts["render_input_digest"] == config["renderInputDigest"]
+            and fonts["font_resources_sha256"] == config["fontResourcesDigest"]
+            and fonts["managed_fonts"] == config["managedFonts"]
+            and (fonts["first_frame"], fonts["end_frame_exclusive"], fonts["fps_num"], fonts["fps_den"]) == (0, 180, 30, 1)
+            and fonts["authoring"] is True and ready["observed_before_renderer_render"] is True
+            and ready["status_after_ready"] == "loaded"
+            and len(ready["requests"]) == 5 + sum(len(font["weights"]) for font in config["managedFonts"]),
+            "FixedTxt_actual_browser_font_readiness")
+    font_inventory = []
+    total_font_bytes = 0
+    font_sources = [(MOTION_RUNTIME, pin, "bundled") for pin in config["fontResourcePins"]]
+    font_sources += [(paths["project"], pin, "imported") for pin in config["managedFonts"]]
+    for ordinal, (source_root, pin, role) in enumerate(font_sources):
+        require(fixed_relative(pin["path"]), "FixedTxt_font_source_path")
+        data = regular(source_root / pin["path"], 16 * 1024 * 1024)[0]
+        total_font_bytes += len(data)
+        require(total_font_bytes <= 128 * 1024 * 1024
+                and hashlib.sha256(data).hexdigest() == pin["sha256"], "FixedTxt_original_font_bytes")
+        retained = f"font-{ordinal:04}.original.bin"
+        new_bytes(destination / retained, data)
+        font_inventory.append({"role": role, "path": pin["path"], "retained": retained, "bytes": len(data), "sha256": pin["sha256"]})
+    write_private_json(destination / "font-source-inventory.json", {
+        "originals": font_inventory, "glyph_fidelity_accepted": False, "browser_readiness_is_glyph_fidelity": False,
+    })
+    admitted = {}
+    for frame in fixed_samples(key):
+        row = manifest["frames"][frame]
+        png = regular(root / f"frames/{frame:06}.png", 32 * 1024 * 1024)[0]
+        require(len(png) == row["bytes"] and hashlib.sha256(png).hexdigest() == row["sha256"], "FixedTxt_selected_original_PNG_changed")
+        header = validate_png_crc_bytes(png, 1920, 1080, max_bytes=32 * 1024 * 1024)
+        require(header["animated"] is False and
+                tuple(header[name] for name in ("bit_depth", "color_type", "compression", "filter", "interlace")) == (8, 6, 0, 0, 0),
+                "FixedTxt_selected_original_RGBA8_transport")
+        new_bytes(destination / f"frame-{frame:06}.original.png", png)
+        admitted[frame] = png
+    decoded = []
+    for frame, png in admitted.items():
+        capture, primary, rgba = {}, None, None
+        try:
+            rgba = decoded_rgba_png_capture(png, 1920, 1080, ffmpeg=decoder,
+                                           executable_sha256=spec["decoder_sha256"], capture=capture)
+        except BaseException as error:
+            primary = (error, error.__traceback__)
+        try:
+            for stream in ("stdout", "stderr"):
+                if stream in capture:
+                    require(type(capture[stream]) is bytes, "FixedTxt_decoder_original_stream_type")
+                    new_bytes(destination / f"frame-{frame:06}.decoder.{stream}", capture[stream])
+            metadata = {name: value for name, value in capture.items() if name not in {"stdout", "stderr"}}
+            metadata["original_streams"] = {
+                stream: ({"present": True, "bytes": len(capture[stream]), "sha256": hashlib.sha256(capture[stream]).hexdigest(),
+                          "buffer_collected_from_process": capture.get("state") == "TERMINAL_OBSERVED"}
+                         if stream in capture else {"present": False}) for stream in ("stdout", "stderr")}
+            metadata["invocation"] = {"callable": "decoded_rgba_png_capture", "width": 1920, "height": 1080,
+                "decoder": str(decoder), "decoder_sha256": spec["decoder_sha256"], "input_png_sha256": hashlib.sha256(png).hexdigest()}
+            metadata["automatic_retry"] = False
+            write_private_json(destination / f"frame-{frame:06}.decoder.capture.json", metadata)
+        except BaseException:
+            attempt.secondary(f"frame-{frame:06}.decoder-custody")
+            if primary is None:
+                raise
+        if primary is not None:
+            raise primary[0].with_traceback(primary[1])
+        terminal = capture.get("terminal", {})
+        require(capture.get("state") == "TERMINAL_OBSERVED" and terminal.get("whole_process_completed") is True
+                and terminal.get("exit_code") == 0 and terminal.get("timed_out") is False
+                and terminal.get("output_budget_exceeded") is False and terminal.get("pipes_closed") is True
+                and terminal.get("stdin_complete") is True and terminal.get("pipe_errors") == []
+                and capture.get("stderr") == b"" and type(rgba) is bytes and len(rgba) == 1920 * 1080 * 4
+                and capture.get("stdout") == rgba, "FixedTxt_original_decoder_terminal")
+        pixel_sha = hashlib.sha256(rgba).hexdigest()
+        row = manifest["frames"][frame]
+        sampled = row.get("pixel_sha256") is not None
+        if sampled:
+            alpha = rgba[3::4]
+            require(pixel_sha == row["pixel_sha256"] and min(alpha) == row["min_alpha"] and max(alpha) == row["max_alpha"],
+                    "FixedTxt_independent_decoded_pixels_differ_from_SDK_sample")
+        decoded.append({"frame": frame, "png_sha256": row["sha256"], "png_bytes": len(png),
+                        "rgba_sha256": pixel_sha, "rgba_bytes": len(rgba), "original_rgba_file": f"frame-{frame:06}.decoder.stdout",
+                        "compared_with_original_SDK_pixel_sample": sampled})
+    result = {
+        "schema": "motionwright.native.fixed-text-selected-originals/4", "arm": spec["arm"], "fixture": key,
+        "manifest_sha256": artifact["manifest_sha256"], "native_observation_sha256": receipt["sha256"],
+        "original_Host_stdin_sha256": binding["original_Host_stdin_sha256"],
+        "original_font_readiness_sha256": hashlib.sha256(originals["font-readiness-receipt.json"]).hexdigest(),
+        "selected_frames": decoded, "actual_browser_readiness_observed": True,
+        "native_effect_repeated": False, "oracle_v3_reused": False, "causal_pixel_verdict": "NOT_EVALUATED",
+        "glyph_fidelity_accepted": False, "formal_acceptance": False, "human_acceptance": False,
+    }
+    write_private_json(destination / "selected-originals.json", result)
+    return result
+
+
+def fixed_owner_close(daemon, source, evidence, attempt, original_identity):
+    def identity():
+        value = source.lstat()
+        require(source.resolve(strict=True) == source and source.is_dir() and not source.is_symlink()
+                and value.st_mode & 0o777 == 0o700, "FixedTxt_owner_custody_directory")
+        return (value.st_dev, value.st_ino, value.st_uid, value.st_mode)
+    require(identity() == original_identity, "FixedTxt_owner_custody_directory_replaced")
+    known_success = bool(attempt.native_commands) and set(attempt.native_commands.values()) == {"SUCCESS_REPORTED"}
+    if not known_success:
+        observation = {"loss_free_close_observed": False, "original_close_record_observed": False,
+                       "termination_requested": False, "reason": "native_outcome_not_known_success",
+                       "native_command_terminals": attempt.native_commands, "automatic_retry": False}
+        write_private_json(evidence / "owner-custody-close.observation.json", observation)
+        attempt.owner_custody_close = observation
+        return
+    require(daemon.poll() is not None or observed.process_identity(daemon.pid) == attempt.daemon_identity,
+            "FixedTxt_original_daemon_identity_changed")
+    write_private_json(evidence / "owner-shutdown.intent.json", {
+        "pid": daemon.pid, "original_process_identity": attempt.daemon_identity,
+        "method": "existing_semwrightd_Unix_terminate_signal_handler", "native_command_terminals": attempt.native_commands,
+        "automatic_retry": False, "signal_is_receiver_close_evidence": False,
+    })
+    if daemon.poll() is None:
+        attempt.owner_shutdown_requested = True
+        daemon.terminate()
+    started, wait_error = time.monotonic(), None
+    try:
+        exit_code = daemon.wait(timeout=10)
+    except BaseException as error:
+        wait_error, exit_code = error, daemon.poll()
+    try:
+        write_private_json(evidence / "owner-shutdown.terminal.json", {
+            "pid": daemon.pid, "observed_exit_code": exit_code, "elapsed_seconds": time.monotonic() - started,
+            "termination_requested": attempt.owner_shutdown_requested,
+            "wait_error_type": None if wait_error is None else type(wait_error).__name__,
+            "receiver_close_inferred_from_process_exit": False, "automatic_retry": False,
+        })
+    except BaseException:
+        attempt.secondary("owner-shutdown-terminal-custody")
+        if wait_error is None:
+            raise
+    if wait_error is not None:
+        raise wait_error
+    raw = regular(source / "closed.json", 8192)[0]
+    new_bytes(evidence / "owner-closed.original.json", raw)
+    closed = fixed_json(raw)
+    require(identity() == original_identity, "FixedTxt_original_owner_directory_changed_after_close")
+    counters = closed.get("loss_counters_at_observer_close")
+    selected = fixed_json(regular(evidence / "native-result.host-stdin/readback.observation.json", 8 * 1024 * 1024)[0])["selected_capture_join"]
+    valid = (set(closed) == {"schema", "status", "reason", "capture_records_written", "terminal_records_written",
+                            "input_bytes_reserved", "queued_captures_discarded", "queue_disconnection_proven",
+                            "loss_counters_at_observer_close", "expected_job_coverage", "child_consumption", "native_render_success"}
+             and closed.get("schema") == "semwright.host-stdin-custody-close/1"
+             and closed.get("status") == "observer_closed" and closed.get("reason") in {"owner_shutdown", "channel_closed"}
+             and closed.get("queue_disconnection_proven") is True
+             and all(type(closed.get(name)) is int for name in
+                     ("capture_records_written", "terminal_records_written", "input_bytes_reserved", "queued_captures_discarded"))
+             and closed["queued_captures_discarded"] == 0 and type(counters) is dict
+             and set(counters) == {"capture_full", "capture_closed", "capture_oversized", "terminal_receiver_lost"}
+             and all(type(value) is int and value == 0 for value in counters.values())
+             and closed["capture_records_written"] == closed["terminal_records_written"] == 1
+             and closed["input_bytes_reserved"] == selected["capture"]["stdin_bytes"]
+             and selected.get("matched") is True and selected.get("ordinal") == 1
+             and selected.get("pipe_write_all_completed") is True
+             and closed.get("child_consumption") == "not_observed" and closed.get("native_render_success") == "not_inferred"
+             and closed.get("expected_job_coverage") == "caller_must_join_original_job_and_parent_ids" and exit_code == 0)
+    observation = {"loss_free_close_observed": valid, "original_close_record_observed": True,
+                   "original_close_sha256": hashlib.sha256(raw).hexdigest(), "original_daemon_exit_code": exit_code,
+                   "termination_requested": attempt.owner_shutdown_requested, "child_consumption": "not_observed",
+                   "formal_acceptance": False, "global_job_coverage_accepted": False, "automatic_retry": False}
+    write_private_json(evidence / "owner-custody-close.observation.json", observation)
+    attempt.owner_custody_close = observation
+    require(valid, "FixedTxt_actual_original_receiver_close_incomplete_or_losses")
+
+
+def execute_fixed_text_v4(input_path, fixed_input_path):
+    attempt = FilmAttempt.prepare(input_path)
+    attempt.fixed_text_v4 = {"arm": None, "fixtures": list(FIXED_TEXT_KEYS)}
+    original_error = None
+    try:
+        plan = checked_plan(attempt)
+        write_private_json(attempt.evidence_dir / "source-plan.json", plan)
+        spec, project_files, component, decoder = fixed_cycle_inputs(fixed_input_path, attempt)
+        attempt.fixed_text_v4 = {"arm": spec["arm"], "fixtures": list(FIXED_TEXT_KEYS)}
+        fixture_root = attempt.evidence_dir / "canonical-fixture-set"
+        terminal = fixed_component(attempt, "fixed.source-fixtures", component, spec["compiler_binary_sha256"],
+            ["--fixtures", spec["template_film"]["path"], "--managed-project", spec["managed_project"]["path"],
+             "--caption-source", spec["caption_source"]["path"], "--output", str(fixture_root)], dict(os.environ))
+        require(terminal.get("schema") == "motionwright-fixedtxt-film-fixture-set/4"
+                and terminal.get("status") == "AUTHORED_FILM_FIXTURES_WRITTEN" and terminal.get("fixture_count") == 12
+                and [row["key"] for row in terminal["fixtures"]] == list(FIXED_TEXT_KEYS)
+                and terminal["compiler"]["runtime_source_sha256"] == spec["runtime"]["native_source_sha256"][spec["arm"]],
+                "FixedTxt_current_canonical_twelve_fixture_component")
+        for key in FIXED_TEXT_KEYS:
+            directory = attempt.evidence_dir / key
+            directory.mkdir(mode=0o700)
+            child = FilmAttempt(attempt.inputs, directory)
+            child.fixed_text_v4 = {"arm": spec["arm"], "fixtures": [key]}
+            child.melt_alias_observation = attempt.melt_alias_observation
+            case_error = None
+            try:
+                fixed_one_case(child, spec, project_files, component, decoder, fixture_root, key)
+            except BaseException as error:
+                case_error = (error, error.__traceback__)
+                child.retain_error(error)
+            try:
+                child.finish()
+            except BaseException as error:
+                child.secondary("final-custody")
+                if case_error is None:
+                    case_error = (error, error.__traceback__)
+            require(not (set(attempt.native_commands) & set(child.native_commands)), "FixedTxt_native_case_identity_duplicated")
+            attempt.native_commands.update(child.native_commands)
+            attempt.completed_stages.update(child.completed_stages)
+            attempt.secondary_failures.extend(key + "." + entry for entry in child.secondary_failures)
+            if case_error is not None:
+                raise case_error[0].with_traceback(case_error[1])
+            require(child.completed and not child.secondary_failures, "FixedTxt_case_custody_incomplete")
+        require(digest(SEM / FIXED_NATIVE_PATH) == spec["runtime"]["native_source_sha256"][spec["arm"]]
+                and digest(component) == spec["compiler_binary_sha256"], "FixedTxt_source_changed_after_cycle")
+        common = fixed_json(fixed_original(spec["common_sources"], 4 * 1024 * 1024))
+        for row in common["files"]:
+            fixed_original({**row, "path": str(SEM / row["path"])}, 16 * 1024 * 1024)
+        for field, bound in [("template_film", 4 * 1024 * 1024), ("managed_project", 4 * 1024 * 1024), ("caption_source", 65536)]:
+            fixed_original(spec[field], bound)
+        write_private_json(attempt.evidence_dir / "fixed-text-cycle.observation.json", {
+            "schema": "motionwright.native.fixed-text-cycle/4", "arm": spec["arm"], "source_sha": RUN_SHA, "semwright_sha": PIN,
+            "fixture_count": 12, "native_render_start_count": len(attempt.native_commands),
+            "render_frame_count_each": 180, "selected_decode_count": 48,
+            "template_film_original_sha256": spec["template_film"]["sha256"],
+            "managed_project_original_sha256": spec["managed_project"]["sha256"],
+            "caption_source_original_sha256": spec["caption_source"]["sha256"],
+            "common_compiler_sources_original_sha256": spec["common_sources"]["sha256"],
+            "native_source_pair": spec["runtime"]["native_source_sha256"], "completed_stages": attempt.completed_stages,
+            "canonical_Film_realize_project_compile_used": True, "original_Host_stdin_retained": True,
+            "automatic_native_retry": False, "pair_pixel_verdict": "NOT_EVALUATED",
+            "formal_acceptance": False, "human_acceptance": False, "release_authorized": False,
+        })
+        attempt.completed = True
+    except BaseException as error:
+        original_error = (error, error.__traceback__)
+        attempt.retain_error(error)
+    try:
+        attempt.finish()
+    except BaseException:
+        attempt.secondary("final-custody")
+        if original_error is None:
+            raise
+    if original_error is not None:
+        raise original_error[0].with_traceback(original_error[1])
+    require(attempt.completed and not attempt.secondary_failures, "FixedTxt_cycle_custody_incomplete")
+    print(json.dumps({"fixed_text_v4": "SUCCESS_REPORTED", "arm": spec["arm"], "native_renders": 12,
+                      "frames_each": 180, "selected_decodes": 48, "pair_pixel_verdict": "NOT_EVALUATED",
+                      "formal_acceptance": False, "private_evidence_seal": "PENDING_WORKFLOW_CUSTODY",
+                      "automatic_retry": False}, sort_keys=True))
+
+
 if __name__ == "__main__":
     try:
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("--g2-inputs", type=Path, required=True)
-        execute(parser.parse_args().g2_inputs)
+        parser.add_argument("--fixed-text-v4-inputs", type=Path)
+        arguments = parser.parse_args()
+        if arguments.fixed_text_v4_inputs is None:
+            execute(arguments.g2_inputs)
+        else:
+            execute_fixed_text_v4(arguments.g2_inputs, arguments.fixed_text_v4_inputs)
     except NativeCommandFailure as error:
         # Closed vocabulary only, never stderr, tickets, paths or input media.
         print(json.dumps({

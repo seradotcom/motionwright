@@ -34,6 +34,7 @@ mod blender_render;
 mod brand_fonts;
 mod hyperframes;
 mod manim_graph;
+mod manim_graph_profile;
 pub use hyperframes::HyperframesSourceEvidence;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
@@ -42,6 +43,8 @@ mod native_runtime_versions;
 #[cfg(test)]
 mod path_boundary_tests;
 mod receipt_custody;
+mod transport_custody;
+pub use transport_custody::ProductionTransportCustody;
 mod recovery;
 mod renderer_registry;
 mod renderer_versions;
@@ -66,6 +69,7 @@ pub use blender_render::{
     BlenderLitSource, BlenderLitStillJournal, BlenderLitStillPhase, BlenderLitStillPlan,
     BlenderLitStillRequest, build_blender_lit_still_plan,
 };
+pub use manim_graph_profile::{ManimGraphProfileObservation, ManimGraphProfileState};
 pub use mlt_mezzanine::{MltPreparedMezzanines, MltVerifiedMezzanine};
 pub use mlt_multisegment_av::{MltMultisegmentAvMasterEvidence, MltMultisegmentAvMasterRequest};
 pub use mlt_timeline::MltVerifiedLosslessTimeline;
@@ -113,6 +117,8 @@ const HYPERFRAMES_MUTATING_COMMANDS: &[&str] = &[
 const MOTION_CANVAS_COMMANDS: &[&str] = &[
     "driver.motion-canvas.doctor",
     "driver.motion-canvas.project.create",
+    "driver.motion-canvas.project.inspect",
+    "driver.motion-canvas.project.validate",
     "driver.motion-canvas.asset.import",
     "driver.motion-canvas.asset.list",
     "driver.motion-canvas.composition.inspect",
@@ -777,6 +783,7 @@ pub struct MltAvMasterEvidence {
 #[derive(Clone)]
 pub struct ProductionClient {
     connection: ProductionConnection,
+    transport_custody: Option<ProductionTransportCustody>,
     #[cfg(test)]
     execute_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -786,6 +793,7 @@ impl ProductionClient {
         connection.validate()?;
         Ok(Self {
             connection,
+            transport_custody: None,
             #[cfg(test)]
             execute_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
@@ -793,6 +801,13 @@ impl ProductionClient {
 
     pub fn connection(&self) -> &ProductionConnection {
         &self.connection
+    }
+
+    /// Opt in to bounded custody of this client's original transport bytes.
+    /// This does not change provenance, receipts or dispatch permissions.
+    pub fn with_transport_custody(mut self, custody: &ProductionTransportCustody) -> Self {
+        self.transport_custody = Some(custody.clone());
+        self
     }
 
     pub async fn probe_runtime(
@@ -895,151 +910,190 @@ impl ProductionClient {
             .execute_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        let expected = expected_authority(command).ok_or_else(|| {
-            Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
-        })?;
-        let mutation = mutation
-            || WORKFLOW_MUTATING_COMMANDS.contains(&command)
-            || HYPERFRAMES_MUTATING_COMMANDS.contains(&command)
-            || BLENDER_PRODUCT_MUTATING_COMMANDS.contains(&command)
-            || command == manim_graph::START_COMMAND;
-        self.connection.validate()?;
-        let encoded = serde_json::to_vec(&args)
-            .map_err(|_| invalid("Production command arguments are malformed"))?;
-        if encoded.len() > MAX_ARGS_BYTES {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "Production command arguments exceed the transport budget",
-            ));
-        }
-
-        let mut child = Command::new(&self.connection.executable);
-        child
-            .arg("--socket")
-            .arg(&self.connection.socket)
-            .arg("--session-file")
-            .arg(&self.connection.session_file)
-            .arg("--json")
-            .arg("execute")
-            .arg(command)
-            .arg("--args-json")
-            .arg(
-                std::str::from_utf8(&encoded)
-                    .map_err(|_| invalid("Production arguments are not UTF-8 JSON"))?,
-            )
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-
-        let budget_secs = if command == "driver.manim-community.doctor" {
-            DEFAULT_DEADLINE_SECS
-        } else if command.starts_with("driver.hyperframes.")
-            || command.starts_with("driver.mlt-video.")
-            || command.starts_with("driver.blender.")
-            || command.starts_with("driver.manim-community.")
-        {
-            MLT_DEADLINE_SECS
-        } else {
-            DEFAULT_DEADLINE_SECS
-        };
-        let deadline = Instant::now() + Duration::from_secs(budget_secs);
-        let mut child = child.spawn().map_err(|_| {
-            Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
-        })?;
-        // Once the child starts, a transport failure cannot establish whether a
-        // mutation ran. A typed Broker error retains its own outcome below.
-        let post_spawn_error = |error: Error| {
-            if mutation { error.uncertain() } else { error }
-        };
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| post_spawn_error(backend("Semwright CLI stdout unavailable")))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| post_spawn_error(backend("Semwright CLI stderr unavailable")))?;
-        // Joining owned reader futures avoids detached tasks on every error
-        // and cancellation path. Process exit never starts a new output budget.
-        let captured = timeout_at(deadline, async {
-            tokio::try_join!(
-                async {
-                    child
-                        .wait()
-                        .await
-                        .map_err(|_| post_spawn_error(backend("Semwright CLI process failed")))
-                },
-                async {
-                    read_bounded(stdout).await.map_err(|_| {
-                        post_spawn_error(backend("Semwright CLI output could not be read"))
-                    })
-                },
-                async {
-                    read_bounded(stderr).await.map_err(|_| {
-                        post_spawn_error(backend("Semwright CLI diagnostics could not be read"))
-                    })
-                },
-            )
-        })
-        .await;
-        let (status, stdout, stderr) = match captured {
-            Ok(result) => result?,
-            Err(_) => {
-                let error =
-                    Error::new(ErrorCode::Timeout, "Canonical production command timed out");
-                return Err(post_spawn_error(error));
+        let mut capture: Option<transport_custody::CaptureReservation> = None;
+        let result = async {
+            let expected = expected_authority(command).ok_or_else(|| {
+                Error::new(ErrorCode::Unsupported, "Canonical command is not enabled")
+            })?;
+            let mutation = mutation
+                || WORKFLOW_MUTATING_COMMANDS.contains(&command)
+                || HYPERFRAMES_MUTATING_COMMANDS.contains(&command)
+                || BLENDER_PRODUCT_MUTATING_COMMANDS.contains(&command)
+                || command == manim_graph::START_COMMAND;
+            self.connection.validate()?;
+            let encoded = serde_json::to_vec(&args)
+                .map_err(|_| invalid("Production command arguments are malformed"))?;
+            if encoded.len() > MAX_ARGS_BYTES {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "Production command arguments exceed the transport budget",
+                ));
             }
-        };
-        if stdout.len() > MAX_OUTPUT_BYTES || stderr.len() > MAX_OUTPUT_BYTES {
-            return Err(post_spawn_error(Error::new(
-                ErrorCode::ResourceExhausted,
-                "Semwright CLI response exceeded the transport budget",
-            )));
-        }
 
-        let envelope: Envelope = serde_json::from_slice(&stdout).map_err(|_| {
-            post_spawn_error(backend(
-                "Semwright CLI returned an invalid response envelope",
-            ))
-        })?;
-        if envelope.command != command {
-            return Err(post_spawn_error(backend(
-                "Semwright CLI response command does not match the request",
-            )));
-        }
-        if !status.success() || !envelope.ok {
-            let error = envelope.error.unwrap_or_else(|| {
+            let mut child = Command::new(&self.connection.executable);
+            child
+                .arg("--socket")
+                .arg(&self.connection.socket)
+                .arg("--session-file")
+                .arg(&self.connection.session_file)
+                .arg("--json")
+                .arg("execute")
+                .arg(command)
+                .arg("--args-json")
+                .arg(
+                    std::str::from_utf8(&encoded)
+                        .map_err(|_| invalid("Production arguments are not UTF-8 JSON"))?,
+                )
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+
+            let budget_secs = if command == "driver.manim-community.doctor" {
+                DEFAULT_DEADLINE_SECS
+            } else if command.starts_with("driver.hyperframes.")
+                || command.starts_with("driver.mlt-video.")
+                || command.starts_with("driver.blender.")
+                || command.starts_with("driver.manim-community.")
+            {
+                MLT_DEADLINE_SECS
+            } else {
+                DEFAULT_DEADLINE_SECS
+            };
+            if let Some(custody) = &self.transport_custody {
+                let process = child.as_std();
+                let argv: Vec<_> = process.get_args().collect();
+                capture = Some(custody.reserve(
+                    command,
+                    mutation,
+                    &self.connection,
+                    process.get_program(),
+                    argv.iter().copied(),
+                    &encoded,
+                )?);
+            }
+            let deadline = Instant::now() + Duration::from_secs(budget_secs);
+            let mut child = child.spawn().map_err(|_| {
+                Error::new(ErrorCode::Unavailable, "Semwright CLI could not be started")
+            })?;
+            if let Some(capture) = capture.as_ref() {
+                capture.started(child.id());
+            }
+            // Once the child starts, a transport failure cannot establish whether a
+            // mutation ran. A typed Broker error retains its own outcome below.
+            let post_spawn_error = |error: Error| {
+                if mutation { error.uncertain() } else { error }
+            };
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| post_spawn_error(backend("Semwright CLI stdout unavailable")))?;
+            let stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| post_spawn_error(backend("Semwright CLI stderr unavailable")))?;
+            // Joining owned reader futures avoids detached tasks on every error
+            // and cancellation path. Process exit never starts a new output budget.
+            let captured = timeout_at(deadline, async {
+                tokio::try_join!(
+                    async {
+                        let status = child.wait().await.map_err(|_| {
+                            post_spawn_error(backend("Semwright CLI process failed"))
+                        })?;
+                        if let Some(capture) = capture.as_ref() {
+                            capture.process_exit(&status);
+                        }
+                        Ok::<_, Error>(status)
+                    },
+                    async {
+                        transport_custody::read_bounded_with_capture(
+                            stdout,
+                            capture.as_ref(),
+                            transport_custody::Stream::Stdout,
+                        )
+                        .await
+                        .map_err(|_| {
+                            post_spawn_error(backend("Semwright CLI output could not be read"))
+                        })
+                    },
+                    async {
+                        transport_custody::read_bounded_with_capture(
+                            stderr,
+                            capture.as_ref(),
+                            transport_custody::Stream::Stderr,
+                        )
+                        .await
+                        .map_err(|_| {
+                            post_spawn_error(backend("Semwright CLI diagnostics could not be read"))
+                        })
+                    },
+                )
+            })
+            .await;
+            let (status, stdout, stderr) = match captured {
+                Ok(result) => result?,
+                Err(_) => {
+                    let error =
+                        Error::new(ErrorCode::Timeout, "Canonical production command timed out");
+                    return Err(post_spawn_error(error));
+                }
+            };
+            if stdout.len() > MAX_OUTPUT_BYTES || stderr.len() > MAX_OUTPUT_BYTES {
+                return Err(post_spawn_error(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "Semwright CLI response exceeded the transport budget",
+                )));
+            }
+
+            let envelope: Envelope = serde_json::from_slice(&stdout).map_err(|_| {
                 post_spawn_error(backend(
-                    "Canonical production command failed without a typed error",
+                    "Semwright CLI returned an invalid response envelope",
                 ))
-            });
-            return Err(error);
+            })?;
+            if envelope.command != command {
+                return Err(post_spawn_error(backend(
+                    "Semwright CLI response command does not match the request",
+                )));
+            }
+            if !status.success() || !envelope.ok {
+                let error = envelope.error.unwrap_or_else(|| {
+                    post_spawn_error(backend(
+                        "Canonical production command failed without a typed error",
+                    ))
+                });
+                return Err(error);
+            }
+            let provenance = envelope.execution.provenance.as_ref().ok_or_else(|| {
+                post_spawn_error(backend("Canonical production response has no provenance"))
+            })?;
+            if provenance.provider != expected.provider
+                || provenance.source != expected.source
+                || (expected.provider_generation_required
+                    && provenance.provider_generation.is_none())
+                || !is_sha256(&provenance.descriptor_sha256)
+            {
+                return Err(post_spawn_error(backend(
+                    "Canonical response provenance does not match the expected authority",
+                )));
+            }
+            let value = envelope.data.ok_or_else(|| {
+                post_spawn_error(backend("Canonical production response has no data"))
+            })?;
+            Ok(BrokerResult {
+                value: json!({
+                    "data": value,
+                    "execution": envelope.execution,
+                    "warnings": envelope.warnings,
+                    "provenance_checked": true
+                }),
+                request_id: envelope.request_id,
+            })
         }
-        let provenance = envelope.execution.provenance.as_ref().ok_or_else(|| {
-            post_spawn_error(backend("Canonical production response has no provenance"))
-        })?;
-        if provenance.provider != expected.provider
-            || provenance.source != expected.source
-            || (expected.provider_generation_required && provenance.provider_generation.is_none())
-            || !is_sha256(&provenance.descriptor_sha256)
-        {
-            return Err(post_spawn_error(backend(
-                "Canonical response provenance does not match the expected authority",
-            )));
+        .await;
+        if let Some(capture) = capture.as_mut() {
+            capture.finish(&result);
         }
-        let value = envelope.data.ok_or_else(|| {
-            post_spawn_error(backend("Canonical production response has no data"))
-        })?;
-        Ok(BrokerResult {
-            value: json!({
-                "data": value,
-                "execution": envelope.execution,
-                "warnings": envelope.warnings,
-                "provenance_checked": true
-            }),
-            request_id: envelope.request_id,
-        })
+        result
     }
 }
 
@@ -1413,6 +1467,12 @@ impl ProductionCoordinator {
     /// Inspection neither acknowledges an effect nor permits a redispatch.
     pub fn private_receipt_custody_snapshot(&self) -> Value {
         self.receipt_custody.snapshot()
+    }
+
+    /// Attach private byte custody to the same existing production client.
+    pub fn with_transport_custody(mut self, custody: &ProductionTransportCustody) -> Self {
+        self.client = self.client.with_transport_custody(custody);
+        self
     }
 
     pub fn receipts(&self, project_id: Uuid, limit: usize) -> NativeResult<Vec<ProductionReceipt>> {
