@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
+import sourceLock from "../../../SOURCE_LOCK.json";
 import { fixtureBootstrap, fixtureProject } from "./fixture";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import type { ExtensionProfile, Project } from "./types";
 
-const PIN="4849b3c1dcee9b37438801b4264f59480bff9e40";
+const PIN=sourceLock.dependencies.semwright.revision;
 function project():Project {return structuredClone(fixtureProject);}
 
 describe("MW05-E15-02 creative runtime doctor: browser never invents native readiness",()=>{
   it("uses the immutable source pin present in the actual checked-in Native SDK",()=>{
+    expect(PIN).toMatch(/^[0-9a-f]{40}$/);
     expect(fixtureBootstrap.native_sdk.pinned_revision).toBe(PIN);
-    const report=browserCreativeDoctor(project(),PIN);
+    const report=browserCreativeDoctor(project(),fixtureBootstrap.native_sdk.pinned_revision);
     expect(report.schema).toBe("motionwright.creative-runtime-doctor/1");
     expect(report.semwright_native_sdk_source_pin).toBe(PIN);
     expect(report.runtime_version_evidence).toBe("browser_demo");
