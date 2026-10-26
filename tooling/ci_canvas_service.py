@@ -80,6 +80,330 @@ CAMERA_TITLES = (
     "a late saved-Camera read for scene A preserves the exact visible author copy of scene B",
     "a successful original Camera reply closes only scene A while scene B keeps its exact author bytes",
 )
+# Exact A3 product source nominated for the isolated Camera7 + saved-Manim-v2
+# service regression. This does not grant native, installed or formal acceptance.
+CAMERA_EIGHT_SCOPE = "camera-with-v2"
+CAMERA_EIGHT_REVIEWED_PROFILE = {'schema': 'motionwright.camera-eight-runtime-profile/1',
+ 'source_commit': '27698b7beb274e7a6c028b98cde55519293b3154',
+ 'source_tree': '8b705be62a5584380091270db17df146196f5d5c',
+ 'product_paths': {'apps/studio/tests/camera-reframe-service.spec.ts': '5c9a6cd336786baa7fd22e871205c7515265b877dcdda9324378b46426a6536e',
+                   'apps/studio/tests/camera-reframe-v2-service.spec.ts': '08ae282be69784e085a7be73ae233146843e0ee156f7e27c332ace2ea50089da',
+                   'apps/studio/tests/support/scopedChangeService.ts': '2fba83ace30c032e11f3c108203c0d7a0e98821d79d081717281194108138f1d',
+                   'SOURCE_LOCK.json': 'aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f'},
+ 'runner': 'ubuntu-24.04',
+ 'minimum_available_memory_bytes': 4294967296,
+ 'minimum_target_free_bytes': 19327352832,
+ 'cargo_jobs': 1,
+ 'job_seconds': 5400}
+CAMERA_EIGHT_HISTORICAL_SOURCE = "4cc2cd42e293f11986d4dfda9c9658e884618316"
+CAMERA_EIGHT_HISTORICAL_TREE = "0ce41c8d7904e2f4afe434058dc0655f85996885"
+CAMERA_EIGHT_GATE_PATHS = ("tooling/ci_canvas_service.py", "tooling/tests/test_ci_canvas_service.py",
+                           ".github/workflows/studio-service-verification.yml")
+CAMERA_EIGHT_HISTORICAL_INPUT_PINS = (
+    ("apps/studio/tests/camera-reframe-service.spec.ts", "5c9a6cd336786baa7fd22e871205c7515265b877dcdda9324378b46426a6536e"),
+    ("apps/studio/tests/camera-reframe-v2-service.spec.ts", "08ae282be69784e085a7be73ae233146843e0ee156f7e27c332ace2ea50089da"),
+    ("apps/studio/tests/support/scopedChangeService.ts", "2fba83ace30c032e11f3c108203c0d7a0e98821d79d081717281194108138f1d"),
+    ("SOURCE_LOCK.json", "aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f"),
+)
+CAMERA_EIGHT_SELECTIONS = (
+    ("camera", "camera-reframe-service.spec.ts", CAMERA_TITLES),
+    ("camera-v2", "camera-reframe-v2-service.spec.ts", (
+        "saved Manim v2 Camera preserves its authored pair through raw recovery, two UI edits and SQLite reopen",)),
+)
+CAMERA_EIGHT_CATALOG_SHA256 = "9deb9db56f3854b0e3c7aefe139a64c379616e9d83340bf2cd007048ad408c4a"
+CAMERA_EIGHT_TIMEOUTS = {"camera": 1200, "camera-v2": 300}
+CAMERA_EIGHT_DATABASES = (
+    ("camera", CAMERA_TITLES[0], "camera.sqlite3", 1),
+    ("camera", CAMERA_TITLES[1], "camera-lost-reply.sqlite3", 1),
+    ("camera", CAMERA_TITLES[2], "camera-held-upsert.sqlite3", 2),
+    ("camera", CAMERA_TITLES[3], "camera-held-detach.sqlite3", 2),
+    ("camera", CAMERA_TITLES[4], "camera-held-same-revision.sqlite3", 1),
+    ("camera", CAMERA_TITLES[5], "camera-late-read-scene-scope.sqlite3", 1),
+    ("camera", CAMERA_TITLES[6], "camera-late-ack-scene-scope.sqlite3", 1),
+    ("camera-v2", CAMERA_EIGHT_SELECTIONS[1][2][0], "camera-v2.sqlite3", 1),
+)
+
+
+def camera_eight_selections():
+    rows = CAMERA_EIGHT_SELECTIONS
+    require(isinstance(rows, tuple) and len(rows) == 2
+            and tuple((label, filename, len(titles)) for label, filename, titles in rows) == (
+                ("camera", "camera-reframe-service.spec.ts", 7),
+                ("camera-v2", "camera-reframe-v2-service.spec.ts", 1))
+            and rows[0][2] == CAMERA_TITLES
+            and all(isinstance(titles, tuple) and all(isinstance(title, str) and title for title in titles)
+                    for _, _, titles in rows)
+            and len({(filename, title) for _, filename, titles in rows for title in titles}) == 8
+            and hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                == CAMERA_EIGHT_CATALOG_SHA256, "Camera eight catalogue differs")
+    return rows
+
+
+def camera_eight_profile():
+    """Require a later explicit source nomination; historical inputs cannot activate it."""
+    profile = CAMERA_EIGHT_REVIEWED_PROFILE
+    require(isinstance(profile, dict) and set(profile) == {"schema", "source_commit", "source_tree",
+                "product_paths", "runner", "minimum_available_memory_bytes", "minimum_target_free_bytes",
+                "cargo_jobs", "job_seconds"}
+            and profile.get("schema") == "motionwright.camera-eight-runtime-profile/1",
+            "Camera runtime source/resource profile is not designated")
+    require(all(isinstance(profile.get(key), str) and re.fullmatch(r"[0-9a-f]{40}", profile[key])
+                for key in ("source_commit", "source_tree"))
+            and profile["source_commit"] != CAMERA_EIGHT_HISTORICAL_SOURCE,
+            "Camera needs a later nominated source; historical 4cc is not a runtime target")
+    require(isinstance(profile.get("product_paths"), dict)
+            and set(profile["product_paths"]) == {name for name, _ in CAMERA_EIGHT_HISTORICAL_INPUT_PINS}
+            and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                    for value in profile["product_paths"].values())
+            and profile["runner"] == "ubuntu-24.04"
+            and profile["minimum_available_memory_bytes"] == 4 * 1024**3
+            and profile["minimum_target_free_bytes"] == 18 * 1024**3
+            and profile["cargo_jobs"] == 1 and profile["job_seconds"] == 5400
+            and all(type(profile[key]) is int for key in ("minimum_available_memory_bytes",
+                    "minimum_target_free_bytes", "cargo_jobs", "job_seconds")),
+            "Camera nominated input or resource profile differs")
+    camera_eight_selections()
+    return dict(profile)
+
+
+def camera_eight_source_binding(repo, observation):
+    profile = camera_eight_profile()
+    require(isinstance(observation, dict) and isinstance(observation.get("files"), dict),
+            "Camera source observation missing")
+    for name, expected in profile["product_paths"].items():
+        require(observation["files"].get(name, {}).get("sha256") == expected,
+                "Camera product source bytes differ: " + name)
+    tree = subprocess.check_output(["git", "rev-parse", profile["source_commit"] + "^{tree}"],
+                                   cwd=repo, timeout=30).decode("ascii").strip()
+    require(tree == profile["source_tree"], "Camera nominated source tree differs")
+    changed = subprocess.check_output(["git", "diff", "--name-only", "-z", profile["source_commit"],
+                                       observation["checkout"], "--"], cwd=repo, timeout=30)
+    require(changed == b"" or changed.endswith(b"\0"), "Camera source delta is not closed")
+    names = changed.decode("utf-8").split("\0")[:-1] if changed else []
+    require(len(names) == len(set(names)) and set(names) <= set(CAMERA_EIGHT_GATE_PATHS),
+            "Camera gate changed nominated product outside its verification paths")
+    for name, expected in profile["product_paths"].items():
+        original = subprocess.check_output(["git", "show", profile["source_commit"] + ":" + name],
+                                           cwd=repo, timeout=30)
+        require(hashlib.sha256(original).hexdigest() == expected, "Camera nominated input blob differs")
+    return {"nominated_input": {"commit": profile["source_commit"], "tree": tree},
+            "executed_source": {"commit": observation["checkout"], "tree": observation["tree"]},
+            "verification_path_delta": names, "result_transfer": False, "source_profile": profile}
+
+
+def camera_eight_resources(repo, target, *, phase):
+    profile = camera_eight_profile()
+    require(phase in ("preflight", "build", "list-camera", "list-camera-v2", "execute-camera", "execute-camera-v2"),
+            "Camera resource phase differs")
+    require(sys.platform.startswith("linux") and os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and os.environ.get("GITHUB_JOB") == "real-service"
+            and os.environ.get("RUNNER_OS") == "Linux" and os.environ.get("ImageOS") == "ubuntu24"
+            and os.environ.get("ImageVersion") and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+            and re.fullmatch(r"[1-9][0-9]*", os.environ.get("GITHUB_RUN_ID", "")) is not None
+            and re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")) is not None,
+            "Camera requires its genuine first hosted Linux job")
+    require(repo.name == "g" and target == repo.parent / "v/t"
+            and Path(os.environ.get("GITHUB_WORKSPACE", "")) == repo.parent,
+            "Camera requires its isolated existing g/v layout")
+    memory = Path("/proc/meminfo").read_text(encoding="ascii")
+    rows = re.findall(r"^MemAvailable:\s+([0-9]+) kB$", memory, re.MULTILINE)
+    require(len(rows) == 1, "Camera memory observation is absent")
+    available = int(rows[0]) * 1024
+    free = shutil.disk_usage(target.parent).free
+    require(available >= profile["minimum_available_memory_bytes"]
+            and type(free) is int and free >= profile["minimum_target_free_bytes"],
+            "Camera source build or case resource floor is unavailable")
+    return {"phase": phase, "available_memory_bytes": available, "target_free_bytes": free,
+            "minimum_available_memory_bytes": profile["minimum_available_memory_bytes"],
+            "minimum_target_free_bytes": profile["minimum_target_free_bytes"],
+            "cargo_jobs": 1, "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1",
+            "job": "real-service", "executed_source": os.environ["GITHUB_SHA"],
+            "image_os": os.environ["ImageOS"], "image_version": os.environ["ImageVersion"],
+            "boundary": "PRE_COMMAND_OBSERVATION_NOT_CONTINUOUS_RESOURCE_WATCHDOG"}
+
+
+def camera_eight_preflight(arguments):
+    parser = argparse.ArgumentParser(description="Bind the closed Camera source before dependencies.")
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    camera_eight_profile()  # A missing runtime nomination refuses before filesystem/Git queries.
+    repo, target, output = (path.resolve() for path in (args.repo, args.target, args.output))
+    require(output == repo.parent / "v/tools/camera-preflight.json" and not output.exists(),
+            "Camera preflight requires its fresh original path")
+    source = source_observation(repo, CAMERA_EIGHT_SCOPE)
+    resources = camera_eight_resources(repo, target, phase="preflight")
+    value = {"schema": "motionwright.camera-eight-preflight/1", "source": source,
+             "resources": resources, "execution": "NOT_RUN", "formal_acceptance": False}
+    write_new(output, value)
+    require(json.loads(output.read_bytes()) == value, "Camera preflight original readback differs")
+    print(json.dumps({"status": "SOURCE_INPUTS_BOUND_NO_RUNTIME", "source": source["checkout"],
+                      "receipt": str(output)}))
+    return 0
+
+
+def camera_eight_report(document, filename, titles, *, listing, expected=None):
+    require(type(listing) is bool and (filename, titles) in {(name, names) for _, name, names in camera_eight_selections()},
+            "Camera file selection differs")
+    require(isinstance(document, dict) and document.get("errors") == [], "Camera original report errors")
+    stats = document.get("stats", {})
+    require(all(type(stats.get(key)) is int for key in ("expected", "skipped", "unexpected", "flaky")),
+            "Camera report counters are not integers")
+    if listing:
+        require(stats["expected"] == 0 and stats["skipped"] == len(titles)
+                and stats["unexpected"] == stats["flaky"] == 0,
+                "Camera discovery contains executed or unexpected results")
+    else:
+        validate_browser_execution(document, filename, titles)
+    actual = browser_result_identities(document)
+    require(len(actual) == len(titles) and {pair for pair, _ in actual} == {(filename, title) for title in titles},
+            "Camera exact title inventory differs")
+    specs = []
+    def visit(suites):
+        for suite in suites:
+            specs.extend(suite.get("specs", []))
+            visit(suite.get("suites", []))
+    visit(document["suites"])
+    require(len(specs) == len(titles), "Camera original spec inventory differs")
+    identities = []
+    for spec in specs:
+        case = spec["tests"][0]
+        require(case.get("expectedStatus") == "passed" and case.get("annotations", []) == []
+                and type(case.get("timeout")) is int and case["timeout"] == 120000,
+                "Camera skip or original case timeout differs")
+        require(isinstance(spec.get("id"), str) and 0 < len(spec["id"]) <= 512
+                and all(ord(char) >= 33 for char in spec["id"])
+                and type(spec.get("line")) is int and spec["line"] > 0
+                and type(spec.get("column")) is int and spec["column"] > 0,
+                "Camera original Playwright identity is missing")
+        require(not listing or case.get("results") == [], "Camera list contains a test result")
+        if not listing:
+            require(type(case["results"][0].get("retry")) is int and case["results"][0]["retry"] == 0,
+                    "Camera original retry counter is not zero")
+        identities.append({key: spec[key] for key in ("file", "title", "id", "line", "column")})
+    require(len({row["id"] for row in identities}) == len(titles), "Camera original case ID is repeated")
+    identities.sort(key=lambda row: titles.index(row["title"]))
+    if not listing:
+        require(isinstance(expected, dict) and expected.get("status") == "LISTED_NOT_EXECUTED"
+                and expected.get("identities") == identities, "Camera execution differs from its original list")
+    return {"status": "LISTED_NOT_EXECUTED" if listing else "PASSED_ORIGINAL_SELECTED_CASES",
+            "listed": len(titles), "executed": 0 if listing else len(titles),
+            "identities": identities, "skips": 0, "retries": 0}
+
+
+def camera_eight_intent(label, titles, argv, cwd, source, binary):
+    return {"schema": "motionwright.camera-eight-selection-intent/1", "label": label,
+            "expected_cases": len(titles), "argv": argv, "cwd": str(cwd),
+            "source_commit": source["checkout"], "source_tree": source["tree"], "service_binary": binary,
+            "execution": "NOT_STARTED", "retry": "FORBIDDEN"}
+
+
+def camera_eight_record_attempt(selection, command):
+    pid = command.get("pid")
+    selection.update(command=command, attempted=type(pid) is int and pid > 0,
+                     original_pid=pid if type(pid) is int and pid > 0 else None,
+                     original_exit=command.get("exit_code"),
+                     status="UNKNOWN" if execution_unknown(command) else "FAIL", validated_cases=0)
+
+
+def camera_eight_archive_lists(root, inventory, receipt, source, command_closed):
+    rows = camera_eight_selections()
+    observed = receipt.get("camera_discovery", [])
+    require(isinstance(observed, list) and [row.get("label") for row in observed] == [row[0] for row in rows],
+            "Camera original two-list inventory differs")
+    preflight = archive_json(root, inventory, "tools/camera-preflight.json")
+    require(preflight.get("schema") == "motionwright.camera-eight-preflight/1"
+            and preflight.get("source") == source and preflight.get("execution") == "NOT_RUN"
+            and preflight.get("formal_acceptance") is False
+            and preflight.get("resources", {}).get("phase") == "preflight"
+            and receipt.get("camera_preflight") == {key: inventory["entries"]["tools/camera-preflight.json"][key]
+                                                     for key in ("bytes", "sha256")},
+            "Camera preflight original differs")
+    resource_rows = receipt.get("camera_resource_observations", [])
+    expected_phases = ["build", "list-camera", "list-camera-v2", "execute-camera", "execute-camera-v2"]
+    require(isinstance(resource_rows, list) and [row.get("phase") for row in resource_rows] == expected_phases,
+            "Camera resource observation roster differs")
+    for row in [preflight.get("resources", {}), *resource_rows]:
+        require(row.get("run_id") == receipt.get("run_id") and row.get("run_attempt") == receipt.get("run_attempt") == "1"
+                and row.get("job") == receipt.get("job") == "real-service"
+                and row.get("executed_source") == source["checkout"]
+                and row.get("image_os") == "ubuntu24" and isinstance(row.get("image_version"), str)
+                and row["image_version"] and type(row.get("cargo_jobs")) is int and row["cargo_jobs"] == 1
+                and row.get("minimum_available_memory_bytes") == 4 * 1024**3
+                and row.get("minimum_target_free_bytes") == 18 * 1024**3
+                and type(row.get("available_memory_bytes")) is int and row["available_memory_bytes"] >= 4 * 1024**3
+                and type(row.get("target_free_bytes")) is int and row["target_free_bytes"] >= 18 * 1024**3,
+                "Camera original resource/context observation differs")
+    repo, target = root.parent / "g", root / "t"
+    node = receipt["node"]["path"]
+    cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+    result = {}
+    for observed_row, selection in zip(observed, rows):
+        label, filename, titles = selection
+        command = observed_row.get("command", {})
+        command_closed(command, label + "-discovery")
+        env = service_environment_binding(target, root / "e", label, target / "debug/examples/studio_review_session")
+        env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(root / "e" / (label + "-discovery.json"))
+        require(command.get("argv") == service_command(node, cli, root / "e", selection,
+                                                       listing=True, scope=CAMERA_EIGHT_SCOPE)
+                and command.get("cwd") == str(repo / "apps/studio")
+                and command.get("selected_environment") == env,
+                "Camera original list invocation differs")
+        path = "e/" + label + "-discovery.json"
+        actual = camera_eight_report(archive_json(root, inventory, path), filename, titles, listing=True)
+        require(observed_row.get("status") == "LISTED_NOT_EXECUTED" and observed_row.get("verified") == actual
+                and observed_row.get("original_report") == {key: inventory["entries"][path][key] for key in ("bytes", "sha256")},
+                "Camera original list report differs")
+        result[label] = actual
+    all_ids = [identity["id"] for item in result.values() for identity in item["identities"]]
+    require(len(all_ids) == len(set(all_ids)) == 8, "Camera two-list original IDs are not eight distinct identities")
+    def original_time(value):
+        require(isinstance(value, str) and value, "Camera original command time is absent")
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        require(instant.tzinfo is not None and instant.utcoffset() is not None,
+                "Camera original command time has no timezone")
+        return instant
+    lists_end = [original_time(row["command"].get("finished_utc")) for row in observed]
+    executions = receipt.get("selections", [])
+    require(len(executions) == 2 and all(max(lists_end) <= original_time(row.get("command", {}).get("started_utc"))
+                                       for row in executions),
+            "Camera execution started before both original lists closed")
+    return result
+
+
+def camera_eight_capture_bindings(root, inventory, captures):
+    """Bind eight distinct source-declared databases; do not claim archive reopen."""
+    require(len(captures) == 8 and len({row.get("manifest") for row in captures}) == 8,
+            "Camera requires all eight original closed stores")
+    layout = {database: (label, title, participants) for label, title, database, participants in CAMERA_EIGHT_DATABASES}
+    require(len(layout) == 8, "Camera source database inventory differs")
+    used, roots, bound = set(), set(), []
+    for capture in captures:
+        name = capture.get("manifest")
+        require(isinstance(name, str) and name.endswith("/closed-camera-store/manifest.json"),
+                "Camera original store path differs")
+        parts = name.split("/")
+        require(len(parts) == 5 and parts[0] == "e", "Camera closed store path is not a direct case output")
+        manifest = archive_json(root, inventory, name)
+        database = manifest.get("databaseRelativePath")
+        require(database in layout and database not in used, "Camera database is foreign or repeated")
+        label, title, participants = layout[database]
+        require(parts[1] == label + "-test-results", "Camera database belongs to another selection")
+        case_root = "/".join(parts[:3])
+        require(case_root not in roots, "Camera original cases share a store root")
+        roots.add(case_root); used.add(database)
+        _manifest, oracle, _outcome = partial_closed_store(root, inventory, case_root + "/closed-camera-store",
+                                                         root / case_root / "store", database, participants, 1)
+        bound.append({"label": label, "title": title, "manifest": name, "database": database,
+                      "project_id": oracle["project"]["id"], "participants": participants,
+                      "basis": "SOURCE_PINNED_DATABASE_AND_COMPLETE_HELPER_ORIGINALS",
+                      "independent_archive_reopen": False, "additional_oracle_reexecution": False})
+    require(used == set(layout), "Camera original database inventory is incomplete")
+    return bound
+
+
 GESTURE_TITLES = (
     "rapid pointer move and release commits one exact Canvas transform without losing the final delta",
     "pointercancel discards the transient delta and later pointerup cannot apply it",
@@ -2288,6 +2612,8 @@ def selected_selections(selection):
     require(isinstance(selection, str), "selection must be a single named scope")
     if is_browser_scope(selection):
         return browser_selections(selection)
+    if selection == CAMERA_EIGHT_SCOPE:
+        return camera_eight_selections()
     if selection == PARTIAL_ORACLE_SCOPE:
         return partial_oracle_selections()
     require(SELECTIONS == (*PROJECT_AUTHORING_SELECTIONS, *CREATIVE_PRODUCTION_SELECTIONS, *BRANCH_CLAIM_SELECTIONS)
@@ -2327,6 +2653,17 @@ def selected_selections(selection):
 def selection_plan(selection):
     chosen = selected_selections(selection)
     labels = {row[0] for row in chosen}
+    if selection == CAMERA_EIGHT_SCOPE:
+        return {"requested": selection, "scope": "CAMERA_SEVEN_PLUS_SAVED_MANIM_V2",
+                "required": [{"label": label, "file": filename, "titles": list(titles)}
+                             for label, filename, titles in chosen],
+                "not_selected": [{"label": label, "file": filename, "titles": list(titles),
+                                  "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                                 for label, filename, titles in SELECTIONS if label != "camera"],
+                "required_tests": 8, "full_default_tests": 184, "existing_camera_cases": 7,
+                "added_v2_cases": 1, "discovery_required_before_execution": True,
+                "execution_platform": "Linux", "independent_archive_reopen": False,
+                "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
     if selection == PARTIAL_ORACLE_SCOPE:
         return {"requested": selection, "scope": "EXPLICIT_PARTIAL_TECHNICAL_SERVICE_ORACLES",
                 "required": [{"label": label, "file": filename, "titles": list(titles)}
@@ -2426,8 +2763,10 @@ def write_new(path, value):
 
 
 def source_observation(repo, selection=None):
-    require(selection is None or is_browser_scope(selection) or selection == PARTIAL_ORACLE_SCOPE,
+    require(selection is None or is_browser_scope(selection) or selection in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE),
             "unknown source observation scope")
+    if selection == CAMERA_EIGHT_SCOPE:
+        camera_eight_profile()
     def git(*arguments):
         return subprocess.check_output(["git", *arguments], cwd=repo, timeout=30).decode().strip()
 
@@ -2571,6 +2910,8 @@ def source_observation(repo, selection=None):
     if selection == PARTIAL_ORACLE_SCOPE:
         partial_oracle_selections()
         paths = tuple(dict.fromkeys((*paths, *PARTIAL_ORACLE_SOURCE_PATHS)))
+    if selection == CAMERA_EIGHT_SCOPE:
+        paths = tuple(dict.fromkeys((*paths, *(name for name, _ in CAMERA_EIGHT_HISTORICAL_INPUT_PINS))))
     files = {}
     for name in paths:
         original = subprocess.check_output(["git", "show", head + ":" + name], cwd=repo, timeout=30)
@@ -2580,7 +2921,10 @@ def source_observation(repo, selection=None):
         require(observed == {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()},
                 "source differs from Git: " + name)
         files[name] = observed
-    return {"checkout": head, "tree": git("rev-parse", "HEAD^{tree}"), "files": files}
+    result = {"checkout": head, "tree": git("rev-parse", "HEAD^{tree}"), "files": files}
+    if selection == CAMERA_EIGHT_SCOPE:
+        result["camera_eight_binding"] = camera_eight_source_binding(repo, result)
+    return result
 
 
 PROCESS_ENVIRONMENT_KEYS = ("CARGO_TARGET_DIR", "PLAYWRIGHT_JSON_OUTPUT_FILE",
@@ -2982,6 +3326,7 @@ def archive_closed_bindings(root, inventory, source):
     plan = receipt.get("selection_plan", {})
     require(plan == selection_plan(plan.get("requested")), "archive selection binding differs")
     required = selected_selections(plan["requested"])
+    camera_mode = plan["requested"] == CAMERA_EIGHT_SCOPE
     selections = receipt.get("selections", [])
     require([x.get("label") for x in selections] == [x[0] for x in required],
             "archive selected roster differs")
@@ -3058,7 +3403,7 @@ def archive_closed_bindings(root, inventory, source):
         build = receipt.get("build", {})
         command_closed(build, "build")
         require(build.get("argv") == [cargo, "build", "--locked", "-p", "motionwright-service",
-                                       "--example", "studio_review_session"]
+                                       "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode else [])]
                 and build.get("cwd") == str(repo)
                 and build.get("selected_environment") == service_environment_binding(target),
                 "service build invocation differs")
@@ -3081,6 +3426,7 @@ def archive_closed_bindings(root, inventory, source):
                         archive_json(root, inventory, "e/" + label + "-discovery.json"), filename, titles),
                     "partial oracle discovery original differs")
         partial_oracle_list_order(discovered, selections)
+    camera_lists = camera_eight_archive_lists(root, inventory, receipt, source, command_closed) if camera_mode else {}
     for selection, (_, filename, titles) in zip(selections, required):
         label = selection["label"]
         command_closed(selection.get("command", {}), label)
@@ -3094,7 +3440,7 @@ def archive_closed_bindings(root, inventory, source):
                 "browser selected command differs")
         else:
             require(selection["command"].get("argv") == service_command(
-                node, cli, root / "e", (label, filename, titles))
+                node, cli, root / "e", (label, filename, titles), scope=CAMERA_EIGHT_SCOPE if camera_mode else None)
                 and selection["command"].get("cwd") == cwd
                 and selection["command"].get("selected_environment") == service_environment_binding(
                     target, root / "e", label, binary_path), "service selected invocation differs")
@@ -3102,10 +3448,27 @@ def archive_closed_bindings(root, inventory, source):
         require(selection.get("status") == "PASS" and selection.get("expected_tests") == len(titles)
                 and selection.get("original_report") == {k: original.get(k) for k in ("bytes", "sha256")},
                 "archive report binding differs")
-        verify = validate_browser_execution if browser_mode or plan["requested"] == PARTIAL_ORACLE_SCOPE else validate_report
-        require(selection.get("verified") == verify(
-            archive_json(root, inventory, "e/" + label + ".json"), filename, titles),
-            "archive original selected results differ")
+        original_document = archive_json(root, inventory, "e/" + label + ".json")
+        if camera_mode:
+            verified = camera_eight_report(original_document, filename, titles, listing=False, expected=camera_lists[label])
+            intent_name = "e/" + label + "-intent.json"
+            intent = camera_eight_intent(label, titles, selection["command"]["argv"], Path(cwd), source, receipt["service_binary"])
+            require(archive_json(root, inventory, intent_name) == intent
+                    and selection.get("intent") == {key: inventory["entries"][intent_name][key] for key in ("bytes", "sha256")}
+                    and selection.get("launch_requested") is True and selection.get("attempted") is True
+                    and type(selection.get("original_pid")) is int and selection["original_pid"] > 0
+                    and selection["original_pid"] == selection["command"].get("pid")
+                    and type(selection.get("original_exit")) is int and selection["original_exit"] == 0
+                    and type(selection.get("validated_cases")) is int and selection["validated_cases"] == len(titles),
+                    "Camera original attempt or intent differs")
+        else:
+            verify = validate_browser_execution if browser_mode or plan["requested"] == PARTIAL_ORACLE_SCOPE else validate_report
+            verified = verify(original_document, filename, titles)
+        require(selection.get("verified") == verified, "archive original selected results differ")
+    if camera_mode:
+        require(receipt.get("camera_execution") == {"selected_cases": 8, "launch_requested_cases": 8,
+                "selected_cases_in_started_processes": 8, "validated_cases": 8, "state": "VALIDATED_ALL_SELECTED_ORIGINALS",
+                "retry": "FORBIDDEN", "formal_acceptance": False}, "Camera aggregate execution is not complete")
     if browser_mode:
         for name in inventory["entries"]:
             parts = name.split("/")
@@ -3174,6 +3537,8 @@ def archive_closed_bindings(root, inventory, source):
                          "evidence_scope": manifest.get("evidenceScope")})
     result = {"receipt": {k: inventory["entries"]["e/receipt.json"][k] for k in ("bytes", "sha256")},
               "selection_plan": plan, "captures": captures}
+    if camera_mode:
+        result["camera_eight_cases"] = camera_eight_capture_bindings(root, inventory, captures)
     if plan["requested"] == PARTIAL_ORACLE_SCOPE:
         result["partial_oracle_cases"] = partial_oracle_store_bindings(
             root, inventory, selections, captures, receipt["service_binary"], source)
@@ -3321,7 +3686,8 @@ def retain_closed_archive(repo, root):
                                      original_receipt.get("unsealed_command", {}))
         commands = [original_receipt.get("build", {}), original_receipt.get("discovery", {}).get("command", {}),
                     *(row.get("command", {}) for row in original_receipt.get("selections", [])),
-                    *(row.get("command", {}) for row in original_receipt.get("partial_discovery", []))]
+                    *(row.get("command", {}) for row in original_receipt.get("partial_discovery", [])),
+                    *(row.get("command", {}) for row in original_receipt.get("camera_discovery", []))]
         for command in commands:
             if execution_unknown(command):
                 raise UnknownObservation("original command is UNKNOWN; no source commands or archive copy", command)
@@ -3331,7 +3697,7 @@ def retain_closed_archive(repo, root):
                 and archive_json(root, before, receipt_name) == original_receipt,
                 "original receipt changed before archive admission")
         selected = original_receipt.get("selection_plan", {}).get("requested")
-        source_mode = selected if is_browser_scope(selected) or selected == PARTIAL_ORACLE_SCOPE else None
+        source_mode = selected if is_browser_scope(selected) or selected in (PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE) else None
         source = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source"] = source
         report["bindings"] = archive_closed_bindings(root, before, source)
@@ -3516,9 +3882,17 @@ def service_environment_binding(target, output=None, label=None, binary=None):
             "MOTIONWRIGHT_SERVICE_TEST_TMPDIR": str(output / (label + "-stores")) if label is not None else None}
 
 
-def service_command(node, cli, output, selection, *, listing=False):
+def service_command(node, cli, output, selection, *, listing=False, scope=None):
     label, filename, _titles = selection
     require(type(listing) is bool, "service list flag must be boolean")
+    require(scope in (None, CAMERA_EIGHT_SCOPE), "unknown closed service command scope")
+    if scope == CAMERA_EIGHT_SCOPE:
+        require(selection in camera_eight_selections(), "unknown Camera eight selection")
+        pattern = "^(?:" + "|".join(re.escape(" ".join(("chromium", filename, title))) for title in _titles) + ")$"
+        return [node, str(cli), "test", "tests/" + filename, "--project=chromium",
+                "--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only", "--reporter=json",
+                "--output=" + str(output / (label + "-test-results")), "--grep", pattern,
+                *(["--list"] if listing else [])]
     if label in {row[0] for row in PARTIAL_ORACLE_SELECTIONS}:
         require(selection in partial_oracle_selections(), "unknown partial oracle selection")
         pattern = "^(?:" + "|".join(re.escape(" ".join(("chromium", filename, title)))
@@ -3892,15 +4266,20 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--selection", default="all", choices=["all", PARTIAL_ORACLE_SCOPE, *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
+    parser.add_argument("--selection", default="all", choices=["all", PARTIAL_ORACLE_SCOPE, CAMERA_EIGHT_SCOPE, *SELECTION_GROUPS, *(row[0] for row in SELECTIONS), *BROWSER_SCOPES])
     args = parser.parse_args()
     if is_browser_scope(args.selection):
         return run_browser_selection(args.repo, args.output, args.target, args.selection)
     selections = selected_selections(args.selection)
-    partial_mode = args.selection == PARTIAL_ORACLE_SCOPE
-    require(not partial_mode or sys.platform.startswith("linux"),
+    partial_mode, camera_mode = args.selection == PARTIAL_ORACLE_SCOPE, args.selection == CAMERA_EIGHT_SCOPE
+    listed_mode = partial_mode or camera_mode
+    if camera_mode:
+        camera_eight_profile()  # No source/resource admission is inferred from this selector.
+    require(not listed_mode or sys.platform.startswith("linux"),
             "partial service verification requires its owned POSIX process boundary")
     repo, output, target = (p.resolve() for p in (args.repo, args.output, args.target))
+    if camera_mode:
+        require(output == repo.parent / "v/e", "Camera requires its original isolated evidence path")
     require(repo.is_dir(), "repository missing")
     require(not output.exists() and not target.exists(), "fresh evidence and build directories required")
     output.mkdir(parents=True, exist_ok=False)
@@ -3909,10 +4288,20 @@ def main():
               "job": os.environ.get("GITHUB_JOB"), "selections": [],
               "selection_plan": selection_plan(args.selection),
               "installed_tauri": "NOT_RUN", "native_render": "NOT_RUN", "human_acceptance": "NOT_RUN"}
+    source_mode = args.selection if listed_mode else None
     try:
-        before = (source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo))
+        before = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         report["source_before"] = before
         write_new(output / "source-before.json", before)
+        if camera_mode:
+            original, preflight = browser_report_original(output.parent / "tools/camera-preflight.json")
+            require(preflight.get("schema") == "motionwright.camera-eight-preflight/1"
+                    and preflight.get("source") == before and preflight.get("execution") == "NOT_RUN"
+                    and preflight.get("formal_acceptance") is False
+                    and preflight.get("resources", {}).get("phase") == "preflight",
+                    "Camera preflight original source differs")
+            report["camera_preflight"] = original
+            report["camera_resource_observations"] = [camera_eight_resources(repo, target, phase="build")]
         cargo, node = shutil.which("cargo"), shutil.which("node")
         require(cargo is not None and node is not None, "cargo and node are required")
         report["cargo"], report["node"] = observed_tool(Path(cargo)), observed_tool(Path(node))
@@ -3923,7 +4312,8 @@ def main():
             env.pop(variable, None)
         env["CARGO_TARGET_DIR"] = str(target)
         build = execute([cargo, "build", "--locked", "-p", "motionwright-service",
-                         "--example", "studio_review_session"], repo, env, output, "build", 1200)
+                         "--example", "studio_review_session", *(["--jobs", "1"] if camera_mode else [])],
+                        repo, env, output, "build", 1200)
         report["build"] = build
         require_observed_command(build)
         require(build["exit_code"] == 0, "real service build failed")
@@ -3935,60 +4325,97 @@ def main():
         shutil.copyfile(binary, retained_binary)
         report["retained_service_binary"] = {"path": retained_binary.name, **digest(retained_binary)}
         require(digest(retained_binary) == digest(binary), "retained service binary differs")
-        require((source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo)) == before, "source changed during service compilation")
+        require((source_observation(repo, source_mode) if source_mode else source_observation(repo)) == before,
+                "source changed during service compilation")
         cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
         report["playwright_cli"] = digest(cli)
-        if partial_mode:
-            report["partial_discovery"] = []
-            # Admit every current list before any selected test body is launched.
+        discovery_key = "camera_discovery" if camera_mode else "partial_discovery"
+        if listed_mode:
+            report[discovery_key] = []
+            # Every current list closes before any selected test body is launched.
             for label, filename, titles in selections:
                 stores = output / (label + "-stores")
                 stores.mkdir()
                 discovery_env = dict(env)
                 discovery_env.update(service_environment_binding(target, output, label, binary))
                 discovery_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + "-discovery.json"))
-                command = execute(service_command(node, cli, output, (label, filename, titles), listing=True),
+                if camera_mode:
+                    report["camera_resource_observations"].append(camera_eight_resources(repo, target, phase="list-" + label))
+                command = execute(service_command(node, cli, output, (label, filename, titles), listing=True,
+                                                  scope=CAMERA_EIGHT_SCOPE if camera_mode else None),
                                   repo / "apps/studio", discovery_env, output, label + "-discovery", 60)
                 observed = {"label": label, "command": command, "status": "FAIL"}
-                report["partial_discovery"].append(observed)
+                report[discovery_key].append(observed)
                 require_observed_command(command)
                 require(command["exit_code"] == 0, "partial oracle discovery process failed")
                 original, document = browser_report_original(output / (label + "-discovery.json"))
-                observed.update(original_report=original,
-                                verified=partial_oracle_discovery(document, filename, titles),
-                                status="LISTED_NOT_EXECUTED")
-            require(source_observation(repo, PARTIAL_ORACLE_SCOPE) == before,
-                    "source changed during partial oracle listing")
+                verified = (camera_eight_report(document, filename, titles, listing=True) if camera_mode
+                            else partial_oracle_discovery(document, filename, titles))
+                observed.update(original_report=original, verified=verified, status="LISTED_NOT_EXECUTED")
+            if camera_mode:
+                all_ids = [identity["id"] for row in report[discovery_key] for identity in row["verified"]["identities"]]
+                require(len(all_ids) == len(set(all_ids)) == 8, "Camera two-list original IDs are not eight distinct identities")
+            require(source_observation(repo, source_mode) == before, "source changed during partial oracle listing")
             require(digest(binary) == {key: report["service_binary"][key] for key in ("bytes", "sha256")}
                     and digest(cli) == report["playwright_cli"], "partial oracle input changed during listing")
         for label, filename, titles in selections:
             case_env = dict(env)
             stores = output / (label + "-stores")
-            if not partial_mode:
+            if not listed_mode:
                 stores.mkdir()
             case_env["MOTIONWRIGHT_SERVICE_TEST_BIN"] = str(binary)
             case_env["MOTIONWRIGHT_SERVICE_TEST_TMPDIR"] = str(stores)
             case_env["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (label + ".json"))
-            argv = service_command(node, cli, output, (label, filename, titles))
-            command = execute(argv, repo / "apps/studio", case_env, output, label,
-                              PARTIAL_ORACLE_TIMEOUTS[label] if partial_mode else SELECTION_TIMEOUTS[label])
-            selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
-            report["selections"].append(selection)
+            argv = service_command(node, cli, output, (label, filename, titles),
+                                   scope=CAMERA_EIGHT_SCOPE if camera_mode else None)
+            if camera_mode:
+                report["camera_resource_observations"].append(camera_eight_resources(repo, target, phase="execute-" + label))
+                intent = camera_eight_intent(label, titles, argv, repo / "apps/studio", before, report["service_binary"])
+                intent_path = output / (label + "-intent.json")
+                selection = {"label": label, "expected_tests": len(titles), "status": "PRE_LAUNCH",
+                             "attempted": False, "launch_requested": False, "original_pid": None,
+                             "original_exit": None, "validated_cases": 0}
+                report["selections"].append(selection)
+                write_new(intent_path, intent)
+                identity, retained_intent = browser_report_original(intent_path)
+                require(retained_intent == intent, "Camera pre-dispatch selection intent changed")
+                selection.update(intent=identity, launch_requested=True)
+            try:
+                command = execute(argv, repo / "apps/studio", case_env, output, label,
+                                  CAMERA_EIGHT_TIMEOUTS[label] if camera_mode else
+                                  PARTIAL_ORACLE_TIMEOUTS[label] if partial_mode else SELECTION_TIMEOUTS[label])
+            except UnknownObservation as error:
+                if camera_mode:
+                    camera_eight_record_attempt(selection, error.command)
+                raise
+            if camera_mode:
+                camera_eight_record_attempt(selection, command)
+            else:
+                selection = {"label": label, "expected_tests": len(titles), "command": command, "status": "FAIL"}
+                report["selections"].append(selection)
             require_observed_command(command)
             try:
                 result_path = output / (label + ".json")
                 selection["original_report"] = digest(result_path)
                 require(result_path.stat().st_size <= 64 * 1024 * 1024, "report exceeds bound")
                 document = json.loads(result_path.read_bytes())
-                verifier = validate_browser_execution if partial_mode else validate_report
-                selection["verified"] = verifier(document, filename, titles)
+                if camera_mode:
+                    discovered = next(row["verified"] for row in report[discovery_key] if row["label"] == label)
+                    selection["verified"] = camera_eight_report(document, filename, titles, listing=False, expected=discovered)
+                else:
+                    verifier = validate_browser_execution if partial_mode else validate_report
+                    selection["verified"] = verifier(document, filename, titles)
                 require(command["exit_code"] == 0, "selected process did not exit zero")
                 selection["status"] = "PASS"
+                if camera_mode:
+                    selection["validated_cases"] = len(titles)
             except Exception as error:
                 selection["error"] = str(error)
+            if camera_mode:
+                require(selection["status"] == "PASS", "Camera original execution or result admission failed")
             if command["exit_code"] is None:
                 break
-        report["source_after"] = (source_observation(repo, PARTIAL_ORACLE_SCOPE) if partial_mode else source_observation(repo))
+        report["source_after"] = source_observation(repo, source_mode) if source_mode else source_observation(repo)
         require(report["source_after"] == before, "source changed during browser execution")
         require(digest(binary) == {k: report["service_binary"][k] for k in ("bytes", "sha256")},
                 "service executable changed")
@@ -4004,6 +4431,15 @@ def main():
                       terminal_custody="UNSEALED_NO_FURTHER_COMMANDS")
     except Exception as error:
         report["error"] = str(error)
+    if camera_mode:
+        started = sum(row["expected_tests"] for row in report["selections"] if row.get("attempted") is True)
+        report["camera_execution"] = {
+            "selected_cases": 8, "launch_requested_cases": sum(row["expected_tests"] for row in report["selections"]
+                                                                 if row.get("launch_requested") is True),
+            "selected_cases_in_started_processes": started, "validated_cases": sum(row.get("validated_cases", 0) for row in report["selections"]),
+            "state": ("UNKNOWN" if report["status"] == "UNKNOWN" else "VALIDATED_ALL_SELECTED_ORIGINALS"
+                      if report["status"] == "PASS" else "ATTEMPTED_NOT_VALIDATED" if started else "NOT_RUN"),
+            "retry": "FORBIDDEN", "formal_acceptance": False}
     write_new(output / "receipt.json", report)
     print(json.dumps({"status": report["status"],
                       "selected_tests": sum(x["expected_tests"] for x in report["selections"]),
@@ -5415,6 +5851,8 @@ def studio68_main(arguments):
     return exit_code
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["camera-preflight"]:
+        raise SystemExit(camera_eight_preflight(sys.argv[2:]))
     if sys.argv[1:2] == ["studio68"]:
         raise SystemExit(studio68_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "claim-source-contracts":

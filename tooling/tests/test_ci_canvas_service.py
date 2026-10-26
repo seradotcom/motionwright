@@ -895,7 +895,7 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         self.assertEqual(len(declared_options), 1)
         choices = [item.strip() for item in declared_options[0].split(",")]
         self.assertEqual(len(choices), len(set(choices)))
-        self.assertEqual(set(choices), {gate.STUDIO68_SCOPE, gate.PARTIAL_ORACLE_SCOPE, "all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
+        self.assertEqual(set(choices), {gate.STUDIO68_SCOPE, gate.PARTIAL_ORACLE_SCOPE, gate.CAMERA_EIGHT_SCOPE, "all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
         service_job = workflow.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         conditions = re.findall(r"^    if: (.+)$", service_job, re.MULTILINE)
         self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'"])
@@ -4277,7 +4277,7 @@ class PartialCriterionServiceSelectionTests(unittest.TestCase):
 
     def test_workflow_routes_only_the_new_choice_through_the_existing_manual_g0_service_job(self):
         path = Path(__file__).resolve().parents[2] / ".github/workflows/studio-service-verification.yml"
-        raw = path.read_bytes()
+        raw = camera_previous_workflow(path.read_bytes())
         added = b"options: [studio-service-68, criterion-partials, creative-production,"
         old = b"options: [studio-service-68, creative-production,"
         self.assertEqual(raw.count(added), 1)
@@ -4922,6 +4922,555 @@ class Studio68PartialStateTests(unittest.TestCase):
         self.assertNotIn("playwright-execution", calls)
         self.assertEqual(intents, [])
 
+
+
+
+
+CAMERA_WORKFLOW_REVERT_PAIRS = (("      - name: Bind the eight Camera inputs and resources before dependencies\n        if: matrix.selection == 'camera-with-v2'\n        timeout-minutes: 2\n        run: |\n          set -euo pipefail\n          python -B -I tooling/ci_canvas_service.py camera-preflight --repo . \\\n            --target ../v/t --output ../v/tools/camera-preflight.json\n      - name: Install locked Studio dependencies and Chromium\n", '      - name: Install locked Studio dependencies and Chromium\n'), ("          ref: ${{ github.sha }}\n          fetch-depth: ${{ matrix.selection == 'camera-with-v2' && 2 || 1 }}\n          persist-credentials: false\n", '          ref: ${{ github.sha }}\n          persist-credentials: false\n'), ("timeout-minutes: ${{ matrix.selection == 'camera-with-v2' && 90 || matrix.selection == 'branch-claim' && 120", "timeout-minutes: ${{ matrix.selection == 'branch-claim' && 120"), ('options: [studio-service-68, criterion-partials, camera-with-v2,', 'options: [studio-service-68, criterion-partials,'))
+
+
+def camera_previous_workflow(raw):
+    for added, previous in CAMERA_WORKFLOW_REVERT_PAIRS:
+        if raw.count(added.encode()) != 1:
+            raise ValueError("Camera workflow addition is not the exact reviewed delta")
+        raw = raw.replace(added.encode(), previous.encode(), 1)
+    if gate.hashlib.sha256(raw).hexdigest() != "df55e67be7d53f6ce65690f0097112deb30a974e3f324bb81801fc979b27594b":
+        raise ValueError("an existing workflow byte changed outside the Camera addition")
+    return raw
+
+
+
+class CameraEightSourceTests(unittest.TestCase):
+    """Inert source controls; all product/process/Git observations are explicit seams."""
+
+    @staticmethod
+    def profile():
+        return {"schema": "motionwright.camera-eight-runtime-profile/1",
+                "source_commit": "c" * 40, "source_tree": "d" * 40,
+                "product_paths": dict(gate.CAMERA_EIGHT_HISTORICAL_INPUT_PINS), "runner": "ubuntu-24.04",
+                "minimum_available_memory_bytes": 4 * 1024**3, "minimum_target_free_bytes": 18 * 1024**3,
+                "cargo_jobs": 1, "job_seconds": 5400}
+
+    @staticmethod
+    def environment(repo):
+        return {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_JOB": "real-service",
+                "RUNNER_OS": "Linux", "ImageOS": "ubuntu24", "ImageVersion": "synthetic-image-1",
+                "GITHUB_RUN_ID": "12345", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_SHA": "a" * 40,
+                "GITHUB_WORKSPACE": str(repo.parent)}
+
+    @staticmethod
+    def resources(phase):
+        return {"phase": phase, "available_memory_bytes": 4 * 1024**3, "target_free_bytes": 18 * 1024**3,
+                "minimum_available_memory_bytes": 4 * 1024**3, "minimum_target_free_bytes": 18 * 1024**3,
+                "cargo_jobs": 1, "run_id": "12345", "run_attempt": "1", "job": "real-service",
+                "executed_source": "a" * 40, "image_os": "ubuntu24", "image_version": "synthetic-image-1",
+                "boundary": "PRE_COMMAND_OBSERVATION_NOT_CONTINUOUS_RESOURCE_WATCHDOG"}
+
+    @staticmethod
+    def document(filename, titles, *, listing=False):
+        value = PartialCriterionServiceSelectionTests.document(filename, titles, listing=listing)
+        for index, spec in enumerate(value["suites"][0]["specs"], 1):
+            spec.update(id=gate.hashlib.sha256((filename + "\0" + spec["title"]).encode()).hexdigest(), line=index, column=1)
+            spec["tests"][0].update(timeout=120000, annotations=[])
+        return value
+
+    def test_eight_exact_historical_source_titles_and_four_inputs_match_the_git_fixtures(self):
+        repo = PATH.parents[1]
+        profile = gate.camera_eight_profile()
+        self.assertEqual((profile["source_commit"], profile["source_tree"]),
+                         ("27698b7beb274e7a6c028b98cde55519293b3154", "8b705be62a5584380091270db17df146196f5d5c"))
+        self.assertEqual(profile["product_paths"], dict(gate.CAMERA_EIGHT_HISTORICAL_INPUT_PINS))
+        for name, expected in gate.CAMERA_EIGHT_HISTORICAL_INPUT_PINS:
+            raw = (repo / name).read_bytes()
+            self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), expected, name)
+        camera = (repo / "apps/studio/tests/camera-reframe-service.spec.ts").read_text(encoding="utf-8")
+        literal = re.findall(r'\btest\("([^"\n]+)"', camera)
+        self.assertEqual(literal, [*gate.CAMERA_TITLES[:2], *gate.CAMERA_TITLES[4:]])
+        self.assertEqual(camera.count('for (const operation of ["upsert", "detach"] as const)'), 1)
+        self.assertEqual(camera.count('test(`a peer ${operation} with identical saved Camera values cannot acknowledge the held original`'), 1)
+        v2 = (repo / "apps/studio/tests/camera-reframe-v2-service.spec.ts").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'\btest\("([^"\n]+)"', v2), list(gate.CAMERA_EIGHT_SELECTIONS[1][2]))
+        self.assertEqual(len(gate.selected_selections("camera")[0][2]), 7)
+        self.assertEqual(sum(len(row[2]) for row in gate.selected_selections("all")), 184)
+        self.assertEqual(gate.selection_plan(gate.CAMERA_EIGHT_SCOPE)["required_tests"], 8)
+        self.assertEqual(gate.selection_plan(gate.CAMERA_EIGHT_SCOPE)["not_selected"],
+                         [{"label": label, "file": name, "titles": list(titles), "status": "NOT_SELECTED", "technical_credit": "NONE"}
+                          for label, name, titles in gate.SELECTIONS if label != "camera"])
+
+    def test_catalogue_and_full_title_commands_reject_omission_duplication_renaming_and_retry(self):
+        rows = gate.camera_eight_selections()
+        for selection in rows:
+            label, filename, titles = selection
+            argv = gate.service_command("node", Path("cli.js"), Path("output"), selection, scope=gate.CAMERA_EIGHT_SCOPE)
+            self.assertEqual(gate.service_command("node", Path("cli.js"), Path("output"), selection,
+                                                 listing=True, scope=gate.CAMERA_EIGHT_SCOPE), [*argv, "--list"])
+            for flag in ("--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only", "--project=chromium"):
+                self.assertIn(flag, argv)
+            pattern = argv[argv.index("--grep") + 1]
+            for title in titles:
+                exact = " ".join(("chromium", filename, title))
+                self.assertIsNotNone(re.fullmatch(pattern, exact))
+                for altered in (exact + " suffix", "prefix " + exact, exact.replace("chromium", "firefox", 1)):
+                    self.assertIsNone(re.fullmatch(pattern, altered))
+        for changed in (rows[:-1], (rows[0], rows[0]), (rows[0], (rows[1][0], rows[1][1], ("renamed",)))):
+            with self.subTest(changed=changed), mock.patch.object(gate, "CAMERA_EIGHT_SELECTIONS", changed), self.assertRaises(ValueError):
+                gate.camera_eight_selections()
+        with self.assertRaises(ValueError):
+            gate.service_command("node", Path("cli"), Path("out"), rows[1], scope="foreign")
+        with self.assertRaises(ValueError):
+            gate.service_command("node", Path("cli"), Path("out"), rows[1], listing=1, scope=gate.CAMERA_EIGHT_SCOPE)
+        self.assertEqual(gate.CAMERA_EIGHT_TIMEOUTS, {"camera": 1200, "camera-v2": 300})
+
+    def test_absent_or_foreign_profile_refuses_before_source_files_git_or_child_queries(self):
+        good = self.profile()
+        for changed in (None, {}, {**good, "source_commit": gate.CAMERA_EIGHT_HISTORICAL_SOURCE}, {**good, "cargo_jobs": True},
+                        {**good, "minimum_target_free_bytes": 0}, {**good, "job_seconds": 6000}):
+            with self.subTest(profile=changed), mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", changed), \
+                    mock.patch.object(gate.subprocess, "check_output") as git, mock.patch.object(gate, "digest") as read, \
+                    mock.patch.object(gate, "execute") as child, self.assertRaises(ValueError):
+                gate.source_observation(Path("not-read"), gate.CAMERA_EIGHT_SCOPE)
+            git.assert_not_called(); read.assert_not_called(); child.assert_not_called()
+        with mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", good):
+            self.assertEqual(gate.camera_eight_profile(), good)
+
+    def test_source_binding_refuses_foreign_tree_input_or_product_delta_before_launch(self):
+        with tempfile.TemporaryDirectory(prefix="camera-source-binding-") as directory:
+            repo = Path(directory)
+            originals = {name: ("synthetic original " + name).encode() for name, _ in gate.CAMERA_EIGHT_HISTORICAL_INPUT_PINS}
+            pins = tuple((name, gate.hashlib.sha256(raw).hexdigest()) for name, raw in originals.items())
+            observed = {"checkout": "a" * 40, "tree": "b" * 40,
+                        "files": {name: {"bytes": len(raw), "sha256": digest} for (name, digest), raw in zip(pins, originals.values())}}
+            mutation = [None]
+            def query(argv, **kwargs):
+                self.assertEqual(kwargs, {"cwd": repo, "timeout": 30})
+                if argv[1] == "rev-parse":
+                    return ("f" * 40 if mutation[0] == "tree" else self.profile()["source_tree"]).encode()
+                if argv[1] == "diff":
+                    return b"apps/studio/src/App.tsx\0" if mutation[0] == "product" else b"tooling/ci_canvas_service.py\0"
+                self.assertEqual(argv[:2], ["git", "show"])
+                name = argv[2].split(":", 1)[1]
+                return originals[name] + (b"changed" if mutation[0] == "original" else b"")
+            with mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", {**self.profile(), "product_paths": dict(pins)}), \
+                    mock.patch.object(gate.subprocess, "check_output", side_effect=query), \
+                    mock.patch.object(gate, "execute") as child:
+                self.assertEqual(gate.camera_eight_source_binding(repo, observed)["executed_source"],
+                                 {"commit": "a" * 40, "tree": "b" * 40})
+                for kind in ("tree", "product", "original", "working"):
+                    mutation[0] = kind
+                    changed = copy.deepcopy(observed)
+                    if kind == "working": changed["files"][pins[0][0]]["sha256"] = "f" * 64
+                    with self.subTest(kind=kind), self.assertRaises(ValueError):
+                        gate.camera_eight_source_binding(repo, changed)
+                child.assert_not_called()
+
+    def test_resource_context_and_byte_below_limits_refuse_without_any_child(self):
+        with tempfile.TemporaryDirectory(prefix="camera-resources-") as directory:
+            repo = Path(directory) / "g"
+            target = repo.parent / "v/t"
+            environment = self.environment(repo)
+            with mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", self.profile()), \
+                    mock.patch.object(gate.sys, "platform", "linux"), \
+                    mock.patch.object(Path, "read_text", return_value="MemAvailable: 4194304 kB\n"), \
+                    mock.patch.object(gate.shutil, "disk_usage", return_value=mock.Mock(free=18 * 1024**3)), \
+                    mock.patch.object(gate, "execute") as child:
+                with mock.patch.dict(gate.os.environ, environment, clear=True):
+                    value = gate.camera_eight_resources(repo, target, phase="build")
+                    self.assertEqual(value, self.resources("build"))
+                    with mock.patch.object(gate.shutil, "disk_usage", return_value=mock.Mock(free=18 * 1024**3 - 1)), self.assertRaises(ValueError):
+                        gate.camera_eight_resources(repo, target, phase="build")
+                    with mock.patch.object(Path, "read_text", return_value="MemAvailable: 4194303 kB\n"), self.assertRaises(ValueError):
+                        gate.camera_eight_resources(repo, target, phase="build")
+                for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_JOB", "g0"), ("GITHUB_RUN_ATTEMPT", "2"),
+                                   ("GITHUB_SHA", "foreign"), ("GITHUB_EVENT_NAME", "push"), ("ImageOS", "ubuntu22")):
+                    with self.subTest(key=key), mock.patch.dict(gate.os.environ, {**environment, key: value}, clear=True), self.assertRaises(ValueError):
+                        gate.camera_eight_resources(repo, target, phase="build")
+                child.assert_not_called()
+
+    def test_lists_have_eight_named_unexecuted_identities_and_reject_skips_or_results(self):
+        observed = []
+        for _, filename, titles in gate.camera_eight_selections():
+            document = self.document(filename, titles, listing=True)
+            accepted = gate.camera_eight_report(document, filename, titles, listing=True)
+            self.assertEqual((accepted["listed"], accepted["executed"]), (len(titles), 0))
+            observed.extend(accepted["identities"])
+            for mutation in ("missing", "foreign", "duplicate-id", "skip", "executed", "bool", "timeout", "ancestor"):
+                changed = copy.deepcopy(document)
+                spec = changed["suites"][0]["specs"][0]
+                if mutation == "missing": changed["suites"][0]["specs"].pop()
+                elif mutation == "foreign": spec["title"] = "foreign"
+                elif mutation == "duplicate-id":
+                    if len(titles) > 1: changed["suites"][0]["specs"][1]["id"] = spec["id"]
+                    else: spec["id"] = ""
+                elif mutation == "skip": spec["tests"][0]["annotations"] = [{"type": "skip"}]
+                elif mutation == "executed": spec["tests"][0]["results"] = [{"status": "passed"}]
+                elif mutation == "bool": changed["stats"]["expected"] = False
+                elif mutation == "timeout": spec["tests"][0]["timeout"] = 1
+                else: changed["suites"][0]["title"] = "foreign describe"
+                with self.subTest(filename=filename, mutation=mutation), self.assertRaises(ValueError):
+                    gate.camera_eight_report(changed, filename, titles, listing=True)
+        self.assertEqual(len(observed), 8)
+        self.assertEqual(len({row["id"] for row in observed}), 8)
+
+    def test_execution_must_match_its_original_list_with_zero_retries_and_no_relabeling(self):
+        for _, filename, titles in gate.camera_eight_selections():
+            original = gate.camera_eight_report(self.document(filename, titles, listing=True), filename, titles, listing=True)
+            document = self.document(filename, titles)
+            self.assertEqual(gate.camera_eight_report(document, filename, titles, listing=False, expected=original)["executed"], len(titles))
+            for mutation in ("id", "line", "retry", "bool-retry", "skip", "error", "missing-list"):
+                changed = copy.deepcopy(document)
+                spec = changed["suites"][0]["specs"][0]
+                if mutation == "id": spec["id"] = "foreign-id"
+                elif mutation == "line": spec["line"] += 1
+                elif mutation == "retry": spec["tests"][0]["results"][0]["retry"] = 1
+                elif mutation == "bool-retry": spec["tests"][0]["results"][0]["retry"] = False
+                elif mutation == "skip": spec["tests"][0]["expectedStatus"] = "skipped"
+                elif mutation == "error": spec["tests"][0]["results"][0]["errors"] = [{"message": "original failure"}]
+                with self.subTest(filename=filename, mutation=mutation), self.assertRaises(ValueError):
+                    gate.camera_eight_report(changed, filename, titles, listing=False,
+                                             expected=None if mutation == "missing-list" else original)
+
+    def run_fixture(self, directory, *, failure=None):
+        root = Path(directory)
+        repo, output, target = root / "g", root / "v/e", root / "v/t"
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        cli.parent.mkdir(parents=True)
+        cli.write_bytes(b"inert CLI source fixture; never executed")
+        for tool in ("cargo", "node"): (repo / tool).write_bytes(("inert " + tool).encode())
+        tools = root / "v/tools"
+        tools.mkdir(parents=True)
+        source = {"checkout": "a" * 40, "tree": "b" * 40, "files": {"synthetic": "not product evidence"}}
+        gate.write_new(tools / "camera-preflight.json", {"schema": "motionwright.camera-eight-preflight/1", "source": source,
+                       "resources": self.resources("preflight"), "execution": "NOT_RUN", "formal_acceptance": False})
+        calls, intents = [], []
+        rows = {row[0]: row for row in gate.camera_eight_selections()}
+        write_original = gate.write_new
+        def write(path, value):
+            write_original(path, value)
+            if path.name.endswith("-intent.json"):
+                intents.append(copy.deepcopy(value))
+                if failure == "intent":
+                    changed = copy.deepcopy(value); changed["label"] = "foreign"
+                    path.write_text(json.dumps(changed), encoding="utf-8")
+        def execute(argv, cwd, env, destination, label, timeout):
+            calls.append((label, list(argv), timeout))
+            command = {"argv": list(argv), "cwd": str(cwd), "exit_code": 0, **synthetic_process_fields(env),
+                       "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED"}
+            if failure in (label + "-unknown", label + "-raised"):
+                command.update(observation="UNKNOWN_PROCESS_NO_RETRY", exit_code=None,
+                               diagnostic_custody="UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED")
+                if failure.endswith("-raised"): raise gate.UnknownObservation("synthetic original unknown", command)
+                return command
+            if label == "build":
+                binary = target / "debug/examples/studio_review_session"
+                if gate.os.name == "nt": binary = binary.with_suffix(".exe")
+                binary.parent.mkdir(parents=True); binary.write_bytes(b"inert binary; never executed")
+            else:
+                listing = label.endswith("-discovery")
+                _, filename, titles = rows[label.removesuffix("-discovery")]
+                document = self.document(filename, titles, listing=listing)
+                if failure == "bad-list" and listing: document["suites"][0]["specs"].pop()
+                if failure == "duplicate-list-id" and label == "camera-v2-discovery":
+                    camera = self.document(rows["camera"][1], rows["camera"][2], listing=True)
+                    document["suites"][0]["specs"][0]["id"] = camera["suites"][0]["specs"][0]["id"]
+                if failure == "postreadback" and label == "camera": document = None
+                Path(env["PLAYWRIGHT_JSON_OUTPUT_FILE"]).write_text(json.dumps(document), encoding="utf-8")
+            return command
+        argv = ["ci_canvas_service.py", "--repo", str(repo), "--output", str(output), "--target", str(target),
+                "--selection", gate.CAMERA_EIGHT_SCOPE]
+        with mock.patch("sys.argv", argv), mock.patch("sys.stdout", new=io.StringIO()), \
+                mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", self.profile()), \
+                mock.patch.object(gate.sys, "platform", "linux"), \
+                mock.patch.dict(gate.os.environ, self.environment(repo), clear=True), \
+                mock.patch.object(gate, "source_observation", return_value=source) as source_queries, \
+                mock.patch.object(gate, "camera_eight_resources", side_effect=lambda _r, _t, *, phase: self.resources(phase)), \
+                mock.patch.object(gate.shutil, "which", side_effect=lambda name: str(repo / name)), \
+                mock.patch.object(gate, "write_new", side_effect=write), \
+                mock.patch.object(gate, "execute", side_effect=execute), \
+                mock.patch.object(gate.subprocess, "Popen", side_effect=AssertionError("no real process permitted")):
+            code = gate.main()
+        return code, json.loads((output / "receipt.json").read_bytes()), calls, intents, source_queries.call_count
+
+    def test_real_main_builds_once_lists_both_before_bodies_and_validates_seven_plus_one(self):
+        with tempfile.TemporaryDirectory(prefix="camera-main-") as directory:
+            code, receipt, calls, intents, queries = self.run_fixture(directory)
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual([row[0] for row in calls], ["build", "camera-discovery", "camera-v2-discovery", "camera", "camera-v2"])
+        self.assertEqual([row[2] for row in calls], [1200, 60, 60, 1200, 300])
+        self.assertEqual(calls[0][1][-2:], ["--jobs", "1"])
+        self.assertEqual([row["expected_cases"] for row in intents], [7, 1])
+        self.assertEqual(queries, 4)
+        self.assertEqual(receipt["camera_execution"], {"selected_cases": 8, "launch_requested_cases": 8,
+                         "selected_cases_in_started_processes": 8, "validated_cases": 8, "state": "VALIDATED_ALL_SELECTED_ORIGINALS",
+                         "retry": "FORBIDDEN", "formal_acceptance": False})
+        self.assertEqual([row["verified"]["executed"] for row in receipt["camera_discovery"]], [0, 0])
+
+    def test_missing_or_unknown_lists_stop_before_any_case_and_unknown_postqueries(self):
+        for failure in ("bad-list", "duplicate-list-id", "camera-discovery-unknown", "camera-v2-discovery-unknown"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="camera-list-failure-") as directory:
+                code, receipt, calls, intents, queries = self.run_fixture(directory, failure=failure)
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["selections"], [])
+            self.assertEqual(intents, [])
+            self.assertEqual(queries, 2)
+            self.assertNotIn("source_after", receipt)
+            self.assertEqual([row[0] for row in calls], ["build", "camera-discovery"] +
+                             (["camera-v2-discovery"] if failure.startswith("camera-v2") or failure == "duplicate-list-id" else []))
+            self.assertEqual(receipt["status"], "FAIL" if failure in ("bad-list", "duplicate-list-id") else "UNKNOWN")
+
+    def test_unknown_original_case_keeps_started_pid_without_retry_or_later_queries(self):
+        for failure in ("camera-unknown", "camera-raised"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="camera-original-unknown-") as directory:
+                code, receipt, calls, intents, queries = self.run_fixture(directory, failure=failure)
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["status"], "UNKNOWN")
+            self.assertEqual([row[0] for row in calls], ["build", "camera-discovery", "camera-v2-discovery", "camera"])
+            self.assertEqual(queries, 3)
+            self.assertNotIn("source_after", receipt)
+            self.assertEqual(receipt["selections"][0]["original_pid"], 123)
+            self.assertIsNone(receipt["selections"][0]["original_exit"])
+            self.assertEqual(receipt["camera_execution"]["selected_cases_in_started_processes"], 7)
+            self.assertEqual(receipt["camera_execution"]["validated_cases"], 0)
+            self.assertEqual(receipt["camera_execution"]["state"], "UNKNOWN")
+            self.assertEqual(len(intents), 1)
+
+    def test_postexecution_readback_failure_preserves_attempt_and_original_exit(self):
+        with tempfile.TemporaryDirectory(prefix="camera-original-readback-") as directory:
+            code, receipt, calls, intents, queries = self.run_fixture(directory, failure="postreadback")
+        self.assertEqual(code, 1)
+        self.assertEqual([row[0] for row in calls], ["build", "camera-discovery", "camera-v2-discovery", "camera"])
+        self.assertEqual(receipt["selections"][0]["error"], "Camera original report errors")
+        self.assertEqual(receipt["selections"][0]["original_exit"], 0)
+        self.assertEqual(receipt["camera_execution"]["state"], "ATTEMPTED_NOT_VALIDATED")
+        self.assertEqual(receipt["camera_execution"]["selected_cases_in_started_processes"], 7)
+        self.assertEqual(receipt["camera_execution"]["validated_cases"], 0)
+        self.assertEqual(queries, 3)
+        self.assertEqual(len(intents), 1)
+
+    def test_changed_retained_intent_refuses_after_lists_before_selected_launch(self):
+        with tempfile.TemporaryDirectory(prefix="camera-intent-original-") as directory:
+            code, receipt, calls, intents, queries = self.run_fixture(directory, failure="intent")
+        self.assertEqual(code, 1)
+        self.assertEqual([row[0] for row in calls], ["build", "camera-discovery", "camera-v2-discovery"])
+        self.assertEqual(receipt["error"], "Camera pre-dispatch selection intent changed")
+        self.assertEqual(receipt["camera_execution"]["selected_cases_in_started_processes"], 0)
+        self.assertEqual(receipt["camera_execution"]["launch_requested_cases"], 0)
+        self.assertFalse(receipt["selections"][0]["attempted"])
+        self.assertEqual(queries, 3)
+        self.assertEqual(len(intents), 1)
+
+    def archive_fixture(self, directory):
+        root, source, _store = ClosedStudioArchiveTests().fixture(directory)
+        output, repo, target = root / "e", root.parent / "g", root / "t"
+        gate.shutil.rmtree(output / "case")  # Only the inert predecessor fixture in this temporary directory.
+        for path in output.glob("ink.*"): path.unlink()
+        receipt = json.loads((output / "receipt.json").read_bytes())
+        receipt.update(selection_plan=gate.selection_plan(gate.CAMERA_EIGHT_SCOPE), selections=[], camera_discovery=[],
+                       run_id="12345", run_attempt="1", job="real-service",
+                       camera_resource_observations=[self.resources(phase) for phase in (
+                           "build", "list-camera", "list-camera-v2", "execute-camera", "execute-camera-v2")],
+                       camera_execution={"selected_cases": 8, "launch_requested_cases": 8, "selected_cases_in_started_processes": 8,
+                                         "validated_cases": 8, "state": "VALIDATED_ALL_SELECTED_ORIGINALS",
+                                         "retry": "FORBIDDEN", "formal_acceptance": False})
+        def save(name, value):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+            return gate.digest(path)
+        save("tools/camera-preflight.json", {"schema": "motionwright.camera-eight-preflight/1", "source": source,
+             "resources": self.resources("preflight"), "execution": "NOT_RUN", "formal_acceptance": False})
+        receipt["camera_preflight"] = gate.digest(root / "tools/camera-preflight.json")
+        receipt["build"]["argv"].extend(["--jobs", "1"])
+        receipt["build"].update(started_utc="2026-10-26T13:00:00+00:00", finished_utc="2026-10-26T13:00:01+00:00")
+        save("e/build.command.json", receipt["build"])
+        cli = repo / "apps/studio/node_modules/@playwright/test/cli.js"
+        binary = Path(receipt["service_binary"]["path"])
+        for index, selection in enumerate(gate.camera_eight_selections()):
+            label, filename, titles = selection
+            listed = None
+            for listing in (True, False):
+                observed_label = label + "-discovery" if listing else label
+                environment = gate.service_environment_binding(target, output, label, binary)
+                environment["PLAYWRIGHT_JSON_OUTPUT_FILE"] = str(output / (observed_label + ".json"))
+                argv = gate.service_command(receipt["node"]["path"], cli, output, selection,
+                                            listing=listing, scope=gate.CAMERA_EIGHT_SCOPE)
+                stamp = 2 + index if listing else 4 + index
+                command = {"argv": argv, "cwd": str(repo / "apps/studio"), **synthetic_process_fields(environment),
+                           "exit_code": 0, "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED",
+                           "started_utc": "2026-10-26T13:00:0" + str(stamp) + "+00:00",
+                           "finished_utc": "2026-10-26T13:00:0" + str(stamp) + ".500000+00:00"}
+                for stream in ("stdout", "stderr"):
+                    path = output / (observed_label + "." + stream + ".log")
+                    path.write_bytes(b"synthetic original; no command execution\n")
+                    command[stream] = gate.digest(path)
+                save("e/" + observed_label + ".command.json", command)
+                document = self.document(filename, titles, listing=listing)
+                identity = save("e/" + observed_label + ".json", document)
+                verified = gate.camera_eight_report(document, filename, titles, listing=listing, expected=listed)
+                row = {"label": label, "command": command, "original_report": identity, "verified": verified,
+                       "status": "LISTED_NOT_EXECUTED" if listing else "PASS"}
+                if listing:
+                    listed = verified
+                    receipt["camera_discovery"].append(row)
+                else:
+                    intent = gate.camera_eight_intent(label, titles, argv, repo / "apps/studio", source, receipt["service_binary"])
+                    row.update(expected_tests=len(titles), intent=save("e/" + label + "-intent.json", intent),
+                               launch_requested=True, attempted=True, original_pid=123, original_exit=0, validated_cases=len(titles))
+                    receipt["selections"].append(row)
+        for index, (label, title, database, participants) in enumerate(gate.CAMERA_EIGHT_DATABASES):
+            case = output / (label + "-test-results") / ("inert-case-" + str(index))
+            store = case / "closed-camera-store/store"
+            store.mkdir(parents=True)
+            database_path = store / database
+            database_path.write_bytes(("inert SQLite byte fixture " + str(index)).encode())
+            entries = [{"path": "", "kind": "directory"}, {"path": database, "kind": "file",
+                       "sizeBytes": database_path.stat().st_size, "sha256": gate.digest(database_path)["sha256"]}]
+            aggregate = gate.hashlib.sha256(json.dumps(entries, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+            lifecycle = [{"databasePath": str(case / "store" / database), "taints": [],
+                          "exits": [{"processId": 2000 + index * 10 + participant, "code": 0, "signal": None,
+                                     "observedAt": "2026-10-26T13:00:06.000Z"}]} for participant in range(participants)]
+            manifest = {"schemaVersion": 1, "entries": entries, "sourceDirectory": str(case / "store"),
+                        "snapshotDirectory": str(store), "databaseRelativePath": database,
+                        "sourceBeforeSha256": aggregate, "sourceAfterSha256": aggregate, "snapshotSha256": aggregate,
+                        "lifecycle": lifecycle, "evidenceScope": "synthetic parser fixture; no SQLite or service execution"}
+            oracle = {"schemaVersion": 1, "observedAt": "2026-10-26T13:00:06.000Z",
+                      "project": {"id": "inert-project-" + str(index), "generation": "fixture-generation",
+                                  "active_branch": "fixture-branch", "revision": 0},
+                      "journal": [], "journalAfterRevisionExclusive": 0, "journalComplete": True}
+            outcome = {"schemaVersion": 1, "errors": [], "capture": copy.deepcopy(manifest), "oracle": copy.deepcopy(oracle),
+                       "preparation": [{"index": 0, "status": "fulfilled"}],
+                       "closures": [{"status": "fulfilled", **copy.deepcopy(row)} for row in lifecycle]}
+            prefix = case.relative_to(root).as_posix() + "/closed-camera-store"
+            save(prefix + "/manifest.json", manifest)
+            save(prefix + "/oracle.json", oracle)
+            save(prefix + "-outcomes.json", outcome)
+        save("e/receipt.json", receipt)
+        return root, source, receipt, save
+
+    def test_complete_archive_binds_one_build_two_lists_eight_original_stores_and_attempts(self):
+        with tempfile.TemporaryDirectory(prefix="camera-eight-originals-") as directory:
+            root, source, _receipt, _save = self.archive_fixture(directory)
+            with mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}):
+                result = gate.archive_closed_bindings(root, gate.archive_inventory(root), source)
+            self.assertEqual(len(result["captures"]), 8)
+            self.assertEqual(len(result["camera_eight_cases"]), 8)
+            self.assertEqual({row["database"] for row in result["camera_eight_cases"]},
+                             {row[2] for row in gate.CAMERA_EIGHT_DATABASES})
+            self.assertTrue(all(row["independent_archive_reopen"] is False and row["additional_oracle_reexecution"] is False
+                                for row in result["camera_eight_cases"]))
+
+    def test_coherent_archive_changes_reject_late_list_foreign_id_attempt_source_and_store(self):
+        for mutation in ("late-list", "naive-list-time", "cross-list-id", "foreign-execution-id", "intent", "attempt", "source", "resource",
+                         "build-jobs", "missing-store", "unclosed", "oracle-null", "oracle-incomplete"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(prefix="camera-forged-originals-") as directory:
+                root, source, receipt, save = self.archive_fixture(directory)
+                first = receipt["selections"][0]
+                if mutation == "late-list":
+                    command = receipt["camera_discovery"][-1]["command"]
+                    command["finished_utc"] = "2026-10-26T13:00:09+00:00"
+                    save("e/camera-v2-discovery.command.json", command)
+                elif mutation == "naive-list-time":
+                    command = receipt["camera_discovery"][-1]["command"]
+                    command["finished_utc"] = "2026-10-26T13:00:03"
+                    save("e/camera-v2-discovery.command.json", command)
+                elif mutation == "cross-list-id":
+                    duplicate = receipt["camera_discovery"][0]["verified"]["identities"][0]["id"]
+                    for row, label in ((receipt["camera_discovery"][1], "camera-v2-discovery"), (receipt["selections"][1], "camera-v2")):
+                        document = json.loads((root / ("e/" + label + ".json")).read_bytes())
+                        document["suites"][0]["specs"][0]["id"] = duplicate
+                        row["original_report"] = save("e/" + label + ".json", document)
+                        row["verified"]["identities"][0]["id"] = duplicate
+                elif mutation == "foreign-execution-id":
+                    document = json.loads((root / "e/camera.json").read_bytes())
+                    document["suites"][0]["specs"][0]["id"] = "foreign-source-original-id"
+                    first["original_report"] = save("e/camera.json", document)
+                    first["verified"]["identities"][0]["id"] = "foreign-source-original-id"
+                elif mutation == "intent":
+                    intent = json.loads((root / "e/camera-intent.json").read_bytes()); intent["source_commit"] = "f" * 40
+                    first["intent"] = save("e/camera-intent.json", intent)
+                elif mutation == "attempt": first["original_pid"] = 999
+                elif mutation == "source":
+                    preflight = json.loads((root / "tools/camera-preflight.json").read_bytes())
+                    preflight["source"]["checkout"] = "f" * 40
+                    receipt["camera_preflight"] = save("tools/camera-preflight.json", preflight)
+                elif mutation == "resource": receipt["camera_resource_observations"][-1]["target_free_bytes"] = 18 * 1024**3 - 1
+                elif mutation == "build-jobs":
+                    receipt["build"]["argv"][-1] = "2"; save("e/build.command.json", receipt["build"])
+                else:
+                    prefix = "e/camera-test-results/inert-case-0/closed-camera-store"
+                    if mutation == "missing-store": (root / prefix / "manifest.json").unlink()
+                    elif mutation == "unclosed":
+                        manifest = json.loads((root / prefix / "manifest.json").read_bytes())
+                        outcome = json.loads((root / (prefix + "-outcomes.json")).read_bytes())
+                        manifest["lifecycle"][0]["exits"][0]["code"] = 1
+                        outcome["capture"] = copy.deepcopy(manifest)
+                        outcome["closures"][0]["exits"][0]["code"] = 1
+                        save(prefix + "/manifest.json", manifest); save(prefix + "-outcomes.json", outcome)
+                    else:
+                        oracle = json.loads((root / prefix / "oracle.json").read_bytes())
+                        oracle = None if mutation == "oracle-null" else {**oracle, "journalComplete": False}
+                        outcome = json.loads((root / (prefix + "-outcomes.json")).read_bytes()); outcome["oracle"] = oracle
+                        save(prefix + "/oracle.json", oracle); save(prefix + "-outcomes.json", outcome)
+                save("e/receipt.json", receipt)
+                with mock.patch.dict(gate.os.environ, {"GITHUB_ACTIONS": "false"}), self.assertRaises(ValueError):
+                    gate.archive_closed_bindings(root, gate.archive_inventory(root), source)
+
+    def test_unknown_camera_list_quarantines_archive_before_source_copy_or_traversal(self):
+        with tempfile.TemporaryDirectory(prefix="camera-archive-unknown-") as directory:
+            root, _, _ = ClosedStudioArchiveTests().fixture(directory)
+            receipt_path = root / "e/receipt.json"
+            receipt = json.loads(receipt_path.read_bytes())
+            uncertain = {"pid": 123, "observation": "UNKNOWN_PROCESS_NO_RETRY",
+                         "diagnostic_custody": "UNSEALED_SNAPSHOT_DESCENDANTS_NOT_OBSERVED"}
+            receipt["camera_discovery"] = [{"label": "camera-v2", "command": uncertain}]
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            with mock.patch.object(gate, "archive_inventory") as inventory, \
+                    mock.patch.object(gate, "source_observation") as source, mock.patch.object(gate, "write_closed_tar") as tar:
+                result = gate.retain_closed_archive(root.parent / "g", root)
+            self.assertEqual(result["status"], "UNKNOWN")
+            self.assertEqual(result["unsealed_command"], uncertain)
+            inventory.assert_not_called(); source.assert_not_called(); tar.assert_not_called()
+
+    def test_preflight_retains_exact_source_resource_original_without_service_execution(self):
+        with tempfile.TemporaryDirectory(prefix="camera-preflight-") as directory:
+            repo, target, output = Path(directory) / "g", Path(directory) / "v/t", Path(directory) / "v/tools/camera-preflight.json"
+            repo.mkdir(); output.parent.mkdir(parents=True)
+            source = {"checkout": "a" * 40, "tree": "b" * 40, "files": {"fixture": "not product evidence"}}
+            with mock.patch.object(gate, "CAMERA_EIGHT_REVIEWED_PROFILE", self.profile()), \
+                    mock.patch.object(gate, "source_observation", return_value=source) as queried, \
+                    mock.patch.object(gate, "camera_eight_resources", return_value=self.resources("preflight")), \
+                    mock.patch.object(gate, "execute") as child, mock.patch("sys.stdout", new=io.StringIO()):
+                argv = ["--repo", str(repo), "--target", str(target), "--output", str(output)]
+                self.assertEqual(gate.camera_eight_preflight(argv), 0)
+                original = json.loads(output.read_bytes())
+                self.assertEqual(original["source"], source)
+                self.assertEqual(original["resources"], self.resources("preflight"))
+                self.assertEqual(original["execution"], "NOT_RUN")
+                queried.assert_called_once_with(repo.resolve(), gate.CAMERA_EIGHT_SCOPE)
+                with self.assertRaisesRegex(ValueError, "fresh original"):
+                    gate.camera_eight_preflight(argv)
+                child.assert_not_called()
+
+    def test_workflow_only_adds_camera_choice_ninety_minutes_source_depth_and_closed_preflight(self):
+        path = Path(__file__).resolve().parents[2] / ".github/workflows/studio-service-verification.yml"
+        raw = path.read_bytes()
+        previous = camera_previous_workflow(raw)
+        self.assertEqual(gate.hashlib.sha256(previous).hexdigest(),
+                         "df55e67be7d53f6ce65690f0097112deb30a974e3f324bb81801fc979b27594b")
+        value = raw.decode()
+        self.assertEqual(re.findall(r"^  ([a-z][a-z0-9_-]*):$", value, re.M),
+                         ["push", "workflow_dispatch", "run", "g0", "creative-unit-build", "real-service", "studio-service-68"])
+        self.assertIn("default: authoring-drafts", value)
+        real = value.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'", real)
+        self.assertIn("needs: g0", real)
+        self.assertIn("matrix.selection == 'camera-with-v2' && 90", real)
+        self.assertIn("fetch-depth: ${{ matrix.selection == 'camera-with-v2' && 2 || 1 }}", real)
+        self.assertLess(real.index("camera-preflight --repo ."), real.index("Install locked Studio dependencies and Chromium"))
+        self.assertIn("--target ../v/t --output ../v/tools/camera-preflight.json", real)
+        self.assertEqual(real.count('ci_canvas_service.py --repo .'), 1)
+        for changed in (raw + b" ", raw.replace(b"needs: g0", b"needs: []", 1),
+                        raw.replace(b"default: authoring-drafts", b"default: camera-with-v2", 1)):
+            with self.assertRaises(ValueError): camera_previous_workflow(changed)
 
 
 if __name__ == "__main__":
