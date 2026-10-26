@@ -154,6 +154,30 @@ CAUSALS = ({'id': 'pending-original-red',
 
 FIXED["pins"]["crates/platform-linux-sys/src/sandbox_main.rs"] = "065f2dd6632f205ec6315b6adda5987df09d2e00b4e11137e72768ee369b8d18"
 
+# These public commits preserve the reviewed causal trees without publishing the
+# local histories. Only hosted Windows selects them; a matching tree alone does
+# not admit another commit or substitute a local lease's source identities.
+HOSTED_CAUSAL_SHAS = MappingProxyType({
+    "pending-original-red": "5f6f79ae1e31e035f294b46ef958883c1fd75c92",
+    "effects-target-original-red": "859f0f9b9e1f461a977efcbd32c70a5a6a056968",
+    "receiver-close-latch-red": "0ae99dfe35f91aef3cfe301fbafb6085c474c357",
+    "refresh-remove-red": "cad4c0e2ef921edc398cf9cf3ac60cc8d53e7a5e",
+})
+
+
+def causal_profiles(mode):
+    require(type(mode) is str and mode in MODES, "unknown causal source selection mode")
+    if mode == "windows-g1":
+        return CAUSALS
+    if mode == "linux-g2":
+        return ()
+    require(set(HOSTED_CAUSAL_SHAS) == {p["id"] for p in CAUSALS}
+            and all(type(value) is str and SHA.fullmatch(value) for value in HOSTED_CAUSAL_SHAS.values())
+            and len(set(HOSTED_CAUSAL_SHAS.values())) == 4
+            and not set(HOSTED_CAUSAL_SHAS.values()) & {FIXED["sha"], *(p["sha"] for p in CAUSALS)},
+            "hosted causal source catalogue differs")
+    return tuple({**profile, "sha": HOSTED_CAUSAL_SHAS[profile["id"]]} for profile in CAUSALS)
+
 
 def target(crate, kind="lib", name=None, source=None):
     return {"package": "semwright-" + crate, "crate": crate, "kind": kind,
@@ -201,7 +225,8 @@ def validate_catalogue():
             "closed group catalogue differs")
     require(len(CAUSALS) == 4 and len({r["sha"] for r in CAUSALS}) == 4,
             "causal source catalogue differs")
-    for profile in (FIXED, *CAUSALS):
+    hosted_causals = causal_profiles(HOSTED_MODE)
+    for profile in (FIXED, *CAUSALS, *hosted_causals):
         require(SHA.fullmatch(profile["sha"]) and SHA.fullmatch(profile["tree"])
                 and profile["pins"] and all(DIGEST.fullmatch(v) for v in profile["pins"].values()),
                 "source profile is incomplete")
@@ -213,6 +238,7 @@ def validate_catalogue():
             "windows_groups": 13, "windows_positive_observations": 134,
             "causal_sources": 4, "linux_native_cases": 2, "product_execution": "NOT_RUN",
             "hosted_windows": {"mode": HOSTED_MODE, "transport": "UNCOMPOSED_BLOCKED",
+                               "causal_source_shas": [p["sha"] for p in hosted_causals],
                                "execution": "NOT_RUN", "automatic_dispatch": False}}
 
 
@@ -237,7 +263,7 @@ def hosted_binding(value):
     require(type(transport) is dict and set(transport) == {
                 "review_sha256", "source_shas", "incoming", "outgoing", "private_sources_published"}
             and type(transport["review_sha256"]) is str and DIGEST.fullmatch(transport["review_sha256"])
-            and transport["source_shas"] == sorted([FIXED["sha"], *(p["sha"] for p in CAUSALS)])
+            and transport["source_shas"] == sorted([FIXED["sha"], *(p["sha"] for p in causal_profiles(HOSTED_MODE))])
             and transport["incoming"] == "OWNER_COMPOSED_FIVE_CHECKOUTS"
             and transport["outgoing"] == "OWNER_COMPOSED_PRIVATE_ORIGINALS_CUSTODY"
             and transport["private_sources_published"] is False,
@@ -1133,12 +1159,13 @@ def run(mode, source_sha, admission_id, sdk, baseline_paths, run_root, lease=Non
     if mode == HOSTED_MODE:
         # No catalogue or CLI value activates incomplete private transport.
         require_hosted_transport_composition(context)
+    selected_causals = causal_profiles(mode)
     selection_mode = "windows-g1" if windows_selection(mode) else mode
     gate = Path(__file__).resolve().parents[1]
     sdk = Path(sdk).resolve(strict=True)
     baselines = {k: Path(v).resolve(strict=True) for k, v in baseline_paths.items()}
     run_root = canonical_run_root(run_root)
-    require(set(baselines) == ({p["id"] for p in CAUSALS} if windows_selection(mode) else set()),
+    require(set(baselines) == {p["id"] for p in selected_causals},
             "baseline source roles are missing, duplicated or foreign")
     owned_paths(gate, sdk, baselines, run_root, mode)
     lease_identity = None
@@ -1219,7 +1246,7 @@ def run(mode, source_sha, admission_id, sdk, baseline_paths, run_root, lease=Non
             report["gate_g0"] = {"scope": "EXACT_ACTIONS_GATE_JOB_REQUIRED_BY_NEEDS", "product_credit": "NONE"}
         profiles = [("fixed", sdk, FIXED, None)]
         if windows_selection(mode):
-            profiles.extend((p["id"], baselines[p["id"]], p, p) for p in CAUSALS)
+            profiles.extend((p["id"], baselines[p["id"]], p, p) for p in selected_causals)
         for identifier, repo, profile, causal in profiles:
             budget.remaining(1)
             folder = evidence / identifier; folder.mkdir(mode=0o700)

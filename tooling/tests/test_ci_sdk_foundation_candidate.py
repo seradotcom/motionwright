@@ -676,7 +676,7 @@ class SDKFoundationHostedTests(unittest.TestCase):
             "GITHUB_WORKFLOW_REF": "example/repo/" + gate.WORKFLOW + "@refs/heads/review",
             "GITHUB_WORKSPACE": str(self.root),
         }
-        sources = sorted([gate.FIXED["sha"], *(p["sha"] for p in gate.CAUSALS)])
+        sources = sorted([gate.FIXED["sha"], *(p["sha"] for p in gate.causal_profiles(gate.HOSTED_MODE))])
         self.auth = {
             "kind": "github-dispatch", "mode": gate.HOSTED_MODE, "source_sha": gate.FIXED["sha"],
             "review_sha256": "a" * 64, "max_total_seconds": 600,
@@ -740,6 +740,22 @@ class SDKFoundationHostedTests(unittest.TestCase):
         self.assertEqual(value["process_boundary"], "DIRECT_PROCESS_ONLY")
         self.assertFalse(value["continuous_resource_watchdog"])
         self.assertEqual(value["escaped_descendants"], "NOT_OBSERVED")
+        expected = {
+            "pending-original-red": "5f6f79ae1e31e035f294b46ef958883c1fd75c92",
+            "effects-target-original-red": "859f0f9b9e1f461a977efcbd32c70a5a6a056968",
+            "receiver-close-latch-red": "0ae99dfe35f91aef3cfe301fbafb6085c474c357",
+            "refresh-remove-red": "cad4c0e2ef921edc398cf9cf3ac60cc8d53e7a5e",
+        }
+        hosted = gate.causal_profiles(gate.HOSTED_MODE)
+        self.assertEqual({p["id"]: p["sha"] for p in hosted}, expected)
+        self.assertIs(gate.causal_profiles("windows-g1"), gate.CAUSALS)
+        self.assertEqual(gate.causal_profiles("linux-g2"), ())
+        for local, public in zip(gate.CAUSALS, hosted):
+            self.assertNotEqual(local["sha"], public["sha"])
+            self.assertEqual({k: v for k, v in local.items() if k != "sha"},
+                             {k: v for k, v in public.items() if k != "sha"})
+        with self.assertRaisesRegex(ValueError, "unknown causal source"):
+            gate.causal_profiles("same-tree-any-sha")
 
     def test_hosted_rejects_foreign_run_job_attempt_image_and_workflow(self):
         changes = (("GITHUB_ACTIONS", "false"), ("GITHUB_EVENT_NAME", "push"),
@@ -765,9 +781,22 @@ class SDKFoundationHostedTests(unittest.TestCase):
                     gate.request_context(environment, "windows-g1", gate.FIXED["sha"], "local", "win32")
         with self.assertRaisesRegex(ValueError, "authority mode"):
             self.context(authority={**self.auth, "kind": "local-lease"})
+        original_case = SDKFoundationCandidateTests()
+        original_case.root = self.root
+        lease = original_case.lease()
+        self.assertEqual(gate.validate_lease(lease, "b" * 64, "b" * 64,
+                                            self.root / "run", 200, 600), lease)
+        lease["source_shas"] = self.auth["binding"]["private_transport"]["source_shas"]
+        with self.assertRaisesRegex(ValueError, "lease scope differs"):
+            gate.validate_lease(lease, "b" * 64, "b" * 64, self.root / "run", 200, 600)
 
     def test_hosted_unknown_or_foreign_authority_stops_before_path_or_command(self):
-        for catalogue, source in (({}, gate.FIXED["sha"]), ({"remote": self.auth}, "f" * 40)):
+        stale = copy.deepcopy(self.auth)
+        stale_sources = sorted([gate.FIXED["sha"], *(p["sha"] for p in gate.CAUSALS)])
+        stale["binding"]["private_transport"]["source_shas"] = stale_sources
+        stale["binding"]["cold_growth"]["source_shas"] = stale_sources
+        for catalogue, source in (({}, gate.FIXED["sha"]), ({"remote": self.auth}, "f" * 40),
+                                  ({"remote": stale}, gate.FIXED["sha"])):
             with self.subTest(source=source), patch.object(gate, "REVIEWED_AUTHORITIES", catalogue), \
                     patch.object(gate.observer, "command") as command, \
                     patch.object(gate, "full_snapshot") as reader, \
@@ -786,6 +815,17 @@ class SDKFoundationHostedTests(unittest.TestCase):
             changed["binding"]["private_transport"][key] = value
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, "private incoming"):
                 self.context(authority=changed)
+        selected = gate.causal_profiles(gate.HOSTED_MODE)
+        for index, old in enumerate(gate.CAUSALS):
+            for foreign_sha in (old["sha"], "f" * 40, selected[(index + 1) % 4]["sha"]):
+                sources = [gate.FIXED["sha"], *(p["sha"] for p in selected)]
+                sources[index + 1] = foreign_sha
+                changed = copy.deepcopy(self.auth)
+                changed["binding"]["private_transport"]["source_shas"] = sorted(sources)
+                changed["binding"]["cold_growth"]["source_shas"] = sorted(sources)
+                with self.subTest(role=old["id"], sha=foreign_sha), \
+                        self.assertRaisesRegex(ValueError, "private incoming"):
+                    self.context(authority=changed)
 
     def test_hosted_growth_requires_reviewed_typed_source_bound_components(self):
         variants = []
