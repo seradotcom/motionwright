@@ -90,8 +90,8 @@ class SDKFoundationCandidateTests(unittest.TestCase):
                                 self.binary, self.binary if after is None else after, listed, argv, self.context)
 
     def test_empty_authority_stops_before_paths_or_product_commands(self):
-        # The exact public source profile still cannot grant an execution slot.
-        self.assertEqual(dict(gate.REVIEWED_AUTHORITIES), {})
+        # Exercise empty and populated catalogues explicitly. A future reviewed
+        # production entry must not permit an unknown ID or a foreign source.
         self.assertEqual(hashlib.sha256(json.dumps(gate.CAUSALS, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest(), "39f7a1fdefdd08f0751751f804ca7a83a5421adf728266fec95303acb06c209f")
         self.assertTrue(all(case["pins"]["docs/commands.md"] ==
@@ -389,13 +389,28 @@ class SDKFoundationCandidateTests(unittest.TestCase):
         self.assertNotIn("private-host-stdin-custody", json.dumps(plan))
 
     def test_original_resource_thresholds_and_compiler_slot_are_not_counts_only(self):
-        values = {"physical": 4 * 1024**3, "virtual": 8 * 1024**3, "disk": 14 * 1024**3, "compilers": []}
-        result = gate.resource_values(values, "windows-g1", True)
-        self.assertFalse(result["continuous_monitoring"])
-        for key, value in (("physical", values["physical"] - 1), ("virtual", values["virtual"] - 1),
-                           ("disk", values["disk"] - 1), ("compilers", [{"Id": 42}]), ("physical", True)):
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                gate.resource_values({**values, key: value}, "windows-g1", True)
+        for initial, limits in ((True, (4, 8, 18)), (False, (4, 0, 18))):
+            values = dict(zip(("physical", "virtual", "disk"),
+                              (minimum * 1024**3 for minimum in limits)))
+            values["compilers"] = []
+            with self.subTest(initial=initial, boundary="exact"):
+                result = gate.resource_values(values, "windows-g1", initial)
+                self.assertEqual(result["minimum_gib"],
+                                 dict(zip(("physical", "virtual", "disk"), limits)))
+                self.assertFalse(result["continuous_monitoring"])
+                self.assertEqual(result["cargo_jobs"], 1)
+            for key, value in (("physical", values["physical"] - 1),
+                               ("virtual", values["virtual"] - 1),
+                               ("disk", values["disk"] - 1),
+                               ("compilers", [{"Id": 42}]), ("physical", True)):
+                with self.subTest(initial=initial, key=key), self.assertRaises(ValueError):
+                    gate.resource_values({**values, key: value}, "windows-g1", initial)
+        linux = gate.resource_values(
+            {"physical": 2 * 1024**3, "virtual": 0, "disk": 12 * 1024**3,
+             "compilers": []}, "linux-g2", True)
+        self.assertEqual(linux["minimum_gib"], {"physical": 2, "virtual": 0, "disk": 12})
+        self.assertFalse(linux["continuous_monitoring"])
+        self.assertEqual(linux["cargo_jobs"], 1)
 
     def test_missing_retained_fixture_root_never_receives_original_credit(self):
         temp = self.root / "owned-temp"; temp.mkdir()

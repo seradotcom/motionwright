@@ -686,7 +686,7 @@ def resource_values(value, mode, initial):
             and all(type(value[n]) is int and value[n] >= 0 for n in ("physical", "virtual", "disk"))
             and type(value["compilers"]) is list, "resource observation is incomplete")
     if mode == "windows-g1":
-        limits = (4, 8, 14) if initial else (2, 0, 10)
+        limits = (4, 8, 18) if initial else (4, 0, 18)
         require(not value["compilers"], "another compiler owns the local slot")
     else:
         limits = (2, 0, 12)
