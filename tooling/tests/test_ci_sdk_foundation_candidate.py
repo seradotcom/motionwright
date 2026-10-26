@@ -1119,7 +1119,7 @@ class SDKFoundationHostedCapacityTests(unittest.TestCase):
                 with self.subTest(key=key), self.assertRaises(ValueError):
                     gate.capacity_context({**self.env, key: value})
             with self.assertRaisesRegex(ValueError, "BLOCKED_PRIVATE_TRANSPORT"):
-                gate.require_hosted_transport_composition(observed)
+                gate.require_hosted_transport_composition({"mode": gate.HOSTED_MODE})
 
     def test_capacity_cli_refuses_execution_inputs_before_any_observer(self):
         for suffix in (("--execute",), ("--admit-only",), ("--authority", "reviewed"),
