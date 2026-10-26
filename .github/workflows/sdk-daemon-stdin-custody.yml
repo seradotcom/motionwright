@@ -1,0 +1,276 @@
+name: SDK Daemon Stdin Custody
+
+on:
+  push:
+    branches: ["verify/sdk-daemon-stdin-custody-*"]
+    paths:
+      - .github/workflows/sdk-daemon-stdin-custody.yml
+      - tooling/ci_sdk_daemon_stdin_g2.py
+      - tooling/tests/test_ci_sdk_daemon_stdin_g2.py
+      - tooling/fixtures/sdk-daemon-stdin/prepare_linux_fixture.py
+  workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Source controls, or the four frozen real Linux Host cases
+        type: choice
+        required: true
+        options: [source-controls, linux-real-host-g2]
+        default: source-controls
+      reviewed_gate_sha:
+        description: Exact workflow commit reviewed for the manual G2 run
+        type: string
+        required: false
+      sdk_source_sha:
+        description: Exact separately reviewed SDK source; no pin update or fallback
+        type: string
+        required: false
+        default: da05d8e4a02fd5acc70d3c37f108b02bca761481
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-daemon-stdin-custody-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+  MW_DAEMON_SCOPE: ${{ inputs.verification_scope || 'source-controls' }}
+  MW_DAEMON_GATE_SHA: ${{ inputs.reviewed_gate_sha }}
+  MW_DAEMON_SDK_SHA: ${{ inputs.sdk_source_sha }}
+
+jobs:
+  source-controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Isolate source-control outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          MW_G0_ROOT="$RUNNER_TEMP/sdk-daemon-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 -p "$MW_G0_ROOT/tmp"
+          printf 'MW_G0_ROOT=%s\n' "$MW_G0_ROOT" >> "$GITHUB_ENV"
+          printf 'TMPDIR=%s\nTEMP=%s\nTMP=%s\n' "$MW_G0_ROOT/tmp" "$MW_G0_ROOT/tmp" "$MW_G0_ROOT/tmp" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Bind the request and exact verifier sources
+        id: admission
+        shell: bash
+        run: |
+          python -I -B - <<'PY'
+          import json, os, pathlib, sys
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(root))
+          from tooling import ci_sdk_daemon_stdin_g2 as gate
+          output = pathlib.Path(os.environ["MW_G0_ROOT"])
+          request = gate.admit_request(os.environ)
+          before = gate.custody.source_snapshot(root, os.environ["GITHUB_SHA"], gate.GATE_FILES)
+          gate.require(all(before["files"][p]["sha256"] == h for p, h in gate.GATE_PINS.items()),
+                       "reviewed observer or preparer changed")
+          gate.custody.write_new(output / "context-before.json", {"request": request, "source": before,
+              "run_id": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "sdk_cases_executed": 0, "installed_application": "NOT_RUN"})
+          PY
+      - name: Run quick source and conformance policies with originals
+        if: ${{ !cancelled() && steps.admission.outcome == 'success' }}
+        shell: bash
+        run: |
+          python -I -B - <<'PY'
+          import json, os, pathlib, subprocess, sys, time
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          output = pathlib.Path(os.environ["MW_G0_ROOT"])
+          commands = [("whitespace", ["git", "diff", "--check", "HEAD^", "HEAD"])]
+          commands += [(name, [sys.executable, "-B", "tooling/" + name + ".py"])
+                       for name in ("source_policy", "acceptance_policy", "creative_status_policy", "public_surface_policy")]
+          records = []
+          for label, argv in commands:
+              started = time.monotonic()
+              row = {"label": label, "argv": argv, "source_sha": os.environ["GITHUB_SHA"]}
+              with (output / (label + ".stdout.original")).open("xb") as stdout, (output / (label + ".stderr.original")).open("xb") as stderr:
+                  try:
+                      result = subprocess.run(argv, cwd=root, stdout=stdout, stderr=stderr, timeout=180)
+                      row.update(exit_code=result.returncode, state="EXIT_OBSERVED")
+                  except subprocess.TimeoutExpired:
+                      row.update(exit_code=None, state="TIMEOUT_NO_SUCCESS")
+              row["seconds"] = time.monotonic() - started
+              records.append(row)
+          with (output / "policies.json").open("x") as stream:
+              json.dump(records, stream, indent=2); stream.write("\n")
+          raise SystemExit(0 if all(row["exit_code"] == 0 for row in records) else 1)
+          PY
+      - name: Validate the workflow using the existing pinned actionlint
+        if: ${{ !cancelled() && steps.admission.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$MW_G0_ROOT/actionlint"
+          archive="$MW_G0_ROOT/actionlint/actionlint.tar.gz"
+          curl --fail --silent --show-error --location --retry 0 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive" 2>"$MW_G0_ROOT/actionlint/download.stderr.original"
+          printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "$archive" \
+            | sha256sum --check >"$MW_G0_ROOT/actionlint/check.stdout.original"
+          tar -xzf "$archive" -C "$MW_G0_ROOT/actionlint" actionlint
+          status=0
+          "$MW_G0_ROOT/actionlint/actionlint" -shellcheck= -pyflakes= .github/workflows/sdk-daemon-stdin-custody.yml \
+            >"$MW_G0_ROOT/actionlint/stdout.original" 2>"$MW_G0_ROOT/actionlint/stderr.original" || status=$?
+          printf '%s\n' "$status" >"$MW_G0_ROOT/actionlint/exit-code.original"
+          exit "$status"
+      - name: Check selected infrastructure and evidence contracts through both entrypoints
+        if: ${{ !cancelled() && steps.admission.outcome == 'success' }}
+        shell: bash
+        run: |
+          python -I -B tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --test-directory tooling/tests --pattern test_ci_sdk_daemon_stdin_g2.py \
+            --pattern test_ci_job_plan.py --pattern test_source_policy_credentials.py \
+            --pattern test_conformance_policy.py --mode both --require-complete \
+            --expected-source "$GITHUB_SHA" --report "$MW_G0_ROOT/controls/receipt.json"
+      - name: Retain verifier source postcheck
+        if: ${{ always() && steps.admission.outcome == 'success' }}
+        shell: bash
+        run: |
+          python -I -B - <<'PY'
+          import json, os, pathlib, sys
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(root))
+          from tooling import ci_sdk_daemon_stdin_g2 as gate
+          output = pathlib.Path(os.environ["MW_G0_ROOT"])
+          before = json.loads((output / "context-before.json").read_text())["source"]
+          after = gate.custody.source_snapshot(root, os.environ["GITHUB_SHA"], gate.GATE_FILES)
+          gate.custody.write_new(output / "context-after.json", {"source": after, "unchanged": before == after,
+              "sdk_cases_executed": 0, "installed_application": "NOT_RUN"})
+          gate.require(before == after, "verifier source changed during source controls")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sdk-daemon-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MW_G0_ROOT }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  linux-real-host-g2:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux-real-host-g2'
+    needs: source-controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      RUSTUP_TOOLCHAIN: "1.98.1"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: gate
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Isolate runner resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          MW_DAEMON_ROOT="$RUNNER_TEMP/sdk-daemon-g2-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 -p "$MW_DAEMON_ROOT/cache/cargo" "$MW_DAEMON_ROOT/cache/rustup" "$MW_DAEMON_ROOT/provisioning-tmp"
+          printf 'MW_DAEMON_ROOT=%s\nCARGO_HOME=%s\nRUSTUP_HOME=%s\n' "$MW_DAEMON_ROOT" "$MW_DAEMON_ROOT/cache/cargo" "$MW_DAEMON_ROOT/cache/rustup" >> "$GITHUB_ENV"
+          printf 'TMPDIR=%s\nTEMP=%s\nTMP=%s\n' "$MW_DAEMON_ROOT/provisioning-tmp" "$MW_DAEMON_ROOT/provisioning-tmp" "$MW_DAEMON_ROOT/provisioning-tmp" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Admit the exact first-attempt dispatcher before SDK retrieval
+        working-directory: gate
+        shell: bash
+        run: |
+          python -I -B - <<'PY'
+          import os, pathlib, sys
+          root = pathlib.Path.cwd()
+          sys.path.insert(0, str(root))
+          from tooling import ci_sdk_daemon_stdin_g2 as gate
+          context = gate.execution_context(os.environ)
+          gate.custody.write_new(pathlib.Path(os.environ["MW_DAEMON_ROOT"]) / "dispatch-admission.json",
+              {"context": context, "status": "SDK_SOURCE_NOT_YET_OBSERVED", "sdk_cases_executed": 0,
+               "retry_authorized": False, "installed_application": "NOT_RUN"})
+          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ inputs.sdk_source_sha }}
+          path: sdk
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+      - name: Provision the four reviewed Linux dependencies with originals
+        working-directory: gate
+        shell: bash
+        run: |
+          python -I -B - <<'PY'
+          import os, pathlib, re, sys
+          root = pathlib.Path.cwd()
+          sys.path.insert(0, str(root))
+          from tooling import ci_sdk_daemon_stdin_g2 as gate
+          context = gate.execution_context(os.environ)
+          output = pathlib.Path(os.environ["MW_DAEMON_ROOT"]) / "provisioning"
+          output.mkdir(mode=0o700)
+          cache = pathlib.Path(os.environ["MW_DAEMON_ROOT"]) / "cache/apt"
+          cache.mkdir(mode=0o700)
+          packages = ("libpipewire-0.3-dev", "pkg-config", "clang", "bubblewrap")
+          commands = (
+              ("apt-update", ["sudo", "apt-get", "-o", "Dir::Cache=" + str(cache), "update"]),
+              ("apt-install", ["sudo", "apt-get", "-o", "Dir::Cache=" + str(cache), "install", "--yes", "--no-install-recommends", *packages]),
+              ("package-versions", ["dpkg-query", "--show", "--showformat=${Package}\t${Version}\n", *packages]),
+              ("pipewire-version", ["pkg-config", "--modversion", "libpipewire-0.3"]),
+              ("clang-version", ["clang", "--version"]),
+              ("bubblewrap-version", ["bwrap", "--version"]),
+          )
+          observations = []
+          report = {"context": context, "status": "NOT_COMPLETED", "packages": list(packages),
+                    "sdk_cases_executed": 0, "retry_authorized": False}
+          try:
+              for label, argv in commands:
+                  row = gate.observer.command(argv, root, os.environ, output, label, 900, context, (output, observations))
+                  gate.require(type(row["exit_code"]) is int and row["exit_code"] == 0, "dependency provisioning failed: " + label)
+                  if label == "pipewire-version":
+                      original = gate.observer.original_stream(output, row, "stdout").decode("ascii").strip()
+                      gate.require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", original), "unrecognized PipeWire version")
+                      version = tuple(map(int, original.split(".")))
+                      gate.require(version >= (0, 3, 65), "SDK feature v0_3_65 requires PipeWire >=0.3.65")
+                      report["pipewire_version"] = original
+              gate.sdk_gate.verify_commands(output, observations)
+              report["status"] = "DEPENDENCIES_PROVISIONED"
+          except (gate.observer.UnknownExecution, gate.custody.UnknownObservation) as error:
+              report.update(status="UNKNOWN_NO_RETRY", error=str(error), uncertain_command=error.command)
+          except BaseException as error:
+              report.update(status="PROVISIONING_FAILED", error=type(error).__name__ + ": " + str(error))
+          report["commands"] = observations
+          gate.custody.write_new(output / "receipt.json", report)
+          raise SystemExit(0 if report["status"] == "DEPENDENCIES_PROVISIONED" else 1)
+          PY
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: "1.98.1"
+          components: clippy
+      - name: Observe the four exact real Host cases without replay
+        working-directory: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tooling/ci_sdk_daemon_stdin_g2.py --gate "$GITHUB_WORKSPACE/gate" \
+            --sdk "$GITHUB_WORKSPACE/sdk" --output "$MW_DAEMON_ROOT/execution"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sdk-daemon-real-host-${{ github.sha }}-${{ inputs.sdk_source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.MW_DAEMON_ROOT }}/dispatch-admission.json
+            ${{ env.MW_DAEMON_ROOT }}/provisioning/
+            ${{ env.MW_DAEMON_ROOT }}/execution/evidence/
+          if-no-files-found: error
+          retention-days: 30
