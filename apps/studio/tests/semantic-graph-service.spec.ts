@@ -246,15 +246,38 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
         const mutationCount = graphRequests(service).length;
         await field(page, "Editor preview timebase").selectOption(setup.profileId);
         await field(page, "Production working scene").selectOption(setup.sceneId);
+        const sceneStart = expectedProject.scenes.find(scene => scene.id === setup.sceneId)!.start;
+        const startNumerator = BigInt(sceneStart.num) * 30n, startDenominator = BigInt(sceneStart.den);
+        expect(startNumerator % startDenominator).toBe(0n);
+        const firstFrame = Number(startNumerator / startDenominator);
+        expect(Number.isSafeInteger(firstFrame)).toBe(true);
+        const readout = page.locator(".timeline-transport .timecode");
+        await expect(readout).toHaveAttribute("title", "30 fps NDF · display only");
+        const observedClock: { relativeFrame: number; timecode: string }[] = [];
+        const assertClock = async (relativeFrame: number) => {
+          let observed = "";
+          await expect.poll(async () => {
+            observed = (await readout.innerText()).trim();
+            const parts = /^(?:(\d{2,}):)?(\d{2}):(\d{2}):(\d{2})$/.exec(observed);
+            if (!parts) return NaN;
+            const [, hours, minutes, seconds, frames] = parts;
+            if (Number(minutes) >= 60 || Number(seconds) >= 60 || Number(frames) >= 30) return NaN;
+            return ((Number(hours ?? 0) * 60 + Number(minutes)) * 60 + Number(seconds)) * 30 + Number(frames);
+          }).toBe(firstFrame + relativeFrame);
+          observedClock.push({ relativeFrame, timecode: observed });
+        };
+        await assertClock(0);
         await field(page, "Graph editorial view").selectOption("playhead");
         const label = preview.locator('[data-graph-label="' + edge.id + '-label"]');
         const lines = label.locator("[data-graph-label-line]");
         await button(page, "Step forward one frame").click();
+        await assertClock(1);
         await expect(lines).toHaveCount(1);
         await expect(lines.nth(0)).toHaveText("Route \u00b7 data");
         await expect(lines.nth(0)).toHaveAttribute("x", String(x));
         await expect(lines.nth(0)).toHaveAttribute("y", String(singleLineY));
         await button(page, "Step forward one frame").click();
+        await assertClock(2);
         await expect(lines).toHaveCount(2);
         await expect(lines.nth(0)).toHaveText("Route \u00b7 data");
         await expect(lines.nth(1)).toHaveText("Retained synthetic transfer");
@@ -266,6 +289,7 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
         await expect(lines.nth(1)).toHaveAttribute("y", String(singleLineY + 12));
         await expect(lines.nth(1)).toBeVisible();
         await button(page, "Step forward one frame").click();
+        await assertClock(3);
         await expect(lines).toHaveCount(1);
         await expect(lines.nth(0)).toHaveText("Route \u00b7 data");
         await expect(lines.nth(0)).toHaveAttribute("x", String(x));
@@ -275,7 +299,7 @@ for (const kind of ["causal_diagram", "system_flow"] as const) {
         expect(afterSeek.journal).toEqual(beforeSeek.journal);
         expect(graphRequests(service)).toHaveLength(mutationCount);
         observations.push({ stage, eventId: first.content.kind === "system_flow" ? first.content.events[0].id : null,
-          relativeFrames: [1, 2, 3], beforeAndAfter: { x, y: singleLineY },
+          observedClock, beforeAndAfter: { x, y: singleLineY },
           activeLines: [{ x, y: singleLineY - 12 }, { x, y: singleLineY + 12 }],
           sourceUnchanged: true, graphMutations: mutationCount, editorialOnly: true });
         await field(page, "Graph editorial view").selectOption("complete");
