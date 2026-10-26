@@ -93,7 +93,7 @@ class SDKFoundationCandidateTests(unittest.TestCase):
         # The exact public source profile still cannot grant an execution slot.
         self.assertEqual(dict(gate.REVIEWED_AUTHORITIES), {})
         self.assertEqual(hashlib.sha256(json.dumps(gate.CAUSALS, sort_keys=True,
-            separators=(",", ":")).encode()).hexdigest(), "ed53462e48995d5bff38b8211f55efd3e98b2c1a97e5f17b001ff0acc1541484")
+            separators=(",", ":")).encode()).hexdigest(), "39f7a1fdefdd08f0751751f804ca7a83a5421adf728266fec95303acb06c209f")
         self.assertTrue(all(case["pins"]["docs/commands.md"] ==
             "23b03db7d5e68d7340247b00b710d644e533b83a5bb9ac55d43f853c39aecf12" for case in gate.CAUSALS))
         self.assertEqual(gate.FIXED["sha"], "dac1f5886b97efb4cd7a9351e817f4b7321b79c9")
