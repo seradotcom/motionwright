@@ -2518,6 +2518,7 @@ export default function App() {
             type="button"
             key={name}
             className={workspace === name ? "active" : ""}
+            aria-label={name}
             aria-current={workspace === name ? "page" : undefined}
             onClick={() => setWorkspace(name)}
           >

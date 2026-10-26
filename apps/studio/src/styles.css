@@ -3275,6 +3275,10 @@ select:focus {
 }
 
 @media (max-width: 920px) {
+  .editor-grid > .center-stack {
+    grid-column: 2;
+  }
+
   .two-column-fields,
   .narrative-columns {
     grid-template-columns: 1fr;
@@ -3282,10 +3286,14 @@ select:focus {
 
   .canvas-body {
     grid-template-columns: 150px minmax(320px, 1fr);
+    grid-template-rows: minmax(180px, 1fr) minmax(160px, 1fr);
+    overflow: auto;
   }
 
   .canvas-properties {
-    display: none;
+    grid-column: 1 / -1;
+    border-left: 0;
+    border-top: 1px solid var(--border);
   }
 }
 
