@@ -20,10 +20,12 @@ use uuid::Uuid;
 
 #[path = "native_manim_editable/source_cycle.rs"]
 mod editable_cycle;
+#[path = "native_manim_graph/source_cycle.rs"]
+mod graph_cycle;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-manim-e2e <seed-graph-profile DATABASE | observe-graph-profile DATABASE CONNECTION SEED_JSON EVIDENCE_JSON | seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON [REQUEST_ID] | realize-bundle DATABASE CONNECTION EVIDENCE_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | source-cycle-edit DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT REQUEST_ID | source-cycle-readback DATABASE EDIT_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
+        "usage: native-manim-e2e <seed-graph-cycle DATABASE REPORT_JSON | graph-cycle-edit-prepare DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT_JSON REQUEST_ID | graph-cycle-save-readback DATABASE PENDING_JSON OWNER_TERMINAL_JSON REPORT_JSON | realize-graph DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON REQUEST_ID | realize-graph-bundle DATABASE CONNECTION EVIDENCE_JSON SAVED_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | seed-graph-profile DATABASE | observe-graph-profile DATABASE CONNECTION SEED_JSON EVIDENCE_JSON | seed DATABASE | realize DATABASE CONNECTION EVIDENCE_JSON [REQUEST_ID] | realize-bundle DATABASE CONNECTION EVIDENCE_JSON INPUT_DESCRIPTOR_JSON REQUEST_ID | source-cycle-edit DATABASE ORIGINAL_NATIVE OUTPUT_ROOT REPORT REQUEST_ID | source-cycle-readback DATABASE EDIT_REPORT CURRENT_NATIVE OUTPUT_ROOT REPORT | realize-camera DATABASE CONNECTION EVIDENCE_JSON PROJECT_ID SCENE_ID DELIVERABLE_ID REQUEST_ID>"
     );
     std::process::exit(2);
 }
@@ -432,24 +434,50 @@ fn seed_graph_profile(database: &Path) -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[cfg(unix)]
+fn graph_profile_original_identity(
+    metadata: &std::fs::Metadata,
+) -> (u64, u64, u32, u64, u64, i64, i64, i64, i64) {
+    use std::os::unix::fs::MetadataExt;
+    (
+        metadata.dev(),
+        metadata.ino(),
+        metadata.mode(),
+        metadata.nlink(),
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    )
+}
+
+#[cfg(unix)]
+fn graph_profile_open_original(
+    path: &Path,
+    before: &std::fs::Metadata,
+) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // A path replaced after its first metadata read must neither follow a
+    // symlink nor block waiting for a writer on an unexpected FIFO.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file()
+        || graph_profile_original_identity(before) != graph_profile_original_identity(&opened)
+    {
+        return Err("Graph profile original input changed before descriptor capture".into());
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
 fn graph_profile_original_file(
     path: &Path,
     limit: u64,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     use std::{io::Read, os::unix::fs::MetadataExt};
-    fn identity(metadata: &std::fs::Metadata) -> (u64, u64, u32, u64, u64, i64, i64, i64, i64) {
-        (
-            metadata.dev(),
-            metadata.ino(),
-            metadata.mode(),
-            metadata.nlink(),
-            metadata.len(),
-            metadata.mtime(),
-            metadata.mtime_nsec(),
-            metadata.ctime(),
-            metadata.ctime_nsec(),
-        )
-    }
     let before = std::fs::symlink_metadata(path)?;
     if !path.is_absolute()
         || path.canonicalize()? != path
@@ -462,9 +490,9 @@ fn graph_profile_original_file(
     {
         return Err("Graph profile original input is not a bounded canonical regular file".into());
     }
-    let mut file = std::fs::File::open(path)?;
+    let mut file = graph_profile_open_original(path, &before)?;
     let opened = file.metadata()?;
-    if identity(&before) != identity(&opened) {
+    if graph_profile_original_identity(&before) != graph_profile_original_identity(&opened) {
         return Err("Graph profile original input changed before descriptor capture".into());
     }
     let mut bytes = Vec::new();
@@ -473,8 +501,8 @@ fn graph_profile_original_file(
     let final_path = std::fs::symlink_metadata(path)?;
     if bytes.len() as u64 != opened.len()
         || bytes.len() as u64 > limit
-        || identity(&opened) != identity(&after)
-        || identity(&after) != identity(&final_path)
+        || graph_profile_original_identity(&opened) != graph_profile_original_identity(&after)
+        || graph_profile_original_identity(&after) != graph_profile_original_identity(&final_path)
         || path.canonicalize()? != path
     {
         return Err("Graph profile original input changed during descriptor capture".into());
@@ -1408,6 +1436,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             seed(&database)
         }
+        "seed-graph-cycle" => {
+            let database = path_arg(&mut args);
+            let report = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            let value = graph_cycle::seed(&database, &report)?;
+            println!("{}", serde_json::to_string(&value)?);
+            Ok(())
+        }
+        "graph-cycle-edit-prepare" => {
+            let database = path_arg(&mut args);
+            let native = path_arg(&mut args);
+            let output = path_arg(&mut args);
+            let report = path_arg(&mut args);
+            let request = text_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            let value = graph_cycle::prepare_edit(&database, &native, &output, &report, &request)?;
+            println!("{}", serde_json::to_string(&value)?);
+            Ok(())
+        }
+        "graph-cycle-save-readback" => {
+            let database = path_arg(&mut args);
+            let source = path_arg(&mut args);
+            let terminal = path_arg(&mut args);
+            let report = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            let value = graph_cycle::finish_save(&database, &source, &terminal, &report)?;
+            println!("{}", serde_json::to_string(&value)?);
+            Ok(())
+        }
+        command @ ("realize-graph" | "realize-graph-bundle") => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            let saved = path_arg(&mut args);
+            let input = if command == "realize-graph-bundle" {
+                Some(path_arg(&mut args))
+            } else {
+                None
+            };
+            let request = text_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            graph_cycle::realize(
+                &database,
+                &connection,
+                &evidence,
+                &saved,
+                input.as_deref(),
+                &request,
+            )
+            .await
+        }
         "seed-graph-profile" => {
             let database = path_arg(&mut args);
             if args.next().is_some() {
@@ -2207,6 +2294,34 @@ mod graph_profile_tests {
         extended["ready"] = json!(true);
         assert!(serde_json::from_value::<GraphProfileSeed>(extended).is_err());
         assert_eq!(service.project(original.project_id).unwrap(), project);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn original_input_replaced_by_fifo_is_rejected_without_a_writer_or_blocking_open() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let path = root.join("original-then-fifo");
+        std::fs::write(&path, b"original input").unwrap();
+        assert_eq!(
+            graph_profile_original_file(&path, 64).unwrap(),
+            b"original input"
+        );
+        let before = std::fs::symlink_metadata(&path).unwrap();
+        assert!(before.is_file());
+        std::fs::remove_file(&path).unwrap();
+        let native = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // Replace only after the caller's regular-file metadata observation.
+        // There is deliberately no FIFO writer and no substitute runtime.
+        assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+        let error = graph_profile_open_original(&path, &before)
+            .expect_err("changed input must fail before any read");
+        assert!(
+            error
+                .to_string()
+                .contains("changed before descriptor capture")
+        );
     }
 
     #[test]

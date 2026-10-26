@@ -32,6 +32,7 @@ MW_CAMERA_SEED = ROOT / "target" / "debug" / "examples" / "native-manim-camera-s
 MW_CAMERA_SOURCE = ROOT / "target" / "debug" / "examples" / "native-manim-camera-e2e"
 MW_DRIVER = ROOT / "target" / "debug" / "motionwright-manim-community-driver"
 MW_RUNNER = ROOT / "target" / "debug" / "motionwright-manim-runner"
+MW_GRAPH_PROVIDER = ROOT / "target" / "debug" / "motionwright-native-provider"
 MANIM_RUNTIME = Path(
     os.environ.get("SEMWRIGHT_TEST_MANIM_RUNTIME", ROOT / ".manim-runtime")
 ).resolve()
@@ -427,7 +428,8 @@ def probe_video(path: Path, *, evidence=None, camera_custody=None) -> dict:
 
 
 def capability_catalog(env: dict[str, str], socket: Path, session: Path, *,
-                       evidence=None, camera_custody=None) -> list[dict]:
+                       evidence=None, camera_custody=None,
+                       provider="driver:manim-community") -> list[dict]:
     capabilities: list[dict] = []
     offset = 0
     catalog_revision = None
@@ -437,14 +439,16 @@ def capability_catalog(env: dict[str, str], socket: Path, session: Path, *,
             "--socket", str(socket),
             "--session-file", str(session),
             "--json", "capabilities", "search", "",
-            "--provider", "driver:manim-community",
+            "--provider", provider,
             "--limit", "100", "--offset", str(offset),
         ]
         if evidence is None:
             discovered = run_json(argv, env=env)
         else:
             discovered = captured_json(
-                argv, env=env, evidence=evidence, label=f"capabilities-{offset}",
+                argv, env=env, evidence=evidence,
+                label=(f"graph-capabilities-{offset}" if provider == "driver:motionwright"
+                       else f"capabilities-{offset}"),
                 camera_custody=camera_custody, record_native=False,
             )
         data = discovered.get("data", {})
@@ -569,6 +573,14 @@ def editable_options(args):
     return _private_options(args, editable=True)
 
 
+def graph_options(args):
+    from native_manim_camera_evidence import require
+    require(MW_GRAPH_PROVIDER.is_file() and not MW_GRAPH_PROVIDER.is_symlink()
+            and MW_GRAPH_PROVIDER.resolve(strict=True) == MW_GRAPH_PROVIDER,
+            "graph_normal_provider_binary_absent")
+    return _private_options(args, editable=True)
+
+
 def checked_static_originals(native, seeded, evidence):
     """Bind retained pre-render observation to the original successful Rust result."""
     from native_manim_camera_evidence import object_bytes, read, require, sha
@@ -612,9 +624,15 @@ def checked_static_originals(native, seeded, evidence):
     }
 
 
-def _run_single(args, *, source_cycle=None, editable_cycle=None):
+def _run_single(args, *, source_cycle=None, editable_cycle=None, graph_cycle=None):
     camera = args.scenario == "camera120"
     editable = args.scenario == "editable-source-cycle"
+    graph = args.scenario == "graph-source-cycle"
+    lifecycle = editable or graph
+    lifecycle_context = graph_cycle if graph else editable_cycle
+    if graph != (graph_cycle is not None):
+        raise ValueError("Graph phases require the ordered existing source-cycle owner")
+    graph_result = None
     if editable != (editable_cycle is not None):
         raise ValueError("editable phases require the ordered source-cycle coordinator")
     cycle_observation = None
@@ -625,9 +643,10 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
     from native_manim_camera_evidence import (
         CameraCustody, EVIDENCE_NAME, finish_render, prepare_seed, private_json,
     )
-    recipient, current = (editable_options(args) if editable
-                          else camera_options(args, camera=camera))
-    if editable and current != editable_cycle["current"]:
+    recipient, current = (graph_options(args) if graph else
+                          editable_options(args) if editable else
+                          camera_options(args, camera=camera))
+    if lifecycle and current != lifecycle_context["current"]:
         raise ValueError("editable cycle context changed between native phases")
     if source_cycle is not None and current != source_cycle["current"]:
         raise ValueError("camera cycle context changed between native phases")
@@ -636,11 +655,11 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
     # Every native profile retains its owner and original streams until runner
     # disposal, even when observation, process cleanup or sealing fails.
     shared_owner = (source_cycle["owner"] if source_cycle is not None else
-                    editable_cycle["owner"] if editable else None)
+                    lifecycle_context["owner"] if lifecycle else None)
     workspace = (
         contextlib.nullcontext(str(shared_owner)) if shared_owner is not None else
         contextlib.nullcontext(tempfile.mkdtemp(
-            prefix=("mw-manim-" if editable else
+            prefix=("mw-manim-" if lifecycle else
                     "motionwright-native-manim-camera-" if camera else
                     "motionwright-native-manim-static-"),
             dir=os.environ["RUNNER_TEMP"],
@@ -651,15 +670,15 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
         root.chmod(0o700)
         with CameraCustody(
             root, evidence, args.sealed_originals, recipient, current,
-            profile="editable" if editable else "camera",
+            profile="graph" if graph else "editable" if editable else "camera",
         ) as camera_custody:
             runtime_inventory_sha256 = retain_runtime_inventory(evidence)
             phase_root = root
             if source_cycle is not None:
                 phase_root = root / "edited1040"
                 phase_root.mkdir(mode=0o700, exist_ok=False)
-            if editable:
-                phase_root = root / editable_cycle["short_phase"]
+            if lifecycle:
+                phase_root = root / lifecycle_context["short_phase"]
                 phase_root.mkdir(mode=0o700, exist_ok=False)
             paths: dict[str, Path] = {}
             for name in [
@@ -672,13 +691,13 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
                 "output",
                 "motionwright-data",
             ]:
-                if editable and name in ("motionwright-data", "bin"):
+                if lifecycle and name in ("motionwright-data", "bin"):
                     path = root / name
-                    if editable_cycle["history"]:
+                    if lifecycle_context["history"]:
                         if (not path.is_dir() or path.is_symlink()
                                 or path.resolve(strict=True) != path):
                             raise ValueError("editable shared store or pinned binary root changed")
-                        if name == "motionwright-data" and editable_cycle["database"].parent != path:
+                        if name == "motionwright-data" and lifecycle_context["database"].parent != path:
                             raise ValueError("editable phase changed the original persisted store")
                     else:
                         path.mkdir(mode=0o700, exist_ok=False)
@@ -705,6 +724,9 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
                 SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BINS / "semwright-sandbox"),
             )
 
+            if graph:
+                # The normal provider must derive its Store from the actual Host mount.
+                env.pop("MOTIONWRIGHT_DB", None)
             database = paths["motionwright-data"] / "motionwright.sqlite3"
             if camera:
                 if source_cycle is None:
@@ -740,6 +762,27 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
                     "compiler_bytes_exported_before_native_dispatch": True,
                     "independent_vendor_binary_authentication": False,
                 })
+            elif graph:
+                from native_manim_graph_cycle import new_phase_inputs
+                prepared_graph = new_phase_inputs(
+                    graph_cycle, evidence, database, paths["output"], env,
+                    capture=captured_json, source_binary=MW_EXAMPLE,
+                )
+                seeded = prepared_graph["seed"]
+                private_json(evidence / "native-input-identities.json", {
+                    "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN,
+                    "runner_uid": os.geteuid(), "manim_version": MANIM_VERSION,
+                    "source_lock_sha256": digest(ROOT / "SOURCE_LOCK.json"),
+                    "runtime_inventory_sha256": runtime_inventory_sha256,
+                    "binaries": {name: digest(path) for name, path in {
+                        "native_example": MW_EXAMPLE, "native_provider": MW_GRAPH_PROVIDER,
+                        "driver": MW_DRIVER, "runner": MW_RUNNER,
+                        "broker": SW_BINS / "semwrightd", "client": SW_BINS / "semwright",
+                        "sandbox": SW_BINS / "semwright-sandbox", "python": PYTHON,
+                        "ffmpeg": FFMPEG, "ffprobe": FFPROBE,
+                    }.items()},
+                    "independent_vendor_binary_authentication": False,
+                })
             elif editable:
                 from native_manim_editable_cycle import new_phase_inputs
                 prepared_editable = new_phase_inputs(
@@ -771,7 +814,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
 
             driver = paths["bin"] / "motionwright-manim-community-driver"
             runner = paths["bin"] / "motionwright-manim-runner"
-            if editable and editable_cycle["history"]:
+            if lifecycle and lifecycle_context["history"]:
                 if digest(driver) != digest(MW_DRIVER) or digest(runner) != digest(MW_RUNNER):
                     raise ValueError("editable original admitted binaries changed")
             else:
@@ -854,6 +897,13 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
             }
             manifest_path = paths["config"] / "manim-driver.json"
             write_private_json(manifest_path, manifest)
+            driver_manifests = [manifest_path]
+            if graph:
+                from native_manim_graph_cycle import provider_manifest
+                graph_manifest = provider_manifest(
+                    prepared_graph, paths, MW_GRAPH_PROVIDER, digest=digest, evidence=evidence,
+                )
+                driver_manifests.append(graph_manifest)
 
             grants = [
                 ("manim-runtime", MANIM_RUNTIME, False),
@@ -864,13 +914,16 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
                 ("python-root", PYTHON, False),
                 ("ffmpeg-root", FFMPEG, False),
             ]
+            if graph:
+                grants.append(("motionwright-data", paths["motionwright-data"], True))
             config_lines = [
-                f"drivers = [{json.dumps(str(manifest_path))}]",
+                "drivers = [" + ", ".join(json.dumps(str(path)) for path in driver_manifests) + "]",
                 "driver_network = false",
                 "",
                 "[policy]",
                 'profile = "workspace"',
-                'allow = ["driver:manim-community"]',
+                ('allow = ["driver:manim-community", "driver:motionwright", "providers.execute_bound"]'
+                 if graph else 'allow = ["driver:manim-community"]'),
             ]
             for name, path, write in grants:
                 config_lines.extend(
@@ -924,6 +977,8 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
                 }
                 if camera:
                     required.add("driver.manim-community.camera.render.start")
+                elif graph:
+                    required.add("driver.manim-community.graph.render.start")
                 else:
                     required.add("driver.manim-community.editable.render.start")
                 private_json(evidence / "provider-capabilities.json", capabilities)
@@ -952,6 +1007,9 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
                     "runtime_inventory_sha256": runtime_inventory_sha256,
                     "fresh_process_launched_by_this_wrapper": True,
                 }
+                if graph:
+                    launch["native_provider_sha256"] = digest(MW_GRAPH_PROVIDER)
+                    launch["graph_manifest_sha256"] = digest(graph_manifest)
                 private_json(evidence / "original-host-launch.json", launch)
                 connection_path = paths["config"] / "motionwright-connection.json"
                 write_private_json(
@@ -993,6 +1051,44 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
                             paths["output"], env, source_binary=MW_CAMERA_SOURCE,
                             capture=captured_json,
                         )
+                elif graph:
+                    from native_manim_graph_cycle import (
+                        EVIDENCE_NAME as GRAPH_EVIDENCE_NAME, apply_pending, finish_phase,
+                    )
+                    graph_capabilities = capability_catalog(
+                        env, socket, session, evidence=evidence, camera_custody=camera_custody,
+                        provider="driver:motionwright",
+                    )
+                    private_json(evidence / "graph-provider-capabilities.json", graph_capabilities)
+                    prepared_graph = apply_pending(
+                        graph_cycle, prepared_graph, database, paths["output"], env, evidence,
+                        socket, session, graph_capabilities,
+                        cli=SW_BINS / "semwright", source_binary=MW_EXAMPLE,
+                        capture=captured_json, secondary=camera_custody.secondary,
+                    )
+                    seeded = prepared_graph["seed"]
+                    request_id = (f"graph-{current['run_id']}-{current['run_attempt']}-"
+                                  f"{GITHUB_SHA[:12]}-{graph_cycle['short_phase']}")
+                    command = [str(MW_EXAMPLE),
+                               "realize-graph-bundle" if prepared_graph["input_path"] else "realize-graph",
+                               str(database), str(connection_path), str(evidence / GRAPH_EVIDENCE_NAME),
+                               str(prepared_graph["saved_path"])]
+                    if prepared_graph["input_path"] is not None:
+                        command.append(str(prepared_graph["input_path"]))
+                    command.append(request_id)
+                    native = camera_custody.once(lambda: captured_json(
+                        command, env=env, evidence=evidence, label="native-example",
+                        timeout=420, camera_custody=camera_custody,
+                    ))
+                    require_original_native_video(
+                        native, capabilities, paths["output"], paths["work"], evidence,
+                    )
+                    graph_result = finish_phase(
+                        graph_cycle, prepared_graph, native, evidence,
+                        paths["output"], paths["work"], database, env,
+                        capture=captured_json, source_binary=MW_EXAMPLE, python=PYTHON,
+                        runtime=MANIM_RUNTIME, tooling=ROOT / "tooling", launch=launch,
+                    )
                 elif editable:
                     from native_manim_editable_cycle import (
                         EVIDENCE_NAME as EDITABLE_EVIDENCE_NAME, finish_phase,
@@ -1112,13 +1208,21 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
                 except BaseException as cleanup_error:
                     camera_custody.secondary("broker-log-close", cleanup_error)
 
-        if not camera and not editable:
+        if not camera and not lifecycle:
             # __exit__ has sealed the actual selected originals and failed closed
             # on partial capture or cleanup errors. This is an exclusive new file.
             static_result["sealed_originals_sha256"] = digest(args.sealed_originals)
             static_result["sealed_originals_bytes"] = args.sealed_originals.stat().st_size
             private_json(evidence / "result.json", static_result)
 
+    if graph:
+        return {
+            "owner": root, "database": database, "evidence": evidence,
+            "sealed_originals": args.sealed_originals, "current": current,
+            "prepared": prepared_graph, "seed": seeded, "native": native,
+            "native_path": evidence / GRAPH_EVIDENCE_NAME, "output_root": paths["output"],
+            "launch": launch, **graph_result,
+        }
     if editable:
         return {
             "owner": root, "database": database, "evidence": evidence,
@@ -1141,7 +1245,7 @@ def _run_single(args, *, source_cycle=None, editable_cycle=None):
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--scenario", choices=("static-scene", "camera120", "camera120-source-cycle", "editable-source-cycle"),
+        "--scenario", choices=("static-scene", "camera120", "camera120-source-cycle", "editable-source-cycle", "graph-source-cycle"),
         default="static-scene",
     )
     parser.add_argument("--evidence-root", type=Path)
@@ -1152,7 +1256,11 @@ def main(argv=None) -> None:
     args = parser.parse_args(argv)
     exact_inputs()
     camera = args.scenario != "static-scene"
-    if args.scenario == "editable-source-cycle":
+    if args.scenario == "graph-source-cycle":
+        from native_manim_graph_cycle import run_source_cycle
+        run_source_cycle(args, run_phase=_run_single, validate_phase=graph_options)
+        status_key = "native_manim_graph_source_cycle_e2e"
+    elif args.scenario == "editable-source-cycle":
         from native_manim_editable_cycle import run_source_cycle
         run_source_cycle(args, run_phase=_run_single, validate_phase=editable_options)
         status_key = "native_manim_editable_source_cycle_e2e"

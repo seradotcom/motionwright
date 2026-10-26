@@ -23,6 +23,12 @@ import tarfile
 SPEC_SCHEMA = "motionwright.native.evidence-selection/2"
 MANIFEST_SCHEMA = "motionwright.native.selected-evidence/2"
 PROJECTION_SCHEMA = "motionwright.native.json-projection/2"
+SPEC_SCHEMA_V3 = "motionwright.native.evidence-selection/3"
+MANIFEST_SCHEMA_V3 = "motionwright.native.selected-evidence/3"
+DIAGNOSTIC_CONTRACT_SCHEMA = "motionwright.native.diagnostic-contract/1"
+DIAGNOSTIC_KINDS = frozenset(("diagnostic-original", "diagnostic-json-original"))
+DIAGNOSTIC_MAXIMUM = {"stdout": 262144, "stderr": 262144,
+                      "stdin": 65536, "typed-terminal": 65536}
 MAX_FILE = 256 * 1024 * 1024
 MAX_TOTAL = 512 * 1024 * 1024
 MAX_FILES = 4096
@@ -51,6 +57,13 @@ LOST_SCOPE = (
     "whole-owner-tree", "raw-diagnostics", "raw-environment",
     "broker-grants-and-journal-replay", "atomic-sqlite-snapshot",
 )
+LOST_SCOPE_V3 = tuple("unselected-raw-diagnostics" if x == "raw-diagnostics" else x
+                      for x in LOST_SCOPE)
+DIAGNOSTIC_MANIFEST_FIELDS = frozenset((
+    "diagnostic_contract", "diagnostic_contract_sha256", "diagnostic_roster_complete",
+    "diagnostic_eof_claimed", "diagnostic_history_complete_claimed",
+    "diagnostic_payloads_redacted",
+))
 
 class SelectionError(ValueError):
     """A closed code, never a raw source exception or file payload."""
@@ -310,14 +323,117 @@ class RootHandles:
         return all(identity(os.fstat(fd)) == identity(self.initial[name])
                    for name, fd in self.fds.items())
 
-def _checked_spec(spec, policies, role_contract):
+def _checked_diagnostic_contract(contract, expected_context, *, policies=None,
+                                 role_contract=None, roots=None):
+    """Freeze an external, source-owned roster; never infer it from a TAR."""
+    require(type(contract) is dict, "diagnostic-contract-required")
+    frozen = strict(canonical(contract))
+    require(set(frozen) == {"schema", "context", "entries"}
+            and frozen["schema"] == DIAGNOSTIC_CONTRACT_SCHEMA,
+            "diagnostic-contract-fields")
+    context(frozen["context"])
+    require(frozen["context"] == expected_context, "diagnostic-context-mismatch")
+    entries = frozen["entries"]
+    require(type(entries) is list and 1 <= len(entries) <= MAX_FILES,
+            "diagnostic-contract-entries")
+    fields = {"root", "relative_path", "phase", "layer", "role", "type", "maximum", "policy"}
+    paths = set()
+    for entry in entries:
+        require(type(entry) is dict and set(entry) == fields, "diagnostic-entry-fields")
+        require(type(entry["root"]) is str and LABEL.fullmatch(entry["root"])
+                and entry["root"] != "source", "diagnostic-entry-root")
+        if roots is not None:
+            require(entry["root"] in roots, "diagnostic-entry-root")
+        require(not excluded(member_path(entry["relative_path"])), "diagnostic-entry-excluded")
+        require(type(entry["phase"]) is str and entry["phase"] in PHASES
+                and type(entry["layer"]) is str and entry["layer"] == "attempt-custody"
+                and type(entry["role"]) is str and LABEL.fullmatch(entry["role"]),
+                "diagnostic-entry-scope")
+        key = (entry["phase"], entry["layer"], entry["role"])
+        if role_contract is not None:
+            require(key in role_contract, "diagnostic-entry-role")
+        require(type(entry["type"]) is str and entry["type"] in DIAGNOSTIC_MAXIMUM,
+                "diagnostic-entry-type")
+        require(type(entry["maximum"]) is int
+                and 0 < entry["maximum"] <= DIAGNOSTIC_MAXIMUM[entry["type"]],
+                "diagnostic-entry-maximum")
+        if entry["type"] == "typed-terminal":
+            require(type(entry["policy"]) is str and LABEL.fullmatch(entry["policy"]),
+                    "diagnostic-json-policy")
+            if policies is not None:
+                require(entry["policy"] in policies
+                        and isinstance(policies[entry["policy"]], Object),
+                        "diagnostic-json-policy")
+        else:
+            require(entry["policy"] is None, "diagnostic-stream-policy")
+        path = (entry["root"], entry["relative_path"])
+        require(path not in paths, "diagnostic-entry-alias")
+        paths.add(path)
+    return frozen
+
+
+def _diagnostic_selection(rows, guards, contract):
+    """Every reserved path is selected with its fixed type or guarded absent."""
+    entries = {(e["root"], e["relative_path"]): e for e in contract["entries"]}
+    covered = set()
+    for row in rows:
+        path = (row["root"], row["relative_path"])
+        diagnostic = type(row.get("kind")) is str and row["kind"] in DIAGNOSTIC_KINDS
+        require(path in entries or not diagnostic, "diagnostic-unregistered-member")
+        if path not in entries:
+            require("diagnostic_type" not in row, "diagnostic-type-on-ordinary-member")
+            continue
+        require(path not in covered, "diagnostic-selection-alias")
+        covered.add(path)
+        entry = entries[path]
+        kind = ("diagnostic-json-original" if entry["type"] == "typed-terminal"
+                else "diagnostic-original")
+        require(row.get("kind") == kind and row.get("diagnostic_type") == entry["type"],
+                "diagnostic-kind-mismatch")
+        require(all(row.get(k) == entry[k] for k in ("phase", "layer", "role", "policy")),
+                "diagnostic-member-scope")
+        require(row.get("required") is True, "diagnostic-selected-made-optional")
+        unobserved = row.get("expected_sha256") is None and row.get("bytes") is None
+        require(unobserved or (type(row.get("bytes")) is int
+                and 0 <= row["bytes"] <= entry["maximum"]
+                and type(row.get("expected_sha256")) is str
+                and SHA.fullmatch(row["expected_sha256"])), "diagnostic-member-budget")
+        if row.get("state") == "INCLUDED":
+            require(not unobserved and type(row.get("retained_bytes")) is int
+                    and 0 <= row["retained_bytes"] <= entry["maximum"],
+                    "diagnostic-retained-budget")
+            require(row.get("member") == "/".join(("selected", entry["phase"], entry["layer"],
+                    entry["root"], entry["relative_path"])), "diagnostic-tar-path")
+    for guard in guards:
+        path = (guard["root"], guard["relative_path"])
+        if path not in entries:
+            continue
+        require(path not in covered, "diagnostic-selection-alias")
+        covered.add(path)
+        require(all(guard.get(k) == entries[path][k] for k in ("phase", "layer", "role")),
+                "diagnostic-guard-scope")
+    require(covered == set(entries), "diagnostic-roster-incomplete")
+
+
+def _diagnostic_complete(rows, guards, contract, stable):
+    paths = {(e["root"], e["relative_path"]) for e in contract["entries"]}
+    return bool(stable and all(row["state"] == "INCLUDED" for row in rows
+                if (row["root"], row["relative_path"]) in paths)
+                and all(guard["absent_before"] is True and guard["absent_after"] is True
+                        for guard in guards
+                        if (guard["root"], guard["relative_path"]) in paths))
+
+
+def _checked_spec(spec, policies, role_contract, diagnostic_contract=None):
     # Copy/freeze before any path resolution, stat or read. The caller cannot
     # insert a late selection while capture is in progress.
     frozen = strict(canonical(spec))
     keys = {"schema", "context", "roots", "members", "exclusions", "source_bindings", "origin"}
     require(set(frozen) in (keys, keys | {"absence_guards"}), "spec-fields")
     frozen.setdefault("absence_guards", [])
-    require(frozen["schema"] == SPEC_SCHEMA, "spec-schema")
+    require(frozen["schema"] in (SPEC_SCHEMA, SPEC_SCHEMA_V3), "spec-schema")
+    v3 = frozen["schema"] == SPEC_SCHEMA_V3
+    require(v3 or diagnostic_contract is None, "diagnostic-contract-on-legacy")
     context(frozen["context"])
     require(type(frozen["roots"]) is dict and 1 <= len(frozen["roots"]) <= 16
             and all(type(k) is str and LABEL.fullmatch(k) for k in frozen["roots"]),
@@ -331,13 +447,20 @@ def _checked_spec(spec, policies, role_contract):
     member_keys = {"root", "relative_path", "role", "layer", "phase", "kind",
                    "required", "expected_sha256", "bytes", "policy"}
     for item in members:
-        require(type(item) is dict and set(item) == member_keys, "member-fields")
-        require(item["root"] in frozen["roots"] and item["root"] != "source", "member-root")
+        require(type(item) is dict, "member-fields")
+        diagnostic = v3 and type(item.get("kind")) is str and item["kind"] in DIAGNOSTIC_KINDS
+        require(set(item) == (member_keys | {"diagnostic_type"} if diagnostic else member_keys),
+                "member-fields")
+        require(type(item["root"]) is str and item["root"] in frozen["roots"]
+                and item["root"] != "source", "member-root")
         parts = member_path(item["relative_path"])
-        require(item["layer"] in LAYERS and item["phase"] in PHASES, "member-scope")
+        require(type(item["layer"]) is str and item["layer"] in LAYERS
+                and type(item["phase"]) is str and item["phase"] in PHASES, "member-scope")
         require(type(item["role"]) is str and LABEL.fullmatch(item["role"]), "member-role")
         require(type(item["required"]) is bool, "member-required")
-        require(item["kind"] in ("original", "json-original", "json-projection"), "member-kind")
+        require(type(item["kind"]) is str and
+                (item["kind"] in ("original", "json-original", "json-projection")
+                 or diagnostic), "member-kind")
         unobserved = item["expected_sha256"] is None and item["bytes"] is None
         require(unobserved or (type(item["expected_sha256"]) is str
                 and SHA.fullmatch(item["expected_sha256"])), "member-expected-digest")
@@ -352,14 +475,18 @@ def _checked_spec(spec, policies, role_contract):
         if item["kind"] == "original":
             require(item["policy"] is None and not parts[-1].casefold().endswith(".json"),
                     "original-json-needs-closed-policy")
+        elif item["kind"] == "diagnostic-original":
+            require(item["policy"] is None, "diagnostic-stream-policy")
         else:
             require(type(item["policy"]) is str and item["policy"] in policies,
                     "unregistered-json-policy")
         require(not excluded(parts), "required-role-in-excluded-scope")
         role_counts[contract_key] = role_counts.get(contract_key, 0) + 1
     for key, bounds in role_contract.items():
-        require(type(key) is tuple and len(key) == 3 and key[0] in PHASES
-                and key[1] in LAYERS and LABEL.fullmatch(key[2]), "role-contract-key")
+        require(type(key) is tuple and len(key) == 3
+                and type(key[0]) is str and key[0] in PHASES
+                and type(key[1]) is str and key[1] in LAYERS
+                and type(key[2]) is str and LABEL.fullmatch(key[2]), "role-contract-key")
         require(type(bounds) is tuple and len(bounds) == 2
                 and 0 <= bounds[0] <= bounds[1] <= MAX_FILES, "role-contract-range")
         require(bounds[0] <= role_counts.get(key, 0) <= bounds[1], "role-count-incomplete")
@@ -382,13 +509,21 @@ def _checked_spec(spec, policies, role_contract):
     for row in guards:
         require(type(row) is dict and set(row) == {"root", "relative_path", "phase", "layer", "role"},
                 "absence-guard-fields")
-        require(row["root"] in frozen["roots"] and row["root"] != "source", "absence-guard-root")
+        require(type(row["root"]) is str and row["root"] in frozen["roots"]
+                and row["root"] != "source", "absence-guard-root")
         require(not excluded(member_path(row["relative_path"])), "absence-guard-excluded")
+        require(type(row["phase"]) is str and row["phase"] in PHASES
+                and type(row["layer"]) is str and row["layer"] in LAYERS
+                and type(row["role"]) is str, "absence-guard-scope")
         key = (row["phase"], row["layer"], row["role"])
         require(key in role_contract and role_contract[key][0] == 0, "absence-guard-role")
         path_key = (row["root"], row["relative_path"])
         require(path_key not in seen and path_key not in guard_keys, "absence-guard-alias")
         guard_keys.add(path_key)
+    if v3:
+        diagnostic_contract = _checked_diagnostic_contract(diagnostic_contract, frozen["context"],
+            policies=policies, role_contract=role_contract, roots=frozen["roots"])
+        _diagnostic_selection(members, guards, diagnostic_contract)
     bindings = frozen["source_bindings"]
     require(type(bindings) is list and 1 <= len(bindings) <= 128, "source-bindings")
     bind_names = set()
@@ -461,9 +596,16 @@ def _layers(rows, contract, stable):
                             if x["phase"] == phase and x["layer"] == layer)}
             for phase, layer in sorted(required)]
 
-def capture_selected_originals(spec, *, policies, role_contract):
-    """Return (new TAR bytes, /2 manifest). Never encrypt or upload."""
-    spec = _checked_spec(spec, policies, role_contract)
+def capture_selected_originals(spec, *, policies, role_contract, diagnostic_contract=None):
+    """Return selected TAR bytes and /2 or explicit /3 manifest; never upload.
+
+    A /3 diagnostic contract is supplied by the source/run-admitted caller.
+    Retaining opaque streams does not prove EOF, sanitization or producer exit.
+    """
+    diagnostic_contract = (None if diagnostic_contract is None
+                           else strict(canonical(diagnostic_contract)))
+    spec = _checked_spec(spec, policies, role_contract, diagnostic_contract)
+    v3 = spec["schema"] == SPEC_SCHEMA_V3
     rows, payloads, initial = [], {}, {}
     stable, source_bound = False, False
     with _HandlesContext(spec["roots"]) as handles:
@@ -497,6 +639,8 @@ def capture_selected_originals(spec, *, policies, role_contract):
         for item in spec["members"]:
             row = {k: item[k] for k in ("root", "relative_path", "role", "layer", "phase",
                                         "kind", "required", "expected_sha256", "bytes", "policy")}
+            if item["kind"] in DIAGNOSTIC_KINDS:
+                row["diagnostic_type"] = item["diagnostic_type"]
             key = (item["root"], item["relative_path"])
             mark = initial[key]
             if type(mark) is str or item["expected_sha256"] is None:
@@ -511,10 +655,10 @@ def capture_selected_originals(spec, *, policies, role_contract):
                 require(len(raw) == item["bytes"] and sha(raw) == item["expected_sha256"],
                         "selected-digest-or-size-changed")
                 data = raw
-                if item["kind"] != "original":
+                if item["kind"] not in ("original", "diagnostic-original"):
                     value = strict(raw)
                     projected = project(value, policies[item["policy"]],
-                                        exact=item["kind"] == "json-original")
+                                        exact=item["kind"] in ("json-original", "diagnostic-json-original"))
                     if item["kind"] == "json-projection":
                         data = canonical({"schema": PROJECTION_SCHEMA, "policy": item["policy"],
                             "source_sha256": sha(raw), "source_bytes": len(raw),
@@ -587,8 +731,9 @@ def capture_selected_originals(spec, *, policies, role_contract):
             stable, source_bound = False, False
     layer_rows = _layers(rows, role_contract, stable and source_bound)
     manifest = {
-        "schema": MANIFEST_SCHEMA, "context": spec["context"],
-        "selection_sha256": sha(canonical(spec)), "origin": spec["origin"],
+        "schema": MANIFEST_SCHEMA_V3 if v3 else MANIFEST_SCHEMA, "context": spec["context"],
+        "selection_sha256": sha(canonical({"spec": spec, "diagnostic_contract": diagnostic_contract}
+                                          if v3 else spec)), "origin": spec["origin"],
         "source_bindings": spec["source_bindings"], "source_bytes_bound": source_bound,
         "absence_guards": absence_guards,
         "role_contract": _contract_rows(role_contract), "members": rows,
@@ -605,6 +750,18 @@ def capture_selected_originals(spec, *, policies, role_contract):
         "human_acceptance": False, "release_authorized": False,
         "upload_authorization": "NOT_GRANTED_BY_COLLECTOR",
     }
+    if v3:
+        manifest.update(
+            diagnostic_contract=diagnostic_contract,
+            diagnostic_contract_sha256=sha(canonical(diagnostic_contract)),
+            diagnostic_roster_complete=_diagnostic_complete(rows, absence_guards,
+                diagnostic_contract, stable and source_bound),
+            # A post-read CHANGED row can still have original bytes in the TAR.
+            # Presence is independent of admissibility/completeness.
+            raw_diagnostics_included=any(r["kind"] in DIAGNOSTIC_KINDS and r.get("member") in payloads
+                                         for r in rows),
+            diagnostic_eof_claimed=False, diagnostic_history_complete_claimed=False,
+            diagnostic_payloads_redacted=False, lost_scope=list(LOST_SCOPE_V3))
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for name, data in sorted(payloads.items()):
@@ -623,36 +780,85 @@ class _HandlesContext:
     def __enter__(self): return self.handles
     def __exit__(self, *_): self.handles.close()
 
-def validate_selected_manifest(manifest, *, expected_context, role_contract):
-    """Publication/intake shares the exact source-owned role contract."""
+def validate_selected_manifest(manifest, *, expected_context, role_contract,
+                               expected_diagnostic_contract=None, require_complete=True):
+    """Validate complete custody, or explicitly permit incomplete /3 selection.
+
+    Partial intake preserves required roles and their failed/missing rows. It
+    still requires source binding, a stable selected namespace and bilateral
+    absence observations. It never grants render, recovery or acceptance credit.
+    Independent source/run-owned contracts remain mandatory for /3.
+    """
     context(expected_context)
-    require(type(manifest) is dict and manifest.get("schema") == MANIFEST_SCHEMA,
+    require(type(require_complete) is bool, "selected-completeness-mode")
+    require(type(manifest) is dict and manifest.get("schema") in (MANIFEST_SCHEMA, MANIFEST_SCHEMA_V3),
             "selected-manifest-schema")
+    v3 = manifest["schema"] == MANIFEST_SCHEMA_V3
+    require(v3 or require_complete, "partial-custody-on-legacy")
+    diagnostic_contract = None
+    if v3:
+        diagnostic_contract = _checked_diagnostic_contract(expected_diagnostic_contract,
+            expected_context, role_contract=role_contract)
+        actual_contract = _checked_diagnostic_contract(manifest.get("diagnostic_contract"),
+            expected_context, role_contract=role_contract)
+        require(canonical(actual_contract) == canonical(diagnostic_contract)
+                and manifest.get("diagnostic_contract_sha256") == sha(canonical(diagnostic_contract)),
+                "selected-diagnostic-contract-mismatch")
+    else:
+        require(expected_diagnostic_contract is None
+                and not (DIAGNOSTIC_MANIFEST_FIELDS & set(manifest)), "diagnostic-contract-on-legacy")
     require(manifest.get("context") == expected_context, "selected-context-mismatch")
     require(manifest.get("role_contract") == _contract_rows(role_contract),
             "selected-role-contract-mismatch")
-    require(manifest.get("required_layers_complete") is True
-            and manifest.get("source_bytes_bound") is True
+    require(manifest.get("source_bytes_bound") is True
             and manifest.get("selected_namespace_stable") is True,
             "selected-layer-incomplete")
     require(all(manifest.get(k) is False for k in (
         "complete_owner_state_claimed", "atomic_sqlite_snapshot_claimed",
-        "full_original_json_claimed", "raw_diagnostics_included",
+        "full_original_json_claimed",
         "raw_environment_included", "automatic_retry", "physical_acceptance",
         "human_acceptance", "release_authorized")), "selected-scope-escalation")
     require(manifest.get("native_effects_invoked_by_collector") == 0
             and manifest.get("upload_authorization") == "NOT_GRANTED_BY_COLLECTOR"
-            and manifest.get("lost_scope") == list(LOST_SCOPE), "selected-scope-mismatch")
+            and manifest.get("lost_scope") == list(LOST_SCOPE_V3 if v3 else LOST_SCOPE),
+            "selected-scope-mismatch")
+    if not v3:
+        require(manifest.get("raw_diagnostics_included") is False, "selected-scope-escalation")
     rows = manifest.get("members")
     require(type(rows) is list and 1 <= len(rows) <= MAX_FILES, "selected-member-list")
     counts, names = {}, set()
     for row in rows:
-        require(type(row) is dict and row.get("state") in STATES, "selected-member-state")
-        k = (row.get("phase"), row.get("layer"), row.get("role"))
+        require(type(row) is dict and type(row.get("state")) is str
+                and row["state"] in STATES, "selected-member-state")
+        require(type(row.get("kind")) is str
+                and (row["kind"] in ("original", "json-original", "json-projection")
+                     or (v3 and row["kind"] in DIAGNOSTIC_KINDS)), "selected-member-kind")
+        if not v3:
+            require(row.get("kind") not in DIAGNOSTIC_KINDS and "diagnostic_type" not in row,
+                    "diagnostic-member-on-legacy")
+        require(type(row.get("phase")) is str and row["phase"] in PHASES
+                and type(row.get("layer")) is str and row["layer"] in LAYERS
+                and type(row.get("role")) is str, "selected-member-role")
+        k = (row["phase"], row["layer"], row["role"])
         require(k in role_contract and type(row.get("required")) is bool, "selected-member-role")
         counts[k] = counts.get(k, 0) + 1
-        require(not row["required"] or row["state"] == "INCLUDED", "selected-required-missing")
+        require(not require_complete or not row["required"] or row["state"] == "INCLUDED",
+                "selected-required-missing")
         require(not excluded(member_path(row.get("relative_path"))), "selected-excluded-member")
+        require(type(row.get("root")) is str and LABEL.fullmatch(row["root"])
+                and row["root"] != "source", "selected-member-root")
+        if not require_complete and row["state"] != "INCLUDED":
+            require(row["state"] in ("REQUIRED_MISSING", "CAPTURE_FAILED", "CHANGED"),
+                    "selected-partial-member-state")
+            require(not ({"member", "retained_sha256", "retained_bytes", "original_bytes"} & set(row)),
+                    "selected-partial-unadmitted-payload")
+            unobserved = row.get("expected_sha256") is None and row.get("bytes") is None
+            require(unobserved or (type(row.get("expected_sha256")) is str
+                    and SHA.fullmatch(row["expected_sha256"])
+                    and type(row.get("bytes")) is int and 0 <= row["bytes"] <= MAX_FILE),
+                    "selected-partial-expected-identity")
+            require(type(row.get("code")) is str and LABEL.fullmatch(row["code"]),
+                    "selected-partial-failure-code")
         if row["state"] == "INCLUDED":
             member_path(row.get("member"))
             require(row["member"] not in names and SHA.fullmatch(row.get("retained_sha256", ""))
@@ -667,8 +873,13 @@ def validate_selected_manifest(manifest, *, expected_context, role_contract):
             require(all(r["required"] for r in rows
                         if (r["phase"], r["layer"], r["role"]) == key),
                     "selected-required-made-optional")
-    require(manifest.get("layers") == _layers(rows, role_contract, True),
+    computed_layers = _layers(rows, role_contract, True)
+    require(manifest.get("layers") == computed_layers,
             "selected-layer-contract")
+    complete = all(layer["complete"] for layer in computed_layers)
+    require(manifest.get("required_layers_complete") is complete,
+            "selected-global-completeness-mismatch")
+    require(not require_complete or complete, "selected-layer-incomplete")
     guards = manifest.get("absence_guards")
     require(type(guards) is list and len(guards) <= 128, "selected-absence-guards")
     guard_names = set()
@@ -676,6 +887,10 @@ def validate_selected_manifest(manifest, *, expected_context, role_contract):
     for row in guards:
         require(type(row) is dict and set(row) == {"root", "relative_path", "phase", "layer",
                 "role", "absent_before", "absent_after", "opened", "hashed"}, "selected-absence-fields")
+        require(type(row["phase"]) is str and row["phase"] in PHASES
+                and type(row["layer"]) is str and row["layer"] in LAYERS
+                and type(row["role"]) is str and type(row["root"]) is str,
+                "selected-absence-role")
         key = (row["phase"], row["layer"], row["role"])
         require(key in role_contract and role_contract[key][0] == 0, "selected-absence-role")
         name = (row["root"], row["relative_path"])
@@ -684,6 +899,16 @@ def validate_selected_manifest(manifest, *, expected_context, role_contract):
         require(not excluded(member_path(row["relative_path"]))
                 and row["absent_before"] is True and row["absent_after"] is True
                 and row["opened"] is False and row["hashed"] is False, "selected-absence-changed")
+    if v3:
+        _diagnostic_selection(rows, guards, diagnostic_contract)
+        included = any(r["kind"] in DIAGNOSTIC_KINDS and r["state"] == "INCLUDED" for r in rows)
+        require(manifest.get("raw_diagnostics_included") is included
+                and manifest.get("diagnostic_roster_complete") is
+                    _diagnostic_complete(rows, guards, diagnostic_contract, True),
+                "selected-diagnostic-completeness")
+        require(all(manifest.get(k) is False for k in ("diagnostic_eof_claimed",
+                "diagnostic_history_complete_claimed", "diagnostic_payloads_redacted")),
+                "selected-diagnostic-scope-escalation")
     for row in manifest.get("exclusions", []):
         require(row.get("state") == "EXCLUDED_BY_SCOPE"
                 and excluded(member_path(row.get("relative_path")))
@@ -729,8 +954,17 @@ def _selected_tar_framing(raw):
     raise SelectionError("selected-tar-footer")
 
 
-def inspect_selected_tar(raw, *, expected_context, role_contract, policies):
-    """Read a decrypted /2 TAR without extraction or opening retained SQLite."""
+def inspect_selected_tar(raw, *, expected_context, role_contract, policies,
+                         expected_diagnostic_contract=None, require_complete=True):
+    """Read exact selected bytes; partial /3 custody requires an explicit opt-in.
+
+    An independently admitted diagnostic roster is always required for /3.
+    Passing require_complete=False preserves incomplete flags and failed rows;
+    it does not weaken payload identities, policies or namespace/source guards.
+    """
+    require(type(require_complete) is bool, "selected-completeness-mode")
+    expected_diagnostic_contract = (None if expected_diagnostic_contract is None
+        else strict(canonical(expected_diagnostic_contract)))
     require(type(raw) is bytes and 0 < len(raw) <= MAX_TOTAL + 16 * 1024 * 1024,
             "selected-tar-budget")
     extensions = _selected_tar_framing(raw)
@@ -761,7 +995,12 @@ def inspect_selected_tar(raw, *, expected_context, role_contract, policies):
         require(manifest_info.size <= MAX_JSON, "selected-manifest-budget")
         manifest = strict(archive.extractfile(manifest_info).read())
         validate_selected_manifest(manifest, expected_context=expected_context,
-                                   role_contract=role_contract)
+                                   role_contract=role_contract,
+                                   expected_diagnostic_contract=expected_diagnostic_contract,
+                                   require_complete=require_complete)
+        if manifest["schema"] == MANIFEST_SCHEMA_V3:
+            _checked_diagnostic_contract(expected_diagnostic_contract, expected_context,
+                policies=policies, role_contract=role_contract)
         expected = {r["member"]: r for r in manifest["members"] if r["state"] == "INCLUDED"}
         require(set(names) == set(expected) | {"selected-evidence-manifest.json"},
                 "selected-tar-unlisted-member")
@@ -770,12 +1009,13 @@ def inspect_selected_tar(raw, *, expected_context, role_contract, policies):
             require(info.size == row["retained_bytes"], "selected-tar-size")
             data = archive.extractfile(info).read()
             require(sha(data) == row["retained_sha256"], "selected-tar-digest")
-            require(row["kind"] in ("original", "json-original", "json-projection"),
+            require(row["kind"] in ("original", "json-original", "json-projection")
+                    or (manifest["schema"] == MANIFEST_SCHEMA_V3 and row["kind"] in DIAGNOSTIC_KINDS),
                     "selected-tar-member-kind")
             if row["kind"] != "json-projection":
                 require(sha(data) == row["expected_sha256"] and len(data) == row["bytes"],
                         "selected-original-identity")
-            if row["kind"] == "json-original":
+            if row["kind"] in ("json-original", "diagnostic-json-original"):
                 require(row["policy"] in policies, "selected-policy-missing")
                 project(strict(data), policies[row["policy"]], exact=True)
             if row["kind"] == "json-projection":

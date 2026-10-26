@@ -55,6 +55,11 @@ class ReadbackError(ValueError):
     pass
 
 
+class BoundedProcessExitError(ReadbackError):
+    """Internal final-exit classification; never a supervision failure."""
+    pass
+
+
 def require(condition, reason):
     if not condition:
         raise ReadbackError(reason)
@@ -405,7 +410,8 @@ def run_bounded(argv, max_stdout, timeout_seconds=120, *, input_bytes=None, capt
     require(not overflow.is_set(), "readonly_decoder_output_budget")
     require(pipes_closed, "decoder_pipe_not_closed")
     require(not errors and stdin_complete, "readonly_decoder_pipe_error")
-    require(process.returncode == 0,
+    if process.returncode != 0:
+        raise BoundedProcessExitError(
             f"readonly_decoder_failed:{process.returncode}:{bytes(outputs[1]).decode('utf-8', 'replace')[:2000]}")
     return bytes(outputs[0]), {"exit_code": process.returncode,
                               "elapsed_seconds": terminal["elapsed_seconds"],

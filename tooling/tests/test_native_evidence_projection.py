@@ -504,6 +504,527 @@ class SelectionContractTests(unittest.TestCase):
         self.assertTrue(proof["source_bytes_bound"])
         self.assertEqual(proof["native_effects"],0)
 
+class DiagnosticSelectionV3Tests(unittest.TestCase):
+    """Opaque diagnostic custody is not a producer EOF or acceptance oracle."""
+    def setUp(self):
+        self.files = {("owner", "media.mp4"): RAW, ("owner", "terminal.json"): TERMINAL}
+        self.spec = spec_for(self.files)
+        self.spec["schema"] = n.SPEC_SCHEMA_V3
+        self.roles = dict(ROLES)
+        self.contract = {"schema": n.DIAGNOSTIC_CONTRACT_SCHEMA,
+                         "context": dict(CTX), "entries": []}
+        for subtype, data in (("stdout", b"stdout-prefix\0" + SECRET.encode()),
+                ("stderr", b"stderr-prefix\xff"), ("stdin", b""),
+                ("typed-terminal", n.canonical({"native_outcome": "UNKNOWN",
+                    "automatic_retry": False, "process": {"pid": 123, "start_ticks": "9"}}))):
+            terminal = subtype == "typed-terminal"
+            path = "attempt00/" + subtype + (".original.json" if terminal else ".original.bin")
+            role = "diagnostic-" + subtype
+            policy = "terminal-v2" if terminal else None
+            self.files[("owner", path)] = data
+            self.roles[("original", "attempt-custody", role)] = (0, 1)
+            self.contract["entries"].append({"root": "owner", "relative_path": path,
+                "phase": "original", "layer": "attempt-custody", "role": role,
+                "type": subtype, "maximum": n.DIAGNOSTIC_MAXIMUM[subtype], "policy": policy})
+            self.spec["members"].append({"root": "owner", "relative_path": path,
+                "phase": "original", "layer": "attempt-custody", "role": role,
+                "kind": "diagnostic-json-original" if terminal else "diagnostic-original",
+                "diagnostic_type": subtype, "required": True, "expected_sha256": n.sha(data),
+                "bytes": len(data), "policy": policy})
+        self.handles = MemoryHandles(self.files)
+
+    def capture(self, *, spec=None, contract=None, roles=None):
+        with mock.patch.object(n, "RootHandles", return_value=self.handles), \
+             mock.patch.object(n, "_verify_sources") as sources:
+            result = n.capture_selected_originals(spec or self.spec, policies=POLICIES,
+                role_contract=roles or self.roles,
+                diagnostic_contract=self.contract if contract is None else contract)
+            self.assertEqual(sources.call_count, 2)
+            return result
+
+    def inspect(self, raw, *, contract=None):
+        return n.inspect_selected_tar(raw, expected_context=CTX, role_contract=self.roles,
+            policies=POLICIES, expected_diagnostic_contract=self.contract if contract is None else contract)
+
+    def reject_before_open(self, *, spec=None, contract=None, roles=None):
+        with mock.patch.object(n, "RootHandles") as opened:
+            with self.assertRaises(n.SelectionError):
+                n.capture_selected_originals(spec or self.spec, policies=POLICIES,
+                    role_contract=roles or self.roles,
+                    diagnostic_contract=self.contract if contract is None else contract)
+            opened.assert_not_called()
+
+    def guard(self, subtype):
+        entry = next(e for e in self.contract["entries"] if e["type"] == subtype)
+        path = (entry["root"], entry["relative_path"])
+        self.spec["members"] = [r for r in self.spec["members"]
+                                if (r["root"], r["relative_path"]) != path]
+        self.spec.setdefault("absence_guards", []).append({k: entry[k]
+            for k in ("root", "relative_path", "phase", "layer", "role")})
+        self.handles.files.pop(path, None)
+        return path
+
+    def test_complete_four_subtypes_retain_exact_bytes_without_eof_or_acceptance(self):
+        raw, manifest = self.capture()
+        self.assertEqual(manifest["schema"], n.MANIFEST_SCHEMA_V3)
+        self.assertEqual(self.inspect(raw), manifest)
+        self.assertEqual(manifest["diagnostic_contract"], self.contract)
+        self.assertEqual(manifest["diagnostic_contract_sha256"], n.sha(n.canonical(self.contract)))
+        self.assertTrue(manifest["raw_diagnostics_included"])
+        self.assertTrue(manifest["diagnostic_roster_complete"])
+        self.assertIn("unselected-raw-diagnostics", manifest["lost_scope"])
+        self.assertNotIn("raw-diagnostics", manifest["lost_scope"])
+        for key in ("diagnostic_eof_claimed", "diagnostic_history_complete_claimed",
+                    "diagnostic_payloads_redacted", "raw_environment_included",
+                    "physical_acceptance", "human_acceptance", "automatic_retry"):
+            self.assertIs(manifest[key], False)
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            for row in manifest["members"]:
+                if row["kind"] in n.DIAGNOSTIC_KINDS:
+                    self.assertEqual(archive.extractfile(row["member"]).read(),
+                                     self.files[(row["root"], row["relative_path"])])
+        self.assertIn(SECRET.encode(), raw)  # Original opaque bytes, never a redaction claim.
+
+    def test_v3_requires_nonempty_external_contract_before_capture_and_at_intake(self):
+        for contract in (None, {}, {**self.contract, "entries": []}):
+            with self.subTest(contract=contract), mock.patch.object(n, "RootHandles") as opened:
+                with self.assertRaises(n.SelectionError):
+                    n.capture_selected_originals(self.spec, policies=POLICIES,
+                        role_contract=self.roles, diagnostic_contract=contract)
+                opened.assert_not_called()
+        raw, _ = self.capture()
+        with self.assertRaises(n.SelectionError):
+            n.inspect_selected_tar(raw, expected_context=CTX, role_contract=self.roles, policies=POLICIES)
+
+    def test_legacy_rejects_contract_extensions_and_diagnostic_kinds(self):
+        old = spec_for()
+        self.reject_before_open(spec=old, roles=ROLES)
+        changed = copy.deepcopy(self.spec); changed["schema"] = n.SPEC_SCHEMA
+        with mock.patch.object(n, "RootHandles") as opened, self.assertRaises(n.SelectionError):
+            n.capture_selected_originals(changed, policies=POLICIES, role_contract=self.roles)
+        opened.assert_not_called()
+        with mock.patch.object(n, "RootHandles", return_value=self.handles), \
+             mock.patch.object(n, "_verify_sources"):
+            raw, manifest = n.capture_selected_originals(old, policies=POLICIES, role_contract=ROLES)
+        self.assertFalse(set(manifest) & n.DIAGNOSTIC_MANIFEST_FIELDS)
+        self.assertEqual(manifest["lost_scope"], list(n.LOST_SCOPE))
+        with self.assertRaises(n.SelectionError):
+            n.inspect_selected_tar(raw, expected_context=CTX, role_contract=ROLES,
+                policies=POLICIES, expected_diagnostic_contract=self.contract)
+        forged = rewrite_tar(raw, lambda m: m.update(diagnostic_contract=self.contract))
+        with self.assertRaises(n.SelectionError):
+            n.inspect_selected_tar(forged, expected_context=CTX, role_contract=ROLES, policies=POLICIES)
+
+    def test_contract_cannot_transfer_between_sources_runs_attempts_or_scenarios(self):
+        for key, value in (("source_sha", "3"*40), ("semwright_sha", "4"*40),
+                ("run_id", "124"), ("run_attempt", "2"), ("scenario", "other-fixture")):
+            contract = copy.deepcopy(self.contract); contract["context"][key] = value
+            with self.subTest(key=key): self.reject_before_open(contract=contract)
+        raw, _ = self.capture()
+        contract = copy.deepcopy(self.contract); contract["context"]["run_id"] = "124"
+        with self.assertRaises(n.SelectionError): self.inspect(raw, contract=contract)
+
+    def test_contract_fields_types_policies_and_maxima_are_closed(self):
+        for key, value in (("maximum", True), ("maximum", 262145), ("maximum", 0),
+                ("type", "environment"), ("layer", "readback"), ("policy", "terminal-v2")):
+            contract = copy.deepcopy(self.contract); contract["entries"][0][key] = value
+            with self.subTest(key=key, value=value): self.reject_before_open(contract=contract)
+        for policy in (None, "unregistered-policy"):
+            contract = copy.deepcopy(self.contract); contract["entries"][-1]["policy"] = policy
+            with self.subTest(policy=policy): self.reject_before_open(contract=contract)
+        contract = copy.deepcopy(self.contract); contract["extra"] = True
+        self.reject_before_open(contract=contract)
+        contract = copy.deepcopy(self.contract); contract["entries"].append(contract["entries"][0])
+        self.reject_before_open(contract=contract)
+
+    def test_every_contract_path_must_be_selected_or_guarded_once(self):
+        spec = copy.deepcopy(self.spec); spec["members"].pop()
+        self.reject_before_open(spec=spec)
+        path = self.guard("stdin")
+        spec = copy.deepcopy(self.spec); spec["absence_guards"] *= 2
+        self.reject_before_open(spec=spec)
+        spec = copy.deepcopy(self.spec); spec["absence_guards"] = []
+        self.reject_before_open(spec=spec)
+        spec = copy.deepcopy(self.spec)
+        row = copy.deepcopy(spec["members"][2]); row["relative_path"] = "attempt00/extra.bin"
+        spec["members"].append(row)
+        roles = dict(self.roles); roles[(row["phase"], row["layer"], row["role"])] = (0, 2)
+        self.reject_before_open(spec=spec, roles=roles)
+        self.assertNotIn(path, self.handles.reads)
+
+    def test_reserved_member_cannot_downgrade_type_or_move_scope(self):
+        for kind in ("original", "json-original"):
+            spec = copy.deepcopy(self.spec); row = spec["members"][2]
+            row["kind"] = kind; row.pop("diagnostic_type")
+            if kind == "json-original": row["policy"] = "terminal-v2"
+            with self.subTest(kind=kind): self.reject_before_open(spec=spec)
+        spec = copy.deepcopy(self.spec); spec["members"][2]["diagnostic_type"] = "stderr"
+        self.reject_before_open(spec=spec)
+        spec = copy.deepcopy(self.spec); spec["members"][2]["phase"] = "edited"
+        roles = dict(self.roles); roles[("edited", "attempt-custody", "diagnostic-stdout")] = (0, 1)
+        self.reject_before_open(spec=spec, roles=roles)
+
+    def test_present_diagnostic_is_required_even_when_its_role_allows_absence(self):
+        spec = copy.deepcopy(self.spec); spec["members"][2]["required"] = False
+        self.reject_before_open(spec=spec)
+
+    def test_absence_is_observed_bilaterally_without_open_or_hash(self):
+        path = self.guard("stdin")
+        raw, manifest = self.capture()
+        self.assertEqual(self.inspect(raw), manifest)
+        self.assertTrue(manifest["diagnostic_roster_complete"])
+        self.assertEqual(self.handles.stats.count(path), 2)
+        self.assertNotIn(path, self.handles.reads)
+        self.assertEqual({k: manifest["absence_guards"][0][k]
+            for k in ("absent_before", "absent_after", "opened", "hashed")},
+            {"absent_before": True, "absent_after": True, "opened": False, "hashed": False})
+
+    def test_all_diagnostics_observed_absent_do_not_claim_raw_payloads(self):
+        for subtype in n.DIAGNOSTIC_MAXIMUM: self.guard(subtype)
+        raw, manifest = self.capture()
+        self.assertEqual(self.inspect(raw), manifest)
+        self.assertFalse(manifest["raw_diagnostics_included"])
+        self.assertTrue(manifest["diagnostic_roster_complete"])
+        self.assertFalse(manifest["diagnostic_history_complete_claimed"])
+
+    def test_guarded_diagnostic_present_before_capture_blocks_completeness(self):
+        path = self.guard("stdin"); self.handles.files[path] = self.files[path]
+        raw, manifest = self.capture()
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+        self.assertFalse(manifest["required_layers_complete"])
+        self.assertNotIn(path, self.handles.reads)
+        with self.assertRaises(n.SelectionError): self.inspect(raw)
+
+    def test_guarded_diagnostic_appearing_late_is_not_captured_or_admitted(self):
+        path = self.guard("stdin")
+        self.handles.hook = lambda: self.handles.files.update({path: self.files[path]})
+        raw, manifest = self.capture()
+        self.assertTrue(manifest["absence_guards"][0]["absent_before"])
+        self.assertFalse(manifest["absence_guards"][0]["absent_after"])
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+        self.assertNotIn(path, self.handles.reads)
+        with self.assertRaises(n.SelectionError): self.inspect(raw)
+
+    def test_missing_selected_diagnostic_cannot_be_relabelled_as_absence(self):
+        row = self.spec["members"][2]
+        self.handles.files.pop((row["root"], row["relative_path"]))
+        raw, manifest = self.capture()
+        self.assertEqual(manifest["members"][2]["state"], "REQUIRED_MISSING")
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+        with self.assertRaises(n.SelectionError): self.inspect(raw)
+
+    def test_changed_stream_hash_is_rejected_with_original_selection_retained(self):
+        row = self.spec["members"][2]; key = (row["root"], row["relative_path"])
+        self.handles.files[key] = b"X" * row["bytes"]
+        raw, manifest = self.capture()
+        self.assertEqual(manifest["members"][2]["state"], "CHANGED")
+        self.assertEqual(manifest["members"][2]["expected_sha256"], row["expected_sha256"])
+        with self.assertRaises(n.SelectionError): self.inspect(raw)
+
+    def test_diagnostic_byte_budget_is_checked_before_any_read(self):
+        for index, limit in ((2, 262144), (4, 65536), (5, 65536)):
+            spec = copy.deepcopy(self.spec); spec["members"][index]["bytes"] = limit + 1
+            with self.subTest(index=index): self.reject_before_open(spec=spec)
+
+    def test_postread_changed_diagnostic_remains_truthfully_present_but_incomplete(self):
+        for subtype in ("stderr", "stdin", "typed-terminal"): self.guard(subtype)
+        row = self.spec["members"][2]
+        self.handles.changed_after_read = (row["root"], row["relative_path"])
+        raw, manifest = self.capture()
+        changed = manifest["members"][2]
+        self.assertEqual(changed["state"], "CHANGED")
+        self.assertTrue(manifest["raw_diagnostics_included"])
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+        self.assertFalse(manifest["required_layers_complete"])
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            self.assertEqual(archive.extractfile(changed["member"]).read(),
+                             self.files[(row["root"], row["relative_path"])])
+        with self.assertRaises(n.SelectionError): self.inspect(raw)
+
+    def test_contract_is_frozen_before_payloads_and_cannot_be_changed_by_caller(self):
+        expected = copy.deepcopy(self.contract)
+        def mutate(): self.contract["entries"][0]["type"] = "environment"
+        self.handles.hook = mutate
+        raw, manifest = self.capture()
+        self.assertEqual(manifest["diagnostic_contract"], expected)
+        self.assertEqual(self.inspect(raw, contract=expected), manifest)
+
+    def test_typed_terminal_requires_strict_closed_json_without_success_promotion(self):
+        invalid = [n.canonical({"native_outcome": "UNKNOWN", "automatic_retry": False, "extra": True}),
+            n.canonical({"native_outcome": "UNKNOWN", "automatic_retry": 0}),
+            n.canonical({"native_outcome": "UNKNOWN", "automatic_retry": False,
+                         "process": {"pid": True, "start_ticks": "9"}}),
+            b'{"native_outcome":"UNKNOWN","native_outcome":"UNKNOWN","automatic_retry":false}\n']
+        for data in invalid:
+            self.setUp()
+            row = self.spec["members"][-1]; key = (row["root"], row["relative_path"])
+            row.update(expected_sha256=n.sha(data), bytes=len(data))
+            self.handles.files[key] = data
+            mark = self.handles.marks[key]; self.handles.marks[key] = (*mark[:5], len(data), *mark[6:])
+            with self.subTest(data=data):
+                raw, manifest = self.capture()
+                self.assertEqual(manifest["members"][-1]["state"], "CAPTURE_FAILED")
+                self.assertFalse(manifest["diagnostic_roster_complete"])
+                with self.assertRaises(n.SelectionError): self.inspect(raw)
+
+    def test_self_consistent_manifest_contract_cannot_replace_external_authority(self):
+        raw, _ = self.capture()
+        def forge(manifest):
+            manifest["diagnostic_contract"]["entries"][0]["type"] = "stderr"
+            manifest["diagnostic_contract_sha256"] = n.sha(n.canonical(manifest["diagnostic_contract"]))
+            manifest["members"][2]["diagnostic_type"] = "stderr"
+        with self.assertRaisesRegex(n.SelectionError, "selected-diagnostic-contract-mismatch"):
+            self.inspect(rewrite_tar(raw, forge))
+
+    def test_manifest_presence_completeness_and_scope_flags_cannot_be_forged(self):
+        raw, _ = self.capture()
+        for key, value in (("raw_diagnostics_included", False), ("raw_diagnostics_included", 1),
+                ("diagnostic_roster_complete", False), ("diagnostic_eof_claimed", True),
+                ("diagnostic_payloads_redacted", True), ("diagnostic_history_complete_claimed", True),
+                ("lost_scope", list(n.LOST_SCOPE)), ("physical_acceptance", True)):
+            with self.subTest(key=key), self.assertRaises(n.SelectionError):
+                self.inspect(rewrite_tar(raw, lambda manifest: manifest.update({key: value})))
+
+    def test_diagnostic_original_hash_and_canonical_tar_path_remain_bound(self):
+        raw, _ = self.capture()
+        def rehash(manifest): manifest["members"][2]["expected_sha256"] = "0" * 64
+        with self.assertRaisesRegex(n.SelectionError, "selected-original-identity"):
+            self.inspect(rewrite_tar(raw, rehash))
+        def rename(manifest): manifest["members"][2]["member"] = "selected/original/attempt-custody/owner/other.bin"
+        with self.assertRaisesRegex(n.SelectionError, "diagnostic-tar-path"):
+            self.inspect(rewrite_tar(raw, rename))
+
+    def test_diagnostic_contract_never_permits_excluded_or_unsafe_paths(self):
+        for path in ("../outside", "runtime/diag.bin", "logs/diag.bin", "environ", "diag.stderr"):
+            spec, contract = copy.deepcopy(self.spec), copy.deepcopy(self.contract)
+            spec["members"][2]["relative_path"] = path
+            contract["entries"][0]["relative_path"] = path
+            with self.subTest(path=path): self.reject_before_open(spec=spec, contract=contract)
+        spec, contract = copy.deepcopy(self.spec), copy.deepcopy(self.contract)
+        spec["members"][2]["root"] = "source"; contract["entries"][0]["root"] = "source"
+        self.reject_before_open(spec=spec, contract=contract)
+
+    def test_source_postcheck_failure_keeps_payload_presence_without_completeness(self):
+        with mock.patch.object(n, "RootHandles", return_value=self.handles), \
+             mock.patch.object(n, "_verify_sources", side_effect=[None, n.SelectionError("source-changed")]):
+            raw, manifest = n.capture_selected_originals(self.spec, policies=POLICIES,
+                role_contract=self.roles, diagnostic_contract=self.contract)
+        self.assertTrue(manifest["raw_diagnostics_included"])
+        self.assertFalse(manifest["source_bytes_bound"])
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+        with self.assertRaises(n.SelectionError): self.inspect(raw)
+
+
+class PartialCustodyV3Tests(unittest.TestCase):
+    """Partial byte custody preserves failures; it is never a native PASS."""
+    setUp = DiagnosticSelectionV3Tests.setUp
+    capture = DiagnosticSelectionV3Tests.capture
+    guard = DiagnosticSelectionV3Tests.guard
+
+    def inspect_partial(self, raw, *, contract=None):
+        return n.inspect_selected_tar(raw, expected_context=CTX, role_contract=self.roles,
+            policies=POLICIES, expected_diagnostic_contract=self.contract if contract is None else contract,
+            require_complete=False)
+
+    def missing_media(self):
+        self.handles.files.pop(("owner", "media.mp4"))
+        self.spec["members"][0].update(expected_sha256=None, bytes=None)
+
+    def test_partial_missing_required_outputs_keep_roles_rows_and_original_diagnostics(self):
+        self.missing_media()
+        self.roles[("original", "readback", "decoder")] = (1, 1)
+        self.spec["members"].append({"root": "owner", "relative_path": "decoded.frames.bin",
+            "phase": "original", "layer": "readback", "role": "decoder", "kind": "original",
+            "required": True, "expected_sha256": None, "bytes": None, "policy": None})
+        raw, manifest = self.capture()
+        self.assertEqual(self.inspect_partial(raw), manifest)
+        self.assertEqual(manifest["role_contract"], n._contract_rows(self.roles))
+        missing = [r for r in manifest["members"] if r["role"] in ("media", "decoder")]
+        self.assertEqual(len(missing), 2)
+        self.assertTrue(all(r["required"] is True and r["state"] == "REQUIRED_MISSING"
+                            and "member" not in r for r in missing))
+        self.assertFalse(manifest["required_layers_complete"])
+        self.assertTrue(manifest["diagnostic_roster_complete"])
+        self.assertTrue(manifest["raw_diagnostics_included"])
+        self.assertEqual(manifest["absence_guards"], [])
+        for key in ("physical_acceptance", "human_acceptance", "release_authorized",
+                    "automatic_retry", "diagnostic_eof_claimed"):
+            self.assertIs(manifest[key], False)
+        with self.assertRaises(n.SelectionError):
+            n.inspect_selected_tar(raw, expected_context=CTX, role_contract=self.roles,
+                policies=POLICIES, expected_diagnostic_contract=self.contract)
+
+    def test_partial_missing_selected_diagnostic_stays_required_and_incomplete(self):
+        row = self.spec["members"][2]
+        self.handles.files.pop((row["root"], row["relative_path"]))
+        row.update(expected_sha256=None, bytes=None)
+        raw, manifest = self.capture()
+        self.assertEqual(self.inspect_partial(raw), manifest)
+        missing = manifest["members"][2]
+        self.assertIs(missing["required"], True)
+        self.assertEqual(missing["state"], "REQUIRED_MISSING")
+        self.assertFalse(manifest["required_layers_complete"])
+        self.assertFalse(manifest["diagnostic_roster_complete"])
+        self.assertTrue(manifest["raw_diagnostics_included"])
+        self.assertEqual(manifest["absence_guards"], [])
+
+    def test_partial_mode_is_explicit_typed_and_unavailable_to_legacy(self):
+        raw, manifest = self.capture()
+        self.assertEqual(self.inspect_partial(raw), manifest)
+        for mode in (None, 0, 1, "false", [], {}):
+            with self.subTest(mode=mode), self.assertRaisesRegex(n.SelectionError,
+                    "selected-completeness-mode"):
+                n.inspect_selected_tar(raw, expected_context=CTX, role_contract=self.roles,
+                    policies=POLICIES, expected_diagnostic_contract=self.contract,
+                    require_complete=mode)
+        files = {("owner", "media.mp4"): RAW, ("owner", "terminal.json"): TERMINAL}
+        with mock.patch.object(n, "RootHandles", return_value=MemoryHandles(files)), \
+             mock.patch.object(n, "_verify_sources"):
+            legacy, _ = n.capture_selected_originals(spec_for(files), policies=POLICIES,
+                                                     role_contract=ROLES)
+        with self.assertRaisesRegex(n.SelectionError, "partial-custody-on-legacy"):
+            n.inspect_selected_tar(legacy, expected_context=CTX, role_contract=ROLES,
+                                    policies=POLICIES, require_complete=False)
+
+    def test_partial_cannot_omit_downgrade_or_replace_required_role_with_guard(self):
+        self.missing_media()
+        raw, _ = self.capture()
+        def omit(m): m["members"] = [r for r in m["members"] if r["role"] != "media"]
+        def downgrade(m): m["members"][0]["required"] = False
+        def replace(m):
+            row = m["members"].pop(0)
+            m["absence_guards"].append({**{k: row[k] for k in
+                ("root", "relative_path", "phase", "layer", "role")},
+                "absent_before": True, "absent_after": True, "opened": False, "hashed": False})
+        for mutation in (omit, downgrade, replace):
+            with self.subTest(mutation=mutation.__name__), self.assertRaises(n.SelectionError):
+                self.inspect_partial(rewrite_tar(raw, mutation))
+
+    def test_optional_capture_failure_cannot_forge_global_complete_on_either_schema(self):
+        for version in (2, 3):
+            self.setUp()
+            spec = copy.deepcopy(self.spec)
+            roles, contract = dict(self.roles), self.contract
+            if version == 2:
+                spec["schema"] = n.SPEC_SCHEMA
+                spec["members"] = spec["members"][:2]
+                roles, contract = dict(ROLES), None
+            roles[("original", "persistence", "optional-output")] = (0, 1)
+            spec["members"].append({"root": "owner", "relative_path": "optional.bin",
+                "phase": "original", "layer": "persistence", "role": "optional-output",
+                "kind": "original", "required": False, "expected_sha256": None,
+                "bytes": None, "policy": None})
+            with mock.patch.object(n, "RootHandles", return_value=self.handles), \
+                 mock.patch.object(n, "_verify_sources"):
+                _, manifest = n.capture_selected_originals(spec, policies=POLICIES,
+                    role_contract=roles, diagnostic_contract=contract)
+            self.assertEqual(manifest["members"][-1]["state"], "CAPTURE_FAILED")
+            self.assertFalse(manifest["required_layers_complete"])
+            self.assertFalse(next(r for r in manifest["layers"]
+                                  if r["layer"] == "persistence")["complete"])
+            forged = copy.deepcopy(manifest)
+            forged["required_layers_complete"] = True  # The only changed field.
+            self.assertEqual({k: v for k, v in forged.items() if k != "required_layers_complete"},
+                             {k: v for k, v in manifest.items() if k != "required_layers_complete"})
+            with self.subTest(version=version), self.assertRaisesRegex(n.SelectionError,
+                    "selected-global-completeness-mismatch"):
+                n.validate_selected_manifest(forged, expected_context=CTX, role_contract=roles,
+                                             expected_diagnostic_contract=contract)
+            with self.assertRaises(n.SelectionError):
+                n.validate_selected_manifest(manifest, expected_context=CTX, role_contract=roles,
+                                             expected_diagnostic_contract=contract)
+            if version == 3:
+                self.assertEqual(n.validate_selected_manifest(manifest, expected_context=CTX,
+                    role_contract=roles, expected_diagnostic_contract=contract,
+                    require_complete=False), manifest)
+                with self.assertRaisesRegex(n.SelectionError, "selected-global-completeness-mismatch"):
+                    n.validate_selected_manifest(forged, expected_context=CTX, role_contract=roles,
+                        expected_diagnostic_contract=contract, require_complete=False)
+
+    def test_global_complete_false_or_integer_is_not_equivalent_to_recomputed_true(self):
+        _, manifest = self.capture()
+        for value in (False, 1, 0, None):
+            changed = copy.deepcopy(manifest); changed["required_layers_complete"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(n.SelectionError,
+                    "selected-global-completeness-mismatch"):
+                n.validate_selected_manifest(changed, expected_context=CTX, role_contract=self.roles,
+                    expected_diagnostic_contract=self.contract, require_complete=False)
+
+    def test_partial_keeps_external_roster_and_retained_payload_identity_checks(self):
+        self.missing_media()
+        raw, _ = self.capture()
+        with self.assertRaisesRegex(n.SelectionError, "diagnostic-contract-required"):
+            n.inspect_selected_tar(raw, expected_context=CTX, role_contract=self.roles,
+                                    policies=POLICIES, require_complete=False)
+        foreign = copy.deepcopy(self.contract)
+        foreign["entries"][0]["type"] = "stderr"
+        with self.assertRaisesRegex(n.SelectionError, "selected-diagnostic-contract-mismatch"):
+            self.inspect_partial(raw, contract=foreign)
+        def change(name, data):
+            return data + b"X" if name.endswith("stdout.original.bin") else data
+        with self.assertRaises(n.SelectionError):
+            self.inspect_partial(rewrite_tar(raw, mutate_payload=change))
+        def forged_payload(m):
+            row = m["members"][2]
+            row.update(state="CAPTURE_FAILED", code="selected-capture-failed")
+            m["layers"] = n._layers(m["members"], self.roles, True)
+            m["diagnostic_roster_complete"] = False
+        with self.assertRaisesRegex(n.SelectionError, "selected-partial-unadmitted-payload"):
+            self.inspect_partial(rewrite_tar(raw, forged_payload))
+
+    def test_partial_does_not_admit_changed_namespace_source_or_absence_guards(self):
+        for failure in ("postread", "source", "guard"):
+            self.setUp()
+            if failure == "postread":
+                row = self.spec["members"][2]
+                self.handles.changed_after_read = (row["root"], row["relative_path"])
+                raw, manifest = self.capture()
+                self.assertTrue(manifest["raw_diagnostics_included"])
+                self.assertIn("member", manifest["members"][2])
+            elif failure == "source":
+                with mock.patch.object(n, "RootHandles", return_value=self.handles), \
+                     mock.patch.object(n, "_verify_sources", side_effect=[None,
+                         n.SelectionError("source-changed")]):
+                    raw, manifest = n.capture_selected_originals(self.spec, policies=POLICIES,
+                        role_contract=self.roles, diagnostic_contract=self.contract)
+                self.assertFalse(manifest["source_bytes_bound"])
+            else:
+                path = self.guard("stdin")
+                self.handles.hook = lambda: self.handles.files.update({path: self.files[path]})
+                raw, manifest = self.capture()
+                self.assertFalse(manifest["absence_guards"][0]["absent_after"])
+            with self.subTest(failure=failure), self.assertRaises(n.SelectionError):
+                self.inspect_partial(raw)
+
+    def test_nonstring_phase_and_kind_reject_as_selection_error_before_capture_io(self):
+        for field, value in (("phase", []), ("phase", {}), ("kind", [])):
+            spec = copy.deepcopy(self.spec); spec["members"][0][field] = value
+            with self.subTest(field=field, value=value), \
+                 mock.patch.object(n, "RootHandles") as opened:
+                with self.assertRaises(n.SelectionError):
+                    n.capture_selected_originals(spec, policies=POLICIES, role_contract=self.roles,
+                                                 diagnostic_contract=self.contract)
+                opened.assert_not_called()
+        for value in ([], {}):
+            contract = copy.deepcopy(self.contract); contract["entries"][0]["phase"] = value
+            with self.subTest(contract_phase=value), mock.patch.object(n, "RootHandles") as opened:
+                with self.assertRaises(n.SelectionError):
+                    n.capture_selected_originals(self.spec, policies=POLICIES,
+                        role_contract=self.roles, diagnostic_contract=contract)
+                opened.assert_not_called()
+
+    def test_nonstring_manifest_phase_and_kind_reject_with_typed_errors(self):
+        raw, _ = self.capture()
+        for field, value in (("phase", []), ("phase", {}), ("kind", [])):
+            def mutate(m): m["members"][0][field] = value
+            for partial in (False, True):
+                with self.subTest(field=field, value=value, partial=partial), \
+                     self.assertRaises(n.SelectionError):
+                    n.inspect_selected_tar(rewrite_tar(raw, mutate), expected_context=CTX,
+                        role_contract=self.roles, policies=POLICIES,
+                        expected_diagnostic_contract=self.contract, require_complete=not partial)
+
+
 @unittest.skipUnless(os.name == "posix" and hasattr(os,"O_NOFOLLOW"),
                      "actual Linux openat/Git cases run in GH Actions, not Windows authoring host")
 class LinuxFilesystemTests(unittest.TestCase):
@@ -576,6 +1097,53 @@ class LinuxFilesystemTests(unittest.TestCase):
         nested = self.source/"owner"; nested.mkdir(mode=0o700)
         self.spec["roots"]["owner"] = str(nested)
         with self.assertRaisesRegex(n.SelectionError,"overlapping-roots"): self.capture()
+
+    def diagnostic_fixture(self):
+        data = b"explicit-stream\0" + SECRET.encode()
+        path = "capture.stdout.bin"
+        (self.owner/path).write_bytes(data)
+        self.spec["schema"] = n.SPEC_SCHEMA_V3
+        self.spec["members"].append({"root": "owner", "relative_path": path,
+            "phase": "original", "layer": "attempt-custody", "role": "diagnostic-stdout",
+            "kind": "diagnostic-original", "diagnostic_type": "stdout", "required": True,
+            "expected_sha256": n.sha(data), "bytes": len(data), "policy": None})
+        roles = {**ROLES, ("original", "attempt-custody", "diagnostic-stdout"): (0, 1)}
+        contract = {"schema": n.DIAGNOSTIC_CONTRACT_SCHEMA, "context": dict(self.spec["context"]),
+            "entries": [{"root": "owner", "relative_path": path, "phase": "original",
+                "layer": "attempt-custody", "role": "diagnostic-stdout", "type": "stdout",
+                "maximum": 262144, "policy": None}]}
+        return data, path, roles, contract
+
+    def test_v3_actual_handles_retain_only_registered_diagnostic_original(self):
+        data, path, roles, contract = self.diagnostic_fixture()
+        raw, manifest = n.capture_selected_originals(self.spec, policies=POLICIES,
+            role_contract=roles, diagnostic_contract=contract)
+        self.assertTrue(manifest["diagnostic_roster_complete"])
+        self.assertTrue(manifest["raw_diagnostics_included"])
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            row = manifest["members"][-1]
+            self.assertEqual(row["relative_path"], path)
+            self.assertEqual(archive.extractfile(row["member"]).read(), data)
+        self.assertEqual(n.inspect_selected_tar(raw, expected_context=self.spec["context"],
+            role_contract=roles, policies=POLICIES, expected_diagnostic_contract=contract), manifest)
+
+    def test_v3_diagnostic_kind_does_not_bypass_real_symlink_or_hardlink_guards(self):
+        _, path, roles, contract = self.diagnostic_fixture()
+        target = self.owner/path
+        for link in ("symlink", "hardlink"):
+            target.unlink()
+            if link == "symlink": target.symlink_to(self.owner/"runtime/motionwright.session")
+            else: os.link(self.owner/"runtime/motionwright.session", target)
+            with self.subTest(link=link):
+                raw, manifest = n.capture_selected_originals(self.spec, policies=POLICIES,
+                    role_contract=roles, diagnostic_contract=contract)
+                self.assertEqual(manifest["members"][-1]["state"], "CAPTURE_FAILED")
+                self.assertFalse(manifest["diagnostic_roster_complete"])
+                self.assertFalse(manifest["raw_diagnostics_included"])
+                self.assertNotIn(SECRET.encode(), raw)
+                with self.assertRaises(n.SelectionError):
+                    n.inspect_selected_tar(raw, expected_context=self.spec["context"],
+                        role_contract=roles, policies=POLICIES, expected_diagnostic_contract=contract)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

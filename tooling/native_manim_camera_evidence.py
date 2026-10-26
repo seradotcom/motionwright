@@ -366,7 +366,7 @@ def verified_publication(root, source_sha, semwright_sha, sealed_originals, *, f
 class CameraCustody:
     """Retain the one invocation's outcome before later observation or cleanup."""
     def __init__(self, owner, evidence, seal_path, recipient, context, *, engine=None, profile="camera"):
-        require(profile in ("camera", "editable"), "native_custody_profile")
+        require(profile in ("camera", "editable", "graph"), "native_custody_profile")
         self.profile = profile
         self.engine = engine or custody_module()
         self.engine.public_key(recipient)
@@ -430,6 +430,12 @@ class CameraCustody:
             "automatic_retry": False,
             "source_or_human_acceptance": False,
         }
+        if self.profile == "graph" and original is not None:
+            owner_envelope = getattr(original, "original_envelope", None)
+            if owner_envelope is not None:
+                # Preserve the whole original SDK envelope even if separate
+                # stream custody failed. This remains private, not a retry.
+                terminal["original_graph_owner_envelope"] = owner_envelope
         try:
             self.engine.new_json(self.evidence / "original-terminal.json", terminal)
         except BaseException as error:

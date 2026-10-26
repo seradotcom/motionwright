@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import pathlib
 import re
@@ -164,7 +165,20 @@ for path in iter_source_files(ROOT):
             "crates/storage/src/cas_retention_process_tests.rs",
             "crates/driver-manim-community/src/bin/runtime_runner.rs",
         }
-        if any(token in text for token in process_tokens) and rel not in process_allowlist:
+        # Exact reviewed source: the bounded FIFO child exists only in cfg(test).
+        # Keep the production file outside the path-only process allowlist.
+        # read_text normalizes newlines; the reviewed UTF-8 Git source uses LF.
+        process_test_fixture_sources = {
+            "crates/native/src/production/brand_fonts.rs":
+                "c5629640cd459549a5702454248a5043074ccff802e06c6b59ed135901d59a63",
+        }
+        reviewed_test_fixture = (
+            rel in process_test_fixture_sources
+            and hashlib.sha256(text.encode("utf-8")).hexdigest()
+                == process_test_fixture_sources[rel]
+        )
+        if (any(token in text for token in process_tokens)
+                and rel not in process_allowlist and not reviewed_test_fixture):
             errors.append(f"unreviewed first-party process execution primitive found: {rel}")
 
         direct_network_tokens = [

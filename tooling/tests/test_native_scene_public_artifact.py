@@ -308,7 +308,19 @@ class NativeSceneEvidenceTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         for scene in pub.SCENES:
             yml = (root / ".github/workflows" / ("native-" + scene + "-e2e.yml")).read_text()
-            self.assertIn("path: verification/native-" + scene + "-public", yml)
+            if scene == "manim":
+                lines = yml.splitlines()
+                name = "          name: motionwright-native-manim-${{ github.sha }}"
+                self.assertEqual(lines.count(name), 1)
+                start = lines.index(name) + 1
+                self.assertEqual(lines[start:start + 4], [
+                    "          path: |",
+                    "            verification/native-manim-public/public-evidence.json",
+                    "            verification/native-manim-public/motionwright-manim-community.mp4",
+                    "          if-no-files-found: error",
+                ])
+            else:
+                self.assertIn("path: verification/native-" + scene + "-public", yml)
             self.assertNotIn("path: verification/native-" + scene + "-e2e\n", yml)
             self.assertIn("test_native_scene_public_artifact.py", yml)
 
