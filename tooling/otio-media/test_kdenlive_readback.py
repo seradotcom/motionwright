@@ -574,5 +574,154 @@ class KdenliveNativeReadbackTests(unittest.TestCase):
                     inspect_saved_kdenlive(project, sha, bundle, seal)
 
 
+
+
+class KdenliveRetainedAlabReadbackContracts(unittest.TestCase):
+    """Synthetic XML/media/notices through the existing retained bridge; no NLE."""
+
+    def fixture(self):
+        import bridge
+        import test_bridge as controls
+        helper = controls.RetainedAlabObservationTests()
+        self.addCleanup(helper.doCleanups)
+        root, owner, bundle, project, request, retained, data = helper.portable()
+        bridge.export_portable(owner, request, bundle, retained_alab=retained,
+                               source_notices=helper.source_notices)
+        root, bundle = root.resolve(strict=True), bundle.resolve(strict=True)
+        manifest_sha = SHA((bundle / "bridge-manifest.json").read_bytes())
+        return root, bundle, manifest_sha, project, retained, data
+
+    def xml(self, data, *, second=182, rate=24, width=1920, height=1080,
+            first_in=0, extension="mov"):
+        sources = []
+        for index, row in enumerate(data["media_pins"]):
+            sources.append(f'<chain id="video{index}"><property name="resource">'
+                           f'media/{row[3]}.{extension}</property></chain>')
+        return (f'<mlt><profile width="{width}" height="{height}" frame_rate_num="{rate}" '
+                f'frame_rate_den="1"/>' + ''.join(sources)
+                + '<playlist id="main_bin"><entry producer="video0" in="0" out="51"/>'
+                  '<entry producer="video1" in="0" out="181"/></playlist>'
+                + f'<playlist id="timeline0"><entry producer="video0" in="{first_in}" out="51"/>'
+                  f'<entry producer="video1" in="0" out="{second - 1}"/></playlist>'
+                  '<tractor id="main_tractor"><property name="kdenlive:projectTractor">1</property>'
+                  '<track producer="timeline0"/></tractor></mlt>').encode()
+
+    def test_two_retained_MOV_instances_keep_24fps_52_182_and_only_12frame_second_trim(self):
+        import bridge
+        _, bundle, manifest_sha, project, retained, data = self.fixture()
+        initial, initial_sha = native_file(bundle, self.xml(data), "initial.kdenlive")
+        edited, edited_sha = native_file(bundle, self.xml(data, second=170), "edited.kdenlive")
+        with mock.patch.object(bridge, "file_probe", side_effect=AssertionError("no retained decode")) as probe, \
+             mock.patch.object(bridge.subprocess, "Popen", side_effect=AssertionError("no native child")) as child:
+            before = inspect_saved_kdenlive(initial, initial_sha, bundle, manifest_sha, retained_alab=retained)
+            after = inspect_saved_kdenlive(edited, edited_sha, bundle, manifest_sha, retained_alab=retained)
+            observed = compare_two_native_custody_snapshots(before, after)
+            probe.assert_not_called(); child.assert_not_called()
+        self.assertEqual(before["native_saved_frame_rate"], "24/1")
+        self.assertEqual(before["native_saved_profile_size"], [1920, 1080])
+        self.assertEqual([r["duration_frames"] for r in before["observed_bound_editorial_clip_semantics"]], [52, 182])
+        self.assertEqual([r["duration_frames"] for r in after["observed_bound_editorial_clip_semantics"]], [52, 170])
+        self.assertEqual([r["original_inpoint_frame"] for r in before["observed_bound_editorial_clip_semantics"]], [0, 0])
+        self.assertEqual(observed["bounded_native_end_trims_observed"], [{"scene_id": project["scenes"][1]["id"],
+            "initial_duration_frames": 182, "reopened_duration_frames": 170}])
+        self.assertFalse(after["external_Kdenlive_PID_or_application_process_attested"])
+        self.assertFalse(after["reopened_in_distinct_editor_process"])
+        self.assertFalse(after["human_rights_or_visual_approval"])
+        self.assertEqual(retained.descriptor()["historical_source_origin"], "NOT_OBSERVED")
+
+    def test_saved_MOV_project_cannot_self_admit_a_profile_from_manifest_or_descriptor(self):
+        _, bundle, manifest_sha, _, retained, data = self.fixture()
+        initial, initial_sha = native_file(bundle, self.xml(data))
+        for value in (None, retained.descriptor(), {"verified": True}):
+            with self.subTest(value_type=type(value).__name__), \
+                 mock.patch("kdenlive_readback.safe_mlt_xml", side_effect=AssertionError("no XML before source admission")) as parser:
+                with self.assertRaises(KdenliveReadbackRejected):
+                    inspect_saved_kdenlive(initial, initial_sha, bundle, manifest_sha, retained_alab=value)
+                parser.assert_not_called()
+
+    def test_retained_native_XML_cannot_change_clock_geometry_inpoint_container_or_source(self):
+        import bridge
+        for defect in ("fps", "width", "height", "inpoint", "extension", "media"):
+            with self.subTest(defect=defect):
+                _, bundle, manifest_sha, _, retained, data = self.fixture()
+                values = {"fps": {"rate": 30}, "width": {"width": 1280}, "height": {"height": 720},
+                          "inpoint": {"first_in": 1}, "extension": {"extension": "mp4"}, "media": {}}[defect]
+                initial, initial_sha = native_file(bundle, self.xml(data, **values))
+                if defect == "media":
+                    (bundle / f"media/{data['media_pins'][0][3]}.mov").write_bytes(b"foreign source")
+                with mock.patch.object(bridge, "file_probe", side_effect=AssertionError("invalid source decoder")) as probe:
+                    with self.assertRaises(KdenliveReadbackRejected):
+                        inspect_saved_kdenlive(initial, initial_sha, bundle, manifest_sha, retained_alab=retained)
+                    probe.assert_not_called()
+
+    def test_saved_native_project_does_not_erase_original_notice_requirements(self):
+        import bridge
+        for role in ("license", "readme", "selection_notice"):
+            for defect in ("missing", "changed"):
+                with self.subTest(role=role, defect=defect):
+                    _, bundle, manifest_sha, _, retained, data = self.fixture()
+                    initial, initial_sha = native_file(bundle, self.xml(data))
+                    name = next(row[1] for row in bridge._ALAB_SOURCE_NOTICES if row[0] == role)
+                    if defect == "missing":
+                        (bundle / name).unlink()
+                    else:
+                        (bundle / name).write_bytes(b"changed original notice")
+                    with mock.patch("kdenlive_readback.safe_mlt_xml", side_effect=AssertionError("no XML after notice failure")) as parser:
+                        with self.assertRaises(KdenliveReadbackRejected):
+                            inspect_saved_kdenlive(initial, initial_sha, bundle, manifest_sha, retained_alab=retained)
+                        parser.assert_not_called()
+
+
+class ImmutableKdenliveOriginalReadTests(unittest.TestCase):
+    def test_verified_read_uses_the_exact_captured_bytes_without_reopening_path(self):
+        import ci_private_evidence as custody
+        import kdenlive_readback as reader
+        with tempfile.TemporaryDirectory()as folder:
+            path=Path(folder).resolve()/"original.kdenlive"
+            original=b'<mlt producer="original"/>'
+            changed=b'<mlt producer="replaced"/>'
+            path.write_bytes(original)
+            real=custody.regular
+            calls=[]
+            def replace_after_capture(candidate,limit):
+                result=real(candidate,limit)
+                calls.append(candidate)
+                path.write_bytes(changed)
+                return result
+            with mock.patch.object(custody,"regular",side_effect=replace_after_capture), \
+                 mock.patch.object(Path,"read_bytes",side_effect=AssertionError("readback reopened pathname")):
+                observed=reader.read_closed_bytes(path,SHA(original),1024)
+            self.assertEqual(observed,original)
+            self.assertEqual(calls,[path])
+            self.assertEqual(path.read_bytes(),changed)
+
+    def test_invalid_pin_wrong_SHA_and_growth_keep_the_exact_rejection_contract(self):
+        import kdenlive_readback as reader
+        from bridge import BridgeRefused
+        with tempfile.TemporaryDirectory()as folder:
+            path=Path(folder).resolve()/"original.json"
+            path.write_bytes(b"original")
+            with mock.patch.object(reader,"capture_original",side_effect=AssertionError("invalid pin read")):
+                with self.assertRaisesRegex(KdenliveReadbackRejected,"readback_original_SHA256_missing"):
+                    reader.read_closed_bytes(path,"not-a-digest",64)
+            with self.assertRaisesRegex(KdenliveReadbackRejected,"readback_original_content_changed_from_expected_SHA"):
+                reader.read_closed_bytes(path,"f"*64,64)
+            with self.assertRaisesRegex(BridgeRefused,"File exceeds byte budget:"):
+                reader.read_closed_bytes(path,SHA(b"original"),2)
+
+    def test_capture_primary_error_or_interrupt_is_never_replaced_by_parse_or_reopen(self):
+        import kdenlive_readback as reader
+        with tempfile.TemporaryDirectory()as folder:
+            path=Path(folder).resolve()/"original.json"
+            path.write_bytes(b"original")
+            for original in (OSError("original IO"),KeyboardInterrupt("original interrupt"),SystemExit(17)):
+                with self.subTest(kind=type(original).__name__), \
+                     mock.patch.object(reader,"capture_original",side_effect=original), \
+                     mock.patch.object(Path,"read_bytes",side_effect=AssertionError("secondary reopen")):
+                    with self.assertRaises(type(original))as caught:
+                        reader.read_closed_bytes(path,SHA(b"original"),64)
+                    self.assertIs(caught.exception,original)
+
+
 if __name__ == "__main__":
     unittest.main()

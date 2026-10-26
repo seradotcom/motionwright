@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
+import bridge as _retained_bridge
 from bridge import (
     BridgeRefused, export_portable, file_probe, import_preview, rtc, trange, SCHEMA,
     _probe_output, preview_kdenlive_cut, KDENLIVE_REQUEST_SCHEMA, fingerprint, _nle_local_media,
@@ -670,7 +671,7 @@ class BoundedKdenliveCutTests(unittest.TestCase):
     def test_raw_drift_after_bound_parse_cannot_emit_a_proposal(self):
         self.prepare()
         calls=0
-        def change_after_source_preflight(path):
+        def change_after_source_preflight(path,*,original_bytes=None):
             nonlocal calls
             calls+=1
             if calls==4:
@@ -697,8 +698,11 @@ class BoundedFileDigestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="mw-otio-bounded-hash-")as folder:
             path=Path(folder)/"source.mp4"
             path.write_bytes(b"abcd")
+            # Instrument the actual shared held-FD read, not Path.open,
+            # which is deliberately no longer the source-data reader.
+            import mlt_official_runtime_intake as intake
             for observed in (b"abc",b"abcde"):
-                with patch.object(Path,"open",return_value=io.BytesIO(observed)):
+                with patch.object(intake.os,"read",side_effect=[observed,b""]):
                     with self.assertRaises(BridgeRefused):fingerprint(path,10)
             self.assertEqual(fingerprint(path,10),(hashlib.sha256(b"abcd").hexdigest(),4))
 
@@ -725,19 +729,22 @@ class VideoReadbackTests(unittest.TestCase):
             with self.subTest(changes=changes):
                 with patch("bridge._probe_output",return_value=self.header(**changes))as probe:
                     with self.assertRaises(BridgeRefused):
-                        file_probe(Path("private-owner-source.mp4"))
+                        file_probe(Path("private-owner-source.mp4"),original_bytes=b"unit protocol source")
                     self.assertEqual(probe.call_count,1)
 
     def test_complete_count_is_observed_for_only_the_selected_video(self):
         with patch("bridge._probe_output",side_effect=[self.header(),self.decoded()])as probe:
-            self.assertEqual(file_probe(Path("private-owner-source.mp4")),{
+            self.assertEqual(file_probe(Path("private-owner-source.mp4"),original_bytes=b"unit protocol source"),{
                 "fps":30,"frames":60,"width":320,"height":180,"codec":"h264"})
         self.assertEqual(probe.call_count,2)
         for call in probe.call_args_list:
             args=call.args[0]
             self.assertEqual(args[args.index("-select_streams")+1],"v:0")
             self.assertEqual(args[args.index("-threads")+1],"1")
-            self.assertEqual(args[args.index("-protocol_whitelist")+1],"file")
+            self.assertEqual(args[args.index("-protocol_whitelist")+1],"pipe")
+            self.assertEqual(args[-1],"pipe:0")
+            self.assertEqual(call.kwargs["input_bytes"],b"unit protocol source")
+        self.assertIn("-count_packets",probe.call_args_list[0].args[0])
         self.assertNotIn("-count_frames",probe.call_args_list[0].args[0])
         self.assertIn("-count_frames",probe.call_args_list[1].args[0])
         self.assertIn("-err_detect",probe.call_args_list[1].args[0])
@@ -751,7 +758,7 @@ class VideoReadbackTests(unittest.TestCase):
                     self.header(),self.decoded(nb_read_frames=count)
                 ]):
                     with self.assertRaises(BridgeRefused):
-                        file_probe(Path("private-owner-source.mp4"))
+                        file_probe(Path("private-owner-source.mp4"),original_bytes=b"unit protocol source")
 
     def test_decode_cannot_change_geometry_or_substitute_a_codec(self):
         for changes in ({"codec_name":"vp9"},{"width":640},{"height":360}):
@@ -760,7 +767,7 @@ class VideoReadbackTests(unittest.TestCase):
                     self.header(),self.decoded(**changes)
                 ]):
                     with self.assertRaisesRegex(BridgeRefused,"geometry or codec"):
-                        file_probe(Path("private-owner-source.mp4"))
+                        file_probe(Path("private-owner-source.mp4"),original_bytes=b"unit protocol source")
 
     def test_missing_or_ambiguous_decoded_stream_is_refused(self):
         for decoded in ({"streams":[]},{"streams":[{},{}]},
@@ -770,7 +777,7 @@ class VideoReadbackTests(unittest.TestCase):
                     self.header(),json.dumps(decoded).encode()
                 ]):
                     with self.assertRaises(BridgeRefused):
-                        file_probe(Path("private-owner-source.mp4"))
+                        file_probe(Path("private-owner-source.mp4"),original_bytes=b"unit protocol source")
 
     def test_zero_exit_with_decoder_error_is_refused_without_private_diagnostics(self):
         with self.assertRaisesRegex(BridgeRefused,"decode error")as raised:
@@ -809,11 +816,14 @@ class VideoReadbackTests(unittest.TestCase):
     def test_stdout_and_stderr_are_bounded_while_the_process_is_alive(self):
         for stream in ("stdout","stderr"):
             with self.subTest(stream=stream):
+                capture={}
                 with patch("bridge.MAX_JSON",128):
                     with self.assertRaisesRegex(BridgeRefused,"bounded"):
                         _probe_output([sys.executable,"-I","-c",
-                            f"import sys,time; sys.{stream}.write('x'*4096); "
-                            f"sys.{stream}.flush(); time.sleep(2)"])
+                            f"import sys,time; sys.{stream}.write('x'*131072); "
+                            f"sys.{stream}.flush(); time.sleep(2)"],capture=capture)
+                self.assertTrue(capture["terminal"]["output_budget_exceeded"])
+                self.assertLessEqual(len(capture[stream]),129 if stream=="stdout" else 65537)
 
 
 # ALab read-only causal controls: no network, ffprobe, decode or adoption.
@@ -1582,6 +1592,1054 @@ class ExternalOtioSourceInspectionTests(unittest.TestCase):
         self.assertIn("media_reference_outside_profile",self.codes(report))
         self.assertIsNone(report["observations"][0]["active_reference"]["target_url"])
         self.assertFalse(report["verified_media"])
+
+
+class RetainedAlabObservationTests(unittest.TestCase):
+    """Synthetic contract originals only; no native decode, ALab adoption or NLE receipt.
+
+    Internal-validator pins below deliberately identify synthetic unit bytes.
+    The production entry remains fixed to the independently admitted originals.
+    """
+    @staticmethod
+    def clone(value):
+        return json.loads(json.dumps(value))
+
+    @staticmethod
+    def rational_pair(num,den=1):
+        value=_retained_bridge.Fraction(num,den)
+        return {"num":value.numerator,"den":value.denominator}
+
+    def fixture(self):
+        source=ExternalOtioSourceInspectionTests.source_document()
+        raw_media=(b"unit retained source MOV one",b"unit retained source MOV two")
+        pins=[];containers=[];observations=[]
+        for index,original in enumerate(_retained_bridge._ALAB_RETAINED_MEDIA):
+            pointer,target,_,_,origin,count=original
+            blob=raw_media[index]
+            pins.append((pointer,target,len(blob),hashlib.sha256(blob).hexdigest(),origin,count))
+            clip=source["tracks"]["children"][0]["children"][index]
+            clip["media_references"]["DEFAULT_MEDIA"]["target_url"]=target
+            clip["metadata"]["AAF"]={"StartTime":0}
+            timecode=("00:00:41:18","00:00:42:00")[index]
+            container={
+                "format":"mov,mp4,m4a,3gp,3g2,mj2",
+                "duration_microseconds":round(count*1000000/24),"start_time_microseconds":0,
+                "metadata":{"major_brand":"qt  ","compatible_brands":"qt  ","timecode":timecode},
+                "streams":[{"index":0,"type":"video","time_base":{"num":1,"den":2400},
+                    "start_time":0,"duration":count*100,"container_declared_frames":count,
+                    "metadata":{"handler_name":"Video Handler"},
+                    "codec":{"name":"h264","profile":"Main","width":1920,"height":1080,
+                             "sample_rate":{"unavailable":"AttributeError"},
+                             "channels":{"unavailable":"AttributeError"}}},
+                    {"index":1,"type":"data","time_base":{"num":1,"den":2400},
+                     "start_time":0,"duration":count*100,"container_declared_frames":1,
+                     "metadata":{"handler_name":"Timecode Handler","timecode":timecode}}]}
+            containers.append(container)
+            observations.append({
+                "source_path":"synthetic-unit-only/"+Path(target).name,
+                "source_sha256":pins[-1][3],"source_bytes":len(blob),
+                "decoded_frame_count":count,
+                "decoded_pts":[{"index":frame,"pts":frame*100,
+                    "time_base":{"num":1,"den":2400},
+                    "presentation_time":self.rational_pair(frame,24)}for frame in range(count)],
+                "pixel_samples":[{"index":frame,"presentation_time":self.rational_pair(frame,24),
+                    "width":1920,"height":1080,"rgb24_bytes":1920*1080*3,
+                    "rgb24_sha256":hashlib.sha256(f"unit sample {index}:{frame}".encode()).hexdigest(),
+                    "source_pixel_format":"yuv420p","nonconstant_rgb":True}
+                    for frame in (0,count//2,count-1)],
+                "source_origin":"NOT_OBSERVED",
+                "container_metadata_original":{"path":f"synthetic-container-{index}.json",
+                                                "bytes":0,"sha256":"0"*64},
+                "physical_observation":{"width":1920,"height":1080,"codec":"h264",
+                    "average_rate":{"num":24,"den":1},"container_declared_frames":count,
+                    "declared_count_matches_decoded":True,"first_presentation_time":{"num":0,"den":1},
+                    "last_presentation_time":self.rational_pair(count-1,24),
+                    "cadence_matches_average_rate":True,"timecode_fields":"Synthetic original-shaped unit field",
+                    "source_origin":"NOT_OBSERVED"}})
+        readback={"schema":"motionwright.a4.alab-native-readback/1",
+            "status":"PASS_TWO_RETAINED_ORIGINALS_NATIVE_DECODE","media":observations,
+            "new_render":False,"nle_opened":False,"canonical_scene_ids_created":False,
+            "assets_adopted":False,"unknown_replayed":False,"human_acceptance":False,
+            "formal_acceptance":False,"source_origin":"NOT_OBSERVED",
+            "runtime":{"av_version":"synthetic-contract-fixture-not-runtime-evidence"},
+            "inputs_stable":True,"elapsed_seconds":0.0,"ended_at_utc":"unit-only"}
+        return {"source":source,"readback":readback,"containers":containers,
+                "media_pins":tuple(pins),"raw_media":raw_media}
+
+    def encode(self,data,*,bind_containers=True):
+        value=self.clone({k:v for k,v in data.items()if k not in ("media_pins","raw_media")})
+        dump=lambda v:json.dumps(v,separators=(",",":"),sort_keys=True).encode()
+        containers=tuple(dump(v)for v in value["containers"])
+        if bind_containers:
+            for row,blob in zip(value["readback"]["media"],containers):
+                row["container_metadata_original"]["bytes"]=len(blob)
+                row["container_metadata_original"]["sha256"]=hashlib.sha256(blob).hexdigest()
+        originals=(dump(value["source"]),dump(value["readback"]),*containers)
+        pins=tuple((role,len(blob),hashlib.sha256(blob).hexdigest())for role,blob in zip(
+            ("otio","readback","container0","container1"),originals))
+        return originals,pins,data["media_pins"]
+
+    def admit(self,data=None):
+        return _retained_bridge._admit_alab_retained_originals(*self.encode(data or self.fixture()))
+
+    def portable(self,data=None):
+        data=data or self.fixture()
+        self.source_notices={role:("Unit original notice "+role).encode()
+                             for role,_,_,_ in _retained_bridge._ALAB_SOURCE_NOTICES}
+        notice_pins=tuple((role,name,len(self.source_notices[role]),
+                           hashlib.sha256(self.source_notices[role]).hexdigest())
+                          for role,name,_,_ in _retained_bridge._ALAB_SOURCE_NOTICES)
+        notice_patch=patch.object(_retained_bridge,"_ALAB_SOURCE_NOTICES",notice_pins)
+        notice_patch.start();self.addCleanup(notice_patch.stop)
+        temp=tempfile.TemporaryDirectory(prefix="mw-alab-retained-unit-")
+        self.addCleanup(temp.cleanup)
+        root=Path(temp.name);owner=root/"owner";owner.mkdir()
+        scenes=[];assets=[];clips=[];bindings=[]
+        start=_retained_bridge.Fraction(0)
+        for index,pin in enumerate(data["media_pins"]):
+            pointer,target,size,digest,origin,count=pin
+            duration=_retained_bridge.Fraction(count,24)
+            scene={"id":ID(10+index),"name":f"Synthetic selected occurrence {index}",
+                "start":{"num":str(start.numerator),"den":str(start.denominator)},
+                "duration":{"num":str(duration.numerator),"den":str(duration.denominator)}}
+            start+=duration;scenes.append(scene)
+            assets.append({"id":ID(50+index),"name":f"Synthetic MOV {index}",
+                "media_type":"video/quicktime","content_sha256":digest,
+                "source_revision":"unit-contract-only"})
+            file=Path(target).name;(owner/file).write_bytes(data["raw_media"][index])
+            bindings.append({"scene_id":scene["id"],"asset_id":assets[-1]["id"],
+                "file":file,"sha256":digest,"source_start_frame":0,
+                "rights":{"owner":"unit fixture only","license":"synthetic contract fixture",
+                          "authorized":True,"redistributable":True}})
+            clips.append({"OTIO_SCHEMA":"Clip.1","enabled":True,"effects":[],"markers":[],
+                "media_reference":{"OTIO_SCHEMA":"MissingReference.1","available_range":None,
+                                   "metadata":{},"name":None},
+                "source_range":trange(0,count,24),"name":scene["name"],
+                "metadata":{"motionwright":{"scene_id":scene["id"]}}})
+        project={"id":ID(1),"generation":ID(2),"revision":7,"title":"Synthetic canonical cut",
+                 "scenes":scenes,"assets":assets}
+        timeline={"OTIO_SCHEMA":"Timeline.1","name":"Synthetic canonical export",
+            "metadata":{"motionwright":{"project_id":ID(1),"generation":ID(2),"revision":7,
+                "export_profile":"conservative-cut-v1","loss_report":["Unit source remains native."]}},
+            "tracks":{"OTIO_SCHEMA":"Stack.1","children":[{"OTIO_SCHEMA":"Track.1",
+                "kind":"Video","children":clips}]}}
+        request={"schema":SCHEMA,"project":"project.json","otio":"baseline.otio",
+                 "bindings":bindings,"owner_review":{"reviewer":"unit-only",
+                                                       "synthetic_source_allowed":True}}
+        (owner/"project.json").write_text(json.dumps(project),encoding="utf-8")
+        (owner/"baseline.otio").write_text(json.dumps(timeline),encoding="utf-8")
+        return root,owner,root/"capsule",project,request,self.admit(data),data
+
+    def test_retained_join_is_new_derivation_and_never_promotes_historical_readback(self):
+        data=self.fixture();raw,pins,media=self.encode(data);before=tuple(raw)
+        with patch("bridge.file_probe",side_effect=AssertionError("no new decoder")), \
+             patch("bridge.subprocess.Popen",side_effect=AssertionError("no new native child")):
+            admitted=_retained_bridge._admit_alab_retained_originals(raw,pins,media)
+        result=admitted.descriptor()
+        self.assertEqual(raw,before)
+        self.assertEqual(result["status"],"RETAINED_MEDIA_ORIGIN_DERIVED_NOT_ADOPTED")
+        self.assertEqual([row["source_origin_frame"]for row in result["selected"]],[1002,1008])
+        self.assertEqual([row["source_start_frame"]for row in result["selected"]],[0,0])
+        self.assertEqual([row["actual_media_frames"]for row in result["selected"]],[52,182])
+        self.assertEqual(result["source_inspection"]["status"],"SOURCE_INSPECTED_NOT_ADOPTED")
+        self.assertEqual(result["source_inspection"]["media_origin"],"unknown")
+        self.assertTrue(result["source_inspection"]["opaque_regions"])
+        self.assertEqual(result["historical_source_origin"],"NOT_OBSERVED")
+        for key in ("historical_readback_rewritten","new_decode","new_render","assets_adopted",
+                    "canonical_scene_ids_created","nle_opened","formal_acceptance"):
+            self.assertIs(result[key],False)
+        self.assertEqual(result["later_edit_proposal"],{
+            "occurrence":"/tracks/children/0/children/1","from_frames":182,"to_frames":170,"applied":False})
+        self.assertEqual([row["rgb_samples_retained"]for row in result["selected"]],[3,3])
+        self.assertFalse(any(row["all_decoded_frame_pixel_hashes"]for row in result["selected"]))
+
+    def test_fixed_benchmark_entry_refuses_self_admitted_synthetic_or_member00_sources(self):
+        raw,_,_=self.encode(self.fixture())
+        with patch("bridge.inspect_external_otio",side_effect=AssertionError("parse before fixed pin"))as parse:
+            with self.assertRaises(BridgeRefused):
+                _retained_bridge.admit_alab_retained_originals(*raw)
+            parse.assert_not_called()
+        self.assertEqual(_retained_bridge._ALAB_RETAINED_ORIGINALS[0],(
+            "otio",218949,"6c90cbc64000e5de1d6450c95b1f5845db2862c053fa2591d02d370505f3bd28"))
+        self.assertNotEqual(_retained_bridge._ALAB_RETAINED_ORIGINALS[0][2],
+                           "1ef8cbab507adaeb2d83476925c187812351009558cc181383730b4de80be185")
+
+    def test_all_four_byte_identities_are_verified_before_any_parser(self):
+        raw,pins,media=self.encode(self.fixture())
+        for index in range(4):
+            with self.subTest(original=index):
+                changed=list(raw);changed[index]=raw[index]+b" "
+                with patch("bridge.inspect_external_otio",side_effect=AssertionError("early source parse"))as source_parse, \
+                     patch("bridge.strict_json",side_effect=AssertionError("early JSON parse"))as json_parse:
+                    with self.assertRaises(BridgeRefused):
+                        _retained_bridge._admit_alab_retained_originals(tuple(changed),pins,media)
+                    source_parse.assert_not_called();json_parse.assert_not_called()
+
+    def test_container_roles_and_native_source_identity_cannot_be_swapped(self):
+        data=self.fixture();raw,pins,media=self.encode(data)
+        bound=self.clone(data["readback"])
+        bound["media"]=[json.loads(raw[1])["media"][1],json.loads(raw[1])["media"][0]]
+        for scenario in ("containers","media","source_sha","source_size"):
+            with self.subTest(scenario=scenario):
+                item=self.fixture()
+                if scenario=="containers":
+                    item["containers"].reverse()
+                elif scenario=="media":item["readback"]=bound
+                elif scenario=="source_sha":item["readback"]["media"][0]["source_sha256"]="0"*64
+                else:item["readback"]["media"][0]["source_bytes"]+=1
+                with self.assertRaises(BridgeRefused):self.admit(item)
+
+    def test_complete_retained_clock_rejects_missing_duplicate_reordered_or_forged_frames(self):
+        mutations=(
+            ("missing",lambda r:r["decoded_pts"].pop()),
+            ("duplicate",lambda r:r["decoded_pts"].__setitem__(1,self.clone(r["decoded_pts"][0]))),
+            ("reordered",lambda r:r["decoded_pts"].reverse()),
+            ("index_bool",lambda r:r["decoded_pts"][0].__setitem__("index",False)),
+            ("pts_shift",lambda r:r["decoded_pts"][1].__setitem__("pts",101)),
+            ("timebase",lambda r:r["decoded_pts"][1].__setitem__("time_base",{"num":1,"den":1200})),
+            ("presentation",lambda r:r["decoded_pts"][1].__setitem__("presentation_time",{"num":1,"den":25})),
+            ("zero_den",lambda r:r["decoded_pts"][1].__setitem__("presentation_time",{"num":1,"den":0})),
+            ("unreduced",lambda r:r["decoded_pts"][1].__setitem__("presentation_time",{"num":2,"den":48})),
+            ("string_num",lambda r:r["decoded_pts"][1].__setitem__("presentation_time",{"num":"1","den":24})),
+            ("count",lambda r:r.__setitem__("decoded_frame_count",51)),
+            ("declared_mismatch",lambda r:r["physical_observation"].__setitem__("declared_count_matches_decoded",False)),
+            ("rate",lambda r:r["physical_observation"].__setitem__("average_rate",{"num":30,"den":1})),
+            ("last_pts",lambda r:r["physical_observation"].__setitem__("last_presentation_time",{"num":52,"den":24})),
+        )
+        for name,mutate in mutations:
+            with self.subTest(scenario=name):
+                data=self.fixture();mutate(data["readback"]["media"][0])
+                with self.assertRaises(BridgeRefused):self.admit(data)
+
+    def test_container_profile_requires_exact_quicktime_h264_clock_and_geometry(self):
+        mutations=(
+            ("brand",lambda c:c["metadata"].__setitem__("major_brand","isom")),
+            ("compatible",lambda c:c["metadata"].__setitem__("compatible_brands","isom")),
+            ("format",lambda c:c.__setitem__("format","matroska,webm")),
+            ("codec",lambda c:c["streams"][0]["codec"].__setitem__("name","hevc")),
+            ("profile",lambda c:c["streams"][0]["codec"].__setitem__("profile","High")),
+            ("width",lambda c:c["streams"][0]["codec"].__setitem__("width",1280)),
+            ("stream_start",lambda c:c["streams"][0].__setitem__("start_time",100)),
+            ("container_start",lambda c:c.__setitem__("start_time_microseconds",1)),
+            ("stream_duration",lambda c:c["streams"][0].__setitem__("duration",5201)),
+            ("declared_frames",lambda c:c["streams"][0].__setitem__("container_declared_frames",51)),
+            ("data_handler",lambda c:c["streams"][1]["metadata"].__setitem__("handler_name","Other")),
+            ("extra_stream",lambda c:c["streams"].append(self.clone(c["streams"][1]))),
+        )
+        for name,mutate in mutations:
+            with self.subTest(scenario=name):
+                data=self.fixture();mutate(data["containers"][0])
+                with self.assertRaises(BridgeRefused):self.admit(data)
+
+    def test_origin_uses_matching_ndf24_timecodes_not_global_clock_or_aaf_start(self):
+        for value in ("00:00:41;18","00:00:41:24","24:00:00:00","00:60:00:00",
+                      "00:00:41:17","0:00:41:18",None):
+            with self.subTest(timecode=value):
+                data=self.fixture()
+                data["containers"][0]["metadata"]["timecode"]=value
+                data["containers"][0]["streams"][1]["metadata"]["timecode"]=value
+                with self.assertRaises(BridgeRefused):self.admit(data)
+        data=self.fixture()
+        data["containers"][0]["streams"][1]["metadata"]["timecode"]="00:00:42:00"
+        with self.assertRaises(BridgeRefused):self.admit(data)
+        data=self.fixture()
+        data["source"]["global_start_time"]=rtc(123456,24)
+        data["source"]["tracks"]["children"][0]["children"][0]["metadata"]["AAF"]["StartTime"]=999
+        result=self.admit(data).descriptor()
+        self.assertEqual([row["source_origin_frame"]for row in result["selected"]],[1002,1008])
+        self.assertEqual([row["source_start_frame"]for row in result["selected"]],[0,0])
+        self.assertEqual(result["source_inspection"]["source"]["declared_global_start_time"],rtc(123456,24))
+
+    def test_selected_clip2_reference_and_interval_never_fall_back_to_foreign_metadata(self):
+        for scenario in ("clip1","active","target","start","duration","available"):
+            with self.subTest(scenario=scenario):
+                data=self.fixture();clip=data["source"]["tracks"]["children"][0]["children"][0]
+                if scenario=="clip1":clip["OTIO_SCHEMA"]="Clip.1"
+                elif scenario=="active":clip["active_media_reference_key"]="not_present"
+                elif scenario=="target":clip["media_references"]["DEFAULT_MEDIA"]["target_url"]="other.mov"
+                elif scenario=="start":clip["source_range"]=trange(1001,52,24)
+                elif scenario=="duration":clip["source_range"]=trange(1002,51,24)
+                else:clip["media_references"]["DEFAULT_MEDIA"]["available_range"]=trange(0,52,24)
+                with self.assertRaises(BridgeRefused):self.admit(data)
+
+    def test_rgb_samples_remain_three_corroborating_instants_without_frame_hash_promotion(self):
+        for scenario in ("missing","wrong_index","wrong_size","bad_hash","constant"):
+            with self.subTest(scenario=scenario):
+                data=self.fixture();samples=data["readback"]["media"][0]["pixel_samples"]
+                if scenario=="missing":samples.pop()
+                elif scenario=="wrong_index":samples[1]["index"]=25
+                elif scenario=="wrong_size":samples[1]["rgb24_bytes"]-=1
+                elif scenario=="bad_hash":samples[1]["rgb24_sha256"]="not-a-hash"
+                else:samples[1]["nonconstant_rgb"]=False
+                with self.assertRaises(BridgeRefused):self.admit(data)
+
+    def test_historical_origin_execution_or_acceptance_flags_cannot_be_promoted(self):
+        for field in ("source_origin","new_render","nle_opened","canonical_scene_ids_created",
+                      "assets_adopted","unknown_replayed","human_acceptance","formal_acceptance",
+                      "inputs_stable"):
+            with self.subTest(field=field):
+                data=self.fixture()
+                data["readback"][field]="OBSERVED" if field=="source_origin" else field!="inputs_stable"
+                with self.assertRaises(BridgeRefused):self.admit(data)
+
+    def test_retained_value_is_immutable_and_a_json_descriptor_is_not_admission(self):
+        observation=self.admit();expected=observation.descriptor()
+        changed=observation.descriptor();changed["selected"][0]["source_sha256"]="0"*64
+        self.assertEqual(observation.descriptor(),expected)
+        with self.assertRaises(AttributeError):observation._media=()
+        with self.assertRaises(BridgeRefused):
+            _retained_bridge._admitted_video_profile({"media_type":"video/quicktime"},changed)
+        with self.assertRaises(BridgeRefused):_retained_bridge._retained_output_profile({"verified":True})
+
+    def test_retained_mov_export_and_import_preview_reuse_observations_without_decoder(self):
+        root,owner,out,project,request,observation,data=self.portable()
+        with patch("bridge.file_probe",side_effect=AssertionError("retained source decoded again"))as probe, \
+             patch("bridge.subprocess.Popen",side_effect=AssertionError("retained source spawned a child"))as child:
+            exported=export_portable(owner,request,out,retained_alab=observation,source_notices=self.source_notices)
+            preview=import_preview(out,"timeline.otio",out/"source-project.json",retained_alab=observation)
+            probe.assert_not_called();child.assert_not_called()
+        manifest=json.loads((out/"bridge-manifest.json").read_bytes())
+        self.assertEqual(manifest["output_profile"],"alab-two-retained-mov-cut-v1")
+        self.assertEqual(manifest["source_media_count"],2)
+        self.assertEqual(manifest["missing_scene_ids"],[])
+        self.assertEqual({row["path"]for row in manifest["bound_media"]},
+                         {f"media/{pin[3]}.mov"for pin in data["media_pins"]})
+        self.assertEqual(manifest["retained_source_binding"],_retained_bridge._retained_source_binding(observation))
+        self.assertTrue(any("opaque/unavailable"in loss for loss in manifest["loss_report"]))
+        self.assertEqual(preview["native_change_proposals"],[])
+        self.assertEqual(len(preview["property_fidelity"]),12)
+        self.assertIs(preview["edit_imported"],False)
+        self.assertIs(exported["owner_publication_authorized"],False)
+        for pin,blob in zip(data["media_pins"],data["raw_media"]):self.assertEqual((out/f"media/{pin[3]}.mov").read_bytes(),blob)
+
+    def test_missing_independent_admission_never_becomes_generic_mov_support(self):
+        root,owner,out,project,request,observation,data=self.portable()
+        with patch("bridge.file_probe",side_effect=AssertionError("unadmitted MOV decode"))as probe:
+            with self.assertRaises(BridgeRefused):export_portable(owner,request,out)
+            self.assertFalse(out.exists());probe.assert_not_called()
+            export_portable(owner,request,out,retained_alab=observation,source_notices=self.source_notices)
+            with self.assertRaises(BridgeRefused):import_preview(out,"timeline.otio",out/"source-project.json")
+            with self.assertRaises(BridgeRefused):
+                import_preview(out,"timeline.otio",out/"source-project.json",retained_alab=observation.descriptor())
+            probe.assert_not_called()
+
+    def test_changed_or_relabelled_source_refuses_before_export_destination_or_decoder(self):
+        for scenario in ("changed_bytes","extension","mime"):
+            with self.subTest(scenario=scenario):
+                root,owner,out,project,request,observation,data=self.portable()
+                if scenario=="changed_bytes":
+                    (owner/request["bindings"][0]["file"]).write_bytes(b"unadmitted replacement")
+                elif scenario=="extension":
+                    old=owner/request["bindings"][0]["file"]
+                    new=old.with_suffix(".mp4");old.rename(new);request["bindings"][0]["file"]=new.name
+                else:
+                    project["assets"][0]["media_type"]="video/mp4"
+                    (owner/"project.json").write_text(json.dumps(project))
+                with patch("bridge.file_probe",side_effect=AssertionError("unadmitted source decode"))as probe:
+                    with self.assertRaises(BridgeRefused):export_portable(owner,request,out,retained_alab=observation,source_notices=self.source_notices)
+                    probe.assert_not_called()
+                self.assertFalse(out.exists())
+
+    def test_default_mp4_export_and_preview_keep_their_existing_probe_route(self):
+        fixture=PortableOtioTests(methodName="runTest");fixture.setUp();self.addCleanup(fixture.doCleanups)
+        out=fixture.root/"retained-default-mp4"
+        with patch("bridge.file_probe",return_value=VIDEO_INFO)as probe:
+            export_portable(fixture.src,fixture.request,out)
+            import_preview(out,"timeline.otio",out/"source-project.json")
+            self.assertEqual(probe.call_count,4)
+        manifest=json.loads((out/"bridge-manifest.json").read_bytes())
+        self.assertEqual(manifest["output_profile"],"portable-media-cut-v2")
+        self.assertNotIn("retained_source_binding",manifest)
+        self.assertTrue(all(row["path"].endswith(".mp4")for row in manifest["bound_media"]))
+
+    def test_retained_nle_shaped_return_derives_only_second_182_to170_cut_without_decoder(self):
+        root,owner,out,project,request,observation,data=self.portable()
+        with patch("bridge.file_probe",side_effect=AssertionError("retained media decoded again"))as probe:
+            export_portable(owner,request,out,retained_alab=observation,source_notices=self.source_notices)
+            native_clips=[]
+            original=json.loads((out/"timeline.otio").read_bytes())
+            for clip in original["tracks"]["children"][0]["children"]:
+                ref=self.clone(clip["media_reference"]);ref["metadata"]={}
+                ref["available_image_bounds"]=None;ref["target_url"]=str(out/ref["target_url"])
+                native_clips.append({"OTIO_SCHEMA":"Clip.2","name":"Unit native-shaped original",
+                    "enabled":True,"effects":[],"markers":[],"metadata":{},
+                    "source_range":self.clone(clip["source_range"]),
+                    "media_references":{"DEFAULT_MEDIA":ref},"active_media_reference_key":"DEFAULT_MEDIA"})
+            received={"OTIO_SCHEMA":"Timeline.1","metadata":{},"tracks":{"OTIO_SCHEMA":"Stack.1",
+                "children":[{"OTIO_SCHEMA":"Track.1","kind":"Video","children":native_clips}]}}
+            edited=self.clone(received);edited["tracks"]["children"][0]["children"][1]["source_range"]=trange(0,170,24)
+            raw=root/"raw";raw.mkdir()
+            for name,value in (("received.otio",received),("edited.otio",edited)):
+                (raw/name).write_text(json.dumps(value),encoding="utf-8")
+            digest=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
+            query={"schema":KDENLIVE_REQUEST_SCHEMA,"capsule_manifest_sha256":digest(out/"bridge-manifest.json"),
+                   "received_otio":"received.otio","received_sha256":digest(raw/"received.otio"),
+                   "edited_otio":"edited.otio","edited_sha256":digest(raw/"edited.otio")}
+            result=preview_kdenlive_cut(out,raw,query,out/"source-project.json",
+                                       authorized_media_roots=(out,),retained_alab=observation)
+            probe.assert_not_called()
+        self.assertEqual(result["status"],"BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED")
+        self.assertEqual(result["native_change_proposals"],[{"type":"set_scene_duration",
+            "scene_id":project["scenes"][1]["id"],"duration":{"num":"85","den":"12"}}])
+        self.assertEqual([row["original_inpoint"]for row in result["source_identity_mapping"]],[0,0])
+        self.assertEqual(result["nle_receiver_acceptance"],"NOT_VERIFIED")
+        self.assertEqual(result["native_project_reopened"],"NOT_VERIFIED")
+        self.assertIs(result["edit_imported"],False)
+        self.assertIs(result["native_final_frames_verified"],False)
+
+    def test_capsule_cannot_replace_or_drop_the_independent_retained_source_binding(self):
+        for scenario in ("missing","origin_sha","descriptor_sha","self_profile"):
+            with self.subTest(scenario=scenario):
+                root,owner,out,project,request,observation,data=self.portable()
+                export_portable(owner,request,out,retained_alab=observation,source_notices=self.source_notices)
+                manifest=json.loads((out/"bridge-manifest.json").read_bytes())
+                if scenario=="missing":del manifest["retained_source_binding"]
+                elif scenario=="origin_sha":manifest["retained_source_binding"]["originals"][0]["sha256"]="0"*64
+                elif scenario=="descriptor_sha":manifest["retained_source_binding"]["derived_descriptor_sha256"]="0"*64
+                else:manifest["output_profile"]="portable-media-cut-v2"
+                (out/"bridge-manifest.json").write_text(json.dumps(manifest))
+                with patch("bridge.file_probe",side_effect=AssertionError("changed capsule decoder")):
+                    with self.assertRaises(BridgeRefused):
+                        import_preview(out,"timeline.otio",out/"source-project.json",retained_alab=observation)
+
+    def test_closed_selected_scene_bindings_do_not_allow_extra_missing_reordered_or_shifted_media(self):
+        for scenario in ("omitted","extra","swapped","shifted","duration"):
+            with self.subTest(scenario=scenario):
+                root,owner,out,project,request,observation,data=self.portable()
+                if scenario=="omitted":request["bindings"].pop()
+                elif scenario=="extra":request["bindings"].append(self.clone(request["bindings"][0]))
+                elif scenario=="swapped":
+                    request["bindings"][0]["scene_id"],request["bindings"][1]["scene_id"]=\
+                        request["bindings"][1]["scene_id"],request["bindings"][0]["scene_id"]
+                elif scenario=="shifted":request["bindings"][0]["source_start_frame"]=1
+                else:
+                    project["scenes"][1]["duration"]={"num":"85","den":"12"}
+                    (owner/"project.json").write_text(json.dumps(project))
+                with patch("bridge.file_probe",side_effect=AssertionError("invalid binding decoder"))as probe:
+                    with self.assertRaises(BridgeRefused):export_portable(owner,request,out,retained_alab=observation,source_notices=self.source_notices)
+                    probe.assert_not_called()
+                self.assertFalse(out.exists())
+
+    def test_original_alab_notices_are_required_before_export_destination_or_decoder(self):
+        for scenario in ("missing_license","missing_readme","missing_selection_notice",
+                         "altered_license","altered_readme","altered_selection_notice",
+                         "extra_role","not_bytes","no_notices","no_retained_observation"):
+            with self.subTest(scenario=scenario):
+                root,owner,out,project,request,observation,data=self.portable()
+                notices=dict(self.source_notices)
+                if scenario.startswith("missing_"):del notices[scenario.removeprefix("missing_")]
+                elif scenario.startswith("altered_"):notices[scenario.removeprefix("altered_")]+=b"changed"
+                elif scenario=="extra_role":notices["foreign"]=b"extra original"
+                elif scenario=="not_bytes":notices["license"]=notices["license"].decode()
+                elif scenario=="no_notices":notices=None
+                else:observation=None
+                with patch("bridge.file_probe",side_effect=AssertionError("invalid license must not decode"))as probe, \
+                     patch("bridge.subprocess.Popen",side_effect=AssertionError("invalid license must not spawn"))as child:
+                    with self.assertRaises(BridgeRefused):
+                        export_portable(owner,request,out,retained_alab=observation,source_notices=notices)
+                    probe.assert_not_called();child.assert_not_called()
+                self.assertFalse(out.exists())
+
+    def test_alab_portable_zip_retains_all_original_notices_and_extracts_to_the_same_import(self):
+        root,owner,out,project,request,observation,data=self.portable()
+        exported=export_portable(owner,request,out,retained_alab=observation,
+                                 source_notices=self.source_notices)
+        archive=out/"portable-cut.zip"
+        self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(),exported["portable_zip_sha256"])
+        expected={"README.md","bridge-manifest.json","source-project.json","timeline.otio",
+                  *[row[1]for row in _retained_bridge._ALAB_SOURCE_NOTICES],
+                  *[f"media/{row[3]}.mov"for row in data["media_pins"]]}
+        extracted=root/"extracted-standalone-zip";extracted.mkdir()
+        with zipfile.ZipFile(archive)as zipped:
+            self.assertEqual(set(zipped.namelist()),expected)
+            self.assertEqual(len(zipped.infolist()),len(expected))
+            for name in sorted(expected):
+                raw=zipped.read(name)
+                self.assertEqual(raw,(out/name).read_bytes())
+                target=extracted/name;target.parent.mkdir(exist_ok=True)
+                target.write_bytes(raw)
+            for role,name,_,_ in _retained_bridge._ALAB_SOURCE_NOTICES:
+                self.assertEqual(zipped.read(name),self.source_notices[role])
+        self.assertFalse((extracted/"portable-cut.zip").exists())
+        with patch("bridge.file_probe",side_effect=AssertionError("no decoder during retained ZIP import"))as probe:
+            original=import_preview(out,"timeline.otio",out/"source-project.json",retained_alab=observation)
+            restored=import_preview(extracted,"timeline.otio",extracted/"source-project.json",retained_alab=observation)
+            probe.assert_not_called()
+        self.assertEqual(restored,original)
+        self.assertFalse(restored["edit_imported"])
+        self.assertEqual(restored["nle_receiver_acceptance"],"NOT_VERIFIED")
+
+    def test_import_rejects_missing_changed_or_forged_notice_bindings_even_with_original_MOVs(self):
+        cases=[("file_missing",role)for role in ("license","readme","selection_notice")]
+        cases += [("file_changed",role)for role in ("license","readme","selection_notice")]
+        cases += [(where,defect)for where in ("manifest","timeline")
+                  for defect in ("missing","sha","bytes","extra")]
+        for scenario,detail in cases:
+            with self.subTest(scenario=scenario,detail=detail):
+                root,owner,out,project,request,observation,data=self.portable()
+                export_portable(owner,request,out,retained_alab=observation,source_notices=self.source_notices)
+                if scenario.startswith("file_"):
+                    name=next(row[1]for row in _retained_bridge._ALAB_SOURCE_NOTICES if row[0]==detail)
+                    if scenario=="file_missing":(out/name).unlink()
+                    else:(out/name).write_bytes(b"changed original notice")
+                else:
+                    path=out/("bridge-manifest.json"if scenario=="manifest"else"timeline.otio")
+                    document=json.loads(path.read_bytes())
+                    value=document if scenario=="manifest"else document["metadata"]["motionwright"]
+                    if detail=="missing":del value["original_source_notices"]
+                    elif detail=="sha":value["original_source_notices"][0]["sha256"]="0"*64
+                    elif detail=="bytes":value["original_source_notices"][0]["bytes"]+=1
+                    else:value["original_source_notices"].append(dict(value["original_source_notices"][0]))
+                    path.write_text(json.dumps(document))
+                with patch("bridge.file_probe",side_effect=AssertionError("invalid notice decoder"))as probe:
+                    with self.assertRaises(BridgeRefused):
+                        import_preview(out,"timeline.otio",out/"source-project.json",retained_alab=observation)
+                    probe.assert_not_called()
+
+
+class ImmutableOwnerCaptureTests(unittest.TestCase):
+    """Real bounded file reads; decoder/native results remain simulated."""
+
+    def fixture(self, alab=False):
+        if alab:
+            helper=RetainedAlabObservationTests()
+            self.addCleanup(helper.doCleanups)
+            root,owner,out,project,request,retained,data=helper.portable()
+            return helper,owner,out,request,retained,helper.source_notices
+        helper=PortableOtioTests()
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        return helper,helper.src,helper.out,helper.request,None,None
+
+    def test_owner_JSON_and_Project_digest_consume_the_same_immutable_capture(self):
+        import ci_private_evidence as custody
+        helper,root,_,_,_,_=self.fixture()
+        path=root/"project.json"
+        original=path.read_bytes()
+        changed=original.replace(b"Owned video source",b"Other video source")
+        self.assertNotEqual(original,changed)
+        real=custody.regular
+        observed=[]
+        def replace_after_capture(candidate,limit):
+            result=real(candidate,limit)
+            if candidate==path:
+                observed.append(result)
+                path.write_bytes(changed)
+            return result
+        with patch.object(custody,"regular",side_effect=replace_after_capture), \
+             patch.object(Path,"read_bytes",side_effect=AssertionError("consumer reopened pathname")), \
+             patch("bridge.subprocess.Popen",side_effect=AssertionError("no native process")):
+            project,digest=_retained_bridge.parse_project(root,"project.json")
+        self.assertEqual(project,helper.project)
+        self.assertEqual(digest,hashlib.sha256(original).hexdigest())
+        self.assertEqual(len(observed),1)
+        self.assertEqual(path.read_bytes(),changed)
+        path.write_bytes(original)
+        with patch.object(custody,"regular",side_effect=replace_after_capture), \
+             patch.object(Path,"read_bytes",side_effect=AssertionError("JSON reopened pathname")):
+            self.assertEqual(_retained_bridge.read_json(root,"project.json"),helper.project)
+        self.assertEqual(len(observed),2)
+
+    def test_portable_directory_and_ZIP_copy_captured_bytes_for_MP4_and_ALab(self):
+        for alab in (False,True):
+            with self.subTest(alab=alab):
+                helper,root,out,request,retained,notices=self.fixture(alab)
+                project_raw=(root/"project.json").read_bytes()
+                source_media={row["file"]:(root/row["file"]).read_bytes()for row in request["bindings"]}
+                real_read=Path.read_bytes
+                def no_source_reopen(path):
+                    if path.is_relative_to(root):raise AssertionError("copy/parse reopened owner source")
+                    return real_read(path)
+                with patch.object(Path,"read_bytes",no_source_reopen), \
+                     patch("bridge.shutil.copyfile",side_effect=AssertionError("copyfile reopened source")), \
+                     patch("bridge.file_probe",return_value=VIDEO_INFO)as probe, \
+                     patch("bridge.subprocess.Popen",side_effect=AssertionError("no native process")):
+                    result=export_portable(root,request,out,retained_alab=retained,source_notices=notices)
+                self.assertEqual((out/"source-project.json").read_bytes(),project_raw)
+                with zipfile.ZipFile(out/"portable-cut.zip")as archive:
+                    self.assertEqual(archive.read("source-project.json"),project_raw)
+                    for source,raw in source_media.items():
+                        name="media/"+hashlib.sha256(raw).hexdigest()+Path(source).suffix
+                        self.assertEqual(archive.read(name),raw)
+                        self.assertEqual((out/name).read_bytes(),raw)
+                    if alab:
+                        for role,name,_,_ in _retained_bridge._ALAB_SOURCE_NOTICES:
+                            self.assertEqual(archive.read(name),notices[role])
+                self.assertEqual(probe.call_count,0 if alab else len(request["bindings"]))
+                self.assertEqual(result["portable_zip_sha256"],hashlib.sha256((out/"portable-cut.zip").read_bytes()).hexdigest())
+
+    def test_input_replacement_after_capture_cannot_publish_a_rebased_portable_cut(self):
+        for kind in ("project","otio","media"):
+            with self.subTest(kind=kind):
+                helper,root,out,request,_,_=self.fixture()
+                target=root/{"project":"project.json","otio":"baseline.otio","media":"original.mp4"}[kind]
+                before=target.read_bytes()
+                real=_retained_bridge._admitted_video_probe
+                changed=[]
+                def replace_before_existing_probe(path,retained,**kwargs):
+                    if not changed:
+                        target.write_bytes(before+b" ")
+                        changed.append(True)
+                    return real(path,retained,**kwargs)
+                with patch.object(_retained_bridge,"_admitted_video_probe",side_effect=replace_before_existing_probe), \
+                     patch("bridge.file_probe",return_value=VIDEO_INFO), \
+                     patch("bridge.subprocess.Popen",side_effect=AssertionError("no native process")):
+                    with self.assertRaisesRegex(BridgeRefused,"Original source changed|Owner media changed"):
+                        export_portable(root,request,out)
+                self.assertEqual(changed,[True])
+                self.assertFalse(out.exists())
+                self.assertEqual(target.read_bytes(),before+b" ")
+
+        with self.subTest(alias="identical_media_bindings_remain_admitted"):
+            helper,root,out,request,_,_=self.fixture()
+            real=_retained_bridge.capture_owner_original
+            observed=[]
+            def remember_media(*args,**kwargs):
+                result=real(*args,**kwargs)
+                if args[1]=="original.mp4":
+                    observed.append((result[0],result[2]["sha256"],len(result[1])))
+                return result
+            with patch.object(_retained_bridge,"capture_owner_original",side_effect=remember_media), \
+                 patch("bridge.file_probe",return_value=VIDEO_INFO), \
+                 patch("bridge.subprocess.Popen",side_effect=AssertionError("no native process")):
+                result=export_portable(root,request,out)
+            self.assertEqual(len(observed),2)
+            self.assertEqual(observed[0],observed[1])
+            self.assertEqual(result["verified_media_refs"],2)
+            manifest=json.loads((out/"bridge-manifest.json").read_bytes())
+            self.assertTrue(manifest["original_project_unchanged"])
+            self.assertEqual(manifest["source_media_count"],1)
+
+        with self.subTest(alias="project_A_then_OTIO_B_same_path"):
+            helper,root,out,request,_,_=self.fixture()
+            project_path=root/request["project"]
+            project_original=project_path.read_bytes()
+            otio_original=(root/request["otio"]).read_bytes()
+            request["otio"]=request["project"]
+            self.assertNotEqual(project_original,otio_original)
+            real=_retained_bridge.capture_original
+            captured=[]
+            def replace_after_first_capture(path,budget):
+                result=real(path,budget)
+                if path==project_path:
+                    captured.append(result[0])
+                    if len(captured)==1:
+                        project_path.write_bytes(otio_original)
+                return result
+            with patch.object(_retained_bridge,"capture_original",side_effect=replace_after_first_capture), \
+                 patch("bridge.file_probe",side_effect=AssertionError("alias mismatch before native observation"))as probe, \
+                 patch("bridge.subprocess.Popen",side_effect=AssertionError("no native process")):
+                with self.assertRaisesRegex(BridgeRefused,"Repeated original path changed between captures"):
+                    export_portable(root,request,out)
+            self.assertEqual(captured,[project_original,otio_original])
+            probe.assert_not_called()
+            self.assertFalse(out.exists())
+            self.assertEqual(project_path.read_bytes(),otio_original)
+
+        with self.subTest(alias="media_A_then_media_B_same_path"):
+            helper,root,out,request,_,_=self.fixture()
+            media=root/"original.mp4"
+            original=media.read_bytes()
+            replacement=original+b" changed for the second binding"
+            replacement_sha=hashlib.sha256(replacement).hexdigest()
+            second=dict(helper.project["assets"][0])
+            second.update(id=ID(51),content_sha256=replacement_sha)
+            helper.project["assets"].append(second)
+            helper.save()
+            request["bindings"][1].update(asset_id=ID(51),sha256=replacement_sha)
+            real=_retained_bridge.capture_owner_original
+            captured=[]
+            def replace_before_second_media(*args,**kwargs):
+                if args[1]=="original.mp4" and len(captured)==1:
+                    media.write_bytes(replacement)
+                result=real(*args,**kwargs)
+                if args[1]=="original.mp4":
+                    captured.append(result[1])
+                return result
+            with patch.object(_retained_bridge,"capture_owner_original",side_effect=replace_before_second_media), \
+                 patch("bridge.file_probe",return_value=VIDEO_INFO)as probe, \
+                 patch("bridge.subprocess.Popen",side_effect=AssertionError("no native process")):
+                with self.assertRaisesRegex(BridgeRefused,"Repeated original path changed between captures"):
+                    export_portable(root,request,out)
+            self.assertEqual(captured,[original,replacement])
+            self.assertEqual(probe.call_count,1)
+            self.assertFalse(out.exists())
+            self.assertEqual(media.read_bytes(),replacement)
+
+    def test_ALab_notices_validate_captured_bytes_without_a_second_open(self):
+        import ci_private_evidence as custody
+        helper,root,out,request,retained,notices=self.fixture(True)
+        export_portable(root,request,out,retained_alab=retained,source_notices=notices)
+        manifest=json.loads((out/"bridge-manifest.json").read_bytes())
+        role,name,_,_=_retained_bridge._ALAB_SOURCE_NOTICES[0]
+        target=out/name
+        original=target.read_bytes()
+        real=custody.regular
+        calls=[]
+        def replace_after_capture(path,limit):
+            result=real(path,limit)
+            if path==target:
+                target.write_bytes(b"x"*len(original))
+                calls.append(path)
+            return result
+        real_open=Path.open
+        def no_read_open(path,mode="r",*args,**kwargs):
+            if path==target and "r"in mode:raise AssertionError("notice reopened after capture")
+            return real_open(path,mode,*args,**kwargs)
+        with patch.object(custody,"regular",side_effect=replace_after_capture), \
+             patch.object(Path,"open",no_read_open):
+            _retained_bridge._require_alab_source_notices(out,manifest,retained)
+        self.assertEqual(calls,[target])
+        self.assertEqual(target.read_bytes(),b"x"*len(original))
+        with self.assertRaises(BridgeRefused):
+            _retained_bridge._require_alab_source_notices(out,manifest,retained)
+        self.assertEqual(notices[role],original)
+
+    def test_shared_capture_rejects_namespace_replacement_link_growth_and_shortening(self):
+        import mlt_official_runtime_intake as intake
+        import stat
+        for kind in ("replacement","link","growth","shortening"):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory()as folder:
+                path=Path(folder).resolve()/"source.bin"
+                path.write_bytes(b"original")
+                real_open,real_read,real_lstat=intake.os.open,intake.os.read,Path.lstat
+                state={"opened":False,"read":False}
+                def opened(candidate,flags,*args,**kwargs):
+                    result=real_open(candidate,flags,*args,**kwargs)
+                    if Path(candidate)==path:state["opened"]=True
+                    return result
+                def namespace(candidate,*args,**kwargs):
+                    value=real_lstat(candidate,*args,**kwargs)
+                    if candidate==path and state["opened"]and kind in ("replacement","link"):
+                        attrs={key:getattr(value,key)for key in ("st_dev","st_ino","st_size","st_mode","st_uid","st_gid","st_mtime_ns","st_ctime_ns")}
+                        if kind=="replacement":attrs["st_ino"]+=1
+                        else:attrs["st_mode"]=stat.S_IFLNK|0o777
+                        return SimpleNamespace(**attrs)
+                    return value
+                def read(fd,limit):
+                    value=real_read(fd,limit)
+                    if state["opened"]and not state["read"]:
+                        state["read"]=True
+                        if kind=="growth":
+                            with path.open("ab")as output:output.write(b"grew")
+                        elif kind=="shortening":path.write_bytes(b"x")
+                    return value
+                with patch.object(intake.os,"open",side_effect=opened), \
+                     patch.object(intake.os,"read",side_effect=read), \
+                     patch.object(Path,"lstat",namespace):
+                    with self.assertRaises(BridgeRefused)as caught:
+                        _retained_bridge.capture_original(path,64)
+                self.assertIsInstance(caught.exception.__cause__,intake.IntakeError)
+                self.assertTrue(state["opened"])
+                self.assertTrue(state["read"])
+
+
+class CapturedMp4ProbeTests(unittest.TestCase):
+    """Synthetic protocol controls; no MP4/NLE acceptance is inferred."""
+    def portable(self,kind=PortableOtioTests):
+        helper=kind(methodName="runTest")
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        return helper
+
+    def test_mp4_export_probes_exact_captured_stdin_across_A_B_A_path_replacement(self):
+        helper=self.portable()
+        first=helper.media.read_bytes()
+        replacement=first+b" different pathname bytes during ffprobe"
+        calls=[]
+        def observe(args,*,deadline,input_bytes,capture=None):
+            self.assertEqual(input_bytes,first)
+            self.assertEqual(args[-1],"pipe:0")
+            self.assertNotIn(str(helper.media),args)
+            self.assertEqual(args[args.index("-protocol_whitelist")+1],"pipe")
+            calls.append((args,input_bytes,deadline))
+            if "-count_frames" not in args:
+                self.assertIn("-count_packets",args)
+                helper.media.write_bytes(replacement)
+                return VideoReadbackTests.header(nb_frames="90")
+            self.assertEqual(helper.media.read_bytes(),replacement)
+            helper.media.write_bytes(first)
+            return VideoReadbackTests.decoded(nb_read_frames="90")
+        with patch("bridge._probe_output",side_effect=observe), \
+             patch("bridge.subprocess.Popen",side_effect=AssertionError("protocol fixture only")):
+            exported=export_portable(helper.src,helper.request,helper.out)
+        self.assertEqual(len(calls),2*len(helper.request["bindings"]))
+        for metadata,decoded in zip(calls[::2],calls[1::2]):
+            self.assertIs(metadata[1],decoded[1])
+            self.assertEqual(metadata[2],decoded[2])
+        digest=hashlib.sha256(first).hexdigest()
+        manifest=json.loads((helper.out/"bridge-manifest.json").read_bytes())
+        self.assertIs(manifest["external_program_executed"],True)
+        self.assertIs(manifest["nle_import_verified"],False)
+        self.assertIs(manifest["publishing_authorized"],False)
+        self.assertTrue(all(row["source_sha256"]==digest and row["bytes"]==len(first)
+                            for row in manifest["bound_media"]))
+        self.assertEqual((helper.out/f"media/{digest}.mp4").read_bytes(),first)
+        with zipfile.ZipFile(helper.out/"portable-cut.zip")as zipped:
+            self.assertEqual(zipped.read(f"media/{digest}.mp4"),first)
+        self.assertEqual(exported["verified_media_refs"],len(helper.request["bindings"]))
+        with self.subTest(profile="empty_export_has_no_probe"):
+            empty=self.portable()
+            empty.request["bindings"]=[]
+            with patch("bridge._probe_output",side_effect=AssertionError("no bound media to observe"))as probe:
+                export_portable(empty.src,empty.request,empty.out)
+            probe.assert_not_called()
+            empty_manifest=json.loads((empty.out/"bridge-manifest.json").read_bytes())
+            self.assertIs(empty_manifest["external_program_executed"],False)
+            self.assertEqual(empty_manifest["bound_media"],[])
+
+    def test_import_and_native_preview_probe_the_same_verified_source_bytes(self):
+        for native in (False,True):
+            with self.subTest(native=native):
+                helper=self.portable(BoundedKdenliveCutTests if native else PortableOtioTests)
+                if native:helper.prepare()
+                else:helper.export()
+                seen=[]
+                def check(path,*,original_bytes=None):
+                    self.assertIs(type(original_bytes),bytes)
+                    self.assertEqual(original_bytes,path.read_bytes())
+                    self.assertEqual(hashlib.sha256(original_bytes).hexdigest(),path.stem)
+                    seen.append((path,original_bytes))
+                    return dict(VIDEO_INFO)
+                with patch("bridge.file_probe",side_effect=check), \
+                     patch("bridge.subprocess.Popen",side_effect=AssertionError("protocol fixture only")):
+                    if native:
+                        result=preview_kdenlive_cut(helper.out,helper.raw,helper.raw_request(),
+                            helper.out/"source-project.json",authorized_media_roots=(helper.out,helper.raw))
+                    else:
+                        result=import_preview(helper.out,"timeline.otio",helper.out/"source-project.json")
+                self.assertTrue(seen)
+                self.assertEqual(result["native_change_proposals"],[])
+                self.assertTrue(all(row[1]==seen[0][1]for row in seen))
+        with self.subTest(retained_alab="same_capture_without_new_decoder"):
+            import ci_private_evidence as custody
+            helper=RetainedAlabObservationTests()
+            self.addCleanup(helper.doCleanups)
+            _,owner,out,_,request,retained,_=helper.portable()
+            export_portable(owner,request,out,retained_alab=retained,source_notices=helper.source_notices)
+            self.assertIs(json.loads((out/"bridge-manifest.json").read_bytes())["external_program_executed"],False)
+            real=custody.regular
+            captured=[]
+            def capture(path,budget):
+                result=real(path,budget)
+                if path.parent==out/"media":captured.append(path)
+                return result
+            with patch.object(custody,"regular",side_effect=capture), \
+                 patch.object(type(retained),"probe",side_effect=AssertionError("retained bytes reopened")), \
+                 patch("bridge.subprocess.Popen",side_effect=AssertionError("retained media decoded again")):
+                result=import_preview(out,"timeline.otio",out/"source-project.json",retained_alab=retained)
+            self.assertEqual(result["native_change_proposals"],[])
+            self.assertEqual(len(captured),2)
+            self.assertEqual(len(set(captured)),2)
+
+    def test_native_RAW_alias_preserves_the_first_capture_and_accepts_only_identical_bytes(self):
+        for changed in (False,True):
+            with self.subTest(alias="different_bytes"if changed else"same_bytes"):
+                helper=self.portable(BoundedKdenliveCutTests)
+                helper.prepare()
+                path=helper.raw/"received.otio"
+                first=path.read_bytes()
+                second=json.loads(first)
+                second["name"]="Changed content at the same native RAW pathname"
+                second=json.dumps(second,sort_keys=True).encode()
+                self.assertNotEqual(first,second)
+                request=helper.raw_request()
+                request["edited_otio"]=request["received_otio"]
+                request["edited_sha256"]=hashlib.sha256(second if changed else first).hexdigest()
+                real=_retained_bridge.capture_owner_original
+                captures=[]
+                def capture(*args,**kwargs):
+                    result=real(*args,**kwargs)
+                    if result[0]==path:
+                        captures.append(result[1])
+                        if changed and len(captures)==1:path.write_bytes(second)
+                    return result
+                with patch.object(_retained_bridge,"capture_owner_original",side_effect=capture), \
+                     patch("bridge.file_probe",return_value=VIDEO_INFO), \
+                     patch("bridge.subprocess.Popen",side_effect=AssertionError("RAW fixture only")):
+                    if changed:
+                        with self.assertRaisesRegex(BridgeRefused,"Repeated original path changed"):
+                            preview_kdenlive_cut(helper.out,helper.raw,request,
+                                helper.out/"source-project.json",authorized_media_roots=(helper.out,helper.raw))
+                    else:
+                        result=preview_kdenlive_cut(helper.out,helper.raw,request,
+                            helper.out/"source-project.json",authorized_media_roots=(helper.out,helper.raw))
+                        self.assertEqual(result["native_change_proposals"],[])
+                        self.assertEqual(result["received_otio_sha256"],result["edited_otio_sha256"])
+                self.assertEqual(captures,[first,second]if changed else[first,first])
+                self.assertEqual(path.read_bytes(),second if changed else first)
+
+    def test_mp4_input_budget_and_types_reject_before_any_probe(self):
+        for raw in (b"",bytearray(b"x"),"x",b"123456789"):
+            with self.subTest(type=type(raw).__name__,length=len(raw)), \
+                 patch("bridge.MAX_MEDIA",8),patch("bridge._probe_output")as probe:
+                with self.assertRaises(BridgeRefused):
+                    file_probe(Path("not-reopened.mp4"),original_bytes=raw)
+                probe.assert_not_called()
+        original=OSError("source capture failed")
+        with patch("bridge.capture_original",side_effect=original)as captured, \
+             patch("bridge._probe_output")as probe:
+            with self.assertRaises(OSError)as raised:file_probe(Path("original.mp4"))
+        self.assertIs(raised.exception,original)
+        captured.assert_called_once()
+        probe.assert_not_called()
+
+    def test_shared_executor_default_32MiB_and_explicit_256MiB_are_bounded_before_spawn(self):
+        import manim_native_readback as executor
+        # One real bounded byte value proves the old default has not widened.
+        raw=b"x"*(32*1024*1024+1)
+        with patch.object(executor.subprocess,"Popen")as start:
+            with self.assertRaises(executor.ReadbackError):
+                executor.run_bounded(["not-started"],32,input_bytes=raw)
+            start.assert_not_called()
+        sentinel=OSError("only a startup boundary witness")
+        original={}
+        with patch.object(executor.subprocess,"Popen",side_effect=sentinel)as start:
+            with self.assertRaises(OSError)as raised:
+                executor.run_bounded(["not-started"],32,input_bytes=raw,capture=original,
+                                     max_stdin_bytes=256*1024*1024)
+        self.assertIs(raised.exception,sentinel)
+        start.assert_called_once()
+        self.assertEqual(original["state"],"NOT_STARTED")
+        self.assertEqual(original["stdin_bytes"],len(raw))
+        del raw
+        for limit in (False,None,0,-1,256*1024*1024+1):
+            with self.subTest(limit=limit),patch.object(executor.subprocess,"Popen")as start:
+                with self.assertRaises(executor.ReadbackError):
+                    executor.run_bounded(["not-started"],32,input_bytes=b"x",max_stdin_bytes=limit)
+                start.assert_not_called()
+
+    def test_shared_executor_sends_one_exact_original_stdin_and_retains_its_terminal(self):
+        raw=bytes(range(256))*512
+        digest=hashlib.sha256(raw).hexdigest()
+        capture={}
+        started=[]
+        real=subprocess.Popen
+        def once(*args,**kwargs):
+            child=real(*args,**kwargs);started.append(child);return child
+        argv=[sys.executable,"-I","-c",
+              "import hashlib,sys; data=sys.stdin.buffer.read(); "
+              "sys.stdout.write(hashlib.sha256(data).hexdigest())"]
+        with patch("bridge.subprocess.Popen",side_effect=once):
+            observed=_probe_output(argv,input_bytes=raw,capture=capture)
+        self.assertEqual(len(started),1)
+        self.assertEqual(observed,digest.encode("ascii"))
+        self.assertEqual(capture["argv"],argv)
+        self.assertEqual((capture["stdin_bytes"],capture["stdin_sha256"]),(len(raw),digest))
+        self.assertEqual(capture["stdout"],observed)
+        self.assertEqual(capture["stderr"],b"")
+        self.assertEqual(capture["terminal"]["exit_code"],0)
+        self.assertTrue(capture["terminal"]["stdin_complete"])
+        self.assertTrue(capture["terminal"]["pipes_closed"])
+        self.assertIsNotNone(started[0].returncode)
+
+    def test_shared_executor_feed_error_retains_known_exit_and_does_not_redispatch(self):
+        import manim_native_readback as executor
+        class FailingInput(io.BytesIO):
+            def write(self,data):raise OSError("original feed failure")
+        class Child:
+            def __init__(self):
+                self.stdin=FailingInput();self.stdout=io.BytesIO(b"partial JSON")
+                self.stderr=io.BytesIO(b"original stderr");self.returncode=7
+            def wait(self,timeout=None):return self.returncode
+            def poll(self):return self.returncode
+            def kill(self):raise AssertionError("known terminal must not be killed")
+        child=Child();capture={}
+        with patch.object(executor.subprocess,"Popen",return_value=child)as start:
+            with self.assertRaises(BridgeRefused)as raised:
+                _probe_output(["ffprobe","pipe:0"],input_bytes=b"original",capture=capture)
+        start.assert_called_once()
+        self.assertIsInstance(raised.exception.__cause__,executor.ReadbackError)
+        self.assertEqual(capture["terminal"]["exit_code"],7)
+        self.assertFalse(capture["terminal"]["stdin_complete"])
+        self.assertIn("write:OSError",capture["terminal"]["pipe_errors"])
+        self.assertEqual(capture["stdout"],b"partial JSON")
+        self.assertEqual(capture["stderr"],b"original stderr")
+        self.assertTrue(all(stream.closed for stream in (child.stdin,child.stdout,child.stderr)))
+
+    def test_shared_executor_incomplete_pipes_keep_known_exit_separate_from_closure(self):
+        import manim_native_readback as executor
+        class PendingThread:
+            def __init__(self,*args,**kwargs):self.joins=[]
+            def start(self):pass
+            def join(self,timeout=None):
+                self.joins.append(timeout)
+                if timeout is None:raise AssertionError("unbounded join")
+            def is_alive(self):return True
+        class Child:
+            returncode=0
+            def __init__(self):
+                self.stdout=io.BytesIO(b"");self.stderr=io.BytesIO(b"")
+            def wait(self,timeout=None):return 0
+            def poll(self):return 0
+            def kill(self):raise AssertionError("known exit remains known")
+        threads=[]
+        def thread(*args,**kwargs):
+            result=PendingThread(*args,**kwargs);threads.append(result);return result
+        child=Child();capture={}
+        try:
+            with patch.object(executor.subprocess,"Popen",return_value=child)as start, \
+                 patch.object(executor.threading,"Thread",side_effect=thread):
+                with self.assertRaises(BridgeRefused):
+                    _probe_output(["ffprobe","pipe:0"],capture=capture)
+            start.assert_called_once()
+            self.assertEqual(capture["terminal"]["exit_code"],0)
+            self.assertFalse(capture["terminal"]["pipes_closed"])
+            self.assertFalse(capture["terminal"]["whole_process_completed"])
+            self.assertTrue(all(t.joins and all(x is not None and x>=0 for x in t.joins)for t in threads))
+        finally:
+            # These are owned BytesIO fixtures, never cross-thread native pipes.
+            child.stdout.close();child.stderr.close()
+
+    def test_probe_primary_and_closed_diagnostics_survive_secondary_capture_failure(self):
+        import manim_native_readback as executor
+        class RejectedCapture(dict):
+            def update(self,*args,**kwargs):raise SystemExit("secondary custody failure")
+        originals=[OSError("PRIVATE_OWNER_PATH"),executor.ReadbackError("original readback failure"),
+                   executor.BoundedProcessExitError("original exit7"),KeyboardInterrupt(),SystemExit(9)]
+        for original in originals:
+            with self.subTest(type=type(original).__name__):
+                def failed(*args,**kwargs):
+                    kwargs["capture"].update({"state":"TERMINAL_OBSERVED","stdout":b"prefix",
+                        "stderr":b"private original stderr","terminal":{"exit_code":7,"pipes_closed":False}})
+                    raise original
+                with patch.object(executor,"run_bounded",side_effect=failed)as run:
+                    with self.assertRaises(BaseException)as raised:
+                        _probe_output(["ffprobe","pipe:0"],capture=RejectedCapture())
+                run.assert_called_once()
+                if isinstance(original,(OSError,executor.ReadbackError)):
+                    self.assertIsInstance(raised.exception,BridgeRefused)
+                    self.assertIs(raised.exception.__cause__,original)
+                    self.assertNotIn("PRIVATE_OWNER_PATH",str(raised.exception))
+                else:self.assertIs(raised.exception,original)
+                self.assertEqual(original.otio_probe_original["terminal"]["exit_code"],7)
+                self.assertEqual(original.otio_probe_original["stderr"],b"private original stderr")
+        custody_error=OSError("success cannot hide failed custody")
+        class FailedSuccessCapture(dict):
+            def update(self,*args,**kwargs):raise custody_error
+        def success(*args,**kwargs):
+            kwargs["capture"].update({"stdout":b"{}","stderr":b"","terminal":{"exit_code":0}})
+            return b"{}",{}
+        with patch.object(executor,"run_bounded",side_effect=success)as run:
+            with self.assertRaises(OSError)as raised:
+                _probe_output(["ffprobe","pipe:0"],capture=FailedSuccessCapture())
+        self.assertIs(raised.exception,custody_error)
+        run.assert_called_once()
+
+    def test_metadata_stderr_rejection_remains_primary_over_failed_capture(self):
+        import manim_native_readback as executor
+        class RejectedCapture(dict):
+            def update(self,*args,**kwargs):raise KeyboardInterrupt()
+        def warning(*args,**kwargs):
+            kwargs["capture"].update({"stdout":b"{}","stderr":b"PRIVATE_OWNER_PATH decode warning",
+                                      "terminal":{"exit_code":0,"pipes_closed":True}})
+            return b"{}",{}
+        with patch.object(executor,"run_bounded",side_effect=warning)as run:
+            with self.assertRaisesRegex(BridgeRefused,"decode error")as raised:
+                _probe_output(["ffprobe","pipe:0"],capture=RejectedCapture())
+        run.assert_called_once()
+        self.assertNotIn("PRIVATE_OWNER_PATH",str(raised.exception))
+        self.assertEqual(raised.exception.otio_probe_original["terminal"]["exit_code"],0)
 
 
 if __name__=="__main__":unittest.main()

@@ -43,7 +43,7 @@ def complete_manifest(project: dict, rows: list[dict]) -> dict:
     return {
         "schema": "motionwright.otio-portable-media-bridge/1",
         "output_profile": "portable-media-cut-v2",
-        "nle_import_verified": False, "external_program_executed": False,
+        "nle_import_verified": False, "external_program_executed": True,
         "publishing_authorized": False, "missing_scene_ids": [],
         "scene_order": [scene["id"] for scene in project["scenes"]],
         "bound_media": [
@@ -163,11 +163,16 @@ class KdenliveFullyBoundOriginalSourceTests(unittest.TestCase):
 
     def test_native_rights_or_human_approval_never_inferred_from_owner_fixture(self):
         project, rows = self.source()
-        report = require_full_original_manifest(
-            complete_manifest(project, rows), project, SOURCE_SHA,
-        )
+        manifest = complete_manifest(project, rows)
+        self.assertIs(manifest["external_program_executed"], True)
+        report = require_full_original_manifest(manifest, project, SOURCE_SHA)
         self.assertFalse(report["human_or_rights_independent_acceptance"])
         self.assertFalse(report["actual_Kdenlive_native_editor_import_or_reopen"])
+        self.assertFalse(report["release_authorized"])
+        stale_effect = copy.deepcopy(manifest)
+        stale_effect["external_program_executed"] = False
+        with self.assertRaisesRegex(KdenliveCompleteFixtureRefused, "three_bound"):
+            require_full_original_manifest(stale_effect, project, SOURCE_SHA)
 
     def test_disposable_linux_G2_gate_rejects_simulated_windows_on_all_hosts(self):
         with mock.patch.object(sys, "platform", "win32"):

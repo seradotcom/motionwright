@@ -23,6 +23,12 @@ import time
 from urllib.parse import unquote, urlsplit
 import zipfile
 
+# The existing shared custodian owns the sole held-FD read implementation.
+# Resolve the trusted module location, never a source-data pathname.
+_TOOLING_DIRECTORY = str(Path(__file__).resolve().parents[1])
+if _TOOLING_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TOOLING_DIRECTORY)
+
 SCHEMA="motionwright.otio-portable-media-bridge/1"
 HEX=re.compile(r"^[a-f0-9]{64}$")
 UUID=re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
@@ -58,21 +64,28 @@ def exact(value:object,fields:set[str],label:str)->dict:
            f"{label} fields are missing or unsupported")
     return value
 def sha_bytes(data:bytes)->str:return hashlib.sha256(data).hexdigest()
-def fingerprint(path:Path,budget:int)->tuple[str,int]:
+def capture_original(path:Path,budget:int)->tuple[bytes,dict]:
+    """Capture immutable bytes and their original held-handle observation once.
+
+    The preliminary checks retain the bridge's existing nonempty/budget error
+    contract. Only the shared regular/capture_regular result supplies content
+    and identity; consumers never reopen this pathname to parse or copy it.
+    """
     insist(path.is_file() and not path.is_symlink(),f"Missing or unsafe file: {path.name}")
     size=path.stat().st_size
     insist(0<size<=budget,f"File exceeds byte budget: {path.name}")
-    digest=hashlib.sha256()
-    with path.open("rb") as stream:
-        remaining=size
-        while remaining:
-            block=stream.read(min(1024*1024,remaining))
-            insist(bool(block),f"File shortened during digest verification: {path.name}")
-            digest.update(block)
-            remaining-=len(block)
-        insist(not stream.read(1),f"File grew during digest verification: {path.name}")
-    insist(path.stat().st_size==size,f"File changed during digest verification: {path.name}")
-    return digest.hexdigest(),size
+    import ci_private_evidence as custody
+    from mlt_official_runtime_intake import IntakeError
+    try:
+        raw,observed=custody.regular(path.absolute(),budget)
+    except (custody.CustodyRejected,IntakeError) as error:
+        raise BridgeRefused(f"File changed or became unsafe during retained capture: {path.name}") from error
+    insist(0<len(raw)<=budget,f"File exceeds byte budget: {path.name}")
+    return raw,observed
+
+def fingerprint(path:Path,budget:int)->tuple[str,int]:
+    raw,observed=capture_original(path,budget)
+    return observed["sha256"],len(raw)
 def owner_file(root:Path,name:str,budget:int,extension:set[str]|None=None)->Path:
     insist(isinstance(name,str) and 1<=len(name)<=250,
            "Owner file requires a bounded relative path")
@@ -84,10 +97,19 @@ def owner_file(root:Path,name:str,budget:int,extension:set[str]|None=None)->Path
     for component in rel.parts:
         path=path/component
         insist(not path.is_symlink(),"Symlinked source paths are never admitted")
-    fingerprint(path,budget)
+    # This is a pathname locator, not an observation or content receipt.
+    # Reading consumers must use capture_original and keep its immutable bytes.
+    insist(path.is_file() and not path.is_symlink(),f"Missing or unsafe file: {path.name}")
+    insist(0<path.stat().st_size<=budget,f"File exceeds byte budget: {path.name}")
     return path
+
+def capture_owner_original(root:Path,name:str,budget:int,
+                           extension:set[str]|None=None)->tuple[Path,bytes,dict]:
+    path=owner_file(root,name,budget,extension)
+    raw,observed=capture_original(path,budget)
+    return path,raw,observed
 def read_json(root:Path,name:str)->dict:
-    data=owner_file(root,name,MAX_JSON).read_bytes()
+    _,data,_=capture_owner_original(root,name,MAX_JSON)
     result=strict_json(data,"owner JSON")
     insist(isinstance(result,dict),"Expected a bounded JSON object")
     return result
@@ -115,65 +137,78 @@ def rtc(value:int,rate:int)->dict:
 def trange(start:int,duration:int,rate:int)->dict:
     return {"OTIO_SCHEMA":"TimeRange.1","duration":rtc(duration,rate),
             "start_time":rtc(start,rate)}
-def _probe_output(args:list[str],deadline:float|None=None)->bytes:
-    """Bound readback output while the process runs, including corrupt-file logs."""
-    if deadline is None:deadline=time.monotonic()+PROBE_TIMEOUT_SECONDS
-    insist(time.monotonic()<deadline,"Media video readback exceeded its bounded time budget")
-    try:
-        process=subprocess.Popen(args,stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    except OSError:
-        raise BridgeRefused("A bounded ffprobe video readback is unavailable")from None
-    output=[b"",b""]
-    overflow=threading.Event()
-    read_failed=threading.Event()
-    def stop()->None:
-        try:process.kill()
-        except OSError:pass
-    def collect(stream,index:int)->None:
-        try:
-            output[index]=stream.read(MAX_JSON+1)
-            if len(output[index])>MAX_JSON:
-                overflow.set()
-                stop()
-        except OSError:
-            read_failed.set()
-            stop()
-        finally:
-            stream.close()
-    readers=[threading.Thread(target=collect,args=(stream,index),daemon=True)
-             for index,stream in enumerate((process.stdout,process.stderr))]
-    timed_out=False
-    started=[]
-    with process:
-        try:
-            for reader in readers:
-                reader.start()
-                started.append(reader)
-            process.wait(timeout=max(0,deadline-time.monotonic()))
-        except subprocess.TimeoutExpired:
-            timed_out=True
-        finally:
-            if process.poll() is None:
-                stop()
-                process.wait()
-            for reader in started:reader.join()
-    insist(not timed_out and not overflow.is_set() and not read_failed.is_set(),
-           "Media video readback exceeded its bounded time or output budget")
-    # ffprobe may return zero after reporting a damaged packet or decoder error.
-    # Never include those diagnostics, which can contain private paths, in errors.
-    insist(process.returncode==0 and not output[1].strip(),
-           "Media video readback failed or reported a decode error")
-    return output[0]
+def _probe_output(args:list[str],deadline:float|None=None,*,
+                  input_bytes:bytes|None=None,capture:dict|None=None)->bytes:
+    """Use the existing decoder executor for one original readback attempt.
 
-def file_probe(media:Path)->dict:
-    # Metadata and complete decode share the existing whole-source time budget.
+    This adapter keeps the bridge's closed public error messages. The identical
+    original executor exception remains their cause; interrupts remain the same
+    object. A capture is an in-memory original, not a persisted custody receipt.
+    """
+    from manim_native_readback import ReadbackError, run_bounded
+    if deadline is None:deadline=time.monotonic()+PROBE_TIMEOUT_SECONDS
+    remaining=deadline-time.monotonic()
+    insist(remaining>0,"Media video readback exceeded its bounded time budget")
+    insist(input_bytes is None or(type(input_bytes)is bytes and
+           0<len(input_bytes)<=MAX_MEDIA),"Media video stdin exceeds its byte budget")
+    insist(capture is None or(isinstance(capture,dict)and not capture),
+           "Media video readback capture must be new")
+    original={}
+    primary=None
+    executor_failure=False
+    decoded=None
+    try:
+        decoded,_=run_bounded(args,MAX_JSON,remaining,input_bytes=input_bytes,
+                             capture=original,max_stdin_bytes=MAX_MEDIA)
+        # Decoder warnings/errors are private originals. An exit zero with a
+        # diagnostic cannot establish an admitted clean media observation.
+        insist(not original["stderr"].strip(),
+               "Media video readback failed or reported a decode error")
+    except BaseException as error:
+        primary=error
+        executor_failure=not isinstance(error,BridgeRefused)
+    try:
+        original["argv"]=list(args)
+        original["limits"]={"stdin_bytes":MAX_MEDIA,"stdout_bytes":MAX_JSON,
+                            "stderr_bytes":65536,"work_deadline":deadline,
+                            "cleanup_allowance_seconds":10}
+        if capture is not None:capture.update(original)
+    except BaseException as custody_error:
+        if primary is None:
+            primary=custody_error
+            executor_failure=False
+        else:
+            try:primary.add_note("Secondary media readback custody failure: "+
+                                 type(custody_error).__name__)
+            except BaseException:pass
+    if primary is not None:
+        try:primary.otio_probe_original=original
+        except BaseException:pass
+        if executor_failure and isinstance(primary,(ReadbackError,OSError,subprocess.SubprocessError)):
+            # Preserve the established BridgeRefused/public-diagnostic boundary,
+            # not the old `from None` loss of the original supervision failure.
+            closed=BridgeRefused("A bounded ffprobe video readback failed or reported a decode error")
+            closed.otio_probe_original=original
+            raise closed from primary
+        raise primary
+    return decoded
+
+def file_probe(media:Path,*,original_bytes:bytes|None=None)->dict:
+    # The same immutable original feeds both existing phases. Filesystem
+    # capture has no general wall-time guarantee; no decoder starts after the
+    # existing shared work deadline. A pipe-incompatible MP4 is refused, never
+    # retried through its mutable pathname or transcoded into another source.
     deadline=time.monotonic()+PROBE_TIMEOUT_SECONDS
-    common=["ffprobe","-v","error","-protocol_whitelist","file",
+    if original_bytes is None:original_bytes,_=capture_original(media,MAX_MEDIA)
+    insist(type(original_bytes)is bytes and 0<len(original_bytes)<=MAX_MEDIA,
+           "Media video stdin exceeds its byte budget")
+    common=["ffprobe","-v","error","-protocol_whitelist","pipe",
             "-threads","1","-max_alloc",str(MAX_MEDIA),"-select_streams","v:0"]
+    # Packet counting drains the metadata phase without a second full video
+    # decode. Packet counts never substitute for the decoded frame count below.
     observed=strict_json(_probe_output(common+[
-        "-show_entries","stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames",
-        "-of","json",str(media)],deadline=deadline),"ffprobe")
+        "-count_packets","-show_entries","stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames",
+        "-of","json","pipe:0"],deadline=deadline,input_bytes=original_bytes),"ffprobe")
     streams=observed.get("streams",[])
     insist(isinstance(streams,list) and len(streams)==1 and isinstance(streams[0],dict),
            "Expected exactly one probed video stream")
@@ -197,8 +232,8 @@ def file_probe(media:Path)->dict:
     # video stream. Container nb_frames is a declaration, not observed media.
     decoded=strict_json(_probe_output(common+[
         "-err_detect","explode","-count_frames","-show_entries",
-        "stream=codec_name,width,height,nb_read_frames","-of","json",str(media)],
-        deadline=deadline),
+        "stream=codec_name,width,height,nb_read_frames","-of","json","pipe:0"],
+        deadline=deadline,input_bytes=original_bytes),
         "decoded ffprobe")
     readback=decoded.get("streams",[])
     insist(isinstance(readback,list) and len(readback)==1 and isinstance(readback[0],dict),
@@ -213,10 +248,9 @@ def file_probe(media:Path)->dict:
            "Decoded media frame count differs from the declared source length")
     return {"fps":fps.numerator,"frames":read_count,"width":item["width"],"height":item["height"],
             "codec":"h264"}
-def parse_project(root:Path,name:str)->tuple[dict,str]:
-    path=owner_file(root,name,MAX_JSON)
-    digest,_=fingerprint(path,MAX_JSON)
-    project=strict_json(path.read_bytes(),"Project")
+def _capture_project(root:Path,name:str)->tuple[dict,str,bytes,Path]:
+    path,raw,observed=capture_owner_original(root,name,MAX_JSON)
+    project=strict_json(raw,"Project")
     insist(isinstance(project,dict) and
            all(isinstance(project.get(key),str) and UUID.fullmatch(project[key].lower())
                for key in ("id","generation")) and
@@ -241,6 +275,10 @@ def parse_project(root:Path,name:str)->tuple[dict,str]:
     insist(isinstance(assets,list)and len(assets)<=128,"Native asset ledger is malformed")
     asset_ids=[a.get("id")for a in assets if isinstance(a,dict)]
     insist(len(asset_ids)==len(set(asset_ids)),"Project asset ledger contains duplicate identities")
+    return project,observed["sha256"],raw,path
+
+def parse_project(root:Path,name:str)->tuple[dict,str]:
+    project,digest,_,_=_capture_project(root,name)
     return project,digest
 def validate_existing_otio(project:dict,source:dict)->list[dict]:
     insist(source.get("OTIO_SCHEMA")=="Timeline.1","Existing exporter is not an OTIO Timeline")
@@ -269,14 +307,28 @@ def validate_existing_otio(project:dict,source:dict)->list[dict]:
                "Existing OTIO 24 fps source duration changed")
     return clips
 
-def export_portable(root:Path,request:dict,output:Path)->dict:
+def export_portable(root:Path,request:dict,output:Path,
+                    *,retained_alab:_RetainedAlabObservation|None=None,
+                    source_notices:dict|None=None)->dict:
     root=root.resolve(strict=True)
     insist(root.is_dir() and not output.exists() and output.parent.is_dir() and
            not output.parent.is_symlink(),"Export requires an existing owner root and a new destination")
+    notice_bytes=_validate_alab_source_notices(source_notices,retained_alab)
     entry=exact(request,{"schema","project","otio","bindings","owner_review"},"Portable export request")
     insist(entry["schema"]==SCHEMA,"Unknown portable OTIO export contract")
-    project,project_sha=parse_project(root,entry["project"])
-    original=read_json(root,entry["otio"])
+    input_originals={}
+    def remember_original(path:Path,digest:str,size:int,budget:int)->None:
+        previous=input_originals.get(path)
+        insist(previous is None or previous[:2]==(digest,size),
+               "Repeated original path changed between captures")
+        # The first byte identity remains authoritative. A later use can only
+        # tighten its read budget; it cannot rebase an earlier captured input.
+        input_originals[path]=(digest,size,budget if previous is None else min(previous[2],budget))
+    project,project_sha,project_original,project_path=_capture_project(root,entry["project"])
+    remember_original(project_path,project_sha,len(project_original),MAX_JSON)
+    otio_path,otio_original,otio_observed=capture_owner_original(root,entry["otio"],MAX_JSON)
+    remember_original(otio_path,otio_observed["sha256"],len(otio_original),MAX_JSON)
+    original=strict_json(otio_original,"owner JSON")
     clips=validate_existing_otio(project,original)
     approval=exact(entry["owner_review"],{"reviewer","synthetic_source_allowed"},"Owner review")
     insist(isinstance(approval["reviewer"],str) and
@@ -284,6 +336,8 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
            type(approval["synthetic_source_allowed"])is bool,
            "Explicit source reviewer and synthetic policy required")
     bindings=entry["bindings"]
+    if retained_alab is not None:
+        _validate_alab_project_bindings(project,bindings,retained_alab)
     insist(isinstance(bindings,list) and len(bindings)<=len(clips),
            "Too many video bindings for original scenes")
     asset_by_id={asset["id"]:asset for asset in project.get("assets",[])}
@@ -298,7 +352,7 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
         insist(scene_id in scene_by_id and scene_id not in verified,
                "Binding must target exactly one original project scene")
         asset=asset_by_id.get(asset_id)
-        insist(asset is not None and asset.get("media_type")=="video/mp4"
+        insist(asset is not None and asset.get("media_type")==("video/mp4" if retained_alab is None else "video/quicktime")
                and asset.get("content_sha256")==bind["sha256"]and
                isinstance(bind["sha256"],str) and HEX.fullmatch(bind["sha256"]),
                "Video reference does not match the exact project asset digest")
@@ -311,10 +365,14 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
         if not approval["synthetic_source_allowed"]:
             insist("synthetic" not in rights["license"].lower(),
                    "Synthetic source needs explicit reviewer permission")
-        path=owner_file(root,bind["file"],MAX_MEDIA,{".mp4"})
-        hash_,size=fingerprint(path,MAX_MEDIA)
+        extension=_admitted_video_profile(asset,retained_alab)
+        path,media_original,media_observed=capture_owner_original(root,bind["file"],MAX_MEDIA,{extension})
+        hash_,size=media_observed["sha256"],len(media_original)
         insist(hash_==bind["sha256"],"Owner media was changed after asset admission")
-        probe=file_probe(path)
+        remember_original(path,hash_,size,MAX_MEDIA)
+        probe=_admitted_video_probe(path,retained_alab,original_bytes=media_original)
+        insist(fingerprint(path,MAX_MEDIA)==(hash_,size),
+               "Owner media changed during its existing source observation")
         start=bind["source_start_frame"]
         insist(type(start)is int and 0<=start<=probe["frames"],
                "Owner's original video source offset must be a nonnegative frame")
@@ -322,13 +380,13 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
                      probe["fps"],"media source duration")
         insist(start+count<=probe["frames"],
                "Real original video does not contain the full requested scene interval")
-        relative=f"media/{hash_}.mp4"
+        relative=f"media/{hash_}{extension}"
         existing=media_by_name.get(relative)
         if existing is None:
-            media_by_name[relative]=path
+            media_by_name[relative]=(path,media_original)
             total_bytes+=size
         else:
-            insist(existing.stat().st_size==path.stat().st_size,
+            insist(existing[1]==media_original,
                    "Same source digest points to different video bytes")
         insist(total_bytes<=MAX_TOTAL,"Portable media exceeds aggregate 512 MiB budget")
         verified[scene_id]={
@@ -375,6 +433,8 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
         "Asset rights are owner declarations and must be rechecked by the NLE or receiving workspace.",
         "Only H.264 fixed-frame-rate video and an explicit media mapping are covered; audio tracks, captions, camera rigs, effects, locks, native branch/approval state and unknown NLE import features require separate review.",
     ]
+    if retained_alab is not None:
+        loss.append("This closed benchmark cut selects two original ALab MOV occurrences. The whole original OTIO and its unselected references remain opaque/unavailable outside this cut; no MissingReference or replacement media was fabricated for them. Retained native media observations are reused by exact identity, without a new decode or receiver claim.")
     if unresolved:
         loss.append(f"{len(unresolved)} scene(s) retain MissingReference because no authorized original media was bound; no placeholder media was invented.")
     fidelity=[
@@ -403,7 +463,7 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
     ]
     original["metadata"]["motionwright"].update({
         "property_fidelity":fidelity,
-        "export_profile":"portable-media-cut-v2",
+        "export_profile":_retained_output_profile(retained_alab),
         "source_project_sha256":project_sha,
         "original_scene_count":len(clips),
         "verified_media_clip_count":len(verified),
@@ -414,7 +474,7 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
     })
     manifest={
         "schema":SCHEMA,"source_profile":"conservative-cut-v1",
-        "output_profile":"portable-media-cut-v2",
+        "output_profile":_retained_output_profile(retained_alab),
         "project_id":project["id"],"generation":project["generation"],
         "revision":project["revision"],"project_sha256":project_sha,
         "scene_order":[scene["id"]for scene in project["scenes"]],
@@ -430,42 +490,56 @@ def export_portable(root:Path,request:dict,output:Path)->dict:
         "nle_import_verified":False,
         "otio_live_receiver_readback":"NOT_RUN",
         "original_project_unchanged":True,
-        "external_program_executed":False,
+        "external_program_executed":retained_alab is None and bool(verified),
         "publishing_authorized":False,
     }
+    if retained_alab is not None:
+        manifest["retained_source_binding"]=_retained_source_binding(retained_alab)
+        original["metadata"]["motionwright"]["retained_source_binding"]=_retained_source_binding(retained_alab)
+        manifest["original_source_notices"]=_alab_source_notice_records()
+        original["metadata"]["motionwright"]["original_source_notices"]=_alab_source_notice_records()
     archive_data=json.dumps(original,sort_keys=True,ensure_ascii=False,indent=2).encode()+b"\n"
     manifest["otio_sha256"]=sha_bytes(archive_data)
     with tempfile.TemporaryDirectory(prefix=".mw-portable-cut-",dir=output.parent)as scratch:
         stage=Path(scratch)/"payload"
         stage.mkdir()
         (stage/"media").mkdir()
-        (stage/"timeline.otio").write_bytes(archive_data)
-        src=owner_file(root,entry["project"],MAX_JSON)
-        shutil.copyfile(src,stage/"source-project.json")
-        for rel,path in sorted(media_by_name.items()):
-            shutil.copyfile(path,stage/rel)
-            insist(fingerprint(stage/rel,MAX_MEDIA)[0]==Path(rel).stem,
-                   "Source media changed during portable export copy")
-        (stage/"bridge-manifest.json").write_text(
-            json.dumps(manifest,sort_keys=True,ensure_ascii=False,indent=2)+"\n")
-        (stage/"README.md").write_text(
+        readme=(
             "# Original media-bound OTIO editorial handoff\n\n"
             "Extract the directory before opening timeline.otio. All video files live under media/ "
             "and use exact SHA-256 names. A receiving NLE may need to relink relative targets. "
             "MissingReference is deliberate if no source has been authorized. "
             "This is not a native Motionwright round-trip, an approval to publish, or a "
             "validated NLE import; see bridge-manifest.json for per-property losses.\n")
+        # Preserve the prior platform newline form of these two generated text
+        # files. The original Project, MOV/MP4 and notices remain exact bytes.
+        manifest_text=json.dumps(manifest,sort_keys=True,ensure_ascii=False,indent=2)+"\n"
+        portable_originals={
+            "timeline.otio":archive_data,
+            "source-project.json":project_original,
+            "bridge-manifest.json":manifest_text.replace("\n",os.linesep).encode("utf-8"),
+            "README.md":readme.replace("\n",os.linesep).encode("utf-8"),
+            **notice_bytes,
+            **{name:raw for name,(_,raw)in media_by_name.items()},
+        }
+        for relative,raw in portable_originals.items():
+            (stage/relative).write_bytes(raw)
         with zipfile.ZipFile(stage/"portable-cut.zip","x",compression=zipfile.ZIP_STORED)as zipped:
             for relative in ["README.md","bridge-manifest.json","source-project.json",
-                             "timeline.otio",*sorted(media_by_name)]:
-                content=(stage/relative).read_bytes()
+                             "timeline.otio",*sorted(notice_bytes),*sorted(media_by_name)]:
                 info=zipfile.ZipInfo(relative,date_time=(2026,1,1,0,0,0))
                 info.compress_type=zipfile.ZIP_STORED
                 info.external_attr=0o644<<16
-                zipped.writestr(info,content)
+                zipped.writestr(info,portable_originals[relative])
+        for relative,raw in portable_originals.items():
+            insist(fingerprint(stage/relative,len(raw))==(sha_bytes(raw),len(raw)),
+                   "Portable output differs from its captured original bytes")
         for key in ("timeline.otio","source-project.json","bridge-manifest.json"):
-            insist((stage/key).stat().st_size<MAX_JSON,
+            insist(len(portable_originals[key])<MAX_JSON,
                    "Portable source metadata exceeded bounded review profile")
+        for path,(digest,size,budget)in input_originals.items():
+            insist(fingerprint(path,budget)==(digest,size),
+                   "Original source changed after its portable capture")
         # Windows indexers can transiently lock a freshly closed ZIP.
         # Retry only the local atomic rename, never media work or external jobs.
         for attempt in range(8):
@@ -522,7 +596,8 @@ def _native_cut_commands(original_ids:list[str],observed_order:list[str],
            "Too many source revision updates for bounded OTIO cut")
     return commands
 
-def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
+def import_preview(bundle:Path,edit_name:str,current_project:Path,
+                   *,retained_alab:_RetainedAlabObservation|None=None)->dict:
     insist(current_project.is_file() and not current_project.is_symlink(),
            "A live current Project snapshot is required for a bounded edit proposal")
     insist(bundle.is_dir() and not bundle.is_symlink(),
@@ -530,10 +605,12 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
     root=bundle.resolve(strict=True)
     manifest=read_json(root,"bridge-manifest.json")
     insist(manifest.get("schema")==SCHEMA and
-           manifest.get("output_profile")=="portable-media-cut-v2" and
+           manifest.get("output_profile")==_retained_output_profile(retained_alab) and
            manifest.get("nle_import_verified") is False and
            manifest.get("publishing_authorized") is False,
            "Portable bridge has an unknown, already-published or forged profile")
+    _require_retained_source_binding(manifest,retained_alab)
+    _require_alab_source_notices(root,manifest,retained_alab)
     source,sha=parse_project(root,"source-project.json")
     current_digest,current_bytes=fingerprint(current_project,MAX_JSON)
     insist(current_bytes>0 and current_digest==sha,
@@ -555,13 +632,18 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
                and row.get("asset_id") in original_assets,
                "Original video binding no longer identifies a unique project scene/asset")
         original_asset=original_assets[row["asset_id"]]
-        insist(original_asset.get("media_type")=="video/mp4"
+        insist(original_asset.get("media_type")==("video/mp4" if retained_alab is None else "video/quicktime")
                and original_asset.get("content_sha256")==row.get("source_sha256"),
                "Imported external media does not belong to the original project's SHA-bound asset")
-        local=owner_file(root,row["path"],MAX_MEDIA,{".mp4"})
-        insist(fingerprint(local,MAX_MEDIA)[0]==row["source_sha256"],
+        extension=_admitted_video_profile(original_asset,retained_alab)
+        if retained_alab is not None:
+            insist(row["path"]==f"media/{row['source_sha256']}{extension}",
+                   "Portable media path no longer matches its admitted container profile")
+        local=owner_file(root,row["path"],MAX_MEDIA,{extension})
+        media_original,media_observed=capture_original(local,MAX_MEDIA)
+        insist(media_observed["sha256"]==row["source_sha256"],
                "A relinked video source differs from the immutable owner media digest")
-        probe=file_probe(local)
+        probe=_admitted_video_probe(local,retained_alab,original_bytes=media_original)
         insist(probe["fps"]==row["source_fps"] and probe["frames"]==row["actual_media_frames"],
                "Portable source media stream changed rate or length")
         per_scene[row["scene_id"]]=row
@@ -572,8 +654,15 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path)->dict:
            inherited.get("generation")==source["generation"] and
            inherited.get("revision")==source["revision"] and
            inherited.get("source_project_sha256")==sha and
-           inherited.get("export_profile")=="portable-media-cut-v2",
+           inherited.get("export_profile")==_retained_output_profile(retained_alab),
            "Edited OTIO does not belong to this exact original creative revision")
+    _require_retained_source_binding(inherited,retained_alab)
+    _require_alab_source_notices(root,inherited,retained_alab)
+    if retained_alab is not None:
+        bindings=[{"scene_id":row["scene_id"],"asset_id":row["asset_id"],
+                   "sha256":row["source_sha256"],"source_start_frame":row["source_start_frame"]}
+                  for row in rows]
+        _validate_alab_project_bindings(source,bindings,retained_alab)
     insist(isinstance(manifest.get("property_fidelity"),list)
            and len(manifest["property_fidelity"])==12 and
            inherited.get("property_fidelity")==manifest["property_fidelity"],
@@ -793,7 +882,8 @@ def _nle_resolve_plain_path(path:Path,message:str,*,directory:bool=False)->Path:
     except (OSError,RuntimeError,ValueError):
         raise BridgeRefused(message)from None
 
-def _nle_local_media(raw_parent:Path,target:object,roots:tuple[Path,...])->Path:
+def _nle_local_media(raw_parent:Path,target:object,roots:tuple[Path,...],
+                     *,retained_alab:_RetainedAlabObservation|None=None)->Path:
     _nle_require(isinstance(target,str) and 1<=len(target)<=250
                  and not any(ord(c)<32 for c in target),"unsafe_media_target",
                  "Native media target is absent or outside path bounds")
@@ -826,12 +916,16 @@ def _nle_local_media(raw_parent:Path,target:object,roots:tuple[Path,...])->Path:
             "Native media target contains a link, reparse point or unavailable path")from None
     _nle_require(any(path.is_relative_to(root)for root in roots),"unauthorized_media_root",
                  "Resolved native media target lies outside the backend-authorized roots")
-    _nle_require(path.suffix.lower()==".mp4","unsupported_media_reference",
-                 "Native source must remain the admitted MP4")
+    expected_extension=".mp4" if retained_alab is None else ".mov"
+    _nle_require(retained_alab is None or type(retained_alab)is _RetainedAlabObservation,
+                 "unsupported_media_reference","Native retained source needs validated original observations")
+    _nle_require(path.suffix.lower()==expected_extension,"unsupported_media_reference",
+                 "Native source must retain the admitted container extension")
     return path
 
 def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:Path,
-                         *,authorized_media_roots:tuple[Path,...])->dict:
+                         *,authorized_media_roots:tuple[Path,...],
+                         retained_alab:_RetainedAlabObservation|None=None)->dict:
     """Source-bound data inspection only: no NLE receipt, grant or Project mutation.
 
     A backend resolves the expected hashes and roots from CAS/authority. Neither
@@ -856,25 +950,29 @@ def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:
             "Invalid backend-authorized media root",directory=True))
     roots=tuple(roots)
     snapshots={}
+    def remember_snapshot(path:Path,digest:str,size:int,budget:int)->None:
+        previous=snapshots.get(path)
+        insist(previous is None or previous[:2]==(digest,size),
+               "Repeated original path changed during bounded cut inspection")
+        snapshots[path]=(digest,size,budget if previous is None else min(previous[2],budget))
     def read_bound(root:Path,name:str,expected:object)->tuple[dict,Path]:
         insist(isinstance(expected,str) and HEX.fullmatch(expected),"Expected CAS SHA-256 is missing")
-        path=owner_file(root,name,MAX_JSON)
-        with path.open("rb")as stream:data=stream.read(MAX_JSON+1)
-        insist(0<len(data)<=MAX_JSON and sha_bytes(data)==expected,
+        path,data,observed=capture_owner_original(root,name,MAX_JSON)
+        insist(0<len(data)<=MAX_JSON and observed["sha256"]==expected,
                "Source capsule or native RAW differs from its expected CAS bytes")
-        snapshots[path]=(expected,len(data),MAX_JSON)
+        remember_snapshot(path,expected,len(data),MAX_JSON)
         try:return strict_json(data,"bound native cut data"),path
         except RecursionError:raise BridgeRefused("Native JSON nesting exceeds the bounded parser")from None
     manifest,manifest_path=read_bound(bundle,"bridge-manifest.json",request["capsule_manifest_sha256"])
     original,original_path=read_bound(bundle,"timeline.otio",manifest.get("otio_sha256"))
     # Reuse the established source/rights/fidelity/current-Project/media checks.
     # Its legacy contract and raw metadata requirements are not relaxed.
-    legacy=import_preview(bundle,"timeline.otio",current_project)
+    legacy=import_preview(bundle,"timeline.otio",current_project,retained_alab=retained_alab)
     source,source_sha=parse_project(bundle,"source-project.json")
     for path in (bundle/"source-project.json",current_project):
         hash_,size=fingerprint(path,MAX_JSON)
         insist(hash_==source_sha,"Current or original Project changed during cut inspection")
-        snapshots[path]=(hash_,size,MAX_JSON)
+        remember_snapshot(path,hash_,size,MAX_JSON)
     received,received_path=read_bound(raw_root,request["received_otio"],request["received_sha256"])
     edited,edited_path=read_bound(raw_root,request["edited_otio"],request["edited_sha256"])
     original_ids=[scene["id"]for scene in source["scenes"]]
@@ -897,18 +995,16 @@ def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:
     probes={}
     unique_bytes={}
     def media(path:Path,expected_sources:set[str]|None=None)->tuple[str,dict]:
-        hash_,size=fingerprint(path,MAX_MEDIA)
+        media_original,media_observed=capture_original(path,MAX_MEDIA)
+        hash_,size=media_observed["sha256"],len(media_original)
         _nle_require(expected_sources is None or hash_ in expected_sources,
                      "unbound_source_or_inpoint",
                      "Native source digest is not bound by the immutable capsule")
-        previous=snapshots.get(path)
-        insist(previous is None or previous==(hash_,size,MAX_MEDIA),
-               "Physical media changed during native cut inspection")
-        snapshots[path]=(hash_,size,MAX_MEDIA)
+        remember_snapshot(path,hash_,size,MAX_MEDIA)
         unique_bytes[hash_]=size
         insist(sum(unique_bytes.values())<=MAX_TOTAL,"Native cut source media exceeds aggregate budget")
         if path not in probes:
-            probes[path]=file_probe(path)
+            probes[path]=_admitted_video_probe(path,retained_alab,original_bytes=media_original)
             insist(fingerprint(path,MAX_MEDIA)==(hash_,size),
                    "Physical media changed while its frames were decoded")
         return hash_,probes[path]
@@ -917,7 +1013,8 @@ def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:
         keys={}
         geometry=None
         for row in manifest["bound_media"]:
-            path=owner_file(bundle,row["path"],MAX_MEDIA,{".mp4"})
+            extension=".mp4" if retained_alab is None else ".mov"
+            path=owner_file(bundle,row["path"],MAX_MEDIA,{extension})
             hash_,probe=media(path)
             _nle_require(hash_==row["source_sha256"] and
                          all(probe[k]==row[m]for k,m in (("fps","source_fps"),
@@ -949,7 +1046,7 @@ def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:
             mapped=[]
             used=set()
             for item in observations:
-                path=_nle_local_media(raw_path.parent,item["target"],roots)
+                path=_nle_local_media(raw_path.parent,item["target"],roots,retained_alab=retained_alab)
                 hash_,probe=media(path,{key[0]for key in keys})
                 key=(hash_,item["fps"],item["start"])
                 row=keys.get(key)
@@ -1284,6 +1381,391 @@ def inspect_external_otio(source:bytes,expected_sha256:str,
     insist(len(json.dumps(result,ensure_ascii=True,allow_nan=False).encode("ascii"))<=MAX_JSON,
            "External OTIO inspection output exceeds its byte budget")
     return result
+
+
+# This is an explicitly closed benchmark profile, not generic MOV support.
+ALAB_RETAINED_PROFILE="alab-two-retained-mov-24-v1"
+_ALAB_RETAINED_ORIGINALS=(
+    ("otio",218949,"6c90cbc64000e5de1d6450c95b1f5845db2862c053fa2591d02d370505f3bd28"),
+    ("readback",107354,"2c5739cb39dc7233b955428450939585f68b743cb418d0d2afb1c12f79023c24"),
+    ("container0",1301,"390c157862ede63b25583502eaac6b3603e4ed9632630267315d2b68bc6d8218"),
+    ("container1",1304,"52a988b9db2d9d771cbf42e2b24f026b772651a9936459b3859a0f7940baf21a"),
+)
+_ALAB_RETAINED_MEDIA=(
+    ("/tracks/children/0/children/0","ALab_h264_MOVs/mk020_0010.mov",7627921,
+     "86c40f8271339a4bab948d11ddbdd172588816df5ff52d056bd4e54378069e1a",1002,52),
+    ("/tracks/children/0/children/1","ALab_h264_MOVs/mk020_0020.mov",20227644,
+     "08aac3e29ea980e80993aa6baaef1b83b4b0598c3ae95685434886a1c326b2f6",1008,182),
+)
+
+
+_ALAB_SOURCE_NOTICES=(
+    ("license","ALab-LICENSE.original.txt",2622,
+     "4263d9c4ad26b95bda3398c406ef9787f696f236fb88ab509693371983174021"),
+    ("readme","ALab-README.original.txt",8729,
+     "e5964177d9826d6f80c3318a01e3404d3bc2f24d8cdd143a4b566b0b3ff295a0"),
+    ("selection_notice","ALab-SELECTION-NOTICE.original.txt",902,
+     "0d90946e0b723a499bf516275d3407100d022de9c76935bcc6fa368f70daa376"),
+)
+
+def _alab_source_notice_records()->list[dict]:
+    return [{"role":role,"file":name,"bytes":size,"sha256":digest}
+            for role,name,size,digest in _ALAB_SOURCE_NOTICES]
+
+def _validate_alab_source_notices(notices:object,
+                                  retained:_RetainedAlabObservation|None)->dict:
+    if retained is None:
+        insist(notices is None,"Ordinary media profile does not admit an ALab notice contract")
+        return {}
+    insist(type(retained)is _RetainedAlabObservation and type(notices)is dict
+           and set(notices)=={row[0]for row in _ALAB_SOURCE_NOTICES},
+           "Closed ALab export requires its original license, README and selection notice")
+    result={}
+    for role,name,size,digest in _ALAB_SOURCE_NOTICES:
+        raw=notices[role]
+        insist(type(raw)is bytes and len(raw)==size and sha_bytes(raw)==digest,
+               "ALab original source notice identity changed: "+role)
+        result[name]=raw
+    return result
+
+def _require_alab_source_notices(root:Path,value:dict,
+                                 retained:_RetainedAlabObservation|None)->None:
+    if retained is None:
+        insist("original_source_notices"not in value,
+               "Ordinary media profile cannot self-admit an ALab notice scope")
+        return
+    insist(type(retained)is _RetainedAlabObservation
+           and value.get("original_source_notices")==_alab_source_notice_records(),
+           "ALab original source notice roster differs from its fixed benchmark contract")
+    raw={}
+    for role,name,size,digest in _ALAB_SOURCE_NOTICES:
+        _,raw[role],observed=capture_owner_original(root,name,size)
+        insist((observed["sha256"],len(raw[role]))==(digest,size),
+               "ALab original source notice changed during import readback: "+role)
+    _validate_alab_source_notices(raw,retained)
+
+
+class _RetainedAlabObservation:
+    """Immutable validated originals; an in-process value, never a source grant.
+
+    No JSON boolean can select this path. Only the closed benchmark constructor
+    below is called by the existing owned caller. JSON receipts are derived
+    observations and cannot be passed back as this value.
+    """
+    __slots__=("_originals","_original_pins","_media","_descriptor","_sealed")
+
+    def __init__(self,originals:tuple[bytes,...],original_pins:tuple,
+                 media:tuple,descriptor:bytes):
+        object.__setattr__(self,"_originals",originals)
+        object.__setattr__(self,"_original_pins",original_pins)
+        object.__setattr__(self,"_media",media)
+        object.__setattr__(self,"_descriptor",descriptor)
+        object.__setattr__(self,"_sealed",True)
+
+    def __setattr__(self,name,value):
+        raise AttributeError("Retained ALab observations are immutable")
+
+    def descriptor(self)->dict:
+        return strict_json(self._descriptor,"retained ALab derived descriptor")
+
+    def probe(self,media:Path)->dict:
+        raw,_=capture_original(media,MAX_MEDIA)
+        return self._probe_original_bytes(media,raw)
+
+    def _probe_original_bytes(self,media:Path,raw:bytes)->dict:
+        insist(media.suffix.lower()==".mov",
+               "Retained ALab source must remain a MOV, without extension relabelling")
+        insist(type(raw)is bytes and 0<len(raw)<=MAX_MEDIA,
+               "Retained ALab source requires bounded captured original bytes")
+        digest,size=sha_bytes(raw),len(raw)
+        rows=[row for row in self._media if row[3]==digest and row[2]==size]
+        insist(len(rows)==1,"MOV bytes do not match one of the admitted retained ALab originals")
+        row=rows[0]
+        return {"fps":24,"frames":row[5],"width":1920,"height":1080,"codec":"h264"}
+
+
+def _alab_exact_fraction(value:object,label:str)->Fraction:
+    exact(value,{"num","den"},label)
+    insist(type(value["num"])is int and type(value["den"])is int
+           and value["den"]>0 and abs(value["num"])<=2**53
+           and value["den"]<=2**53,label+" is not a bounded rational number")
+    result=Fraction(value["num"],value["den"])
+    insist(result.numerator==value["num"] and result.denominator==value["den"],
+           label+" is not in canonical rational form")
+    return result
+
+
+def _alab_ndf24(value:object)->int:
+    insist(type(value)is str and re.fullmatch(r"[0-9]{2}:[0-9]{2}:[0-9]{2}:[0-9]{2}",value),
+           "ALab origin requires an exact 24fps non-drop-frame timecode")
+    hour,minute,second,frame=map(int,value.split(":"))
+    insist(hour<24 and minute<60 and second<60 and frame<24,
+           "ALab timecode is outside the closed 24fps clock")
+    return ((hour*60+minute)*60+second)*24+frame
+
+
+def _alab_bounded_json(raw:bytes,label:str)->dict:
+    try:result=strict_json(raw,label)
+    except RecursionError:raise BridgeRefused(label+" exceeds its structural budget")from None
+    pending=[(result,0)]
+    count=0
+    while pending:
+        value,depth=pending.pop()
+        count+=1
+        insist(depth<=64 and count<=65536,label+" exceeds its structural budget")
+        if isinstance(value,(dict,list)):
+            insist(count+len(pending)+len(value)<=65536,label+" exceeds its structural budget")
+            pending.extend((child,depth+1)for child in (value.values()if isinstance(value,dict)else value))
+        elif type(value)is float:
+            insist(value==value and abs(value)<=sys.float_info.max,label+" contains a non-finite number")
+    return result
+
+
+def _admit_alab_retained_originals(originals:tuple[bytes,...],original_pins:tuple,
+                                   media_pins:tuple)->_RetainedAlabObservation:
+    """Shared validator; synthetic pin values are used only by its unit tests."""
+    insist(type(originals)is tuple and len(originals)==4
+           and type(original_pins)is tuple and len(original_pins)==4,
+           "ALab requires all four independently admitted structured originals")
+    insist(all(type(row)is tuple and len(row)==3 for row in original_pins)
+           and tuple(row[0]for row in original_pins)==("otio","readback","container0","container1"),
+           "ALab original roles changed")
+    for raw,(_,size,digest)in zip(originals,original_pins):
+        insist(type(raw)is bytes and type(size)is int and 0<size<=MAX_JSON
+               and type(digest)is str and HEX.fullmatch(digest)
+               and len(raw)==size and sha_bytes(raw)==digest,
+               "ALab original differs from its independently admitted bytes")
+    insist(type(media_pins)is tuple and len(media_pins)==2
+           and all(type(row)is tuple and len(row)==6 for row in media_pins)
+           and tuple((row[0],row[1],row[4],row[5])for row in media_pins)
+               ==tuple((row[0],row[1],row[4],row[5])for row in _ALAB_RETAINED_MEDIA),
+           "ALab selected source occurrence profile changed")
+    for row in media_pins:
+        insist(len(row)==6 and type(row[2])is int and 0<row[2]<=MAX_MEDIA
+               and type(row[3])is str and HEX.fullmatch(row[3]),
+               "ALab source identity is not bounded")
+    insist(media_pins[0][3]!=media_pins[1][3],"ALab selected source identities are ambiguous")
+    # Every size/digest is checked before the first parser invocation.
+    inspection=inspect_external_otio(originals[0],original_pins[0][2],
+                                     [row[0]for row in media_pins])
+    readback=_alab_bounded_json(originals[1],"ALab native readback original")
+    containers=[_alab_bounded_json(raw,"ALab container original")for raw in originals[2:]]
+    exact(readback,{"schema","status","media","new_render","nle_opened",
+                   "canonical_scene_ids_created","assets_adopted","unknown_replayed",
+                   "human_acceptance","formal_acceptance","source_origin","runtime",
+                   "inputs_stable","elapsed_seconds","ended_at_utc"},"ALab native readback")
+    insist(readback["schema"]=="motionwright.a4.alab-native-readback/1"
+           and readback["status"]=="PASS_TWO_RETAINED_ORIGINALS_NATIVE_DECODE"
+           and readback["inputs_stable"]is True
+           and readback["source_origin"]=="NOT_OBSERVED"
+           and all(readback[name]is False for name in ("new_render","nle_opened",
+               "canonical_scene_ids_created","assets_adopted","unknown_replayed",
+               "human_acceptance","formal_acceptance")),
+           "ALab readback cannot acquire unobserved source or execution claims")
+    insist(type(readback["media"])is list and len(readback["media"])==2,
+           "ALab requires the two original native media observations")
+    selected=[]
+    for index,(pin,clip,media,container)in enumerate(zip(
+            media_pins,inspection["observations"],readback["media"],containers)):
+        pointer,target,size,digest,origin,count=pin
+        insist(clip["pointer"]==pointer and clip["schema"]=="Clip.2"
+               and clip["track_kind"]=="Video"
+               and clip["range_supported_by_existing_cut_parser"]is True
+               and clip["active_reference"]=={
+                   "pointer":pointer+"/media_references/DEFAULT_MEDIA",
+                   "schema":"ExternalReference.1","target_url":target,
+                   "declared_available_range":None}
+               and clip["declared_source_range"]==trange(origin,count,24),
+               "ALab source selection/reference/range differs from the original handoff")
+        exact(media,{"source_path","source_sha256","source_bytes","decoded_frame_count",
+                     "decoded_pts","pixel_samples","source_origin","container_metadata_original",
+                     "physical_observation"},"ALab native media observation")
+        insist(media["source_sha256"]==digest and type(media["source_bytes"])is int
+               and media["source_bytes"]==size and type(media["decoded_frame_count"])is int
+               and media["decoded_frame_count"]==count and media["source_origin"]=="NOT_OBSERVED",
+               "ALab native media identity or measured frame count changed")
+        original=exact(media["container_metadata_original"],{"path","bytes","sha256"},
+                       "ALab container-original binding")
+        insist(type(original["bytes"])is int and original["bytes"]==original_pins[index+2][1]
+               and original["sha256"]==original_pins[index+2][2],
+               "ALab container role is not bound to the original native observation")
+        exact(container,{"format","duration_microseconds","start_time_microseconds",
+                         "metadata","streams"},"ALab container")
+        metadata=container["metadata"]
+        insist(type(metadata)is dict and container["format"]=="mov,mp4,m4a,3gp,3g2,mj2"
+               and metadata.get("major_brand")=="qt  "
+               and metadata.get("compatible_brands")=="qt  "
+               and type(container["start_time_microseconds"])is int
+               and container["start_time_microseconds"]==0,
+               "ALab source is not the retained QuickTime container")
+        streams=container["streams"]
+        insist(type(streams)is list and len(streams)==2
+               and all(type(stream)is dict for stream in streams)
+               and [stream.get("type")for stream in streams]==["video","data"]
+               and [stream.get("index")for stream in streams]==[0,1],
+               "ALab requires the retained video and timecode streams")
+        video,tmcd=streams
+        codec=exact(video.get("codec"),{"name","profile","width","height","sample_rate","channels"},
+                    "ALab video codec")
+        insist(codec["name"]=="h264" and codec["profile"]=="Main"
+               and type(codec["width"])is int and codec["width"]==1920
+               and type(codec["height"])is int and codec["height"]==1080,
+               "ALab retained video codec/geometry changed")
+        for stream in streams:
+            insist(_alab_exact_fraction(stream.get("time_base"),"ALab stream timebase")==Fraction(1,2400)
+                   and type(stream.get("start_time"))is int and stream["start_time"]==0
+                   and type(stream.get("duration"))is int and stream["duration"]==count*100,
+                   "ALab retained stream clock changed")
+        insist(type(video.get("container_declared_frames"))is int
+               and video["container_declared_frames"]==count
+               and type(tmcd.get("container_declared_frames"))is int
+               and tmcd["container_declared_frames"]==1
+               and type(tmcd.get("metadata"))is dict
+               and tmcd["metadata"].get("handler_name")=="Timecode Handler",
+               "ALab container frame/timecode declaration changed")
+        format_timecode=metadata.get("timecode")
+        insist(tmcd["metadata"].get("timecode")==format_timecode
+               and _alab_ndf24(format_timecode)==origin,
+               "ALab format/tmcd timecode does not establish the selected source origin")
+        observation=exact(media["physical_observation"],{"width","height","codec","average_rate",
+            "container_declared_frames","declared_count_matches_decoded","first_presentation_time",
+            "last_presentation_time","cadence_matches_average_rate","timecode_fields","source_origin"},
+            "ALab physical observation")
+        insist(type(observation["width"])is int and observation["width"]==1920
+               and type(observation["height"])is int and observation["height"]==1080
+               and observation["codec"]=="h264"
+               and _alab_exact_fraction(observation["average_rate"],"ALab measured rate")==24
+               and type(observation["container_declared_frames"])is int
+               and observation["container_declared_frames"]==count
+               and observation["declared_count_matches_decoded"]is True
+               and observation["cadence_matches_average_rate"]is True
+               and observation["source_origin"]=="NOT_OBSERVED"
+               and _alab_exact_fraction(observation["first_presentation_time"],"ALab first PTS")==0
+               and _alab_exact_fraction(observation["last_presentation_time"],"ALab last PTS")==Fraction(count-1,24),
+               "ALab measured source clock/geometry changed")
+        pts=media["decoded_pts"]
+        insist(type(pts)is list and len(pts)==count,
+               "ALab retained decode is not a complete frame sequence")
+        for frame,row in enumerate(pts):
+            exact(row,{"index","pts","time_base","presentation_time"},"ALab decoded frame clock")
+            insist(type(row["index"])is int and row["index"]==frame
+                   and type(row["pts"])is int and row["pts"]==frame*100
+                   and _alab_exact_fraction(row["time_base"],"ALab decoded timebase")==Fraction(1,2400)
+                   and _alab_exact_fraction(row["presentation_time"],"ALab decoded PTS")==Fraction(frame,24),
+                   "ALab retained frame clock is missing, duplicated, reordered or nonuniform")
+        # Pixel samples corroborate three instants; no per-frame pixel claim.
+        samples=media["pixel_samples"]
+        insist(type(samples)is list and len(samples)==3
+               and all(type(sample)is dict for sample in samples)
+               and [sample.get("index")for sample in samples]==[0,count//2,count-1],
+               "ALab three retained RGB samples changed")
+        for sample in samples:
+            exact(sample,{"index","presentation_time","width","height","rgb24_bytes",
+                          "rgb24_sha256","source_pixel_format","nonconstant_rgb"},"ALab RGB sample")
+            insist(type(sample["index"])is int and type(sample["width"])is int
+                   and sample["width"]==1920 and type(sample["height"])is int
+                   and sample["height"]==1080 and type(sample["rgb24_bytes"])is int
+                   and sample["rgb24_bytes"]==1920*1080*3
+                   and type(sample["rgb24_sha256"])is str and HEX.fullmatch(sample["rgb24_sha256"])
+                   and sample["source_pixel_format"]=="yuv420p" and sample["nonconstant_rgb"]is True
+                   and _alab_exact_fraction(sample["presentation_time"],"ALab sample PTS")==Fraction(sample["index"],24),
+                   "ALab retained RGB sample descriptor changed")
+        selected.append({"pointer":pointer,"target_url":target,"source_sha256":digest,"source_bytes":size,
+                         "media_type":"video/quicktime","source_fps":24,"width":1920,"height":1080,
+                         "codec":"h264","source_origin_frame":origin,"source_start_frame":0,
+                         "duration_frames":count,"actual_media_frames":count,
+                         "container_timecode":format_timecode,"rgb_samples_retained":3,
+                         "all_decoded_frame_pixel_hashes":False})
+    derived={"schema":"motionwright.alab-retained-original-cut/1","profile":ALAB_RETAINED_PROFILE,
+             "status":"RETAINED_MEDIA_ORIGIN_DERIVED_NOT_ADOPTED",
+             "originals":[{"role":role,"bytes":size,"sha256":digest}for role,size,digest in original_pins],
+             "source_inspection":inspection,"selected":selected,
+             "source_origin_basis":"matching original OTIO range, retained complete video PTS and matching format/tmcd 24fps non-drop-frame timecodes",
+             "historical_source_origin":"NOT_OBSERVED","historical_readback_rewritten":False,
+             "new_decode":False,"new_render":False,"assets_adopted":False,
+             "canonical_scene_ids_created":False,"nle_opened":False,"formal_acceptance":False,
+             "remaining_source_references":"opaque/unavailable for this selected two-occurrence profile",
+             "later_edit_proposal":{"occurrence":media_pins[1][0],"from_frames":182,"to_frames":170,"applied":False}}
+    encoded=json.dumps(derived,sort_keys=True,ensure_ascii=True,allow_nan=False).encode("ascii")
+    insist(len(encoded)<=MAX_JSON,"ALab retained-origin result exceeds its bounded profile")
+    return _RetainedAlabObservation(originals,original_pins,media_pins,encoded)
+
+
+def admit_alab_retained_originals(source:bytes,readback:bytes,container0:bytes,
+                                  container1:bytes)->_RetainedAlabObservation:
+    """Join the four fixed benchmark originals without native/media IO.
+
+    This does not grant caller authority, adopt media or promote the historical
+    native observation. Its independent source binding is fixed above; a TAR or
+    manifest cannot supply its own admission.
+    """
+    return _admit_alab_retained_originals((source,readback,container0,container1),
+                                         _ALAB_RETAINED_ORIGINALS,_ALAB_RETAINED_MEDIA)
+
+
+def _admitted_video_profile(asset:dict,retained:_RetainedAlabObservation|None)->str:
+    if retained is None:
+        insist(asset.get("media_type")=="video/mp4","Ordinary portable media requires its admitted MP4 asset")
+        return ".mp4"
+    insist(type(retained)is _RetainedAlabObservation
+           and asset.get("media_type")=="video/quicktime"
+           and asset.get("content_sha256")in {row[3]for row in retained._media},
+           "Retained ALab media requires one of its original QuickTime assets")
+    return ".mov"
+
+
+def _admitted_video_probe(media:Path,retained:_RetainedAlabObservation|None,
+                          *,original_bytes:bytes|None=None)->dict:
+    if retained is None:return file_probe(media,original_bytes=original_bytes)
+    insist(type(retained)is _RetainedAlabObservation,"Retained media requires validated original observation bytes")
+    if original_bytes is not None:return retained._probe_original_bytes(media,original_bytes)
+    return retained.probe(media)
+
+
+def _retained_output_profile(retained:_RetainedAlabObservation|None)->str:
+    insist(retained is None or type(retained)is _RetainedAlabObservation,
+           "Retained profile cannot be admitted by a JSON flag or foreign object")
+    return "portable-media-cut-v2" if retained is None else "alab-two-retained-mov-cut-v1"
+
+
+def _retained_source_binding(retained:_RetainedAlabObservation)->dict:
+    insist(type(retained)is _RetainedAlabObservation,"Retained source binding requires original observations")
+    descriptor=retained.descriptor()
+    return {"profile":ALAB_RETAINED_PROFILE,"originals":descriptor["originals"],
+            "derived_descriptor_sha256":sha_bytes(retained._descriptor),
+            "occurrences":[row[0]for row in retained._media],
+            "new_decode":False,"historical_readback_rewritten":False}
+
+
+def _require_retained_source_binding(value:dict,retained:_RetainedAlabObservation|None)->None:
+    if retained is None:
+        insist("retained_source_binding" not in value,
+               "A capsule cannot self-admit retained native observations")
+    else:
+        insist(value.get("retained_source_binding")==_retained_source_binding(retained),
+               "Retained source binding differs from independently admitted originals")
+
+
+def _validate_alab_project_bindings(project:dict,bindings:object,
+                                    retained:_RetainedAlabObservation)->None:
+    insist(type(retained)is _RetainedAlabObservation and type(bindings)is list
+           and len(bindings)==2 and type(project.get("scenes"))is list
+           and len(project["scenes"])==2,
+           "Closed ALab source requires exactly its two canonical scenes and bindings")
+    assets={asset.get("id"):asset for asset in project.get("assets",[])if type(asset)is dict}
+    observed=set()
+    for scene,pin in zip(project["scenes"],retained._media):
+        rows=[row for row in bindings if type(row)is dict and row.get("scene_id")==scene.get("id")]
+        insist(len(rows)==1,"ALab binding does not identify exactly one original canonical scene")
+        row=rows[0]
+        asset=assets.get(row.get("asset_id"))
+        insist(asset is not None and asset.get("media_type")=="video/quicktime"
+               and asset.get("content_sha256")==pin[3] and row.get("sha256")==pin[3]
+               and type(row.get("source_start_frame"))is int and row["source_start_frame"]==0
+               and rational(scene.get("duration"),"ALab source scene duration")==Fraction(pin[5],24),
+               "ALab canonical scene/asset does not match its selected retained source window")
+        observed.add(row["asset_id"])
+    insist(len(observed)==2,"ALab selected originals cannot share one substituted asset")
 
 
 def main()->None:

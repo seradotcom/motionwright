@@ -271,14 +271,21 @@ def rational(value):
     return Fraction(n, d)
 
 
-def run_bounded(argv, max_stdout, timeout_seconds=120, *, input_bytes=None, capture=None):
-    """Supervise one read-only decoder; stdin and capture are opt-in."""
+def run_bounded(argv, max_stdout, timeout_seconds=120, *, input_bytes=None, capture=None,
+                max_stdin_bytes=32 * 1024 * 1024):
+    """Supervise one read-only decoder; default stdin stays bounded at 32 MiB.
+
+    A caller may select a narrower or up-to-256-MiB input ceiling for an already
+    captured original. This byte budget grants no source or execution authority.
+    """
     require(type(max_stdout) is int and max_stdout > 0, "readonly_decoder_stdout_budget")
     require(type(timeout_seconds) in (int, float)
             and math.isfinite(timeout_seconds) and timeout_seconds > 0,
             "readonly_decoder_timeout_budget")
+    require(type(max_stdin_bytes) is int and 0 < max_stdin_bytes <= 256 * 1024 * 1024,
+            "readonly_decoder_stdin_ceiling")
     require(input_bytes is None or (type(input_bytes) is bytes
-            and 0 < len(input_bytes) <= 32 * 1024 * 1024), "readonly_decoder_stdin_budget")
+            and 0 < len(input_bytes) <= max_stdin_bytes), "readonly_decoder_stdin_budget")
     require(capture is None or (type(capture) is dict and not capture),
             "readonly_decoder_capture_must_be_new")
     started = time.monotonic()

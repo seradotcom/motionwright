@@ -28,7 +28,7 @@ import xml.etree.ElementTree as ET
 
 from bridge import (
     BridgeRefused, HEX, MAX_JSON, MAX_MEDIA, SCHEMA, _nle_local_media,
-    fingerprint, strict_json,
+    capture_original, fingerprint, strict_json,
 )
 
 MAX_XML_BYTES = 5 * 1024 * 1024
@@ -52,17 +52,13 @@ def read_closed_bytes(path: Path, expected_sha: str, maximum: int) -> bytes:
     require(path.is_absolute() and path.is_file() and not path.is_symlink()
             and not any(part.is_symlink() for part in path.parents),
             "readback_original_file_not_plain_absolute")
-    actual_sha, size = fingerprint(path, maximum)
-    require(size <= maximum and actual_sha == expected_sha,
+    data, observed = capture_original(path, maximum)
+    require(len(data) <= maximum and observed["sha256"] == expected_sha,
             "readback_original_content_changed_from_expected_SHA")
-    data = path.read_bytes()
-    require(len(data) == size
-            and hashlib.sha256(data).hexdigest() == expected_sha,
-            "readback_original_file_mutated_during_read")
     return data
 
 
-def read_capsule(bundle: Path, manifest_sha: str) -> tuple[Path, dict]:
+def read_capsule(bundle: Path, manifest_sha: str, *, retained_alab=None) -> tuple[Path, dict]:
     require(bundle.is_absolute() and bundle.is_dir() and not bundle.is_symlink()
             and not any(parent.is_symlink() for parent in bundle.parents),
             "readback_original_capsule_not_plain_absolute")
@@ -72,12 +68,26 @@ def read_capsule(bundle: Path, manifest_sha: str) -> tuple[Path, dict]:
         "Kdenlive-original-capsule-manifest",
     )
     require(manifest.get("schema") == SCHEMA
-            and manifest.get("output_profile") == "portable-media-cut-v2"
+            and manifest.get("output_profile") == ("portable-media-cut-v2" if retained_alab is None
+                                                  else "alab-two-retained-mov-cut-v1")
             and manifest.get("nle_import_verified") is False
             and manifest.get("publishing_authorized") is False
             and type(manifest.get("bound_media")) is list
             and type(manifest.get("missing_scene_ids")) is list,
             "readback_original_capsule_contract_not_admitted")
+    if retained_alab is not None:
+        # Use the SAME bridge's admitted observation, source, notice and media
+        # rules. An ALab manifest alone never selects this profile or a decoder.
+        from bridge import import_preview
+        try:
+            preview = import_preview(root, "timeline.otio", root / "source-project.json",
+                                     retained_alab=retained_alab)
+        except BridgeRefused as error:
+            raise KdenliveReadbackRejected("readback_ALab_original_admission_or_notice_changed") from error
+        require(preview.get("native_change_proposals") == []
+                and preview.get("media_refs_verified") == 2
+                and read_closed_bytes(root / "bridge-manifest.json", manifest_sha, MAX_JSON),
+                "readback_ALab_original_capsule_no_longer_matches_its_admitted_source")
     rows = manifest["bound_media"]
     require(1 <= len(rows) <= 32
             and not manifest["missing_scene_ids"]
@@ -88,7 +98,7 @@ def read_capsule(bundle: Path, manifest_sha: str) -> tuple[Path, dict]:
         require(type(item) is dict
                 and type(item.get("source_sha256")) is str
                 and HEX.fullmatch(item["source_sha256"])
-                and item.get("path") == f"media/{item['source_sha256']}.mp4"
+                and item.get("path") == f"media/{item['source_sha256']}" + (".mp4" if retained_alab is None else ".mov")
                 and type(item.get("scene_id")) is str
                 and item["scene_id"] in manifest["scene_order"]
                 and type(item.get("source_start_frame")) is int
@@ -179,10 +189,12 @@ def original_mlt_frame(value: object, fps: int) -> int:
 
 def inspect_saved_kdenlive(
     native_path: Path, native_sha: str, bundle: Path, manifest_sha: str,
+    *, retained_alab=None,
 ) -> dict:
     require(native_path.suffix.lower() == ".kdenlive",
             "native_Kdenlive_source_not_a_native_project_extension")
-    capsule, manifest = read_capsule(bundle, manifest_sha)
+    capsule, manifest = (read_capsule(bundle, manifest_sha) if retained_alab is None else
+                         read_capsule(bundle, manifest_sha, retained_alab=retained_alab))
     raw = read_closed_bytes(native_path, native_sha, MAX_XML_BYTES)
     project, shimmed = safe_mlt_xml(raw)
     profiles = project.findall("profile")
@@ -199,6 +211,9 @@ def inspect_saved_kdenlive(
             and 16 <= width <= 4096 and 16 <= height <= 4096,
             "native_Kdenlive_native_project_rate_or_geometry_not_supported")
 
+    if retained_alab is not None:
+        require(rate_num == 24 * rate_den and (width, height) == (1920, 1080),
+                "native_Kdenlive_ALab_clock_or_geometry_differs_from_retained_originals")
     nodes = list(project.iter())
     ids = [node.attrib["id"] for node in nodes if node.tag in (
         "producer", "chain", "playlist", "tractor",
@@ -373,11 +388,12 @@ def inspect_saved_kdenlive(
             ):
                 continue
             target = (element.text or "").strip()
-            if not target.lower().endswith(".mp4"):
+            if not target.lower().endswith(".mp4" if retained_alab is None else ".mov"):
                 continue
             try:
                 original_path = _nle_local_media(
                     native_path.parent, target, (capsule,),
+                    **({} if retained_alab is None else {"retained_alab": retained_alab}),
                 )
             except BridgeRefused as error:
                 raise KdenliveReadbackRejected(

@@ -587,6 +587,59 @@ def verified_snapshot_fixture(context):
             hashlib.sha256(members["owner/owner-cut-reopen-readback.json"]).hexdigest(),
         "human_acceptance": False, "release_authorized": False,
     }
+    # Closed synthetic files exercise the actual TAR binding, without any
+    # assertion that a native application or SQLite import ran in this test.
+    members.update({
+        "owner/native-source-attach-receipt.json": b'{"synthetic_attach_only":true}\n',
+        "owner/native-source-reopen.json": b'{"synthetic_source_reopen_only":true}\n',
+        "owner/native-source-bundle-receipt.json": b'{"synthetic_bundle_only":true}\n',
+        "owner/native-source-portable-reopen.json": b'{"synthetic_portable_reopen_only":true}\n',
+        "owner/native-source-portable/manifest.json": b'{"synthetic_manifest_only":true}\n',
+        "owner/capsule-relocation.original.json": b'{"synthetic_relocation_only":true}\n',
+        "capsule/bridge-manifest.json": b'{"synthetic_bridge_only":true}\n',
+        "capsule/source-project.json": b'{"synthetic_project_only":true}\n',
+        "capsule/firstparty-complete-native-G2-input.json": b'{"synthetic_fixture_only":true}\n',
+        "capsule/media/6ae70684422274dbc39d90e7e3a045c096a9df3692604c02a351e39fc094f2f1.mp4": b"synthetic media bytes; no codec claim\n",
+    })
+    cycle_fields = {
+        "native_source_import_receipt_sha256": "owner/native-source-attach-receipt.json",
+        "native_source_readback_sha256": "owner/native-source-reopen.json",
+        "native_source_bundle_receipt_sha256": "owner/native-source-bundle-receipt.json",
+        "native_source_portable_readback_sha256": "owner/native-source-portable-reopen.json",
+        "bundle_manifest_sha256": "owner/native-source-portable/manifest.json",
+    }
+    result["native_source_cycle"] = {
+        **{key: hashlib.sha256(members[name]).hexdigest()
+           for key, name in cycle_fields.items()},
+        "native_source_import_committed": True, "source_readback_in_new_process": True,
+        "source_blob_reopened_equal": True, "portable_readback_in_new_process": True,
+        "fresh_generation_observed": True, "source_fidelity_unavailable": True,
+        "native_source_sha256": result["edited_project_sha256"],
+        "additional_source_revision_increment": 1, "production_receipt_count": 0,
+        "source_generation": "synthetic-original-generation",
+        "portable_generation": "synthetic-fresh-generation",
+        "bundle_inspection_fingerprint": "f" * 64,
+        "local_production_receipts_inherited": False, "execution_authority_issued": False,
+        "per_scene_native_semantic_mapping_verified": False,
+        "native_editor_dispatched_here": False, "alab_sources_adopted_here": False,
+        "automatic_retry": False, "human_acceptance": False, "release_authorized": False,
+    }
+    result["capsule_relocation"] = {
+        "schema": runner.CAPSULE_RELOCATION_SCHEMA,
+        "mode": "relative_reference_resolution_after_physical_relocation",
+        "receipt_sha256": hashlib.sha256(
+            members["owner/capsule-relocation.original.json"]).hexdigest(),
+        "members": {
+            name.removeprefix("capsule/"): {"bytes": len(raw),
+                                          "sha256": hashlib.sha256(raw).hexdigest()}
+            for name, raw in members.items() if name.startswith("capsule/")
+        },
+        "original_location_absent": True, "original_bytes_preserved": True,
+        "relative_media_members_preserved": True, "ui_relink_dialog_used": False,
+        "native_application_launched_here": False, "source_origin_inferred": False,
+        "alab_sources_adopted_here": False, "automatic_retry": False,
+        "human_acceptance": False, "release_authorized": False,
+    }
     record = {"status": "NATIVE_GUI_BOUNDED_ROUNDTRIP_OBSERVED",
               "source": context, "result": result,
               "recording_errors_before_result": [], "native_operation_retried": False,
@@ -1111,7 +1164,7 @@ class EditedProjectReopenContracts(unittest.TestCase):
 
     def run_mocked_route(self, *, mutate_third=None, final_preview=None,
                          third_close_error=None, changed_edited_bytes=False,
-                         changed_readback=False):
+                         changed_readback=False, source_database=None):
         before, after, comparison, preview = admitted_edit()
         final = copy.deepcopy(after)
         if changed_readback:
@@ -1171,7 +1224,7 @@ class EditedProjectReopenContracts(unittest.TestCase):
                  preview, preview if final_preview is None else final_preview]) as cut:
             self.launch, self.inspect, self.compare, self.cut = launch, inspect, compare, cut
             return runner.run_route(appdir, binary, "8" * 64, capsule,
-                                    self.records, profile)
+                                    self.records, profile, source_database=source_database)
 
     def test_saved_edit_is_reopened_exported_and_closed_in_a_third_native_process(self):
         value = self.run_mocked_route()
@@ -1273,6 +1326,49 @@ class EditedProjectReopenContracts(unittest.TestCase):
             inspect.assert_called_once()
 
 
+    def test_original_owner_cut_then_source_cycle_use_exact_third_saved_native_bytes(self):
+        database = Path("/synthetic/evidence/canonical-source.sqlite3")
+        completion = {"sqlite_owner_cut_committed": True}
+        cycle = {"native_source_import_committed": True}
+        order = []
+        def commit(*args):
+            self.assertEqual(args[2], database)
+            self.assertTrue(all(p.close.called for p in self.processes))
+            order.append("owner-cut")
+            return completion
+        def attach(*args):
+            self.assertEqual(order, ["owner-cut"])
+            self.assertEqual(args[2], database)
+            self.assertEqual(args[3], Path("/synthetic/evidence/edited.kdenlive"))
+            self.assertEqual(args[4], "2" * 64)
+            self.assertIs(args[5], completion)
+            order.append("source-cycle")
+            return cycle
+        with patch.object(runner.owner_cut, "commit_once", side_effect=commit) as owner, \
+             patch.object(runner.owner_cut, "source_cycle_once", side_effect=attach) as source:
+            result = self.run_mocked_route(source_database=database)
+        self.assertEqual(order, ["owner-cut", "source-cycle"])
+        self.assertIs(result["native_source_cycle"], cycle)
+        owner.assert_called_once()
+        source.assert_called_once()
+        self.assertEqual(self.launch.call_count, 3)
+
+    def test_unknown_source_cycle_terminal_never_repeats_owner_cut_or_native_route(self):
+        original = TimeoutError("original source import state unknown")
+        with patch.object(runner.owner_cut, "commit_once",
+                          return_value={"sqlite_owner_cut_committed": True}) as owner, \
+             patch.object(runner.owner_cut, "source_cycle_once", side_effect=original) as source:
+            with self.assertRaises(TimeoutError) as caught:
+                self.run_mocked_route(
+                    source_database=Path("/synthetic/evidence/canonical-source.sqlite3"))
+        self.assertIs(caught.exception, original)
+        owner.assert_called_once()
+        source.assert_called_once()
+        self.assertEqual(self.launch.call_count, 3)
+        for process in self.processes:
+            process.close.assert_called_once()
+
+
 class NativeVersionCompositionContracts(unittest.TestCase):
     """Exercise the real parser and live witness with only external I/O replaced."""
 
@@ -1356,6 +1452,7 @@ class NativeVerifiedSnapshotContracts(unittest.TestCase):
             for name in ("owner", "capsule", "public"):
                 (root / name).mkdir()
             for name, raw in members.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
                 (root / name).write_bytes(raw)
             if before is not None:
                 before(root, result)
@@ -1475,6 +1572,69 @@ class NativeVerifiedSnapshotContracts(unittest.TestCase):
         projection, _, _ = self.run_case(result_missing=True)
         self.assertEqual(projection["status"], "CUSTODY_FAILED")
 
+
+
+    def test_source_cycle_receipts_and_bundle_manifest_cannot_change_under_prior_success(self):
+        names = ("native-source-attach-receipt.json", "native-source-reopen.json",
+                 "native-source-bundle-receipt.json", "native-source-portable-reopen.json",
+                 "native-source-portable/manifest.json")
+        for name in names:
+            def replace(root, result):
+                path = root / "owner" / name
+                raw = path.read_bytes()
+                path.write_bytes(b"X" + raw[1:])
+            with self.subTest(name=name):
+                projection, captured, _ = self.run_case(before=replace)
+                self.assertEqual(projection["status"], "CUSTODY_FAILED")
+                self.assertTrue(captured["owner/" + name].startswith(b"X"))
+
+    def test_relocation_receipt_metadata_and_media_cannot_change_under_prior_success(self):
+        names = (
+            "owner/capsule-relocation.original.json",
+            "capsule/bridge-manifest.json", "capsule/source-project.json",
+            "capsule/firstparty-complete-native-G2-input.json",
+            "capsule/media/6ae70684422274dbc39d90e7e3a045c096a9df3692604c02a351e39fc094f2f1.mp4",
+        )
+        for name in names:
+            def replace(root, result):
+                path = root / name
+                raw = path.read_bytes()
+                path.write_bytes(b"X" + raw[1:])
+            with self.subTest(name=name):
+                projection, captured, _ = self.run_case(before=replace)
+                self.assertEqual(projection["status"], "CUSTODY_FAILED")
+                self.assertTrue(captured[name].startswith(b"X"))
+
+    def test_old_location_appearance_before_or_during_capture_blocks_success_without_recapture(self):
+        def appear(root, result):
+            old = runner.relocation_source_path(root / "capsule")
+            old.mkdir()
+            (old / "late-member.original").write_bytes(b"late original location")
+        for timing in ("before", "during", "after"):
+            with self.subTest(timing=timing):
+                projection, _captured, _ = self.run_case(**{timing: appear})
+                self.assertEqual(projection["status"], "CUSTODY_FAILED")
+                # run_case asserts one gather, one encryption of those very bytes.
+
+    def test_source_cycle_and_relocation_claims_cannot_be_promoted_by_flags(self):
+        import ci_private_evidence as custody
+        mutations = (
+            ("native_source_cycle", "source_fidelity_unavailable", False),
+            ("native_source_cycle", "local_production_receipts_inherited", True),
+            ("native_source_cycle", "execution_authority_issued", True),
+            ("native_source_cycle", "per_scene_native_semantic_mapping_verified", True),
+            ("native_source_cycle", "native_source_sha256", "f" * 64),
+            ("native_source_cycle", "additional_source_revision_increment", True),
+            ("capsule_relocation", "original_location_absent", False),
+            ("capsule_relocation", "ui_relink_dialog_used", True),
+            ("capsule_relocation", "alab_sources_adopted_here", True),
+        )
+        for field, key, value in mutations:
+            result, _, _ = verified_snapshot_fixture({})
+            result[field][key] = value
+            with self.subTest(field=field, key=key), patch.object(runner, "custody", custody):
+                with self.assertRaises(actions.GuiRejected):
+                    runner.verified_snapshot_expectations(result, {})
 
 
 class NativeTerminalCustodyPriorityContracts(unittest.TestCase):
@@ -1612,6 +1772,646 @@ class NativeTerminalCustodyPriorityContracts(unittest.TestCase):
                                     observed.__notes__)
                             else:
                                 self.assertIs(observed, recording_error)
+
+class NativeCapsuleRelocationContracts(unittest.TestCase):
+    """Real bounded file moves; codec, NLE and canonical import stay unexecuted."""
+
+    @staticmethod
+    def make_capsule(path):
+        import hashlib
+        path.mkdir()
+        (path / "media").mkdir()
+        media = b"synthetic opaque test media, not decoded video"
+        digest = hashlib.sha256(media).hexdigest()
+        (path / "media" / (digest + ".mp4")).write_bytes(media)
+        manifest = {
+            "schema": runner.readback.SCHEMA, "output_profile": "portable-media-cut-v2",
+            "nle_import_verified": False, "publishing_authorized": False,
+            "scene_order": ["a", "b", "c"], "missing_scene_ids": [],
+            "bound_media": [
+                {"source_sha256": digest, "path": "media/" + digest + ".mp4",
+                 "scene_id": scene, "source_start_frame": index * 30,
+                 "duration_frames": 30, "source_fps": 30}
+                for index, scene in enumerate(("a", "b", "c"))],
+        }
+        (path / "bridge-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        for name in runner.CAPSULE_METADATA_NAMES:
+            if name != "bridge-manifest.json":
+                (path / name).write_bytes(b'{"synthetic_only":true}\n')
+        return media, digest
+
+    def test_one_physical_move_keeps_relative_originals_and_never_claims_ui_relink(self):
+        import ci_private_evidence as custody
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            capsule = root / "capsule"
+            source = runner.relocation_source_path(capsule)
+            media, digest = self.make_capsule(source)
+            (root / "records").mkdir()
+            with patch.object(runner, "custody", custody), \
+                 patch.object(runner, "NativeProcess") as native:
+                records = runner.Recorder(root / "records")
+                before = runner.frozen_capsule_members(source)
+                try:
+                    result = runner.relocate_capsule_once(source, capsule, records)
+                finally:
+                    records.close()
+                self.assertFalse(source.exists())
+                self.assertEqual(result["members"], before)
+                self.assertEqual(runner.frozen_capsule_members(capsule), before)
+                self.assertEqual((capsule / "media" / (digest + ".mp4")).read_bytes(), media)
+                self.assertTrue(result["original_bytes_preserved"])
+                self.assertFalse(result["ui_relink_dialog_used"])
+                self.assertFalse(result["alab_sources_adopted_here"])
+                self.assertTrue((root / "records/capsule-relocation.intent.json").is_file())
+                retained = root / "records/capsule-relocation.original.json"
+                self.assertEqual(result["receipt_sha256"], custody.sha(retained.read_bytes()))
+                native.assert_not_called()
+
+    def test_foreign_or_existing_destination_or_changed_media_refuses_before_move(self):
+        import ci_private_evidence as custody
+        for defect in ("existing-destination", "foreign-source", "changed-media"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                capsule = root / "capsule"
+                source = runner.relocation_source_path(capsule)
+                _, digest = self.make_capsule(source)
+                (root / "records").mkdir()
+                if defect == "existing-destination":
+                    capsule.mkdir()
+                elif defect == "foreign-source":
+                    source = root / "different-source"
+                else:
+                    (source / "media" / (digest + ".mp4")).write_bytes(b"changed original")
+                with patch.object(runner, "custody", custody), \
+                     patch.object(Path, "rename") as move:
+                    records = runner.Recorder(root / "records")
+                    try:
+                        with self.assertRaises((actions.GuiRejected,
+                                               runner.readback.KdenliveReadbackRejected)):
+                            runner.relocate_capsule_once(source, capsule, records)
+                    finally:
+                        records.close()
+                    move.assert_not_called()
+                    self.assertFalse((root / "records/capsule-relocation.intent.json").exists())
+
+    def test_existing_intent_blocks_any_second_move(self):
+        import ci_private_evidence as custody
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            capsule = root / "capsule"
+            source = runner.relocation_source_path(capsule)
+            self.make_capsule(source)
+            (root / "records").mkdir()
+            with patch.object(runner, "custody", custody), patch.object(Path, "rename") as move:
+                records = runner.Recorder(root / "records")
+                records.document("capsule-relocation.intent.json", {"state": "UNKNOWN"})
+                try:
+                    with self.assertRaises(FileExistsError):
+                        runner.relocate_capsule_once(source, capsule, records)
+                finally:
+                    records.close()
+                move.assert_not_called()
+                self.assertTrue(source.is_dir())
+                self.assertFalse(capsule.exists())
+
+    def test_move_original_error_survives_terminal_custody_failure_without_retry(self):
+        import ci_private_evidence as custody
+        for original in (TimeoutError("original move terminal unknown"),
+                         KeyboardInterrupt("original move interrupted")):
+            with self.subTest(type=type(original).__name__), \
+                 tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                capsule = root / "capsule"
+                source = runner.relocation_source_path(capsule)
+                self.make_capsule(source)
+                (root / "records").mkdir()
+                with patch.object(runner, "custody", custody), \
+                     patch.object(Path, "rename", side_effect=original) as move:
+                    records = runner.Recorder(root / "records")
+                    emit = records.emit
+                    def fail_terminal(value):
+                        if value["state"] == "ERROR_OR_UNKNOWN":
+                            raise OSError("terminal retention failed")
+                        return emit(value)
+                    records.emit = fail_terminal
+                    try:
+                        with self.assertRaises(type(original)) as caught:
+                            runner.relocate_capsule_once(source, capsule, records)
+                    finally:
+                        records.close()
+                    self.assertIs(caught.exception, original)
+                    self.assertIsInstance(original.__cause__, OSError)
+                    move.assert_called_once_with(capsule)
+                    self.assertTrue((root / "records/capsule-relocation.intent.json").is_file())
+                    self.assertFalse((root / "records/capsule-relocation.original.json").exists())
+
+    def test_full_selection_relocates_before_native_route_and_uses_same_source_database(self):
+        import ci_private_evidence as custody
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            capsule = root / "capsule"
+            old = runner.relocation_source_path(capsule)
+            (root / "records").mkdir()
+            def prepare(destination, **kwargs):
+                self.assertEqual(destination, old)
+                self.assertEqual(kwargs["source_database"], root / "records/canonical-source.sqlite3")
+                self.make_capsule(destination)
+                return {"synthetic_source_only": True}
+            def route(appdir, binary, binary_sha, observed_capsule, records, profile, **kwargs):
+                self.assertEqual(observed_capsule, capsule)
+                self.assertFalse(old.exists())
+                self.assertTrue(capsule.is_dir())
+                self.assertEqual(kwargs["source_database"], root / "records/canonical-source.sqlite3")
+                self.assertTrue((records.root / "capsule-relocation.original.json").is_file())
+                return {"owner_cut_completion": {"sqlite_owner_cut_committed": True},
+                        "native_source_cycle": {"native_source_import_committed": True,
+                                               "portable_readback_in_new_process": True}}
+            with patch.object(runner, "custody", custody), \
+                 patch.object(runner.fixture, "prepare_original", side_effect=prepare) as producer, \
+                 patch.object(runner, "run_route", side_effect=route) as native:
+                records = runner.Recorder(root / "records")
+                try:
+                    status, result = runner.run_selected_native(
+                        "kdenlive-gui", root / "app", root / "binary", "a" * 64,
+                        capsule, records, root / "profile")
+                finally:
+                    records.close()
+            self.assertEqual(status, "NATIVE_GUI_BOUNDED_ROUNDTRIP_OBSERVED")
+            self.assertTrue(result["capsule_relocation"]["original_location_absent"])
+            producer.assert_called_once()
+            native.assert_called_once()
+
+    def test_post_move_custody_failure_blocks_native_route_and_preserves_actual_move(self):
+        import ci_private_evidence as custody
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            capsule = root / "capsule"
+            old = runner.relocation_source_path(capsule)
+            (root / "records").mkdir()
+            def prepare(destination, **kwargs):
+                self.make_capsule(destination)
+                return {"synthetic_source_only": True}
+            with patch.object(runner, "custody", custody), \
+                 patch.object(runner.fixture, "prepare_original", side_effect=prepare) as producer, \
+                 patch.object(runner, "run_route") as native:
+                records = runner.Recorder(root / "records")
+                document = records.document
+                original = OSError("original move receipt storage failure")
+                def fail_receipt(name, value):
+                    if name == "capsule-relocation.original.json":
+                        raise original
+                    return document(name, value)
+                records.document = fail_receipt
+                try:
+                    with self.assertRaises(OSError) as caught:
+                        runner.run_selected_native(
+                            "kdenlive-gui", root / "app", root / "binary", "a" * 64,
+                            capsule, records, root / "profile")
+                finally:
+                    records.close()
+            self.assertIs(caught.exception, original)
+            self.assertFalse(old.exists())
+            self.assertTrue(capsule.is_dir())
+            self.assertTrue((root / "records/capsule-relocation.intent.json").is_file())
+            producer.assert_called_once()
+            native.assert_not_called()
+
+
+
+class AlabNativeGuiContracts(unittest.TestCase):
+    """Explicit ALab profile contracts; simulated UI/Native calls are never G2 evidence."""
+
+    @staticmethod
+    def context():
+        return {"source_sha": "a" * 40, "semwright_sha": "b" * 40, "run_id": "123", "run_attempt": "1"}
+
+    def source_fixture(self, root):
+        import test_kdenlive_owner_cut as owner_controls
+        helper = owner_controls.KdenliveAlabCanonicalSourceContracts()
+        helper.prepare(root)
+        helper.workspace = helper.evidence / "alab-source"
+        helper.database = helper.evidence / "canonical-source.sqlite3"
+        return helper
+
+    @staticmethod
+    def source_scope(helper):
+        from contextlib import ExitStack
+        import bridge as media_bridge
+        stack = ExitStack()
+        for entry in (
+            patch.object(runner.owner_cut, "OWNER_EXAMPLE", helper.binary),
+            patch.object(runner.owner_cut, "_ALAB_SOURCE_NOTICES", helper.notice_pins),
+            patch.object(media_bridge, "_ALAB_SOURCE_NOTICES", helper.notice_pins),
+            patch.object(media_bridge, "_ALAB_RETAINED_ORIGINALS", helper.pins),
+            patch.object(media_bridge, "_ALAB_RETAINED_MEDIA", helper.media_pins),
+            patch.object(media_bridge, "file_probe", side_effect=AssertionError("no new ALab decoder")),
+            patch.object(media_bridge.subprocess, "Popen", side_effect=AssertionError("no native subprocess in GUI unit test")),
+        ):
+            stack.enter_context(entry)
+        return stack
+
+    def input_value(self, helper):
+        import bridge as media_bridge
+        pins = {role: (size, sha) for role, size, sha in helper.pins}
+        pins.update({"media" + str(i): (row[2], row[3]) for i, row in enumerate(helper.media_pins)})
+        return {"schema": runner.ALAB_GUI_INPUT_SCHEMA, "profile": media_bridge.ALAB_RETAINED_PROFILE,
+                "source": self.context(),
+                "originals": {role: {"path": str(helper.originals[role]), "bytes": size, "sha256": sha}
+                              for role, (size, sha) in pins.items()},
+                "notices": {role: {"path": str(helper.notices[role]), "bytes": size, "sha256": sha}
+                            for role, _, size, sha in helper.notice_pins},
+                "owner_review": helper.owner_review, "media_rights": helper.rights}
+
+    def test_alab_input_is_exact_run_bound_originals_before_any_native_process(self):
+        import ci_private_evidence as custody
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); helper = self.source_fixture(root)
+            path = root / "admitted-alab-input.json"
+            raw = (json.dumps(self.input_value(helper), sort_keys=True) + "\n").encode(); path.write_bytes(raw)
+            with self.source_scope(helper), patch.object(runner, "custody", custody), \
+                 patch.object(runner, "NativeProcess") as native, \
+                 patch.object(runner, "extract_distribution") as extract:
+                admitted, original = runner.load_alab_gui_inputs(path, self.context(), root)
+            self.assertEqual(original, raw)
+            self.assertEqual(admitted["admission_sha256"], custody.sha(raw))
+            self.assertEqual(admitted["originals"], helper.originals)
+            self.assertEqual(admitted["notices"], helper.notices)
+            native.assert_not_called(); extract.assert_not_called()
+
+    def test_alab_input_wrong_context_roles_or_identity_refuses_before_original_leaf_access(self):
+        import ci_private_evidence as custody
+        for defect in ("source", "run", "role", "extra", "sha", "size", "boolean-size"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); helper = self.source_fixture(root)
+                value = self.input_value(helper)
+                if defect == "source": value["source"]["source_sha"] = "c" * 40
+                elif defect == "run": value["source"]["run_id"] = "124"
+                elif defect == "role": value["originals"].pop("otio")
+                elif defect == "extra": value["grant"] = True
+                elif defect == "sha": value["originals"]["otio"]["sha256"] = "0" * 64
+                elif defect == "size": value["originals"]["otio"]["bytes"] += 1
+                else: value["originals"]["otio"]["bytes"] = True
+                path = root / "bad-input.json"; path.write_text(json.dumps(value), encoding="utf-8")
+                with self.source_scope(helper), patch.object(runner, "custody", custody), \
+                     patch.object(runner.readback, "read_closed_bytes", side_effect=AssertionError("original accessed before descriptor admission")) as read, \
+                     patch.object(runner, "NativeProcess") as native:
+                    with self.assertRaises(actions.GuiRejected): runner.load_alab_gui_inputs(path, self.context(), root)
+                read.assert_not_called(); native.assert_not_called()
+
+    def make_ui(self, *, before=(52, 0, 182), late_duration=None, multiple=False):
+        def code(frame):
+            whole, residual = divmod(frame, 24)
+            return f"00:00:{whole:02}:{residual:02}"
+        monitor = row("app/monitor", name="Project Monitor", role="panel", editable=False)
+        seek = row("app/monitor/seek", text="00:00:00:00")
+        dialog = row("app/dialog", name="Duration", role="dialog", editable=False)
+        fields, labels = [], []
+        for i, (name, value) in enumerate(zip(("Position:", "Crop start:", "Duration:"), before)):
+            labels.append(row(f"app/dialog/label{i}", name=name, role="label", editable=False,
+                              rect=[0, 20 + i * 40, 70, 20]))
+            fields.append(row(f"app/dialog/field{i}", text=code(value), rect=[100, 20 + i * 40, 100, 20]))
+        if multiple: labels.append(row("app/dialog/multiple", name="Apply duration to all items", editable=False))
+        state = {"closed": False}
+        ui = Mock()
+        ui.tree.side_effect = lambda: [monitor, seek, dialog, *labels, *fields]
+        ui.dialog.return_value = dialog
+        ui.descendants.side_effect = lambda selected: [*labels, *fields]
+        ui.journal.wait.side_effect = lambda step, query: query()
+        ui.text.side_effect = lambda step, selected, value: selected.update(text=value)
+        def key(step, symbol):
+            if step == "alab.commit-duration-field" and late_duration is not None:
+                fields[2]["text"] = code(late_duration)
+        ui.key.side_effect = key
+        okay = row("app/dialog/ok", name="OK", role="push button", editable=False)
+        ui.find.side_effect = lambda names, roles, **kwargs: okay if names == ("OK",) else (None if state["closed"] else dialog)
+        ui.action.side_effect = lambda step, selected: state.update(closed=True)
+        return ui, fields, seek
+
+    def test_alab_duration_action_uses_only_existing_controls_and_24fps_second_clip_fields(self):
+        ui, fields, seek = self.make_ui()
+        runner.edit_alab_second_clip(ui)
+        self.assertEqual(seek["text"], "00:00:04:04")
+        self.assertEqual([field["text"] for field in fields], ["00:00:02:04", "00:00:00:00", "00:00:07:02"])
+        self.assertEqual(ui.key.call_args_list[0].args, ("alab.commit-seek", 0xFF0D))
+        self.assertEqual(ui.key.call_args_list[1].args, ("alab.select-video-track1", 0x0031))
+        ui.action.assert_called_once()
+        ui.edit_third_clip.assert_not_called()
+        self.assertEqual(ui.journal.emit.call_args.args[0]["duration_frames"], 182)
+        self.assertEqual(ui.journal.emit.call_args.args[0]["new_duration_frames"], 170)
+        for value in ("00:00:00:24", "00:60:00:00", "0:0:7:2"):
+            with self.subTest(timecode=value), self.assertRaises(actions.GuiRejected): runner._alab_timecode24(value)
+
+    def test_alab_duration_selection_or_late_field_change_never_accepts_the_wrong_clip(self):
+        cases = ({"before": (51, 0, 182)}, {"before": (52, 1, 182)}, {"before": (52, 0, 181)},
+                 {"multiple": True}, {"late_duration": 169})
+        for case in cases:
+            with self.subTest(case=case):
+                ui, _fields, _seek = self.make_ui(**case)
+                with self.assertRaises(actions.GuiRejected): runner.edit_alab_second_clip(ui)
+                ui.action.assert_not_called()
+                ui.edit_third_clip.assert_not_called()
+
+    @staticmethod
+    def selected_edit():
+        before = {"observed_bound_editorial_clip_semantics": [
+            {"scene_id": "scene-a", "original_inpoint_frame": 0, "duration_frames": 52},
+            {"scene_id": "scene-b", "original_inpoint_frame": 0, "duration_frames": 182}]}
+        after = copy.deepcopy(before); after["observed_bound_editorial_clip_semantics"][1]["duration_frames"] = 170
+        comparison = {"bounded_native_end_trims_observed": [{"scene_id": "scene-b",
+            "initial_duration_frames": 182, "reopened_duration_frames": 170}]}
+        preview = {"status": "BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED", "nle_receiver_acceptance": "NOT_VERIFIED",
+            "edit_imported": False, "human_review_required": True, "publication_approved": False,
+            "native_change_proposals": [{"type": "set_scene_duration", "scene_id": "scene-b",
+                                        "duration": {"num": "85", "den": "12"}}]}
+        return before, after, comparison, preview
+
+    def test_alab_native_readback_and_returned_preview_must_agree_on_only_twelve_second_clip_frames(self):
+        runner.check_alab_edit(*self.selected_edit())
+        for defect in ("inpoint", "first-duration", "second-duration", "comparison", "proposal", "promoted"):
+            with self.subTest(defect=defect):
+                before, after, comparison, preview = self.selected_edit()
+                if defect == "inpoint": after["observed_bound_editorial_clip_semantics"][1]["original_inpoint_frame"] = 12
+                elif defect == "first-duration": after["observed_bound_editorial_clip_semantics"][0]["duration_frames"] = 40
+                elif defect == "second-duration": after["observed_bound_editorial_clip_semantics"][1]["duration_frames"] = 169
+                elif defect == "comparison": comparison["bounded_native_end_trims_observed"][0]["scene_id"] = "scene-a"
+                elif defect == "proposal": preview["native_change_proposals"][0]["duration"] = {"num": "1", "den": "2"}
+                else: preview["edit_imported"] = True
+                with self.assertRaises(actions.GuiRejected): runner.check_alab_edit(before, after, comparison, preview)
+
+    def mocked_alab_route(self, *, failed_close=None, primary=None):
+        before, after, comparison, preview = self.selected_edit()
+        root, capsule, appdir = Path("/synthetic/evidence"), Path("/synthetic/capsule"), Path("/synthetic/app")
+        records = Mock(root=root); binary = appdir / "kdenlive"
+        initial, edited = root / "initial.kdenlive", root / "edited.kdenlive"
+        self.processes = [Mock(), Mock(), Mock()]
+        for index, process in enumerate(self.processes):
+            saved = initial if index == 0 else edited
+            reopen = None if index == 0 else initial if index == 1 else edited
+            process.witness.return_value = {"schema": "motionwright.native.kdenlive-live-process/1",
+                "phase": "import" if index == 0 else "reopen", "pid": 401 + index,
+                "kernel_starttime_ticks": 8001 + index, "actual_executable_sha256": "8" * 64,
+                "original_Kdenlive_application_version": runner.APPIMAGE_VERSION,
+                "source_original_OTIO_sha256": "3" * 64,
+                "saved_native_project_path": saved.as_posix(),
+                "saved_native_project_sha256": ("1" if index == 0 else "2") * 64,
+                "reopen_input_project_path": None if reopen is None else reopen.as_posix(),
+                "reopen_input_project_sha256": None if index == 0 else ("1" if index == 1 else "2") * 64,
+                "process_arguments": {"saved_project_was_an_exact_launch_argument": index > 0,
+                                      "native_project_path_checked": None if reopen is None else reopen.as_posix()},
+                "live_application_binary_and_pid_verified": True}
+            process.ui.tree.return_value = []
+        if failed_close is not None: self.processes[failed_close].close.side_effect = primary
+        hashes = {"initial.kdenlive": "1", "edited.kdenlive": "2", "timeline.otio": "3",
+                  "bridge-manifest.json": "4", "received.otio": "5", "edited.otio": "6",
+                  "reopened-edited.otio": "7", "kdenlive": "8"}
+        self.retained, self.source_input = object(), {"unit_source_input": True}
+        completion = {"unit_mocked_returned_source": True}
+        with patch.object(runner, "NativeProcess", side_effect=self.processes) as launch, \
+             patch.object(runner, "digest", side_effect=lambda path, maximum: hashes[path.name] * 64), \
+             patch.object(runner.readback, "read_capsule") as source_check, \
+             patch.object(runner.readback, "inspect_saved_kdenlive", side_effect=[before, after, after]) as inspect, \
+             patch.object(runner.readback, "compare_two_native_custody_snapshots", return_value=comparison), \
+             patch.object(runner, "preview_kdenlive_cut", side_effect=[preview, preview]) as preview_call, \
+             patch.object(runner, "edit_alab_second_clip") as edit, \
+             patch.object(runner.owner_cut, "finish_alab_return_once", return_value=completion) as finish:
+            self.launch, self.inspect, self.edit, self.finish, self.preview_call = launch, inspect, edit, finish, preview_call
+            return runner.run_route(appdir, binary, "8" * 64, capsule, records, root / "profile",
+                source_database=root / "canonical-source.sqlite3", retained_alab=self.retained,
+                alab_source_input=self.source_input)
+
+    def test_alab_route_retains_three_original_native_sessions_and_only_second_scene_edit(self):
+        result = self.mocked_alab_route()
+        self.assertEqual(self.launch.call_count, 3)
+        self.assertEqual(self.launch.call_args.args[-1], "reopen-edited")
+        self.edit.assert_called_once_with(self.processes[1].ui)
+        for process in self.processes:
+            process.ui.edit_third_clip.assert_not_called()
+            process.close.assert_called_once()
+        self.assertEqual(result["exact_end_trim_frames"], 12)
+        self.assertTrue(result["edited_native_project_reopened"])
+        self.assertEqual(result["alab_returned_source"], {"unit_mocked_returned_source": True})
+        self.assertEqual(self.finish.call_args.args[-2:], (self.source_input, self.retained))
+        self.assertTrue(all(call.kwargs["retained_alab"] is self.retained for call in self.inspect.call_args_list))
+        self.assertTrue(all(call.kwargs["retained_alab"] is self.retained for call in self.preview_call.call_args_list))
+
+    def test_alab_native_unknown_terminal_stops_before_owner_commit_without_retry(self):
+        for phase in (0, 1, 2):
+            with self.subTest(phase=phase):
+                original = subprocess.TimeoutExpired(["unit-native"], 30)
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                    self.mocked_alab_route(failed_close=phase, primary=original)
+                self.assertIs(caught.exception, original)
+                self.assertEqual(self.launch.call_count, phase + 1)
+                self.finish.assert_not_called()
+                self.assertTrue(all(process.close.call_count <= 1 for process in self.processes))
+
+    def test_alab_profile_cannot_be_sent_to_accessibility_or_without_both_source_bindings(self):
+        with patch.object(runner, "run_selected_alab") as selected, \
+             patch.object(runner, "NativeProcess") as native:
+            with self.assertRaises(actions.GuiRejected):
+                runner.run_selected_native("accessibility-only", Path("a"), Path("b"), "0" * 64,
+                    Path("c"), Mock(), Path("p"), alab_inputs={})
+            with self.assertRaises(actions.GuiRejected):
+                runner.run_route(Path("a"), Path("b"), "0" * 64, Path("c"), Mock(), Path("p"),
+                                 retained_alab=object())
+        selected.assert_not_called(); native.assert_not_called()
+
+    def test_alab_physical_relocation_preserves_two_MOVs_original_notices_and_standalone_ZIP(self):
+        import ci_private_evidence as custody
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); helper = self.source_fixture(root)
+            capsule = root / "selected-alab"
+            helper.destination = runner.relocation_source_path(capsule)
+            _source, retained = helper.invoke()
+            with self.source_scope(helper), patch.object(runner, "custody", custody), \
+                 patch.object(runner, "NativeProcess") as native:
+                records = runner.Recorder(helper.evidence)
+                before = runner.frozen_capsule_members(helper.destination, retained_alab=retained)
+                try: moved = runner.relocate_capsule_once(helper.destination, capsule, records, retained_alab=retained)
+                finally: records.close()
+                self.assertEqual(runner.frozen_capsule_members(capsule, retained_alab=retained), before)
+            self.assertEqual(len(moved["members"]), 12)
+            self.assertFalse(helper.destination.exists())
+            self.assertFalse(moved["ui_relink_dialog_used"])
+            self.assertFalse(moved["alab_sources_adopted_here"])
+            self.assertIn("portable-cut.zip", moved["members"])
+            for _, name, size, sha in helper.notice_pins:
+                self.assertEqual(moved["members"][name], {"bytes": size, "sha256": sha})
+            native.assert_not_called()
+
+    def test_alab_changed_notice_or_standalone_ZIP_refuses_before_physical_relocation(self):
+        import ci_private_evidence as custody
+        import bridge as media_bridge
+        for target in ("ALab-LICENSE.original.txt", "ALab-README.original.txt", "ALab-SELECTION-NOTICE.original.txt", "portable-cut.zip"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); helper = self.source_fixture(root)
+                capsule = root / "selected-alab"; helper.destination = runner.relocation_source_path(capsule)
+                _source, retained = helper.invoke()
+                path = helper.destination / target; raw = path.read_bytes(); path.write_bytes(b"X" + raw[1:])
+                with self.source_scope(helper), patch.object(runner, "custody", custody), \
+                     patch.object(Path, "rename") as move:
+                    records = runner.Recorder(helper.evidence)
+                    try:
+                        with self.assertRaises((actions.GuiRejected, runner.readback.KdenliveReadbackRejected, media_bridge.BridgeRefused)):
+                            runner.relocate_capsule_once(helper.destination, capsule, records, retained_alab=retained)
+                    finally: records.close()
+                move.assert_not_called()
+                self.assertTrue(helper.destination.exists()); self.assertFalse(capsule.exists())
+
+    def prepared_snapshot(self, root):
+        import ci_private_evidence as custody
+        import bridge as media_bridge
+        import test_kdenlive_owner_cut as owner_controls
+        helper = owner_controls.KdenliveAlabReturnedSourceContracts()
+        helper.prepare_return(root)
+        capsule = root / "snapshot-alab-capsule"
+        before = runner.relocation_source_path(capsule)
+        # Synthetic fixture arrangement only; the next call is the sole observed
+        # production relocation. No retained historical original is touched.
+        helper.capsule.rename(before)
+        records = runner.Recorder(helper.evidence)
+        try:
+            with helper.original_scope(), patch.object(runner, "custody", custody):
+                relocation = runner.relocate_capsule_once(before, capsule, records, retained_alab=helper.retained)
+                helper.capsule = capsule
+                completion = helper.invoke_return()
+                admission = (json.dumps(self.input_value(helper.base), sort_keys=True) + "\n").encode()
+                custody.new_bytes(helper.evidence / "alab-gui-input.original.json", admission)
+                # The caller's native mocks already retained the same argv,
+                # terminal and exact stream bytes before the first parse.
+                for name in ("initial.kdenlive", "received.otio", "edited.otio", "reopened-edited.otio"):
+                    custody.new_bytes(helper.evidence / name, ("unit-only original " + name).encode())
+                result = {"source_profile": media_bridge.ALAB_RETAINED_PROFILE,
+                    "owner_cut_completion": None, "native_source_cycle": None,
+                    "alab_source_adoption": helper.source_input, "alab_returned_source": completion,
+                    "alab_input_admission_sha256": custody.sha(admission), "capsule_relocation": relocation,
+                    "initial_project_sha256": custody.sha((helper.evidence / "initial.kdenlive").read_bytes()),
+                    "edited_project_sha256": custody.sha(helper.native.read_bytes()),
+                    "original_otio_sha256": custody.sha((capsule / "timeline.otio").read_bytes()),
+                    "received_otio_sha256": custody.sha((helper.evidence / "received.otio").read_bytes()),
+                    "edited_otio_sha256": custody.sha((helper.evidence / "edited.otio").read_bytes()),
+                    "reopened_edited_otio_sha256": custody.sha((helper.evidence / "reopened-edited.otio").read_bytes()),
+                    "two_distinct_native_processes": True, "three_distinct_native_processes": True,
+                    "edited_native_project_reopened": True, "exact_end_trim_frames": 12}
+                result["alab_original_bindings"] = runner.observe_alab_original_bindings(
+                    helper.evidence, helper.source_input, completion)
+                record = {"status": "NATIVE_GUI_BOUNDED_ROUNDTRIP_OBSERVED", "source": self.context(), "result": result,
+                          "recording_errors_before_result": [], "native_operation_retried": False,
+                          "human_acceptance": False, "release_authorized": False}
+                custody.new_bytes(helper.evidence / "original-result.json", custody.json_bytes(record))
+        finally:
+            records.close()
+        return helper, capsule, result
+
+    def test_alab_existing_single_snapshot_and_crypto_recover_exact_originals_not_native_credit(self):
+        import base64
+        import tarfile
+        import ci_private_evidence as custody
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            helper, capsule, result = self.prepared_snapshot(root)
+            public = root / "public"; public.mkdir()
+            key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+            der = key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+            recipient = {"spki_der_base64": base64.b64encode(der).decode(), "sha256": custody.sha(der)}
+            with helper.original_scope(), patch.object(runner, "custody", custody), \
+                 patch.object(custody, "gather_snapshot", wraps=custody.gather_snapshot) as gather, \
+                 patch.object(custody, "encrypt_snapshot", wraps=custody.encrypt_snapshot) as encrypt, \
+                 patch.object(runner, "NativeProcess") as native:
+                expected = runner.verified_snapshot_expectations(result, self.context())
+                projection = runner.seal_and_publish(helper.evidence, capsule, public, recipient,
+                    self.context(), "NATIVE_GUI_BOUNDED_ROUNDTRIP_OBSERVED", result=result)
+                raw, context = custody.decrypt_snapshot((public / "original-evidence.mwseal").read_bytes(), key)
+                runner.require_verified_snapshot(raw, expected)
+            gather.assert_called_once(); encrypt.assert_called_once(); native.assert_not_called()
+            self.assertEqual(context, self.context())
+            self.assertEqual(projection["status"], "NATIVE_GUI_BOUNDED_ROUNDTRIP_OBSERVED")
+            self.assertFalse(projection["human_acceptance"]); self.assertFalse(projection["release_authorized"])
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+                for name in ("alab-source/alab-adopt-cli.stderr.bin", "alab-returned-cut-cli.stderr.bin"):
+                    self.assertEqual(archive.extractfile("owner/" + name).read(), b"")
+                for name in ("ALab-LICENSE.original.txt", "ALab-README.original.txt", "ALab-SELECTION-NOTICE.original.txt", "portable-cut.zip"):
+                    self.assertEqual(archive.extractfile("capsule/" + name).read(), (capsule / name).read_bytes())
+                self.assertEqual(archive.extractfile("owner/alab-returned-source-receipt.json").read(),
+                                 (helper.evidence / "alab-returned-source-receipt.json").read_bytes())
+            self.assertEqual(result["alab_returned_source"]["total_original_history_events"], 9)
+            self.assertIs(result["alab_returned_source"]["native_editor_dispatched_here"], False)
+
+    def test_alab_changed_or_missing_originals_and_coherent_result_rewrite_cannot_inherit_snapshot_success(self):
+        import tarfile
+        import ci_private_evidence as custody
+        for defect in ("source-stage", "license", "empty-stderr", "coherent-return", "duplicate-return"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); helper, capsule, result = self.prepared_snapshot(root)
+                public = root / "public"; public.mkdir()
+                original_gather = custody.gather_snapshot
+                def capture(roots, **kwargs):
+                    if defect == "source-stage":
+                        path = helper.evidence / "alab-source/alab-adoption-receipt.stage-02.result.original.json"
+                        body = path.read_bytes(); path.write_bytes(b"X" + body[1:])
+                    elif defect == "license": (capsule / "ALab-LICENSE.original.txt").unlink()
+                    elif defect == "empty-stderr":
+                        (helper.evidence / "alab-returned-cut-cli.stderr.bin").write_bytes(b"changed original")
+                    elif defect == "coherent-return":
+                        name = "alab-returned-source-receipt.json"
+                        path = helper.evidence / name; body = path.read_bytes(); path.write_bytes(b" " + body)
+                        new = path.read_bytes(); digest = custody.sha(new)
+                        result["alab_returned_source"]["returned_source_receipt_sha256"] = digest
+                        result["alab_original_bindings"]["members"][name] = {"bytes": len(new), "sha256": digest}
+                        record_path = helper.evidence / "original-result.json"
+                        record = custody.strict(record_path.read_bytes()); record["result"] = result
+                        record_path.write_bytes(custody.json_bytes(record))
+                    packed, complete = original_gather(roots, **kwargs)
+                    if defect == "duplicate-return":
+                        with tarfile.open(fileobj=io.BytesIO(packed), mode="r:") as archive:
+                            entries = [(item.name, archive.extractfile(item).read()) for item in archive]
+                        duplicate = "owner/alab-returned-source-receipt.json"
+                        entries.append((duplicate, (helper.evidence / "alab-returned-source-receipt.json").read_bytes()))
+                        stream = io.BytesIO()
+                        with tarfile.open(fileobj=stream, mode="w") as archive:
+                            for name, body in entries:
+                                item = tarfile.TarInfo(name); item.size = len(body)
+                                archive.addfile(item, io.BytesIO(body))
+                        packed = stream.getvalue()
+                    return packed, complete
+                with helper.original_scope(), patch.object(runner, "custody", custody), \
+                     patch.object(custody, "gather_snapshot", side_effect=capture) as gather, \
+                     patch.object(custody, "encrypt_snapshot", return_value=b"unit opaque seal; crypto covered separately") as encrypt:
+                    projection = runner.seal_and_publish(helper.evidence, capsule, public, {}, self.context(),
+                        "NATIVE_GUI_BOUNDED_ROUNDTRIP_OBSERVED", result=result)
+                gather.assert_called_once(); encrypt.assert_called_once()
+                self.assertEqual(projection["status"], "CUSTODY_FAILED")
+                self.assertTrue((public / "original-evidence.mwseal").is_file())
+
+    def test_alab_verified_scope_rejects_promoted_flags_wrong_counts_and_out_of_roster_originals(self):
+        import ci_private_evidence as custody
+        cases = (("alab_source_adoption", "source_adoption_history_events", True),
+                 ("alab_source_adoption", "new_decode", True),
+                 ("alab_returned_source", "additional_history_events", True),
+                 ("alab_returned_source", "execution_authority_issued", True),
+                 ("capsule_relocation", "ui_relink_dialog_used", True),
+                 ("capsule_relocation", "alab_sources_adopted_here", True))
+        with tempfile.TemporaryDirectory() as temporary:
+            helper, _capsule, original = self.prepared_snapshot(Path(temporary).resolve())
+            with helper.original_scope(), patch.object(runner, "custody", custody):
+                for section, key, value in cases:
+                    with self.subTest(section=section, key=key):
+                        changed = copy.deepcopy(original); changed[section][key] = value
+                        with self.assertRaises(actions.GuiRejected): runner.verified_snapshot_expectations(changed, self.context())
+                for defect in ("missing", "extra", "wrong-phase-path", "boolean-bytes"):
+                    with self.subTest(defect=defect):
+                        changed = copy.deepcopy(original)
+                        members = changed["alab_original_bindings"]["members"]
+                        key = "alab-returned-cut-cli.stderr.bin"
+                        if defect == "missing": members.pop(key)
+                        elif defect == "extra": members["foreign-original.bin"] = members[key]
+                        elif defect == "wrong-phase-path": members["alab-source/" + key] = members.pop(key)
+                        else: members[key]["bytes"] = False
+                        with self.assertRaises(actions.GuiRejected): runner.verified_snapshot_expectations(changed, self.context())
+
 
 if __name__ == "__main__":
     unittest.main()

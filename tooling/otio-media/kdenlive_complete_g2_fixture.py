@@ -110,7 +110,7 @@ def require_full_original_manifest(manifest: dict, project: dict,
             and isinstance(rows, list)
             and len(rows) == EXPECTED_SCENE_COUNT
             and manifest.get("nle_import_verified") is False
-            and manifest.get("external_program_executed") is False
+            and manifest.get("external_program_executed") is True
             and manifest.get("publishing_authorized") is False,
             "original_full_OTIO_owner_capsule_not_three_bound_unapproved_scenes")
     observed = [
