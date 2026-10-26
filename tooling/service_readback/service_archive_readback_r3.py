@@ -738,10 +738,10 @@ def main(observation=None):
     parser.add_argument("--expected-playwright-sha256", help="External original report SHA-256, mandatory for execution")
     parser.add_argument("--expected-roster-json", type=Path, help="Original Playwright --list JSON of the expected source selection")
     parser.add_argument("--expected-roster-sha256", help="External expected --list JSON SHA-256, mandatory for execution")
-    parser.add_argument("--provenance-receipt", type=Path, help="External A6/source/binary receipt, mandatory for execution")
+    parser.add_argument("--provenance-receipt", type=Path, help="External source/binary provenance receipt, mandatory for execution")
     parser.add_argument("--expected-provenance-sha256", help="External receipt SHA-256, mandatory for execution")
-    parser.add_argument("--a6-receipt-reviewed", action="store_true", help="Caller explicitly confirms external A6 binding review; not authentication by this tool")
-    parser.add_argument("--execute-readback", action="store_true", help="Opt in only after A6 supplies the exact executable and receipt")
+    parser.add_argument("--provenance-reviewed", action="store_true", help="Caller explicitly confirms external provenance binding review; not authentication by this tool")
+    parser.add_argument("--execute-readback", action="store_true", help="Opt in only after the exact executable and provenance receipt are supplied")
     parser.add_argument("--expected-binary-sha256")
     parser.add_argument("--backend-source-sha")
     parser.add_argument("--rpc-timeout-seconds", type=float, default=10)
@@ -766,12 +766,12 @@ def main(observation=None):
                     "Execution requires the original Playwright JSON and its external SHA-256; a count is insufficient")
             require(args.expected_roster_json is not None and args.expected_roster_sha256,
                     "Execution requires an independent original Playwright --list roster and its external SHA-256")
-            require(args.provenance_receipt is not None and args.expected_provenance_sha256 and args.a6_receipt_reviewed,
-                    "Execution requires the external A6 receipt, its SHA-256, and explicit caller review of the binding")
+            require(args.provenance_receipt is not None and args.expected_provenance_sha256 and args.provenance_reviewed,
+                    "Execution requires the external provenance receipt, its SHA-256, and explicit caller review of the binding")
         if args.provenance_receipt:
             receipt = copy_external_file(args.provenance_receipt, output / "provenance-receipt.original", args.expected_provenance_sha256)
             external.append(receipt)
-            report["provenanceReceipt"] = {**receipt, "externalReviewAssertedByCaller": args.a6_receipt_reviewed,
+            report["provenanceReceipt"] = {**receipt, "externalReviewAssertedByCaller": args.provenance_reviewed,
                                            "authentication": "NOT_ESTABLISHED_BY_THIS_SCRIPT"}
         original_playwright = None
         expected_ids = None
@@ -812,13 +812,13 @@ def main(observation=None):
         if args.execute_readback:
             require(args.playwright_exit_code == 0, "Readback requires the caller's successful Playwright exit receipt")
             require(report["playwrightRoster"] is not None, "The original Playwright ID roster is required")
-            require(re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_binary_sha256 or "") is not None, "An exact A6 binary SHA-256 is required")
-            require(re.fullmatch(r"[0-9a-fA-F]{40}", args.backend_source_sha or "") is not None, "The backend source SHA must be supplied from the externally reviewed A6 receipt")
+            require(re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_binary_sha256 or "") is not None, "An exact binary SHA-256 is required")
+            require(re.fullmatch(r"[0-9a-fA-F]{40}", args.backend_source_sha or "") is not None, "The backend source SHA must be supplied from the externally reviewed provenance receipt")
             configured = os.environ.get("MOTIONWRIGHT_SERVICE_TEST_BIN", "")
             binary = Path(configured)
             require(configured and binary.is_absolute() and binary.is_file(), "MOTIONWRIGHT_SERVICE_TEST_BIN must be an existing absolute executable path")
             expected_hash = args.expected_binary_sha256.lower()
-            require(sha256(binary) == expected_hash, "Executable differs from the supplied A6 binary SHA-256")
+            require(sha256(binary) == expected_hash, "Executable differs from the supplied binary SHA-256")
             report["binary"] = {"path": str(binary), "sha256": expected_hash}
             durable = DurableObservations(output / "execution-observations.jsonl")
             report["observationJournal"]["status"] = "OPEN"

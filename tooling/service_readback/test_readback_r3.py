@@ -127,8 +127,8 @@ class RuntimeFixture(unittest.TestCase):
         listed['suites'][0]['specs'][0]['tests'][0]['results'] = []
         listed['suites'][0]['specs'][0]['tests'][0]['status'] = 'skipped'
         dump(self.roster, listed)
-        self.receipt = self.base / 'a6.mock-receipt.json'
-        dump(self.receipt, {'testOnly': True, 'notAnA6Receipt': 'source-only transport regression'})
+        self.receipt = self.base / 'provenance.mock-receipt.json'
+        dump(self.receipt, {'testOnly': True, 'notAProvenanceReceipt': 'source-only transport regression'})
         self.binary = self.base / 'INERT-NOT-EXECUTABLE.bin'
         self.binary.write_bytes(b'SOURCE ONLY MOCK; POPEN IS FORBIDDEN')
         self.output = self.base / 'output'
@@ -145,10 +145,10 @@ class RuntimeFixture(unittest.TestCase):
         if hasattr(reader_module, 'bind_playwright_roster'):
             args += ['--playwright-json', str(self.report), '--expected-playwright-sha256', reader_module.sha256(self.report),
                      '--expected-roster-json', str(self.roster), '--expected-roster-sha256', reader_module.sha256(self.roster),
-                     '--expected-provenance-sha256', reader_module.sha256(self.receipt), '--a6-receipt-reviewed']
+                     '--expected-provenance-sha256', reader_module.sha256(self.receipt), '--provenance-reviewed']
         for flag in omit_flags:
             index = args.index(flag)
-            del args[index:index + (1 if flag in ('--a6-receipt-reviewed', '--execute-readback') else 2)]
+            del args[index:index + (1 if flag in ('--provenance-reviewed', '--execute-readback') else 2)]
         original = reader_module.write_json
         def failing(path, value, *a, **kw):
             if Path(path).name in fail_names:
@@ -321,7 +321,7 @@ class RosterAndDurabilityTests(RuntimeFixture):
 
     def test_execution_requires_external_report_roster_receipt_and_review(self):
         for index, flag in enumerate(('--playwright-json', '--expected-playwright-sha256', '--expected-roster-json',
-                                      '--expected-roster-sha256', '--provenance-receipt', '--expected-provenance-sha256', '--a6-receipt-reviewed')):
+                                      '--expected-roster-sha256', '--provenance-receipt', '--expected-provenance-sha256', '--provenance-reviewed')):
             with self.subTest(flag=flag):
                 self.output = self.base / ('omitted-' + str(index))
                 code, raised, report, _, _ = self.run_main(omit_flags=(flag,))
