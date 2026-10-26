@@ -246,7 +246,7 @@ jobs:
           source=json.loads((public/"source-inputs.json").read_text())
           receipt=json.loads((public/"official-runtime-contracts.json").read_text())
           expected={"tooling/mlt_official_runtime_intake.py":"6995e2f9ad35cf11a46a8e280f5928e3284c4318d353bbd6d11dced496034bc6",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"b1e8cde77fa27b70722ca7c30840fb11905df87db96113b433ff80b0d6bb0ea7"}
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"14835911ddd681b4fe155bee9c9e9b0219991a91ea1e8ecd19752f4c2f599267"}
           test="tooling/tests/test_mlt_official_runtime_intake.py"
           assert source["official_intake_sources"]==expected
           assert set(source["official_intake_blob_oids"])==set(expected)
@@ -1659,7 +1659,7 @@ jobs:
           require(not git("ls-files","--others","--ignored","--exclude-standard","-z"),
                   "ignored checkout files")
           pins={"tooling/mlt_official_runtime_intake.py":"6995e2f9ad35cf11a46a8e280f5928e3284c4318d353bbd6d11dced496034bc6",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"b1e8cde77fa27b70722ca7c30840fb11905df87db96113b433ff80b0d6bb0ea7"}
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"14835911ddd681b4fe155bee9c9e9b0219991a91ea1e8ecd19752f4c2f599267"}
           workflow=".github/workflows/mlt-audio-diagnostic.yml"
           runner="tooling/ci_test_runner.py"
           sources={}
@@ -1710,7 +1710,7 @@ jobs:
           source=json.loads((public/"source-inputs.json").read_text())
           receipt=json.loads((public/"official-runtime-contracts.json").read_text())
           expected={"tooling/mlt_official_runtime_intake.py":"6995e2f9ad35cf11a46a8e280f5928e3284c4318d353bbd6d11dced496034bc6",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"b1e8cde77fa27b70722ca7c30840fb11905df87db96113b433ff80b0d6bb0ea7"}
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"14835911ddd681b4fe155bee9c9e9b0219991a91ea1e8ecd19752f4c2f599267"}
           test="tooling/tests/test_mlt_official_runtime_intake.py"
           assert source["official_intake_sources"]==expected
           assert set(source["official_intake_blob_oids"])==set(expected)

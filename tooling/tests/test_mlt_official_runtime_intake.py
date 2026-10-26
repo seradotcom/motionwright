@@ -830,6 +830,7 @@ import stat
 import sys
 from unittest import mock
 
+assert sys.dont_write_bytecode is True, "isolated child must not mutate source bytecode"
 spec = importlib.util.spec_from_file_location("capture_regular_under_test", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -883,7 +884,7 @@ print(json.dumps({"pid": os.getpid(), "leaf_checks": leaf_checks,
             path = Path(temporary).resolve() / "replaced-original.bin"
             path.write_bytes(b"observed ordinary original")
             child = subprocess.Popen(
-                [sys.executable, "-I", "-c", child_source,
+                [sys.executable, "-I", "-B", "-c", child_source,
                  str(Path(intake.__file__).resolve(strict=True)), str(path)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
