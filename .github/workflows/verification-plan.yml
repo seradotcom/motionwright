@@ -68,6 +68,21 @@ jobs:
             --mode both --expected-source "$MW_SOURCE_SHA" \
             --report "$RUNNER_TEMP/verification/g0-receipt.json" \
             --require-complete
+      - name: Verify selected-originals Core source on Linux in both entrypoints
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          python -B -E -s tooling/source_policy.py
+          python -B -E -s tooling/public_surface_policy.py
+          python -B -E -s tooling/ci_test_runner.py --repo . \
+            --test-directory tooling/tests \
+            --pattern test_native_evidence_projection.py \
+            --mode both --expected-source "$MW_SOURCE_SHA" \
+            --report "$RUNNER_TEMP/verification/core-projection-receipt.json" \
+            --require-complete --timeout 60
       - name: Compute full-source shadow selection without dispatching jobs
         id: shadow_plan
         shell: python

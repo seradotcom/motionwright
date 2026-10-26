@@ -1145,5 +1145,489 @@ class LinuxFilesystemTests(unittest.TestCase):
                     n.inspect_selected_tar(raw, expected_context=self.spec["context"],
                         role_contract=roles, policies=POLICIES, expected_diagnostic_contract=contract)
 
+    @unittest.skipUnless(sys.platform.startswith("linux") and hasattr(os, "pidfd_open"),
+                         "real Linux FIFO replacement with original-child pidfd custody")
+    def test_regular_to_fifo_race_is_nonblocking_with_closed_original_child(self):
+        """Real FIFO plus a declared fault injection; no historical SHA credit."""
+        import select
+        import signal
+        import time
+        self.assertTrue(hasattr(signal, "pidfd_send_signal"))
+        self.assertEqual(signal.getsignal(signal.SIGCHLD), signal.SIG_DFL)
+        for omit_nonblock in (False, True):
+            with self.subTest(omit_nonblock=omit_nonblock):
+                started = time.monotonic()
+                work_deadline, hard_deadline = started + 2.0, started + 5.0
+                owned, close_errors, observation_errors = {}, [], []
+                pid, waited, primary = None, None, None
+                original, eof = bytearray(), False
+                read_failed = wait_failed = False
+                kill_attempts, release_attempts = 0, 0
+                leaf = "fifo-race-" + ("negative" if omit_nonblock else "fixed") + ".bin"
+
+                def close_once(name):
+                    fd = owned.pop(name, None)  # Retire even if close is uncertain.
+                    if fd is None:
+                        return True
+                    try:
+                        os.close(fd)
+                        return True
+                    except BaseException as error:
+                        close_errors.append({"name": name, "fd": fd,
+                                             "error": type(error).__name__, "message": str(error)})
+                        return False
+
+                def drain_once():
+                    nonlocal eof, read_failed
+                    if eof or read_failed or "reader" not in owned:
+                        return
+                    try:
+                        block = os.read(owned["reader"], 4097 - len(original))
+                        original.extend(block)
+                        eof = block == b""
+                        if len(original) > 4096:
+                            read_failed = True
+                            observation_errors.append({"operation": "read", "error": "prefix-budget"})
+                    except (BlockingIOError, InterruptedError):
+                        pass
+                    except BaseException as error:
+                        read_failed = True
+                        observation_errors.append({"operation": "read", "error": type(error).__name__,
+                                                   "message": str(error)})
+
+                def wait_once():
+                    nonlocal waited, wait_failed
+                    if pid is None or waited is not None or wait_failed:
+                        return
+                    try:
+                        returned, status = os.waitpid(pid, os.WNOHANG)
+                        if returned:
+                            if returned != pid:
+                                raise AssertionError("wait did not return the original child")
+                            waited = status
+                    except InterruptedError:
+                        pass
+                    except BaseException as error:
+                        wait_failed = True
+                        observation_errors.append({"operation": "wait", "error": type(error).__name__,
+                                                   "message": str(error)})
+
+                def kill_once():
+                    nonlocal kill_attempts
+                    if waited is not None or wait_failed or kill_attempts or "pidfd" not in owned:
+                        return
+                    kill_attempts = 1
+                    try:
+                        signal.pidfd_send_signal(owned["pidfd"], signal.SIGKILL)
+                    except BaseException as error:
+                        observation_errors.append({"operation": "pidfd-signal", "error": type(error).__name__,
+                                                   "message": str(error)})
+
+                try:
+                    (self.owner / leaf).write_bytes(b"original-regular-bytes")
+                    owned["reader"], owned["writer"] = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+                    owned["gate_reader"], owned["gate_writer"] = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+                    pid = os.fork()
+                    if pid == 0:
+                        handles, status, real_open = None, 2, os.open
+                        try:
+                            closed = [close_once("reader"), close_once("gate_writer")]
+                            if not all(closed):
+                                raise AssertionError("child preparation close was uncertain")
+                            token, gate_eof = bytearray(), False
+                            while time.monotonic() < work_deadline:
+                                remaining = max(0, work_deadline - time.monotonic())
+                                ready, _, _ = select.select([owned["gate_reader"]], [], [], min(0.02, remaining))
+                                if not ready:
+                                    continue
+                                block = os.read(owned["gate_reader"], 2 - len(token))
+                                token.extend(block)
+                                if len(token) > 1:
+                                    raise AssertionError("foreign fixture release token")
+                                if not block:
+                                    gate_eof = True
+                                    break
+                            if bytes(token) != b"G" or not gate_eof:
+                                raise AssertionError("fixture was not released by a pidfd-owning parent")
+                            if not close_once("gate_reader"):
+                                raise AssertionError("child release descriptor close was uncertain")
+                            handles = n.RootHandles({"owner": str(self.owner)})
+                            value, _ = handles.read("owner", (leaf,), 64)
+                            if value != b"original-regular-bytes":
+                                raise AssertionError("regular control changed")
+                            os.write(owned["writer"], b"REGULAR_OK\n")
+                            swapped = False
+
+                            def replace_leaf_then_open(path, flags, *args, **kwargs):
+                                nonlocal swapped
+                                if path == leaf and not swapped and "dir_fd" in kwargs:
+                                    swapped = True
+                                    parent = kwargs["dir_fd"]
+                                    os.unlink(leaf, dir_fd=parent)
+                                    os.mkfifo(leaf, mode=0o600, dir_fd=parent)
+                                    os.write(owned["writer"], b"FIFO_CREATED\n")
+                                    if omit_nonblock:
+                                        flags &= ~os.O_NONBLOCK
+                                return real_open(path, flags, *args, **kwargs)
+
+                            os.open = replace_leaf_then_open
+                            try:
+                                handles.read("owner", (leaf,), 64)
+                            except n.SelectionError as error:
+                                if str(error) != "member-changed-before-open" or not swapped:
+                                    raise
+                                os.write(owned["writer"], b"REJECTED_CHANGED_BEFORE_OPEN\n")
+                                status = 0
+                            else:
+                                os.write(owned["writer"], b"UNEXPECTED_READ_SUCCESS\n")
+                        except BaseException:
+                            try:
+                                if "writer" in owned:
+                                    os.write(owned["writer"], b"CHILD_SOURCE_CONTROL_ERROR\n")
+                            except BaseException:
+                                pass
+                        finally:
+                            os.open = real_open
+                            try:
+                                if handles is not None:
+                                    handles.close()
+                            except BaseException:
+                                status = 2
+                            for name in tuple(owned):
+                                if not close_once(name):
+                                    status = 2
+                            # This covers every post-fork path, including reader
+                            # close and gate setup: never return into unittest.
+                            os._exit(status)
+
+                    closed = [close_once("writer"), close_once("gate_reader")]
+                    if not all(closed):
+                        raise AssertionError("parent preparation close was uncertain")
+                    # SIGCHLD is default and the original child is unreaped;
+                    # it cannot have been replaced by a reused PID at this bind.
+                    owned["pidfd"] = os.pidfd_open(pid, 0)
+                    release_attempts = 1
+                    if os.write(owned["gate_writer"], b"G") != 1:
+                        raise AssertionError("incomplete fixture release")
+                    if not close_once("gate_writer"):
+                        raise AssertionError("release close was uncertain")
+                    while time.monotonic() < hard_deadline:
+                        drain_once()
+                        wait_once()
+                        if read_failed or wait_failed:
+                            raise AssertionError("original FIFO observation became uncertain")
+                        if waited is not None and eof:
+                            break
+                        if time.monotonic() >= work_deadline:
+                            kill_once()
+                        delay = min(0.02, max(0, hard_deadline - time.monotonic()))
+                        select.select([owned["reader"]] if not eof else [], [], [], delay)
+                    if waited is None or not eof:
+                        raise AssertionError("original FIFO child terminal or EOF UNKNOWN; no replay")
+                except BaseException as error:
+                    primary = error
+                finally:
+                    # If pidfd acquisition failed, this EOF releases the gated
+                    # child to exit without touching a regular/FIFO source. There
+                    # is no fallback signal or handle reacquisition by PID.
+                    close_once("gate_writer")
+                    if pid is not None and pid > 0:
+                        wait_once()
+                        if waited is None and time.monotonic() < hard_deadline:
+                            kill_once()
+                        while time.monotonic() < hard_deadline and not wait_failed:
+                            drain_once()
+                            wait_once()
+                            if waited is not None and (eof or read_failed):
+                                break
+                            try:
+                                time.sleep(min(0.01, max(0, hard_deadline - time.monotonic())))
+                            except BaseException as error:
+                                observation_errors.append({"operation": "cleanup-delay",
+                                    "error": type(error).__name__, "message": str(error)})
+                                if primary is None:
+                                    primary = error
+                                break
+                    bound = "pidfd" in owned
+                    for name in tuple(owned):
+                        close_once(name)
+                    finished = time.monotonic()
+                    closure_before_deadline = finished < hard_deadline
+                    closed = (waited is not None and eof and not read_failed and not wait_failed
+                              and not close_errors and not observation_errors and closure_before_deadline)
+                    record = {"schema": "motionwright.core-fifo-source-control/1",
+                        "fault_injection_remove_nonblock": omit_nonblock,
+                        "original_child_pid": pid, "original_pidfd_bound": bound,
+                        "release_attempts": release_attempts,
+                        "original_pipe_prefix_hex": bytes(original).hex(),
+                        "original_pipe_prefix_sha256": n.sha(bytes(original)),
+                        "original_pipe_eof": eof, "prefix_limit_exceeded": len(original) > 4096,
+                        "wait_status": waited,
+                        "exit_code": os.waitstatus_to_exitcode(waited) if waited is not None else None,
+                        "kill_attempts": kill_attempts, "close_errors": close_errors,
+                        "observation_errors": observation_errors,
+                        "primary_error": None if primary is None else {
+                            "type": type(primary).__name__, "message": str(primary)},
+                        "status": "OBSERVED_ORIGINAL_TERMINAL" if closed else "UNKNOWN",
+                        "elapsed_seconds": finished - started,
+                        "closure_before_deadline": closure_before_deadline,
+                        "work_seconds": 2.0, "original_closure_deadline_seconds": 5.0,
+                        "global_descendants_closed": False, "native_operation_executed": False}
+                    print("CORE_FIFO_SOURCE_ORIGINAL=" + json.dumps(record, sort_keys=True), flush=True)
+                if primary is not None:
+                    raise primary
+                self.assertTrue(closed, "original FIFO custody incomplete; no replay")
+                self.assertEqual(release_attempts, 1)
+                if omit_nonblock:
+                    self.assertEqual(bytes(original), b"REGULAR_OK\nFIFO_CREATED\n")
+                    self.assertEqual(kill_attempts, 1)
+                    self.assertTrue(os.WIFSIGNALED(waited))
+                    self.assertEqual(os.WTERMSIG(waited), signal.SIGKILL)
+                else:
+                    self.assertEqual(bytes(original), b"REGULAR_OK\nFIFO_CREATED\nREJECTED_CHANGED_BEFORE_OPEN\n")
+                    self.assertEqual(kill_attempts, 0)
+                    self.assertTrue(os.WIFEXITED(waited))
+                    self.assertEqual(os.WEXITSTATUS(waited), 0)
+
+
+class ScopedJsonSnapshotLeafTests(unittest.TestCase):
+    """Synthetic envelopes exercise leaves; they are not an SDK schema claim."""
+    def setUp(self):
+        self.files = {("owner", "media.mp4"): RAW, ("owner", "terminal.json"): TERMINAL}
+        self.spec = spec_for(self.files)
+        self.spec["roots"]["records"] = "/virtual/records"
+        self.roles = dict(ROLES)
+        receipt = n.Object({"payload": n.Field(n.JsonValue()),
+                            "state": n.Field(n.String(values=("UNKNOWN",)))})
+        self.envelope = n.Object({
+            "schema": n.Field(n.Literal("unit-scoped-json-leaf/1")),
+            "error": n.Field(n.Object({
+                "code": n.Field(n.String()), "message": n.Field(n.JsonText()),
+                "candidates": n.Field(n.Array(n.JsonText(), 8)),
+                "progress": n.Field(n.Object({"note": n.Field(n.JsonText())})),
+                "native_diagnostic": n.Field(n.Object({
+                    "name": n.Field(n.String()), "text": n.Field(n.JsonText())})),
+            })),
+            "receipts": n.Field(n.Array(receipt, 4)),
+            "attempted_receipt": n.Field(n.Nullable(receipt)),
+        })
+        self.value = {"schema": "unit-scoped-json-leaf/1", "error": {
+            "code": "native-unknown", "message": "first\nsecond\t\u0000",
+            "candidates": ["candidate\rline", "\u0001escaped"],
+            "progress": {"note": "progress\ntext"},
+            "native_diagnostic": {"name": "fixture", "text": "native\ntext"}},
+            "receipts": [{"state": "UNKNOWN", "payload": {
+                "dynamic\nkey": [None, True, 17, 2.5, {"text": "\u001fdata"}]}}],
+            "attempted_receipt": {"state": "UNKNOWN", "payload": ["opaque", False]},
+        }
+        self.policies = dict(POLICIES)
+        self.policies.update({key: self.envelope for key in n.JSON_SNAPSHOT_POLICIES})
+        self.policy = "hyperframes-original-render-failure"
+
+    def add_snapshot(self, policy=None, raw=None):
+        policy = policy or self.policy
+        phase, path = n.JSON_SNAPSHOT_POLICIES[policy]
+        raw = raw if raw is not None else (json.dumps(self.value, indent=1, ensure_ascii=True) + "\n").encode()
+        self.files[("records", path)] = raw
+        row = {"root": "records", "relative_path": path, "role": policy,
+               "layer": "attempt-custody", "phase": phase, "kind": "json-original",
+               "required": False, "expected_sha256": n.sha(raw), "bytes": len(raw), "policy": policy}
+        self.roles[(phase, "attempt-custody", policy)] = (0, 1)
+        self.spec["members"].append(row)
+        return row
+
+    def capture(self):
+        self.handles = MemoryHandles(self.files)
+        with mock.patch.object(n, "RootHandles", return_value=self.handles), \
+             mock.patch.object(n, "_verify_sources") as sources:
+            raw, manifest = n.capture_selected_originals(self.spec, policies=self.policies,
+                                                        role_contract=self.roles)
+            self.assertEqual(sources.call_count, 2)
+        return raw, manifest
+
+    def inspect(self, raw, **kwargs):
+        return n.inspect_selected_tar(raw, expected_context=CTX, role_contract=self.roles,
+                                      policies=self.policies, **kwargs)
+
+    def test_default_string_and_projection_do_not_acquire_json_leaf_permissions(self):
+        self.assertEqual(n.project("ordinary", n.String()), "ordinary")
+        for value, rule in [("escaped\ntext", n.String()), ("escaped\ntext", n.JsonText()),
+                            ({"dynamic": True}, n.JsonValue()),
+                            ({"payload": {}}, n.Object({"payload": n.Field(n.JsonValue())}))]:
+            with self.subTest(rule=type(rule).__name__), self.assertRaises(n.SelectionError):
+                n.project(value, rule, exact=True)
+
+    def test_four_opted_in_files_retain_escaped_text_and_dynamic_payload_bytes(self):
+        self.assertEqual(len(n.JSON_SNAPSHOT_POLICIES), 4)
+        self.assertEqual((n.MAX_JSON, n.MAX_TOTAL), (8 * 1024 * 1024, 512 * 1024 * 1024))
+        for policy in n.JSON_SNAPSHOT_POLICIES:
+            self.add_snapshot(policy)
+        raw, manifest = self.capture()
+        self.assertEqual(self.inspect(raw), manifest)
+        self.assertTrue(manifest["required_layers_complete"])
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            for row in manifest["members"][-4:]:
+                original = self.files[(row["root"], row["relative_path"])]
+                self.assertEqual(archive.extractfile(row["member"]).read(), original)
+                self.assertNotEqual(original, n.canonical(self.value))
+                self.assertEqual(row["retained_sha256"], n.sha(original))
+                self.assertTrue(row["original_bytes"])
+        self.assertEqual(manifest["schema"], n.MANIFEST_SCHEMA)
+        for flag in ("raw_diagnostics_included", "raw_environment_included", "physical_acceptance",
+                     "human_acceptance", "full_original_json_claimed", "release_authorized"):
+            self.assertIs(manifest[flag], False)
+
+    def test_opt_in_is_bound_to_exact_policy_file_root_phase_kind_and_schema(self):
+        row = self.add_snapshot()
+        changes = [{"root": "owner"}, {"relative_path": "records/original-render.failure.json"},
+                   {"phase": "edited"}, {"layer": "persistence"}, {"kind": "json-projection"},
+                   {"policy": "foreign-policy"}, {"policy": [self.policy]}]
+        self.policies["foreign-policy"] = self.envelope
+        for change in changes:
+            spec = copy.deepcopy(self.spec); spec["members"][-1].update(change)
+            with self.subTest(change=change), mock.patch.object(n, "RootHandles") as handles:
+                with self.assertRaises(n.SelectionError):
+                    n.capture_selected_originals(spec, policies=self.policies, role_contract=self.roles)
+                handles.assert_not_called()
+        spec = copy.deepcopy(self.spec); spec["schema"] = n.SPEC_SCHEMA_V3
+        with mock.patch.object(n, "RootHandles") as handles, self.assertRaisesRegex(
+                n.SelectionError, "json-snapshot-policy-scope"):
+            n.capture_selected_originals(spec, policies=self.policies, role_contract=self.roles)
+        handles.assert_not_called()
+        self.assertEqual(row["relative_path"], "original-render.failure.json")
+
+    def test_unregistered_policy_cannot_use_new_leaves_on_another_selected_file(self):
+        row = self.add_snapshot()
+        row.update(relative_path="unrelated.json", policy="foreign-policy")
+        self.policies["foreign-policy"] = self.envelope
+        with mock.patch.object(n, "RootHandles") as handles:
+            with self.assertRaisesRegex(n.SelectionError, "json-snapshot-leaf-not-opted-in"):
+                n.capture_selected_originals(self.spec, policies=self.policies, role_contract=self.roles)
+            handles.assert_not_called()
+
+    def test_payload_leaf_cannot_replace_progress_diagnostic_or_the_envelope(self):
+        self.add_snapshot()
+        for policy in [n.JsonValue(), n.Object({"progress": n.Field(n.JsonValue())}),
+                       n.Object({"native_diagnostic": n.Field(n.JsonValue())}),
+                       n.Object({"receipts": n.Field(n.Array(n.JsonValue(), 4))}),
+                       n.Object({"message": n.Field(n.JsonText(n.MAX_JSON + 1))})]:
+            self.policies[self.policy] = policy
+            with self.subTest(policy=repr(policy)), mock.patch.object(n, "RootHandles") as handles:
+                with self.assertRaises(n.SelectionError):
+                    n.capture_selected_originals(self.spec, policies=self.policies, role_contract=self.roles)
+                handles.assert_not_called()
+
+    def test_whole_file_node_depth_and_string_budgets_are_shared_not_per_leaf(self):
+        self.assertEqual((n.JSON_SNAPSHOT_DEPTH, n.JSON_SNAPSHOT_NODES,
+                          n.JSON_SNAPSHOT_STRING_BYTES), (32, 65536, n.MAX_JSON))
+        self.policies[self.policy] = n.Object({"payload": n.Field(n.JsonValue())})
+        for count, expected in [(65533, "INCLUDED"), (65534, "CAPTURE_FAILED")]:
+            self.spec["members"] = self.spec["members"][:2]
+            original = n.canonical({"payload": [None] * count})
+            self.add_snapshot(raw=original)
+            decode, calls = n.json.loads, []
+            def watched_decode(data, *args, **kwargs):
+                if data == original:
+                    calls.append("snapshot")
+                    self.assertEqual(expected, "INCLUDED", "node overflow reached JSON decoder")
+                return decode(data, *args, **kwargs)
+            with mock.patch.object(n.json, "loads", side_effect=watched_decode):
+                _, manifest = self.capture()
+            self.assertEqual(calls, ["snapshot"] if expected == "INCLUDED" else [])
+            self.assertEqual(manifest["members"][-1]["state"], expected)
+        for depth, expected in [(31, "INCLUDED"), (32, "CAPTURE_FAILED")]:
+            payload = 0
+            for _ in range(depth): payload = [payload]
+            self.spec["members"] = self.spec["members"][:2]
+            original = n.canonical({"payload": payload})
+            self.add_snapshot(raw=original)
+            decode, calls = n.json.loads, []
+            def watched_decode(data, *args, **kwargs):
+                if data == original:
+                    calls.append("snapshot")
+                    self.assertEqual(expected, "INCLUDED", "depth overflow reached JSON decoder")
+                return decode(data, *args, **kwargs)
+            with mock.patch.object(n.json, "loads", side_effect=watched_decode):
+                _, manifest = self.capture()
+            self.assertEqual(calls, ["snapshot"] if expected == "INCLUDED" else [])
+            self.assertEqual(manifest["members"][-1]["state"], expected)
+        self.policies[self.policy] = n.Object({"a": n.Field(n.JsonText()), "b": n.Field(n.JsonText())})
+        self.spec["members"] = self.spec["members"][:2]
+        self.add_snapshot(raw=n.canonical({"a": "x" * 40, "b": "y" * 40}))
+        for budget, expected in [(82, "INCLUDED"), (81, "CAPTURE_FAILED")]:
+            with mock.patch.object(n, "JSON_SNAPSHOT_STRING_BYTES", budget):
+                _, manifest = self.capture()
+            self.assertEqual(manifest["members"][-1]["state"], expected)
+
+    def test_invalid_nonfinite_duplicate_and_surrogate_data_remain_incomplete(self):
+        self.policies[self.policy] = n.Object({"payload": n.Field(n.JsonValue())})
+        variants = [b'{"payload":NaN}', b'{"payload":Infinity}', b'{"payload":1e999}',
+                    b'{"payload":0,"payload":1}', b'{"payload":"\\ud800"}',
+                    b'{"payload":"\xff"}', b'{"payload":', '{"payload":true}'.encode("utf-16-le")]
+        for original in variants:
+            self.spec["members"] = self.spec["members"][:2]
+            row = self.add_snapshot(raw=original)
+            with self.subTest(original=original):
+                raw, manifest = self.capture()
+                self.assertEqual(manifest["members"][-1]["state"], "CAPTURE_FAILED")
+                self.assertFalse(manifest["required_layers_complete"])
+                self.assertNotIn("member", manifest["members"][-1])
+                self.assertEqual(self.files[("records", row["relative_path"])], original)
+                with self.assertRaises(n.SelectionError): self.inspect(raw)
+
+    def test_oversize_is_rejected_at_reader_bound_without_truncation_or_partial_v2(self):
+        original = b" " * n.MAX_JSON + b"{}"
+        row = self.add_snapshot(raw=original)
+        handles = MemoryHandles(self.files)
+        with mock.patch.object(handles, "read", wraps=handles.read) as read, \
+             mock.patch.object(n, "RootHandles", return_value=handles), mock.patch.object(n, "_verify_sources"):
+            raw, manifest = n.capture_selected_originals(self.spec, policies=self.policies,
+                                                        role_contract=self.roles)
+        self.assertIn(mock.call("records", (row["relative_path"],), n.MAX_JSON), read.call_args_list)
+        failed = manifest["members"][-1]
+        self.assertEqual((failed["state"], failed["code"]), ("CAPTURE_FAILED", "member-byte-budget"))
+        self.assertNotIn("retained_bytes", failed)
+        self.assertEqual(handles.files[("records", row["relative_path"])], original)
+        self.assertFalse(manifest["required_layers_complete"])
+        with self.assertRaises(n.SelectionError): self.inspect(raw)
+        with self.assertRaisesRegex(n.SelectionError, "partial-custody-on-legacy"):
+            self.inspect(raw, require_complete=False)
+
+    def test_closed_envelopes_and_typed_structs_reject_unexpected_fields(self):
+        variants = [dict(self.value, unexpected="outside payload")]
+        for field in ("progress", "native_diagnostic"):
+            value = copy.deepcopy(self.value)
+            value["error"][field]["unexpected"] = "outside payload"
+            variants.append(value)
+        for value in variants:
+            self.spec["members"] = self.spec["members"][:2]
+            self.add_snapshot(raw=n.canonical(value))
+            raw, manifest = self.capture()
+            self.assertEqual(manifest["members"][-1]["code"], "original-json-extra-field")
+            self.assertFalse(manifest["required_layers_complete"])
+            with self.assertRaises(n.SelectionError): self.inspect(raw)
+
+    def test_intake_rechecks_scope_and_closed_data_despite_consistent_self_hashes(self):
+        self.add_snapshot()
+        raw, manifest = self.capture()
+        row = manifest["members"][-1]
+        changed = n.canonical(dict(self.value, invented_envelope_field=True))
+        def metadata(value):
+            target = value["members"][-1]
+            target.update(expected_sha256=n.sha(changed), retained_sha256=n.sha(changed),
+                          bytes=len(changed), retained_bytes=len(changed))
+        forged = rewrite_tar(raw, mutate_manifest=metadata,
+                             mutate_payload=lambda name, data: changed if name == row["member"] else data)
+        with self.assertRaisesRegex(n.SelectionError, "original-json-extra-field"):
+            self.inspect(forged)
+        forged = rewrite_tar(raw, mutate_manifest=lambda value: value["members"][-1].update(
+            relative_path="another.failure.json"))
+        with self.assertRaisesRegex(n.SelectionError, "json-snapshot-member-scope"):
+            self.inspect(forged)
+        duplicate = copy.deepcopy(manifest)
+        duplicate["members"].append(copy.deepcopy(duplicate["members"][-1]))
+        with self.assertRaisesRegex(n.SelectionError, "json-snapshot-duplicate-policy"):
+            n.validate_selected_manifest(duplicate, expected_context=CTX, role_contract=self.roles)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
