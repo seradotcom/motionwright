@@ -830,7 +830,14 @@ class CasCandidateBindingContractTests(unittest.TestCase):
         self.assertIn('cas-input-event.original.json', text)
         self.assertIn('candidate-source-manifest.original.json', text)
         self.assertIn("MW_CAS_WORKFLOW_SHA: ${{ github.workflow_sha }}", text)
-        self.assertEqual(text.count("    needs: g0-source-controls\n"), 2)
+        jobs = re.findall(r"(?ms)^  ([a-z][a-z0-9-]*):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)",
+                          text.split("\njobs:\n", 1)[1])
+        self.assertEqual(len(jobs), 4)
+        self.assertEqual({name for name, _ in jobs},
+                         {"g0-source-controls", "storage-contracts", "file-import-platforms", "bundle-recovery-five"})
+        self.assertEqual({name: re.findall(r"(?m)^    needs: (.+)$", body) for name, body in jobs},
+                         {"g0-source-controls": [], "storage-contracts": ["g0-source-controls"],
+                          "file-import-platforms": ["g0-source-controls"], "bundle-recovery-five": ["g0-source-controls"]})
         self.assertIn("if: always() && github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'cas_retention' || inputs.verification_scope == 'cas_candidate' || inputs.verification_scope == 'gc_proxy_candidate')", text)
 
     def test_candidate_windows_lf_is_set_before_checkout_without_changing_legacy_boundary(self):
