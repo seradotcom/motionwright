@@ -521,6 +521,7 @@ class FoundationCausalTests(unittest.TestCase):
         sdk_inputs = (
             "          - sdk-foundation-source-controls\n"
             "          - sdk-foundation-linux-two\n"
+            "          - sdk-foundation-windows-g1\n"
             "      sdk_foundation_source_sha:\n"
             "        description: Exact reviewed SDK source (source profile is not execution authority)\n"
             "        required: false\n"
@@ -549,7 +550,8 @@ class FoundationCausalTests(unittest.TestCase):
             + "' && github.head_ref != '" + branch + "')) && ("
             + guard.removeprefix("    if: ").removesuffix("\n")[:-1]
             + " && inputs.verification_scope != 'sdk-foundation-source-controls'"
-            + " && inputs.verification_scope != 'sdk-foundation-linux-two'))\n"
+            + " && inputs.verification_scope != 'sdk-foundation-linux-two'"
+            + " && inputs.verification_scope != 'sdk-foundation-windows-g1'))\n"
         )
         self.assertEqual(original.count(sdk_guard), 1)
         original = original.replace(sdk_guard, guard, 1)

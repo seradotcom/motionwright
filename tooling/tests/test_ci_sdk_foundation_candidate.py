@@ -601,7 +601,7 @@ class SDKFoundationWorkflowTests(unittest.TestCase):
         return source_condition(expression, values)
 
     def test_legacy_job_bodies_remain_byte_exact_after_only_review_guards(self):
-        self.assertEqual(set(self.jobs), set(LEGACY_BODY_DIGESTS) | {"sdk-foundation-g0", "sdk-foundation-linux-two"})
+        self.assertEqual(set(self.jobs), set(LEGACY_BODY_DIGESTS) | {"sdk-foundation-g0", "sdk-foundation-linux-two", "sdk-foundation-windows-g1"})
         for name, digest in LEGACY_BODY_DIGESTS.items():
             body = self.jobs[name]
             if name in {"source-boundary", "dependency-review"}:
@@ -615,6 +615,7 @@ class SDKFoundationWorkflowTests(unittest.TestCase):
                 self.assertTrue(self.condition("sdk-foundation-g0", event))
                 self.assertFalse(self.condition("source-boundary", event))
                 self.assertFalse(self.condition("sdk-foundation-linux-two", event))
+                self.assertFalse(self.condition("sdk-foundation-windows-g1", event))
                 self.assertFalse(self.condition("dependency-review", event))
 
     def test_manual_full_and_legacy_foundation_preserve_behavior_on_review_branch(self):
@@ -636,6 +637,7 @@ class SDKFoundationWorkflowTests(unittest.TestCase):
                 self.assertFalse(self.condition("source-admission-ntfs", "workflow_dispatch", scope))
                 self.assertTrue(self.condition("sdk-foundation-g0", "workflow_dispatch", scope))
                 self.assertEqual(self.condition("sdk-foundation-linux-two", "workflow_dispatch", scope), scope == gate.SCOPES[1])
+                self.assertEqual(self.condition("sdk-foundation-windows-g1", "workflow_dispatch", scope), scope == gate.HOSTED_SCOPE)
         self.assertEqual(re.findall(r"(?m)^    needs: (.+)$", self.jobs["sdk-foundation-linux-two"]), ["sdk-foundation-g0"])
         self.assertIn("        default: full\n", self.text)
 
@@ -651,6 +653,367 @@ class SDKFoundationWorkflowTests(unittest.TestCase):
         self.assertNotIn("apparmor", job)
         self.assertNotIn("windows-g1", job)
         self.assertIn("--expected-source \"$GITHUB_SHA\"", self.jobs["sdk-foundation-g0"])
+
+
+HOSTED_UNCHANGED_KERNEL_AST = {'validate_lease': '3acc0f07e00be6974e4c1c08ccfd2fff00c5b5dc18a958d264d26f7d0da1e854', 'full_snapshot': '3947f1fb83e4ea94311afc78f22ac70eb1bfb66d8677f9b701a908abe0423029', 'source_unchanged': 'a90aa2a39eb8eb89e39ff635e1775fa646a5400a96ce1962d2e07d76695f82f6', 'sdk_g0': 'e807a4a6d665755063b607c18ff3506869701de66d370802bfe9c633eca9d438', 'producer_plan': 'c0e2afd4e52fc11f246549898c7e646eb5cccb12317f9dd2bd16217bddd84194', 'compiled_paths': '09634acfe6133793bfd112f7dcca4456e6a8e39866ad0f880b0d8e82eb9a43e0', 'prepare_role': 'b6600d7d6ba74f757b033f57b9a98a35a8939156bdbeae2bdd66d907c45eaf0a', 'parse_roster': 'c8c67c18557117c8a64e5ca5e6f0b53d7e5b5d63e18be422e1d915d8c541e67e', 'group_roster': '585eb7523f97103a299ec12407ef6221bc7b3e5ed6d038ba89d7541684dd8c45', 'group_argv': '07493ac6b10ca09ad5690784a880c22f875c67f0f0f21481981e31f6b2662bd3', 'admit_group': 'ae82264bb09df3da74c5d49009d61902c21639b8789389554ec43f34a3640261', 'current_binary': 'd7e8b63ad9499f9ce4bdaa1bb98e481a685723aef7e8eac2133449a7d0a7353c', 'list_role': '8aa5b716fe0711d84cb5e37dba554b39e751acc47a12f94d43e6a4e2117d4283', 'observe_causal': 'ec1b5a47a2c150ee076799544d981b7f159ab466446a722385c4e11c38553a7b', 'observe_fixed_groups': 'e1b5809454cfd7ecd5bc452157d13807c5bd168e2784852a10411ec70cc38d59', 'admit_gate_controls': '7e3a1dbc4adaddf61c83e21540d1ea04b4aa104237e5167bbe8927e90d4cb46e', 'local_gate_g0': 'ff43a34fb269266261728927c3b5677bc46bb634b92a9da7bc9e9aa5f34301ca', 'execute_selection': '1814280b85cda72509f05f89b7955373a9524887f67e390604b36ef37c7f5d0f'}
+
+
+class SDKFoundationHostedTests(unittest.TestCase):
+    """Synthetic admission pairs; these controls never grant execution authority."""
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="sdk-hosted-contracts-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.repo = self.root / "gate"; self.repo.mkdir()
+        self.env = {
+            "GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows", "RUNNER_ARCH": "X64",
+            "RUNNER_ENVIRONMENT": "github-hosted", "ImageOS": gate.HOSTED_IMAGE_OS,
+            "ImageVersion": "20260101.1", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "SDK_FOUNDATION_SCOPE": gate.HOSTED_SCOPE, "GITHUB_JOB": gate.HOSTED_SCOPE,
+            "GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": "12345",
+            "GITHUB_SHA": "c" * 40, "GITHUB_WORKFLOW_SHA": "c" * 40,
+            "GITHUB_REPOSITORY": "example/repo",
+            "GITHUB_WORKFLOW_REF": "example/repo/" + gate.WORKFLOW + "@refs/heads/review",
+            "GITHUB_WORKSPACE": str(self.root),
+        }
+        sources = sorted([gate.FIXED["sha"], *(p["sha"] for p in gate.CAUSALS)])
+        self.auth = {
+            "kind": "github-dispatch", "mode": gate.HOSTED_MODE, "source_sha": gate.FIXED["sha"],
+            "review_sha256": "a" * 64, "max_total_seconds": 600,
+            "binding": {
+                "repository": self.env["GITHUB_REPOSITORY"], "workflow_ref": self.env["GITHUB_WORKFLOW_REF"],
+                "gate_base_sha": "b" * 40, "runner_label": gate.HOSTED_RUNNER,
+                "runner_image_os": gate.HOSTED_IMAGE_OS,
+                "private_transport": {
+                    "review_sha256": "d" * 64, "source_shas": sources,
+                    "incoming": "OWNER_COMPOSED_FIVE_CHECKOUTS",
+                    "outgoing": "OWNER_COMPOSED_PRIVATE_ORIGINALS_CUSTODY",
+                    "private_sources_published": False,
+                },
+                "cold_growth": {
+                    "basis_sha256": "e" * 64, "source_shas": sources, "compiled_configurations": 13,
+                    "bytes": {name: 1024**2 for name in (
+                        "source_transport", "source_checkouts", "toolchain", "cargo_downloads", "targets",
+                        "sealed_binary_originals", "temporary_and_logs", "safety")},
+                },
+            },
+        }
+
+    def context(self, environment=None, authority=None, platform="win32"):
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": self.auth if authority is None else authority}):
+            return gate.request_context(self.env if environment is None else environment,
+                                        gate.HOSTED_MODE, gate.FIXED["sha"], "remote", platform)
+
+    def gate_fixture(self):
+        context = self.context()
+        old = b"from types import MappingProxyType\nREVIEWED_AUTHORITIES = MappingProxyType({})\ndef observed_code():\n    return 1\n"
+        new = old.replace(b"MappingProxyType({})", ("MappingProxyType(" + repr({"remote": self.auth}) + ")").encode())
+        path = self.repo / gate.HELPER; path.parent.mkdir(); path.write_bytes(new)
+        base, actual = "b" * 40, "c" * 40
+        before = ("100644 blob " + "1" * 40 + "\t" + gate.HELPER + "\0"
+                  "100644 blob " + "3" * 40 + "\tunchanged.py\0").encode()
+        after = before.replace(b"1" * 40, b"2" * 40)
+        responses = {
+            ("rev-list", "--parents", "-n", "1", "HEAD"): (actual + " " + base + "\n").encode(),
+            ("ls-tree", "-r", "-z", base): before,
+            ("ls-tree", "-r", "-z", actual): after,
+            ("show", base + ":" + gate.HELPER): old,
+            ("show", actual + ":" + gate.HELPER): new,
+        }
+        return context, path, responses
+
+    def verify_gate(self, context, responses):
+        def query(repo, *argv):
+            self.assertEqual(repo, self.repo)
+            return responses[argv]
+        with patch.object(gate.custody, "git", side_effect=query):
+            return gate.verify_hosted_gate(self.repo, context, self.auth, gate.Budget(60))
+
+    def test_hosted_original_identity_remains_distinct_from_local_and_linux(self):
+        value = self.context()
+        self.assertEqual(value["execution_kind"], "GITHUB_WINDOWS")
+        self.assertEqual(value["mode"], gate.HOSTED_MODE)
+        self.assertEqual(value["github"]["GITHUB_SHA"], "c" * 40)
+        self.assertEqual(value["github"]["GITHUB_WORKFLOW_SHA"], "c" * 40)
+        self.assertEqual(value["runner_label"], "windows-2025")
+        self.assertEqual(value["image_version"], "20260101.1")
+        self.assertEqual(value["process_boundary"], "DIRECT_PROCESS_ONLY")
+        self.assertFalse(value["continuous_resource_watchdog"])
+        self.assertEqual(value["escaped_descendants"], "NOT_OBSERVED")
+
+    def test_hosted_rejects_foreign_run_job_attempt_image_and_workflow(self):
+        changes = (("GITHUB_ACTIONS", "false"), ("GITHUB_EVENT_NAME", "push"),
+                   ("RUNNER_OS", "Linux"), ("RUNNER_ARCH", "ARM64"),
+                   ("RUNNER_ENVIRONMENT", "self-hosted"), ("ImageOS", "win22"), ("ImageVersion", ""),
+                   ("GITHUB_RUN_ID", "0"), ("GITHUB_RUN_ATTEMPT", "2"),
+                   ("GITHUB_JOB", "sdk-foundation-linux-two"), ("SDK_FOUNDATION_SCOPE", gate.SCOPES[1]),
+                   ("GITHUB_SHA", "d" * 40), ("GITHUB_WORKFLOW_SHA", "d" * 40),
+                   ("GITHUB_REPOSITORY", "other/repo"), ("GITHUB_WORKFLOW_REF", "foreign"))
+        for key, value in changes:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.context({**self.env, key: value})
+        with self.assertRaises(ValueError):
+            self.context(platform="linux")
+
+    def test_local_mode_still_refuses_actions_instead_of_stripping_identity(self):
+        local = {"kind": "local-lease", "mode": "windows-g1", "source_sha": gate.FIXED["sha"],
+                 "review_sha256": "a" * 64, "max_total_seconds": 600,
+                 "binding": {"lease_sha256": "b" * 64}}
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"local": local}):
+            for environment in (self.env, {"GITHUB_RUN_ID": "12345"}, {"GITHUB_SHA": "c" * 40}):
+                with self.subTest(environment=environment), self.assertRaisesRegex(ValueError, "impersonate"):
+                    gate.request_context(environment, "windows-g1", gate.FIXED["sha"], "local", "win32")
+        with self.assertRaisesRegex(ValueError, "authority mode"):
+            self.context(authority={**self.auth, "kind": "local-lease"})
+
+    def test_hosted_unknown_or_foreign_authority_stops_before_path_or_command(self):
+        for catalogue, source in (({}, gate.FIXED["sha"]), ({"remote": self.auth}, "f" * 40)):
+            with self.subTest(source=source), patch.object(gate, "REVIEWED_AUTHORITIES", catalogue), \
+                    patch.object(gate.observer, "command") as command, \
+                    patch.object(gate, "full_snapshot") as reader, \
+                    patch.object(gate, "require_hosted_transport_composition") as transport, \
+                    self.assertRaises(ValueError):
+                gate.run(gate.HOSTED_MODE, source, "remote", self.repo, {}, self.root / "new", environment=self.env)
+            command.assert_not_called(); reader.assert_not_called(); transport.assert_not_called()
+            self.assertFalse((self.root / "new").exists())
+
+    def test_hosted_private_transport_covers_exact_five_sources_both_directions(self):
+        self.assertEqual(gate.hosted_binding(self.auth["binding"]), self.auth["binding"])
+        for key, value in (("incoming", "PUBLIC_GIT_PUSH"), ("outgoing", "PUBLIC_ACTIONS_ARTIFACT"),
+                           ("private_sources_published", True), ("source_shas", [gate.FIXED["sha"]]),
+                           ("review_sha256", "self-approved")):
+            changed = copy.deepcopy(self.auth)
+            changed["binding"]["private_transport"][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "private incoming"):
+                self.context(authority=changed)
+
+    def test_hosted_growth_requires_reviewed_typed_source_bound_components(self):
+        variants = []
+        for key, value in (("compiled_configurations", True), ("compiled_configurations", 12),
+                           ("source_shas", [gate.FIXED["sha"]]), ("basis_sha256", "missing")):
+            changed = copy.deepcopy(self.auth); changed["binding"]["cold_growth"][key] = value
+            variants.append(changed)
+        for value in (0, -1, True, 1.5, 257 * 1024**3):
+            changed = copy.deepcopy(self.auth); changed["binding"]["cold_growth"]["bytes"]["targets"] = value
+            variants.append(changed)
+        changed = copy.deepcopy(self.auth); del changed["binding"]["cold_growth"]["bytes"]["sealed_binary_originals"]
+        variants.append(changed)
+        for changed in variants:
+            with self.subTest(binding=changed["binding"]["cold_growth"]), self.assertRaisesRegex(ValueError, "cold growth"):
+                self.context(authority=changed)
+
+    def test_hosted_transport_cannot_be_activated_by_registry_or_boolean(self):
+        context = self.context()
+        for changed in (context, {**context, "transport_ready": True, "execute": True}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "BLOCKED_PRIVATE_TRANSPORT_UNCOMPOSED"):
+                gate.require_hosted_transport_composition(changed)
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": self.auth}), \
+                patch.object(gate.sys, "platform", "win32"), \
+                patch.object(gate.observer, "command") as command, \
+                patch.object(gate, "full_snapshot") as reader, \
+                self.assertRaisesRegex(ValueError, "BLOCKED_PRIVATE_TRANSPORT_UNCOMPOSED"):
+            gate.run(gate.HOSTED_MODE, gate.FIXED["sha"], "remote", self.repo, {}, self.root / "new",
+                     lease=self.root / "self-issued.json", environment=self.env)
+        command.assert_not_called(); reader.assert_not_called()
+        self.assertFalse((self.root / "new").exists())
+
+    def test_hosted_paths_use_actual_workspace_without_an_E_drive_alias(self):
+        sdk = self.root / "sdk"; sdk.mkdir()
+        baselines = {}
+        for profile in gate.CAUSALS:
+            path = self.root / profile["id"]; path.mkdir(); baselines[profile["id"]] = path
+        with patch.dict(gate.os.environ, {"GITHUB_WORKSPACE": str(self.root)}):
+            gate.owned_paths(self.repo, sdk, baselines, self.root / "new", gate.HOSTED_MODE)
+        with patch.dict(gate.os.environ, {"GITHUB_WORKSPACE": str(self.repo)}):
+            with self.assertRaisesRegex(ValueError, "escaped the owned workspace"):
+                gate.owned_paths(self.repo, sdk, baselines, self.root / "new", gate.HOSTED_MODE)
+        self.assertFalse((self.root / "new").exists())
+
+    def test_hosted_growth_keeps_original_floor_and_does_not_reset_origin(self):
+        context = self.context(); total = sum(context["cold_growth"]["bytes"].values())
+        floor = 18 * 1024**3; original = floor + total
+        first = gate.hosted_growth_observation({"disk": original}, context)
+        self.assertEqual(first["initial_free_bytes"], original)
+        final = gate.hosted_growth_observation({"disk": floor}, context, original)
+        self.assertEqual(final["observed_volume_delta_bytes"], total)
+        self.assertFalse(final["exclusive_allocation_attribution"])
+        self.assertFalse(final["continuous_resource_watchdog"])
+        for disk, initial in ((original - 1, None), (floor - 1, original), (original, original - 1)):
+            with self.subTest(disk=disk, initial=initial), self.assertRaises(ValueError):
+                gate.hosted_growth_observation({"disk": disk}, context, initial)
+
+    def hosted_tool_fixture(self, compiler_target="x86_64-w64-mingw32"):
+        paths = {}
+        for family, names in (("rust", ("rustup", "cargo", "rustc", "rustdoc", "cargo-fmt", "rustfmt")),
+                              ("base", ("python", "git", "node", "bash")),
+                              ("gnu", ("gcc", "g++", "ar", "as", "ld"))):
+            directory = self.root / family; directory.mkdir()
+            for name in names:
+                path = directory / name; path.write_bytes(("observed-fixture-" + name).encode()); paths[name] = path
+        calls = []
+        def call(argv, cwd, env, output, label, timeout, context):
+            calls.append((list(argv), dict(env), label))
+            return {"exit_code": 0, "label": label}
+        def stream(output, row, channel):
+            label = row["label"]
+            if label.startswith("tool-path-"):
+                return (str(paths[label.removeprefix("tool-path-")]) + "\n").encode()
+            if label.startswith("tool-target-"):
+                return (compiler_target + "\n").encode()
+            name = label.removeprefix("tool-version-")
+            if name == "rustc":
+                return b"rustc 1.98.1\nrelease: 1.98.1\nhost: x86_64-pc-windows-gnu\n"
+            return (("v22.23.4" if name == "node" else name + " observed-version") + "\n").encode()
+        return paths, calls, call, stream
+
+    def test_hosted_toolchain_observes_GNU_target_and_binds_own_linker_without_identity_stripping(self):
+        paths, calls, call, stream = self.hosted_tool_fixture()
+        with patch.object(gate.sys, "executable", str(paths["python"])), \
+                patch.object(gate.shutil, "which", side_effect=lambda name, **kw: str(paths[name])), \
+                patch.object(gate.observer, "original_stream", side_effect=stream):
+            tools, env = gate.observe_tools(self.repo, self.env, self.root, self.context(), call)
+        self.assertEqual(tools["gcc"]["target"], "x86_64-w64-mingw32")
+        self.assertEqual(tools["g++"]["target"], "x86_64-w64-mingw32")
+        self.assertEqual(env["CC"], str(paths["gcc"]))
+        self.assertEqual(env["CXX"], str(paths["g++"]))
+        self.assertEqual(env["CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER"], str(paths["gcc"]))
+        self.assertEqual(env["GITHUB_SHA"], self.env["GITHUB_SHA"])
+        self.assertEqual(env["GITHUB_RUN_ID"], self.env["GITHUB_RUN_ID"])
+        self.assertEqual(env["GITHUB_ACTIONS"], "true")
+        resolutions = [argv for argv, _, label in calls if label.startswith("tool-path-")]
+        self.assertEqual(len(resolutions), 5)
+        self.assertTrue(all(argv[3] == gate.HOSTED_RUST for argv in resolutions))
+
+    def test_hosted_toolchain_rejects_incompatible_compiler_before_any_Cargo_producer(self):
+        paths, calls, call, stream = self.hosted_tool_fixture("i686-w64-mingw32")
+        with patch.object(gate.sys, "executable", str(paths["python"])), \
+                patch.object(gate.shutil, "which", side_effect=lambda name, **kw: str(paths[name])), \
+                patch.object(gate.observer, "original_stream", side_effect=stream), \
+                self.assertRaisesRegex(ValueError, "tool target is incompatible"):
+            gate.observe_tools(self.repo, self.env, self.root, self.context(), call)
+        self.assertFalse(any("test" in argv or "build" in argv for argv, _, _ in calls))
+
+    def test_hosted_retains_the_same_resource_boundaries_and_compiler_exclusion(self):
+        for initial, minima in ((True, (4, 8, 18)), (False, (4, 0, 18))):
+            value = dict(zip(("physical", "virtual", "disk"), (n * 1024**3 for n in minima)))
+            value["compilers"] = []
+            self.assertEqual(gate.resource_values(value, gate.HOSTED_MODE, initial),
+                             gate.resource_values(value, "windows-g1", initial))
+            for name, minimum in zip(("physical", "virtual", "disk"), minima):
+                if minimum:
+                    with self.subTest(name=name, initial=initial), self.assertRaises(ValueError):
+                        gate.resource_values({**value, name: minimum * 1024**3 - 1}, gate.HOSTED_MODE, initial)
+            with self.assertRaisesRegex(ValueError, "compiler"):
+                gate.resource_values({**value, "compilers": [{"Id": 123, "ProcessName": "rustc"}]}, gate.HOSTED_MODE, initial)
+
+    def test_hosted_gate_accepts_only_literal_authority_child_and_reports_actual_SHA(self):
+        context, _, responses = self.gate_fixture()
+        result = self.verify_gate(context, responses)
+        self.assertEqual(result["reviewed_gate_base_sha"], "b" * 40)
+        self.assertEqual(result["executed_gate_sha"], "c" * 40)
+        self.assertEqual(result["actual_workflow_sha"], "c" * 40)
+        self.assertFalse(result["source_result_transferred"])
+
+    def test_hosted_gate_rejects_foreign_parent_merge_and_changed_other_blob(self):
+        context, _, original = self.gate_fixture()
+        key = ("rev-list", "--parents", "-n", "1", "HEAD")
+        for lineage in (("c" * 40 + " " + "d" * 40 + "\n").encode(),
+                        ("c" * 40 + " " + "b" * 40 + " " + "d" * 40 + "\n").encode()):
+            with self.subTest(lineage=lineage), self.assertRaisesRegex(ValueError, "ordinary child"):
+                self.verify_gate(context, {**original, key: lineage})
+        key = ("ls-tree", "-r", "-z", "c" * 40)
+        for data in (original[key].replace(b"3" * 40, b"4" * 40),
+                     original[key].replace(b"100644 blob " + b"2" * 40, b"100755 blob " + b"2" * 40)):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                self.verify_gate(context, {**original, key: data})
+
+    def test_hosted_gate_rejects_code_change_or_unrelated_registry_entry(self):
+        context, path, original = self.gate_fixture()
+        key = ("show", "c" * 40 + ":" + gate.HELPER)
+        variants = [original[key].replace(b"return 1", b"return 2"),
+                    original[key].replace(repr({"remote": self.auth}).encode(),
+                                          repr({"remote": self.auth, "foreign": self.auth}).encode())]
+        for data in variants:
+            path.write_bytes(data)
+            with self.subTest(data=data[-60:]), self.assertRaisesRegex(ValueError, "code or contains unrelated"):
+                self.verify_gate(context, {**original, key: data})
+
+    def test_hosted_gate_rejects_working_helper_different_from_its_Git_blob(self):
+        context, path, responses = self.gate_fixture()
+        path.write_bytes(path.read_bytes() + b"# local edit\n")
+        with self.assertRaisesRegex(ValueError, "executed gate helper"):
+            self.verify_gate(context, responses)
+
+    def test_hosted_registry_ast_rejects_dynamic_duplicate_or_missing_assignment(self):
+        for raw in (b"x=1\n", b"REVIEWED_AUTHORITIES = MappingProxyType(dict())\n",
+                    b"REVIEWED_AUTHORITIES = MappingProxyType({'x':1,'x':2})\n",
+                    b"REVIEWED_AUTHORITIES = MappingProxyType({})\nREVIEWED_AUTHORITIES = MappingProxyType({})\n"):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                gate.catalogue_syntax(raw)
+
+    def test_hosted_gate_query_keeps_existing_finite_bound_and_original_budget(self):
+        context = self.context(); now = [0]; budget = gate.Budget(60, lambda: now[0])
+        now[0] = 16_000_000_000
+        with patch.object(gate.custody, "git") as query, self.assertRaisesRegex(ValueError, "insufficient original budget"):
+            gate.verify_hosted_gate(self.repo, context, self.auth, budget)
+        query.assert_not_called()
+        self.assertEqual(budget.deadline, 60_000_000_000)
+
+    def test_selection_G0_causal_and_original_admission_kernels_remain_reviewed(self):
+        source = ast.parse(Path(gate.__file__).read_bytes())
+        functions = {node.name: node for node in source.body if isinstance(node, ast.FunctionDef)}
+        for name, expected in HOSTED_UNCHANGED_KERNEL_AST.items():
+            with self.subTest(name=name):
+                actual = hashlib.sha256(ast.dump(functions[name], include_attributes=False).encode()).hexdigest()
+                self.assertEqual(actual, expected)
+        self.assertEqual(len(gate.CAUSALS), 4)
+        self.assertEqual(len(gate.GROUPS), 13)
+        self.assertEqual(sum(group[4] for group in gate.GROUPS), 134)
+        self.assertTrue(gate.windows_selection(gate.HOSTED_MODE))
+        self.assertFalse(gate.windows_selection("linux-g2"))
+        self.assertEqual(gate.HOSTED_RUST, "1.98.1-x86_64-pc-windows-gnu")
+
+
+class SDKFoundationHostedWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text()
+        self.jobs = workflow_jobs(self.text)
+
+    def test_manual_hosted_job_needs_exact_source_G0_and_has_no_product_or_private_upload(self):
+        job = self.jobs[gate.HOSTED_SCOPE]
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'sdk-foundation-windows-g1'", job)
+        self.assertEqual(re.findall(r"(?m)^    needs: (.+)$", job), ["sdk-foundation-g0"])
+        self.assertIn("runs-on: windows-2025", job)
+        self.assertIn("timeout-minutes: 135", job)
+        self.assertIn("--mode windows-hosted-g1", job)
+        self.assertIn("--admit-only", job)
+        self.assertNotIn("--execute", job)
+        self.assertNotIn("--lease", job)
+        self.assertNotIn("repository: seradotcom/semwright", job)
+        self.assertNotIn("rust-toolchain@", job)
+        self.assertNotIn("cargo test", job)
+        self.assertNotIn("foundation-execution/evidence", job)
+        self.assertIn("path: verification/sdk-foundation-hosted-admission", job)
+        self.assertIn("$actualExit = $LASTEXITCODE", job)
+        self.assertIn("if ($actualExit -ne 0)", job)
+        self.assertNotIn("Remove-Item Env:GITHUB", job)
+        self.assertNotIn("subst ", job)
+
+    def test_third_scope_normalization_preserves_old_hash_and_rejects_one_foreign_byte(self):
+        from tooling.tests import test_ci_foundation_causal as legacy
+        case = legacy.FoundationCausalTests("test_existing_automatic_workflow_and_default_jobs_are_preserved")
+        method = case.test_existing_automatic_workflow_and_default_jobs_are_preserved
+        # Exercise the actual legacy normalizer, not a new duplicate of it.
+        with patch.object(Path, "read_text", return_value=self.text):
+            method()
+        changed = self.text.replace("name: Security and Delivery", "name: Security and DeliveryX", 1)
+        self.assertNotEqual(changed, self.text)
+        with patch.object(Path, "read_text", return_value=changed), self.assertRaises(AssertionError):
+            method()
+        changed = self.text.replace("          - sdk-foundation-windows-g1\n", "          - unrelated-hosted-scope\n", 1)
+        with patch.object(Path, "read_text", return_value=changed), self.assertRaises(AssertionError):
+            method()
+
 
 
 if __name__ == "__main__":

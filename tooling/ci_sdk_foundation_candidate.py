@@ -4,10 +4,13 @@
 Known source profiles do not grant execution authority. The authority catalogue
 starts empty. Local Windows observations retain their direct-process limitation;
 the two Linux native methods are a separate, explicitly admitted selection.
+Hosted Windows remains blocked until private incoming and outgoing custody is
+composed into reviewed code; a registry entry does not activate that missing seam.
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import ctypes
 import hashlib
 import json
@@ -34,8 +37,13 @@ HELPER = "tooling/ci_sdk_foundation_candidate.py"
 TEST = "tooling/tests/test_ci_sdk_foundation_candidate.py"
 REVIEW_BRANCH = "verify/sdk-foundation-candidate-20261026-a6"
 RUST = "1.98.1"
-MODES = ("windows-g1", "linux-g2")
-SCOPES = ("sdk-foundation-source-controls", "sdk-foundation-linux-two")
+HOSTED_MODE = "windows-hosted-g1"
+HOSTED_SCOPE = "sdk-foundation-windows-g1"
+HOSTED_RUNNER = "windows-2025"
+HOSTED_IMAGE_OS = "win25"
+HOSTED_RUST = RUST + "-x86_64-pc-windows-gnu"
+MODES = ("windows-g1", "linux-g2", HOSTED_MODE)
+SCOPES = ("sdk-foundation-source-controls", "sdk-foundation-linux-two", HOSTED_SCOPE)
 SCHEMA = "motionwright.sdk-foundation-candidate/1"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -203,7 +211,143 @@ def validate_catalogue():
                 "causal site or named method is unbound")
     return {"source_profile": FIXED["sha"], "authority_entries": len(REVIEWED_AUTHORITIES),
             "windows_groups": 13, "windows_positive_observations": 134,
-            "causal_sources": 4, "linux_native_cases": 2, "product_execution": "NOT_RUN"}
+            "causal_sources": 4, "linux_native_cases": 2, "product_execution": "NOT_RUN",
+            "hosted_windows": {"mode": HOSTED_MODE, "transport": "UNCOMPOSED_BLOCKED",
+                               "execution": "NOT_RUN", "automatic_dispatch": False}}
+
+
+def windows_selection(mode):
+    return mode in ("windows-g1", HOSTED_MODE)
+
+
+def hosted_binding(value):
+    """A reviewed registry row, never authority created from dispatch inputs."""
+    keys = {"repository", "workflow_ref", "gate_base_sha", "runner_label", "runner_image_os",
+            "private_transport", "cold_growth"}
+    require(type(value) is dict and set(value) == keys, "hosted authority binding shape differs")
+    require(type(value["repository"]) is str and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["repository"])
+            and type(value["workflow_ref"]) is str and value["workflow_ref"].startswith(
+                value["repository"] + "/" + WORKFLOW + "@refs/heads/")
+            and len(value["workflow_ref"].split("@refs/heads/", 1)[1]) > 0,
+            "hosted repository or workflow ref differs")
+    require(type(value["gate_base_sha"]) is str and SHA.fullmatch(value["gate_base_sha"])
+            and value["runner_label"] == HOSTED_RUNNER and value["runner_image_os"] == HOSTED_IMAGE_OS,
+            "reviewed gate base or hosted image differs")
+    transport = value["private_transport"]
+    require(type(transport) is dict and set(transport) == {
+                "review_sha256", "source_shas", "incoming", "outgoing", "private_sources_published"}
+            and type(transport["review_sha256"]) is str and DIGEST.fullmatch(transport["review_sha256"])
+            and transport["source_shas"] == sorted([FIXED["sha"], *(p["sha"] for p in CAUSALS)])
+            and transport["incoming"] == "OWNER_COMPOSED_FIVE_CHECKOUTS"
+            and transport["outgoing"] == "OWNER_COMPOSED_PRIVATE_ORIGINALS_CUSTODY"
+            and transport["private_sources_published"] is False,
+            "private incoming and outgoing source custody require an exact owner review")
+    growth = value["cold_growth"]
+    parts = {"source_transport", "source_checkouts", "toolchain", "cargo_downloads", "targets",
+             "sealed_binary_originals", "temporary_and_logs", "safety"}
+    require(type(growth) is dict and set(growth) == {"basis_sha256", "source_shas", "compiled_configurations", "bytes"}
+            and type(growth["basis_sha256"]) is str and DIGEST.fullmatch(growth["basis_sha256"])
+            and growth["source_shas"] == transport["source_shas"]
+            and type(growth["compiled_configurations"]) is int and growth["compiled_configurations"] == 13
+            and type(growth["bytes"]) is dict and set(growth["bytes"]) == parts
+            and all(type(n) is int and 0 < n <= 256 * 1024**3 for n in growth["bytes"].values())
+            and sum(growth["bytes"].values()) <= 512 * 1024**3,
+            "cold growth budget is absent, noninteger or belongs to another source/configuration")
+    return value
+
+
+def catalogue_syntax(raw):
+    """Normalize only the one literal registry assignment; executable code stays exact."""
+    tree = ast.parse(raw)
+    assignments = [node for node in tree.body if isinstance(node, ast.Assign)
+                   and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                   and node.targets[0].id == "REVIEWED_AUTHORITIES"]
+    require(len(assignments) == 1, "gate authority assignment missing or repeated")
+    node = assignments[0]
+    require(isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "MappingProxyType" and len(node.value.args) == 1
+            and not node.value.keywords and isinstance(node.value.args[0], ast.Dict),
+            "gate authority is not one literal registry")
+    keys = node.value.args[0].keys
+    require(all(isinstance(key, ast.Constant) and type(key.value) is str for key in keys)
+            and len({key.value for key in keys}) == len(keys),
+            "gate authority keys are dynamic or duplicated")
+    value = ast.literal_eval(node.value.args[0])
+    require(type(value) is dict, "gate authority literal is not a dictionary")
+    node.value = ast.Constant(value="REVIEWED_AUTHORITY_LITERAL_REMOVED_FOR_COMPARISON")
+    return value, ast.dump(tree, include_attributes=False)
+
+
+def verify_hosted_gate(gate, context, selected, budget):
+    """G is reviewed code; actual G-prime may add only its one reviewed R row."""
+    require(context["mode"] == HOSTED_MODE, "hosted gate verification used for a different mode")
+    binding = hosted_binding(selected["binding"])
+    actual = context["github"]["GITHUB_SHA"]
+    base = binding["gate_base_sha"]
+    def query(*argv):
+        # Reuse the existing45s Git query. Do not start one without its full remainder.
+        require(budget.remaining(45) >= 45, "gate query has insufficient original budget")
+        raw = custody.git(gate, *argv)
+        budget.remaining(1)
+        return raw
+    lineage = query("rev-list", "--parents", "-n", "1", "HEAD").decode().strip().split()
+    require(lineage == [actual, base], "actual gate must be one ordinary child of the reviewed base")
+    before = query("ls-tree", "-r", "-z", base)
+    after = query("ls-tree", "-r", "-z", actual)
+    def split_listing(raw):
+        kept, helper_entry = [], []
+        for row in raw.split(b"\0"):
+            if row:
+                header, path = row.split(b"\t", 1)
+                (helper_entry if path == HELPER.encode() else kept).append(row)
+        require(len(helper_entry) == 1 and helper_entry[0].split(b" ", 2)[:2] == [b"100644", b"blob"],
+                "gate helper mode or identity changed")
+        return kept
+    require(split_listing(before) == split_listing(after), "gate child changed a non-catalogue file")
+    old = query("show", base + ":" + HELPER)
+    new = query("show", actual + ":" + HELPER)
+    old_catalogue, old_code = catalogue_syntax(old)
+    new_catalogue, new_code = catalogue_syntax(new)
+    require(old_catalogue == {} and new_catalogue == {context["authority_id"]: selected}
+            and old_code == new_code, "gate child changed code or contains unrelated authority")
+    require((gate / HELPER).read_bytes() == new, "executed gate helper differs from its Git blob")
+    return {"status": "EXACT_GIT_CODE_PLUS_REVIEWED_AUTHORITY_CHILD",
+            "reviewed_gate_base_sha": base, "executed_gate_sha": actual,
+            "actual_workflow_sha": context["github"]["GITHUB_WORKFLOW_SHA"],
+            "base_listing_sha256": hashlib.sha256(before).hexdigest(),
+            "executed_listing_sha256": hashlib.sha256(after).hexdigest(),
+            "source_result_transferred": False}
+
+
+def require_hosted_transport_composition(context):
+    # A future reviewed base must compose actual private input AND output custody.
+    # A populated registry or an input boolean cannot substitute for that code.
+    require(context["mode"] == HOSTED_MODE, "private transport seam used for another mode")
+    raise custody.VerificationError(
+        "BLOCKED_PRIVATE_TRANSPORT_UNCOMPOSED: incoming five exact SDK checkouts and "
+        "durable private originals custody require reviewed workflow/helper composition; "
+        "do not publish private source originals or start SDK producers")
+
+
+def hosted_growth_observation(resources, context, initial_disk=None):
+    """A phase-bound volume observation, not a continuous allocation watchdog."""
+    require(context["mode"] == HOSTED_MODE, "cold growth used for another mode")
+    growth = context["cold_growth"]
+    reserve = sum(growth["bytes"].values())
+    floor = 18 * 1024**3
+    disk = resources["disk"]
+    require(type(disk) is int and disk >= floor, "hosted protected disk floor breached")
+    if initial_disk is None:
+        require(disk >= floor + reserve, "hosted cold growth reserve is unavailable")
+        initial_disk = disk
+    require(type(initial_disk) is int and initial_disk >= floor + reserve,
+            "original hosted cold growth observation is incomplete")
+    observed_delta = max(0, initial_disk - disk)
+    require(observed_delta <= reserve, "observed hosted volume growth exceeds reviewed reserve")
+    return {"basis_sha256": growth["basis_sha256"], "planned_bytes": growth["bytes"],
+            "reserved_total_bytes": reserve, "initial_free_bytes": initial_disk,
+            "current_free_bytes": disk, "observed_volume_delta_bytes": observed_delta,
+            "exclusive_allocation_attribution": False, "continuous_resource_watchdog": False}
 
 
 def authority(admission_id, mode, source_sha):
@@ -216,10 +360,12 @@ def authority(admission_id, mode, source_sha):
         "reviewed authority shape differs")
     require(row["mode"] == mode and row["source_sha"] == source_sha
             and type(row["review_sha256"]) is str and DIGEST.fullmatch(row["review_sha256"])
-            and type(row["max_total_seconds"]) is int and 60 <= row["max_total_seconds"] <= (7200 if mode == "windows-g1" else 3600),
+            and type(row["max_total_seconds"]) is int and 60 <= row["max_total_seconds"] <= (7200 if windows_selection(mode) else 3600),
             "reviewed authority source or finite budget differs")
     require(row["kind"] == ("local-lease" if mode == "windows-g1" else "github-dispatch")
             and type(row["binding"]) is dict, "authority mode differs")
+    if mode == HOSTED_MODE:
+        hosted_binding(row["binding"])
     return row
 
 
@@ -234,6 +380,27 @@ def request_context(environment, mode, source_sha, admission_id, runtime_platfor
                 and not any(github.values()), "local Windows context must not impersonate Actions")
         require(set(selected["binding"]) == {"lease_sha256"}
                 and DIGEST.fullmatch(selected["binding"]["lease_sha256"]), "local lease digest is absent")
+    elif mode == HOSTED_MODE:
+        binding = hosted_binding(selected["binding"])
+        require(actual == "win32" and environment.get("RUNNER_OS") == "Windows"
+                and environment.get("RUNNER_ARCH") == "X64"
+                and environment.get("RUNNER_ENVIRONMENT") == "github-hosted"
+                and environment.get("ImageOS") == binding["runner_image_os"],
+                "genuine hosted Windows x64 image required")
+        require(environment.get("GITHUB_ACTIONS") == "true"
+                and github["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+                and environment.get("SDK_FOUNDATION_SCOPE") == HOSTED_SCOPE
+                and github["GITHUB_JOB"] == HOSTED_SCOPE and github["GITHUB_RUN_ATTEMPT"] == "1",
+                "hosted Windows requires its original manual job and attempt")
+        require(SHA.fullmatch(github["GITHUB_SHA"])
+                and github["GITHUB_WORKFLOW_SHA"] == github["GITHUB_SHA"]
+                and re.fullmatch(r"[1-9][0-9]*", github["GITHUB_RUN_ID"])
+                and github["GITHUB_REPOSITORY"] == binding["repository"]
+                and github["GITHUB_WORKFLOW_REF"] == binding["workflow_ref"],
+                "hosted run, gate SHA or reviewed workflow identity differs")
+        require(type(environment.get("ImageVersion")) is str
+                and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", environment["ImageVersion"]),
+                "hosted image version is unobserved")
     else:
         require(actual == "linux" and environment.get("RUNNER_OS") == "Linux"
                 and environment.get("RUNNER_ARCH") == "X64", "Linux x64 runner required")
@@ -253,10 +420,15 @@ def request_context(environment, mode, source_sha, admission_id, runtime_platfor
                 "dispatch is outside its reviewed context")
     return {"mode": mode, "product_source_sha": source_sha, "authority_id": admission_id,
             "authority_review_sha256": selected["review_sha256"], "runtime_platform": actual,
-            "execution_kind": "LOCAL_WINDOWS" if mode == "windows-g1" else "GITHUB_LINUX",
+            "execution_kind": ("LOCAL_WINDOWS" if mode == "windows-g1" else
+                               "GITHUB_WINDOWS" if mode == HOSTED_MODE else "GITHUB_LINUX"),
             "github": github, "max_total_seconds": selected["max_total_seconds"],
-            "process_boundary": "DIRECT_PROCESS_ONLY" if mode == "windows-g1" else "OWNED_POSIX_SESSION_GROUP",
-            "escaped_descendants": "NOT_OBSERVED", "continuous_resource_watchdog": False}
+            "process_boundary": "DIRECT_PROCESS_ONLY" if windows_selection(mode) else "OWNED_POSIX_SESSION_GROUP",
+            "escaped_descendants": "NOT_OBSERVED", "continuous_resource_watchdog": False,
+            **({"runner_label": HOSTED_RUNNER, "image_os": environment["ImageOS"],
+                "image_version": environment["ImageVersion"], "cold_growth": selected["binding"]["cold_growth"],
+                "private_transport_review_sha256": selected["binding"]["private_transport"]["review_sha256"]}
+               if mode == HOSTED_MODE else {})}
 
 
 def validate_lease(value, expected_digest, observed_digest, run_root, now_ns, max_seconds):
@@ -379,7 +551,7 @@ def observe_tools(repo, env, logs, context, call):
     names = ("cargo", "rustc", "rustdoc", "cargo-fmt", "rustfmt")
     for name in names:
         require(custody.fingerprint(resolver, resolver.parent) == resolver_identity, "toolchain resolver changed")
-        row = call([str(resolver), "which", "--toolchain", RUST, name], repo, env, logs,
+        row = call([str(resolver), "which", "--toolchain", HOSTED_RUST if context["mode"] == HOSTED_MODE else RUST, name], repo, env, logs,
                    "tool-path-" + name, 45, context)
         require(type(row["exit_code"]) is int and row["exit_code"] == 0, "selected tool unavailable: " + name)
         path = Path(observer.original_stream(logs, row, "stdout").decode().strip())
@@ -394,9 +566,29 @@ def observe_tools(repo, env, logs, context, call):
         require(found, "SDK G0 prerequisite absent: " + name)
         path = Path(found).resolve(strict=True)
         tools[name] = {"absolute_path": str(path), "fingerprint": custody.fingerprint(path, path.parent)}
+    if context["mode"] == HOSTED_MODE:
+        # Bind the GNU host compiler/linker actually used on this Windows image.
+        for name in ("gcc", "g++", "ar", "as", "ld"):
+            found = shutil.which(name, path=env.get("PATH"))
+            require(found, "hosted GNU toolchain prerequisite absent: " + name)
+            path = Path(found).resolve(strict=True)
+            tools[name] = {"absolute_path": str(path), "fingerprint": custody.fingerprint(path, path.parent)}
+        require(len({Path(tools[name]["absolute_path"]).parent for name in ("gcc", "g++", "ar", "as", "ld")}) == 1,
+                "hosted GNU compiler and binutils come from different tool roots")
     tool_env = dict(env, CARGO=tools["cargo"]["absolute_path"], RUSTC=tools["rustc"]["absolute_path"],
                     RUSTDOC=tools["rustdoc"]["absolute_path"], RUSTFMT=tools["rustfmt"]["absolute_path"])
     tool_env["PATH"] = os.pathsep.join(dict.fromkeys([str(Path(row["absolute_path"]).parent) for row in tools.values()])) + os.pathsep + env.get("PATH", "")
+    if context["mode"] == HOSTED_MODE:
+        tool_env.update(CC=tools["gcc"]["absolute_path"], CXX=tools["g++"]["absolute_path"],
+                        AR=tools["ar"]["absolute_path"],
+                        CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=tools["gcc"]["absolute_path"])
+        for name in ("gcc", "g++"):
+            row = call([tools[name]["absolute_path"], "-dumpmachine"], repo, tool_env, logs,
+                       "tool-target-" + name, 45, context)
+            require(type(row["exit_code"]) is int and row["exit_code"] == 0, "hosted GNU target observation failed")
+            target = observer.original_stream(logs, row, "stdout").decode("ascii").strip()
+            require(target == "x86_64-w64-mingw32", "hosted GNU tool target is incompatible with the frozen Windows selection")
+            tools[name]["target"] = target
     for name, item in tools.items():
         flag = "-Vv" if name == "rustc" else "--version"
         row = call([item["absolute_path"], flag], repo, tool_env, logs, "tool-version-" + name, 45, context)
@@ -407,7 +599,7 @@ def observe_tools(repo, env, logs, context, call):
         if name in ("cargo", "rustdoc"):
             require(raw.startswith(name + " "), "unexpected observed tool version")
         if name == "rustc":
-            host = "x86_64-pc-windows-gnu" if context["mode"] == "windows-g1" else "x86_64-unknown-linux-gnu"
+            host = "x86_64-pc-windows-gnu" if windows_selection(context["mode"]) else "x86_64-unknown-linux-gnu"
             require("release: " + RUST + "\n" in raw.replace("\r\n", "\n")
                     and "host: " + host + "\n" in raw.replace("\r\n", "\n"), "compiler release or actual host differs")
         if name == "node":
@@ -685,7 +877,7 @@ def resource_values(value, mode, initial):
     require(type(value) is dict and set(value) == {"physical", "virtual", "disk", "compilers"}
             and all(type(value[n]) is int and value[n] >= 0 for n in ("physical", "virtual", "disk"))
             and type(value["compilers"]) is list, "resource observation is incomplete")
-    if mode == "windows-g1":
+    if windows_selection(mode):
         limits = (4, 8, 18) if initial else (4, 0, 18)
         require(not value["compilers"], "another compiler owns the local slot")
     else:
@@ -698,7 +890,7 @@ def resource_values(value, mode, initial):
 
 def observe_resources(mode, run_root, logs, context, call, label, initial=False):
     disk = shutil.disk_usage(run_root).free
-    if mode == "windows-g1":
+    if windows_selection(mode):
         script = ("$ErrorActionPreference='Stop'; $m=Get-CimInstance Win32_OperatingSystem; "
                   "$a=@(Get-Process -ErrorAction Stop | Where-Object {$_.ProcessName -in @('cargo','rustc','rustdoc')} | "
                   "Select-Object Id,ProcessName); "
@@ -938,11 +1130,15 @@ def run(mode, source_sha, admission_id, sdk, baseline_paths, run_root, lease=Non
     environment = dict(os.environ) if environment is None else dict(environment)
     context = request_context(environment, mode, source_sha, admission_id)
     selected = authority(admission_id, mode, source_sha)
+    if mode == HOSTED_MODE:
+        # No catalogue or CLI value activates incomplete private transport.
+        require_hosted_transport_composition(context)
+    selection_mode = "windows-g1" if windows_selection(mode) else mode
     gate = Path(__file__).resolve().parents[1]
     sdk = Path(sdk).resolve(strict=True)
     baselines = {k: Path(v).resolve(strict=True) for k, v in baseline_paths.items()}
     run_root = canonical_run_root(run_root)
-    require(set(baselines) == ({p["id"] for p in CAUSALS} if mode == "windows-g1" else set()),
+    require(set(baselines) == ({p["id"] for p in CAUSALS} if windows_selection(mode) else set()),
             "baseline source roles are missing, duplicated or foreign")
     owned_paths(gate, sdk, baselines, run_root, mode)
     lease_identity = None
@@ -984,7 +1180,10 @@ def run(mode, source_sha, admission_id, sdk, baseline_paths, run_root, lease=Non
     def guarded(argv, cwd, env, output, label, timeout, frame):
         nonlocal counter
         counter += 1
-        observe_resources(mode, run_root, logs, context, bounded, "pre-command-" + str(counter))
+        resources = observe_resources(mode, run_root, logs, context, bounded, "pre-command-" + str(counter))
+        if mode == HOSTED_MODE:
+            sample = hosted_growth_observation(resources, context, report["initial_resources"]["disk"])
+            report.setdefault("hosted_growth_samples", []).append(sample)
         if lease_identity is not None:
             require(custody.fingerprint(lease, lease.parent, 256 * 1024) == lease_identity,
                     "exclusive lease changed; stop without replay")
@@ -993,9 +1192,11 @@ def run(mode, source_sha, admission_id, sdk, baseline_paths, run_root, lease=Non
 
     try:
         gate_sha = custody.git(gate, "rev-parse", "HEAD").decode().strip()
-        if mode == "linux-g2":
+        if mode in ("linux-g2", HOSTED_MODE):
             require(gate_sha == context["github"]["GITHUB_SHA"], "gate checkout differs from actual Actions source")
         context["gate_source_sha"] = gate_sha
+        if mode == HOSTED_MODE:
+            report["gate_admission"] = verify_hosted_gate(gate, context, selected, budget)
         gate_snapshot = custody.source_snapshot(gate, gate_sha, GATE_FILES)
         require(all(gate_snapshot["files"][p]["sha256"] == digest for p, digest in GATE_PINS.items()),
                 "shared provider source differs")
@@ -1004,7 +1205,11 @@ def run(mode, source_sha, admission_id, sdk, baseline_paths, run_root, lease=Non
         for directory in ("cargo-home", "pip-cache", "npm-cache", "config", "data", "cache", "state", "runtime", "temporary", "targets"):
             (run_root / directory).mkdir(mode=0o700)
         env = clean_environment(environment, run_root, run_root / "targets", run_root / "temporary")
+        if mode == HOSTED_MODE:
+            env["RUSTUP_TOOLCHAIN"] = HOSTED_RUST
         report["initial_resources"] = observe_resources(mode, run_root, logs, context, bounded, "initial-resources", initial=True)
+        if mode == HOSTED_MODE:
+            report["hosted_cold_growth"] = hosted_growth_observation(report["initial_resources"], context)
         tools, env = observe_tools(gate, env, logs, context, guarded)
         report["tools"] = tools
         if mode == "windows-g1":
@@ -1013,7 +1218,7 @@ def run(mode, source_sha, admission_id, sdk, baseline_paths, run_root, lease=Non
         else:
             report["gate_g0"] = {"scope": "EXACT_ACTIONS_GATE_JOB_REQUIRED_BY_NEEDS", "product_credit": "NONE"}
         profiles = [("fixed", sdk, FIXED, None)]
-        if mode == "windows-g1":
+        if windows_selection(mode):
             profiles.extend((p["id"], baselines[p["id"]], p, p) for p in CAUSALS)
         for identifier, repo, profile, causal in profiles:
             budget.remaining(1)
@@ -1029,14 +1234,20 @@ def run(mode, source_sha, admission_id, sdk, baseline_paths, run_root, lease=Non
                      "context": frame, "logs": folder, "target": target_root, "temporary": temporary,
                      "env": dict(env, CARGO_TARGET_DIR=str(target_root), TMP=str(temporary), TEMP=str(temporary), TMPDIR=str(temporary))}
             states.append(state)
-        execute_selection(states, mode, tools, env, evidence, budget, guarded, report)
+        if mode == HOSTED_MODE:
+            actual_source_bytes = sum(item["bytes"] for state in states for item in state["source"]["files"].values())
+            require(actual_source_bytes <= context["cold_growth"]["bytes"]["source_checkouts"],
+                    "actual five-source bytes exceed reviewed cold source allowance")
+            report["hosted_source_bytes"] = actual_source_bytes
+        execute_selection(states, selection_mode, tools, env, evidence, budget, guarded, report)
         source_unchanged(gate, gate_snapshot)
         producer.verify_commands(evidence, observations)
         if mode == "windows-g1":
             original_controls = report["gate_g0"]["controls"]
             refreshed = admit_gate_controls(Path(original_controls["folder"]) / "gate-unittest.json", gate_snapshot, tools["python"], context)
             require(refreshed == original_controls, "gate G0 original changed after product observation")
-        report["status"] = ("PASS_WINDOWS_G1_SELECTED_ROOT_OBSERVATIONS" if mode == "windows-g1"
+        report["status"] = ("PASS_HOSTED_WINDOWS_G1_SELECTED_ROOT_OBSERVATIONS" if mode == HOSTED_MODE else
+                            "PASS_WINDOWS_G1_SELECTED_ROOT_OBSERVATIONS" if mode == "windows-g1"
                             else "PASS_LINUX_TWO_EXISTING_RUNTIME_ORACLES")
     except (observer.UnknownExecution, custody.UnknownObservation) as error:
         report.update(status="UNKNOWN_NO_RETRY", error=str(error), uncertain_command=error.command)
@@ -1084,8 +1295,14 @@ def main(argv=None):
         return 0
     require(not (args.execute and args.admit_only), "choose admission or execution, not both")
     if args.admit_only:
-        require(args.mode == "linux-g2", "local execution requires the real lease file")
-        print(json.dumps(request_context(os.environ, args.mode, args.source_sha, args.authority), sort_keys=True))
+        require(args.mode in ("linux-g2", HOSTED_MODE), "local execution requires the real lease file")
+        context = request_context(os.environ, args.mode, args.source_sha, args.authority)
+        if args.mode == HOSTED_MODE:
+            selected = authority(args.authority, args.mode, args.source_sha)
+            context["gate_admission"] = verify_hosted_gate(
+                Path(__file__).resolve().parents[1], context, selected, Budget(selected["max_total_seconds"]))
+            require_hosted_transport_composition(context)
+        print(json.dumps(context, sort_keys=True))
         return 0
     require(args.sdk and args.run_root, "SDK checkout and fresh owned run root are required")
     rows = [x.split("=", 1) for x in args.baseline]
