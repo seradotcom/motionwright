@@ -61,12 +61,33 @@ pub struct InspectedProjectBundle {
 pub trait BundleAssetAdmission {
     fn prefix_limit(&self) -> usize;
 
+    /// A separate bounded original is needed only after font classification.
+    /// The ordinary prefix, including SVG admission, keeps its existing limit.
+    fn font_export_prefix_limit(&self) -> usize {
+        self.prefix_limit()
+    }
+
     fn validate(
         &self,
         prefix: &[u8],
         actual_size: u64,
         aliases: &[&motionwright_domain::Asset],
     ) -> Result<()>;
+
+    /// Product inspection for a font selected by storage from the same captured
+    /// descriptor and Project. Storage first enforces copy/source declarations.
+    /// A plain structural admission can never certify original font contents.
+    fn validate_font_export(
+        &self,
+        _project: &Project,
+        _prefix: &[u8],
+        _descriptor: &BlobDescriptor,
+        _aliases: &[&motionwright_domain::Asset],
+    ) -> Result<()> {
+        Err(StorageError::InvalidBackup(
+            "portable font export requires original font content inspection".into(),
+        ))
+    }
 }
 
 // The legacy Store APIs enforce storage structure, digests and credentials.
@@ -86,6 +107,132 @@ impl BundleAssetAdmission for StructuralBundleAdmission {
     ) -> Result<()> {
         Ok(())
     }
+}
+
+// Classification selects the existing font inspector; it does not parse or
+// admit a font. A declaration or alias may tighten the classification.
+fn portable_font_export_required(
+    project: &Project,
+    prefix: &[u8],
+    descriptor: &BlobDescriptor,
+    aliases: &[&motionwright_domain::Asset],
+) -> bool {
+    let font_header = [
+        b"\0\x01\0\0".as_slice(),
+        b"OTTO",
+        b"ttcf",
+        b"wOFF",
+        b"wOF2",
+        b"true",
+        b"typ1",
+    ]
+    .iter()
+    .any(|signature| prefix.starts_with(signature));
+    font_header
+        || aliases.iter().any(|asset| {
+            let media_type = asset.media_type.to_ascii_lowercase();
+            media_type.starts_with("font/")
+                || matches!(
+                    media_type.as_str(),
+                    "application/font-sfnt"
+                        | "application/font-woff"
+                        | "application/x-font-ttf"
+                        | "application/x-font-opentype"
+                        | "application/x-font-woff"
+                        | "application/vnd.ms-opentype"
+                        | "application/vnd.ms-fontobject"
+                )
+                || project
+                    .visual_language
+                    .fonts
+                    .iter()
+                    .any(|right| right.source == format!("asset:{}", asset.id.hyphenated()))
+        })
+        || project
+            .production_design
+            .font_portable_copies
+            .iter()
+            .any(|declaration| declaration.content_sha256 == descriptor.sha256)
+}
+
+/// Storage always enforces the recorded source conditions before calling a
+/// product inspector. Supplying a permissive inspector cannot skip this check.
+fn validate_recorded_portable_font_copy(
+    project: &Project,
+    descriptor: &BlobDescriptor,
+    aliases: &[&motionwright_domain::Asset],
+) -> Result<()> {
+    use motionwright_domain::{FontPortableCopyPermission, RightsStatus};
+    if aliases.is_empty()
+        || aliases
+            .iter()
+            .any(|asset| asset.content_sha256.as_deref() != Some(descriptor.sha256.as_str()))
+    {
+        return Err(StorageError::InvalidBackup(
+            "portable font has no exact captured asset alias".into(),
+        ));
+    }
+    let declarations: Vec<_> = project
+        .production_design
+        .font_portable_copies
+        .iter()
+        .filter(|declaration| declaration.content_sha256 == descriptor.sha256)
+        .collect();
+    if declarations
+        .iter()
+        .any(|declaration| declaration.permission == FontPortableCopyPermission::Prohibited)
+    {
+        return Err(StorageError::InvalidBackup(
+            "portable copy of these original font bytes is recorded as prohibited".into(),
+        ));
+    }
+    // The declaration covers these exact bytes through one current source, not
+    // an alias spelling. A prohibition remains effective after an asset is
+    // detached or a second alias is attached. An old Allow for a detached asset
+    // does not authorize a newly attached alias. A descriptive alias without a
+    // FontRight neither supplies a permission nor cancels an existing one.
+    let current: Vec<_> = declarations
+        .into_iter()
+        .filter(|declaration| aliases.iter().any(|asset| asset.id == declaration.asset_id))
+        .collect();
+    if current.is_empty() {
+        return Err(StorageError::InvalidBackup(
+            "portable font requires an explicit source-bound copy declaration".into(),
+        ));
+    }
+    for alias in aliases {
+        let source = format!("asset:{}", alias.id.hyphenated());
+        if project
+            .visual_language
+            .fonts
+            .iter()
+            .any(|right| right.source == source && right.rights_status != RightsStatus::Cleared)
+        {
+            return Err(StorageError::InvalidBackup(
+                "a captured font alias has restricted or unknown use rights".into(),
+            ));
+        }
+    }
+    for declaration in current {
+        declaration.validate()?;
+        if declaration.permission != FontPortableCopyPermission::Allowed {
+            return Err(StorageError::InvalidBackup(
+                "portable font has no recorded permission to copy".into(),
+            ));
+        }
+        let source = format!("asset:{}", declaration.asset_id.hyphenated());
+        if !project
+            .visual_language
+            .fonts
+            .iter()
+            .any(|right| right.source == source && right.rights_status == RightsStatus::Cleared)
+        {
+            return Err(StorageError::InvalidBackup(
+                "portable font copy declaration has no cleared current FontRight source".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl Store {
@@ -108,6 +255,43 @@ impl Store {
     ) -> Result<ProjectBundleManifest> {
         let backup = self.export_project_snapshot(id, Some(expected))?;
         self.export_captured_bundle(backup, destination.as_ref())
+    }
+
+    /// Export the single captured snapshot with product content admission.
+    /// This does not add an operation grant or replace the ordinary source stamp.
+    pub fn export_project_bundle_with_admission(
+        &mut self,
+        id: Uuid,
+        destination: impl AsRef<Path>,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<ProjectBundleManifest> {
+        let destination = destination.as_ref();
+        if destination.exists() {
+            return Err(StorageError::DestinationExists);
+        }
+        let backup = self.export_project_snapshot(id, None)?;
+        self.export_captured_bundle_with_admission_before_publication(
+            backup,
+            destination,
+            admission,
+            |_| {},
+        )
+    }
+
+    pub fn export_project_bundle_at_with_admission(
+        &mut self,
+        id: Uuid,
+        expected: &RevisionStamp,
+        destination: impl AsRef<Path>,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<ProjectBundleManifest> {
+        let backup = self.export_project_snapshot(id, Some(expected))?;
+        self.export_captured_bundle_with_admission_before_publication(
+            backup,
+            destination.as_ref(),
+            admission,
+            |_| {},
+        )
     }
 
     pub fn inspect_project_bundle_with_fingerprint(
@@ -439,6 +623,21 @@ impl Store {
         destination: &Path,
         before_publication: impl FnOnce(&Path),
     ) -> Result<ProjectBundleManifest> {
+        self.export_captured_bundle_with_admission_before_publication(
+            backup,
+            destination,
+            &StructuralBundleAdmission,
+            before_publication,
+        )
+    }
+
+    fn export_captured_bundle_with_admission_before_publication(
+        &self,
+        backup: ProjectBackup,
+        destination: &Path,
+        admission: &impl BundleAssetAdmission,
+        before_publication: impl FnOnce(&Path),
+    ) -> Result<ProjectBundleManifest> {
         match fs::symlink_metadata(destination) {
             Ok(_) => return Err(StorageError::DestinationExists),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -460,19 +659,84 @@ impl Store {
                 "portable bundle contains too many blobs".into(),
             ));
         }
+        // Four bytes select the existing font inspector, without enlarging
+        // the ordinary content-policy prefix. In particular SVG import keeps
+        // its original prefix and size contract.
+        let ordinary_prefix_limit = admission.prefix_limit();
+        let prefix_limit = ordinary_prefix_limit.max(4);
+        if prefix_limit as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+            return Err(StorageError::InvalidBackup(
+                "portable content admission prefix exceeds its memory budget".into(),
+            ));
+        }
         let mut blobs = Vec::with_capacity(digests.len());
         let mut total_blob_bytes = 0_u64;
         for digest in digests {
             let source = self.checked_existing_blob_path(&digest)?;
-            let descriptor = inspect_portable_file(
+            let (descriptor, prefix) = inspect_portable_file_with_prefix(
                 &source,
                 "portable asset",
                 MAX_BUNDLE_TOTAL_BYTES - total_blob_bytes,
+                prefix_limit,
             )?;
             if descriptor.sha256 != digest {
                 return Err(StorageError::InvalidBackup(
                     "stored blob digest differs from its content-addressed path".into(),
                 ));
+            }
+            let aliases: Vec<_> = backup
+                .project
+                .assets
+                .iter()
+                .filter(|asset| asset.content_sha256.as_deref() == Some(descriptor.sha256.as_str()))
+                .collect();
+            if portable_font_export_required(&backup.project, &prefix, &descriptor, &aliases) {
+                validate_recorded_portable_font_copy(&backup.project, &descriptor, &aliases)?;
+                let font_prefix_limit = admission.font_export_prefix_limit();
+                if font_prefix_limit as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+                    return Err(StorageError::InvalidBackup(
+                        "portable font admission prefix exceeds its memory budget".into(),
+                    ));
+                }
+                if descriptor.size_bytes > font_prefix_limit as u64 {
+                    return Err(StorageError::BlobTooLarge {
+                        size: descriptor.size_bytes,
+                        limit: font_prefix_limit as u64,
+                    });
+                }
+                // Reuse a complete first capture, otherwise inspect the whole
+                // font through the same existing bounded reader. A second read
+                // is admitted only if both SHA and size still match the first;
+                // it never refreshes the source pin or the captured Project.
+                let (font_descriptor, font_bytes) = if prefix.len() as u64 == descriptor.size_bytes
+                {
+                    (descriptor.clone(), prefix)
+                } else {
+                    let captured = inspect_portable_file_with_prefix(
+                        &source,
+                        "complete portable font original",
+                        descriptor.size_bytes,
+                        font_prefix_limit,
+                    )?;
+                    if captured.0 != descriptor {
+                        return Err(StorageError::InvalidBackup(
+                            "portable font changed between classification and complete inspection"
+                                .into(),
+                        ));
+                    }
+                    captured
+                };
+                // The callback receives the descriptor and retained bytes of
+                // this verified capture; the parser never reopens a pathname.
+                admission.validate_font_export(
+                    &backup.project,
+                    &font_bytes,
+                    &font_descriptor,
+                    &aliases,
+                )?;
+            } else {
+                let ordinary_prefix = &prefix[..prefix.len().min(ordinary_prefix_limit)];
+                admission.validate(ordinary_prefix, descriptor.size_bytes, &aliases)?;
             }
             total_blob_bytes += descriptor.size_bytes;
             blobs.push(PortableBlob {
@@ -726,7 +990,10 @@ fn checked_portable_source(path: &Path, context: &str, limit: u64) -> Result<Fil
     if size > limit {
         return Err(StorageError::BlobTooLarge { size, limit });
     }
-    Ok(File::open(path)?)
+    // Preserve the context-specific pathname refusal, then let the existing
+    // importer validate the opened leaf. Each copy/readback is an independent
+    // retained-file read and still verifies its own digest and byte count.
+    file_import::open_regular_import_source(path, limit)
 }
 
 pub(super) fn hash_portable_file(path: &Path, limit: u64) -> Result<BlobDescriptor> {
@@ -776,7 +1043,7 @@ pub(super) fn read_bundle_manifest_bytes(source: &Path) -> Result<Vec<u8>> {
     // The file can grow after metadata inspection. Never perform an unbounded
     // read and never parse a truncated prefix as a complete manifest.
     let mut bytes = Vec::with_capacity(size as usize);
-    File::open(path)?
+    checked_portable_source(&path, "portable bundle manifest", MAX_BUNDLE_MANIFEST_BYTES)?
         .take(MAX_BUNDLE_MANIFEST_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_BUNDLE_MANIFEST_BYTES {
@@ -2311,6 +2578,719 @@ mod portable_credential_stream_tests {
                 );
                 assert!(matches!(result, Err(StorageError::InvalidBackup(_))));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod font_portable_copy_export_tests {
+    use super::*;
+    use motionwright_domain::{
+        Asset, FontPortableCopyDeclaration, FontPortableCopyPermission, FontRight, RightsStatus,
+    };
+    use std::cell::Cell;
+
+    // Deliberately not a real font: this suite exercises storage policy and
+    // same-stream binding. The Service suite uses the original SDK TTF.
+    const STRUCTURAL_BYTES: &[u8] = b"\0\x01\0\0bounded structural font fixture";
+
+    struct PermitTechnicalFixture {
+        calls: Cell<usize>,
+        prefix: usize,
+    }
+    impl PermitTechnicalFixture {
+        fn new() -> Self {
+            Self {
+                calls: Cell::new(0),
+                prefix: 128,
+            }
+        }
+    }
+    impl BundleAssetAdmission for PermitTechnicalFixture {
+        fn prefix_limit(&self) -> usize {
+            self.prefix
+        }
+        fn validate(&self, _: &[u8], _: u64, _: &[&Asset]) -> Result<()> {
+            Ok(())
+        }
+        fn validate_font_export(
+            &self,
+            _: &Project,
+            prefix: &[u8],
+            descriptor: &BlobDescriptor,
+            _: &[&Asset],
+        ) -> Result<()> {
+            self.calls.set(self.calls.get() + 1);
+            assert_eq!(prefix, STRUCTURAL_BYTES);
+            assert_eq!(descriptor.sha256, hex::encode(Sha256::digest(prefix)));
+            assert_eq!(descriptor.size_bytes, prefix.len() as u64);
+            Ok(())
+        }
+    }
+
+    fn declaration(
+        asset: &Asset,
+        permission: FontPortableCopyPermission,
+    ) -> FontPortableCopyDeclaration {
+        FontPortableCopyDeclaration {
+            version: 1,
+            asset_id: asset.id,
+            content_sha256: asset.content_sha256.clone().unwrap(),
+            permission,
+            origin: "Technical structural fixture; not a font".into(),
+            license: "Fixture generated for storage tests".into(),
+            note: None,
+        }
+    }
+
+    fn fixture(
+        root: &Path,
+        permission: Option<FontPortableCopyPermission>,
+        status: RightsStatus,
+    ) -> (Store, Project) {
+        let mut store = Store::open(root.join("original/state.sqlite3")).unwrap();
+        let mut project = store.create_named_project("Portable font policy").unwrap();
+        let input = root.join("original-source.bin");
+        fs::write(&input, STRUCTURAL_BYTES).unwrap();
+        let descriptor = store.ingest_blob_file(&input).unwrap();
+        let asset = Asset {
+            id: Uuid::now_v7(),
+            name: "Structural fixture".into(),
+            media_type: "application/octet-stream".into(),
+            content_sha256: Some(descriptor.sha256),
+            source_revision: Some("structural-test".into()),
+        };
+        project = store
+            .apply(
+                project.id,
+                &project.stamp(),
+                "font-fixture-asset",
+                &Change::AddAsset {
+                    asset: asset.clone(),
+                },
+            )
+            .unwrap()
+            .project;
+        let mut visual_language = project.visual_language.clone();
+        visual_language.fonts.push(FontRight {
+            family: "Structural Test Family".into(),
+            source: format!("asset:{}", asset.id.hyphenated()),
+            rights_status: status,
+        });
+        project = store
+            .apply(
+                project.id,
+                &project.stamp(),
+                "font-fixture-use-right",
+                &Change::SetVisualLanguage { visual_language },
+            )
+            .unwrap()
+            .project;
+        if let Some(permission) = permission {
+            project = store
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "font-fixture-copy",
+                    &Change::UpsertFontPortableCopy {
+                        declaration: declaration(&asset, permission),
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        (store, project)
+    }
+
+    fn no_publication(root: &Path, destination: &Path) {
+        assert!(!destination.exists());
+        assert!(!fs::read_dir(root).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".motionwright-export-")
+        }));
+    }
+
+    #[test]
+    fn cleared_use_alone_cannot_bypass_export_copy_policy_with_a_permissive_inspector() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, project) = fixture(root.path(), None, RightsStatus::Cleared);
+        let admission = PermitTechnicalFixture::new();
+        let destination = root.path().join("must-not-export");
+        assert!(
+            store
+                .export_project_bundle_at_with_admission(
+                    project.id,
+                    &project.stamp(),
+                    &destination,
+                    &admission
+                )
+                .is_err()
+        );
+        assert_eq!(admission.calls.get(), 0);
+        assert_eq!(store.load_project(project.id).unwrap(), project);
+        no_publication(root.path(), &destination);
+    }
+
+    #[test]
+    fn structural_store_exports_cannot_skip_original_font_inspection() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, project) = fixture(
+            root.path(),
+            Some(FontPortableCopyPermission::Allowed),
+            RightsStatus::Cleared,
+        );
+        for at_revision in [false, true] {
+            let destination = root.path().join(format!("uninspected-{at_revision}"));
+            let result = if at_revision {
+                store.export_project_bundle_at(project.id, &project.stamp(), &destination)
+            } else {
+                store.export_project_bundle(project.id, &destination)
+            };
+            assert!(result.is_err());
+            no_publication(root.path(), &destination);
+        }
+        // Metadata backup preserves the editable declaration without copying fonts.
+        assert_eq!(
+            store
+                .export_project_at(project.id, &project.stamp())
+                .unwrap()
+                .project,
+            project
+        );
+    }
+
+    #[test]
+    fn prohibited_original_bytes_cannot_be_exported_through_an_allowed_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, mut project) = fixture(
+            root.path(),
+            Some(FontPortableCopyPermission::Prohibited),
+            RightsStatus::Cleared,
+        );
+        let mut alias = project.assets[0].clone();
+        alias.id = Uuid::now_v7();
+        alias.name = "Second alias for the same original".into();
+        project = store
+            .apply(
+                project.id,
+                &project.stamp(),
+                "second-font-alias",
+                &Change::AddAsset {
+                    asset: alias.clone(),
+                },
+            )
+            .unwrap()
+            .project;
+        let mut visual_language = project.visual_language.clone();
+        visual_language.fonts.push(FontRight {
+            family: "Second Structural Name".into(),
+            source: format!("asset:{}", alias.id.hyphenated()),
+            rights_status: RightsStatus::Cleared,
+        });
+        project = store
+            .apply(
+                project.id,
+                &project.stamp(),
+                "second-font-right",
+                &Change::SetVisualLanguage { visual_language },
+            )
+            .unwrap()
+            .project;
+        project = store
+            .apply(
+                project.id,
+                &project.stamp(),
+                "second-font-copy",
+                &Change::UpsertFontPortableCopy {
+                    declaration: declaration(&alias, FontPortableCopyPermission::Allowed),
+                },
+            )
+            .unwrap()
+            .project;
+        let admission = PermitTechnicalFixture::new();
+        let destination = root.path().join("alias-must-not-export");
+        assert!(
+            store
+                .export_project_bundle_with_admission(project.id, &destination, &admission)
+                .is_err()
+        );
+        assert_eq!(admission.calls.get(), 0);
+        assert_eq!(store.load_project(project.id).unwrap(), project);
+        no_publication(root.path(), &destination);
+    }
+
+    #[test]
+    fn allowed_copy_does_not_override_unknown_or_restricted_use_rights() {
+        for status in [RightsStatus::Unknown, RightsStatus::Restricted] {
+            let root = tempfile::tempdir().unwrap();
+            let (mut store, mut project) = fixture(
+                root.path(),
+                Some(FontPortableCopyPermission::Allowed),
+                RightsStatus::Cleared,
+            );
+            let mut alias = project.assets[0].clone();
+            alias.id = Uuid::now_v7();
+            alias.name = "Same bytes with a more restrictive use declaration".into();
+            project = store
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "restricted-alias",
+                    &Change::AddAsset {
+                        asset: alias.clone(),
+                    },
+                )
+                .unwrap()
+                .project;
+            let mut visual_language = project.visual_language.clone();
+            visual_language.fonts.push(FontRight {
+                family: "Other Declared Family".into(),
+                source: format!("asset:{}", alias.id.hyphenated()),
+                rights_status: status,
+            });
+            project = store
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "restricted-alias-rights",
+                    &Change::SetVisualLanguage { visual_language },
+                )
+                .unwrap()
+                .project;
+            let admission = PermitTechnicalFixture::new();
+            let destination = root.path().join("rights-must-not-export");
+            assert!(
+                store
+                    .export_project_bundle_at_with_admission(
+                        project.id,
+                        &project.stamp(),
+                        &destination,
+                        &admission
+                    )
+                    .is_err()
+            );
+            assert_eq!(admission.calls.get(), 0);
+            no_publication(root.path(), &destination);
+        }
+    }
+
+    #[test]
+    fn font_inspector_and_manifest_share_the_one_captured_project_snapshot() {
+        struct ChangeCurrentAfterCapture {
+            database: PathBuf,
+            captured: Project,
+            calls: Cell<usize>,
+        }
+        impl BundleAssetAdmission for ChangeCurrentAfterCapture {
+            fn prefix_limit(&self) -> usize {
+                128
+            }
+            fn validate(&self, _: &[u8], _: u64, _: &[&Asset]) -> Result<()> {
+                Ok(())
+            }
+            fn validate_font_export(
+                &self,
+                project: &Project,
+                prefix: &[u8],
+                descriptor: &BlobDescriptor,
+                aliases: &[&Asset],
+            ) -> Result<()> {
+                assert_eq!(project, &self.captured);
+                assert_eq!(prefix, STRUCTURAL_BYTES);
+                assert_eq!(descriptor.sha256, hex::encode(Sha256::digest(prefix)));
+                assert_eq!(descriptor.size_bytes, prefix.len() as u64);
+                assert_eq!(aliases, [&project.assets[0]]);
+                self.calls.set(self.calls.get() + 1);
+                let mut other = Store::open(&self.database)?;
+                let mut changed = project.production_design.font_portable_copies[0].clone();
+                changed.permission = FontPortableCopyPermission::Prohibited;
+                other.apply(
+                    project.id,
+                    &project.stamp(),
+                    "later-source-decision",
+                    &Change::UpsertFontPortableCopy {
+                        declaration: changed,
+                    },
+                )?;
+                Ok(())
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, project) = fixture(
+            root.path(),
+            Some(FontPortableCopyPermission::Allowed),
+            RightsStatus::Cleared,
+        );
+        let admission = ChangeCurrentAfterCapture {
+            database: root.path().join("original/state.sqlite3"),
+            captured: project.clone(),
+            calls: Cell::new(0),
+        };
+        let destination = root.path().join("captured-export");
+        let manifest = store
+            .export_project_bundle_at_with_admission(
+                project.id,
+                &project.stamp(),
+                &destination,
+                &admission,
+            )
+            .unwrap();
+        assert_eq!(admission.calls.get(), 1);
+        assert_eq!(manifest.backup.project, project);
+        assert_eq!(
+            fs::read(destination.join(&manifest.blobs[0].relative_path)).unwrap(),
+            STRUCTURAL_BYTES
+        );
+        let current = store.load_project(project.id).unwrap();
+        assert_eq!(current.revision, project.revision + 1);
+        assert_eq!(
+            current.production_design.font_portable_copies[0].permission,
+            FontPortableCopyPermission::Prohibited
+        );
+    }
+
+    #[test]
+    fn font_source_replacement_after_admission_never_publishes_a_bundle() {
+        struct ReplaceSource {
+            path: PathBuf,
+        }
+        impl BundleAssetAdmission for ReplaceSource {
+            fn prefix_limit(&self) -> usize {
+                128
+            }
+            fn validate(&self, _: &[u8], _: u64, _: &[&Asset]) -> Result<()> {
+                Ok(())
+            }
+            fn validate_font_export(
+                &self,
+                _: &Project,
+                prefix: &[u8],
+                _: &BlobDescriptor,
+                _: &[&Asset],
+            ) -> Result<()> {
+                assert_eq!(prefix, STRUCTURAL_BYTES);
+                fs::write(&self.path, vec![b'x'; prefix.len()])?;
+                Ok(())
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, project) = fixture(
+            root.path(),
+            Some(FontPortableCopyPermission::Allowed),
+            RightsStatus::Cleared,
+        );
+        let digest = project.assets[0].content_sha256.as_ref().unwrap();
+        let admission = ReplaceSource {
+            path: store.checked_existing_blob_path(digest).unwrap(),
+        };
+        let destination = root.path().join("changed-original-export");
+        assert!(
+            store
+                .export_project_bundle_at_with_admission(
+                    project.id,
+                    &project.stamp(),
+                    &destination,
+                    &admission
+                )
+                .is_err()
+        );
+        assert_eq!(store.load_project(project.id).unwrap(), project);
+        no_publication(root.path(), &destination);
+    }
+
+    #[test]
+    fn detached_prohibition_still_applies_to_the_same_registered_digest() {
+        let root = tempfile::tempdir().unwrap();
+        let (_, mut project) = fixture(
+            root.path(),
+            Some(FontPortableCopyPermission::Prohibited),
+            RightsStatus::Cleared,
+        );
+        let digest = project.assets[0].content_sha256.clone().unwrap();
+        project.assets[0].id = Uuid::now_v7();
+        project.validate().unwrap();
+        let descriptor = BlobDescriptor {
+            sha256: digest,
+            size_bytes: STRUCTURAL_BYTES.len() as u64,
+        };
+        assert!(
+            validate_recorded_portable_font_copy(&project, &descriptor, &[&project.assets[0]])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn export_admission_cannot_request_an_unbounded_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, project) = fixture(
+            root.path(),
+            Some(FontPortableCopyPermission::Allowed),
+            RightsStatus::Cleared,
+        );
+        let admission = PermitTechnicalFixture {
+            calls: Cell::new(0),
+            prefix: usize::MAX,
+        };
+        let destination = root.path().join("unbounded-prefix");
+        assert!(
+            store
+                .export_project_bundle_at_with_admission(
+                    project.id,
+                    &project.stamp(),
+                    &destination,
+                    &admission
+                )
+                .is_err()
+        );
+        assert_eq!(admission.calls.get(), 0);
+        no_publication(root.path(), &destination);
+
+        struct UnboundedFontPrefix;
+        impl BundleAssetAdmission for UnboundedFontPrefix {
+            fn prefix_limit(&self) -> usize {
+                4
+            }
+            fn font_export_prefix_limit(&self) -> usize {
+                usize::MAX
+            }
+            fn validate(&self, _: &[u8], _: u64, _: &[&Asset]) -> Result<()> {
+                Ok(())
+            }
+            fn validate_font_export(
+                &self,
+                _: &Project,
+                _: &[u8],
+                _: &BlobDescriptor,
+                _: &[&Asset],
+            ) -> Result<()> {
+                panic!("an unbounded font prefix must be refused before the callback");
+            }
+        }
+        let destination = root.path().join("unbounded-font-prefix");
+        let result = store.export_project_bundle_at_with_admission(
+            project.id,
+            &project.stamp(),
+            &destination,
+            &UnboundedFontPrefix,
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidBackup(message)) if message == "portable font admission prefix exceeds its memory budget")
+        );
+        no_publication(root.path(), &destination);
+    }
+
+    #[test]
+    fn complete_font_prefix_is_selected_without_growing_the_ordinary_prefix() {
+        struct NarrowAdmission {
+            ordinary: Cell<usize>,
+            fonts: Cell<usize>,
+            font_limits: Cell<usize>,
+        }
+        impl BundleAssetAdmission for NarrowAdmission {
+            fn prefix_limit(&self) -> usize {
+                4
+            }
+            fn font_export_prefix_limit(&self) -> usize {
+                self.font_limits.set(self.font_limits.get() + 1);
+                128
+            }
+            fn validate(&self, prefix: &[u8], size: u64, _: &[&Asset]) -> Result<()> {
+                assert_eq!(prefix.len() as u64, size.min(4));
+                assert_eq!(prefix, b"ordi");
+                self.ordinary.set(self.ordinary.get() + 1);
+                Ok(())
+            }
+            fn validate_font_export(
+                &self,
+                _: &Project,
+                bytes: &[u8],
+                descriptor: &BlobDescriptor,
+                _: &[&Asset],
+            ) -> Result<()> {
+                assert_eq!(bytes, STRUCTURAL_BYTES);
+                assert_eq!(descriptor.size_bytes, bytes.len() as u64);
+                assert_eq!(descriptor.sha256, hex::encode(Sha256::digest(bytes)));
+                self.fonts.set(self.fonts.get() + 1);
+                Ok(())
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, project) = fixture(
+            root.path(),
+            Some(FontPortableCopyPermission::Allowed),
+            RightsStatus::Cleared,
+        );
+        let source = root.path().join("ordinary-original.bin");
+        fs::write(&source, b"ordinary complete opaque bytes").unwrap();
+        let descriptor = store.ingest_blob_file(&source).unwrap();
+        let asset = Asset {
+            id: Uuid::now_v7(),
+            name: "Ordinary source".into(),
+            media_type: "application/octet-stream".into(),
+            content_sha256: Some(descriptor.sha256),
+            source_revision: Some("test-original".into()),
+        };
+        let project = store
+            .apply(
+                project.id,
+                &project.stamp(),
+                "add-ordinary-source",
+                &Change::AddAsset { asset },
+            )
+            .unwrap()
+            .project;
+        let admission = NarrowAdmission {
+            ordinary: Cell::new(0),
+            fonts: Cell::new(0),
+            font_limits: Cell::new(0),
+        };
+        let destination = root.path().join("narrow-prefix-export");
+        let manifest = store
+            .export_project_bundle_at_with_admission(
+                project.id,
+                &project.stamp(),
+                &destination,
+                &admission,
+            )
+            .unwrap();
+        assert_eq!(manifest.backup.project, project);
+        assert_eq!(manifest.blobs.len(), 2);
+        assert_eq!(admission.ordinary.get(), 1);
+        assert_eq!(admission.fonts.get(), 1);
+        assert_eq!(
+            admission.font_limits.get(),
+            1,
+            "ordinary content must never select the font budget"
+        );
+    }
+
+    #[test]
+    fn changed_font_between_prefix_and_complete_inspection_is_rejected_before_staging() {
+        struct ReplaceBeforeCompleteInspection {
+            path: PathBuf,
+            calls: Cell<usize>,
+            parsed: Cell<usize>,
+        }
+        impl BundleAssetAdmission for ReplaceBeforeCompleteInspection {
+            fn prefix_limit(&self) -> usize {
+                4
+            }
+            fn font_export_prefix_limit(&self) -> usize {
+                self.calls.set(self.calls.get() + 1);
+                let mut changed = STRUCTURAL_BYTES.to_vec();
+                *changed.last_mut().unwrap() ^= 1;
+                fs::write(&self.path, changed).unwrap();
+                128
+            }
+            fn validate(&self, _: &[u8], _: u64, _: &[&Asset]) -> Result<()> {
+                Ok(())
+            }
+            fn validate_font_export(
+                &self,
+                _: &Project,
+                _: &[u8],
+                _: &BlobDescriptor,
+                _: &[&Asset],
+            ) -> Result<()> {
+                self.parsed.set(self.parsed.get() + 1);
+                Ok(())
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, project) = fixture(
+            root.path(),
+            Some(FontPortableCopyPermission::Allowed),
+            RightsStatus::Cleared,
+        );
+        let source = store
+            .checked_existing_blob_path(project.assets[0].content_sha256.as_ref().unwrap())
+            .unwrap();
+        let admission = ReplaceBeforeCompleteInspection {
+            path: source,
+            calls: Cell::new(0),
+            parsed: Cell::new(0),
+        };
+        let destination = root.path().join("changed-before-complete-inspection");
+        let result = store.export_project_bundle_at_with_admission(
+            project.id,
+            &project.stamp(),
+            &destination,
+            &admission,
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidBackup(message)) if message == "portable font changed between classification and complete inspection")
+        );
+        assert_eq!(admission.calls.get(), 1);
+        assert_eq!(
+            admission.parsed.get(),
+            0,
+            "changed original bytes must never reach the font callback"
+        );
+        assert_eq!(store.load_project(project.id).unwrap(), project);
+        no_publication(root.path(), &destination);
+    }
+
+    #[test]
+    fn portable_copy_readback_and_manifest_reject_a_leaf_changed_before_open() {
+        struct ClearExistingOpenHook;
+        impl Drop for ClearExistingOpenHook {
+            fn drop(&mut self) {
+                file_import::BEFORE_IMPORT_SOURCE_OPEN.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+            }
+        }
+        for operation in [
+            "copy",
+            "hash-readback",
+            "credential-inspection",
+            "manifest-read",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join(if operation == "manifest-read" {
+                "manifest.json"
+            } else {
+                "original.bin"
+            });
+            fs::write(&source, b"{}").unwrap();
+            let target = root.path().join("must-not-be-created.bin");
+            let observed = std::rc::Rc::new(Cell::new(false));
+            let hook_observed = std::rc::Rc::clone(&observed);
+            let hook_source = source.clone();
+            let _clear = ClearExistingOpenHook;
+            file_import::BEFORE_IMPORT_SOURCE_OPEN.with(|slot| {
+                let previous = slot.borrow_mut().replace(Box::new(move |path: &Path| {
+                    assert_eq!(path, hook_source.as_path());
+                    hook_observed.set(true);
+                    fs::remove_file(path).unwrap();
+                    fs::create_dir(path).unwrap();
+                }));
+                assert!(previous.is_none(), "one original-open hook per test thread");
+            });
+            let result = match operation {
+                "copy" => copy_portable_file(&source, &target, 2).map(|_| ()),
+                "hash-readback" => hash_portable_file(&source, 2).map(|_| ()),
+                "credential-inspection" => {
+                    inspect_portable_file(&source, "original inspection", 2).map(|_| ())
+                }
+                "manifest-read" => read_bundle_manifest_bytes(root.path()).map(|_| ()),
+                _ => unreachable!(),
+            };
+            assert!(
+                observed.get(),
+                "{operation} must use the existing retained-file opener"
+            );
+            assert!(
+                result.is_err(),
+                "{operation} accepted a directory replacing the original regular file"
+            );
+            assert!(
+                !target.exists(),
+                "the copy target must not be created before source admission"
+            );
         }
     }
 }

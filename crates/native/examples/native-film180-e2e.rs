@@ -50,6 +50,7 @@ fn usage() -> ! {
          edit EXISTING_DATABASE ORIGINAL_NATIVE_EVIDENCE NEW_EDITED_PROJECT_JSON |\
          render EXISTING_DATABASE OWNED_CONNECTION NEW_EVIDENCE_JSON |\
          render-captured EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_HOST_CUSTODY_DIR NEW_EVIDENCE_JSON |\
+         window-cycle EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_HOST_CUSTODY_DIR NEW_EVIDENCE_DIR |\
          render-fixed-text-v4 EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_HOST_CUSTODY_DIR CASE_JSON NEW_EVIDENCE_JSON |\
          stage-audio EXISTING_DATABASE OWNED_CONNECTION SOURCE_WAV OWNER_FILENAME NEW_AUDIO_RECEIPT |\
          master EXISTING_DATABASE OWNED_CONNECTION NATIVE_FILM_RESULT WAV_OWNER_RELATIVE WAV_SHA256 NEW_MASTER_EVIDENCE"
@@ -521,7 +522,7 @@ async fn render_original(
     connection: &Path,
     evidence: &Path,
     custody_source: Option<&Path>,
-) -> FixtureResult<()> {
+) -> FixtureResult<MotionCanvasRenderEvidence> {
     if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
         return Err("Film180 original native effects require disposable GitHub Actions".into());
     }
@@ -614,6 +615,7 @@ async fn render_original(
         .and_then(|reader| reader.retain_native_return(&native_snapshot).err())
         .map(|error| error.to_string());
     let native_snapshot_retained = native_snapshot_error.is_none();
+    let mut retained_native_result = None;
     let primary = (|| -> FixtureResult<()> {
         match outcome {
             Ok(native) => {
@@ -654,6 +656,7 @@ async fn render_original(
                         "human_approval":false
                     }))?
                 );
+                retained_native_result = Some(native);
             }
             Err(error) => {
                 if stdin_readback.is_some() {
@@ -703,20 +706,21 @@ async fn render_original(
             )
         })
         .transpose();
-    if primary.is_err() {
+    if let Err(primary_error) = primary {
         if let Err(error) = &custody {
             // Existing private CI stderr retains this secondary failure. The
             // original native Error remains the function's returned error.
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr(),
                 "Secondary stdin custody failure: {error}; preserve the original native outcome; no retry"
             );
         }
-        return primary;
+        return Err(primary_error);
     }
     // Native success and custody failure are separate original observations.
     // Preserve the exact secondary error; neither outcome authorizes redispatch.
     custody?;
-    Ok(())
+    retained_native_result.ok_or_else(|| "Original full native result was not retained".into())
 }
 
 const ORIGINAL_SECOND_TEXT: &str = "New scene retains original intent";
@@ -2479,6 +2483,392 @@ mod fixed_text_v4 {
     }
 }
 
+mod window_cycle {
+    use super::*;
+    use motionwright_domain::SourceFrameWindow;
+    use motionwright_native::production::{
+        MotionCanvasWindowEvidence, MotionCanvasWindowRequest, MotionCanvasWindowUse,
+        read_cached_motion_canvas_window_frame, read_verified_production_artifact,
+        reuse_motion_canvas_window,
+    };
+
+    const PREFIX_ORIGINAL: &str = "film180-window-original-prefix-v1";
+    const PREFIX_EDITED: &str = "film180-window-edited-prefix-v1";
+    const ORIGINAL_WINDOW: SourceFrameWindow = SourceFrameWindow {
+        start: 120,
+        end: 150,
+    };
+
+    fn selected_request(project: &Project) -> FixtureResult<MotionCanvasWindowRequest> {
+        let options = authored_options(project)?;
+        Ok(MotionCanvasWindowRequest {
+            deliverable_id: project.deliverables[0].id,
+            source_scene_id: project.scenes[1].id,
+            source_window: ORIGINAL_WINDOW,
+            options,
+        })
+    }
+    fn secondary(label: &str, result: &FixtureResult<()>) {
+        if let Err(error) = result {
+            let _ = writeln!(
+                std::io::stderr(),
+                "Secondary native window {label} failure: {error}; no retry"
+            );
+        }
+    }
+    async fn capture(
+        service: &StudioService,
+        project: &Project,
+        connection: &ProductionConnection,
+        custody_source: &Path,
+        request_id: &str,
+        target: &Path,
+    ) -> FixtureResult<MotionCanvasWindowEvidence> {
+        must_be_unused(target)?;
+        let readback = stdin_readback::Readback::begin(custody_source, connection, target)?;
+        let coordinator = ProductionCoordinator::new(service.clone(), connection.clone())?;
+        let request = selected_request(project)?;
+        let outcome = coordinator
+            .render_motion_canvas_window(
+                project.id,
+                &RevisionStamp::from(project),
+                request_id,
+                &request,
+            )
+            .await;
+        let snapshot = match &outcome {
+            Ok(value) => json!({"schema":"motionwright.private-native-return-snapshot/1",
+                "native_result":"returned_success","value":value,"wire_bytes":false,"automatic_retry":false}),
+            Err(error) => json!({"schema":"motionwright.private-native-return-snapshot/1",
+                "native_result":"returned_error","error":error,"wire_bytes":false,"automatic_retry":false}),
+        };
+        let retained = readback.retain_native_return(&snapshot);
+        let retention_error = retained.as_ref().err().map(ToString::to_string);
+        let custody = readback.finish(
+            service,
+            project,
+            request_id,
+            outcome.is_ok(),
+            retained.is_ok(),
+            retention_error.as_deref(),
+        );
+        let evidence = match outcome {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                secondary("return custody", &retained);
+                secondary("stdin custody", &custody);
+                return Err(Box::new(error));
+            }
+        };
+        retained?;
+        custody?;
+        stdin_readback::new_json(target, &serde_json::to_value(&evidence)?, 8 * 1024 * 1024)?;
+        Ok(evidence)
+    }
+
+    /// Read actual originals and compare complete encoded PNG bytes. Independent
+    /// RGBA decoding remains the existing G2 wrapper's separately observed step.
+    fn compare_selected_originals(
+        service: &StudioService,
+        output_root: &Path,
+        full: &MotionCanvasRenderEvidence,
+        window: &MotionCanvasWindowEvidence,
+        cache_originals: &Path,
+    ) -> FixtureResult<Vec<String>> {
+        if full.project_resource != window.project_resource
+            || full.generation != window.generation
+            || full.revision != window.revision
+            || full.deliverable_id != window.request.deliverable_id
+            || full.segments.len() != 1
+            || full.segments[0].segment_id != window.segment_id
+            || full.segments[0].frame_count != FRAME_COUNT
+        {
+            return Err("Window/full originals have different source scope".into());
+        }
+        let artifact = &full.segments[0].artifact;
+        let manifest = artifact["manifest"]
+            .as_str()
+            .ok_or("Full original manifest path absent")?;
+        let manifest_sha = artifact["manifest_sha256"]
+            .as_str()
+            .ok_or("Full original manifest digest absent")?;
+        let bytes = read_verified_production_artifact(
+            output_root,
+            manifest,
+            manifest_sha,
+            16 * 1024 * 1024,
+        )?;
+        let view: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let frames = view["frames"]
+            .as_array()
+            .ok_or("Full original frame inventory absent")?;
+        let directory = artifact["directory"]
+            .as_str()
+            .ok_or("Full original directory absent")?;
+        if frames.len() as u64 != FRAME_COUNT
+            || view["plan"]["first_frame"] != 0
+            || view["plan"]["end_frame_exclusive"] != FRAME_COUNT
+        {
+            return Err("Full original frame inventory has a different clock".into());
+        }
+        // Copies of the exact Store bytes just read, for the existing external
+        // decoder. These files are custody originals, never another cache.
+        stdin_readback::new_private_directory(cache_originals)?;
+        let mut digests = Vec::new();
+        for (index, selected) in window.cached_frames.iter().enumerate() {
+            let frame = frames
+                .get(usize::try_from(selected.segment_frame)?)
+                .ok_or("Selected original frame absent")?;
+            let file = format!("frames/{:06}.png", selected.segment_frame);
+            if frame["index"] != selected.segment_frame || frame["file"] != file {
+                return Err("Full original frame identity is not canonical".into());
+            }
+            let sha = frame["sha256"]
+                .as_str()
+                .ok_or("Full original PNG digest absent")?;
+            let original = read_verified_production_artifact(
+                output_root,
+                &format!("{directory}/{file}"),
+                sha,
+                24 * 1024 * 1024,
+            )?;
+            let cached = read_cached_motion_canvas_window_frame(service, window, index as u64)?;
+            if original != cached
+                || original.len() as u64
+                    != frame["bytes"]
+                        .as_u64()
+                        .ok_or("Full PNG byte count absent")?
+            {
+                return Err(
+                    "Actual selected prefix PNG differs from the same full-render PNG".into(),
+                );
+            }
+            stdin_readback::new_bytes(&cache_originals.join(format!("{index:06}.png")), &cached)?;
+            digests.push(hex::encode(Sha256::digest(&original)));
+        }
+        Ok(digests)
+    }
+
+    pub(super) async fn run(
+        database: &Path,
+        connection_path: &Path,
+        custody_source: &Path,
+        output: &Path,
+    ) -> FixtureResult<()> {
+        if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") || !cfg!(target_os = "linux") {
+            return Err(
+                "Native window physical cycle requires the existing disposable Linux owner fixture"
+                    .into(),
+            );
+        }
+        must_be_unused(output)?;
+        let service = StudioService::open(database)?;
+        let projects = service.projects(2)?;
+        let [original] = projects.as_slice() else {
+            return Err("Native window cycle requires one original Film180".into());
+        };
+        let original = original.clone();
+        verified_projection(&original)?;
+        if bound_stage_request(&original)? != NATIVE_REQUEST {
+            return Err("Native window cycle requires the unedited original source".into());
+        }
+        let connection = ProductionConnection::load(connection_path)?;
+        if connection.resource != original.resource_key() {
+            return Err("Native window owner source binding differs".into());
+        }
+        for parent in [
+            NATIVE_REQUEST,
+            EDITED_REQUEST,
+            PREFIX_ORIGINAL,
+            PREFIX_EDITED,
+        ] {
+            for suffix in ["apply", "render-start"] {
+                if service
+                    .latest_production_receipt(original.id, &format!("{parent}:motion:0:{suffix}"))?
+                    .is_some()
+                {
+                    return Err("Native window cycle found an earlier effect identity; inspect it and never restart this cycle".into());
+                }
+            }
+        }
+        stdin_readback::new_private_directory(output)?;
+        stdin_readback::new_json(
+            &output.join("original-project.json"),
+            &serde_json::to_value(&original)?,
+            8 * 1024 * 1024,
+        )?;
+        let full0_path = output.join("full-original.json");
+        let full0 =
+            render_original(database, connection_path, &full0_path, Some(custody_source)).await?;
+        let window0 = capture(
+            &service,
+            &original,
+            &connection,
+            custody_source,
+            PREFIX_ORIGINAL,
+            &output.join("prefix-original.json"),
+        )
+        .await?;
+        let full0_hashes = compare_selected_originals(
+            &service,
+            &connection.output_root,
+            &full0,
+            &window0,
+            &output.join("prefix-original-cached-pngs"),
+        )?;
+        let before_warm = service.production_receipts(original.id, 512)?;
+        stdin_readback::new_json(
+            &output.join("receipts-before-warm.snapshot.json"),
+            &json!({
+                "source":"existing StudioService receipt page","wire_bytes":false,"limit":512,"records":before_warm
+            }),
+            8 * 1024 * 1024,
+        )?;
+        let warm = reuse_motion_canvas_window(
+            &service,
+            original.id,
+            &RevisionStamp::from(&original),
+            &window0.request,
+            &window0,
+        )?;
+        let after_warm = service.production_receipts(original.id, 512)?;
+        stdin_readback::new_json(
+            &output.join("receipts-after-warm.snapshot.json"),
+            &json!({
+                "source":"existing StudioService receipt page","wire_bytes":false,"limit":512,"records":after_warm
+            }),
+            8 * 1024 * 1024,
+        )?;
+        if warm.cost.operation != MotionCanvasWindowUse::ExplicitOriginalReuse
+            || warm.cost.start_calls_observed != 0
+            || after_warm != before_warm
+            || compare_selected_originals(
+                &service,
+                &connection.output_root,
+                &full0,
+                &warm,
+                &output.join("warm-original-cached-pngs"),
+            )? != full0_hashes
+        {
+            return Err("Original warm window changed custody or dispatched native work".into());
+        }
+        stdin_readback::new_json(
+            &output.join("warm-original.json"),
+            &serde_json::to_value(&warm)?,
+            8 * 1024 * 1024,
+        )?;
+        let edited_path = output.join("edited-project.json");
+        edit_saved_project(database, &full0_path, &edited_path)?;
+        let edited = service.project(original.id)?;
+        let before_stale = service.production_receipts(original.id, 512)?;
+        stdin_readback::new_json(
+            &output.join("receipts-before-old-revision.snapshot.json"),
+            &json!({
+                "source":"existing StudioService receipt page","wire_bytes":false,"limit":512,"records":before_stale
+            }),
+            8 * 1024 * 1024,
+        )?;
+        let stale = match reuse_motion_canvas_window(
+            &service,
+            edited.id,
+            &RevisionStamp::from(&edited),
+            &window0.request,
+            &window0,
+        ) {
+            Err(error) => error,
+            Ok(_) => {
+                return Err("Old revision original was unexpectedly reusable as current".into());
+            }
+        };
+        let after_stale = service.production_receipts(original.id, 512)?;
+        stdin_readback::new_json(
+            &output.join("receipts-after-old-revision.snapshot.json"),
+            &json!({
+                "source":"existing StudioService receipt page","wire_bytes":false,"limit":512,"records":after_stale
+            }),
+            8 * 1024 * 1024,
+        )?;
+        if stale.code != semwright_native_sdk::ErrorCode::StaleReference
+            || !stale.outcome_known
+            || after_stale != before_stale
+        {
+            return Err(
+                "Old-revision cache rejection did not remain read-only and source-bound".into(),
+            );
+        }
+        stdin_readback::new_json(
+            &output.join("old-revision-rejection.json"),
+            &json!({
+                "error":stale,"original_generation":original.generation,"original_revision":original.revision,
+                "current_revision":edited.revision,"producer_dispatched":false,"key_relabelled":false
+            }),
+            64 * 1024,
+        )?;
+        let window1 = capture(
+            &service,
+            &edited,
+            &connection,
+            custody_source,
+            PREFIX_EDITED,
+            &output.join("prefix-edited.json"),
+        )
+        .await?;
+        let full1 = render_original(
+            database,
+            connection_path,
+            &output.join("full-edited.json"),
+            Some(custody_source),
+        )
+        .await?;
+        let full1_hashes = compare_selected_originals(
+            &service,
+            &connection.output_root,
+            &full1,
+            &window1,
+            &output.join("prefix-edited-cached-pngs"),
+        )?;
+        if full0_hashes.len() != full1_hashes.len() || full0_hashes == full1_hashes {
+            return Err("Saved text edit did not change any selected native PNG original".into());
+        }
+        let reopened = StudioService::open(database)?.project(original.id)?;
+        if reopened != edited {
+            return Err("Edited native window source did not reopen exactly".into());
+        }
+        stdin_readback::new_json(
+            &output.join("window-cycle.json"),
+            &json!({
+                "schema":"motionwright.native-film180-window-cycle/1",
+                "source_window":ORIGINAL_WINDOW,"original_revision":original.revision,"edited_revision":edited.revision,
+                "original":window0.summary(),"warm":warm.summary(),"edited":window1.summary(),
+                "full_original_selected_png_sha256":full0_hashes,"full_edited_selected_png_sha256":full1_hashes,
+                "cached_original_custody":{
+                    "prefix_original":"prefix-original-cached-pngs",
+                    "warm_original":"warm-original-cached-pngs",
+                    "prefix_edited":"prefix-edited-cached-pngs",
+                    "first_index":0,"end_index_exclusive":30,
+                    "bytes":"verbatim bounded Store read_blob return; independently hash before decoding"
+                },
+                "encoded_png_originals_equal_in_each_revision":true,"selected_pngs_changed_after_edit":true,
+                "originals_read_from_native_output_and_cas":true,"physical_rgba_independent_decode":"not_observed",
+                "desktop_registry_exercised":false,"native_simulation_steps":"not_observed",
+                "old_revision_reused":false,"human_approval":false,"automatic_retry":false
+            }),
+            256 * 1024,
+        )?;
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "schema":"motionwright.native-film180-window-cycle-summary/1",
+                "original_revision":original.revision,"edited_revision":edited.revision,
+                "selected_frames":ORIGINAL_WINDOW.end-ORIGINAL_WINDOW.start,
+                "prefix_frames":ORIGINAL_WINDOW.end,"full_frames":FRAME_COUNT,
+                "encoded_png_comparisons_completed":true,"independent_pixel_decode":false,"human_approval":false
+            }))?
+        );
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> FixtureResult<()> {
     let mut args = env::args_os().skip(1);
@@ -2531,6 +2921,16 @@ async fn main() -> FixtureResult<()> {
                 usage();
             }
             render_original(&database, &connection, &evidence, Some(&source)).await?;
+        }
+        "window-cycle" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let custody = path_arg(&mut args);
+            let output = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            window_cycle::run(&database, &connection, &custody, &output).await?;
         }
         "render-fixed-text-v4" => {
             let database = path_arg(&mut args);

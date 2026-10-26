@@ -24,6 +24,9 @@ pub struct ProductionDesign {
     pub procedural_fields: Vec<ProceduralFieldInstance>,
     #[serde(default)]
     pub brand_profile: Option<BrandProfile>,
+    /// Author-recorded permission to copy exact original font bytes; no legal or native grant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub font_portable_copies: Vec<FontPortableCopyDeclaration>,
     #[serde(default)]
     pub taste_profile: Option<TasteProfile>,
     #[serde(default)]
@@ -425,6 +428,7 @@ impl ProductionDesign {
         audio: &AudioState,
     ) -> Result<()> {
         crate::creative_revisions::validate_creative_patch_records(&self.patches)?;
+        self.validate_font_portable_copy_declarations()?;
         if let Some(lock) = &self.narration_take_lock {
             lock.validate(audio, assets)?;
         }

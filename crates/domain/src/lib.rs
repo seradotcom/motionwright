@@ -11,6 +11,7 @@ mod creative_revisions;
 mod delivery;
 mod delivery_recipe;
 mod extensions;
+mod font_portability;
 mod hero;
 mod history;
 mod identity_origin;
@@ -46,6 +47,7 @@ pub use creative_revisions::*;
 pub use delivery::*;
 pub use delivery_recipe::*;
 pub use extensions::*;
+pub use font_portability::*;
 pub use hero::*;
 pub use history::*;
 pub use identity_origin::*;
@@ -2591,6 +2593,12 @@ impl Project {
                 self.audio.mix = mix.clone();
                 self.audio.validate()?;
             }
+            Change::UpsertFontPortableCopy { declaration } => {
+                self.upsert_font_portable_copy(declaration)?
+            }
+            Change::RemoveFontPortableCopy { asset_id } => {
+                self.remove_font_portable_copy(*asset_id)?
+            }
             Change::SetVisualLanguage { visual_language } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Style])?;
                 visual_language.validate()?;
@@ -2822,6 +2830,12 @@ impl Project {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    UpsertFontPortableCopy {
+        declaration: FontPortableCopyDeclaration,
+    },
+    RemoveFontPortableCopy {
+        asset_id: Uuid,
+    },
     UpsertSemanticGraph {
         graph: Box<SemanticGraph>,
     },

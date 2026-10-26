@@ -1,6 +1,6 @@
 use super::{
-    Result, StorageError, Store, create_checked_blob_directory, ensure_regular_directory,
-    ensure_regular_file, validate_digest,
+    BlobDescriptor, Result, StorageError, Store, create_checked_blob_directory,
+    ensure_regular_directory, ensure_regular_file, validate_digest,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -189,9 +189,38 @@ impl Store {
         work_units: u64,
         admission: Option<&super::cas_retention::derived::proxy::Admission>,
     ) -> Result<DerivedCacheRecord> {
+        self.put_derived_cache_file_with_source_admission(
+            scope,
+            kind,
+            fingerprint_sha256,
+            (source, None),
+            work_units,
+            admission,
+        )
+    }
+
+    pub(crate) fn put_derived_cache_file_with_source_admission<S: AsRef<Path>>(
+        &self,
+        scope: &str,
+        kind: &str,
+        fingerprint_sha256: &str,
+        source: (S, Option<(&BlobDescriptor, u64)>),
+        work_units: u64,
+        admission: Option<&super::cas_retention::derived::proxy::Admission>,
+    ) -> Result<DerivedCacheRecord> {
+        let (source, expected_source) = source;
         validate_scope(scope)?;
         validate_kind(kind)?;
         validate_digest(fingerprint_sha256)?;
+        if let Some((expected, max_bytes)) = expected_source {
+            validate_digest(&expected.sha256)?;
+            if expected.size_bytes > max_bytes {
+                return Err(StorageError::BlobTooLarge {
+                    size: expected.size_bytes,
+                    limit: max_bytes,
+                });
+            }
+        }
         let managed = super::cas_retention::derived::manifest_root(&self.blob_root)?.is_some();
         let scope_sha256 = digest_text(scope);
         let destination =
@@ -199,11 +228,26 @@ impl Store {
         self.checked_derived_cache_dirs(&scope_sha256, true)?;
         let retained = self.read_derived_cache_record(&scope_sha256, kind, fingerprint_sha256)?;
         // Capture once, but do not publish rejected bytes into shared CAS.
-        let staged = if managed {
-            self.stage_derived_file_import(source.as_ref())?
-        } else {
-            self.stage_file_import(source.as_ref())?
+        let source = source.as_ref();
+        let staged = match (managed, expected_source) {
+            (true, Some((_, max_bytes))) => {
+                self.stage_derived_file_import_with_limit(source, max_bytes)?
+            }
+            (false, Some((_, max_bytes))) => {
+                self.stage_file_import_with_limit(source, max_bytes)?
+            }
+            (true, None) => self.stage_derived_file_import(source)?,
+            (false, None) => self.stage_file_import(source)?,
         };
+        // Compare the descriptor from this same bounded capture before CAS,
+        // manifest, proxy binding, index admission, or unrelated maintenance.
+        if let Some((expected, _)) = expected_source
+            && staged.descriptor() != expected
+        {
+            return Err(invalid(
+                "captured cache source differs from its expected SHA-256 or byte count",
+            ));
+        }
         if let Some(existing) = &retained
             && (existing.blob_sha256 != staged.descriptor().sha256
                 || existing.size_bytes != staged.descriptor().size_bytes)

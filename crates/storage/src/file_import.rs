@@ -315,6 +315,15 @@ impl Store {
 
     /// Hash the retained regular source, rejecting excess bytes before hashing them.
     pub fn hash_file_import_source_with_limit(source: &Path, max_bytes: u64) -> Result<String> {
+        Ok(Self::file_import_source_descriptor_with_limit(source, max_bytes)?.sha256)
+    }
+
+    /// Read the retained regular source once, returning the digest and count
+    /// measured by the same bounded loop. No staging, CAS or SQLite operation.
+    pub fn file_import_source_descriptor_with_limit(
+        source: &Path,
+        max_bytes: u64,
+    ) -> Result<BlobDescriptor> {
         let input = open_regular_import_source(source, max_bytes)?;
         let mut input = input.take(max_bytes.saturating_add(1));
         let mut digest = Sha256::new();
@@ -351,7 +360,10 @@ impl Store {
             digest.update(&chunk[..count]);
             size_bytes = next_size;
         }
-        Ok(hex::encode(digest.finalize()))
+        Ok(BlobDescriptor {
+            sha256: hex::encode(digest.finalize()),
+            size_bytes,
+        })
     }
 }
 
@@ -419,9 +431,17 @@ impl Store {
     }
 
     pub(super) fn stage_derived_file_import(&self, source: &Path) -> Result<StagedFileImport> {
+        self.stage_derived_file_import_with_limit(source, u64::MAX)
+    }
+
+    pub(super) fn stage_derived_file_import_with_limit(
+        &self,
+        source: &Path,
+        max_bytes: u64,
+    ) -> Result<StagedFileImport> {
         self.stage_file_import_with_purpose(
             source,
-            u64::MAX,
+            max_bytes,
             super::cas_retention::CapturePurpose::DerivedCache,
         )
     }
@@ -1251,6 +1271,56 @@ mod source_budget_tests {
         let mut files = BTreeMap::new();
         walk(root, root, &mut files);
         files
+    }
+
+    #[test]
+    fn source_descriptor_measures_count_and_digest_without_staging_or_sqlite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.bin");
+        fs::write(&source, b"abcd").unwrap();
+        let observed = Store::file_import_source_descriptor_with_limit(&source, 4).unwrap();
+        assert_eq!(observed.sha256, hex::encode(Sha256::digest(b"abcd")));
+        assert_eq!(observed.size_bytes, 4);
+        assert_eq!(
+            Store::hash_file_import_source_with_limit(&source, 4).unwrap(),
+            observed.sha256
+        );
+        fs::write(&source, b"").unwrap();
+        let empty = Store::file_import_source_descriptor_with_limit(&source, 0).unwrap();
+        assert_eq!(empty.sha256, hex::encode(Sha256::digest(b"")));
+        assert_eq!(empty.size_bytes, 0);
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn source_descriptor_counts_growth_observed_by_the_same_retained_reader() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.bin");
+        fs::write(&source, b"abc").unwrap();
+        assert_eq!(fs::metadata(&source).unwrap().len(), 3);
+        let (_guard, calls) = append_after_first_read(b"abc", b"d");
+        let observed = Store::file_import_source_descriptor_with_limit(&source, 4).unwrap();
+        assert_eq!(observed.sha256, hex::encode(Sha256::digest(b"abcd")));
+        assert_eq!(observed.size_bytes, 4);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(fs::read(&source).unwrap(), b"abcd");
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn source_descriptor_rejects_growth_past_the_existing_budget_without_outputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.bin");
+        fs::write(&source, b"abcd").unwrap();
+        let (_guard, calls) = append_after_first_read(b"abcd", b"e");
+        let observed = Store::file_import_source_descriptor_with_limit(&source, 4);
+        assert!(matches!(
+            observed,
+            Err(StorageError::BlobTooLarge { size: 5, limit: 4 })
+        ));
+        assert_eq!(calls.get(), 1);
+        assert_eq!(fs::read(&source).unwrap(), b"abcde");
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
     }
 
     #[test]

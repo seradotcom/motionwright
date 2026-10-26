@@ -1,6 +1,9 @@
 //! Explicit, disposable source-window cache receipts for independently generated
 //! derived artifacts. No direct renderer admission or incremental-frame savings claim.
-use super::{DerivedCacheHit, DerivedCacheRecord, Result, StorageError, Store, validate_digest};
+use super::{
+    BlobDescriptor, DerivedCacheHit, DerivedCacheRecord, Result, StorageError, Store,
+    validate_digest,
+};
 use crate::cas_retention::derived::proxy;
 use motionwright_domain::{
     Project, RenderImpactCause, RenderTailImpactReport, RenderTailInspectRequest, RevisionStamp,
@@ -140,6 +143,34 @@ impl Store {
         source: impl AsRef<Path>,
         work_units: u64,
     ) -> Result<DerivedCacheRecord> {
+        self.put_render_window_proxy_with_source(key, source, None, work_units)
+    }
+
+    /// Bind the one bounded capture to the caller's expected bytes before
+    /// publishing a cache artifact. This does not establish renderer authority.
+    pub fn put_render_window_proxy_verified(
+        &self,
+        key: &RenderWindowCacheKey,
+        source: impl AsRef<Path>,
+        expected_source: &BlobDescriptor,
+        max_bytes: u64,
+        work_units: u64,
+    ) -> Result<DerivedCacheRecord> {
+        self.put_render_window_proxy_with_source(
+            key,
+            source,
+            Some((expected_source, max_bytes)),
+            work_units,
+        )
+    }
+
+    fn put_render_window_proxy_with_source(
+        &self,
+        key: &RenderWindowCacheKey,
+        source: impl AsRef<Path>,
+        expected_source: Option<(&BlobDescriptor, u64)>,
+        work_units: u64,
+    ) -> Result<DerivedCacheRecord> {
         validate_key(self, key)?;
         let found: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM render_window_cache_entries WHERE project_id=?1",
@@ -171,11 +202,11 @@ impl Store {
             }
         }
         let admission = proxy::Admission::begin(self, key)?;
-        let record = self.put_derived_cache_file_with_admission(
+        let record = self.put_derived_cache_file_with_source_admission(
             &scope(key),
             KIND,
             &key.fingerprint_sha256,
-            source,
+            (source, expected_source),
             work_units,
             admission.as_ref(),
         )?;
@@ -552,5 +583,481 @@ impl Store {
             tombstones_cleared: cleared,
             immutable_blobs_deleted: 0,
         })
+    }
+}
+
+#[cfg(test)]
+mod verified_source_tests {
+    use super::*;
+    use crate::file_import::{AFTER_FIRST_IMPORT_SOURCE_READ, BEFORE_IMPORT_SOURCE_OPEN};
+    use motionwright_domain::Change;
+    use sha2::{Digest, Sha256};
+    use std::{
+        cell::Cell,
+        collections::BTreeMap,
+        fs::{self, OpenOptions},
+        io::Write,
+        path::PathBuf,
+        rc::Rc,
+    };
+
+    fn descriptor(bytes: &[u8]) -> BlobDescriptor {
+        BlobDescriptor {
+            sha256: hex::encode(Sha256::digest(bytes)),
+            size_bytes: bytes.len() as u64,
+        }
+    }
+
+    struct Fixture {
+        directory: tempfile::TempDir,
+        store: Store,
+        key: RenderWindowCacheKey,
+        source: PathBuf,
+        expected: BlobDescriptor,
+    }
+
+    impl Fixture {
+        fn new(managed: bool) -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            if !managed {
+                // An existing unadmitted root retains the legacy storage path.
+                fs::create_dir(directory.path().join("blobs")).unwrap();
+            }
+            let mut store = Store::open(directory.path().join("window.sqlite3")).unwrap();
+            assert_eq!(
+                crate::cas_retention::discover(&store.blob_root)
+                    .unwrap()
+                    .is_some(),
+                managed,
+            );
+            let initial = store
+                .create_named_project("Verified window fixture")
+                .unwrap();
+            let project = store
+                .apply(
+                    initial.id,
+                    &initial.stamp(),
+                    "window-source-scene",
+                    &Change::AddScene {
+                        name: "Original".into(),
+                        objective: "Retain the source clock".into(),
+                        duration_seconds: 2,
+                    },
+                )
+                .unwrap()
+                .project;
+            let key = RenderWindowCacheKey {
+                project_id: project.id,
+                expected: project.stamp(),
+                deliverable_id: project.deliverables[0].id,
+                source_window: SourceFrameWindow { start: 0, end: 1 },
+                fingerprint_sha256: descriptor(b"window dependencies").sha256,
+            };
+            let source = directory.path().join("frame.bin");
+            fs::write(&source, b"verified frame").unwrap();
+            Self {
+                directory,
+                store,
+                key,
+                source,
+                expected: descriptor(b"verified frame"),
+            }
+        }
+
+        fn manifest(&self, key: &RenderWindowCacheKey) -> PathBuf {
+            self.store
+                .derived_cache_manifest_path(
+                    &descriptor(scope(key).as_bytes()).sha256,
+                    KIND,
+                    &key.fingerprint_sha256,
+                )
+                .unwrap()
+        }
+
+        fn assert_unpublished(&self, before: &BTreeMap<String, Vec<Vec<String>>>) {
+            assert_eq!(&sql_rows(&self.store), before);
+            assert!(
+                !self
+                    .store
+                    .blob_path(&self.expected.sha256)
+                    .unwrap()
+                    .exists()
+            );
+            assert!(!self.manifest(&self.key).exists());
+            assert!(
+                self.store
+                    .lookup_render_window_proxy(&self.key)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        fn publish_exact(&self) -> DerivedCacheRecord {
+            let before = sql_rows(&self.store);
+            let record = self
+                .store
+                .put_render_window_proxy_verified(
+                    &self.key,
+                    &self.source,
+                    &self.expected,
+                    self.expected.size_bytes,
+                    7,
+                )
+                .unwrap();
+            assert_eq!(record.blob_sha256, self.expected.sha256);
+            assert_eq!(record.size_bytes, self.expected.size_bytes);
+            let hit = self
+                .store
+                .lookup_render_window_proxy(&self.key)
+                .unwrap()
+                .unwrap();
+            assert_eq!(hit.record, record);
+            assert_eq!(
+                fs::read(hit.blob_path).unwrap(),
+                fs::read(&self.source).unwrap()
+            );
+            assert!(self.manifest(&self.key).is_file());
+            let mut after = sql_rows(&self.store);
+            let mut before = before;
+            assert_eq!(
+                after.remove("render_window_cache_entries").unwrap().len(),
+                1
+            );
+            before.remove("render_window_cache_entries");
+            assert_eq!(
+                after, before,
+                "cache admission must not advance project history"
+            );
+            record
+        }
+    }
+
+    fn sql_rows(store: &Store) -> BTreeMap<String, Vec<Vec<String>>> {
+        let names = {
+            let mut statement = store
+                .conn
+                .prepare(
+                    "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect::<Vec<_>>()
+        };
+        let mut snapshot = BTreeMap::new();
+        for name in names {
+            let query = format!("SELECT * FROM \"{}\"", name.replace('"', "\"\""));
+            let mut statement = store.conn.prepare(&query).unwrap();
+            let columns = statement.column_count();
+            let mut rows = statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|column| {
+                            row.get::<_, rusqlite::types::Value>(column)
+                                .map(|value| format!("{value:?}"))
+                        })
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect::<Vec<_>>();
+            rows.sort();
+            snapshot.insert(name, rows);
+        }
+        snapshot
+    }
+
+    struct SourceHookGuard;
+
+    impl Drop for SourceHookGuard {
+        fn drop(&mut self) {
+            BEFORE_IMPORT_SOURCE_OPEN.with(|slot| {
+                let _ = slot.borrow_mut().take();
+            });
+            AFTER_FIRST_IMPORT_SOURCE_READ.with(|slot| {
+                let _ = slot.borrow_mut().take();
+            });
+        }
+    }
+
+    fn count_source_opens() -> (SourceHookGuard, Rc<Cell<usize>>) {
+        let calls = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&calls);
+        BEFORE_IMPORT_SOURCE_OPEN.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none());
+            *slot = Some(Box::new(move |_| observed.set(observed.get() + 1)));
+        });
+        (SourceHookGuard, calls)
+    }
+
+    #[test]
+    fn verified_window_wrong_sha_rejects_before_publication_and_allows_same_key() {
+        for managed in [false, true] {
+            let fixture = Fixture::new(managed);
+            let before = sql_rows(&fixture.store);
+            let wrong = BlobDescriptor {
+                sha256: "0".repeat(64),
+                size_bytes: fixture.expected.size_bytes,
+            };
+            let result = fixture.store.put_render_window_proxy_verified(
+                &fixture.key,
+                &fixture.source,
+                &wrong,
+                fixture.expected.size_bytes,
+                1,
+            );
+            assert!(matches!(result, Err(StorageError::InvalidDerivedCache(_))));
+            fixture.assert_unpublished(&before);
+            assert_eq!(fs::read(&fixture.source).unwrap(), b"verified frame");
+            fixture.publish_exact();
+        }
+    }
+
+    #[test]
+    fn verified_window_wrong_size_rejects_before_publication_and_allows_same_key() {
+        for managed in [false, true] {
+            let fixture = Fixture::new(managed);
+            let before = sql_rows(&fixture.store);
+            let wrong = BlobDescriptor {
+                sha256: fixture.expected.sha256.clone(),
+                size_bytes: fixture.expected.size_bytes + 1,
+            };
+            let result = fixture.store.put_render_window_proxy_verified(
+                &fixture.key,
+                &fixture.source,
+                &wrong,
+                wrong.size_bytes,
+                1,
+            );
+            assert!(matches!(result, Err(StorageError::InvalidDerivedCache(_))));
+            fixture.assert_unpublished(&before);
+            fixture.publish_exact();
+        }
+    }
+
+    #[test]
+    fn verified_window_initial_excess_is_rejected_before_open_and_allows_same_key() {
+        for managed in [false, true] {
+            let mut fixture = Fixture::new(managed);
+            fs::write(&fixture.source, b"abcde").unwrap();
+            fixture.expected = descriptor(b"abcd");
+            let before = sql_rows(&fixture.store);
+            let (guard, calls) = count_source_opens();
+            let result = fixture.store.put_render_window_proxy_verified(
+                &fixture.key,
+                &fixture.source,
+                &fixture.expected,
+                4,
+                1,
+            );
+            assert!(matches!(
+                result,
+                Err(StorageError::BlobTooLarge { size: 5, limit: 4 })
+            ));
+            assert_eq!(calls.get(), 0);
+            drop(guard);
+            fixture.assert_unpublished(&before);
+            assert!(
+                !fixture
+                    .store
+                    .blob_path(&descriptor(b"abcde").sha256)
+                    .unwrap()
+                    .exists()
+            );
+            fs::write(&fixture.source, b"abcd").unwrap();
+            fixture.publish_exact();
+        }
+    }
+
+    #[test]
+    fn verified_window_growth_is_bounded_in_the_same_capture_and_allows_same_key() {
+        for managed in [false, true] {
+            let mut fixture = Fixture::new(managed);
+            fs::write(&fixture.source, b"abcd").unwrap();
+            fixture.expected = descriptor(b"abcd");
+            let before = sql_rows(&fixture.store);
+            let calls = Rc::new(Cell::new(0));
+            let observed = Rc::clone(&calls);
+            AFTER_FIRST_IMPORT_SOURCE_READ.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                assert!(slot.is_none());
+                *slot = Some(Box::new(move |source| {
+                    observed.set(observed.get() + 1);
+                    OpenOptions::new()
+                        .append(true)
+                        .open(source)
+                        .unwrap()
+                        .write_all(b"e")
+                        .unwrap();
+                }));
+            });
+            let guard = SourceHookGuard;
+            let result = fixture.store.put_render_window_proxy_verified(
+                &fixture.key,
+                &fixture.source,
+                &fixture.expected,
+                4,
+                1,
+            );
+            assert!(matches!(
+                result,
+                Err(StorageError::BlobTooLarge { size: 5, limit: 4 })
+            ));
+            assert_eq!(calls.get(), 1);
+            assert_eq!(fs::read(&fixture.source).unwrap(), b"abcde");
+            drop(guard);
+            fixture.assert_unpublished(&before);
+            assert!(
+                !fixture
+                    .store
+                    .blob_path(&descriptor(b"abcde").sha256)
+                    .unwrap()
+                    .exists()
+            );
+            fs::write(&fixture.source, b"abcd").unwrap();
+            fixture.publish_exact();
+        }
+    }
+
+    #[test]
+    fn verified_window_exact_budget_retains_first_record_and_ordinary_wrapper() {
+        for managed in [false, true] {
+            let fixture = Fixture::new(managed);
+            let first = fixture.publish_exact();
+            let before = sql_rows(&fixture.store);
+            let manifest = fs::read(fixture.manifest(&fixture.key)).unwrap();
+            let wrong = BlobDescriptor {
+                sha256: "0".repeat(64),
+                size_bytes: fixture.expected.size_bytes,
+            };
+            assert!(matches!(
+                fixture.store.put_render_window_proxy_verified(
+                    &fixture.key,
+                    &fixture.source,
+                    &wrong,
+                    fixture.expected.size_bytes,
+                    999,
+                ),
+                Err(StorageError::InvalidDerivedCache(_))
+            ));
+            assert_eq!(sql_rows(&fixture.store), before);
+            assert_eq!(fs::read(fixture.manifest(&fixture.key)).unwrap(), manifest);
+            let replay = fixture
+                .store
+                .put_render_window_proxy(&fixture.key, &fixture.source, 999)
+                .unwrap();
+            assert_eq!(replay, first);
+            assert_eq!(sql_rows(&fixture.store), before);
+            assert_eq!(fs::read(fixture.manifest(&fixture.key)).unwrap(), manifest);
+        }
+    }
+
+    #[test]
+    fn verified_window_rejection_preserves_unrelated_eligible_manifest_and_live_capture() {
+        let fixture = Fixture::new(true);
+        let unrelated_source = fixture.directory.path().join("unrelated.bin");
+        fs::write(&unrelated_source, b"unrelated retained bytes").unwrap();
+        let mut unrelated_key = fixture.key.clone();
+        unrelated_key.fingerprint_sha256 = descriptor(b"unrelated dependencies").sha256;
+        let unrelated = fixture
+            .store
+            .put_render_window_proxy(&unrelated_key, &unrelated_source, 1)
+            .unwrap();
+        let unrelated_manifest = fixture.manifest(&unrelated_key);
+        let manifest_before = fs::read(&unrelated_manifest).unwrap();
+        let blob_path = fixture.store.blob_path(&unrelated.blob_sha256).unwrap();
+        let blob_before = fs::read(&blob_path).unwrap();
+        // Simulate a lost registration only in this fixture. The real proxy
+        // binding remains eligible for the existing Store maintenance path.
+        assert_eq!(
+            fixture
+                .store
+                .conn
+                .execute(
+                    "DELETE FROM render_window_cache_entries WHERE fingerprint_sha256=?1",
+                    [&unrelated_key.fingerprint_sha256],
+                )
+                .unwrap(),
+            1,
+        );
+        let held = fixture.store.stage_file_import(&unrelated_source).unwrap();
+        let held_path = held.path().to_path_buf();
+        let held_before = fs::read(&held_path).unwrap();
+        let before = sql_rows(&fixture.store);
+        let wrong = BlobDescriptor {
+            sha256: "0".repeat(64),
+            size_bytes: fixture.expected.size_bytes,
+        };
+        assert!(matches!(
+            fixture.store.put_render_window_proxy_verified(
+                &fixture.key,
+                &fixture.source,
+                &wrong,
+                fixture.expected.size_bytes,
+                1,
+            ),
+            Err(StorageError::InvalidDerivedCache(_))
+        ));
+        fixture.assert_unpublished(&before);
+        assert_eq!(fs::read(&unrelated_manifest).unwrap(), manifest_before);
+        assert_eq!(fs::read(&blob_path).unwrap(), blob_before);
+        assert_eq!(fs::read(&held_path).unwrap(), held_before);
+        fixture.publish_exact();
+        // Positive control: normal successful admission really does reconcile
+        // that unrelated binding. The rejected path must not do this earlier.
+        assert!(!unrelated_manifest.exists());
+        assert_eq!(fs::read(&held_path).unwrap(), held_before);
+        drop(held);
+    }
+
+    #[test]
+    fn verified_window_keeps_generation_revision_and_source_range_guards_before_io() {
+        let fixture = Fixture::new(true);
+        let before = sql_rows(&fixture.store);
+        let missing = fixture.directory.path().join("not-created.bin");
+        let (guard, calls) = count_source_opens();
+        let mut wrong_generation = fixture.key.clone();
+        wrong_generation.expected.generation = Uuid::new_v4();
+        assert!(matches!(
+            fixture.store.put_render_window_proxy_verified(
+                &wrong_generation,
+                &missing,
+                &fixture.expected,
+                fixture.expected.size_bytes,
+                1,
+            ),
+            Err(StorageError::GenerationConflict)
+        ));
+        let mut wrong_revision = fixture.key.clone();
+        wrong_revision.expected.revision += 1;
+        assert!(matches!(
+            fixture.store.put_render_window_proxy_verified(
+                &wrong_revision,
+                &missing,
+                &fixture.expected,
+                fixture.expected.size_bytes,
+                1,
+            ),
+            Err(StorageError::Conflict { .. })
+        ));
+        let mut wrong_window = fixture.key.clone();
+        wrong_window.source_window = SourceFrameWindow { start: 0, end: 0 };
+        assert!(matches!(
+            fixture.store.put_render_window_proxy_verified(
+                &wrong_window,
+                &missing,
+                &fixture.expected,
+                fixture.expected.size_bytes,
+                1,
+            ),
+            Err(StorageError::InvalidDerivedCache(_))
+        ));
+        assert_eq!(calls.get(), 0);
+        assert!(!missing.exists());
+        drop(guard);
+        fixture.assert_unpublished(&before);
     }
 }

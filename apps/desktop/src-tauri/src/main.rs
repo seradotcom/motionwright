@@ -48,8 +48,8 @@ use motionwright_native::{
     },
     production::{
         MltAvMasterEvidence, MltAvMasterRequest, MltMultisegmentAvMasterRequest,
-        MotionCanvasRenderEvidence, ProductionClient, ProductionConnection, ProductionCoordinator,
-        ProductionReceiptCustody,
+        MotionCanvasRenderEvidence, MotionCanvasWindowRequest, MotionCanvasWindowSummary,
+        ProductionClient, ProductionConnection, ProductionCoordinator, ProductionReceiptCustody,
     },
 };
 use motionwright_service::{
@@ -299,6 +299,25 @@ struct FilmPreflightResponse {
     segment_count: usize,
     total_frames: u64,
     segments: Vec<FilmPreflightSegment>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MotionCanvasWindowRenderRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    request_id: String,
+    effect_grant: Uuid,
+    window: MotionCanvasWindowRequest,
+    /// Original session handle, never raw cached provenance or a file path.
+    reuse_token: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeWindowRenderResponse {
+    window: MotionCanvasWindowSummary,
+    preview: NativeFrameGrant,
 }
 
 #[derive(Debug, Serialize)]
@@ -697,6 +716,70 @@ async fn choose_semwright_connection(
     state
         .runtime_connections
         .remember_verified(request.project_id, request.generation, &path)?;
+    Ok(true)
+}
+
+/// The existing native picker supplies the owner gesture for local no-replace
+/// font staging. JavaScript supplies only project scope, never a filesystem path.
+/// This does not create a Host mount or replace the provider's MediaRO admission.
+#[tauri::command]
+async fn choose_brand_font_media_root(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: RuntimeConnectionSelectionRequest,
+) -> Result<bool, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Project changed; refresh before selecting a font staging folder.".into());
+    }
+    let path = selected_connection_path(&state, project.id)?.ok_or_else(|| {
+        "Select a Semwright connection before its font staging folder.".to_owned()
+    })?;
+    let connection = ProductionConnection::load(&path)
+        .map_err(|_| "Selected Semwright connection failed local validation".to_owned())?;
+    if connection.resource != project.resource_key() {
+        return Err("Selected Semwright connection belongs to another project resource.".into());
+    }
+    let handle = app.clone();
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("Choose the configured Motion Canvas media folder for local font staging")
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(|_| "Native font staging folder picker failed".to_owned())?;
+    let Some(selected) = selected else {
+        return Ok(false);
+    };
+    let media_root = selected
+        .into_path()
+        .map_err(|_| "The selected font staging folder is not local".to_owned())?;
+    let current = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if current.generation != project.generation || current.revision != project.revision {
+        return Err("Project changed during folder selection; no declaration was stored.".into());
+    }
+    state.runtime_connections.remember_font_staging(
+        project.id,
+        project.generation,
+        &path,
+        &connection,
+        &media_root,
+    )?;
+    // Use the actual resolver immediately as a readback. A later render must
+    // resolve again against its own current connection and fresh effect grant.
+    let resolved: runtime_setup::ResolvedFontStaging = state
+        .runtime_connections
+        .resolve_font_staging(project.id, project.generation, &connection)?
+        .ok_or_else(|| "Owner font staging declaration was not retained".to_owned())?;
+    resolved.revalidate(&state.runtime_connections, &connection)?;
     Ok(true)
 }
 
@@ -1414,6 +1497,80 @@ async fn render_motion_canvas(
     .await
     .unwrap_or_default();
     Ok(NativePreviewRenderResponse { evidence, preview })
+}
+
+/// Explicit native prefix capture or read-only reuse of an original window.
+/// Both retain the existing RenderLocal scope and one-use request grant.
+#[tauri::command]
+async fn render_motion_canvas_window(
+    state: State<'_, AppState>,
+    request: MotionCanvasWindowRenderRequest,
+) -> Result<NativeWindowRenderResponse, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Native window scope is stale; reopen the saved revision.".into());
+    }
+    if request.request_id.trim().is_empty()
+        || request.request_id.len() > 96
+        || request.request_id.chars().any(char::is_control)
+    {
+        return Err("Native window request identity is invalid.".into());
+    }
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::RenderLocal,
+        EffectScope::project(request.project_id, request.generation, request.revision),
+        request.request_id.trim(),
+    )?;
+    let expected = RevisionStamp::from(&project);
+    let registry = state.preview.clone();
+    let (evidence, preview) = if let Some(token) = request.reuse_token {
+        let original_project = project.clone();
+        let window = request.window.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            registry.reuse_window(&original_project, token, &window)
+        })
+        .await
+        .map_err(|_| "Original native window read task failed.".to_string())??
+    } else {
+        let connection_path = selected_connection_path(&state, request.project_id)?
+            .ok_or_else(|| "Canonical Semwright production is not configured.".to_string())?;
+        let connection = ProductionConnection::load(connection_path).map_err(|_| {
+            "Canonical Semwright window connection could not be loaded.".to_string()
+        })?;
+        let owner_resource = connection.resource.clone();
+        let coordinator = ProductionCoordinator::with_receipt_custody(
+            state.service.clone(),
+            connection,
+            &state.production_receipt_custody,
+        )
+        .map_err(|_| "Canonical Semwright window connection was rejected.".to_string())?;
+        let evidence = coordinator.render_motion_canvas_window(request.project_id,&expected,
+            &request.request_id,&request.window).await
+            .map_err(|error| format!("Native window capture did not complete ({:?}, outcome_known={}); inspect the original operation before another capture.",error.code,error.outcome_known))?;
+        let service = state.service.clone();
+        let for_registry = evidence.clone();
+        let preview = tauri::async_runtime::spawn_blocking(move || {
+            registry.register_window(&service, &owner_resource, &for_registry)
+        })
+        .await
+        .map_err(|_| "Native window registration task failed.".to_string())??;
+        (evidence, preview)
+    };
+    let latest = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if latest.generation != request.generation || latest.revision != request.revision {
+        return Err("Project changed during native window capture or reuse.".into());
+    }
+    Ok(NativeWindowRenderResponse {
+        window: evidence.summary(),
+        preview,
+    })
 }
 
 /// Source- and manifest-bound native MLT assembly readiness, without job
@@ -2531,6 +2688,7 @@ fn main() {
             production_runtime_status,
             creative_runtime_doctor,
             choose_semwright_connection,
+            choose_brand_font_media_root,
             clear_saved_semwright_connection,
             workflow_overview,
             workflow_action,
@@ -2542,6 +2700,7 @@ fn main() {
             native_blender_product_attempt,
             motion_canvas_preflight,
             render_motion_canvas,
+            render_motion_canvas_window,
             preflight_multi_segment_mlt_readiness,
             assemble_av_master,
             assemble_multisegment_av_master,

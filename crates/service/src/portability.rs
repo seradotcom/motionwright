@@ -70,9 +70,12 @@ impl StudioService {
         expected: &RevisionStamp,
         destination: impl AsRef<Path>,
     ) -> StorageResult<ProjectBundleManifest> {
-        self.store
-            .lock()
-            .export_project_bundle_at(id, expected, destination)
+        self.store.lock().export_project_bundle_at_with_admission(
+            id,
+            expected,
+            destination,
+            &crate::font_portability::FontBundleExportAdmission,
+        )
     }
 
     pub fn inspect_project_bundle_with_fingerprint(

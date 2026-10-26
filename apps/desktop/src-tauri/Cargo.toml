@@ -16,6 +16,8 @@ motionwright-domain = { path = "../../../crates/domain" }
 motionwright-service = { path = "../../../crates/service" }
 motionwright-native = { path = "../../../crates/native" }
 semwright-native-sdk.workspace = true
+semwright-platform-api.workspace = true
+semwright-platform-services.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

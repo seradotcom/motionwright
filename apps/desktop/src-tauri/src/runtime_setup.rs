@@ -2,9 +2,12 @@
 //! session ticket, broker material, driver receipts or executable contents.
 //! Every subsequent native command still reloads and validates the canonical
 //! connection, resource, executable digest and Semwright policy gates.
+mod font_staging;
+
+pub(crate) use font_staging::ResolvedFontStaging;
+
 use serde::{Deserialize, Serialize};
-#[cfg(not(windows))]
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -38,6 +41,9 @@ fn read_reference_reader(reader: impl std::io::Read) -> std::io::Result<Vec<u8>>
 pub(crate) struct RuntimeConnectionRegistry {
     root: PathBuf,
     root_identity: RuntimeDirectoryIdentity,
+    // Clones share the same owner-selection mutation boundary. A folder
+    // declaration cannot resurrect a connection cleared concurrently here.
+    update_lock: Arc<Mutex<font_staging::LiveFontStagingState>>,
 }
 
 #[cfg(not(windows))]
@@ -91,6 +97,20 @@ struct SavedConnectionReference {
     project_id: Uuid,
     generation: Uuid,
     connection_file: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    font_staging: Option<font_staging::SavedFontStaging>,
+}
+
+impl SavedConnectionReference {
+    fn has_supported_schema(&self) -> bool {
+        match (self.schema_version, &self.font_staging) {
+            (REGISTRY_SCHEMA, None) => true,
+            (font_staging::REGISTRY_WITH_FONT_STAGING_SCHEMA, Some(declaration)) => {
+                declaration.has_supported_schema()
+            }
+            _ => false,
+        }
+    }
 }
 
 fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
@@ -133,6 +153,7 @@ impl RuntimeConnectionRegistry {
         let registry = Self {
             root,
             root_identity,
+            update_lock: Arc::new(Mutex::new(Default::default())),
         };
         registry.validate_root()?;
         Ok(registry)
@@ -177,6 +198,19 @@ impl RuntimeConnectionRegistry {
         project_id: Uuid,
         generation: Uuid,
     ) -> Result<Option<PathBuf>, String> {
+        Ok(match self.read_saved_reference(project_id, generation)? {
+            Some(selected) => Some(selected.connection_file),
+            // Explicit environment configuration remains a connection-only
+            // fallback. It never creates a local font staging declaration.
+            None => std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION").map(PathBuf::from),
+        })
+    }
+
+    fn read_saved_reference(
+        &self,
+        project_id: Uuid,
+        generation: Uuid,
+    ) -> Result<Option<SavedConnectionReference>, String> {
         self.validate_root()?;
         let destination = self.destination(project_id);
         let bytes = match fs::symlink_metadata(&destination) {
@@ -201,15 +235,13 @@ impl RuntimeConnectionRegistry {
                     .map_err(|_| "Saved Semwright connection reference is unreadable")?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // An explicitly configured legacy environment connection is
-                // still respected. A saved selection takes precedence.
-                return Ok(std::env::var_os("MOTIONWRIGHT_SEMWRIGHT_CONNECTION").map(PathBuf::from));
+                return Ok(None);
             }
             Err(_) => return Err("Saved Semwright connection reference cannot be inspected".into()),
         };
         let selected: SavedConnectionReference = serde_json::from_slice(&bytes)
             .map_err(|_| "Saved Semwright connection reference is malformed")?;
-        if selected.schema_version != REGISTRY_SCHEMA || selected.project_id != project_id {
+        if !selected.has_supported_schema() || selected.project_id != project_id {
             return Err("Saved Semwright connection reference has incorrect scope".into());
         }
         if selected.generation != generation {
@@ -220,7 +252,7 @@ impl RuntimeConnectionRegistry {
         if !selected.connection_file.is_absolute() {
             return Err("Saved Semwright connection path must be absolute".into());
         }
-        Ok(Some(selected.connection_file))
+        Ok(Some(selected))
     }
 
     /// The selected path must already have been independently validated by
@@ -231,6 +263,10 @@ impl RuntimeConnectionRegistry {
         generation: Uuid,
         connection_file: &Path,
     ) -> Result<(), String> {
+        let mut live = self
+            .update_lock
+            .lock()
+            .map_err(|_| "Runtime selection state is unavailable")?;
         self.validate_root()?;
         if !connection_file.is_absolute() {
             return Err("The selected Semwright file must have an absolute path".into());
@@ -240,7 +276,21 @@ impl RuntimeConnectionRegistry {
             project_id,
             generation,
             connection_file: connection_file.to_path_buf(),
+            // Every new connection selection revokes the previous declaration,
+            // even if it selects the same pathname again.
+            font_staging: None,
         };
+        self.write_saved_reference(value)?;
+        live.remove(&project_id);
+        Ok(())
+    }
+
+    fn write_saved_reference(&self, value: SavedConnectionReference) -> Result<(), String> {
+        self.validate_root()?;
+        if !value.has_supported_schema() || !value.connection_file.is_absolute() {
+            return Err("Semwright connection reference has incorrect scope".into());
+        }
+        let project_id = value.project_id;
         let encoded = serde_json::to_vec(&value)
             .map_err(|_| "Semwright connection reference could not be serialized")?;
         if encoded.is_empty() || encoded.len() > MAX_CONFIG_BYTES as usize {
@@ -311,6 +361,10 @@ impl RuntimeConnectionRegistry {
     /// Remove only the application-owned reference, never the operator's
     /// Semwright connection file, Broker session or native job evidence.
     pub(crate) fn clear_saved(&self, project_id: Uuid) -> Result<bool, String> {
+        let mut live = self
+            .update_lock
+            .lock()
+            .map_err(|_| "Runtime selection state is unavailable")?;
         self.validate_root()?;
         let destination = self.destination(project_id);
         match fs::symlink_metadata(&destination) {
@@ -340,7 +394,7 @@ impl RuntimeConnectionRegistry {
                 }
                 let selected: SavedConnectionReference = serde_json::from_slice(&bytes)
                     .map_err(|_| "Saved Semwright reference is malformed")?;
-                if selected.schema_version != REGISTRY_SCHEMA
+                if !selected.has_supported_schema()
                     || selected.project_id != project_id
                     || !selected.connection_file.is_absolute()
                 {
@@ -348,9 +402,13 @@ impl RuntimeConnectionRegistry {
                 }
                 fs::remove_file(&destination)
                     .map_err(|_| "Saved Semwright reference could not be cleared")?;
+                live.remove(&project_id);
                 Ok(true)
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                live.remove(&project_id);
+                Ok(false)
+            }
             Err(_) => Err("Saved Semwright reference could not be inspected".into()),
         }
     }

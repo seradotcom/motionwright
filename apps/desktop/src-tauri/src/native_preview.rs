@@ -1,8 +1,11 @@
-use motionwright_domain::Project;
+use motionwright_domain::{Project, RevisionStamp};
 use motionwright_native::film::FilmBuildOptions;
 use motionwright_native::production::{
-    MotionCanvasRenderEvidence, read_verified_production_artifact,
+    MotionCanvasRenderEvidence, MotionCanvasWindowEvidence, MotionCanvasWindowRequest,
+    read_cached_motion_canvas_window_frame, read_verified_production_artifact,
+    reuse_motion_canvas_window,
 };
+use motionwright_service::StudioService;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -70,6 +73,18 @@ struct RenderManifest {
 }
 
 #[derive(Clone)]
+enum GrantOrigin {
+    Full {
+        evidence: MotionCanvasRenderEvidence,
+        options: Option<FilmBuildOptions>,
+    },
+    Window {
+        evidence: Arc<MotionCanvasWindowEvidence>,
+        service: StudioService,
+    },
+}
+
+#[derive(Clone)]
 struct GrantEntry {
     token: Uuid,
     project_id: Uuid,
@@ -79,12 +94,8 @@ struct GrantEntry {
     directory: String,
     output_root: PathBuf,
     frames: Arc<Vec<FrameMeta>>,
-    /// This canonical response was recorded after the authorized Semwright
-    /// render and verification, not deserialized from a WebView request.
-    source_evidence: MotionCanvasRenderEvidence,
-    /// Explicit Film options captured during the authorized native render;
-    /// never inferred from current WebView controls or a request payload.
-    source_options: Option<FilmBuildOptions>,
+    /// Backend-produced origin, never deserialized from WebView input.
+    origin: GrantOrigin,
 }
 
 #[derive(Default)]
@@ -252,8 +263,10 @@ impl NativePreviewRegistry {
                 directory,
                 output_root: output_root.to_path_buf(),
                 frames: Arc::new(frames),
-                source_evidence: evidence.clone(),
-                source_options: options.clone(),
+                origin: GrantOrigin::Full {
+                    evidence: evidence.clone(),
+                    options: options.clone(),
+                },
             };
             if let Ok(mut entries) = self.inner.grants.lock() {
                 if entries.len() >= MAX_GRANTS {
@@ -269,6 +282,122 @@ impl NativePreviewRegistry {
             }
         }
         granted
+    }
+
+    /// Only a backend-produced native window enters this registry. It remains
+    /// a preview origin, including when its retained prefix covers the Film.
+    pub fn register_window(
+        &self,
+        service: &StudioService,
+        owner_resource: &str,
+        evidence: &MotionCanvasWindowEvidence,
+    ) -> Result<NativeFrameGrant, String> {
+        let project_id = owner_resource
+            .strip_prefix("project:")
+            .and_then(|text| Uuid::parse_str(text).ok())
+            .ok_or("Native window owner resource is invalid.")?;
+        let project = service
+            .project(project_id)
+            .map_err(|_| "Native window source project is unavailable.")?;
+        if evidence.project_resource != owner_resource
+            || evidence.generation != project.generation
+            || evidence.revision != project.revision
+            || evidence.cached_frames.is_empty()
+            || evidence.cached_frames.len() as u64
+                != evidence
+                    .request
+                    .source_window
+                    .end
+                    .checked_sub(evidence.request.source_window.start)
+                    .ok_or("Native window bounds are invalid.")?
+            || !project
+                .deliverables
+                .iter()
+                .any(|profile| profile.id == evidence.request.deliverable_id)
+        {
+            return Err("Native window belongs to another saved source scope.".into());
+        }
+        let token = Uuid::new_v4();
+        let frames = evidence
+            .cached_frames
+            .iter()
+            .map(|frame| FrameMeta {
+                file: frame.original_relative_path.clone(),
+                sha256: frame.sha256.clone(),
+                bytes: frame.bytes,
+            })
+            .collect::<Vec<_>>();
+        let grant = NativeFrameGrant {
+            token,
+            segment_id: evidence.segment_id.clone(),
+            scene_ids: vec![evidence.request.source_scene_id],
+            frame_count: frames.len() as u64,
+        };
+        let entry = GrantEntry {
+            token,
+            project_id,
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id: evidence.request.deliverable_id,
+            // Window frame reads use the same Store, never these Full-only paths.
+            directory: String::new(),
+            output_root: PathBuf::new(),
+            frames: Arc::new(frames),
+            origin: GrantOrigin::Window {
+                evidence: Arc::new(evidence.clone()),
+                service: service.clone(),
+            },
+        };
+        let mut entries = self
+            .inner
+            .grants
+            .lock()
+            .map_err(|_| "Native preview registry is unavailable.")?;
+        if entries.len() >= MAX_GRANTS {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+        Ok(grant)
+    }
+
+    /// Explicit reuse of this session's original Window handle. No connection
+    /// or producer is available here; every failure stays a read failure.
+    pub fn reuse_window(
+        &self,
+        project: &Project,
+        token: Uuid,
+        request: &MotionCanvasWindowRequest,
+    ) -> Result<(MotionCanvasWindowEvidence, NativeFrameGrant), String> {
+        let entry = self
+            .inner
+            .grants
+            .lock()
+            .map_err(|_| "Native preview registry is unavailable.")?
+            .iter()
+            .find(|entry| entry.token == token)
+            .cloned()
+            .ok_or("Original native window is no longer registered in this session.")?;
+        if entry.project_id != project.id
+            || entry.generation != project.generation
+            || entry.revision != project.revision
+            || entry.deliverable_id != request.deliverable_id
+        {
+            return Err("Original native window belongs to another saved revision.".into());
+        }
+        let GrantOrigin::Window { evidence, service } = &entry.origin else {
+            return Err("This handle does not identify an original native window.".into());
+        };
+        let reused = reuse_motion_canvas_window(service,project.id,&RevisionStamp::from(project),request,evidence)
+            .map_err(|_| "Original native window cannot be reused at this revision; no render was dispatched.")?;
+        Ok((
+            reused,
+            NativeFrameGrant {
+                token,
+                segment_id: evidence.segment_id.clone(),
+                scene_ids: vec![evidence.request.source_scene_id],
+                frame_count: entry.frames.len() as u64,
+            },
+        ))
     }
 
     /// Resolve the canonical rendering evidence behind an unguessable session
@@ -288,20 +417,27 @@ impl NativePreviewRegistry {
             .find(|record| record.token == token)
             .cloned()
             .ok_or("Native render session is no longer available.")?;
+        let GrantOrigin::Full {
+            evidence: source_evidence,
+            options: _,
+        } = entry.origin
+        else {
+            return Err("A native window is preview-only and cannot supply a master.".into());
+        };
         if entry.project_id != project.id
             || entry.generation != project.generation
             || entry.revision != project.revision
             || entry.deliverable_id != deliverable_id
-            || entry.source_evidence.project_resource != project.resource_key()
-            || entry.source_evidence.generation != project.generation
-            || entry.source_evidence.revision != project.revision
-            || entry.source_evidence.deliverable_id != deliverable_id
-            || entry.source_evidence.segments.len() != 1
-            || entry.source_evidence.segments[0].frame_count != entry.frames.len() as u64
+            || source_evidence.project_resource != project.resource_key()
+            || source_evidence.generation != project.generation
+            || source_evidence.revision != project.revision
+            || source_evidence.deliverable_id != deliverable_id
+            || source_evidence.segments.len() != 1
+            || source_evidence.segments[0].frame_count != entry.frames.len() as u64
         {
             return Err("Native master source belongs to another project revision or requires an unsupported multi-segment assembly.".into());
         }
-        Ok(entry.source_evidence)
+        Ok(source_evidence)
     }
 
     /// All source/intent/paths are taken from the owner-issued registry entry.
@@ -321,17 +457,23 @@ impl NativePreviewRegistry {
             .find(|item| item.token == token)
             .cloned()
             .ok_or("Native render session was not registered by this desktop.")?;
+        let GrantOrigin::Full {
+            evidence: source_evidence,
+            options: source_options,
+        } = entry.origin
+        else {
+            return Err("A native window is preview-only and cannot supply a master.".into());
+        };
         if entry.project_id != project.id
             || entry.generation != project.generation
             || entry.revision != project.revision
             || entry.deliverable_id != deliverable_id
-            || entry.source_evidence.project_resource != project.resource_key()
-            || entry.source_evidence.generation != project.generation
-            || entry.source_evidence.revision != project.revision
-            || entry.source_evidence.deliverable_id != deliverable_id
-            || entry.source_evidence.segments.len() < 2
-            || entry
-                .source_evidence
+            || source_evidence.project_resource != project.resource_key()
+            || source_evidence.generation != project.generation
+            || source_evidence.revision != project.revision
+            || source_evidence.deliverable_id != deliverable_id
+            || source_evidence.segments.len() < 2
+            || source_evidence
                 .segments
                 .iter()
                 .filter(|segment| {
@@ -344,10 +486,10 @@ impl NativePreviewRegistry {
         {
             return Err("Native multi-segment source belongs to another creative version, lacks a registered segment or is not multi-segment.".into());
         }
-        let options = entry.source_options.ok_or(
+        let options = source_options.ok_or(
             "Original Film authoring options are unavailable for this native render session.",
         )?;
-        Ok((entry.source_evidence, options, entry.output_root))
+        Ok((source_evidence, options, entry.output_root))
     }
 
     /// A grant never accepts caller-provided paths, hashes or media MIME types.
@@ -397,12 +539,17 @@ impl NativePreviewRegistry {
             return Err("Native preview is busy; retry this frame.".into());
         }
         let _permit = ReadPermit(&self.inner.active_reads);
-        let bytes = read_verified_production_artifact(
-            &entry.output_root,
-            &format!("{}/{}", entry.directory, frame.file),
-            &frame.sha256,
-            MAX_FRAME_BYTES,
-        )
+        let bytes = match &entry.origin {
+            GrantOrigin::Full { .. } => read_verified_production_artifact(
+                &entry.output_root,
+                &format!("{}/{}", entry.directory, frame.file),
+                &frame.sha256,
+                MAX_FRAME_BYTES,
+            ),
+            GrantOrigin::Window { evidence, service } => {
+                read_cached_motion_canvas_window_frame(service, evidence, request.frame_index)
+            }
+        }
         .map_err(|_| "Rendered frame is unavailable or failed SHA-256 verification.")?;
         if bytes.len() as u64 != frame.bytes || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             return Err("Rendered frame metadata no longer matches the verified PNG.".into());
@@ -670,5 +817,205 @@ mod tests {
             "render-../0123456789abcdef0123456789abcd"
         ));
         assert!(validate_manifest(b"{\"frames\":[]}", 1).is_none());
+    }
+
+    fn window_fixture(project: &Project) -> MotionCanvasWindowEvidence {
+        use motionwright_domain::{RevisionStamp, SourceFrameWindow};
+        use motionwright_native::production::{
+            MotionCanvasCachedWindowFrame, MotionCanvasCaptureTimings, MotionCanvasStartOrigin,
+            MotionCanvasWindowCapture, MotionCanvasWindowCost, MotionCanvasWindowUse,
+            MotionCanvasWindowValidation,
+        };
+        use motionwright_service::{DerivedCacheRecord, RenderWindowCacheKey};
+        let request: MotionCanvasWindowRequest = serde_json::from_value(json!({
+            "deliverable_id":project.deliverables[0].id,"source_scene_id":project.scenes[0].id,
+            "source_window":{"start":0,"end":1},
+            "options":{"frame_rate":{"num":30,"den":1},"font_family":"Instrument Sans Variable",
+                "mono_font_family":"IBM Plex Mono","scene_intents":[{
+                    "scene_id":project.scenes[0].id,"role":"mechanism","archetype":"statement"}]}
+        }))
+        .unwrap();
+        let record: DerivedCacheRecord = serde_json::from_value(json!({
+            "format_version":1,"scope_sha256":"a1".repeat(32),"kind":"render-window-proxy",
+            "fingerprint_sha256":"b2".repeat(32),"blob_sha256":"c3".repeat(32),
+            "size_bytes":16,"work_units":1,"created_at":"unit-only"
+        }))
+        .unwrap();
+        let key = RenderWindowCacheKey {
+            project_id: project.id,
+            expected: RevisionStamp::from(project),
+            deliverable_id: project.deliverables[0].id,
+            source_window: SourceFrameWindow { start: 0, end: 1 },
+            fingerprint_sha256: record.fingerprint_sha256.clone(),
+        };
+        // This backend-only fixture tests the origin barrier, not native pixels.
+        MotionCanvasWindowEvidence {
+            project_resource: project.resource_key(),
+            generation: project.generation,
+            revision: project.revision,
+            request,
+            segment_id: "window-unit-fixture".into(),
+            segment_index: 0,
+            segment_window: SourceFrameWindow { start: 0, end: 1 },
+            film_digest: "d4".repeat(32),
+            original_capture: MotionCanvasWindowCapture {
+                segment_frame_count: 1,
+                prefix: SourceFrameWindow { start: 0, end: 1 },
+                plan_ref: "private-plan".into(),
+                fingerprint: "e5".repeat(32),
+                job_ref: "private-job".into(),
+                start_origin: MotionCanvasStartOrigin::FreshAuthenticatedCall,
+                artifact: json!({"private_path":"/private/owner/source.png"}),
+                verification: json!({}),
+                timings: MotionCanvasCaptureTimings {
+                    fonts_micros: 0,
+                    plan_micros: 0,
+                    apply_micros: 0,
+                    render_and_wait_micros: 0,
+                    verification_micros: 0,
+                },
+            },
+            validation: MotionCanvasWindowValidation {
+                verdict: serde_json::from_value(json!("PASS")).unwrap(),
+                native_frame_coverage: serde_json::from_value(json!("PASS")).unwrap(),
+                pass_checks: 1,
+                unknown_checks: 0,
+                unknown_findings: 0,
+            },
+            cached_frames: vec![MotionCanvasCachedWindowFrame {
+                source_frame: 0,
+                segment_frame: 0,
+                original_relative_path: "private-source.png".into(),
+                sha256: record.blob_sha256.clone(),
+                bytes: 16,
+                key,
+                record,
+            }],
+            cost: MotionCanvasWindowCost {
+                operation: MotionCanvasWindowUse::NativePrefix,
+                original_prefix_pngs: 1,
+                selected_pngs: 1,
+                reused_original_pngs: 0,
+                start_calls_observed: 1,
+                cached_png_bytes_returned: 0,
+                cache_payload_bytes_admitted: 16,
+                cache_micros: 0,
+                internal_simulation_steps: None,
+                internal_simulation_observation: "not_observed",
+            },
+        }
+    }
+
+    #[test]
+    fn window_origin_cannot_be_promoted_to_either_master_source_even_at_full_range() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = StudioService::open(directory.path().join("registry.sqlite3")).unwrap();
+        let first = service.create_project("Window origin barrier").unwrap();
+        let project = service
+            .apply(
+                first.id,
+                &motionwright_domain::RevisionStamp::from(&first),
+                "window-registry-scene",
+                &motionwright_domain::Change::AddScene {
+                    name: "Original".into(),
+                    objective: "Origin barrier".into(),
+                    duration_seconds: 1,
+                },
+            )
+            .unwrap()
+            .project;
+        let evidence = window_fixture(&project);
+        let registry = NativePreviewRegistry::default();
+        let grant = registry
+            .register_window(&service, &project.resource_key(), &evidence)
+            .unwrap();
+        assert!(
+            registry
+                .master_source(&project, grant.token, evidence.request.deliverable_id)
+                .is_err()
+        );
+        assert!(
+            registry
+                .multi_segment_source(&project, grant.token, evidence.request.deliverable_id)
+                .is_err()
+        );
+        let public = serde_json::to_string(&evidence.summary()).unwrap();
+        for private in [
+            "private-plan",
+            "private-job",
+            "/private/owner/source.png",
+            "private-source.png",
+        ] {
+            assert!(!public.contains(private));
+        }
+        assert!(evidence.summary().preview_only);
+        assert!(!evidence.summary().master_eligible);
+        let mut stale = project.clone();
+        stale.revision += 1;
+        assert!(
+            registry
+                .reuse_window(&stale, grant.token, &evidence.request)
+                .is_err()
+        );
+        assert!(
+            registry
+                .read_frame(
+                    &stale,
+                    &NativeFrameRequest {
+                        project_id: project.id,
+                        generation: project.generation,
+                        revision: project.revision,
+                        token: grant.token,
+                        frame_index: 0
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            registry
+                .read_frame(
+                    &project,
+                    &NativeFrameRequest {
+                        project_id: project.id,
+                        generation: project.generation,
+                        revision: project.revision,
+                        token: grant.token,
+                        frame_index: 1
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            service
+                .production_receipts(project.id, 512)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn full_or_missing_handle_cannot_trigger_implicit_window_capture() {
+        let root = tempfile::tempdir().unwrap();
+        let project = project();
+        let (registry, full) = sample(root.path(), &project);
+        let grant = registry
+            .register(root.path(), &project.resource_key(), &full)
+            .remove(0);
+        let window = window_fixture(&project);
+        assert!(
+            registry
+                .reuse_window(&project, grant.token, &window.request)
+                .is_err()
+        );
+        assert!(
+            registry
+                .reuse_window(&project, Uuid::new_v4(), &window.request)
+                .is_err()
+        );
+        assert!(
+            registry
+                .master_source(&project, grant.token, full.deliverable_id)
+                .is_ok()
+        );
     }
 }

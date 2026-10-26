@@ -1671,6 +1671,111 @@ pub fn build_motion_canvas_segments(
     Ok(segments)
 }
 
+/// A source-timeline window mapped into the already realized canonical run.
+/// The complete Film is retained; no per-scene replacement Film is authored.
+#[derive(Debug, Clone)]
+pub struct MotionCanvasWindowPlan {
+    pub segment_index: usize,
+    pub segment: MotionCanvasSegment,
+    pub source_scene_id: Uuid,
+    pub source_window: motionwright_domain::SourceFrameWindow,
+    pub segment_window: motionwright_domain::SourceFrameWindow,
+}
+
+fn exact_window_frame(time: RationalTime, rate: Rate) -> NativeResult<u64> {
+    time.validate()
+        .map_err(|error| contract("Window source clock is invalid", error))?;
+    rate.validate()
+        .map_err(|error| contract("Window frame rate is invalid", error))?;
+    let numerator = i128::from(time.num)
+        .checked_mul(i128::from(rate.num))
+        .ok_or_else(|| invalid("Window source frame numerator overflow"))?;
+    let denominator = i128::from(time.den)
+        .checked_mul(i128::from(rate.den))
+        .ok_or_else(|| invalid("Window source frame denominator overflow"))?;
+    if numerator < 0 || denominator <= 0 || numerator % denominator != 0 {
+        return Err(unsupported(
+            "Native window boundaries must lie on exact source frames",
+        ));
+    }
+    u64::try_from(numerator / denominator)
+        .map_err(|_| invalid("Native window frame index overflow"))
+}
+
+pub fn build_motion_canvas_window(
+    project: &Project,
+    deliverable_id: Uuid,
+    source_scene_id: Uuid,
+    source_window: motionwright_domain::SourceFrameWindow,
+    options: &FilmBuildOptions,
+) -> NativeResult<MotionCanvasWindowPlan> {
+    if source_window.start >= source_window.end || source_window.end > 1_080_000 {
+        return Err(invalid(
+            "Native source window is empty or exceeds the source clock bound",
+        ));
+    }
+    let segments = build_motion_canvas_segments(project, deliverable_id, options)?;
+    let mut selected = segments
+        .into_iter()
+        .enumerate()
+        .filter(|(_, segment)| segment.scene_ids.contains(&source_scene_id));
+    let (segment_index, segment) = selected.next().ok_or_else(|| {
+        unsupported("Selected source scene has no Motion Canvas run in this profile")
+    })?;
+    if selected.next().is_some() {
+        return Err(invalid(
+            "Source scene belongs to more than one canonical run",
+        ));
+    }
+    let scene = project
+        .scenes
+        .iter()
+        .find(|scene| scene.id == source_scene_id)
+        .ok_or_else(|| invalid("Native window source scene is absent"))?;
+    let source_start = exact_window_frame(scene.start, options.frame_rate)?;
+    let source_end = exact_window_frame(segment_end(scene)?, options.frame_rate)?;
+    if source_window.start < source_start || source_window.end > source_end {
+        return Err(invalid(
+            "Native window must remain inside the selected original source scene",
+        ));
+    }
+    let realized = realize(&segment.film)
+        .map_err(|error| contract("Native window Film realization failed", error))?;
+    let interval = realized
+        .schedule
+        .interval(&uid("seqspan", source_scene_id))
+        .map_err(|error| contract("Native window source interval is absent", error))?;
+    if interval
+        .duration()
+        .map_err(|error| contract("Window interval duration failed", error))?
+        != scene.duration
+    {
+        return Err(unsupported(
+            "Native window mapping changed the original scene duration",
+        ));
+    }
+    let local_start = exact_window_frame(interval.start, options.frame_rate)?;
+    let local_end = exact_window_frame(interval.end, options.frame_rate)?;
+    let start = local_start
+        .checked_add(source_window.start - source_start)
+        .ok_or_else(|| invalid("Native window local start overflow"))?;
+    let end = local_start
+        .checked_add(source_window.end - source_start)
+        .ok_or_else(|| invalid("Native window local end overflow"))?;
+    if start >= end || end > local_end || end > segment.frame_count {
+        return Err(invalid(
+            "Native window is outside the realized canonical run",
+        ));
+    }
+    Ok(MotionCanvasWindowPlan {
+        segment_index,
+        segment,
+        source_scene_id,
+        source_window,
+        segment_window: motionwright_domain::SourceFrameWindow { start, end },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3231,5 +3336,110 @@ mod tests {
         let runs = motion_canvas_runs(&project, &project.deliverables[0]).unwrap();
         assert_eq!(runs, baseline);
         assert_eq!(project, before);
+    }
+
+    #[test]
+    fn native_window_maps_saved_cut_order_without_reauthoring_the_film() {
+        let mut project = fixture_project();
+        let first = project.scenes[0].id;
+        let second = project.scenes[1].id;
+        let rate = Rate::new(30, 1).unwrap();
+        let source_start = exact_window_frame(project.scenes[0].start, rate).unwrap();
+        let first_frames = exact_window_frame(project.scenes[0].duration, rate).unwrap();
+        let second_frames = exact_window_frame(project.scenes[1].duration, rate).unwrap();
+        let mut profile = project.deliverables[0].clone();
+        profile.included_scene_ids = vec![second, first];
+        project
+            .apply_change(&Change::UpsertDeliverable { profile })
+            .unwrap();
+        let before = project.clone();
+        let options = fixture_options(&project);
+        let original =
+            build_motion_canvas_segments(&project, project.deliverables[0].id, &options).unwrap();
+        let mapped = build_motion_canvas_window(
+            &project,
+            project.deliverables[0].id,
+            first,
+            motionwright_domain::SourceFrameWindow {
+                start: source_start + 1,
+                end: source_start + first_frames - 1,
+            },
+            &options,
+        )
+        .unwrap();
+        assert_eq!(mapped.segment_index, 0);
+        assert_eq!(mapped.segment_window.start, second_frames + 1);
+        assert_eq!(mapped.segment_window.end, second_frames + first_frames - 1);
+        assert_eq!(mapped.segment, original[0]);
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn native_window_rejects_cross_scene_excluded_and_fractional_source_frames() {
+        let mut project = fixture_project();
+        let scene_id = project.scenes[0].id;
+        let options = fixture_options(&project);
+        let end = exact_window_frame(segment_end(&project.scenes[0]).unwrap(), options.frame_rate)
+            .unwrap();
+        assert!(
+            build_motion_canvas_window(
+                &project,
+                project.deliverables[0].id,
+                scene_id,
+                motionwright_domain::SourceFrameWindow {
+                    start: end - 1,
+                    end: end + 1
+                },
+                &options
+            )
+            .is_err()
+        );
+        let mut profile = project.deliverables[0].clone();
+        profile.included_scene_ids = vec![project.scenes[1].id];
+        project
+            .apply_change(&Change::UpsertDeliverable { profile })
+            .unwrap();
+        assert!(
+            build_motion_canvas_window(
+                &project,
+                project.deliverables[0].id,
+                scene_id,
+                motionwright_domain::SourceFrameWindow { start: 0, end: 1 },
+                &options
+            )
+            .is_err()
+        );
+        assert!(
+            exact_window_frame(RationalTime::new(1, 31).unwrap(), Rate::new(30, 1).unwrap())
+                .is_err()
+        );
+        assert!(
+            exact_window_frame(RationalTime::new(-1, 1).unwrap(), Rate::new(30, 1).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn native_window_uses_exact_rational_frames_and_rejects_a_different_profile_rate() {
+        let rate = Rate::new(30_000, 1_001).unwrap();
+        for frame in [0, 1, 29, 30_000, 1_000_000] {
+            assert_eq!(
+                exact_window_frame(rate.at(frame).unwrap(), rate).unwrap(),
+                frame as u64
+            );
+        }
+        let project = fixture_project();
+        let mut options = fixture_options(&project);
+        options.frame_rate = rate;
+        assert!(
+            build_motion_canvas_window(
+                &project,
+                project.deliverables[0].id,
+                project.scenes[0].id,
+                motionwright_domain::SourceFrameWindow { start: 1, end: 2 },
+                &options
+            )
+            .is_err()
+        );
     }
 }

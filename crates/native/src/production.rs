@@ -39,6 +39,14 @@ pub use hyperframes::HyperframesSourceEvidence;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
+mod motion_canvas_window;
+pub use motion_canvas_window::{
+    MotionCanvasCachedWindowFrame, MotionCanvasCaptureTimings, MotionCanvasStartOrigin,
+    MotionCanvasWindowCapture, MotionCanvasWindowCost, MotionCanvasWindowEvidence,
+    MotionCanvasWindowRequest, MotionCanvasWindowSummary, MotionCanvasWindowUse,
+    MotionCanvasWindowValidation, read_cached_motion_canvas_window_frame,
+    reuse_motion_canvas_window,
+};
 mod native_runtime_versions;
 #[cfg(test)]
 mod path_boundary_tests;
@@ -471,9 +479,93 @@ fn output_artifact_path(root: &Path, relative: &str, max_bytes: u64) -> NativeRe
     Ok(candidate)
 }
 
-/// Read immutable production bytes only after a bounded owner-root and SHA-256
-/// check. This function is not exposed as an arbitrary-path desktop command:
-/// its callers must first obtain a scoped, server-issued media grant.
+fn same_artifact_snapshot(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    if !left.is_file()
+        || !right.is_file()
+        || is_link_or_reparse(left)
+        || is_link_or_reparse(right)
+        || left.len() != right.len()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev()
+            && left.ino() == right.ino()
+            && left.nlink() == right.nlink()
+            && left.mode() == right.mode()
+            && left.mtime() == right.mtime()
+            && left.mtime_nsec() == right.mtime_nsec()
+            && left.ctime() == right.ctime()
+            && left.ctime_nsec() == right.ctime_nsec()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // These are the metadata available at this existing boundary, not a
+        // claim of a Windows file-ID or retained handles for every ancestor.
+        left.file_attributes() == right.file_attributes()
+            && left.creation_time() == right.creation_time()
+            && left.last_write_time() == right.last_write_time()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+/// Private opening step for read_verified_production_artifact only. The flags
+/// prevent a substituted leaf FIFO from waiting for a writer on Unix and avoid
+/// following a substituted leaf link/reparse point. They do not isolate every
+/// ancestor and do not bound ordinary filesystem wall time.
+fn open_verified_artifact_input(
+    path: &Path,
+    before: &fs::Metadata,
+) -> NativeResult<(fs::File, fs::Metadata)> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(not(any(unix, windows)))]
+    return Err(Error::new(
+        ErrorCode::Unsupported,
+        "Verified native artifact opening is unavailable on this platform",
+    ));
+    let file = options.open(path).map_err(|_| {
+        Error::new(
+            ErrorCode::Unavailable,
+            "Production artifact cannot be opened",
+        )
+    })?;
+    let opened = file.metadata().map_err(|_| {
+        Error::new(
+            ErrorCode::Unavailable,
+            "Production artifact handle metadata is unavailable",
+        )
+    })?;
+    if !same_artifact_snapshot(before, &opened) {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Production artifact changed before its verified handle was opened",
+        ));
+    }
+    Ok((file, opened))
+}
+
+/// Read immutable production bytes only after the existing owner-root and grant
+/// checks. The bounded descriptor read is followed by fresh path/root checks and
+/// the exact expected SHA-256. This is not an arbitrary-path desktop command or
+/// a continuous filesystem-ancestor isolation claim.
 pub fn read_verified_production_artifact(
     root: &Path,
     relative: &str,
@@ -483,16 +575,55 @@ pub fn read_verified_production_artifact(
     if !is_sha256(expected_sha256) {
         return Err(invalid("Production artifact digest is malformed"));
     }
+    let read_limit = max_bytes
+        .checked_add(1)
+        .filter(|limit| max_bytes > 0 && *limit <= isize::MAX as u64)
+        .ok_or_else(|| invalid("Production artifact read budget is invalid or overflows"))?;
     let path = output_artifact_path(root, relative, max_bytes)?;
-    let bytes = fs::read(path)
+    let before = safe_metadata(&path)?;
+    if !before.is_file()
+        || is_link_or_reparse(&before)
+        || before.len() == 0
+        || before.len() > max_bytes
+    {
+        return Err(invalid("Production artifact is not a bounded regular file"));
+    }
+    let (mut file, opened) = open_verified_artifact_input(&path, &before)?;
+    let capacity = usize::try_from(before.len())
+        .map_err(|_| invalid("Production artifact byte count overflows memory addressing"))?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(capacity).map_err(|_| {
+        Error::new(
+            ErrorCode::ResourceExhausted,
+            "Production artifact read allocation failed",
+        )
+    })?;
+    Read::by_ref(&mut file)
+        .take(read_limit)
+        .read_to_end(&mut bytes)
         .map_err(|_| Error::new(ErrorCode::Unavailable, "Production artifact cannot be read"))?;
-    if bytes.is_empty()
+    // A read failure returns above as the primary error. Successful reads must
+    // still match the opened descriptor and current owner-root resolution.
+    let after = file.metadata().map_err(|_| {
+        Error::new(
+            ErrorCode::Unavailable,
+            "Production artifact handle cannot be rechecked",
+        )
+    })?;
+    let resolved_after = output_artifact_path(root, relative, max_bytes)?;
+    let current = safe_metadata(&resolved_after)?;
+    if resolved_after != path
+        || !same_artifact_snapshot(&before, &after)
+        || !same_artifact_snapshot(&opened, &after)
+        || !same_artifact_snapshot(&after, &current)
+        || bytes.is_empty()
         || bytes.len() as u64 > max_bytes
+        || bytes.len() as u64 != before.len()
         || hex::encode(Sha256::digest(&bytes)) != expected_sha256
     {
         return Err(Error::new(
             ErrorCode::StaleReference,
-            "Production artifact no longer matches its verified digest",
+            "Production artifact no longer matches its verified original",
         ));
     }
     Ok(bytes)
@@ -1481,6 +1612,258 @@ impl ProductionCoordinator {
             .map_err(storage_error)
     }
 
+    /// Shared provider sequence. Full admission remains in its original caller;
+    /// Window admission retains a distinct partial measurement and never emits
+    /// a MotionCanvasRenderEvidence.
+    async fn capture_motion_canvas_segment(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        prefix: &str,
+        index: usize,
+        segment: &crate::film::MotionCanvasSegment,
+        capture_end: u64,
+    ) -> NativeResult<motion_canvas_window::MotionCanvasSegmentCapture> {
+        if capture_end == 0 || capture_end > segment.frame_count {
+            return Err(invalid(
+                "Native capture prefix is outside its canonical Film",
+            ));
+        }
+        let phase_started = std::time::Instant::now();
+        let film = serde_json::to_value(&segment.film)
+            .map_err(|_| invalid("Canonical Film could not be encoded"))?;
+        self.prepare_motion_fonts(project_id, expected, prefix, &segment.film)
+            .await?;
+
+        let fonts_micros = motion_canvas_window::elapsed_micros(phase_started);
+        let phase_started = std::time::Instant::now();
+        let planned = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{prefix}:plan"),
+                "driver.motion-canvas.composition.plan",
+                json!({
+                    "film": film,
+                    "budget": {
+                        "max_iterations": 8,
+                        "max_operations": MOTION_PLAN_MAX_OPERATIONS,
+                        "max_findings": 1024,
+                        "max_observations": 128,
+                        "max_elapsed_ms": 120000
+                    }
+                }),
+                false,
+            )
+            .await?;
+        let plan_ref = required_string(
+            response_data(&planned)?,
+            "/plan_ref",
+            "Motion Canvas composition plan returned no plan reference",
+        )?;
+
+        let plan_micros = motion_canvas_window::elapsed_micros(phase_started);
+        let phase_started = std::time::Instant::now();
+        let applied = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{prefix}:apply"),
+                "driver.motion-canvas.composition.apply",
+                json!({"plan_ref": plan_ref, "dry_run": false}),
+                true,
+            )
+            .await?;
+        let applied_data = response_data(&applied)?;
+        if applied_data.get("applied").and_then(Value::as_bool) != Some(true)
+            || applied_data.get("execution_status").and_then(Value::as_str) != Some("completed")
+        {
+            return Err(backend(
+                "Motion Canvas composition apply did not complete deterministically",
+            ));
+        }
+        let fingerprint = required_string(
+            applied_data,
+            "/fingerprint",
+            "Motion Canvas composition apply returned no source fingerprint",
+        )?;
+
+        let apply_micros = motion_canvas_window::elapsed_micros(phase_started);
+        let phase_started = std::time::Instant::now();
+        let started = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{prefix}:render-start"),
+                "driver.motion-canvas.render.start",
+                json!({
+                    "expected_fingerprint": fingerprint,
+                    "profile": {
+                        "first_frame": 0,
+                        "end_frame_exclusive": capture_end,
+                        "scale": "full",
+                        "transparent": false,
+                        "timeout_ms": MOTION_RENDER_TIMEOUT_MS
+                    }
+                }),
+                true,
+            )
+            .await?;
+        let start_origin = match started.get("replayed").and_then(Value::as_bool) {
+            Some(false) => MotionCanvasStartOrigin::FreshAuthenticatedCall,
+            Some(true) => MotionCanvasStartOrigin::StoredReceiptReplay,
+            None => {
+                return Err(unconfirmed_started_motion_render(backend(
+                    "Native start receipt origin is absent",
+                )));
+            }
+        };
+        let job_ref = required_string(
+            response_data(&started)?,
+            "/job_ref",
+            "Motion Canvas render did not return a job reference",
+        )?;
+
+        let deadline = Instant::now() + Duration::from_secs(MOTION_RENDER_POLL_DEADLINE_SECS);
+        let mut poll = 0_u32;
+        let terminal = loop {
+            if Instant::now() >= deadline {
+                return Err(unconfirmed_started_motion_render(Error::new(
+                    ErrorCode::Timeout,
+                    "Motion Canvas render did not reach a terminal state before the bounded deadline",
+                )));
+            }
+            let status = match self
+                .execute(
+                    project_id,
+                    expected,
+                    &format!("{prefix}:render-status:{poll}"),
+                    "driver.motion-canvas.render.status",
+                    json!({"job_ref": job_ref}),
+                    false,
+                )
+                .await
+            {
+                Ok(status) => status,
+                Err(error) if retryable_motion_status_error(&error) => {
+                    poll = poll
+                        .checked_add(1)
+                        .ok_or_else(|| backend("Motion Canvas render poll counter overflowed"))?;
+                    sleep(Duration::from_millis(MOTION_RENDER_POLL_INTERVAL_MS)).await;
+                    continue;
+                }
+                Err(error) => return Err(unconfirmed_started_motion_render(error)),
+            };
+            let data = response_data(&status)
+                .map_err(unconfirmed_started_motion_render)?
+                .clone();
+            require_acknowledged_motion_job(&data, &job_ref, "status")?;
+            match data.get("state").and_then(Value::as_str) {
+                Some("succeeded") => break data,
+                Some("failed") => {
+                    // A bounded category and the segment number identify
+                    // the failed native lane without leaking provider error
+                    // messages or raw receipts to UI/CI.
+                    return Err(backend(format!(
+                        "Motion Canvas segment {} render failed (category: {})",
+                        index + 1,
+                        motion_failure_class(&data),
+                    )));
+                }
+                Some("cancelled") => {
+                    return Err(Error::new(
+                        ErrorCode::Cancelled,
+                        "Motion Canvas render was cancelled",
+                    ));
+                }
+                Some("queued") | Some("starting") | Some("rendering") => {}
+                Some(_) => {
+                    return Err(unconfirmed_started_motion_render(backend(
+                        "Motion Canvas render returned an unsupported job state",
+                    )));
+                }
+                None => {
+                    return Err(unconfirmed_started_motion_render(backend(
+                        "Motion Canvas render status returned no canonical state",
+                    )));
+                }
+            }
+            poll = poll
+                .checked_add(1)
+                .ok_or_else(|| backend("Motion Canvas render poll counter overflowed"))?;
+            sleep(Duration::from_millis(MOTION_RENDER_POLL_INTERVAL_MS)).await;
+        };
+        if terminal
+            .pointer("/artifact/frame_count")
+            .and_then(Value::as_u64)
+            != Some(capture_end)
+        {
+            return Err(unconfirmed_started_motion_render(backend(
+                "Motion Canvas terminal artifact frame count does not match the Film realization",
+            )));
+        }
+
+        let rendered = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{prefix}:render-result"),
+                "driver.motion-canvas.render.result",
+                json!({"job_ref": job_ref}),
+                false,
+            )
+            .await
+            .map_err(unconfirmed_started_motion_render)?;
+        let rendered_data = response_data(&rendered).map_err(unconfirmed_started_motion_render)?;
+        require_acknowledged_motion_job(rendered_data, &job_ref, "result")?;
+        if rendered_data.get("state").and_then(Value::as_str) != Some("succeeded") {
+            return Err(unconfirmed_started_motion_render(backend(
+                "Motion Canvas render result is not a successful terminal artifact",
+            )));
+        }
+        let artifact = rendered_data.get("artifact").cloned().ok_or_else(|| {
+            unconfirmed_started_motion_render(backend(
+                "Motion Canvas render result has no artifact",
+            ))
+        })?;
+        if artifact.get("frame_count").and_then(Value::as_u64) != Some(capture_end) {
+            return Err(unconfirmed_started_motion_render(backend(
+                "Motion Canvas result artifact frame count does not match the Film realization",
+            )));
+        }
+
+        let render_and_wait_micros = motion_canvas_window::elapsed_micros(phase_started);
+        let phase_started = std::time::Instant::now();
+        let verified = self
+            .execute(
+                project_id,
+                expected,
+                &format!("{prefix}:verify"),
+                "driver.motion-canvas.composition.verify",
+                json!({"plan_ref": plan_ref, "job_ref": job_ref}),
+                false,
+            )
+            .await?;
+        let verification = response_data(&verified)?.clone();
+
+        let verification_micros = motion_canvas_window::elapsed_micros(phase_started);
+        Ok(motion_canvas_window::MotionCanvasSegmentCapture {
+            plan_ref,
+            fingerprint,
+            job_ref,
+            artifact,
+            verification,
+            start_origin,
+            timings: MotionCanvasCaptureTimings {
+                fonts_micros,
+                plan_micros,
+                apply_micros,
+                render_and_wait_micros,
+                verification_micros,
+            },
+        })
+    }
+
     pub async fn render_motion_canvas_segments(
         &self,
         project_id: Uuid,
@@ -1522,205 +1905,17 @@ impl ProductionCoordinator {
         let mut evidence = Vec::with_capacity(segments.len());
         for (index, segment) in segments.into_iter().enumerate() {
             let prefix = format!("{request_id}:motion:{index}");
-            let film = serde_json::to_value(&segment.film)
-                .map_err(|_| invalid("Canonical Film could not be encoded"))?;
-            self.prepare_motion_fonts(project_id, expected, &prefix, &segment.film)
-                .await?;
-
-            let planned = self
-                .execute(
+            let capture = self
+                .capture_motion_canvas_segment(
                     project_id,
                     expected,
-                    &format!("{prefix}:plan"),
-                    "driver.motion-canvas.composition.plan",
-                    json!({
-                        "film": film,
-                        "budget": {
-                            "max_iterations": 8,
-                            "max_operations": MOTION_PLAN_MAX_OPERATIONS,
-                            "max_findings": 1024,
-                            "max_observations": 128,
-                            "max_elapsed_ms": 120000
-                        }
-                    }),
-                    false,
+                    &prefix,
+                    index,
+                    &segment,
+                    segment.frame_count,
                 )
                 .await?;
-            let plan_ref = required_string(
-                response_data(&planned)?,
-                "/plan_ref",
-                "Motion Canvas composition plan returned no plan reference",
-            )?;
-
-            let applied = self
-                .execute(
-                    project_id,
-                    expected,
-                    &format!("{prefix}:apply"),
-                    "driver.motion-canvas.composition.apply",
-                    json!({"plan_ref": plan_ref, "dry_run": false}),
-                    true,
-                )
-                .await?;
-            let applied_data = response_data(&applied)?;
-            if applied_data.get("applied").and_then(Value::as_bool) != Some(true)
-                || applied_data.get("execution_status").and_then(Value::as_str) != Some("completed")
-            {
-                return Err(backend(
-                    "Motion Canvas composition apply did not complete deterministically",
-                ));
-            }
-            let fingerprint = required_string(
-                applied_data,
-                "/fingerprint",
-                "Motion Canvas composition apply returned no source fingerprint",
-            )?;
-
-            let started = self
-                .execute(
-                    project_id,
-                    expected,
-                    &format!("{prefix}:render-start"),
-                    "driver.motion-canvas.render.start",
-                    json!({
-                        "expected_fingerprint": fingerprint,
-                        "profile": {
-                            "first_frame": 0,
-                            "end_frame_exclusive": segment.frame_count,
-                            "scale": "full",
-                            "transparent": false,
-                            "timeout_ms": MOTION_RENDER_TIMEOUT_MS
-                        }
-                    }),
-                    true,
-                )
-                .await?;
-            let job_ref = required_string(
-                response_data(&started)?,
-                "/job_ref",
-                "Motion Canvas render did not return a job reference",
-            )?;
-
-            let deadline = Instant::now() + Duration::from_secs(MOTION_RENDER_POLL_DEADLINE_SECS);
-            let mut poll = 0_u32;
-            let terminal = loop {
-                if Instant::now() >= deadline {
-                    return Err(unconfirmed_started_motion_render(Error::new(
-                        ErrorCode::Timeout,
-                        "Motion Canvas render did not reach a terminal state before the bounded deadline",
-                    )));
-                }
-                let status = match self
-                    .execute(
-                        project_id,
-                        expected,
-                        &format!("{prefix}:render-status:{poll}"),
-                        "driver.motion-canvas.render.status",
-                        json!({"job_ref": job_ref}),
-                        false,
-                    )
-                    .await
-                {
-                    Ok(status) => status,
-                    Err(error) if retryable_motion_status_error(&error) => {
-                        poll = poll.checked_add(1).ok_or_else(|| {
-                            backend("Motion Canvas render poll counter overflowed")
-                        })?;
-                        sleep(Duration::from_millis(MOTION_RENDER_POLL_INTERVAL_MS)).await;
-                        continue;
-                    }
-                    Err(error) => return Err(unconfirmed_started_motion_render(error)),
-                };
-                let data = response_data(&status)
-                    .map_err(unconfirmed_started_motion_render)?
-                    .clone();
-                require_acknowledged_motion_job(&data, &job_ref, "status")?;
-                match data.get("state").and_then(Value::as_str) {
-                    Some("succeeded") => break data,
-                    Some("failed") => {
-                        // A bounded category and the segment number identify
-                        // the failed native lane without leaking provider error
-                        // messages or raw receipts to UI/CI.
-                        return Err(backend(format!(
-                            "Motion Canvas segment {} render failed (category: {})",
-                            index + 1,
-                            motion_failure_class(&data),
-                        )));
-                    }
-                    Some("cancelled") => {
-                        return Err(Error::new(
-                            ErrorCode::Cancelled,
-                            "Motion Canvas render was cancelled",
-                        ));
-                    }
-                    Some("queued") | Some("starting") | Some("rendering") => {}
-                    Some(_) => {
-                        return Err(unconfirmed_started_motion_render(backend(
-                            "Motion Canvas render returned an unsupported job state",
-                        )));
-                    }
-                    None => {
-                        return Err(unconfirmed_started_motion_render(backend(
-                            "Motion Canvas render status returned no canonical state",
-                        )));
-                    }
-                }
-                poll = poll
-                    .checked_add(1)
-                    .ok_or_else(|| backend("Motion Canvas render poll counter overflowed"))?;
-                sleep(Duration::from_millis(MOTION_RENDER_POLL_INTERVAL_MS)).await;
-            };
-            if terminal
-                .pointer("/artifact/frame_count")
-                .and_then(Value::as_u64)
-                != Some(segment.frame_count)
-            {
-                return Err(unconfirmed_started_motion_render(backend(
-                    "Motion Canvas terminal artifact frame count does not match the Film realization",
-                )));
-            }
-
-            let rendered = self
-                .execute(
-                    project_id,
-                    expected,
-                    &format!("{prefix}:render-result"),
-                    "driver.motion-canvas.render.result",
-                    json!({"job_ref": job_ref}),
-                    false,
-                )
-                .await
-                .map_err(unconfirmed_started_motion_render)?;
-            let rendered_data =
-                response_data(&rendered).map_err(unconfirmed_started_motion_render)?;
-            require_acknowledged_motion_job(rendered_data, &job_ref, "result")?;
-            if rendered_data.get("state").and_then(Value::as_str) != Some("succeeded") {
-                return Err(unconfirmed_started_motion_render(backend(
-                    "Motion Canvas render result is not a successful terminal artifact",
-                )));
-            }
-            let artifact = rendered_data.get("artifact").cloned().ok_or_else(|| {
-                unconfirmed_started_motion_render(backend(
-                    "Motion Canvas render result has no artifact",
-                ))
-            })?;
-            if artifact.get("frame_count").and_then(Value::as_u64) != Some(segment.frame_count) {
-                return Err(unconfirmed_started_motion_render(backend(
-                    "Motion Canvas result artifact frame count does not match the Film realization",
-                )));
-            }
-
-            let verified = self
-                .execute(
-                    project_id,
-                    expected,
-                    &format!("{prefix}:verify"),
-                    "driver.motion-canvas.composition.verify",
-                    json!({"plan_ref": plan_ref, "job_ref": job_ref}),
-                    false,
-                )
-                .await?;
-            let verification = response_data(&verified)?.clone();
+            let verification = capture.verification;
             if let Err(error) = ensure_native_motion_verification(&verification) {
                 if captions_requested {
                     // A failed native measurement must never be suppressed or
@@ -1733,15 +1928,14 @@ impl ProductionCoordinator {
                 }
                 return Err(error);
             }
-
             evidence.push(MotionCanvasSegmentEvidence {
                 segment_id: segment.id,
                 scene_ids: segment.scene_ids,
                 frame_count: segment.frame_count,
-                plan_ref,
-                fingerprint,
-                job_ref,
-                artifact,
+                plan_ref: capture.plan_ref,
+                fingerprint: capture.fingerprint,
+                job_ref: capture.job_ref,
+                artifact: capture.artifact,
                 verification,
             });
         }
@@ -6800,5 +6994,239 @@ os._exit(0)
             assert!(graph.start_value(command).is_err());
             assert!(editable.start_value(command).is_err());
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_window_unknown_original_stops_before_any_client_dispatch() {
+        let (service, initial, temp) = fixture_service();
+        let project = motion_canvas_fixture(&service, initial);
+        let connection = fake_render_connection(&temp, project.resource_key());
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let expected = RevisionStamp::from(&project);
+        let request = MotionCanvasWindowRequest {
+            deliverable_id: project.deliverables[0].id,
+            source_scene_id: project.scenes[0].id,
+            source_window: motionwright_domain::SourceFrameWindow { start: 10, end: 20 },
+            options: FilmBuildOptions {
+                frame_rate: Rate::new(30, 1).unwrap(),
+                font_family: crate::film::MOTION_CANVAS_FONT_FAMILY.into(),
+                mono_font_family: crate::film::MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+                scene_intents: vec![crate::film::SceneFilmIntent {
+                    scene_id: project.scenes[0].id,
+                    role: NarrativeRole::Mechanism,
+                    archetype: Archetype::Statement,
+                }],
+            },
+        };
+        for (ordinal, stage) in [
+            "outcome_unknown",
+            "dispatching",
+            "completed",
+            "failed_known",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let parent = format!("window-original-{ordinal}");
+            service.append_production_receipt(ProductionReceiptInput {
+                project_id:project.id,generation:project.generation,revision:project.revision,
+                request_id:format!("{parent}:motion:0:render-start"),request_sha256:"ab".repeat(32),
+                command:"driver.motion-canvas.render.start".into(),stage:stage.into(),
+                payload:json!({"mutation":true,"error":Error::new(ErrorCode::Timeout,"unit original").uncertain()}),
+            }).unwrap();
+            let before = service.production_receipts(project.id, 512).unwrap();
+            let error = coordinator
+                .render_motion_canvas_window(project.id, &expected, &parent, &request)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Conflict);
+            assert_eq!(
+                error.outcome_known,
+                !matches!(stage, "outcome_unknown" | "dispatching")
+            );
+            assert_eq!(
+                coordinator
+                    .client
+                    .execute_calls
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            assert_eq!(
+                service.production_receipts(project.id, 512).unwrap(),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn verified_artifact_reader_keeps_exact_bytes_and_rejects_hash_and_budget_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = b"original bounded native bytes";
+        fs::write(temp.path().join("original.bin"), bytes).unwrap();
+        let digest = hex::encode(Sha256::digest(bytes));
+        assert_eq!(
+            read_verified_production_artifact(
+                temp.path(),
+                "original.bin",
+                &digest,
+                bytes.len() as u64
+            )
+            .unwrap(),
+            bytes
+        );
+        for limit in [0, bytes.len() as u64 - 1, u64::MAX] {
+            assert!(
+                read_verified_production_artifact(temp.path(), "original.bin", &digest, limit)
+                    .is_err()
+            );
+        }
+        assert!(
+            read_verified_production_artifact(temp.path(), "original.bin", &"00".repeat(32), 1024)
+                .is_err()
+        );
+        fs::write(
+            temp.path().join("original.bin"),
+            b"changed bounded native bytes!",
+        )
+        .unwrap();
+        assert!(
+            read_verified_production_artifact(temp.path(), "original.bin", &digest, 1024).is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_artifact_open_rejects_replacement_growth_links_and_owner_path_changes() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("original.bin");
+        let bytes = b"same-sized original bytes";
+        fs::write(&path, bytes).unwrap();
+        let before = safe_metadata(&path).unwrap();
+        fs::rename(&path, temp.path().join("retained-original.bin")).unwrap();
+        fs::write(&path, bytes).unwrap();
+        // The replacement has the same contents and length; device/inode must
+        // still reject it against the observed original metadata.
+        assert!(open_verified_artifact_input(&path, &before).is_err());
+        let before_growth = safe_metadata(&path).unwrap();
+        fs::write(&path, b"a longer substituted source than the original").unwrap();
+        assert!(open_verified_artifact_input(&path, &before_growth).is_err());
+        fs::remove_file(&path).unwrap();
+        symlink(temp.path().join("retained-original.bin"), &path).unwrap();
+        assert!(open_verified_artifact_input(&path, &before).is_err());
+        let digest = hex::encode(Sha256::digest(bytes));
+        assert!(
+            read_verified_production_artifact(temp.path(), "original.bin", &digest, 1024).is_err()
+        );
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(temp.path().join("owner")).unwrap();
+        fs::write(temp.path().join("owner/original.bin"), bytes).unwrap();
+        fs::rename(
+            temp.path().join("owner"),
+            temp.path().join("retained-owner"),
+        )
+        .unwrap();
+        symlink(
+            temp.path().join("retained-owner"),
+            temp.path().join("owner"),
+        )
+        .unwrap();
+        assert!(
+            read_verified_production_artifact(
+                &temp.path().join("owner"),
+                "original.bin",
+                &digest,
+                1024
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_artifact_fifo_substitution_is_rejected_under_an_external_deadline() {
+        use std::os::unix::ffi::OsStrExt;
+        const CHILD_ENV: &str = "MOTIONWRIGHT_VERIFIED_ARTIFACT_FIFO_CHILD";
+        if let Some(directory) = std::env::var_os(CHILD_ENV) {
+            let path = PathBuf::from(directory).join("original.bin");
+            let before = safe_metadata(&path).unwrap();
+            assert!(before.is_file());
+            fs::remove_file(&path).unwrap();
+            let raw = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
+            // No writer exists. The old plain open would wait indefinitely.
+            assert!(open_verified_artifact_input(&path, &before).is_err());
+            println!("verified-artifact-fifo-rejected-before-read");
+            return;
+        }
+        struct OwnedChild(Option<std::process::Child>);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                if let Some(child) = self.0.as_mut() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("original.bin"), b"original").unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","production::tests::verified_artifact_fifo_substitution_is_rejected_under_an_external_deadline","--nocapture"])
+            .env(CHILD_ENV,temp.path()).stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let mut owned = OwnedChild(Some(child));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut deadline_exceeded = false;
+        loop {
+            if owned.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                deadline_exceeded = true;
+                owned.0.as_mut().unwrap().kill().unwrap();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let status = owned.0.as_mut().unwrap().wait().unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        owned
+            .0
+            .as_mut()
+            .unwrap()
+            .stdout
+            .take()
+            .unwrap()
+            .take(64 * 1024)
+            .read_to_end(&mut stdout)
+            .unwrap();
+        owned
+            .0
+            .as_mut()
+            .unwrap()
+            .stderr
+            .take()
+            .unwrap()
+            .take(64 * 1024)
+            .read_to_end(&mut stderr)
+            .unwrap();
+        // Keep ownership through wait and both reads; panic still runs cleanup.
+        drop(owned.0.take());
+        assert!(
+            !deadline_exceeded,
+            "substituted FIFO blocked the artifact opener; child terminated; stderr={}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(
+            status.success(),
+            "artifact opener child failed: {}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&stdout)
+                .contains("verified-artifact-fifo-rejected-before-read")
+        );
     }
 }
