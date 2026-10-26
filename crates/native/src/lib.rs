@@ -262,6 +262,9 @@ impl ObservationProvider for MotionwrightObserver {
     async fn observe(&self, query: &Query, context: &CallContext) -> NativeResult<ObservationPage> {
         context.check_cancelled()?;
         query.validate()?;
+        #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+        graph_store_provider::trace_native_observer(query, context)?;
+        context.check_cancelled()?;
         let project_id = project_id_from_resource(&query.resource)?;
         let project = self.service.project(project_id).map_err(storage_error)?;
         let version = resource_version(&project)?;
@@ -1763,7 +1766,9 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 
 pub fn build_application(service: StudioService) -> NativeResult<Application> {
     let observer = Arc::new(MotionwrightObserver::new(service.clone()));
-    let mut app = Application::new(APP_ID, APP_VERSION)?.with_observer(observer);
+    let mut app = Application::new(APP_ID, APP_VERSION)?
+        .require_resource_read_scope()
+        .with_observer(observer);
 
     let operations = [
         (
@@ -3926,6 +3931,11 @@ mod graph_store_provider {
         }
     }
 
+    #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
+    pub(super) fn trace_native_observer(query: &Query, context: &CallContext) -> NativeResult<()> {
+        owner_fixture::trace_native_observer(query, context)
+    }
+
     // This module is absent from normal builds. It supplies byte-limited
     // observations and checked deadlines, not authority or a storage wall-time bound.
     #[cfg(all(feature = "native-graph-owner-fixture", target_os = "linux"))]
@@ -4053,6 +4063,43 @@ mod graph_store_provider {
             fs::hard_link(&staging, &final_path).map_err(|error| Error::from(error).uncertain())?;
             fs::remove_file(&staging).map_err(|error| Error::from(error).uncertain())?;
             Ok(())
+        }
+
+        pub(super) fn trace_native_observer(
+            query: &Query,
+            context: &CallContext,
+        ) -> NativeResult<()> {
+            // A diagnostic only, never an actor/context or authority oracle.
+            if context.driver_context().is_err() {
+                return Ok(());
+            }
+            let root = workspace_mount(CONTROL)?;
+            match read_optional(&root.join("native-read-mode"), 32)?.as_deref() {
+                None => return Ok(()),
+                Some(b"trace\n") => (),
+                _ => return Err(Error::invalid("Unknown native read fixture mode")),
+            }
+            context.check_cancelled()?;
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if serial == 0 || serial > 256 {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "Native read fixture entry budget exceeded",
+                ));
+            }
+            publish(
+                &root,
+                &format!("read-entry-{serial:04}.json"),
+                &json!({
+                    "schema":"motionwright.sec07-observer-entry/1",
+                    "request_id":context.request_id(),
+                    "provider_process_id":std::process::id(),
+                    "resource":query.resource,"scope":query.scope,
+                    "native_authority":false
+                }),
+            )?;
+            context.check_cancelled()
         }
 
         fn checkpoint_time_remaining(deadline: Instant) -> NativeResult<()> {

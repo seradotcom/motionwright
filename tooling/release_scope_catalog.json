@@ -7725,7 +7725,7 @@
             },
             {
               "ordinal": 8,
-              "name": "S M L × three unrelated briefs × revision ten",
+              "name": "S M L \u00d7 three unrelated briefs \u00d7 revision ten",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
               "source_block_sha256": "a74999ecef5cd51efa1ea272480a767e19a5d35fbe8493e657e030a54762453e",
@@ -12662,8 +12662,8 @@
     },
     {
       "path": ".github/workflows/studio-service-verification.yml",
-      "sha256": "df55e67be7d53f6ce65690f0097112deb30a974e3f324bb81801fc979b27594b",
-      "preamble_sha256": "e2580b3451816795683d256036e2cc00da017eb4852eb6febbeb3eaad008dda4",
+      "sha256": "e1e3ff831d96934317cec81e8f0055b23bdce39665cdbfb2b25bfd8f5ebcdc64",
+      "preamble_sha256": "631036522723f56f0b34ee0ae12429354ea97a9ff8b6659ac81241010418b865",
       "evidence_class": "mixed_source_service_browser",
       "purpose": "Existing closed Studio selections, actual SQLite/service or synthetic browser scopes, and a separately pinned F278 service readback.",
       "inputs": {
@@ -12674,6 +12674,8 @@
           "options": [
             "studio-service-68",
             "criterion-partials",
+            "window-frontend",
+            "camera-with-v2",
             "creative-production",
             "creative-production-browser",
             "project-authoring",
@@ -12723,6 +12725,18 @@
               "criterion-partials"
             ],
             "basis": "These cases describe this exact existing input selection, including its guarded jobs and steps. Alternative selection is not an authorization or an additional mandatory dispatch; original source-specific readback is required."
+          },
+          "window-frontend": {
+            "covered_by": [
+              "window-frontend"
+            ],
+            "basis": "Exact guarded input is described, including its selected job and original step obligations. The current source-admission guard remains closed; descriptive coverage grants no dispatch authority or execution credit."
+          },
+          "camera-with-v2": {
+            "covered_by": [
+              "camera-with-v2"
+            ],
+            "basis": "Exact guarded input is described, including its selected job and original step obligations. The current source-admission guard remains closed; descriptive coverage grants no dispatch authority or execution credit."
           },
           "creative-production": {
             "covered_by": [
@@ -12939,6 +12953,12 @@
             "criterion-partials": [
               {}
             ],
+            "window-frontend": [
+              {}
+            ],
+            "camera-with-v2": [
+              {}
+            ],
             "creative-production": [
               {}
             ],
@@ -13075,13 +13095,16 @@
           ]
         },
         "creative-unit-build": {
-          "source_name": "${{ inputs.selection == 'branch-claim' && 'Branch and Claim units (134), domain and SQLite contracts' || inputs.selection == 'workflow-preview-browser' && 'Workflow and Preview units (79), native route and desktop compile' || inputs.selection == 'review' && 'Review units (72) and production build' || 'Creative Production and Workbench units (67) and production build' }}",
-          "guard": "github.event_name == 'workflow_dispatch' && contains(fromJSON('[\"all\",\"creative-production\",\"creative-production-browser\",\"production-design\",\"creative-workbench\",\"review\",\"workflow-preview-browser\",\"branch-claim\"]'), inputs.selection)",
+          "source_name": "${{ inputs.selection == 'window-frontend' && 'Window and saved-font units (250), build and six Chromium contracts' || inputs.selection == 'branch-claim' && 'Branch and Claim units (134), domain and SQLite contracts' || inputs.selection == 'workflow-preview-browser' && 'Workflow and Preview units (79), native route and desktop compile' || inputs.selection == 'review' && 'Review units (72) and production build' || 'Creative Production and Workbench units (67) and production build' }}",
+          "guard": "github.event_name == 'workflow_dispatch' && contains(fromJSON('[\"all\",\"creative-production\",\"creative-production-browser\",\"production-design\",\"creative-workbench\",\"review\",\"workflow-preview-browser\",\"branch-claim\",\"window-frontend\"]'), inputs.selection)",
           "runs_on": "ubuntu-24.04",
           "needs": "g0",
           "strategy": null,
-          "source_sha256": "576b35c71b4068d13169795b977a3990486916ea92165a4d2a843a47cd152f36",
+          "source_sha256": "04001cf0f39f1556e55ba49c16492f6baa4e3e8430620674efe3aeca13761a24",
           "instance_sets": {
+            "window-frontend": [
+              {}
+            ],
             "creative-production": [
               {}
             ],
@@ -13118,22 +13141,86 @@
             },
             {
               "ordinal": 5,
-              "name": "Install locked unit and build dependencies",
-              "guard": null,
+              "name": "Observe the exact single-parent Window base in this same job",
+              "guard": "inputs.selection == 'window-frontend'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "a7c03b1bd3bef65a26e5e4770573d2904577c65523b75d647a0bcf8129c84200",
+              "source_block_sha256": "87a310e2be8e89d43b59ef2cf059eb29adef2c4ae369ed3c2444297fb94fce53",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 6,
-              "name": "Verify security probe, selected exact Vitest assertions and build",
-              "guard": null,
+              "name": "Bind Window source and hosted resource inputs before dependencies",
+              "guard": "inputs.selection == 'window-frontend'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "7b746fd3fc06724c4c0f7bda22505dd6ed2f9c99a2e78ec1392abcba8828ef11",
+              "source_block_sha256": "aaba6b0ab3471ff9baba983feb46f4883c8b0d4b1cf00f998779d7d3e89775fb",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
+              "name": "Install locked Window frontend dependencies",
+              "guard": "inputs.selection == 'window-frontend'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "6a38a998b37590be50a2adae143bc064bfa055890203d83c10143d26e1db4cdb",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 8,
+              "name": "Install locked unit and build dependencies",
+              "guard": "inputs.selection != 'window-frontend'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "3472d323067926d7a4d6ef80b71c4a8d67e69ab6638457ecbb8a188ee62d2a8b",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 9,
+              "name": "Verify security probe, selected exact Vitest assertions and build",
+              "guard": "inputs.selection != 'window-frontend'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "1b81eb8f2737c7ccfab93d2b66fecd7ac5616f1706a34aca75945ebd80ed125c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 10,
+              "name": "Observe exact Window55 and complete saved-font195 units and production build",
+              "guard": "inputs.selection == 'window-frontend'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "19f6f076f86130e4979b05b059d81d46d9e3adfb2ec0d8fa43fbf8344174b93c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 11,
+              "name": "Install locked Chromium and retain frontend tool identities",
+              "guard": "inputs.selection == 'window-frontend'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "b228fb94f2ce0484f20f22f9b562e463ae68f8c929f36096a3c4cd9f272c5021",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 12,
+              "name": "List and observe the six exact synthetic Window browser contracts",
+              "guard": "inputs.selection == 'window-frontend'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "d8fb620948a7244fe8ca13eef9bb265e37c1035e9ebba35905fc78dfdfe73212",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 13,
+              "name": "Close original Window unit build and browser evidence into the existing TAR",
+              "guard": "success() && inputs.selection == 'window-frontend'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "3386beb6b46d7da8f9bc0beb7162f63317c89e0ace0a883f22c9f3bf36cd49cc",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 14,
+              "name": "Retain Window original evidence and closed archive or incomplete diagnostics",
+              "guard": "always() && inputs.selection == 'window-frontend'",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "3de0db2fc512fcb683ee822a29200ee5c83afc6eb2b6877bad8f53df6ca15a6b",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 16,
               "name": "Install desktop compile prerequisites",
               "guard": "inputs.selection == 'workflow-preview-browser'",
               "kind": "EXECUTABLE_STEP",
@@ -13141,7 +13228,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 9,
+              "ordinal": 17,
               "name": "Verify original workflow route contracts and actual desktop compile",
               "guard": "inputs.selection == 'workflow-preview-browser'",
               "kind": "EXECUTABLE_STEP",
@@ -13149,7 +13236,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 10,
+              "ordinal": 18,
               "name": "Retain original native route commands and source identities",
               "guard": "always() && inputs.selection == 'workflow-preview-browser'",
               "kind": "ARTIFACT_RETENTION",
@@ -13157,7 +13244,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 11,
+              "ordinal": 19,
               "name": "Verify Claim domain, SQLite and compiled native consumers",
               "guard": "inputs.selection == 'branch-claim'",
               "kind": "EXECUTABLE_STEP",
@@ -13165,7 +13252,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 12,
+              "ordinal": 20,
               "name": "Retain original Claim contracts and source identities",
               "guard": "always() && inputs.selection == 'branch-claim'",
               "kind": "ARTIFACT_RETENTION",
@@ -13173,18 +13260,18 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 13,
+              "ordinal": 21,
               "name": "Retain original unit report, command receipts and actual build output",
-              "guard": "always()",
+              "guard": "always() && inputs.selection != 'window-frontend'",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "0739cb2d4f9fa3a6339d7940afe29ecb6018f5e7c5357f6956f80979f9b96343",
+              "source_block_sha256": "01ed8ca9bb74bb91b0414b85d714a8874e6f38887ff8fe73335a5f093ac12a74",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
         },
         "real-service": {
           "source_name": "${{ contains(fromJSON('[\"browser-contracts\",\"creative-production-browser\",\"review-browser\",\"workflow-preview-browser\"]'), matrix.selection) && 'Synthetic browser contracts' || 'Real SQLite and Studio' }} / ${{ matrix.selection }}",
-          "guard": "github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'",
+          "guard": "github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68' && inputs.selection != 'window-frontend'",
           "runs_on": "ubuntu-24.04",
           "needs": "g0",
           "strategy": {
@@ -13193,11 +13280,16 @@
               "selection": "${{ fromJSON(inputs.selection == 'all' && '[\"project-authoring\",\"creative-production\",\"branch-claim\"]' || inputs.selection == 'review' && '[\"review-browser\",\"review\"]' || format('[\"{0}\"]', inputs.selection)) }}"
             }
           },
-          "source_sha256": "7160c1b3316842a221459003c9bd395bfa47badff8d1bdf31298fbca29082cd5",
+          "source_sha256": "e53429f2858145da63fa3a48bc3df6523f273a604ccc4a4ee7ce0ece740853c2",
           "instance_sets": {
             "criterion-partials": [
               {
                 "selection": "criterion-partials"
+              }
+            ],
+            "camera-with-v2": [
+              {
+                "selection": "camera-with-v2"
               }
             ],
             "creative-production": [
@@ -13402,6 +13494,14 @@
             },
             {
               "ordinal": 8,
+              "name": "Bind the eight Camera inputs and resources before dependencies",
+              "guard": "matrix.selection == 'camera-with-v2'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "b047fff3781ecfd4ca8543c32b1f99882cb9125e17ce2f56899578f89ee150b3",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 9,
               "name": "Install locked Studio dependencies and Chromium",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -13409,7 +13509,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 9,
+              "ordinal": 10,
               "name": "Execute the closed selection through the canonical observer",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -13417,7 +13517,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 10,
+              "ordinal": 11,
               "name": "Close complete original evidence into a verified TAR",
               "guard": "success()",
               "kind": "EXECUTABLE_STEP",
@@ -13425,7 +13525,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 11,
+              "ordinal": 12,
               "name": "Retain verified TAR and original custody receipt",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
@@ -13433,7 +13533,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 12,
+              "ordinal": 13,
               "name": "Preserve unsealed diagnostics when archive custody fails",
               "guard": "always() && steps.archive.outcome != 'success'",
               "kind": "ARTIFACT_RETENTION",
@@ -13548,16 +13648,99 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
           "coverage_basis": "Literal current selection. The all option expands exactly project-authoring, creative-production and branch-claim; review expands review-browser and review. Other options are separate closed selections and are not inferred to be subsumed by all. Browser-only members retain their synthetic evidence class.",
           "original_attempt": null,
           "blocking_reason": null
+        },
+        {
+          "id": "window-frontend",
+          "inputs": {
+            "selection": "window-frontend"
+          },
+          "kind": "NEEDS_DISPOSITION",
+          "required_job_instances": [
+            {
+              "job_id": "g0",
+              "display_name": "g0",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                4,
+                5,
+                6,
+                7
+              ]
+            },
+            {
+              "job_id": "creative-unit-build",
+              "display_name": "Window and saved-font units (250), build and six Chromium contracts",
+              "matrix": {},
+              "name_binding": "reviewed_literal_input_expansion",
+              "required_steps": [
+                1,
+                5,
+                6,
+                7,
+                10,
+                11,
+                12,
+                13,
+                14
+              ]
+            }
+          ],
+          "coverage_basis": "The existing guarded creative-unit-build branch selects Window55 and saved-font195 units, a production build and six synthetic Chromium contracts. Its 75-minute job retains original and incomplete evidence; real-service is explicitly excluded. These declared source counts are not execution observations.",
+          "original_attempt": null,
+          "blocking_reason": "The helper retains the exact single-parent Window profile at085d12a947d4b15bd74d131e007fe908e925106f. A1/A6 must reconcile the final composed source, allowed gate delta and product/dependency pins before admission; this catalogue does not open that guard."
+        },
+        {
+          "id": "camera-with-v2",
+          "inputs": {
+            "selection": "camera-with-v2"
+          },
+          "kind": "NEEDS_DISPOSITION",
+          "required_job_instances": [
+            {
+              "job_id": "g0",
+              "display_name": "g0",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                4,
+                5,
+                6,
+                7
+              ]
+            },
+            {
+              "job_id": "real-service",
+              "display_name": "Real SQLite and Studio / camera-with-v2",
+              "matrix": {
+                "selection": "camera-with-v2"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                1,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12
+              ]
+            }
+          ],
+          "coverage_basis": "Distinct eight-case Camera selection, with a same-job source/resource binder before dependencies and a 90-minute real-service job. The original seven-case camera selection remains separate; the additional closed-list case is not inferred from a title or credited as executed.",
+          "original_attempt": null,
+          "blocking_reason": "CAMERA_EIGHT_REVIEWED_PROFILE is None in the exact integrated helper. A1/A3/A6 must bind a reviewed final eight-case source and inputs before the guard can admit execution."
         },
         {
           "id": "creative-production",
@@ -13585,9 +13768,9 @@
               "name_binding": "reviewed_literal_input_expansion",
               "required_steps": [
                 1,
-                5,
-                6,
-                13
+                8,
+                9,
+                21
               ]
             },
             {
@@ -13601,10 +13784,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -13638,9 +13821,9 @@
               "name_binding": "reviewed_literal_input_expansion",
               "required_steps": [
                 1,
-                5,
-                6,
-                13
+                8,
+                9,
+                21
               ]
             },
             {
@@ -13653,10 +13836,10 @@
               "required_steps": [
                 1,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -13694,10 +13877,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -13731,9 +13914,9 @@
               "name_binding": "reviewed_literal_input_expansion",
               "required_steps": [
                 1,
-                5,
-                6,
-                13
+                8,
+                9,
+                21
               ]
             },
             {
@@ -13747,10 +13930,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -13784,9 +13967,9 @@
               "name_binding": "reviewed_literal_input_expansion",
               "required_steps": [
                 1,
-                5,
-                6,
-                13
+                8,
+                9,
+                21
               ]
             },
             {
@@ -13800,10 +13983,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -13841,10 +14024,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -13882,10 +14065,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -13923,10 +14106,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -13960,9 +14143,9 @@
               "name_binding": "reviewed_literal_input_expansion",
               "required_steps": [
                 1,
-                5,
-                6,
-                13
+                8,
+                9,
+                21
               ]
             },
             {
@@ -13976,10 +14159,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             },
             {
@@ -13993,10 +14176,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             },
             {
@@ -14010,10 +14193,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14051,10 +14234,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14092,10 +14275,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14133,10 +14316,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14174,10 +14357,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14215,10 +14398,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14256,10 +14439,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14297,10 +14480,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14338,10 +14521,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14379,10 +14562,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14420,10 +14603,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14461,10 +14644,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14502,10 +14685,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14543,10 +14726,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14580,9 +14763,9 @@
               "name_binding": "reviewed_literal_input_expansion",
               "required_steps": [
                 1,
-                5,
-                6,
-                13
+                8,
+                9,
+                21
               ]
             },
             {
@@ -14595,10 +14778,10 @@
               "required_steps": [
                 1,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             },
             {
@@ -14612,10 +14795,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14652,10 +14835,10 @@
               "required_steps": [
                 1,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14693,10 +14876,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14734,10 +14917,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14775,10 +14958,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14816,10 +14999,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14856,10 +15039,10 @@
               "required_steps": [
                 1,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14893,12 +15076,12 @@
               "name_binding": "reviewed_literal_input_expansion",
               "required_steps": [
                 1,
-                5,
-                6,
                 8,
                 9,
-                10,
-                13
+                16,
+                17,
+                18,
+                21
               ]
             },
             {
@@ -14911,10 +15094,10 @@
               "required_steps": [
                 1,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -14948,11 +15131,11 @@
               "name_binding": "reviewed_literal_input_expansion",
               "required_steps": [
                 1,
-                5,
-                6,
-                11,
-                12,
-                13
+                8,
+                9,
+                19,
+                20,
+                21
               ]
             },
             {
@@ -14966,10 +15149,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -15007,10 +15190,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -15048,10 +15231,10 @@
                 1,
                 6,
                 7,
-                8,
                 9,
                 10,
-                11
+                11,
+                12
               ]
             }
           ],
@@ -15064,9 +15247,11 @@
       "limitations": [
         "all refers only to the integrated helper's closed roster, not every product criterion or later proposed tests.",
         "The helper explicitly reports installed_tauri, native_render and human_acceptance as NOT_RUN.",
-        "Configured process bounds and the job timeout require an operational budget review; this plan does not assume the complete selection has finished within45minutes.",
+        "Configured process bounds and job timeouts are descriptive, not measured completion: Window frontend75minutes, camera-with-v2 real-service90minutes, and other selections retain their exact conditional source budgets. This plan does not authorize load or infer elapsed time.",
         "This definition describes existing dispatch selections; it schedules no jobs, admits no original evidence and does not make every alternative a mandatory rerun. Candidate applicability remains a separate reviewed requirement mapping.",
-        "Native-route and Claim-specific unit steps execute only for their explicit input selections; the all selection does not execute those guarded unit steps. Source guards and retained original readback remain required."
+        "Native-route and Claim-specific unit steps execute only for their explicit input selections; the all selection does not execute those guarded unit steps. Source guards and retained original readback remain required.",
+        "The window-frontend choice maps to the guarded creative-unit-build job, not a new independent job; real-service excludes that choice. Its browser observations remain synthetic.",
+        "The camera choice still selects seven exact cases. camera-with-v2 is a distinct eight-case declaration with no reviewed profile yet. Neither field confers source admission."
       ]
     },
     {

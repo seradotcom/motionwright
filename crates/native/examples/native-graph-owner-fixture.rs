@@ -1,6 +1,6 @@
 //! Seed and independently reopen SQLite for the real Core/Host9 Graph fixture.
 //! This tool never saves a Graph to SQLite and never constructs native authority.
-use motionwright_domain::{Change, Project, RendererKind, RevisionStamp};
+use motionwright_domain::{Change, Project, RendererKind, ReviewKind, RevisionStamp};
 use motionwright_service::StudioService;
 use motionwright_storage::Store;
 use serde_json::{Value, json};
@@ -56,6 +56,10 @@ fn write_new(path: &Path, value: &Value) -> FixtureResult<()> {
 }
 
 fn seed(database: &Path, output: &Path) -> FixtureResult<()> {
+    seed_with_security(database, output, false)
+}
+
+fn seed_with_security(database: &Path, output: &Path, security: bool) -> FixtureResult<()> {
     fresh(database)?;
     fresh(output)?;
     let mut store = Store::open(database)?;
@@ -93,17 +97,61 @@ fn seed(database: &Path, output: &Path) -> FixtureResult<()> {
         graph: Box::new(graph.clone()),
     })?;
     shape.validate()?;
+    let security_source = if security {
+        let marker = format!("SEC07 foreign project {}", Uuid::now_v7());
+        let mut foreign = store.create_named_project(&marker)?;
+        foreign = store
+            .apply(
+                foreign.id,
+                &RevisionStamp::from(&foreign),
+                "sec07-foreign-branch",
+                &Change::CreateBranch {
+                    name: format!("private branch {}", foreign.id),
+                },
+            )?
+            .project;
+        foreign = store
+            .apply(
+                foreign.id,
+                &RevisionStamp::from(&foreign),
+                "sec07-foreign-review",
+                &Change::AddReview {
+                    kind: ReviewKind::Technical,
+                    resource: foreign.resource_key(),
+                    body: format!("Private review for {marker}"),
+                    start: None,
+                    end: None,
+                    locale: None,
+                    profile_id: None,
+                },
+            )?
+            .project;
+        foreign.validate()?;
+        let absent = Uuid::now_v7();
+        if absent == project.id || absent == foreign.id {
+            return Err("Unexpected fixture UUID collision".into());
+        }
+        Some(json!({
+            "schema":"motionwright.sec07-fixture-source/1",
+            "foreign_resource":foreign.resource_key(),"foreign_project":foreign,
+            "foreign_marker":marker,"absent_resource":format!("project:{absent}"),
+            "native_authority":false
+        }))
+    } else {
+        None
+    };
     drop(store);
-    write_new(
-        output,
-        &json!({
-            "schema":"motionwright.graph-owner-fixture-source/1",
-            "application":motionwright_native::APP_ID,
-            "application_version":motionwright_native::APP_VERSION,
-            "resource":project.resource_key(),"project":project,"graph":graph,
-            "graph_persisted":false,"native_authority":false
-        }),
-    )
+    let mut source = json!({
+        "schema":"motionwright.graph-owner-fixture-source/1",
+        "application":motionwright_native::APP_ID,
+        "application_version":motionwright_native::APP_VERSION,
+        "resource":project.resource_key(),"project":project,"graph":graph,
+        "graph_persisted":false,"native_authority":false
+    });
+    if let Some(security) = security_source {
+        source["security"] = security;
+    }
+    write_new(output, &source)
 }
 
 fn readback(database: &Path, project_id: Uuid, output: &Path) -> FixtureResult<()> {
@@ -130,11 +178,13 @@ fn run() -> FixtureResult<()> {
     match args.first().and_then(|value| value.to_str()) {
         Some("seed") if args.len() == 3 =>
             seed(&PathBuf::from(&args[1]), &PathBuf::from(&args[2])),
+        Some("seed-security") if args.len() == 3 =>
+            seed_with_security(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), true),
         Some("readback") if args.len() == 4 => {
             let project_id = Uuid::parse_str(args[2].to_str().ok_or("Project UUID is not UTF-8")?)?;
             readback(&PathBuf::from(&args[1]), project_id, &PathBuf::from(&args[3]))
         }
-        _ => Err("usage: native-graph-owner-fixture seed NEW_DATABASE NEW_SOURCE_JSON | readback DATABASE PROJECT_UUID NEW_JSON".into()),
+        _ => Err("usage: native-graph-owner-fixture seed|seed-security NEW_DATABASE NEW_SOURCE_JSON | readback DATABASE PROJECT_UUID NEW_JSON".into()),
     }
 }
 

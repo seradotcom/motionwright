@@ -2,8 +2,8 @@
 
 This slice restores and adapts the **data-only** accounting contracts from the
 superseded experimental PR #100 into the *current* Motionwright project model.
-The Semwright Native SDK remains pinned to
-`04142a2ae16e53a58bb6cf43135786e396a4b720`. There is no parallel
+The current Semwright Native SDK pin is recorded in
+[`SOURCE_LOCK.json`](../../SOURCE_LOCK.json). There is no parallel
 backend, no external provider connection, no billed generation, and no
 new identity/consent authority. **Release acceptance remains false.**
 
