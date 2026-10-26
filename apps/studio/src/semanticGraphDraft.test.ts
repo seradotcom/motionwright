@@ -41,6 +41,147 @@ function syntheticReceipt(project: Project, submitted: SemanticGraphChange): Gra
 }
 function copy(draft: GraphDraft) { const local = new Memory(), pointers = new Memory(), custody: GraphCustody = { writerId: crypto.randomUUID(), expectedRaw: null, expectedPointer: null }; writeGraphCopy(local, pointers, draft, custody); return { local, pointers, custody }; }
 
+describe("explicit label-placement recovery and authority", () => {
+  const placementPath = (draft: GraphDraft) => "/content/edges/" + draft.input.content.edges[0].id + "/label_placement";
+  const automatic = (draft: GraphDraft) => change(draft, placementPath(draft), raw => {
+    raw.content.edges[0].label_placement = { kind: "polyline_midpoint", offset: { x: "0", y: "0" } };
+  });
+  const receipt = (project: Project, submitted: SemanticGraphChange) => {
+    const next = syntheticReceipt(project, submitted);
+    next.branches = next.branches.map(branch => branch.id === next.active_branch ? { ...branch, head_revision: next.revision } : branch);
+    return next;
+  };
+  it("confirms exact legacy UNKNOWN copy bytes without introducing placement into base, input or submission", async () => {
+    const { project, draft, context } = source();
+    const prepared = await prepareGraphSubmission(draft, project, context, crypto.randomUUID());
+    const writerId = crypto.randomUUID(), local = new Memory(), pointers = new Memory();
+    const raw = JSON.stringify({ schema: "motionwright.semantic-graph-recovery/1", scope: draft.scope,
+      writerId, updatedAt: 1000, draft: prepared.draft }, null, 2) + "\n";
+    const key = graphCopyKey(draft.scope, writerId), pointer = graphPointerKey(draft.scope);
+    local.data.set(key, raw); pointers.data.set(pointer, writerId);
+    const recovered = decodeGraphCopy(raw, draft.scope, writerId).draft;
+    const custody: GraphCustody = { writerId, expectedRaw: raw, expectedPointer: writerId };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(9000);
+    try {
+      writeGraphCopy(local, pointers, recovered, custody);
+      assertGraphCustody(local, pointers, recovered, custody);
+      expect(local.getItem(key)).toBe(raw); expect(custody.expectedRaw).toBe(raw); expect(local.writes).toBe(0);
+      expect(Object.hasOwn(recovered.base!.content.edges[0], "label_placement")).toBe(false);
+      expect(Object.hasOwn(recovered.input.content.edges[0], "label_placement")).toBe(false);
+      if (recovered.pending?.submitted.type !== "upsert_semantic_graph") throw new Error("Expected the frozen legacy upsert");
+      expect(Object.hasOwn(recovered.pending.submitted.graph.content.edges[0], "label_placement")).toBe(false);
+      expect(recovered.pending).toEqual(prepared.draft.pending);
+    } finally { clock.mockRestore(); }
+  });
+  it("retains incomplete signed offsets but rejects unrecognized placement recovery structure", async () => {
+    const { project, draft, context } = source();
+    const input = change(automatic(draft), placementPath(draft) + "/offset/x", raw => {
+      raw.content.edges[0].label_placement!.offset = { x: "1e", y: "-" };
+    });
+    const held = copy(input), raw = held.custody.expectedRaw!;
+    const recovered = decodeGraphCopy(raw, draft.scope, held.custody.writerId).draft;
+    expect(recovered.input).toEqual(input.input);
+    expect(recovered.input.content.edges[0].label_placement!.offset).toEqual({ x: "1e", y: "-" });
+    await expect(prepareGraphSubmission(recovered, project, context, crypto.randomUUID())).rejects.toThrow(/incomplete/);
+    expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(raw);
+    for (const placement of [
+      null,
+      { kind: "vertex", offset: { x: "0", y: "0" } },
+      { kind: "polyline_midpoint", offset: { x: "0", y: "0" }, expression: "x()" },
+      { kind: "polyline_midpoint", offset: { x: "0", y: "0", z: "0" } },
+      { kind: "polyline_midpoint", offset: { x: 0, y: "0" } },
+    ]) {
+      const malformed = structuredClone(input.input);
+      Object.assign(malformed.content.edges[0], { label_placement: placement });
+      expect(() => validateGraphRaw(malformed)).toThrow();
+    }
+  });
+  it("merges unrelated peer text but requires an explicit decision for competing placement or manual removal", () => {
+    const { project, draft } = source(), own = automatic(draft), path = placementPath(draft);
+    const peer = structuredClone(project); peer.revision++;
+    peer.branches = peer.branches.map(branch => branch.id === peer.active_branch ? { ...branch, head_revision: peer.revision } : branch);
+    peer.production_design!.semantic_graphs![0].content.edges[0].label = "Peer relation text";
+    const merged = mergeGraphDraft(own, peer);
+    expect(merged.conflicts).toEqual([]);
+    expect(merged.input.content.edges[0].label).toBe("Peer relation text");
+    expect(merged.input.content.edges[0].label_placement).toEqual(own.input.content.edges[0].label_placement);
+    peer.production_design!.semantic_graphs![0].content.edges[0].label_placement = { kind: "polyline_midpoint", offset: { x: 15, y: 10 } };
+    expect(mergeGraphDraft(own, peer).conflicts.map(conflict => conflict.path)).toEqual([path]);
+    expect(() => reviewGraphDraft(own, peer)).toThrow(/Resolve/);
+    const base = createGraphDraft(peer, peer.production_design!.semantic_graphs![0]);
+    const manual = change(base, path, raw => { delete raw.content.edges[0].label_placement; });
+    const newer = structuredClone(peer); newer.revision++;
+    newer.branches = newer.branches.map(branch => branch.id === newer.active_branch ? { ...branch, head_revision: newer.revision } : branch);
+    newer.production_design!.semantic_graphs![0].content.edges[0].label_placement!.offset.x = 25;
+    expect(mergeGraphDraft(manual, newer).conflicts.map(conflict => conflict.path)).toEqual([path]);
+    const reviewed = reviewGraphDraft(manual, newer, { [path]: "input" });
+    expect(Object.hasOwn(reviewed.input.content.edges[0], "label_placement")).toBe(false);
+    expect(reviewed.base!.content.edges[0].label_placement!.offset.x).toBe("25");
+  });
+  it("freezes the attempted placement in UNKNOWN and preserves a later incomplete offset after the exact ACK", async () => {
+    const { project, draft, context } = source(), own = automatic(draft);
+    const prepared = await prepareGraphSubmission(own, project, context, crypto.randomUUID());
+    const original = copy(prepared.draft), originalRaw = original.custody.expectedRaw!;
+    const later = change(prepared.draft, placementPath(draft) + "/offset/x", raw => { raw.content.edges[0].label_placement!.offset.x = "1e"; });
+    const held = copy(later), recovered = decodeGraphCopy(held.custody.expectedRaw!, draft.scope, held.custody.writerId).draft;
+    expect(recovered.pending).toEqual(prepared.draft.pending);
+    expect(recovered.pending?.outcome).toBe("UNKNOWN");
+    await expect(prepareGraphSubmission(recovered, project, context, crypto.randomUUID())).rejects.toThrow(/unconfirmed/);
+    const exact = receipt(project, prepared.change), changed = structuredClone(exact);
+    delete changed.production_design!.semantic_graphs![0].content.edges[0].label_placement;
+    expect(() => acknowledgeGraphDraft(recovered, prepared.draft.pending!.id, changed)).toThrow(/exact scoped/);
+    const acknowledged = acknowledgeGraphDraft(recovered, prepared.draft.pending!.id, exact);
+    expect(acknowledged.pending).toBeNull();
+    expect(acknowledged.input.content.edges[0].label_placement!.offset.x).toBe("1e");
+    expect(acknowledged.base!.content.edges[0].label_placement!.offset.x).toBe("0");
+    expect(acknowledged.edited[placementPath(draft) + "/offset/x"]).toBeGreaterThan(prepared.draft.pending!.sequence);
+    expect(original.local.getItem(graphCopyKey(draft.scope, original.custody.writerId))).toBe(originalRaw);
+  });
+  it("retains an explicit manual choice made during blocked recovery without deleting the frozen UNKNOWN placement", async () => {
+    const { project, draft, context } = source(), prepared = await prepareGraphSubmission(automatic(draft), project, context, crypto.randomUUID());
+    const held = copy(prepared.draft), originalRaw = held.custody.expectedRaw!, path = placementPath(draft);
+    const recovered = decodeGraphCopy(originalRaw, draft.scope, held.custody.writerId).draft;
+    const manual = change(prepared.draft, path, raw => { delete raw.content.edges[0].label_placement; });
+    const result = recoverGraphRead(manual, recovered, [path]);
+    expect(Object.hasOwn(result.input.content.edges[0], "label_placement")).toBe(false);
+    expect(result.input.content.edges[0].label_box).toEqual(prepared.draft.input.content.edges[0].label_box);
+    expect(result.input.content.edges[0].waypoints).toEqual(prepared.draft.input.content.edges[0].waypoints);
+    expect(result.pending).toEqual(prepared.draft.pending);
+    expect(result.edited[path]).toBeGreaterThan(manual.sequence);
+    expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(originalRaw);
+    // The current saved source can contain a new edge absent from the old copy.
+    // A Manual edit of that edge must retain its complete source, not fail Retry.
+    if (prepared.change.type !== "upsert_semantic_graph") throw new Error("Expected the original automatic upsert");
+    const peerGraph = structuredClone(prepared.change.graph);
+    const additional = { ...structuredClone(peerGraph.content.edges[0]), id: crypto.randomUUID(), label: "New peer relation" };
+    if (peerGraph.content.kind !== "causal_diagram" || !("basis" in additional)) throw new Error("Expected the causal fixture");
+    peerGraph.content.edges.push(additional);
+    const peer = receipt(project, { type: "upsert_semantic_graph", graph: peerGraph });
+    const current = createGraphDraft(peer, peerGraph), additionalPath = "/content/edges/" + additional.id + "/label_placement";
+    const currentManual = change(current, additionalPath, raw => { delete raw.content.edges.find(edge => edge.id === additional.id)!.label_placement; });
+    const addedResult = recoverGraphRead(currentManual, recovered, [additionalPath]);
+    const expectedAdditional = structuredClone(additional); delete expectedAdditional.label_placement;
+    expect(addedResult.input.content.edges.find(edge => edge.id === additional.id)).toEqual(
+      graphToRaw({ ...peerGraph, content: { ...peerGraph.content, edges: [expectedAdditional] } }).content.edges[0]);
+    expect(addedResult.input.content.edges[0]).toEqual(recovered.input.content.edges[0]);
+    expect(addedResult.pending).toEqual(prepared.draft.pending);
+    expect(held.local.getItem(graphCopyKey(draft.scope, held.custody.writerId))).toBe(originalRaw);
+    const requiredPath = path.replace(/label_placement$/, "label");
+    const invalid = change(manual, requiredPath, raw => { delete (raw.content.edges[0] as unknown as Record<string, unknown>).label; });
+    expect(() => recoverGraphRead(invalid, recovered, [requiredPath])).toThrow(/no longer available/);
+  });
+  it("keeps edge locks and exact-source preflight authoritative for an explicit automatic placement", async () => {
+    const { project, draft, context } = source(), own = automatic(draft), before = structuredClone(own);
+    const locked = structuredClone(project);
+    locked.locks = [{ id: crypto.randomUUID(), resource: "graph-edge:" + draft.graphId + ":" + draft.input.content.edges[0].id, kind: "position", note: "Keep this label position" }];
+    await expect(prepareGraphSubmission(own, locked, context, crypto.randomUUID())).rejects.toThrow(/lock/);
+    const altered = structuredClone(project);
+    altered.production_design!.semantic_graphs![0].content.edges[0].label = "Same stamp, different source";
+    await expect(prepareGraphSubmission(own, altered, context, crypto.randomUUID())).rejects.toThrow(/changed without/);
+    expect(own).toEqual(before); expect(own.pending).toBeNull();
+  });
+});
+
 describe("Graph stable-identity draft reconciliation", () => {
   it("retains incomplete geometry and rational bytes through the exact recovery codec", () => {
     const { draft } = source(); const next = change(draft, "/content/vertices/" + draft.input.content.vertices[0].id + "/box/x", raw => { raw.content.vertices[0].box.x = "1e"; raw.time_range.start = { num: "-", den: "" }; });

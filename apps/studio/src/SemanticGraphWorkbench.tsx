@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DeliverableProfile, Project, ReviewAnchor, Scene } from "./types";
 import { graphPreviewFontFamily, graphPreviewFontLicense, graphPreviewMissingCodepoints, graphPreviewText, loadGraphPreviewFont } from "./semanticGraphFonts";
-import { graphAdmissionIssue, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphReviewAnchor,
+import { graphAdmissionIssue, graphEdgeLabelBox, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphReviewAnchor,
   graphSame, graphSourceSnapshot, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphContent, GraphRaw, GraphTargetBinding, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
 import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, createGraphDraft, decodeGraphCopy, discardGraphCopy, editGraphDraft, failGraphSubmission,
@@ -314,6 +314,19 @@ function GraphEditor(props: SemanticGraphWorkbenchProps & { initial: SemanticGra
             </select></label>
             {e.basis.kind === "author_hypothesis" && <TextField label={prefix + " hypothesis disclosure"} multiline value={e.basis.disclosure} onChange={value => change(edge => { if ("basis" in edge && edge.basis.kind === "author_hypothesis") edge.basis.disclosure = value; }, "/basis/disclosure")} />}
           </> : <label className="production-field"><span>{prefix} channel</span><select aria-label={prefix + " channel"} value={e.channel} onChange={event => change(edge => { if ("channel" in edge) edge.channel = event.target.value as typeof edge.channel; }, "/channel")}><option value="data">Data</option><option value="control">Control</option><option value="event">Event</option></select></label>}
+          <label className="production-field"><span>{prefix} label placement</span><select aria-label={prefix + " label placement"}
+            value={e.label_placement?.kind ?? "manual"} onChange={event => change(edge => {
+              if (event.target.value === "manual") delete edge.label_placement;
+              else if (!Object.hasOwn(edge, "label_placement")) edge.label_placement = { kind: "polyline_midpoint", offset: { x: "0", y: "0" } };
+            }, "/label_placement")}>
+            <option value="manual">Manual</option><option value="polyline_midpoint">Follow edge midpoint</option>
+          </select></label>
+          {e.label_placement && <>
+            <p className="production-help">The label follows the middle of the edge's length, with the offset below. The stored manual box is preserved; its width and height also size the following label. Choose Manual to use its stored position again.</p>
+            <div className="production-plan-grid">{(["x", "y"] as const).map(key => <TextField key={key}
+              label={prefix + " label offset " + key.toUpperCase()} value={e.label_placement!.offset[key]}
+              onChange={value => change(edge => { if (edge.label_placement) edge.label_placement.offset[key] = value; }, "/label_placement/offset/" + key)} />)}</div>
+          </>}
           <BoxFields label={prefix + " label box"} value={e.label_box} onChange={(key, value) => change(edge => { edge.label_box[key] = value; }, "/label_box/" + key)} />
           {e.waypoints.map((point, i) => <fieldset key={i}><legend>{prefix} waypoint {i + 1}</legend>{(["x", "y"] as const).map(key => <TextField key={key} label={prefix + " waypoint " + (i + 1) + " " + key} value={point[key]} onChange={value => change(edge => { edge.waypoints[i][key] = value; }, "/waypoints")} />)}<button className="text-button" onClick={() => change(edge => { edge.waypoints.splice(i, 1); }, "/waypoints")}>Remove {prefix.toLowerCase()} waypoint {i + 1}</button></fieldset>)}
           <button className="secondary-button" disabled={e.waypoints.length >= 8} onClick={() => change(edge => { edge.waypoints.push({ x: "0", y: "0" }); }, "/waypoints")}>Add {prefix.toLowerCase()} waypoint</button>
@@ -434,7 +447,7 @@ function GraphPreview({ graph, time }: { graph: SemanticGraph; time?: number }) 
     <g opacity={inInterval ? 1 : 0} data-graph-active-interval={inInterval}>
     {graph.content.edges.map(edge => <g key={edge.id} opacity={opacity(edge.appearance)}><polyline points={graphEdgePoints(graph, edge).map(point => `${point.x},${point.y}`).join(" ")} stroke={graph.style.edge_color} strokeWidth={graph.style.edge_width} fill="none" markerEnd={`url(#graph-arrow-${graph.id})`} />
       {textBox(edge.label + ("influence" in edge ? " · " + ({ positive: "+", negative: "−", unspecified: "?" }[edge.influence]) : " · " + edge.channel)
-        + activeEvents.filter(event => event.edge_id === edge.id).map(event => "\n" + event.label).join(""), edge.label_box, edge.id + "-label")}</g>)}
+        + activeEvents.filter(event => event.edge_id === edge.id).map(event => "\n" + event.label).join(""), graphEdgeLabelBox(graph, edge), edge.id + "-label")}</g>)}
     {graph.content.vertices.map(vertex => <g key={vertex.id} opacity={opacity(vertex.appearance)}>{vertex.shape === "circle" ? <ellipse cx={vertex.box.x + vertex.box.width / 2} cy={vertex.box.y + vertex.box.height / 2} rx={vertex.box.width / 2} ry={vertex.box.height / 2} fill={graph.style.vertex_fill} /> : <rect {...vertex.box} rx={Math.min(vertex.box.width, vertex.box.height) * .04} ry={Math.min(vertex.box.width, vertex.box.height) * .04} fill={graph.style.vertex_fill} />}
       {textBox(vertex.label + (vertex.unit.kind === "symbol" ? " (" + vertex.unit.symbol + ")" : ""), vertex.box, vertex.id + "-label")}</g>)}
     {textBox(graph.content.kind === "system_flow" ? graph.content.source.disclosure : graph.content.edges.map(edge => edge.basis.kind === "author_hypothesis" ? "Hypothesis: " + edge.basis.disclosure : "Declared claim: " + edge.basis.claim_id).join("\n"), graph.style.disclosure_box, "disclosure")}

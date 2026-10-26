@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fixtureBootstrap } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
-import { graphAddTime, graphAdmissionIssue, graphAuthoredNumber, graphEdgePoints, graphExactFrame, graphFraction, graphFrameTime,
+import { graphAddTime, graphAdmissionIssue, graphAuthoredNumber, graphEdgeLabelBox, graphEdgePoints, graphExactFrame, graphFraction, graphFrameTime,
   graphFromRaw, graphReviewAnchor, graphSourceSnapshot, graphToRaw, isGraphReviewResource, newSemanticGraph, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphProject, SemanticGraph } from "./semanticGraph";
 
@@ -80,6 +80,111 @@ describe("closed semantic Graph editorial contract", () => {
   });
   it.each(["full", "off"] as const)("keeps reveal ordering under %s", motion => {
     const { graph } = source(); graph.motion = motion; graph.content.edges[0].appearance.at = { num: "0", den: "1" }; expect(() => validateSemanticGraphShape(graph)).toThrow(/fully visible/);
+  });
+});
+
+/** Exact 3-4-5 route: endpoint ports, authored turns and midpoint are distinct. */
+function labelPlacementSource(kind: "causal_diagram" | "system_flow" = "causal_diagram") {
+  const result = source(kind), { graph } = result;
+  graph.content.vertices[0].box = { x: 100, y: 100, width: 100, height: 100 };
+  graph.content.vertices[1].box = { x: 700, y: 350, width: 100, height: 100 };
+  const edge = graph.content.edges[0];
+  edge.waypoints = [{ x: 500, y: 550 }, { x: 700, y: 550 }];
+  edge.label_box = { x: 20, y: 650, width: 100, height: 40 };
+  return { ...result, edge };
+}
+
+describe("explicit Graph edge-label placement", () => {
+  it("keeps both legacy edge kinds manual and leaves the optional wire member absent", () => {
+    for (const kind of ["causal_diagram", "system_flow"] as const) {
+      const { graph, edge } = labelPlacementSource(kind), before = structuredClone(graph);
+      const raw = JSON.stringify(graph);
+      expect(Object.hasOwn(edge, "label_placement")).toBe(false);
+      expect(graphEdgeLabelBox(graph, edge)).toEqual(edge.label_box);
+      graph.content.vertices[0].box.x += 300;
+      expect(graphEdgeLabelBox(graph, edge)).toEqual(before.content.edges[0].label_box);
+      graph.content.vertices[0].box.x -= 300;
+      expect(JSON.stringify(graphFromRaw(graphToRaw(graph)))).toBe(raw);
+      expect(graph).toEqual(before);
+    }
+  });
+  it("uses half the total Euclidean route length with signed offset for causal and flow labels", () => {
+    for (const kind of ["causal_diagram", "system_flow"] as const) {
+      const { graph, edge } = labelPlacementSource(kind);
+      edge.label_placement = { kind: "polyline_midpoint", offset: { x: -5, y: 10 } };
+      const before = structuredClone(graph);
+      // Segments have lengths 500 + 200 + 150. Half, 425, is 85% of the first.
+      expect(graphEdgePoints(graph, edge)).toEqual([
+        { x: 200, y: 150 }, { x: 500, y: 550 }, { x: 700, y: 550 }, { x: 700, y: 400 },
+      ]);
+      expect(graphEdgeLabelBox(graph, edge)).toEqual({ x: 400, y: 480, width: 100, height: 40 });
+      validateSemanticGraphShape(graph);
+      expect(graphFromRaw(graphToRaw(graph))).toEqual(graph);
+      expect(graph).toEqual(before);
+    }
+  });
+  it("follows changed endpoint ports with fixed waypoints and restores the untouched manual box", () => {
+    const { graph, edge } = labelPlacementSource();
+    edge.label_placement = { kind: "polyline_midpoint", offset: { x: -5, y: 10 } };
+    const manual = structuredClone(edge.label_box), waypoints = JSON.stringify(edge.waypoints);
+    graph.content.vertices[0].box.x = 400; // New source port (500,150): lengths 400+200+150.
+    expect(graphEdgeLabelBox(graph, edge)).toEqual({ x: 445, y: 515, width: 100, height: 40 });
+    graph.content.vertices[1].box.y = 450; // New destination (700,500): lengths 400+200+50.
+    expect(graphEdgeLabelBox(graph, edge)).toEqual({ x: 445, y: 465, width: 100, height: 40 });
+    expect(edge.label_box).toEqual(manual);
+    expect(JSON.stringify(edge.waypoints)).toBe(waypoints);
+    delete edge.label_placement;
+    expect(graphEdgeLabelBox(graph, edge)).toEqual(manual);
+    expect(Object.hasOwn(edge, "label_placement")).toBe(false);
+  });
+  it("takes current box size without baking the resolved position into manual geometry", () => {
+    const { graph, edge } = labelPlacementSource();
+    edge.label_placement = { kind: "polyline_midpoint", offset: { x: -5, y: 10 } };
+    edge.label_box.width = 200; edge.label_box.height = 80;
+    const manual = structuredClone(edge.label_box);
+    expect(graphEdgeLabelBox(graph, edge)).toEqual({ x: 350, y: 460, width: 200, height: 80 });
+    expect(edge.label_box).toEqual(manual);
+  });
+  it("defines repeated and all-zero routes without expanding legacy edge admission", () => {
+    const { graph, edge } = labelPlacementSource();
+    edge.label_placement = { kind: "polyline_midpoint", offset: { x: -5, y: 10 } };
+    edge.waypoints.unshift({ x: 200, y: 150 });
+    edge.waypoints.push({ x: 700, y: 400 });
+    expect(graphEdgeLabelBox(graph, edge)).toEqual({ x: 400, y: 480, width: 100, height: 40 });
+    expect(() => validateSemanticGraphShape(graph)).toThrow(/degenerate/);
+    graph.content.vertices[1].box = { x: 200, y: 100, width: 100, height: 100 };
+    edge.waypoints = [{ x: 200, y: 150 }, { x: 200, y: 150 }];
+    edge.label_placement.offset = { x: 0, y: 0 };
+    expect(graphEdgeLabelBox(graph, edge)).toEqual({ x: 150, y: 130, width: 100, height: 40 });
+    expect(() => validateSemanticGraphShape(graph)).toThrow(/degenerate/);
+  });
+  it("rejects unsupported placement structure and nonnumeric vectors without changing source", () => {
+    const invalid = [
+      null,
+      { kind: "vertex", offset: { x: 0, y: 0 } },
+      { kind: "polyline_midpoint", offset: { x: 0, y: 0 }, code: "ignored()" },
+      { kind: "polyline_midpoint", offset: { x: 0, y: 0, z: 0 } },
+      { kind: "polyline_midpoint", offset: { x: 0 } },
+      { kind: "polyline_midpoint", offset: { x: "0", y: 0 } },
+      { kind: "polyline_midpoint", offset: { x: Infinity, y: 0 } },
+    ];
+    for (const placement of invalid) {
+      const { graph, edge } = labelPlacementSource();
+      Object.assign(edge, { label_placement: placement });
+      const before = structuredClone(graph);
+      expect(() => validateSemanticGraphShape(graph)).toThrow();
+      expect(graph).toEqual(before);
+    }
+  });
+  it("rejects a resolved box outside the frame instead of clamping or altering the stored box", () => {
+    for (const offset of [{ x: -1000, y: 0 }, { x: 1920, y: 0 }, { x: 0, y: -1080 }, { x: 0, y: Number.MAX_VALUE }]) {
+      const { graph, edge } = labelPlacementSource();
+      edge.label_placement = { kind: "polyline_midpoint", offset };
+      const before = structuredClone(graph);
+      expect(() => validateSemanticGraphShape(graph)).toThrow(/outside/);
+      expect(() => graphEdgeLabelBox(graph, edge)).toThrow(/outside/);
+      expect(graph).toEqual(before);
+    }
   });
 });
 describe("Graph current-source write preflight is not authority", () => {

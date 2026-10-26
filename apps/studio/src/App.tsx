@@ -2340,7 +2340,7 @@ export default function App() {
         }} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
-          commitRequired={commitRequired} playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
+          commitRequired={commitCamera} playhead={playhead} onSeek={seekTo} profile={selectedProfile} />;
       case "Timeline":
         return <PreviewSurface
           key={JSON.stringify([

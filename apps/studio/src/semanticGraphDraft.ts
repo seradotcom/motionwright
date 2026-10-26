@@ -224,8 +224,16 @@ export function validateGraphRaw(raw: unknown): asserts raw is GraphRaw {
     rawBox(v.box); rawAppearance(v.appearance); if (v.target !== null) rawRef(v.target, false);
   }
   for (const e of content.edges as unknown[]) {
-    graphExact(e, ["id", "label", "from_vertex_id", "to_vertex_id", "from_port", "to_port", "waypoints", "label_box", "appearance", ...(content.kind === "causal_diagram" ? ["influence", "basis"] : ["channel"])], "Raw edge"); own(e.id);
+    graphExact(e, ["id", "label", "from_vertex_id", "to_vertex_id", "from_port", "to_port", "waypoints", "label_box", "appearance",
+      ...(graphRecord(e) && Object.hasOwn(e, "label_placement") ? ["label_placement"] : []),
+      ...(content.kind === "causal_diagram" ? ["influence", "basis"] : ["channel"])], "Raw edge"); own(e.id);
     [e.label, e.from_vertex_id, e.to_vertex_id, e.from_port, e.to_port].forEach(rawString); rawBox(e.label_box); rawAppearance(e.appearance);
+    if (Object.hasOwn(e, "label_placement")) {
+      graphExact(e.label_placement, ["kind", "offset"], "Raw edge label placement");
+      if (e.label_placement.kind !== "polyline_midpoint") error("Unsupported raw edge label placement.");
+      graphExact(e.label_placement.offset, ["x", "y"], "Raw edge label offset");
+      Object.values(e.label_placement.offset).forEach(rawString);
+    }
     if (!Array.isArray(e.waypoints) || e.waypoints.length > 8) error("Unreadable raw waypoints."); for (const p of e.waypoints as unknown[]) { graphExact(p, ["x", "y"], "Raw waypoint"); Object.values(p).forEach(rawString); }
     if (content.kind === "causal_diagram") { rawString(e.influence); if (!graphRecord(e.basis)) error("Unreadable raw causal basis."); graphExact(e.basis, (e.basis as Record<string, unknown>).kind === "author_hypothesis" ? ["kind", "disclosure"] : ["kind", "claim_id", "content_sha256"], "Raw causal basis"); Object.values(e.basis).forEach(rawString); }
     else rawString(e.channel);
@@ -329,7 +337,16 @@ export function recoverGraphRead(current: GraphDraft, recovered: GraphDraft, edi
   // A final explicit parent contains its later child intent, including a return
   // to another variant. Do not read obsolete descendants of that final value.
   const effectivePaths = paths.filter(path => !paths.some(parent => path !== parent && path.startsWith(parent + "/")));
-  for (const path of effectivePaths) input = overlay(input, current.input, path.slice(1).split("/"));
+  for (const path of effectivePaths) {
+    const parts = path.slice(1).split("/");
+    // Manual is an explicit deletion of this one optional field. It must survive
+    // a failed earlier recovery read without deleting the frozen submission.
+    const manualEdge = parts.length === 4 && parts[0] === "content" && parts[1] === "edges" && parts[3] === "label_placement"
+      ? current.input.content.edges.find(edge => edge.id === parts[2]) : undefined;
+    const retainedEdge = manualEdge && (input as GraphRaw).content.edges.some(edge => edge.id === manualEdge.id);
+    if (manualEdge && retainedEdge && !Object.hasOwn(manualEdge, "label_placement")) input = setPath(input, parts, undefined);
+    else input = overlay(input, current.input, parts);
+  }
   validateGraphRaw(input);
   return { ...clone(recovered), input, sequence, edited,
     pending: recovered.pending ? { ...clone(recovered.pending), outcome: "UNKNOWN" } : null };

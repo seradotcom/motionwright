@@ -17,6 +17,7 @@ import type {
   MotionProperty,
   NodeProperty,
   Project,
+  ReparentCoordinatePolicy,
   Scene,
 } from "./types";
 import { rationalSeconds, seconds } from "./types";
@@ -29,10 +30,11 @@ import {
   canvasRemovalObservation, canvasRecoveryKey, readCanvasRemovalRecoveries,
   readCanvasRecoveries, reconcileCanvasDraft, releaseCanvasSubmission, resolveCanvasField, reviewCanvasContext, writeCanvasRecovery,
   writeCanvasSessionPointer,
+  acknowledgeCanvasReparent, canvasHierarchyReviewIssue, editCanvasReparentPolicy, reviewCanvasHierarchySubmission,
 } from "./canvasWorkspaceDraft";
 import type { CanvasDraftField, CanvasDraftGroup, CanvasRecoveryEntry, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
 
-type Commit = (change: Change) => Promise<void>;
+type Commit = (change: Change) => Promise<Project | void>;
 
 function nodeTransform(node: CanvasNode): CanvasTransform {
   return {
@@ -139,6 +141,7 @@ function recoverCanvasDraft(project: Project, sceneId: string, nodeId: string) {
   session.draft = draft;
   return { session, copies, backupError,
     notice: draft.awaiting?.group === "removal" ? "Recovered an unconfirmed removal. No request was sent again."
+      : draft.awaiting?.group === "hierarchy" ? "Recovered a retained hierarchy copy. No request was replayed."
       : canvasDraftHasWork(draft) ? "Recovered your local Canvas input. Commit to apply it." : null };
 }
 
@@ -315,7 +318,19 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
   useEffect(() => { observe(project); }, [project]);
 
   function edit(field: CanvasDraftField, raw: string) {
-    setError(null); setNotice(null); replace(editCanvasField(session.current.draft, field, raw));
+    setError(null); setNotice(null);
+    try { replace(editCanvasField(session.current.draft, field, raw, projectRef.current)); }
+    catch (reason) {
+      // Retain the author's raw input even if its original object scope has
+      // just become unavailable. An unfrozen new target cannot be prepared.
+      replace(editCanvasField(session.current.draft, field, raw));
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+  function editReparentPolicy(preserve: ReparentCoordinatePolicy | undefined) {
+    setError(null); setNotice(null);
+    try { replace(editCanvasReparentPolicy(session.current.draft, projectRef.current, preserve)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   }
   async function save(group: Exclude<CanvasDraftGroup, "relations">) {
     if (inFlight.current || session.current.removing) return;
@@ -330,14 +345,31 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
     }
     inFlight.current = true; setPending(true); setError(null); setNotice(null);
     try {
-      await commit(attempt.change);
-      // React publication can follow a void callback. Only the matching saved
-      // Project acknowledges this input; a resolved promise is insufficient.
-      if (mounted.current) observe(projectRef.current);
+      const returned = await commit(attempt.change);
+      if (group === "hierarchy") {
+        const current = session.current.draft;
+        const acknowledged = returned ? acknowledgeCanvasReparent(current, returned, attempt.submission) : current;
+        if (returned && acknowledged !== current) {
+          replace(acknowledged);
+          if (mounted.current) {
+            setError(null); setNotice("Saved Canvas hierarchy at r" + returned.revision
+              + "." + (canvasDraftHasWork(acknowledged) ? " Your later and other uncommitted inputs are kept." : ""));
+            // A later peer observation may refine conflicts, but it cannot
+            // supply the original invocation's success signal.
+            if (projectRef.current.revision >= returned.revision) observe(projectRef.current);
+          }
+        } else if (mounted.current && current.awaiting?.id === attempt.submission.id) {
+          setError("The original Canvas hierarchy result did not provide a matching scoped Project and pose. The retained submission remains unconfirmed; nothing is sent again.");
+        }
+      } else {
+        // Preserve the existing non-hierarchy acknowledgement behavior.
+        if (mounted.current) observe(projectRef.current);
+      }
     } catch (reason) {
       // A lost response is not evidence that the service rejected the command.
-      // Keep the exact submitted snapshot in recovery, blocking replay until
-      // the saved revision acknowledges it or the author reviews explicitly.
+      // Keep the exact submitted snapshot in recovery. Hierarchy requires its
+      // original successful reply or a separate, explicitly reviewed draft;
+      // observing another revision never supplies that original success.
       if (mounted.current) setError((reason instanceof Error ? reason.message : String(reason))
         + " The Canvas result is unconfirmed. Reload to inspect the saved revision; no automatic retry will occur.");
     } finally {
@@ -404,6 +436,33 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       : "Kept your " + CANVAS_FIELD_LABELS[field] + " draft against r" + project.revision + ". Commit explicitly to apply it.");
     document.getElementById(fieldId(field))?.focus();
   }
+  function separateHierarchyIntent() {
+    if (inFlight.current || session.current.removing) return;
+    const current = session.current.draft;
+    try {
+      const next = reviewCanvasHierarchySubmission(current, projectRef.current);
+      if (!backup(current)) {
+        setError("The retained hierarchy copy and its session pointer must be confirmed before separating another intent."); return;
+      }
+      const original = session.current, originalKey = canvasRecoveryKey(scope, original.writerId), originalRaw = original.lastRaw;
+      if (originalRaw === null || window.localStorage.getItem(originalKey) !== originalRaw)
+        throw new Error("The retained hierarchy copy changed before it could be preserved.");
+      const writerId = crypto.randomUUID();
+      const raw = writeCanvasRecovery(window.localStorage, { schema: "motionwright.canvas-recovery/1", scope,
+        writerId, updatedAt: Date.now(), draft: next }, null);
+      if (window.localStorage.getItem(originalKey) !== originalRaw)
+        throw new Error("The retained hierarchy copy changed while a separate draft was being saved. No operation was sent.");
+      writeCanvasSessionPointer(window.sessionStorage, CANVAS_SESSION_PREFIX + scope, writerId);
+      // Publish the new in-memory writer only after its durable copy and
+      // pointer are verified. Failure leaves the active UNKNOWN intact.
+      original.draft = next; original.writerId = writerId; original.lastRaw = raw;
+      liveCanvasDrafts.set(scope, original);
+      original.listeners.forEach(listener => listener()); setDraft(next);
+      setBackupError(null); setError(null);
+      setNotice("Kept the original unconfirmed hierarchy copy unchanged and opened a separate draft on the later saved revision. Nothing was sent. Resolve overlaps and Commit explicitly for another operation.");
+      notifyCanvasRecovery(); refreshCopies();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); refreshCopies(); }
+  }
   function restore(entry: CanvasRecoveryEntry) {
     if (inFlight.current || session.current.removing || !entry.value.draft) return;
     try {
@@ -433,7 +492,9 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
   return <section className="canvas-draft-inspector" aria-label="Canvas object draft">
     <style>{CANVAS_DRAFT_STYLES}</style>
     {canvasDraftHasWork(draft) && <p className="inspector-note" role="status">
-      {pending ? draft.awaiting?.group === "removal" ? "Removal pending. No duplicate request will be sent." : "Saving this snapshot. You can keep editing." : "Local Canvas draft · not yet committed."}
+      {pending ? draft.awaiting?.group === "removal" ? "Removal pending. No duplicate request will be sent." : "Saving this snapshot. You can keep editing."
+        : draft.awaiting?.group === "hierarchy" ? "The retained hierarchy outcome is unconfirmed. No request is sent again automatically."
+        : "Local Canvas draft · not yet committed."}
     </p>}
     {notice && <p className="production-notice" role="status">{notice}</p>}
     {error && <p className="production-error" role="alert" id={"canvas-draft-error-" + node.id}>{error}</p>}
@@ -463,25 +524,32 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
         <p>{new Date(entry.value.updatedAt).toLocaleString()} · {entry.value.draft ? "local object input" : "clean checkpoint"}</p>
         {entry.value.draft && <button className="button compact" type="button" disabled={pending} onClick={() => restore(entry)} aria-label={"Restore Canvas draft " + entry.value.writerId}>Restore copy</button>}
         <button className="button compact" type="button" onClick={() => download(entry.raw, "canvas-recovery-" + entry.value.writerId + ".json")} aria-label={"Download Canvas draft " + entry.value.writerId}>Download copy</button>
-        <button className="button compact" type="button" disabled={pending} onClick={() => discardCopy(entry.key, entry.raw)} aria-label={"Discard Canvas draft " + entry.value.writerId}>Discard copy</button>
+        <button className="button compact" type="button" disabled={pending || entry.value.draft?.awaiting?.group === "hierarchy"}
+          title={entry.value.draft?.awaiting?.group === "hierarchy" ? "This original hierarchy outcome is still unconfirmed." : undefined}
+          onClick={() => discardCopy(entry.key, entry.raw)} aria-label={"Discard Canvas draft " + entry.value.writerId}>Discard copy</button>
       </div>)}
     </details>}
     {draft.awaiting && !pending && <section className="production-notice" role="region" aria-label="Unconfirmed Canvas submission">
       <p>{draft.awaiting.group === "removal"
         ? "The removal request outcome is unconfirmed. Review retains the current object and input locally; it cannot cancel a service operation or establish that it failed."
         : "A previous submission has no matching observed saved revision. The retained input will not be sent automatically."}</p>
-      <button className="button compact" type="button" onClick={() => {
+      {draft.awaiting.group === "hierarchy" ? <>
+        <p>{canvasHierarchyReviewIssue(draft, project)
+          ?? "A later saved revision is available. It does not identify the original outcome; a separate explicit draft keeps the original copy unchanged."}</p>
+        <button className="button compact" type="button" disabled={canvasHierarchyReviewIssue(draft, project) !== null}
+          onClick={separateHierarchyIntent}>Keep hierarchy input as a separate draft</button>
+      </> : <button className="button compact" type="button" onClick={() => {
         const current = session.current.draft;
         if (current.awaiting) replace(reconcileCanvasDraft(releaseCanvasSubmission(current, current.awaiting.id), projectRef.current));
         setNotice("Reviewed the retained Canvas input against the current saved revision. Resolve overlaps and commit explicitly.");
-      }}>Review Canvas draft on current revision</button>
+      }}>Review Canvas draft on current revision</button>}
     </section>}
     {contextConflicts.length > 0 && <section className="production-notice" role="region" aria-label="Canvas object context">
       <strong>Review the changed object context</strong>
-      <p>The object's kind, parent or coordinate space changed. The retained {contextConflicts.join(" and ")} input needs your review even if its numbers still match.</p>
+      <p>The object's kind, parent, coordinate space or captured reparent frames changed. The retained {contextConflicts.join(" and ")} input needs your review even if its numbers still match.</p>
       <dl><dt>Original context</dt><dd style={{ overflowWrap: "anywhere" }}>{draft.baseContext.kind} · parent {draft.baseContext.parent_id ?? "scene root"} · {draft.baseContext.coordinate_space}</dd>
         <dt>Saved context</dt><dd style={{ overflowWrap: "anywhere" }}>{node.kind} · parent {node.parent_id ?? "scene root"} · {node.coordinate_space}</dd></dl>
-      <button className="button compact" type="button" disabled={pending} onClick={() => {
+      <button className="button compact" type="button" disabled={pending || draft.awaiting?.group === "hierarchy"} onClick={() => {
         replace(reviewCanvasContext(session.current.draft, projectRef.current));
         setNotice("Kept the raw inputs in the current object context. Resolve any value overlaps and commit explicitly.");
       }}>Review Canvas object context</button>
@@ -534,13 +602,14 @@ function CanvasDraftInspector({ project, scene, node, commit, dragPreview }: {
       {canvasFieldIssue("text", draft.fields.text.raw) && <span id={fieldId("text") + "-error"} className="production-error">{canvasFieldIssue("text", draft.fields.text.raw)}</span>}
     </label>
     <button className="button full" type="button" onClick={() => void save("text")} disabled={pending || textIssue !== null} title={textIssue ?? undefined}>Commit text</button>
-    <CanvasStructureEditor scene={scene} node={node} remove={() => void removeObject()}
+    <CanvasStructureEditor project={project} scene={scene} node={node} remove={() => void removeObject()}
       removalErrorId={error ? "canvas-draft-error-" + node.id : undefined} draft={draft}
-      edit={edit} saveStyle={() => void save("style")} styleIssue={canvasGroupIssue(draft,project,"style")}
+      edit={edit} editReparentPolicy={editReparentPolicy} saveStyle={() => void save("style")} styleIssue={canvasGroupIssue(draft,project,"style")}
       saveHierarchy={() => void save("hierarchy")} hierarchyIssue={canvasGroupIssue(draft,project,"hierarchy")}
       relation={(operation, id) => void changeRelation(operation, id)}
       relationIssue={canvasRelationIssue(draft,project,"add")} pending={pending}/>
-    {canvasDraftHasWork(draft) && <button className="button full" type="button" disabled={pending} onClick={() => {
+    {canvasDraftHasWork(draft) && <button className="button full" type="button" disabled={pending || draft.awaiting?.group === "hierarchy"}
+      title={draft.awaiting?.group === "hierarchy" ? "Keep the original unconfirmed hierarchy copy until its outcome is established." : undefined} onClick={() => {
       replace(createCanvasDraft(projectRef.current, scene.id, node.id));
       setError(null); setNotice("Discarded this object's local input. The saved project and other object drafts are unchanged.");
     }}>Discard Canvas object draft</button>}
@@ -1262,7 +1331,7 @@ export default function CanvasWorkspace({
             project={project} scene={scene} profile={profile}
             sceneTime={scenePlayhead} onSelectNode={selectNode}
           />
-          <VisualLanguageEditor project={project} commit={commitRequired} />
+          <VisualLanguageEditor project={project} commit={async change => { await commitRequired(change); }} />
         </aside>
       </div>
     </div>

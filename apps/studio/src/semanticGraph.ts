@@ -32,6 +32,9 @@ export interface GraphTimeRange {
 export interface GraphPoint { x: number; y: number; }
 export interface GraphBox extends GraphPoint { width: number; height: number; }
 export interface GraphReferenceFrame { width: number; height: number; }
+/** Signed displacement from the route midpoint, not an absolute frame point. */
+export interface GraphLabelOffset { x: number; y: number; }
+export interface GraphLabelPlacement { kind: "polyline_midpoint"; offset: GraphLabelOffset; }
 
 export type GraphSubjectRef =
   | { kind: "scene"; scene_id: string }
@@ -94,6 +97,8 @@ export interface GraphEdgeGeometry {
   to_port: GraphPort;
   waypoints: GraphPoint[];
   label_box: GraphBox;
+  /** Absent retains the manual legacy box. Only an explicit edit opts into following. */
+  label_placement?: GraphLabelPlacement;
   appearance: GraphAppearance;
 }
 
@@ -324,6 +329,39 @@ export function graphEdgePoints(graph: SemanticGraph, edge: GraphEdgeGeometry): 
   if (!from || !to) fail("An edge endpoint is missing.");
   return [graphPortPoint(from!, edge.from_port), ...edge.waypoints, graphPortPoint(to!, edge.to_port)];
 }
+/** Resolve presentation geometry without mutating the authored manual box or route.
+ * Repeated/all-zero routes are defined here; the profile's edge admission remains separate.
+ */
+export function graphEdgeLabelBox(graph: SemanticGraph, edge: GraphEdgeGeometry): GraphBox {
+  box(edge.label_box, "Edge label box", graph.reference_frame);
+  if (!Object.hasOwn(edge, "label_placement")) return { ...edge.label_box };
+  const placement = edge.label_placement;
+  graphExact(placement, ["kind", "offset"], "Edge label placement");
+  member(placement.kind, ["polyline_midpoint"], "edge label placement");
+  graphExact(placement.offset, ["x", "y"], "Edge label offset");
+  finite(placement.offset.x, "Edge label offset X"); finite(placement.offset.y, "Edge label offset Y");
+  const points = graphEdgePoints(graph, edge);
+  points.forEach(value => point(value, "Edge route point", graph.reference_frame));
+  const lengths = points.slice(1).map((value, index) => Math.hypot(value.x - points[index].x, value.y - points[index].y));
+  const total = lengths.reduce((sum, length) => sum + length, 0);
+  finite(total, "Edge route length");
+  let midpoint = points[0], remaining = total / 2;
+  if (total > 0) for (let index = 0; index < lengths.length; index++) {
+    const length = lengths[index];
+    if (length === 0) continue;
+    if (remaining <= length) {
+      const from = points[index], to = points[index + 1], ratio = remaining / length;
+      midpoint = { x: from.x + (to.x - from.x) * ratio, y: from.y + (to.y - from.y) * ratio };
+      break;
+    }
+    remaining -= length;
+  }
+  const resolved = { x: midpoint.x + placement.offset.x - edge.label_box.width / 2,
+    y: midpoint.y + placement.offset.y - edge.label_box.height / 2,
+    width: edge.label_box.width, height: edge.label_box.height };
+  box(resolved, "Resolved edge label box", graph.reference_frame);
+  return resolved;
+}
 /** Closed shape and historical validity; current references and authoring admission are separate checks. */
 export function validateSemanticGraphShape(candidate: unknown, rate?: RationalTime): asserts candidate is SemanticGraph {
   graphExact(candidate, ["id", "scene_id", "component_version", "subject_ref", "time_range", "brand_profile_ref", "variant_profile_ref", "reference_frame", "motion", "style", "content", "authorship"], "Semantic Graph");
@@ -359,13 +397,15 @@ export function validateSemanticGraphShape(candidate: unknown, rate?: RationalTi
   }
   for (const e of g.content.edges) {
     const keys = ["id", "label", "from_vertex_id", "to_vertex_id", "from_port", "to_port", "waypoints", "label_box", "appearance"];
-    graphExact(e, [...keys, ...(g.content.kind === "causal_diagram" ? ["influence", "basis"] : ["channel"])], "Edge"); ownId(e.id); text(e.label, 256, "Edge label");
+    graphExact(e, [...keys, ...(graphRecord(e) && Object.hasOwn(e, "label_placement") ? ["label_placement"] : []),
+      ...(g.content.kind === "causal_diagram" ? ["influence", "basis"] : ["channel"])], "Edge"); ownId(e.id); text(e.label, 256, "Edge label");
     const from = g.content.vertices.find(v => v.id === e.from_vertex_id), to = g.content.vertices.find(v => v.id === e.to_vertex_id);
     if (!from || !to || from.id === to.id) fail("An edge needs two distinct existing endpoints; self loops are not admitted by this profile.");
     member(e.from_port, ["top", "right", "bottom", "left"], "edge source port"); member(e.to_port, ["top", "right", "bottom", "left"], "edge target port");
     if (!Array.isArray(e.waypoints) || e.waypoints.length > GRAPH_LIMITS.waypoints) fail("Graph waypoint budget exceeded.");
     e.waypoints.forEach(p => point(p, "Edge waypoint", g.reference_frame)); box(e.label_box, "Edge label box", g.reference_frame);
     const points = graphEdgePoints(g, e); for (let i = 1; i < points.length; i++) if (graphSame(points[i], points[i - 1])) fail("Edge geometry has a degenerate segment.");
+    graphEdgeLabelBox(g, e);
     appearance(e.appearance, g.time_range.duration, rate, "Edge appearance");
     if (graphCompareTime(e.appearance.at, graphAddTime(from!.appearance.at, from!.appearance.duration)) < 0 || graphCompareTime(e.appearance.at, graphAddTime(to!.appearance.at, to!.appearance.duration)) < 0) fail("Edges begin only after both vertices are fully visible, including motion off.");
     if (g.content.kind === "causal_diagram") {
@@ -480,7 +520,16 @@ export function graphFromRaw(raw: GraphRaw): SemanticGraph {
   g.style.font_size = number(g.style.font_size, "Font size"); g.style.edge_width = number(g.style.edge_width, "Edge width"); b(g.style.disclosure_box, "Disclosure");
   if (g.brand_profile_ref) g.brand_profile_ref.version = number(g.brand_profile_ref.version, "Brand version");
   g.content.vertices.forEach(v => { b(v.box, "Vertex"); if (v.target?.kind === "measured_datum") v.target.table_version = number(v.target.table_version, "Table version"); });
-  g.content.edges.forEach(e => { b(e.label_box, "Edge label"); e.waypoints.forEach(p => { p.x = number(p.x, "Waypoint X"); p.y = number(p.y, "Waypoint Y"); }); });
+  g.content.edges.forEach(e => {
+    b(e.label_box, "Edge label"); e.waypoints.forEach(p => { p.x = number(p.x, "Waypoint X"); p.y = number(p.y, "Waypoint Y"); });
+    if (Object.hasOwn(e, "label_placement")) {
+      graphExact(e.label_placement, ["kind", "offset"], "Edge label placement");
+      member(e.label_placement.kind, ["polyline_midpoint"], "edge label placement");
+      graphExact(e.label_placement.offset, ["x", "y"], "Edge label offset");
+      e.label_placement.offset.x = number(e.label_placement.offset.x, "Edge label offset X");
+      e.label_placement.offset.y = number(e.label_placement.offset.y, "Edge label offset Y");
+    }
+  });
   return g;
 }
 export function newSemanticGraph(project: Project, scene: Scene, profile: DeliverableProfile, kind: GraphContent["kind"], id: string = crypto.randomUUID()): SemanticGraph {

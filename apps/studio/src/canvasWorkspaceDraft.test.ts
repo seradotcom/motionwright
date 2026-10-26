@@ -6,6 +6,8 @@ import {
   canvasDraftScope, canvasFieldIssue, canvasGroupIssue, canvasRecoveryKey, canvasSubmissionMatches,
   createCanvasDraft, decodeCanvasRecovery, discardCanvasRecovery, editCanvasField, prepareCanvasSubmission, readCanvasRecoveries,
   reconcileCanvasDraft, releaseCanvasSubmission, resolveCanvasField, reviewCanvasContext, writeCanvasRecovery,
+  acknowledgeCanvasReparent, canvasHierarchyReviewIssue, editCanvasReparentPolicy,
+  proposeCanvasReparent, reviewCanvasHierarchySubmission,
 } from "./canvasWorkspaceDraft";
 import type { CanvasDraftStorage, CanvasRecovery, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
 
@@ -223,6 +225,308 @@ describe("Canvas input continuity invariants", () => {
     expect(() => prepareCanvasSubmission(draft, project, "transform", "blocked")).toThrow(/lock/);
     expect(draft.fields.width.raw).toBe("960");
     expect(draft.fields.text.raw).toBe("Kept under lock");
+  });
+});
+
+function reparentSource() {
+  const project = source(), scene = project.scenes[0];
+  const child = scene.nodes[0], oldParent = scene.nodes[1];
+  const newParent = { ...structuredClone(oldParent), id: "018f0000-0000-7000-8000-000000000391", name: "New parent" };
+  scene.nodes = [child, oldParent, newParent];
+  project.locks = [];
+  for (const item of scene.nodes) {
+    item.coordinate_space = "project_pixels";
+    item.property_locks = [];
+    item.keyframes = [];
+    item.parent_id = null;
+  }
+  Object.assign(oldParent, { x: 10, y: 20, width: 100, height: 80, rotation_deg: 90, opacity: 0.4 });
+  Object.assign(newParent, { x: 200, y: 40, width: 40, height: 120, rotation_deg: 0, opacity: 0.9 });
+  Object.assign(child, { x: 70, y: 65, width: 20, height: 10, rotation_deg: 15, opacity: 0.7, parent_id: oldParent.id, z_index: 1 });
+  return { project, scene, child, oldParent, newParent };
+}
+
+function reparentDraft(project: Project, parentId: string | null, mode?: "world" | "local") {
+  let draft = editCanvasField(draftFor(project), "parent_id", parentId ?? "", project);
+  draft = editCanvasField(draft, "z_index", "8", project);
+  return mode === undefined ? draft : editCanvasReparentPolicy(draft, project, mode);
+}
+
+function advancedReparentProject(project: Project) {
+  const next = structuredClone(project); next.revision++;
+  const branch = next.branches.find(item => item.id === next.active_branch);
+  if (!branch) throw new Error("The source fixture has no active branch");
+  branch.head_revision = next.revision;
+  return next;
+}
+
+describe("Canvas reparent policy preserves original intent and invocation authority", () => {
+  it("maps the child center through the direct top-left parent frames without inheriting ancestors", () => {
+    const { project, scene, child, oldParent, newParent } = reparentSource();
+    const ancestor = { ...structuredClone(newParent), id: "018f0000-0000-7000-8000-000000000392", x: 900, y: -700, rotation_deg: -63 };
+    scene.nodes.push(ancestor);
+    oldParent.parent_id = ancestor.id;
+    newParent.parent_id = ancestor.id;
+    const original = structuredClone(project);
+    const proposal = proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local");
+    // Fp=T(x,y)T(w/2,h/2)R(theta)T(-w/2,-h/2). The old local
+    // center is (60,20), so the new project center is (260,60).
+    expect(proposal.pose).toEqual({ x: 250, y: 55, width: 20, height: 10, rotation_deg: -75, opacity: 0.7 });
+    expect(proposal.positionChanged).toBe(true);
+    expect(proposal.rotationChanged).toBe(true);
+    expect(project).toEqual(original);
+  });
+
+  it("keeps implicit and explicit world geometry exact while only an explicit selector adds the wire policy", () => {
+    const { project, scene, child, newParent } = reparentSource();
+    child.coordinate_space = "normalized";
+    child.keyframes = [{ at: { num: "1", den: "1" }, property: "x", value: 99, interpolation: "linear" }];
+    const original = structuredClone(project);
+    for (const mode of [undefined, "world"] as const) {
+      const proposal = proposeCanvasReparent(project, scene.id, child.id, newParent.id, mode);
+      expect(proposal.pose).toEqual({ x: 70, y: 65, width: 20, height: 10, rotation_deg: 15, opacity: 0.7 });
+      expect([proposal.positionChanged, proposal.rotationChanged]).toEqual([false, false]);
+      const prepared = prepareCanvasSubmission(reparentDraft(project, newParent.id, mode), project, "hierarchy", "world-" + mode);
+      expect(prepared.change).toEqual({ type: "reparent_canvas_node", scene_id: scene.id, node_id: child.id,
+        parent_id: newParent.id, z_index: 8, ...(mode === undefined ? {} : { preserve: mode }) });
+      expect(prepared.submission.reparent?.pose).toEqual(proposal.pose);
+      expect(roundTrip(prepared.draft).awaiting).toEqual(prepared.submission);
+    }
+    expect(project).toEqual(original);
+  });
+
+  it("uses root identity and exact same-frame identity without introducing false geometry locks", () => {
+    const { project, scene, child, oldParent, newParent } = reparentSource();
+    child.parent_id = null;
+    Object.assign(newParent, { x: 30, y: -20, rotation_deg: 0 });
+    expect(proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local").pose)
+      .toEqual({ x: 100, y: 45, width: 20, height: 10, rotation_deg: 15, opacity: 0.7 });
+    child.parent_id = newParent.id;
+    expect(proposeCanvasReparent(project, scene.id, child.id, null, "local").pose)
+      .toEqual({ x: 40, y: 85, width: 20, height: 10, rotation_deg: 15, opacity: 0.7 });
+    child.property_locks.push("position", "rotation");
+    const unchanged = { x: child.x, y: child.y, width: child.width, height: child.height,
+      rotation_deg: child.rotation_deg, opacity: child.opacity };
+    expect(proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local").pose).toEqual(unchanged);
+    Object.assign(oldParent, { x: newParent.x, y: newParent.y, width: newParent.width, height: newParent.height,
+      rotation_deg: newParent.rotation_deg });
+    expect(proposeCanvasReparent(project, scene.id, child.id, oldParent.id, "local").pose).toEqual(unchanged);
+  });
+
+  it("refuses unsupported local spaces, geometric motion, invalid policies and non-finite results without mutation", () => {
+    for (const role of [0, 1, 2]) for (const space of ["normalized", "scene_local"] as const) {
+      const { project, scene, child, newParent } = reparentSource();
+      scene.nodes[role].coordinate_space = space;
+      const original = structuredClone(project);
+      expect(() => proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local")).toThrow(/space|project_pixels/);
+      expect(project).toEqual(original);
+    }
+    for (const role of [0, 1, 2]) for (const property of ["x", "y", "width", "height", "rotation_deg"] as const) {
+      const { project, scene, child, newParent } = reparentSource();
+      scene.nodes[role].keyframes.push({ at: { num: "1", den: "1" }, property, value: 5, interpolation: "hold" });
+      const original = structuredClone(project);
+      expect(() => proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local")).toThrow(/motion|keyframe/);
+      expect(project).toEqual(original);
+    }
+    const { project, scene, child, newParent } = reparentSource();
+    for (const item of scene.nodes) item.keyframes.push({ at: { num: "1", den: "1" }, property: "opacity", value: 0.5, interpolation: "linear" });
+    expect(proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local").pose.x).toBe(250);
+    for (const invalid of [null, "auto", ["local"]]) {
+      expect(() => proposeCanvasReparent(project, scene.id, child.id, newParent.id, invalid as never)).toThrow(/policy/);
+    }
+    newParent.x = Number.MAX_VALUE; newParent.width = Number.MAX_VALUE;
+    expect(() => proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local")).toThrow(/finite/);
+  });
+
+  it("checks Position and Rotation only for the resulting changed properties and always retains hierarchy locks", () => {
+    const { project, scene, child, oldParent, newParent } = reparentSource();
+    Object.assign(oldParent, { x: 0, y: 0, width: 40, height: 40, rotation_deg: 0 });
+    Object.assign(newParent, { x: 0, y: 0, width: 40, height: 40, rotation_deg: 90 });
+    Object.assign(child, { x: 10, y: 15, width: 20, height: 10, rotation_deg: 0 });
+    child.property_locks = ["position"];
+    expect(proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local")).toMatchObject({ positionChanged: false, rotationChanged: true });
+    child.property_locks = ["rotation"];
+    expect(() => proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local")).toThrow(/lock/);
+    newParent.rotation_deg = 0; newParent.x = 5;
+    expect(proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local")).toMatchObject({ positionChanged: true, rotationChanged: false });
+    for (const lock of ["position", "parent", "order"] as const) {
+      child.property_locks = [lock];
+      expect(() => proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local")).toThrow(/lock/);
+    }
+    child.property_locks = [];
+    for (const kind of ["content", "position"] as const) {
+      project.locks = [{ id: "reparent-lock", resource: "scene:" + scene.id, kind, note: "Authored lock" }];
+      expect(() => proposeCanvasReparent(project, scene.id, child.id, newParent.id, "local")).toThrow(/lock/);
+    }
+  });
+
+  it("keeps raw Z and captured child and parent frames across recovery and rejects each frame drift before preparation", () => {
+    const { project, scene, child, newParent } = reparentSource();
+    const draft = reparentDraft(project, newParent.id, "local");
+    const retained = roundTrip(editCanvasField(draft, "z_index", "1e", project));
+    expect(retained.fields.z_index.raw).toBe("1e");
+    expect(retained.reparent).toEqual(draft.reparent && { ...draft.reparent, sequence: draft.reparent.sequence + 1 });
+    expect(() => prepareCanvasSubmission(retained, project, "hierarchy", "incomplete")).toThrow(/Z order/);
+    for (const role of [0, 1, 2]) {
+      const peer = advancedReparentProject(project);
+      peer.scenes[0].nodes[role].x += 1;
+      const observed = reconcileCanvasDraft(roundTrip(draft), peer);
+      expect(observed.reparent).toEqual(draft.reparent);
+      expect(observed.fields.parent_id.raw).toBe(newParent.id);
+      expect(() => prepareCanvasSubmission(observed, peer, "hierarchy", "drift-" + role)).toThrow(/context|frame|pose/);
+      const reviewed = reviewCanvasContext(observed, peer);
+      expect(prepareCanvasSubmission(reviewed, peer, "hierarchy", "reviewed-" + role).change).toMatchObject({ preserve: "local" });
+    }
+    const disjoint = advancedReparentProject(project);
+    disjoint.scenes[0].nodes[0].text = "A separate authored sentence";
+    disjoint.scenes[0].nodes[1].style.fill = "#456789";
+    expect(prepareCanvasSubmission(reconcileCanvasDraft(draft, disjoint), disjoint, "hierarchy", "disjoint").change)
+      .toMatchObject({ scene_id: scene.id, node_id: child.id, preserve: "local" });
+  });
+
+  it("does not retrofit frames or policy into legacy UNKNOWN copies and refuses unknown new metadata", () => {
+    const { project, newParent } = reparentSource();
+    const prepared = prepareCanvasSubmission(reparentDraft(project, newParent.id), project, "hierarchy", "legacy-pending");
+    const legacy = structuredClone(prepared.draft);
+    legacy.schema = "motionwright.canvas-draft/5";
+    delete legacy.reparent; delete legacy.awaiting!.reparent;
+    const legacyRaw = JSON.stringify(copy(legacy));
+    const decoded = decodeCanvasRecovery(legacyRaw, legacy.scope, "window-a").draft!;
+    const later = advancedReparentProject(project);
+    later.scenes[0].nodes[0].parent_id = newParent.id; later.scenes[0].nodes[0].z_index = 8;
+    const observed = reconcileCanvasDraft(decoded, later);
+    expect(observed.awaiting).toEqual(legacy.awaiting);
+    expect(observed.reparent).toBeUndefined();
+    expect(observed.awaiting?.reparent).toBeUndefined();
+    expect(acknowledgeCanvasReparent(observed, later, legacy.awaiting!)).toBe(observed);
+    expect(legacyRaw).toBe(JSON.stringify(copy(legacy)));
+    for (const mutate of [
+      (value: Record<string, unknown>) => { value.preserve = null; },
+      (value: Record<string, unknown>) => { value.preserve = ["local"]; },
+      (value: Record<string, unknown>) => { value.silentFallback = "world"; },
+    ]) {
+      const damaged = structuredClone(prepared.draft);
+      mutate(damaged.awaiting!.reparent as unknown as Record<string, unknown>);
+      expect(() => roundTrip(damaged)).toThrow(/reparent|policy|snapshot/);
+    }
+  });
+
+  it("requires the original scoped success as well as exact geometry and retains later incomplete author input", () => {
+    const { project, scene, child, newParent } = reparentSource();
+    const sent = prepareCanvasSubmission(reparentDraft(project, newParent.id, "local"), project, "hierarchy", "original-invocation");
+    const payload = JSON.stringify(sent.submission);
+    let later = editCanvasField(sent.draft, "z_index", "1e", project);
+    later = editCanvasField(later, "text", "  Later authored line\n");
+    const returned = advancedReparentProject(project);
+    Object.assign(returned.scenes[0].nodes[0], { ...sent.submission.reparent!.pose, parent_id: newParent.id, z_index: 8 });
+    const observed = reconcileCanvasDraft(roundTrip(later), returned);
+    expect(canvasSubmissionMatches(returned, observed, sent.submission)).toBe(true);
+    expect(observed.awaiting).toEqual(sent.submission);
+    expect(() => prepareCanvasSubmission(observed, returned, "hierarchy", "peer-match-replay")).toThrow(/unconfirmed/);
+    expect(acknowledgeCanvasReparent(observed, returned, { ...sent.submission, id: "another-invocation" })).toBe(observed);
+    for (const mutate of [
+      (value: Project) => { value.generation += "-foreign"; },
+      (value: Project) => { value.revision++; value.branches.find(branch => branch.id === value.active_branch)!.head_revision = value.revision; },
+      (value: Project) => { value.scenes[0].nodes[0].x += 1; },
+      (value: Project) => { value.scenes[0].nodes[0].rotation_deg += 1; },
+      (value: Project) => { value.scenes[0].nodes[0].parent_id = null; },
+      (value: Project) => { value.scenes[0].nodes[0].z_index++; },
+      (value: Project) => { value.scenes[0].nodes[0].width += 1; },
+      (value: Project) => { value.scenes[0].nodes[0].height += 1; },
+      (value: Project) => { value.scenes[0].nodes[0].opacity -= 0.1; },
+      (value: Project) => { value.scenes[0].nodes[0].coordinate_space = "normalized"; },
+      (value: Project) => { value.scenes[0].nodes[0].text = "Unexpected extra text effect"; },
+      (value: Project) => { value.scenes[0].nodes[0].style.fill = "#ABCDEF"; },
+      (value: Project) => { value.scenes[0].nodes[0].keyframes.push({ at: { num: "1", den: "1" }, property: "opacity", value: 0.2, interpolation: "hold" }); },
+    ]) {
+      const wrong = structuredClone(returned); mutate(wrong);
+      expect(acknowledgeCanvasReparent(observed, wrong, sent.submission)).toBe(observed);
+    }
+    const alteredPayload = structuredClone(observed);
+    alteredPayload.awaiting!.fields.z_index = { ...alteredPayload.awaiting!.fields.z_index!, raw: "9", value: "9" };
+    const alteredReply = structuredClone(returned); alteredReply.scenes[0].nodes[0].z_index = 9;
+    expect(acknowledgeCanvasReparent(alteredPayload, alteredReply, sent.submission)).toBe(alteredPayload);
+    const acknowledged = acknowledgeCanvasReparent(observed, returned, sent.submission);
+    expect(acknowledged.awaiting).toBeNull();
+    expect(acknowledged.fields.z_index.raw).toBe("1e");
+    expect(acknowledged.fields.text.raw).toBe("  Later authored line\n");
+    expect(JSON.stringify(sent.submission)).toBe(payload);
+    expect(project.scenes[0].nodes[0]).toEqual(child);
+    expect(acknowledged.scope).toBe(canvasDraftScope(project, scene.id, child.id));
+  });
+
+  it("uses the declared bound only for original local X and Y across non-cardinal, tiny and large finite frames", () => {
+    for (const factor of [1, 1e-12, 1e100]) {
+      const { project, scene, child, oldParent, newParent } = reparentSource();
+      for (const item of scene.nodes) for (const field of ["x", "y", "width", "height"] as const) item[field] *= factor;
+      oldParent.rotation_deg = 17; newParent.rotation_deg = -31;
+      const sent = prepareCanvasSubmission(reparentDraft(project, newParent.id, "local"), project, "hierarchy", "non-cardinal-" + factor);
+      const predicted = sent.submission.reparent!.pose;
+      expect(predicted.rotation_deg).toBe(-33);
+      expect([predicted.width, predicted.height, predicted.opacity]).toEqual([child.width, child.height, child.opacity]);
+      const frozenTerms = [1, predicted.x, predicted.y];
+      for (const item of [child, oldParent, newParent]) frozenTerms.push(item.x, item.y, item.width, item.height);
+      const bound = 1e-9 + 64 * Number.EPSILON * Math.max(...frozenTerms.map(Math.abs));
+      const returned = advancedReparentProject(project);
+      Object.assign(returned.scenes[0].nodes[0], { ...predicted, parent_id: newParent.id, z_index: 8,
+        x: predicted.x + bound / 2, y: predicted.y - bound / 2 });
+      const originalReturn = structuredClone(returned);
+      expect(canvasSubmissionMatches(returned, sent.draft, sent.submission)).toBe(false);
+      expect(reconcileCanvasDraft(sent.draft, returned).awaiting).toEqual(sent.submission);
+      const accepted = acknowledgeCanvasReparent(sent.draft, returned, sent.submission);
+      expect(accepted.awaiting).toBeNull();
+      expect(accepted.fields.x.base).toBe(String(returned.scenes[0].nodes[0].x));
+      expect(accepted.fields.y.raw).toBe(String(returned.scenes[0].nodes[0].y));
+      expect(returned).toEqual(originalReturn);
+      for (const field of ["x", "y"] as const) {
+        const outside = structuredClone(returned); outside.scenes[0].nodes[0][field] = predicted[field] + 4 * bound;
+        expect(acknowledgeCanvasReparent(sent.draft, outside, sent.submission)).toBe(sent.draft);
+        outside.scenes[0].nodes[0][field] = Infinity;
+        expect(acknowledgeCanvasReparent(sent.draft, outside, sent.submission)).toBe(sent.draft);
+      }
+      if (factor === 1) for (const field of ["rotation_deg", "width", "height", "opacity"] as const) {
+        const changedInvariant = structuredClone(returned);
+        changedInvariant.scenes[0].nodes[0][field] += 1e-10;
+        expect(acknowledgeCanvasReparent(sent.draft, changedInvariant, sent.submission)).toBe(sent.draft);
+      }
+    }
+    for (const mode of [undefined, "world", "local"] as const) {
+      const { project, child, oldParent, newParent } = reparentSource();
+      const parent = mode === "local" ? oldParent : newParent;
+      const sent = prepareCanvasSubmission(reparentDraft(project, parent.id, mode), project, "hierarchy", "exact-" + mode);
+      const returned = advancedReparentProject(project);
+      Object.assign(returned.scenes[0].nodes[0], { parent_id: parent.id, z_index: 8, x: child.x + 5e-10 });
+      expect(acknowledgeCanvasReparent(sent.draft, returned, sent.submission)).toBe(sent.draft);
+    }
+  });
+
+  it("blocks same-revision UNKNOWN review and preserves original bytes while an advanced revision starts a separate explicit intent", () => {
+    const { project, newParent } = reparentSource();
+    const sent = prepareCanvasSubmission(reparentDraft(project, newParent.id, "local"), project, "hierarchy", "held-original");
+    const storage = new MemoryStorage();
+    const original = retain(storage, copy(sent.draft, "window-a", 1));
+    const originalKey = canvasRecoveryKey(sent.draft.scope, "window-a");
+    expect(canvasHierarchyReviewIssue(sent.draft, project)).toMatch(/later|revision/);
+    expect(() => reviewCanvasHierarchySubmission(sent.draft, project)).toThrow(/later|revision/);
+    expect(() => discardCanvasRecovery(storage, originalKey, original)).toThrow(/unconfirmed/);
+    expect(storage.getItem(originalKey)).toBe(original);
+    expect(reconcileCanvasDraft(roundTrip(sent.draft), project).awaiting).toEqual(sent.submission);
+    // Confirming an unchanged pending copy must not rewrite updatedAt. The
+    // caller separately confirms its session pointer before it may fork.
+    expect(retain(storage, copy(roundTrip(sent.draft), "window-a", 9999))).toBe(original);
+    const peer = advancedReparentProject(project); peer.title += " peer revision";
+    const reviewed = reviewCanvasHierarchySubmission(roundTrip(sent.draft), peer);
+    expect(reviewed.awaiting).toBeNull();
+    expect(reviewed.fields.parent_id.raw).toBe(newParent.id);
+    expect(reviewed.reparent?.preserve).toBe("local");
+    retain(storage, copy(reviewed, "separate-intent", 10000));
+    expect(storage.getItem(originalKey)).toBe(original);
+    expect(storage.length).toBe(2);
+    expect(readCanvasRecoveries(storage, sent.draft.scope).entries.find(entry => entry.key === originalKey)?.value.draft?.awaiting)
+      .toEqual(sent.submission);
+    storage.data.set(originalKey, original + " ");
+    expect(() => retain(storage, copy(sent.draft, "window-a", 10001))).toThrow(/changed/);
+    expect(storage.getItem(originalKey)).toBe(original + " ");
   });
 });
 
@@ -569,15 +873,19 @@ describe("Canvas parent and Z authoring uses the same persistent revision-scoped
     draft = editCanvasField(draft,"z_index","6");
     const attempted = prepareCanvasSubmission(draft,project,"hierarchy","hier-ack");
     draft = editCanvasField(attempted.draft,"z_index","9");
-    const saved=structuredClone(project);saved.revision++;
+    const saved=advancedReparentProject(project);
     if(attempted.change.type!=="reparent_canvas_node")throw new Error("Wrong command");
     saved.scenes[0].nodes[0].parent_id=attempted.change.parent_id;
     saved.scenes[0].nodes[0].z_index=attempted.change.z_index;
     expect(canvasSubmissionMatches(saved,draft,attempted.submission)).toBe(true);
-    draft=reconcileCanvasDraft(draft,saved);
+    // Only the Project returned by this original successful invocation can
+    // acknowledge a hierarchy operation; a peer observation is insufficient.
+    expect(reconcileCanvasDraft(draft,saved).awaiting).toEqual(attempted.submission);
+    draft=acknowledgeCanvasReparent(draft,saved,attempted.submission);
     expect(draft.awaiting).toBeNull();
     expect(draft.fields.z_index.raw).toBe("9");
     expect(draft.fields.parent_id.raw).toBe(scene.nodes[1].id);
+    draft=reviewCanvasContext(draft,saved);
     expect(prepareCanvasSubmission(draft,saved,"hierarchy","later").change).toMatchObject({z_index:9});
   });
 

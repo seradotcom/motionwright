@@ -1,4 +1,136 @@
-import type { CanvasNode, CanvasTransform, Change, NodeProperty, NodeStyle, NodeRelation, Project } from "./types";
+import type { CanvasNode, CanvasTransform, Change, CoordinateSpace, NodeProperty, NodeStyle, NodeRelation, Project, ReparentCoordinatePolicy } from "./types";
+
+export interface CanvasReparentFrame {
+  id: string; coordinate_space: CoordinateSpace; geometricMotion: boolean;
+  x: number; y: number; width: number; height: number; rotation_deg: number;
+}
+export interface CanvasReparentSnapshot {
+  parentId: string | null;
+  child: { parent_id: string | null; coordinate_space: CoordinateSpace; geometricMotion: boolean; pose: CanvasTransform };
+  oldParent: CanvasReparentFrame | null; newParent: CanvasReparentFrame | null;
+}
+export interface CanvasReparentProposal {
+  pose: CanvasTransform; positionChanged: boolean; rotationChanged: boolean; snapshot: CanvasReparentSnapshot;
+}
+export interface CanvasReparentIntent {
+  preserve?: ReparentCoordinatePolicy;
+  sequence: number; snapshot: CanvasReparentSnapshot;
+}
+export type CanvasReparentUnchanged = Pick<CanvasNode,
+  "id" | "name" | "kind" | "text" | "coordinate_space" | "style" | "relations" | "property_locks" | "keyframes">;
+export interface CanvasReparentSubmission extends CanvasReparentIntent { pose: CanvasTransform; unchanged: CanvasReparentUnchanged }
+
+const canvasPose = (node: CanvasTransform): CanvasTransform => ({ x: node.x, y: node.y, width: node.width,
+  height: node.height, rotation_deg: node.rotation_deg, opacity: node.opacity });
+const geometricMotion = (node: CanvasNode) => node.keyframes.some(key => key.property !== "opacity");
+const unchangedReparentFields = (node: CanvasReparentUnchanged): CanvasReparentUnchanged => ({
+  id: node.id, name: node.name, kind: node.kind, text: node.text, coordinate_space: node.coordinate_space,
+  style: Object.fromEntries(CANVAS_STYLE_FIELDS.map(field => [field, node.style[field]])) as unknown as NodeStyle,
+  relations: node.relations.map(item => ({ id: item.id, kind: item.kind, target_id: item.target_id })),
+  property_locks: [...node.property_locks],
+  keyframes: node.keyframes.map(key => ({ at: { num: key.at.num, den: key.at.den }, property: key.property,
+    value: key.value, interpolation: key.interpolation })),
+});
+const reparentFrame = (node: CanvasNode | undefined): CanvasReparentFrame | null => node ? {
+  id: node.id, coordinate_space: node.coordinate_space, geometricMotion: geometricMotion(node),
+  x: node.x, y: node.y, width: node.width, height: node.height, rotation_deg: node.rotation_deg,
+} : null;
+function captureReparentSnapshot(project: Project, sceneId: string, nodeId: string, parentId: string | null): CanvasReparentSnapshot {
+  const scene = project.scenes.find(item => item.id === sceneId), node = scene?.nodes.find(item => item.id === nodeId);
+  if (!scene || !node) throw new Error("The Canvas object is no longer in this saved scene.");
+  return { parentId, child: { parent_id: node.parent_id, coordinate_space: node.coordinate_space,
+    geometricMotion: geometricMotion(node), pose: canvasPose(node) },
+    oldParent: reparentFrame(scene.nodes.find(item => item.id === node.parent_id)),
+    newParent: reparentFrame(scene.nodes.find(item => item.id === parentId)) };
+}
+function validateReparentPose(pose: CanvasTransform): void {
+  if (![pose.x, pose.y, pose.width, pose.height, pose.rotation_deg, pose.opacity].every(Number.isFinite))
+    throw new Error("Canvas reparent geometry must remain finite.");
+  if (pose.width < 0 || pose.height < 0 || pose.opacity < 0 || pose.opacity > 1)
+    throw new Error("Canvas reparent geometry is outside the admitted size or opacity bounds.");
+}
+function validateReparentPolicy(preserve: unknown): asserts preserve is ReparentCoordinatePolicy | undefined {
+  if (preserve !== undefined && preserve !== "world" && preserve !== "local")
+    throw new Error("The Canvas reparent policy must be absent, world or local.");
+}
+const frameIdentity = (frame: CanvasReparentFrame | null) => frame === null
+  || (frame.x === 0 && frame.y === 0 && frame.rotation_deg === 0);
+const sameReparentFrame = (left: CanvasReparentFrame | null, right: CanvasReparentFrame | null) =>
+  (frameIdentity(left) && frameIdentity(right)) || Boolean(left && right && left.x === right.x && left.y === right.y
+    && left.rotation_deg === right.rotation_deg
+    && (left.rotation_deg === 0 || (left.width === right.width && left.height === right.height)));
+function reparentPose(snapshot: CanvasReparentSnapshot, preserve?: ReparentCoordinatePolicy): CanvasTransform {
+  validateReparentPolicy(preserve);
+  const pose = canvasPose(snapshot.child.pose);
+  validateReparentPose(pose);
+  // An absent policy is historical world preservation. It never interprets
+  // an old coordinate space or changes any stored motion channel.
+  if (preserve !== "local") return pose;
+  if ((snapshot.child.parent_id !== null && !snapshot.oldParent) || (snapshot.parentId !== null && !snapshot.newParent))
+    throw new Error("A captured Canvas parent frame is missing. Review the saved hierarchy.");
+  for (const item of [snapshot.child, snapshot.oldParent, snapshot.newParent]) {
+    if (item && item.coordinate_space !== "project_pixels")
+      throw new Error("Local reparenting requires project_pixels for the child and both direct parents.");
+    if (item?.geometricMotion) throw new Error("Local reparenting cannot reinterpret geometric motion keyframes. Keep world geometry or review the authored motion.");
+  }
+  for (const frame of [snapshot.oldParent, snapshot.newParent]) if (frame) {
+    if (![frame.x, frame.y, frame.width, frame.height, frame.rotation_deg].every(Number.isFinite)
+      || frame.width < 0 || frame.height < 0) throw new Error("Canvas parent frames must contain finite geometry and nonnegative sizes.");
+  }
+  if (sameReparentFrame(snapshot.oldParent, snapshot.newParent)) return pose;
+  const rotate = (x: number, y: number, degrees: number): [number, number] => {
+    const radians = degrees * (Math.PI / 180), cosine = Math.cos(radians), sine = Math.sin(radians);
+    return [cosine * x - sine * y, sine * x + cosine * y];
+  };
+  let cx = pose.x + pose.width / 2, cy = pose.y + pose.height / 2;
+  const old = snapshot.oldParent, next = snapshot.newParent;
+  // F=T(x,y)T(w/2,h/2)R(theta)T(-w/2,-h/2). These are only
+  // the two direct frames; ancestors, camera and opacity do not participate.
+  if (old) {
+    const local = rotate(cx - (old.x + old.width / 2), cy - (old.y + old.height / 2), -old.rotation_deg);
+    cx = local[0] + old.width / 2; cy = local[1] + old.height / 2;
+  }
+  if (next) {
+    const world = rotate(cx - next.width / 2, cy - next.height / 2, next.rotation_deg);
+    cx = next.x + next.width / 2 + world[0]; cy = next.y + next.height / 2 + world[1];
+  }
+  const result = { ...pose, x: cx - pose.width / 2, y: cy - pose.height / 2,
+    rotation_deg: pose.rotation_deg + ((next?.rotation_deg ?? 0) - (old?.rotation_deg ?? 0)) };
+  validateReparentPose(result);
+  return result;
+}
+
+/** Shared by the editor and browser adapter. This function only reads the
+ * saved Project; it validates the complete operation before either caller
+ * changes parent, order or pose. The service remains authoritative. */
+export function proposeCanvasReparent(
+  project: Project, sceneId: string, nodeId: string, parentId: string | null, preserve?: ReparentCoordinatePolicy,
+): CanvasReparentProposal {
+  validateReparentPolicy(preserve);
+  const scene = project.scenes.find(item => item.id === sceneId), node = scene?.nodes.find(item => item.id === nodeId);
+  if (!scene || !node) throw new Error("The Canvas object is no longer in this saved scene.");
+  if (parentId !== null && (parentId === nodeId || !scene.nodes.some(item => item.id === parentId)))
+    throw new Error("Select another object in the same saved scene as parent.");
+  let cursor = parentId, seen = new Set<string>();
+  while (cursor !== null) {
+    if (cursor === nodeId) throw new Error("Cannot move this object under its descendant.");
+    if (seen.has(cursor)) throw new Error("The parent hierarchy is cyclic; review the saved scene.");
+    seen.add(cursor);
+    const parent = scene.nodes.find(item => item.id === cursor);
+    if (!parent) throw new Error("A saved Canvas parent frame is missing.");
+    cursor = parent.parent_id;
+  }
+  const snapshot = captureReparentSnapshot(project, sceneId, nodeId, parentId);
+  if (snapshot.child.parent_id !== null && !snapshot.oldParent) throw new Error("The previous Canvas parent frame is missing.");
+  const pose = reparentPose(snapshot, preserve), positionChanged = pose.x !== node.x || pose.y !== node.y,
+    rotationChanged = pose.rotation_deg !== node.rotation_deg;
+  if (project.locks.some(lock => lock.resource === "scene:" + sceneId && (lock.kind === "content" || lock.kind === "position"))
+    || node.property_locks.includes("parent") || node.property_locks.includes("order")
+    || (positionChanged && node.property_locks.includes("position"))
+    || (rotationChanged && node.property_locks.includes("rotation")))
+    throw new Error("A saved lock protects these Canvas reparent fields. Your draft is kept.");
+  return { pose, positionChanged, rotationChanged, snapshot };
+}
 
 // These records preserve editor input. Project revisions, locks and the existing
 // service remain authoritative; recovery never executes a stored command.
@@ -25,12 +157,14 @@ export interface CanvasSubmission {
   context: CanvasDraftContext;
   fields: Partial<Record<CanvasDraftField, { raw: string; sequence: number; value: string }>>;
   relations?: NodeRelation[]; relationOperation?: "add" | "remove";
+  reparent?: CanvasReparentSubmission;
 }
 export interface CanvasWorkspaceDraft {
-  schema: "motionwright.canvas-draft/1" | "motionwright.canvas-draft/2" | "motionwright.canvas-draft/3" | "motionwright.canvas-draft/4" | "motionwright.canvas-draft/5"; scope: string; sceneId: string; nodeId: string;
+  schema: "motionwright.canvas-draft/1" | "motionwright.canvas-draft/2" | "motionwright.canvas-draft/3" | "motionwright.canvas-draft/4" | "motionwright.canvas-draft/5" | "motionwright.canvas-draft/6"; scope: string; sceneId: string; nodeId: string;
   baseContext: CanvasDraftContext;
   relationsBase: NodeRelation[];
   fields: Record<CanvasDraftField, CanvasFieldDraft>; awaiting: CanvasSubmission | null;
+  reparent?: CanvasReparentIntent;
 }
 export interface CanvasDraftConflict { field: CanvasDraftField; before: string; current: string; proposed: string; futureRevision: boolean }
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
@@ -40,7 +174,7 @@ export const canvasGroupFields = (group: CanvasDraftGroup): readonly CanvasDraft
   group === "text" ? ["text"] : group === "style" ? CANVAS_STYLE_FIELDS
     : group === "hierarchy" ? CANVAS_HIERARCHY_FIELDS : group === "relations" ? CANVAS_RELATION_FIELDS : CANVAS_TRANSFORM_FIELDS;
 export const canvasFieldHasInput = (field: CanvasFieldDraft) => field.intent === true || field.raw !== field.base;
-export const canvasDraftHasWork = (draft: CanvasWorkspaceDraft) => draft.awaiting !== null
+export const canvasDraftHasWork = (draft: CanvasWorkspaceDraft) => draft.awaiting !== null || draft.reparent !== undefined
   || CANVAS_DRAFT_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
 export function canvasNumber(raw: string): number {
   if (!decimal.test(raw.trim()) || !Number.isFinite(Number(raw))) throw new Error("Enter a finite decimal number.");
@@ -102,7 +236,8 @@ const relationListEqual = (a: NodeRelation[], b: NodeRelation[]): boolean => JSO
 const nodeContext = (node: CanvasNode): CanvasDraftContext => ({ kind: node.kind, parent_id: node.parent_id, coordinate_space: node.coordinate_space });
 const contextMatches = (before: CanvasDraftContext, current: CanvasDraftContext, group: CanvasDraftGroup) => before.kind === current.kind
   && (group === "text" || (before.parent_id === current.parent_id && before.coordinate_space === current.coordinate_space));
-const groupHasInput = (draft: CanvasWorkspaceDraft, group: CanvasDraftGroup) => canvasGroupFields(group).some(field => canvasFieldHasInput(draft.fields[field]));
+const groupHasInput = (draft: CanvasWorkspaceDraft, group: CanvasDraftGroup) => (group === "hierarchy" && draft.reparent !== undefined)
+  || canvasGroupFields(group).some(field => canvasFieldHasInput(draft.fields[field]));
 export function canvasDraftNode(draft: CanvasWorkspaceDraft, project: Project): CanvasNode {
   if (draft.scope !== canvasDraftScope(project, draft.sceneId, draft.nodeId)) throw new Error("This Canvas draft belongs to another project, generation, branch or object.");
   const node = project.scenes.find(scene => scene.id === draft.sceneId)?.nodes.find(item => item.id === draft.nodeId);
@@ -121,10 +256,49 @@ export function createCanvasDraft(project: Project, sceneId: string, nodeId: str
   };
   return draft;
 }
-export function editCanvasField(draft: CanvasWorkspaceDraft, field: CanvasDraftField, raw: string): CanvasWorkspaceDraft {
+export function editCanvasField(draft: CanvasWorkspaceDraft, field: CanvasDraftField, raw: string, project?: Project): CanvasWorkspaceDraft {
   const current = draft.fields[field];
-  return { ...draft, fields: { ...draft.fields, [field]: { ...current, raw, sequence: current.sequence + 1,
+  const next = { ...draft, fields: { ...draft.fields, [field]: { ...current, raw, sequence: current.sequence + 1,
     ...(draft.awaiting?.fields[field] ? { intent: true as const } : {}) } } };
+  if (!(CANVAS_HIERARCHY_FIELDS as readonly string[]).includes(field)) return next;
+  if (project) {
+    canvasDraftNode(draft, project);
+    const captured = captureReparentSnapshot(project, draft.sceneId, draft.nodeId, next.fields.parent_id.raw || null);
+    const snapshot = draft.reparent
+      ? field === "parent_id" && current.raw !== raw
+        ? { ...draft.reparent.snapshot, parentId: captured.parentId, newParent: captured.newParent }
+        : draft.reparent.snapshot
+      : captured;
+    return { ...next, schema: "motionwright.canvas-draft/6", reparent: {
+      ...(draft.reparent?.preserve === undefined ? {} : { preserve: draft.reparent.preserve }),
+      sequence: (draft.reparent?.sequence ?? 0) + 1, snapshot: structuredClone(snapshot),
+    } };
+  }
+  return draft.reparent ? { ...next, reparent: { ...draft.reparent, sequence: draft.reparent.sequence + 1 } } : next;
+}
+export function editCanvasReparentPolicy(
+  draft: CanvasWorkspaceDraft, project: Project, preserve: ReparentCoordinatePolicy | undefined,
+): CanvasWorkspaceDraft {
+  validateReparentPolicy(preserve);
+  canvasDraftNode(draft, project);
+  return { ...draft, schema: "motionwright.canvas-draft/6", reparent: {
+    ...(preserve === undefined ? {} : { preserve }), sequence: (draft.reparent?.sequence ?? 0) + 1,
+    snapshot: structuredClone(draft.reparent?.snapshot
+      ?? captureReparentSnapshot(project, draft.sceneId, draft.nodeId, draft.fields.parent_id.raw || null)),
+  } };
+}
+function reparentSnapshotMatches(draft: CanvasWorkspaceDraft, project: Project): boolean {
+  return !draft.reparent || JSON.stringify(draft.reparent.snapshot) === JSON.stringify(
+    captureReparentSnapshot(project, draft.sceneId, draft.nodeId, draft.fields.parent_id.raw || null));
+}
+/** The displayed proposal comes from the retained frames. A separate context
+ * conflict blocks preparation if the saved child or either frame has drifted. */
+export function canvasDraftReparentProposal(draft: CanvasWorkspaceDraft, project: Project): CanvasReparentProposal {
+  canvasDraftNode(draft, project);
+  if (!draft.reparent) return proposeCanvasReparent(project, draft.sceneId, draft.nodeId, draft.fields.parent_id.raw || null);
+  const snapshot = draft.reparent.snapshot, pose = reparentPose(snapshot, draft.reparent.preserve);
+  return { pose, snapshot: structuredClone(snapshot), positionChanged: pose.x !== snapshot.child.pose.x || pose.y !== snapshot.child.pose.y,
+    rotationChanged: pose.rotation_deg !== snapshot.child.pose.rotation_deg };
 }
 export function canvasDraftConflicts(draft: CanvasWorkspaceDraft, project: Project): CanvasDraftConflict[] {
   const node = canvasDraftNode(draft, project);
@@ -146,12 +320,36 @@ export function canvasDraftConflicts(draft: CanvasWorkspaceDraft, project: Proje
  * reparenting or changing an object's kind. */
 export function canvasContextConflicts(draft: CanvasWorkspaceDraft, project: Project): CanvasDraftGroup[] {
   const current = nodeContext(canvasDraftNode(draft, project));
-  return (["text", "transform", "style", "hierarchy", "relations"] as const).filter(group => groupHasInput(draft, group) && !contextMatches(draft.baseContext, current, group));
+  return (["text", "transform", "style", "hierarchy", "relations"] as const).filter(group => groupHasInput(draft, group)
+    && (!contextMatches(draft.baseContext, current, group) || (group === "hierarchy" && !reparentSnapshotMatches(draft, project))));
 }
 export function reviewCanvasContext(draft: CanvasWorkspaceDraft, project: Project): CanvasWorkspaceDraft {
-  return reconcileCanvasDraft({ ...draft, baseContext: nodeContext(canvasDraftNode(draft, project)) }, project);
+  if (draft.awaiting?.group === "hierarchy") throw new Error("Review the unconfirmed Canvas hierarchy submission before rebasing its retained frames.");
+  const reviewed = { ...draft, baseContext: nodeContext(canvasDraftNode(draft, project)),
+    ...(draft.reparent ? { reparent: { ...draft.reparent, sequence: draft.reparent.sequence + 1,
+      snapshot: captureReparentSnapshot(project, draft.sceneId, draft.nodeId, draft.fields.parent_id.raw || null) } } : {}) };
+  return reconcileCanvasDraft(reviewed, project);
 }
 export function canvasSubmissionMatches(project: Project, draft: CanvasWorkspaceDraft, attempt: CanvasSubmission): boolean {
+  return canvasSubmissionStateMatches(project, draft, attempt, false);
+}
+function originalReparentPoseMatches(node: CanvasNode, submitted: CanvasReparentSubmission): boolean {
+  const predicted = submitted.pose;
+  if (CANVAS_TRANSFORM_FIELDS.some(field => !Number.isFinite(node[field]) || !Number.isFinite(predicted[field]))) return false;
+  if (["width", "height", "rotation_deg", "opacity"].some(field => node[field as keyof CanvasTransform] !== predicted[field as keyof CanvasTransform])) return false;
+  if (submitted.preserve !== "local" || sameReparentFrame(submitted.snapshot.oldParent, submitted.snapshot.newParent))
+    return node.x === predicted.x && node.y === predicted.y;
+  // This bound is exclusively the declared original-response ACK relation.
+  // Returned values never enter its scale; source drift and locks stay exact.
+  const terms = [1, predicted.x, predicted.y];
+  for (const frame of [submitted.snapshot.child.pose, submitted.snapshot.oldParent, submitted.snapshot.newParent])
+    if (frame) terms.push(frame.x, frame.y, frame.width, frame.height);
+  if (!terms.every(Number.isFinite)) return false;
+  const scale = Math.max(...terms.map(Math.abs)), tolerance = 1e-9 + 64 * Number.EPSILON * scale;
+  if (!Number.isFinite(tolerance)) return false;
+  return Math.abs(node.x - predicted.x) <= tolerance && Math.abs(node.y - predicted.y) <= tolerance;
+}
+function canvasSubmissionStateMatches(project: Project, draft: CanvasWorkspaceDraft, attempt: CanvasSubmission, originalResponse: boolean): boolean {
   // A local removal token is not the service request_id. Absence can be
   // observed separately, but cannot acknowledge this particular invocation.
   if (attempt.group === "removal" || draft.scope !== attempt.scope || project.revision !== attempt.revision + 1) return false;
@@ -162,11 +360,39 @@ export function canvasSubmissionMatches(project: Project, draft: CanvasWorkspace
   return (attempt.group === "hierarchy"
     ? attempt.context.kind === node.kind && attempt.context.coordinate_space === node.coordinate_space
     : contextMatches(attempt.context, nodeContext(node), attempt.group))
+    && (attempt.group !== "hierarchy" || !attempt.reparent
+      || ((originalResponse ? originalReparentPoseMatches(node, attempt.reparent)
+        : CANVAS_TRANSFORM_FIELDS.every(field => node[field] === attempt.reparent!.pose[field]))
+        && JSON.stringify(unchangedReparentFields(node)) === JSON.stringify(attempt.reparent.unchanged)))
     && (attempt.group === "relations"
       ? Boolean(attempt.relations && relationListEqual(node.relations, attempt.relations))
       : canvasGroupFields(attempt.group).every(field => canonical(node, field) === attempt.fields[field]?.value));
 }
 export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Project): CanvasWorkspaceDraft {
+  return reconcileCanvasDraftObservation(draft, project);
+}
+// Recovery may reconstruct the same closed JSON object in a different key order.
+// Keep every own field and array position exact without rewriting either payload.
+function sameCanvasSubmissionValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => sameCanvasSubmissionValue(value, right[index]));
+  }
+  if (!record(left) || !record(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every(key => Object.hasOwn(right, key) && sameCanvasSubmissionValue(left[key], right[key]));
+}
+/** Only the caller of the original successful mutation may supply this
+ * Project. Recovery and project observations never manufacture this signal. */
+export function acknowledgeCanvasReparent(draft: CanvasWorkspaceDraft, project: Project, original: CanvasSubmission): CanvasWorkspaceDraft {
+  const pending = draft.awaiting;
+  if (pending?.group !== "hierarchy" || !pending.reparent || !sameCanvasSubmissionValue(pending, original)
+    || !canvasSubmissionStateMatches(project, draft, pending, true)) return draft;
+  return reconcileCanvasDraftObservation(draft, project, original.id);
+}
+function reconcileCanvasDraftObservation(draft: CanvasWorkspaceDraft, project: Project, acknowledgedHierarchyId?: string): CanvasWorkspaceDraft {
   if (draft.awaiting?.group === "removal" && canvasRemovalObservation(draft, project) === "absent") {
     // Keep both the uncertainty record and any input authored after dispatch.
     // A removed object is never reconstructed from its local recovery copy.
@@ -183,18 +409,30 @@ export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Proje
     const value = canonical(node, field);
     fields[field] = { raw: value, base: value, baseRevision: project.revision, sequence: 0 };
   }
-  if (draft.schema !== "motionwright.canvas-draft/4" && draft.schema !== "motionwright.canvas-draft/5") for (const field of CANVAS_RELATION_FIELDS) {
+  if (draft.schema !== "motionwright.canvas-draft/4" && draft.schema !== "motionwright.canvas-draft/5"
+    && draft.schema !== "motionwright.canvas-draft/6") for (const field of CANVAS_RELATION_FIELDS) {
     const value = canonical(node, field);
     fields[field] = { raw: value, base: value, baseRevision: project.revision, sequence: 0 };
   }
-  const earlierRelations = draft.schema === "motionwright.canvas-draft/4" || draft.schema === "motionwright.canvas-draft/5"
+  const earlierRelations = draft.schema === "motionwright.canvas-draft/4" || draft.schema === "motionwright.canvas-draft/5" || draft.schema === "motionwright.canvas-draft/6"
     ? draft.relationsBase : structuredClone(node.relations);
   let awaiting = draft.awaiting;
   const ownRelationAcknowledged = Boolean(awaiting && awaiting.group === "relations"
     && canvasSubmissionMatches(project, draft, awaiting));
-  const ownHierarchyAcknowledged = Boolean(awaiting && awaiting.group === "hierarchy"
-    && canvasSubmissionMatches(project, draft, awaiting));
-  if (awaiting && awaiting.group !== "removal" && canvasSubmissionMatches(project, draft, awaiting)) {
+  const ownHierarchyAcknowledged = Boolean(awaiting && awaiting.group === "hierarchy" && awaiting.reparent
+    && acknowledgedHierarchyId === awaiting.id
+    && canvasSubmissionStateMatches(project, draft, awaiting, true));
+  const hierarchyAttempt = awaiting?.group === "hierarchy" ? awaiting : null;
+  if (hierarchyAttempt && !ownHierarchyAcknowledged) {
+    // Neither equal values nor a newer peer revision identifies the original
+    // invocation. Keep its payload and author bases frozen, including legacy
+    // hierarchy snapshots which have no pose/frame metadata to reconstruct.
+    if (draft.schema === "motionwright.canvas-draft/3") return { ...draft,
+      schema: "motionwright.canvas-draft/5", fields, relationsBase: earlierRelations };
+    return draft;
+  }
+  if (awaiting && awaiting.group !== "removal" && (awaiting.group !== "hierarchy" || ownHierarchyAcknowledged)
+    && canvasSubmissionStateMatches(project, draft, awaiting, ownHierarchyAcknowledged)) {
     if (awaiting.group === "relations") {
       if (awaiting.relationOperation === "add") for (const field of CANVAS_RELATION_FIELDS) {
         const input = fields[field], sent = awaiting.fields[field]!;
@@ -214,7 +452,8 @@ export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Proje
         sequence: input.sequence, ...(!unchanged ? { intent: true as const } : {}) };
     }
     awaiting = null;
-  } else if (awaiting && project.revision > awaiting.revision && awaiting.group !== "relations" && awaiting.group !== "removal") {
+  } else if (awaiting && project.revision > awaiting.revision && awaiting.group !== "relations"
+    && awaiting.group !== "removal" && awaiting.group !== "hierarchy") {
     // This is not an acknowledgement of our snapshot. Keep every input and
     // its original base; overlapping current values require an explicit choice.
     awaiting = null;
@@ -233,9 +472,13 @@ export function reconcileCanvasDraft(draft: CanvasWorkspaceDraft, project: Proje
       ...input, raw: dirty ? input.raw : current, base: current, baseRevision: project.revision,
     };
   }
-  const next: CanvasWorkspaceDraft = { ...draft, schema: "motionwright.canvas-draft/5", fields, awaiting,
+  const next: CanvasWorkspaceDraft = { ...draft, schema: draft.schema === "motionwright.canvas-draft/6" ? draft.schema : "motionwright.canvas-draft/5", fields, awaiting,
     relationsBase: ownRelationAcknowledged || (!awaiting && !groupHasInput({ ...draft, fields, awaiting } as CanvasWorkspaceDraft, "relations"))
       ? structuredClone(node.relations) : earlierRelations }, currentContext = nodeContext(node);
+  if (ownHierarchyAcknowledged && hierarchyAttempt?.reparent && next.reparent
+    && next.reparent.sequence === hierarchyAttempt.reparent.sequence
+    && CANVAS_HIERARCHY_FIELDS.every(field => fields[field].sequence === hierarchyAttempt.fields[field]?.sequence
+      && !canvasFieldHasInput(fields[field]))) delete next.reparent;
   const textInput = groupHasInput(next, "text"), transformInput = groupHasInput(next, "transform"),
     styleInput = groupHasInput(next, "style"), hierarchyInput = groupHasInput(next, "hierarchy"),
     relationInput = groupHasInput(next, "relations");
@@ -262,7 +505,25 @@ export function resolveCanvasField(draft: CanvasWorkspaceDraft, project: Project
   } } };
 }
 export function releaseCanvasSubmission(draft: CanvasWorkspaceDraft, id: string): CanvasWorkspaceDraft {
+  // The caller uses this after a verified pre-dispatch backup failure. An
+  // uncertain hierarchy outcome instead requires the guarded, separate-copy
+  // review below; this function is not a service rejection receipt.
   return draft.awaiting?.id === id ? { ...draft, awaiting: null } : draft;
+}
+export function canvasHierarchyReviewIssue(draft: CanvasWorkspaceDraft, project: Project): string | null {
+  if (draft.awaiting?.group !== "hierarchy") return "There is no retained Canvas hierarchy submission to review.";
+  try { canvasDraftNode(draft, project); }
+  catch (reason) { return reason instanceof Error ? reason.message : String(reason); }
+  if (project.revision <= draft.awaiting.revision)
+    return "A later saved revision is required before separating another hierarchy intent. This revision does not establish the original outcome.";
+  return null;
+}
+/** The UI must verify and retain the original writer bytes before writing this
+ * result under a new writer. It creates input only and sends no operation. */
+export function reviewCanvasHierarchySubmission(draft: CanvasWorkspaceDraft, project: Project): CanvasWorkspaceDraft {
+  const issue = canvasHierarchyReviewIssue(draft, project);
+  if (issue) throw new Error(issue);
+  return reviewCanvasContext({ ...draft, awaiting: null }, project);
 }
 function transformLock(field: CanvasDraftField): NodeProperty {
   return field === "x" || field === "y" ? "position" : field === "width" || field === "height" ? "size"
@@ -295,6 +556,10 @@ export function canvasGroupIssue(draft: CanvasWorkspaceDraft, project: Project, 
       cursor = scene?.nodes.find(item => item.id === cursor?.parent_id);
     }
   }
+  if (group === "hierarchy") {
+    try { proposeCanvasReparent(project, draft.sceneId, draft.nodeId, draft.fields.parent_id.raw || null, draft.reparent?.preserve); }
+    catch (reason) { return reason instanceof Error ? reason.message : String(reason); }
+  }
   const sceneLock = group === "hierarchy"
     ? project.locks.some(lock => lock.resource === "scene:" + draft.sceneId && (lock.kind === "content" || lock.kind === "position"))
     : project.locks.some(lock => lock.resource === "scene:" + draft.sceneId
@@ -318,6 +583,12 @@ export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Pr
     submission.fields[field] = { raw: input.raw, sequence: input.sequence, value };
     if (value !== canonical(node, field)) fields[field] = { ...input, intent: true };
   }
+  let reparent = current.reparent;
+  if (group === "hierarchy") {
+    const proposal = proposeCanvasReparent(project, current.sceneId, current.nodeId, submission.fields.parent_id!.value || null, reparent?.preserve);
+    reparent = reparent ?? { sequence: 0, snapshot: proposal.snapshot };
+    submission.reparent = { ...structuredClone(reparent), pose: proposal.pose, unchanged: unchangedReparentFields(node) };
+  }
   const change: Extract<Change, { type: "update_canvas_text" | "transform_canvas_node" | "update_canvas_style" | "reparent_canvas_node" }> =
     group === "text"
       ? { type: "update_canvas_text", scene_id: current.sceneId, node_id: current.nodeId, text: submission.fields.text!.value || null }
@@ -326,10 +597,12 @@ export function prepareCanvasSubmission(draft: CanvasWorkspaceDraft, project: Pr
             style: styleFromSubmission(node, submission.fields) }
         : group === "hierarchy"
           ? { type: "reparent_canvas_node", scene_id: current.sceneId, node_id: current.nodeId,
-              parent_id: submission.fields.parent_id!.value || null, z_index: Number(submission.fields.z_index!.value) }
+              parent_id: submission.fields.parent_id!.value || null, z_index: Number(submission.fields.z_index!.value),
+              ...(reparent?.preserve === undefined ? {} : { preserve: reparent.preserve }) }
           : { type: "transform_canvas_node", scene_id: current.sceneId, node_id: current.nodeId,
               transform: Object.fromEntries(CANVAS_TRANSFORM_FIELDS.map(field => [field, Number(submission.fields[field]!.value)])) as unknown as CanvasTransform };
-  return { draft: { ...current, fields, awaiting: submission }, submission, change };
+  return { draft: { ...current, fields, awaiting: submission,
+    ...(group === "hierarchy" ? { schema: "motionwright.canvas-draft/6" as const, reparent } : {}) }, submission, change };
 }
 
 /** Service validates the complete relation list. Every edit carries the
@@ -470,6 +743,108 @@ function cleanRelationList(value: unknown): NodeRelation[] {
   }
   return relations;
 }
+function reparentExact(value: unknown, keys: readonly string[], label: string): asserts value is Record<string, unknown> {
+  if (!record(value) || Object.keys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key)))
+    throw new Error("The Canvas reparent " + label + " has unknown or missing fields.");
+}
+function reparentId(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.length > 0 && value.length <= 256);
+}
+function reparentSpace(value: unknown): value is CoordinateSpace {
+  return value === "project_pixels" || value === "normalized" || value === "scene_local";
+}
+function cleanReparentPose(value: unknown): CanvasTransform {
+  reparentExact(value, CANVAS_TRANSFORM_FIELDS, "pose snapshot");
+  if (CANVAS_TRANSFORM_FIELDS.some(field => typeof value[field] !== "number"))
+    throw new Error("The Canvas reparent pose snapshot must contain numbers.");
+  const pose = Object.fromEntries(CANVAS_TRANSFORM_FIELDS.map(field => [field, value[field]])) as unknown as CanvasTransform;
+  validateReparentPose(pose);
+  return pose;
+}
+function cleanReparentFrame(value: unknown): CanvasReparentFrame | null {
+  if (value === null) return null;
+  reparentExact(value, ["id", "coordinate_space", "geometricMotion", "x", "y", "width", "height", "rotation_deg"], "parent frame snapshot");
+  if (typeof value.id !== "string" || !value.id || value.id.length > 256 || !reparentSpace(value.coordinate_space)
+    || typeof value.geometricMotion !== "boolean"
+    || ["x", "y", "width", "height", "rotation_deg"].some(field => typeof value[field] !== "number" || !Number.isFinite(value[field]))
+    || (value.width as number) < 0 || (value.height as number) < 0)
+    throw new Error("The Canvas reparent parent frame snapshot is invalid.");
+  return { id: value.id, coordinate_space: value.coordinate_space, geometricMotion: value.geometricMotion,
+    x: value.x as number, y: value.y as number, width: value.width as number, height: value.height as number,
+    rotation_deg: value.rotation_deg as number };
+}
+function cleanReparentSnapshot(value: unknown): CanvasReparentSnapshot {
+  reparentExact(value, ["parentId", "child", "oldParent", "newParent"], "frame snapshot");
+  if (!reparentId(value.parentId)) throw new Error("The Canvas reparent target identity is invalid.");
+  const child = value.child;
+  reparentExact(child, ["parent_id", "coordinate_space", "geometricMotion", "pose"], "child snapshot");
+  if (!reparentId(child.parent_id) || !reparentSpace(child.coordinate_space) || typeof child.geometricMotion !== "boolean")
+    throw new Error("The Canvas reparent child snapshot is invalid.");
+  const oldParent = cleanReparentFrame(value.oldParent), newParent = cleanReparentFrame(value.newParent);
+  if ((oldParent && oldParent.id !== child.parent_id) || (newParent && newParent.id !== value.parentId))
+    throw new Error("The Canvas reparent snapshot does not identify the captured parents.");
+  return { parentId: value.parentId, child: { parent_id: child.parent_id, coordinate_space: child.coordinate_space,
+    geometricMotion: child.geometricMotion, pose: cleanReparentPose(child.pose) }, oldParent, newParent };
+}
+function cleanReparentIntent(value: unknown): CanvasReparentIntent {
+  if (!record(value)) throw new Error("The Canvas reparent intent snapshot is invalid.");
+  reparentExact(value, ["sequence", "snapshot", ...(Object.hasOwn(value, "preserve") ? ["preserve"] : [])], "intent snapshot");
+  validateReparentPolicy(value.preserve);
+  if (!safeInteger(value.sequence)) throw new Error("The Canvas reparent intent sequence is invalid.");
+  return { ...(value.preserve === undefined ? {} : { preserve: value.preserve }), sequence: value.sequence,
+    snapshot: cleanReparentSnapshot(value.snapshot) };
+}
+function cleanReparentUnchanged(value: unknown): CanvasReparentUnchanged {
+  reparentExact(value, ["id", "name", "kind", "text", "coordinate_space", "style", "relations", "property_locks", "keyframes"], "unchanged node snapshot");
+  if (typeof value.id !== "string" || !value.id || value.id.length > 256 || typeof value.name !== "string"
+    || typeof value.kind !== "string" || !value.kind || !reparentSpace(value.coordinate_space)
+    || (value.text !== null && (typeof value.text !== "string" || canvasFieldIssue("text", value.text))))
+    throw new Error("The Canvas reparent unchanged node snapshot is invalid.");
+  const style = value.style;
+  reparentExact(style, CANVAS_STYLE_FIELDS, "unchanged style snapshot");
+  for (const field of CANVAS_STYLE_FIELDS) {
+    const item = style[field], optionalNumber = (optionalNumericStyle as readonly string[]).includes(field);
+    if ((isStyleString(field) && item !== null && typeof item !== "string")
+      || (optionalNumber && item !== null && typeof item !== "number")
+      || (field === "stroke_width" && typeof item !== "number")
+      || (field === "blend_mode" && typeof item !== "string")
+      || canvasFieldIssue(field, item === null ? "" : String(item)))
+      throw new Error("The Canvas reparent unchanged style snapshot is invalid.");
+  }
+  if (!Array.isArray(value.relations)) throw new Error("The Canvas reparent unchanged relation snapshot is invalid.");
+  for (const item of value.relations) reparentExact(item, ["id", "kind", "target_id"], "unchanged relation snapshot");
+  cleanRelationList(value.relations);
+  const locks = value.property_locks, properties = ["position", "size", "rotation", "opacity", "text", "style", "parent", "order"];
+  if (!Array.isArray(locks) || locks.some(lock => typeof lock !== "string" || !properties.includes(lock))
+    || new Set(locks).size !== locks.length) throw new Error("The Canvas reparent unchanged lock snapshot is invalid.");
+  if (!Array.isArray(value.keyframes)) throw new Error("The Canvas reparent unchanged motion snapshot is invalid.");
+  for (const key of value.keyframes) {
+    reparentExact(key, ["at", "property", "value", "interpolation"], "unchanged motion snapshot");
+    reparentExact(key.at, ["num", "den"], "unchanged motion time");
+    if (typeof key.at.num !== "string" || typeof key.at.den !== "string"
+      || !/^[+-]?\d+$/.test(key.at.num) || !/^[+-]?\d+$/.test(key.at.den)
+      || BigInt(key.at.num) < 0n || BigInt(key.at.den) <= 0n
+      || typeof key.property !== "string" || !(CANVAS_TRANSFORM_FIELDS as readonly string[]).includes(key.property)
+      || typeof key.value !== "number" || !Number.isFinite(key.value)
+      || ((key.property === "width" || key.property === "height") && key.value < 0)
+      || (key.property === "opacity" && (key.value < 0 || key.value > 1))
+      || typeof key.interpolation !== "string" || !["hold", "linear", "ease_in_out", "ease_out_cubic"].includes(key.interpolation))
+      throw new Error("The Canvas reparent unchanged motion snapshot is invalid.");
+  }
+  return unchangedReparentFields(value as unknown as CanvasReparentUnchanged);
+}
+function cleanReparentSubmission(value: unknown): CanvasReparentSubmission {
+  if (!record(value)) throw new Error("The Canvas reparent submission snapshot is invalid.");
+  reparentExact(value, ["sequence", "snapshot", "pose", "unchanged", ...(Object.hasOwn(value, "preserve") ? ["preserve"] : [])], "submission snapshot");
+  const { pose, unchanged, ...rawIntent } = value, intent = cleanReparentIntent(rawIntent), cleanedPose = cleanReparentPose(pose);
+  if ((intent.snapshot.child.parent_id !== null && !intent.snapshot.oldParent)
+    || (intent.snapshot.parentId !== null && !intent.snapshot.newParent))
+    throw new Error("The Canvas reparent submission snapshot is missing a participating frame.");
+  const expected = reparentPose(intent.snapshot, intent.preserve);
+  if (CANVAS_TRANSFORM_FIELDS.some(field => cleanedPose[field] !== expected[field]))
+    throw new Error("The Canvas reparent pose does not match its frozen frame snapshot.");
+  return { ...intent, pose: cleanedPose, unchanged: cleanReparentUnchanged(unchanged) };
+}
 export function decodeCanvasRecovery(raw: string, scope: string, writerId: string): CanvasRecovery {
   if (bytes(raw) > CANVAS_COPY_BYTES) throw new Error("This Canvas recovery copy exceeds 1 MiB.");
   const value: unknown = JSON.parse(raw), scopeParts = parsedScope(scope);
@@ -480,14 +855,18 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
     const saved = value.draft;
     if (!record(saved) || (saved.schema !== "motionwright.canvas-draft/1" && saved.schema !== "motionwright.canvas-draft/2"
         && saved.schema !== "motionwright.canvas-draft/3" && saved.schema !== "motionwright.canvas-draft/4"
-        && saved.schema !== "motionwright.canvas-draft/5") || saved.scope !== scope
+        && saved.schema !== "motionwright.canvas-draft/5" && saved.schema !== "motionwright.canvas-draft/6") || saved.scope !== scope
       || saved.sceneId !== scopeParts[3] || saved.nodeId !== scopeParts[4] || !record(saved.fields)) throw new Error("The Canvas draft has an invalid object scope.");
+    if (Object.hasOwn(saved, "reparent") && saved.schema !== "motionwright.canvas-draft/6")
+      throw new Error("Legacy Canvas recovery cannot introduce a reparent frame snapshot.");
+    const reparent = Object.hasOwn(saved, "reparent") ? cleanReparentIntent(saved.reparent) : undefined;
     const fields = {} as CanvasWorkspaceDraft["fields"];
     for (const field of CANVAS_DRAFT_FIELDS) {
       if ((saved.schema === "motionwright.canvas-draft/1" && isStyleField(field))
         || ((saved.schema === "motionwright.canvas-draft/1" || saved.schema === "motionwright.canvas-draft/2")
           && (CANVAS_HIERARCHY_FIELDS as readonly string[]).includes(field))
-        || ((saved.schema !== "motionwright.canvas-draft/4" && saved.schema !== "motionwright.canvas-draft/5") && relationField(field))) continue;
+        || ((saved.schema !== "motionwright.canvas-draft/4" && saved.schema !== "motionwright.canvas-draft/5"
+          && saved.schema !== "motionwright.canvas-draft/6") && relationField(field))) continue;
       const input = saved.fields[field];
       if (!record(input) || typeof input.raw !== "string" || typeof input.base !== "string" || !safeInteger(input.baseRevision)
         || !safeInteger(input.sequence) || (input.intent !== undefined && input.intent !== true)
@@ -501,7 +880,7 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
       if (!record(sent) || typeof sent.id !== "string" || !sent.id || sent.id.length > 128 || sent.scope !== scope
         || !safeInteger(sent.revision) || (sent.group !== "text" && sent.group !== "transform" && sent.group !== "style"
           && sent.group !== "hierarchy" && sent.group !== "relations" && sent.group !== "removal") || !record(sent.fields)) throw new Error("The Canvas submission snapshot is unreadable.");
-      if (sent.group === "removal" && (saved.schema !== "motionwright.canvas-draft/5"
+      if (sent.group === "removal" && ((saved.schema !== "motionwright.canvas-draft/5" && saved.schema !== "motionwright.canvas-draft/6")
         || Object.keys(sent.fields).length !== 0)) throw new Error("The Canvas removal snapshot is invalid.");
       awaiting = { id: sent.id, scope, revision: sent.revision, group: sent.group, context: cleanContext(sent.context), fields: {} };
       if (sent.group === "relations") {
@@ -520,11 +899,24 @@ export function decodeCanvasRecovery(raw: string, scope: string, writerId: strin
           || proposed(field, input.raw) !== input.value) throw new Error("The Canvas submission contains an invalid field snapshot.");
         awaiting.fields[field] = { raw: input.raw, value: input.value, sequence: input.sequence };
       }
+      if (Object.hasOwn(sent, "reparent")) {
+        if (saved.schema !== "motionwright.canvas-draft/6" || sent.group !== "hierarchy" || !reparent)
+          throw new Error("The Canvas reparent snapshot is not part of a current hierarchy draft.");
+        awaiting.reparent = cleanReparentSubmission(sent.reparent);
+        if (awaiting.reparent.sequence > reparent.sequence
+          || awaiting.reparent.snapshot.parentId !== (awaiting.fields.parent_id?.value || null)
+          || awaiting.reparent.snapshot.child.parent_id !== awaiting.context.parent_id
+          || awaiting.reparent.snapshot.child.coordinate_space !== awaiting.context.coordinate_space
+          || awaiting.reparent.unchanged.id !== scopeParts[4] || awaiting.reparent.unchanged.kind !== awaiting.context.kind
+          || awaiting.reparent.unchanged.coordinate_space !== awaiting.context.coordinate_space
+          || awaiting.reparent.unchanged.keyframes.some(key => key.property !== "opacity") !== awaiting.reparent.snapshot.child.geometricMotion)
+          throw new Error("The Canvas reparent snapshot does not match its submitted identity or context.");
+      }
     }
     draft = { schema: saved.schema as CanvasWorkspaceDraft["schema"], scope,
       sceneId: scopeParts[3], nodeId: scopeParts[4], baseContext: cleanContext(saved.baseContext),
-      relationsBase: saved.schema === "motionwright.canvas-draft/4" || saved.schema === "motionwright.canvas-draft/5"
-        ? cleanRelationList(saved.relationsBase) : [], fields, awaiting };
+      relationsBase: saved.schema === "motionwright.canvas-draft/4" || saved.schema === "motionwright.canvas-draft/5" || saved.schema === "motionwright.canvas-draft/6"
+        ? cleanRelationList(saved.relationsBase) : [], fields, awaiting, ...(reparent ? { reparent } : {}) };
   }
   return { schema: "motionwright.canvas-recovery/1", scope, writerId, updatedAt: value.updatedAt, draft };
 }
@@ -575,8 +967,12 @@ export function readCanvasRemovalRecoveries(storage: CanvasDraftStorage, project
 export function writeCanvasRecovery(storage: CanvasDraftStorage, value: CanvasRecovery, expectedRaw: string | null): string {
   const key = canvasRecoveryKey(value.scope, value.writerId), previous = storage.getItem(key);
   if (previous !== expectedRaw) throw new Error("This Canvas recovery copy changed in another window. Its contents were kept.");
-  let raw = JSON.stringify(decodeCanvasRecovery(JSON.stringify(value), value.scope, value.writerId));
-  if (previous !== null && decodeCanvasRecovery(previous, value.scope, value.writerId).draft === null) {
+  const normalized = decodeCanvasRecovery(JSON.stringify(value), value.scope, value.writerId);
+  const earlier = previous === null ? null : decodeCanvasRecovery(previous, value.scope, value.writerId);
+  const unchangedHierarchyPending = normalized.draft?.awaiting?.group === "hierarchy" && earlier !== null
+    && JSON.stringify(normalized.draft) === JSON.stringify(earlier.draft);
+  let raw = JSON.stringify(normalized);
+  if (previous !== null && earlier?.draft === null) {
     if (value.draft !== null) throw new Error("A clean Canvas checkpoint is immutable. Start a new copy for new input.");
     return previous;
   }
@@ -594,7 +990,10 @@ export function writeCanvasRecovery(storage: CanvasDraftStorage, value: CanvasRe
   }
   const latest = stored.reduce((at, item) => item.value?.scope === value.scope ? Math.max(at, item.value.updatedAt) : at, -1);
   value = { ...value, updatedAt: Math.max(value.updatedAt, latest + 1) };
-  raw = JSON.stringify(decodeCanvasRecovery(JSON.stringify(value), value.scope, value.writerId));
+  // A confirmation/fork of the same UNKNOWN snapshot retains the original
+  // bytes and timestamp. Bounds, CAS and readback still run; the caller also
+  // confirms its own session pointer before permitting an explicit fork.
+  raw = unchangedHierarchyPending ? previous! : JSON.stringify(decodeCanvasRecovery(JSON.stringify(value), value.scope, value.writerId));
   // Only remove obsolete clean checkpoints after replacement bytes are
   // persisted and read back. Quota failures must preserve every prior copy.
   const removeClean = (item: typeof stored[number]) => {
@@ -611,7 +1010,7 @@ export function writeCanvasRecovery(storage: CanvasDraftStorage, value: CanvasRe
   };
   if (!fits()) throw new Error("Canvas recovery is full (128 copies / 4 MiB). Inputs and unreadable copies were kept; discard only copies you no longer need.");
   if (storage.getItem(key) !== previous) throw new Error("This Canvas recovery copy changed in another window. Its contents were kept.");
-  storage.setItem(key, raw);
+  if (raw !== previous) storage.setItem(key, raw);
   if (storage.getItem(key) !== raw) throw new Error("The latest Canvas recovery write could not be verified.");
   // A verified clean checkpoint may supersede older clean copies only for
   // the same object scope. Other projects and unreadable copies remain intact.
@@ -624,5 +1023,10 @@ export function discardCanvasRecovery(storage: CanvasDraftStorage, key: string, 
   if (!key.startsWith(CANVAS_DRAFT_PREFIX) || storage.getItem(key) !== expectedRaw) {
     throw new Error("This Canvas recovery copy changed after it was shown. Refresh the copies before discarding it.");
   }
+  const pair = identity(key);
+  let retained: CanvasRecovery | null = null;
+  try { if (pair) retained = decodeCanvasRecovery(expectedRaw, pair[0], pair[1]); } catch { /* Explicit unreadable-copy housekeeping stays unchanged. */ }
+  if (retained?.draft?.awaiting?.group === "hierarchy")
+    throw new Error("The original unconfirmed Canvas hierarchy copy must be retained.");
   storage.removeItem(key);
 }

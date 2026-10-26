@@ -1,9 +1,12 @@
 import { Link2, Trash2 } from "lucide-react";
 import { useMemo } from "react";
-import { CANVAS_STYLE_FIELDS, CANVAS_HIERARCHY_FIELDS, canvasDraftHasWork, canvasFieldHasInput, canvasFieldIssue } from "./canvasWorkspaceDraft";
+import { CANVAS_STYLE_FIELDS, CANVAS_HIERARCHY_FIELDS, CANVAS_TRANSFORM_FIELDS, CANVAS_FIELD_LABELS,
+  canvasDraftHasWork, canvasDraftReparentProposal, canvasFieldHasInput, canvasFieldIssue } from "./canvasWorkspaceDraft";
 import type { CanvasDraftField, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
 import type {
   CanvasNode,
+  Project,
+  ReparentCoordinatePolicy,
   Scene,
 } from "./types";
 
@@ -18,17 +21,20 @@ const finiteOr = (value: string, fallback: number): number => {
 };
 
 export default function CanvasStructureEditor({
+  project,
   scene,
   node,
   remove, removalErrorId, draft, edit, saveStyle, styleIssue, saveHierarchy, hierarchyIssue,
-  relation, relationIssue, pending,
+  relation, relationIssue, pending, editReparentPolicy,
 }: {
+  project: Project;
   scene: Scene;
   node: CanvasNode;
   remove: () => void;
   removalErrorId?: string;
   draft: CanvasWorkspaceDraft;
   edit: (field: CanvasDraftField, raw: string) => void;
+  editReparentPolicy: (preserve: ReparentCoordinatePolicy | undefined) => void;
   saveStyle: () => void;
   styleIssue: string | null;
   saveHierarchy: () => void;
@@ -42,17 +48,22 @@ export default function CanvasStructureEditor({
     [node.id, scene.nodes],
   );
   const styleDirty = CANVAS_STYLE_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
-  const hierarchyDirty = CANVAS_HIERARCHY_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
+  const hierarchyDirty = draft.reparent !== undefined || CANVAS_HIERARCHY_FIELDS.some(field => canvasFieldHasInput(draft.fields[field]));
   const styleLocked = node.property_locks.includes("style");
   const parentLocked = node.property_locks.includes("parent");
   const orderLocked = node.property_locks.includes("order");
   const positionLocked = node.property_locks.includes("position");
+  const proposed = useMemo(() => {
+    if (!hierarchyDirty || (draft.awaiting?.group === "hierarchy" && !draft.reparent)) return null;
+    try { return { pose: canvasDraftReparentProposal(draft, project).pose, error: null }; }
+    catch (reason) { return { pose: null, error: reason instanceof Error ? reason.message : String(reason) }; }
+  }, [draft, project, hierarchyDirty]);
 
   return (
     <div className="canvas-structure-editor">
       <div className="canvas-editor-section">
         <span className="field-label">Hierarchy</span>
-        <p className="semantic-footnote">Draft parent and Z order are recoverable; Commit hierarchy writes both fields atomically.</p>
+        <p className="semantic-footnote">Parent, Z order and the preservation choice remain recoverable. Commit hierarchy writes one change.</p>
         <label>
           <span>Parent</span>
           <select aria-label="Canvas parent" value={draft.fields.parent_id.raw}
@@ -76,6 +87,27 @@ export default function CanvasStructureEditor({
           {canvasFieldIssue("z_index",draft.fields.z_index.raw) && <span className="production-error" role="status">
             {canvasFieldIssue("z_index",draft.fields.z_index.raw)}</span>}
         </label>
+        <label>
+          <span>Preserve when reparenting</span>
+          <select aria-label="Canvas reparent preservation" value={draft.reparent?.preserve ?? ""}
+            disabled={pending || parentLocked || orderLocked}
+            onChange={event => editReparentPolicy(event.target.value === "" ? undefined : event.target.value as ReparentCoordinatePolicy)}>
+            <option value="">World (unchanged default)</option>
+            <option value="world">World - keep project geometry</option>
+            <option value="local">Local - keep parent-relative pose</option>
+          </select>
+        </label>
+        <p className="semantic-footnote">World keeps the saved pose. Local maps it between the two direct parent frames;
+          size and opacity stay unchanged. Local is unavailable for geometric motion or uninterpreted coordinate spaces.</p>
+        {proposed?.pose && <section className="semantic-footnote" role="region" aria-label="Proposed Canvas reparent pose" style={{ overflowWrap: "anywhere" }}>
+          <strong>Proposed saved pose</strong>
+          <p>{CANVAS_TRANSFORM_FIELDS.map(field => CANVAS_FIELD_LABELS[field] + " " + String(proposed.pose![field])).join(" | ")}</p>
+          <span>The retained child and parent frames are checked again before Commit.</span>
+        </section>}
+        {proposed?.error && proposed.error !== hierarchyIssue && <p className="semantic-footnote" role="status">{proposed.error}</p>}
+        {draft.awaiting?.group === "hierarchy" && !draft.awaiting.reparent && <p className="semantic-footnote" role="status">
+          This older retained submission has no recorded frame snapshot. Its original policy remains unspecified.
+        </p>}
         <button type="button" className="button full"
           disabled={!hierarchyDirty || pending || parentLocked || orderLocked || hierarchyIssue !== null}
           title={hierarchyIssue ?? undefined} onClick={() => saveHierarchy()}>Commit hierarchy</button>

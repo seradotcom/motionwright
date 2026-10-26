@@ -1829,3 +1829,391 @@ test("saved Canvas font drives the read-only Delivery choice through real SQLite
     await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
   }
 });
+
+test("explicit Canvas world and local reparent preserve authored channels through real SQLite reopen", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  let bodyFailed = false, primaryFailure: unknown;
+  try {
+    const { randomUUID } = await import("node:crypto");
+    const initial = (await service.fixtureBootstrap()).project;
+    evidence.initial = initial; evidence.final = initial;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), template = scene.nodes[0];
+    expect(template.kind).toBe("text");
+    const initialOracle = await service.observeStoredProject(initial);
+    const initialApplyCount = applyRequests(service).length;
+    const oldParent: CanvasNode = { ...structuredClone(template), id: randomUUID(), name: "Reparent old frame",
+      kind: "group", text: null, parent_id: null, coordinate_space: "project_pixels", z_index: 1,
+      x: 10, y: 20, width: 100, height: 80, rotation_deg: 90, opacity: 0.6,
+      relations: [], property_locks: [], keyframes: [] };
+    const newParent: CanvasNode = { ...structuredClone(oldParent), id: randomUUID(), name: "Reparent new frame",
+      z_index: 2, x: 200, y: 40, width: 40, height: 120, rotation_deg: 0, opacity: 0.4 };
+    const child: CanvasNode = { ...structuredClone(template), id: randomUUID(), name: "Reparent authored child",
+      parent_id: null, coordinate_space: "project_pixels", z_index: 3,
+      x: 70, y: 65, width: 20, height: 10, rotation_deg: 15, opacity: 0.8,
+      text: "  Authored child retained through reparent\n", relations: [], property_locks: ["position"],
+      keyframes: [{ at: { num: "0", den: "1" }, property: "opacity", value: 0.7, interpolation: "hold" }] };
+    let arranged = initial;
+    // These are editable objects saved by ordinary grants/Changes, not an
+    // in-memory Project substituted for the SQLite source.
+    for (const node of [oldParent, newParent, child]) {
+      arranged = await service.apply(arranged, { type: "add_canvas_node", scene_id: scene.id, node });
+      evidence.final = arranged;
+      evidence.checkpoints.push({ label: "real fixture object " + node.name, project: arranged });
+      expect(storedNode(arranged, scene.id, node.id)).toEqual(node);
+    }
+    expect(arranged.revision).toBe(initial.revision + 3);
+    const preserveOtherSource = (project: Project, expectedChild: CanvasNode) => {
+      expect(project.scenes).toEqual(arranged.scenes.map(item => item.id !== scene.id ? item
+        : { ...item, nodes: item.nodes.map(node => node.id === child.id ? expectedChild : node) }));
+      expect(project.assets).toEqual(arranged.assets);
+      expect(project.brief).toEqual(arranged.brief);
+      expect(project.deliverables).toEqual(arranged.deliverables);
+      expect(project.production_design).toEqual(arranged.production_design);
+      expect([project.id, project.generation, project.active_branch])
+        .toEqual([arranged.id, arranged.generation, arranged.active_branch]);
+    };
+    const parent = page.getByLabel("Canvas parent", { exact: true });
+    const policy = page.getByLabel("Canvas reparent preservation", { exact: true });
+    const z = page.getByLabel("Canvas z order", { exact: true });
+    const proposed = page.getByRole("region", { name: "Proposed Canvas reparent pose", exact: true });
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, child.name); await revision(page, arranged.revision);
+    await parent.selectOption(oldParent.id); await policy.selectOption("world"); await z.fill("6");
+    await expect(policy).toHaveValue("world");
+    await expect(proposed).toContainText("X 70 | Y 65 | W 20 | H 10 | Rotation 15 | Opacity 0.8");
+    // Position is locked, but explicit world changes neither position nor
+    // rotation. The real service must accept exactly that unchanged pose.
+    await expect(button(page, "Commit hierarchy")).toBeEnabled();
+    await button(page, "Commit hierarchy").click();
+    const world = await checkpoint(service, page, evidence, initial.id, arranged.revision + 1,
+      "explicit world keeps geometry and opacity motion under the old parent");
+    const worldChild = { ...child, parent_id: oldParent.id, z_index: 6 };
+    preserveOtherSource(world, worldChild);
+    const worldChange: Change = { type: "reparent_canvas_node", scene_id: scene.id, node_id: child.id,
+      parent_id: oldParent.id, z_index: 6, preserve: "world" };
+    expect(applyRequests(service).at(-1)?.request.change).toEqual(worldChange);
+    await expect(page.getByRole("region", { name: "Unconfirmed Canvas submission", exact: true })).toHaveCount(0);
+    const worldOracle = await service.observeStoredProject(world);
+
+    await parent.selectOption(newParent.id); await policy.selectOption("local"); await z.fill("7");
+    const localChange: Change = { type: "reparent_canvas_node", scene_id: scene.id, node_id: child.id,
+      parent_id: newParent.id, z_index: 7, preserve: "local" };
+    const beforeBlockedUi = applyRequests(service).length;
+    await expect(button(page, "Commit hierarchy")).toBeDisabled();
+    await expect(button(page, "Commit hierarchy")).toHaveAttribute("title",
+      "A saved lock protects these Canvas reparent fields. Your draft is kept.");
+    await paint(page);
+    expect(applyRequests(service)).toHaveLength(beforeBlockedUi);
+    // Check the same real service denial independently of the UI guard.
+    const rejected = await service.apply(world, localChange).then(project => {
+      evidence.final = project; return { rejected: false, error: null as string | null };
+    }, reason => ({ rejected: true, error: String(reason) }));
+    expect(rejected.rejected).toBe(true);
+    expect(rejected.error).toMatch(/lock|protected/i);
+    const afterDenial = await service.observeStoredProject(world);
+    expect(afterDenial.project).toEqual(worldOracle.project);
+    expect(afterDenial.journal).toEqual(worldOracle.journal);
+    const unlocked = await service.apply(world, { type: "set_node_property_lock", scene_id: scene.id,
+      node_id: child.id, property: "position", locked: false });
+    evidence.final = unlocked;
+    evidence.checkpoints.push({ label: "explicit real position unlock after the local denial", project: unlocked });
+    const unlockedChild = { ...worldChild, property_locks: [] };
+    preserveOtherSource(unlocked, unlockedChild);
+    await page.reload(); await openCanvas(page, scene.name, child.name); await revision(page, unlocked.revision);
+    await expect(parent).toHaveValue(newParent.id); await expect(policy).toHaveValue("local");
+    await expect(z).toHaveValue("7");
+    // Independent cardinal oracle for F=T(x,y)T(w/2,h/2)R(theta)T(-w/2,-h/2):
+    // child center (80,70) -> old local (60,20) -> new center (260,60).
+    // No frontend projection helper is used to calculate these expectations.
+    await expect(proposed).toContainText("X 250 | Y 55 | W 20 | H 10 | Rotation -75 | Opacity 0.8");
+    await expect(button(page, "Commit hierarchy")).toBeEnabled();
+    await button(page, "Commit hierarchy").click();
+    const local = await checkpoint(service, page, evidence, initial.id, unlocked.revision + 1,
+      "explicit local maps the child center between two rigid parent frames");
+    const localChild = { ...unlockedChild, parent_id: newParent.id, z_index: 7, x: 250, y: 55, rotation_deg: -75 };
+    preserveOtherSource(local, localChild);
+    expect(applyRequests(service).at(-1)?.request.change).toEqual(localChange);
+    await expect(page.getByRole("region", { name: "Unconfirmed Canvas submission", exact: true })).toHaveCount(0);
+    await expect(input(page, "X")).toHaveValue("250"); await expect(input(page, "Y")).toHaveValue("55");
+    await expect(input(page, "Rotation")).toHaveValue("-75");
+    const localOracle = await service.observeStoredProject(local);
+    const localApplyCount = applyRequests(service).length;
+    await service.close(); await service.start(); await page.reload();
+    await openCanvas(page, scene.name, child.name); await revision(page, local.revision);
+    const localReopened = await service.observeStoredProject(local);
+    expect(localReopened.project).toEqual(localOracle.project);
+    expect(localReopened.journal).toEqual(localOracle.journal);
+    await expect(parent).toHaveValue(newParent.id);
+    await expect(input(page, "X")).toHaveValue("250"); await expect(input(page, "Y")).toHaveValue("55");
+    await expect(input(page, "text")).toHaveValue(child.text!);
+    expect(applyRequests(service)).toHaveLength(localApplyCount);
+
+    await parent.selectOption(""); await policy.selectOption("local"); await z.fill("8");
+    // Root is identity. Inverse(new frame) maps center (260,60) to (60,20).
+    await expect(proposed).toContainText("X 50 | Y 15 | W 20 | H 10 | Rotation -75 | Opacity 0.8");
+    await button(page, "Commit hierarchy").click();
+    const final = await checkpoint(service, page, evidence, initial.id, local.revision + 1,
+      "explicit local to scene root uses the identity frame");
+    const rootChild = { ...localChild, parent_id: null, z_index: 8, x: 50, y: 15 };
+    preserveOtherSource(final, rootChild);
+    const rootChange: Change = { type: "reparent_canvas_node", scene_id: scene.id, node_id: child.id,
+      parent_id: null, z_index: 8, preserve: "local" };
+    expect(applyRequests(service).at(-1)?.request.change).toEqual(rootChange);
+    await expect(page.getByRole("region", { name: "Unconfirmed Canvas submission", exact: true })).toHaveCount(0);
+    const finalOracle = await service.observeStoredProject(final);
+    expect(finalOracle.journal.slice(0, initialOracle.journal.length)).toEqual(initialOracle.journal);
+    expect(finalOracle.journal.slice(initialOracle.journal.length).map(event => event.change)).toEqual([
+      ...[oldParent, newParent, child].map(node => ({ type: "add_canvas_node", scene_id: scene.id, node })),
+      worldChange, { type: "set_node_property_lock", scene_id: scene.id, node_id: child.id, property: "position", locked: false },
+      localChange, rootChange,
+    ]);
+    const finalApplyCount = applyRequests(service).length;
+    expect(finalApplyCount - initialApplyCount).toBe(8); // seven commits and the rejected local attempt
+    expect(final.revision - initial.revision).toBe(7);
+    await service.close(); await service.start(); await page.reload();
+    await openCanvas(page, scene.name, child.name); await revision(page, final.revision);
+    const reopened = await service.observeStoredProject(final);
+    expect(reopened.project).toEqual(finalOracle.project); expect(reopened.journal).toEqual(finalOracle.journal);
+    await expect(parent).toHaveValue(""); await expect(z).toHaveValue("8");
+    for (const [label, value] of [["X", "50"], ["Y", "15"], ["W", "20"], ["H", "10"], ["Rotation", "-75"], ["Opacity", "0.8"]])
+      await expect(input(page, label)).toHaveValue(value);
+    await expect(input(page, "text")).toHaveValue(child.text!);
+    expect(applyRequests(service)).toHaveLength(finalApplyCount);
+    evidence.observations.push({ label: "world_local_root_rigid_frame_and_saved_lock_real_service",
+      sceneId: scene.id, childId: child.id, oldParentId: oldParent.id, newParentId: newParent.id,
+      worldPose: transform(worldChild), localPose: transform(localChild), rootPose: transform(rootChild),
+      unchangedText: child.text, unchangedStyle: child.style, unchangedOpacityKeyframes: child.keyframes,
+      denial: rejected, originalJournalEntries: initialOracle.journal.length,
+      finalJournalEntries: finalOracle.journal.length, fullProjectAndJournalEqualAfterBothRestarts: true,
+      actualApplyRequests: finalApplyCount - initialApplyCount, committedChanges: 7,
+      nativeGeometry: "NOT_REQUESTED_OR_VERIFIED", nonCardinalNumericAck: "NOT_EXERCISED" });
+  } catch (error) {
+    bodyFailed = true; primaryFailure = error;
+    evidence.observations.push({ label: "primary_test_failure", error: error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack } : String(error) });
+    throw error;
+  } finally {
+    try { await retainEvidence(testInfo, [service], evidence, [() => page.close()]); }
+    catch (cleanupError) { throw new AggregateError(bodyFailed ? [primaryFailure, cleanupError] : [cleanupError],
+      "Canvas reparent test or closure failed; original failure and existing closed-store outcomes are retained"); }
+  }
+});
+
+test("an uncertain Canvas reparent cannot be acknowledged by a matching peer revision and forks retained input explicitly", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  let peer: ScopedChangeService | undefined, held: ReturnType<typeof holdNextApply> | undefined;
+  let bodyFailed = false, primaryFailure: unknown;
+  const activeCopy = async (scope: string) => page.evaluate(scope => {
+    const writerId = sessionStorage.getItem("motionwright.canvas-session.v1:" + scope);
+    if (!writerId) throw new Error("The Canvas session pointer is missing");
+    for (const key of Object.keys(localStorage).filter(key => key.startsWith("motionwright.canvas-draft.v1:"))) {
+      const raw = localStorage.getItem(key);
+      if (raw === null) continue;
+      const value = JSON.parse(raw) as import("../src/canvasWorkspaceDraft").CanvasRecovery;
+      if (value.scope === scope && value.writerId === writerId) return { key, raw, value, pointer: writerId };
+    }
+    throw new Error("The active Canvas pointer has no retained copy");
+  }, scope);
+  try {
+    const { randomUUID } = await import("node:crypto");
+    const initial = (await service.fixtureBootstrap()).project;
+    evidence.initial = initial; evidence.final = initial;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    expect(target.kind).toBe("text"); expect(target.parent_id).toBeNull();
+    const parentNode: CanvasNode = { ...structuredClone(target), id: randomUUID(), name: "Uncertain reparent destination",
+      kind: "group", text: null, parent_id: null, coordinate_space: "project_pixels", z_index: 1,
+      x: 180, y: 90, width: 420, height: 160, rotation_deg: 90, opacity: 0.5,
+      relations: [], property_locks: [], keyframes: [] };
+    const arranged = await service.apply(initial, { type: "add_canvas_node", scene_id: scene.id, node: parentNode });
+    evidence.final = arranged;
+    evidence.checkpoints.push({ label: "real parent prepared before uncertain authoring", project: arranged });
+    const arrangedOracle = await service.observeStoredProject(arranged), ownBaseline = applyRequests(service).length;
+    const scope = JSON.stringify([arranged.id, arranged.generation, arranged.active_branch, scene.id, target.id]);
+    const unknown = page.getByRole("region", { name: "Unconfirmed Canvas submission", exact: true });
+    const separate = button(page, "Keep hierarchy input as a separate draft");
+    const discard = button(page, "Discard Canvas object draft");
+    const z = page.getByLabel("Canvas z order", { exact: true });
+    const laterText = "  Later copy survives an unconfirmed hierarchy intent\n";
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name); await revision(page, arranged.revision);
+    await page.getByLabel("Canvas parent", { exact: true }).selectOption(parentNode.id);
+    await page.getByLabel("Canvas reparent preservation", { exact: true }).selectOption("world");
+    await z.fill("6");
+    held = holdNextApply(service, "reparent_canvas_node", "before");
+    await button(page, "Commit hierarchy").click();
+    const originalRequest = await held.entered;
+    const originalChange: Change = { type: "reparent_canvas_node", scene_id: scene.id, node_id: target.id,
+      parent_id: parentNode.id, z_index: 6, preserve: "world" };
+    expect(originalRequest.request.change).toEqual(originalChange);
+    expect(originalRequest.request.revision).toBe(arranged.revision);
+    const dispatchedCopy = await activeCopy(scope), originalPending = dispatchedCopy.value.draft?.awaiting;
+    if (!originalPending || originalPending.group !== "hierarchy" || !originalPending.reparent)
+      throw new Error("The original hierarchy intent was not durably retained before transport");
+    expect(originalPending.revision).toBe(arranged.revision);
+    expect(originalPending.fields.z_index?.value).toBe("6");
+    expect(originalPending.reparent.pose).toEqual(transform(target));
+    // The real grant exists, but this original apply has not crossed JSONL.
+    expect(applyRequests(service)).toHaveLength(ownBaseline);
+    expect(await service.project(initial.id)).toEqual(arranged);
+    await button(page, "Brief").click(); await openCanvas(page, scene.name, target.name);
+    await expect(unknown).toBeVisible(); await expect(separate).toBeDisabled(); await expect(discard).toBeDisabled();
+    await expect(button(page, "Review Canvas draft on current revision")).toHaveCount(0);
+    await expect(button(page, "Commit hierarchy")).toBeDisabled();
+    await input(page, "X").fill("1e"); await input(page, "text").fill(laterText); await z.fill("9");
+    await expect(input(page, "X")).toHaveAttribute("aria-invalid", "true");
+    const editedBeforeReload = await activeCopy(scope);
+    expect(editedBeforeReload.value.draft?.awaiting).toEqual(originalPending);
+    await page.reload(); await openCanvas(page, scene.name, target.name); await revision(page, arranged.revision);
+    await expect(unknown).toBeVisible(); await expect(separate).toBeDisabled(); await expect(discard).toBeDisabled();
+    await expect(input(page, "X")).toHaveValue("1e"); await expect(input(page, "text")).toHaveValue(laterText);
+    await expect(z).toHaveValue("9");
+    const laterCopy = await activeCopy(scope);
+    expect(laterCopy.value.draft?.awaiting).toEqual(originalPending);
+    // Recovery intentionally opens another writer. The input and original
+    // copy remain exact; the new envelope has its own identity and timestamp.
+    expect(laterCopy.pointer).not.toBe(editedBeforeReload.pointer);
+    expect(laterCopy.value.draft).toEqual(editedBeforeReload.value.draft);
+    expect(await page.evaluate(key => localStorage.getItem(key), editedBeforeReload.key)).toBe(editedBeforeReload.raw);
+    expect(laterCopy.value.draft?.fields.x.raw).toBe("1e");
+    expect(laterCopy.value.draft?.fields.text.raw).toBe(laterText);
+    expect(laterCopy.value.draft?.fields.z_index.raw).toBe("9");
+    expect(applyRequests(service)).toHaveLength(ownBaseline);
+    const stillN = await service.observeStoredProject(arranged);
+    expect(stillN.project).toEqual(arrangedOracle.project); expect(stillN.journal).toEqual(arrangedOracle.journal);
+
+    peer = await service.peer();
+    expect(await peer.project(initial.id)).toEqual(arranged);
+    // A different real process and request author the same saved result at
+    // N+1. Matching values are deliberately insufficient to ACK our request.
+    const matchingPeer = await peer.apply(arranged, originalChange);
+    evidence.final = matchingPeer;
+    evidence.checkpoints.push({ label: "real peer saved matching hierarchy values with another request ID", project: matchingPeer });
+    expect(matchingPeer.revision).toBe(arranged.revision + 1);
+    const peerRequest = applyRequests(peer).at(-1)!;
+    expect(peerRequest.request.request_id).not.toBe(originalRequest.request.request_id);
+    expect(peerRequest.request.change).toEqual(originalRequest.request.change);
+    const matchedNode = { ...target, parent_id: parentNode.id, z_index: 6 };
+    expect(storedNode(matchingPeer, scene.id, target.id)).toEqual(matchedNode);
+    expect(transform(storedNode(matchingPeer, scene.id, target.id))).toEqual(originalPending.reparent.pose);
+    expect(matchingPeer.branches.find(branch => branch.id === matchingPeer.active_branch)?.head_revision)
+      .toBe(matchingPeer.revision);
+    await page.reload(); await openCanvas(page, scene.name, target.name); await revision(page, matchingPeer.revision);
+    await expect(unknown).toBeVisible(); await expect(separate).toBeEnabled(); await expect(discard).toBeDisabled();
+    await expect(button(page, "Review Canvas object context")).toBeDisabled();
+    await expect(button(page, "Commit hierarchy")).toBeDisabled();
+    await expect(input(page, "X")).toHaveValue("1e"); await expect(input(page, "text")).toHaveValue(laterText);
+    await expect(z).toHaveValue("9");
+    const peerObservedCopy = await activeCopy(scope);
+    expect(peerObservedCopy.pointer).not.toBe(laterCopy.pointer);
+    expect(peerObservedCopy.value.draft).toEqual(laterCopy.value.draft);
+    expect(await page.evaluate(key => localStorage.getItem(key), laterCopy.key)).toBe(laterCopy.raw);
+    expect(await page.evaluate(key => localStorage.getItem(key), editedBeforeReload.key)).toBe(editedBeforeReload.raw);
+    expect(peerObservedCopy.value.draft?.awaiting).toEqual(originalPending);
+    expect(applyRequests(service)).toHaveLength(ownBaseline); expect(applyRequests(peer)).toHaveLength(1);
+    const matchingOracle = await service.observeStoredProject(matchingPeer);
+    expect(matchingOracle.journal.slice(0, arrangedOracle.journal.length)).toEqual(arrangedOracle.journal);
+    expect(matchingOracle.journal.slice(arrangedOracle.journal.length).map(event => event.change)).toEqual([originalChange]);
+
+    held.release();
+    const originalOutcome = await held.observed;
+    expect("error" in originalOutcome).toBe(true);
+    if (!("error" in originalOutcome)) {
+      evidence.final = originalOutcome.project;
+      throw new Error("The stale original request unexpectedly committed after the real peer revision");
+    }
+    await held.dispose(); held = undefined;
+    expect(applyRequests(service).slice(ownBaseline).map(item => item.request.request_id))
+      .toEqual([originalRequest.request.request_id]);
+    const afterOriginalFailure = await service.observeStoredProject(matchingPeer);
+    expect(afterOriginalFailure.project).toEqual(matchingOracle.project);
+    expect(afterOriginalFailure.journal).toEqual(matchingOracle.journal);
+    const beforeRestart = await activeCopy(scope);
+    expect(beforeRestart.value.draft).toEqual(peerObservedCopy.value.draft);
+    // Close every live process before reopening SQLite. Recovery is input;
+    // it does not receive a fabricated original response during this restart.
+    await peer.close(); await service.close(); await service.start(); await page.reload();
+    await openCanvas(page, scene.name, target.name); await revision(page, matchingPeer.revision);
+    const reopened = await service.observeStoredProject(matchingPeer);
+    expect(reopened.project).toEqual(matchingOracle.project); expect(reopened.journal).toEqual(matchingOracle.journal);
+    await expect(unknown).toBeVisible(); await expect(separate).toBeEnabled(); await expect(discard).toBeDisabled();
+    await expect(input(page, "X")).toHaveValue("1e"); await expect(input(page, "text")).toHaveValue(laterText);
+    await expect(z).toHaveValue("9");
+    const beforeFork = await activeCopy(scope);
+    expect(beforeFork.pointer).not.toBe(beforeRestart.pointer);
+    expect(beforeFork.value.draft).toEqual(beforeRestart.value.draft);
+    for (const retained of [editedBeforeReload, laterCopy, beforeRestart])
+      expect(await page.evaluate(key => localStorage.getItem(key), retained.key)).toBe(retained.raw);
+    expect(beforeFork.value.draft?.awaiting).toEqual(originalPending);
+    expect(applyRequests(service)).toHaveLength(ownBaseline + 1);
+    await separate.click();
+    const forked = await activeCopy(scope);
+    expect(forked.pointer).not.toBe(beforeFork.pointer);
+    expect(forked.key).not.toBe(beforeFork.key);
+    expect(forked.value.scope).toBe(beforeFork.value.scope);
+    expect(forked.value.draft?.awaiting).toBeNull();
+    expect(forked.value.draft?.fields.x.raw).toBe("1e");
+    expect(forked.value.draft?.fields.text.raw).toBe(laterText);
+    expect(forked.value.draft?.fields.z_index.raw).toBe("9");
+    expect(await page.evaluate(key => localStorage.getItem(key), beforeFork.key)).toBe(beforeFork.raw);
+    expect(applyRequests(service)).toHaveLength(ownBaseline + 1);
+    expect(await service.project(initial.id)).toEqual(matchingPeer);
+    await expect(unknown).toHaveCount(0);
+    // The peer's Z=6 and our later Z=9 still need an explicit conflict choice.
+    await expect(button(page, "Commit hierarchy")).toBeDisabled();
+    await button(page, "Keep my draft Z order").click();
+    await expect(button(page, "Commit hierarchy")).toBeEnabled();
+    expect(applyRequests(service)).toHaveLength(ownBaseline + 1);
+    await button(page, "Commit hierarchy").click();
+    const final = await checkpoint(service, page, evidence, initial.id, matchingPeer.revision + 1,
+      "separate later hierarchy intent explicitly saved after preserving UNKNOWN bytes");
+    expect(storedNode(final, scene.id, target.id)).toEqual({ ...matchedNode, z_index: 9 });
+    expect(final.scenes).toEqual(matchingPeer.scenes.map(item => item.id !== scene.id ? item
+      : { ...item, nodes: item.nodes.map(node => node.id === target.id ? { ...matchedNode, z_index: 9 } : node) }));
+    expect(final.assets).toEqual(arranged.assets); expect(final.production_design).toEqual(arranged.production_design);
+    expect(final.brief).toEqual(arranged.brief); expect(final.deliverables).toEqual(arranged.deliverables);
+    const newRequest = applyRequests(service).at(-1)!;
+    expect(newRequest.request.request_id).not.toBe(originalRequest.request.request_id);
+    expect(newRequest.request.request_id).not.toBe(peerRequest.request.request_id);
+    expect(newRequest.request.revision).toBe(matchingPeer.revision);
+    expect(newRequest.request.change).toEqual({ ...originalChange, z_index: 9 });
+    expect(applyRequests(service)).toHaveLength(ownBaseline + 2); expect(applyRequests(peer)).toHaveLength(1);
+    await expect(input(page, "X")).toHaveValue("1e"); await expect(input(page, "text")).toHaveValue(laterText);
+    await expect(button(page, "Commit transform")).toBeDisabled();
+    await expect(unknown).toHaveCount(0);
+    const afterNewAck = await activeCopy(scope);
+    expect(afterNewAck.value.draft?.awaiting).toBeNull();
+    expect(afterNewAck.pointer).toBe(forked.pointer);
+    expect(await page.evaluate(key => localStorage.getItem(key), beforeFork.key)).toBe(beforeFork.raw);
+    await page.getByText("Local Canvas recovery copies", { exact: true }).click();
+    await expect(button(page, "Discard Canvas draft " + beforeFork.pointer)).toBeDisabled();
+    const finalOracle = await service.observeStoredProject(final);
+    expect(finalOracle.journal.slice(0, arrangedOracle.journal.length)).toEqual(arrangedOracle.journal);
+    expect(finalOracle.journal.slice(arrangedOracle.journal.length).map(event => event.change))
+      .toEqual([originalChange, { ...originalChange, z_index: 9 }]);
+    evidence.observations.push({ label: "matching_peer_is_not_original_ack_and_unknown_copy_precedes_explicit_fork",
+      originalRequest: originalRequest.request, peerRequest: peerRequest.request, newRequest: newRequest.request,
+      originalPending, originalOutcome: String(originalOutcome.error), retainedBeforeFork: beforeFork,
+      retainedCopiesBeforeReloads: [editedBeforeReload, laterCopy, beforeRestart],
+      newWriter: forked.pointer, afterNewAck, rawInvalidX: "1e", laterUncommittedText: laterText,
+      canonicalRevisions: [arranged.revision, matchingPeer.revision, final.revision],
+      ownApplyRequestsAfterArrangement: 2, peerApplyRequests: 1, committedHierarchyChanges: 2,
+      retainedOriginalBytesExact: true, fullProjectAndJournalEqualAfterRestart: true,
+      nativeGeometry: "NOT_REQUESTED_OR_VERIFIED", originalResponseAuthorityNotReconstructed: true });
+  } catch (error) {
+    bodyFailed = true; primaryFailure = error;
+    evidence.observations.push({ label: "primary_test_failure", error: error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack } : String(error) });
+    throw error;
+  } finally {
+    try { await retainEvidence(testInfo, [service, ...(peer ? [peer] : [])], evidence,
+      [...(held ? [() => held!.dispose()] : []), () => page.close()]); }
+    catch (cleanupError) { throw new AggregateError(bodyFailed ? [primaryFailure, cleanupError] : [cleanupError],
+      "Uncertain Canvas reparent test or closure failed; original failure and existing closed-store outcomes are retained"); }
+  }
+});

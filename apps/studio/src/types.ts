@@ -23,6 +23,7 @@ export type RendererKind =
   | "manim-gl";
 export type LockKind = "content" | "timing" | "position" | "style" | "renderer";
 export type CoordinateSpace = "project_pixels" | "normalized" | "scene_local";
+export type ReparentCoordinatePolicy = "world" | "local";
 export type NodeProperty = "position" | "size" | "rotation" | "opacity" | "text" | "style" | "parent" | "order";
 export type BlendMode = "normal" | "multiply" | "screen" | "add";
 export type MotionProperty = "x" | "y" | "width" | "height" | "rotation_deg" | "opacity";
@@ -820,7 +821,7 @@ export type Change =
   | { type: "remove_canvas_keyframe"; scene_id: string; node_id: string; at: RationalTime; property: MotionProperty }
   | { type: "update_canvas_text"; scene_id: string; node_id: string; text: string | null }
   | { type: "update_canvas_style"; scene_id: string; node_id: string; style: NodeStyle }
-  | { type: "reparent_canvas_node"; scene_id: string; node_id: string; parent_id: string | null; z_index: number }
+  | { type: "reparent_canvas_node"; scene_id: string; node_id: string; parent_id: string | null; z_index: number; preserve?: ReparentCoordinatePolicy }
   | { type: "set_canvas_relations"; scene_id: string; node_id: string; relations: NodeRelation[] }
   | { type: "set_node_property_lock"; scene_id: string; node_id: string; property: NodeProperty; locked: boolean }
   | { type: "set_camera"; scene_id: string; camera: CameraState }

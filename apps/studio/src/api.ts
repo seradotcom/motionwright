@@ -5,6 +5,7 @@ import { claimFields, claimRaw, parseClaimRaw } from "./claimSourceDraft";
 export { nativePaidGenerationJournal, nativePaidGenerationPreflight, nativePaidGenerationReservePreflight } from "./generationJournalApi";
 export {nativeNarrationSourceSnapshot,nativeNarrationReplacementImpact} from "./narrationReviewApi";
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
+import { proposeCanvasReparent } from "./canvasWorkspaceDraft";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateCraftDisclosures, validateMetricSourceNoticesOnEdit } from "./creativeProduction";
@@ -1671,6 +1672,13 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       const node = scene.nodes.find((entry) => entry.id === change.node_id);
       if (!node) throw new Error("resource not found: node:" + change.node_id);
       if (node.property_locks.includes("parent") || node.property_locks.includes("order")) throw new Error("resource is locked: node hierarchy");
+      if (!Number.isSafeInteger(change.z_index) || change.z_index < -2147483648 || change.z_index > 2147483647) {
+        throw new Error("Use a signed 32-bit whole Z order.");
+      }
+      const proposal = proposeCanvasReparent(next, change.scene_id, change.node_id, change.parent_id, change.preserve);
+      // The browser editor shares the same pre-mutation geometry proposal as
+      // the inspector. Native writes still use the existing single Change.
+      if (change.preserve === "local") Object.assign(node, proposal.pose);
       node.parent_id = change.parent_id;
       node.z_index = change.z_index;
       break;
