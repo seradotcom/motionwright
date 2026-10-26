@@ -655,7 +655,7 @@ class SDKFoundationWorkflowTests(unittest.TestCase):
         self.assertIn("--expected-source \"$GITHUB_SHA\"", self.jobs["sdk-foundation-g0"])
 
 
-HOSTED_UNCHANGED_KERNEL_AST = {'validate_lease': '3acc0f07e00be6974e4c1c08ccfd2fff00c5b5dc18a958d264d26f7d0da1e854', 'full_snapshot': '3947f1fb83e4ea94311afc78f22ac70eb1bfb66d8677f9b701a908abe0423029', 'source_unchanged': 'a90aa2a39eb8eb89e39ff635e1775fa646a5400a96ce1962d2e07d76695f82f6', 'sdk_g0': 'e807a4a6d665755063b607c18ff3506869701de66d370802bfe9c633eca9d438', 'producer_plan': 'c0e2afd4e52fc11f246549898c7e646eb5cccb12317f9dd2bd16217bddd84194', 'compiled_paths': '09634acfe6133793bfd112f7dcca4456e6a8e39866ad0f880b0d8e82eb9a43e0', 'prepare_role': 'b6600d7d6ba74f757b033f57b9a98a35a8939156bdbeae2bdd66d907c45eaf0a', 'parse_roster': 'c8c67c18557117c8a64e5ca5e6f0b53d7e5b5d63e18be422e1d915d8c541e67e', 'group_roster': '585eb7523f97103a299ec12407ef6221bc7b3e5ed6d038ba89d7541684dd8c45', 'group_argv': '07493ac6b10ca09ad5690784a880c22f875c67f0f0f21481981e31f6b2662bd3', 'admit_group': 'ae82264bb09df3da74c5d49009d61902c21639b8789389554ec43f34a3640261', 'current_binary': 'd7e8b63ad9499f9ce4bdaa1bb98e481a685723aef7e8eac2133449a7d0a7353c', 'list_role': '8aa5b716fe0711d84cb5e37dba554b39e751acc47a12f94d43e6a4e2117d4283', 'observe_causal': 'ec1b5a47a2c150ee076799544d981b7f159ab466446a722385c4e11c38553a7b', 'observe_fixed_groups': 'e1b5809454cfd7ecd5bc452157d13807c5bd168e2784852a10411ec70cc38d59', 'admit_gate_controls': '7e3a1dbc4adaddf61c83e21540d1ea04b4aa104237e5167bbe8927e90d4cb46e', 'local_gate_g0': 'ff43a34fb269266261728927c3b5677bc46bb634b92a9da7bc9e9aa5f34301ca', 'execute_selection': '1814280b85cda72509f05f89b7955373a9524887f67e390604b36ef37c7f5d0f'}
+HOSTED_UNCHANGED_KERNEL_SOURCE = {'validate_lease': 'ec98cda700bea93615e487f78488f99f3e1d920f1264e4233748544c34a07e63', 'full_snapshot': 'a222f3969e0405a5415a202bad1d6a11d942a4a73df8a5230d3fce301cc11c3b', 'source_unchanged': 'aa21fcf4d6b4d01b09eaaa692047d77d9738571148a3060482ef7e7377c4b825', 'sdk_g0': 'f635fab2284ae19a245723bfe4b4bfbb4c6370ba8d46f710a7013b60d939d5c1', 'producer_plan': '1729aa1650c9199ee7534cbc5e620accc69f9ddde4327497b2aa5dabca9d82ba', 'compiled_paths': 'ca2c07c5129ba6e724d54a31de601a7c21f533344b57bdde3ed5c3eef6469c61', 'prepare_role': '1e0984647890fdd351cf753585481baddef14c0d73084f0eab61ef851fe4018a', 'parse_roster': 'b08a60c15d800045cdd425eb4ca963e087d0a3c8217adfb054d29a714dd11f76', 'group_roster': '48d53599850b54ffc021eeb67374b718c8e982b340a4405bf67aa0ebca175c62', 'group_argv': '0df762a22414ab76d881a8ab4332460f41fa2bce0b2f4893299a294a3de34b25', 'admit_group': '77545de430e06e4ac7bf4df12c1ee73a325f7819022a5e937c627b34252aff2f', 'current_binary': 'c8853e30869663f936291c92a8802ce931f6a0323f758f8a36d43415420a84ea', 'list_role': 'dbb614d0bb25b3de3b9196196d263fea3f471d69b9f2c425331b8a561102b4a7', 'observe_causal': '92268fb5202bc5a142869fdc744f1aab8142a4b6359a88bd247863ce37e7aeec', 'observe_fixed_groups': '565239a9e4114c64bde21d75228d3843d397e8e5dedb32f4420d555bc25a2956', 'admit_gate_controls': 'd7fb8fdb0e755857045fb1385818910b20824ffb51511d9723829009b74c51a7', 'local_gate_g0': '1ea0d631217a6246651e85f8225f0a5da28632d1a728c5cb3929d979a19c2c57', 'execute_selection': 'a0637485f7bd2af50ddf8848de012a7dae9ef94105aab2c7f1d8b8f05dd5d0b9'}
 
 
 class SDKFoundationHostedTests(unittest.TestCase):
@@ -960,12 +960,22 @@ class SDKFoundationHostedTests(unittest.TestCase):
         self.assertEqual(budget.deadline, 60_000_000_000)
 
     def test_selection_G0_causal_and_original_admission_kernels_remain_reviewed(self):
-        source = ast.parse(Path(gate.__file__).read_bytes())
-        functions = {node.name: node for node in source.body if isinstance(node, ast.FunctionDef)}
-        for name, expected in HOSTED_UNCHANGED_KERNEL_AST.items():
+        text = Path(gate.__file__).read_bytes().decode("utf-8")
+        def source_digests(value):
+            functions = {node.name: node for node in ast.parse(value).body if isinstance(node, ast.FunctionDef)}
+            return {name: hashlib.sha256(ast.get_source_segment(value, functions[name]).encode("utf-8")).hexdigest()
+                    for name in HOSTED_UNCHANGED_KERNEL_SOURCE}
+        actual = source_digests(text)
+        for name, expected in HOSTED_UNCHANGED_KERNEL_SOURCE.items():
             with self.subTest(name=name):
-                actual = hashlib.sha256(ast.dump(functions[name], include_attributes=False).encode()).hexdigest()
-                self.assertEqual(actual, expected)
+                self.assertEqual(actual[name], expected)
+        # The historical source bytes stay authoritative across Python AST versions.
+        # A changed executable statement still fails the same source comparison.
+        changed = text.replace('stage["status"] = "PASS_G0_SDK_FOCAL"',
+                               'stage["status"] = "UNREVIEWED_G0_PROMOTION"', 1)
+        self.assertNotEqual(changed, text)
+        with self.assertRaises(AssertionError):
+            self.assertEqual(source_digests(changed), HOSTED_UNCHANGED_KERNEL_SOURCE)
         self.assertEqual(len(gate.CAUSALS), 4)
         self.assertEqual(len(gate.GROUPS), 13)
         self.assertEqual(sum(group[4] for group in gate.GROUPS), 134)
