@@ -60,6 +60,16 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     expect(initial.assets.some(asset => asset.content_sha256 === boot.fixture.asset_sha256)).toBe(true);
     const text = "A reviewed line stored by the real StudioService.";
     const pendingText = "This second input stays outside the reviewed queue.";
+    const rawX = "1e";
+    const expectPendingInputs = async () => {
+      await expect(page.getByLabel("Patch target object")).toHaveValue(other.id);
+      await page.getByLabel("Patch edit kind").selectOption("transform");
+      await expect(page.getByLabel("Patch x", { exact: true })).toHaveValue(rawX);
+      await expect(page.getByLabel("Patch x", { exact: true })).toHaveAttribute("aria-invalid", "true");
+      await expect(button(page, "Add to proposal")).toBeDisabled();
+      await page.getByLabel("Patch edit kind").selectOption("text");
+      await expect(page.getByLabel("Patch replacement text")).toHaveValue(pendingText);
+    };
     const rationale = "Shorten the body and move only its authored position.";
     const transform = { ...nodeTransform(target), x: target.x + 18 };
     const patch: CreativePatch = { scene_id: scene.id, base_revision: initial.revision, rationale,
@@ -67,13 +77,21 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     await service.attachFixturePage(page);
     await page.goto("/");
     await openProposal(page, scene.id);
+    await page.getByLabel("Patch target object").selectOption(other.id);
+    await page.getByLabel("Patch edit kind").selectOption("transform");
+    await page.getByLabel("Patch x", { exact: true }).fill(rawX);
+    await expect(page.getByLabel("Patch x", { exact: true })).toHaveValue(rawX);
+    await expect(button(page, "Add to proposal")).toBeDisabled();
     await queueText(page, target.id, text, rationale);
     await page.getByLabel("Patch edit kind").selectOption("transform");
     await page.getByLabel("Patch x", { exact: true }).fill(String(transform.x));
     await button(page, "Add to proposal").click();
     await page.getByLabel("Patch target object").selectOption(other.id);
+    await expect(page.getByLabel("Patch x", { exact: true })).toHaveValue(rawX);
+    await expect(button(page, "Add to proposal")).toBeDisabled();
     await page.getByLabel("Patch edit kind").selectOption("text");
     await page.getByLabel("Patch replacement text").fill(pendingText);
+    await expect(button(page, "Add to proposal")).toBeEnabled();
     await button(page, "Preview scoped changes").click();
     await expect(page.getByText("Editorial diff prepared", { exact: true })).toBeVisible();
     expect(await service.project(initial.id)).toEqual(initial);
@@ -108,6 +126,7 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     await expect(button(page, "Apply as one revision")).toBeDisabled();
     await expect(page.getByLabel("Patch replacement text")).toHaveValue(pendingText);
     await expect(page.getByRole("region", { name: "Proposed edits", exact: true })).toContainText("No edits queued");
+    await expectPendingInputs();
 
     await service.close();
     await service.start();
@@ -116,6 +135,7 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     expect(await service.project(initial.id)).toEqual(committed);
     await expect(page.getByLabel("Patch replacement text")).toHaveValue(pendingText);
     await expect(button(page, "Apply as one revision")).toBeDisabled();
+    await expectPendingInputs();
 
     // A later author's style decision is real persisted input, outside the
     // first proposal. Undo/redo must conserve it and the pending editor input.
@@ -125,6 +145,7 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     await page.reload();
     await openProposal(page, scene.id);
     await expect(page.locator(".production-patch")).toContainText("Your proposal is kept");
+    await expectPendingInputs();
     await button(page, "Preview undo").click();
     await page.screenshot({ path: testInfo.outputPath("real-service-undo-preserves-author-input.png"), fullPage: true });
     await button(page, "Apply undo as new revision").click();
@@ -135,6 +156,7 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     expect(nodeTransform(undoneNode)).toEqual(nodeTransform(target));
     expect(undoneNode.style).toEqual(style);
     await expect(page.getByLabel("Patch replacement text")).toHaveValue(pendingText);
+    await expectPendingInputs();
     await button(page, "Preview redo").click();
     await button(page, "Apply undo as new revision").click();
     await expect(page.locator(".production-workspace-header p")).toContainText(`revision ${undone.revision + 1}`);
@@ -144,6 +166,7 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     expect(nodeTransform(redoneNode)).toEqual(transform);
     expect(redoneNode.style).toEqual(style);
     await expect(page.getByLabel("Patch replacement text")).toHaveValue(pendingText);
+    await expectPendingInputs();
     await button(page, "Review on current revision").click();
     await expect(button(page, "Apply as one revision")).toBeDisabled();
     await button(page, "Add to proposal").click();
@@ -153,10 +176,34 @@ test("Studio previews, commits, reopens, undoes and redoes against the real pers
     await expect(page.locator(".production-workspace-header p")).toContainText(`revision ${redone.revision + 1}`);
     final = await service.project(initial.id);
     expect(final.scenes.find(item => item.id === scene.id)!.nodes.find(item => item.id === other.id)?.text).toBe(pendingText);
+    await expect(page.getByRole("region", { name: "Proposed edits", exact: true })).toContainText("No edits queued");
+    await expectPendingInputs();
+    for (const stored of [committed, styled, undone, redone, final]) {
+      const storedOther = stored.scenes.find(item => item.id === scene.id)!.nodes.find(item => item.id === other.id)!;
+      expect(nodeTransform(storedOther)).toEqual(nodeTransform(other));
+    }
     expect(await service.history(initial.id, initial.revision)).toHaveLength(5);
     const journal = await service.history(initial.id, initial.revision);
+    expect(journal.map(event => event.change)).toEqual([
+      { type: "apply_creative_patch", patch },
+      { type: "update_canvas_style", scene_id: scene.id, node_id: target.id, style },
+      { type: "undo_creative_patch", patch_id: committed.production_design.patches.at(-1)!.id },
+      { type: "undo_creative_patch", patch_id: undone.production_design.patches.at(-1)!.id },
+      { type: "apply_creative_patch", patch: {
+        scene_id: scene.id, base_revision: redone.revision,
+        rationale: "Complete the remaining independently authored input.",
+        edits: [{ kind: "text", node_id: other.id, text: pendingText }],
+      } },
+    ]);
     await service.close();
     await service.start();
+    expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id, initial.revision)).toEqual(journal);
+    await page.reload();
+    await openProposal(page, scene.id);
+    await expectPendingInputs();
+    await expect(button(page, "Apply as one revision")).toBeDisabled();
+    await expect(page.getByRole("region", { name: "Proposed edits", exact: true })).toContainText("No edits queued");
     expect(await service.project(initial.id)).toEqual(final);
     expect(await service.history(initial.id, initial.revision)).toEqual(journal);
     await page.screenshot({ path: testInfo.outputPath("real-service-completed-editable-project.png"), fullPage: true });
