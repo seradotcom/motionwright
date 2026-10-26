@@ -232,13 +232,26 @@ def run_firstparty_native(cmd: list[str], *, timeout: int = 120,
                 error.add_note("Original source-call evidence retention failed: "
                                + type(retention_error).__name__ + ": " + str(retention_error))
         raise
+    retention_error = None
     if evidence_prefix is not None:
-        _retain_call(evidence_prefix, returncode=result.returncode,
-                     stdout=result.stdout, stderr=result.stderr)
-    require(result.returncode == 0
-            and len(result.stdout) <= MAX_RUST_STDOUT
-            and len(result.stderr) <= 32 * 1024,
-            "original_Kdenlive_G2_source_generator_or_video_failed")
+        try:
+            _retain_call(evidence_prefix, returncode=result.returncode,
+                         stdout=result.stdout, stderr=result.stderr)
+        except BaseException as error:
+            retention_error = error
+    try:
+        require(result.returncode == 0
+                and len(result.stdout) <= MAX_RUST_STDOUT
+                and len(result.stderr) <= 32 * 1024,
+                "original_Kdenlive_G2_source_generator_or_video_failed")
+    except BaseException as original:
+        if retention_error is not None:
+            original.add_note("Original source-call evidence retention failed: "
+                              + type(retention_error).__name__ + ": " + str(retention_error))
+        raise
+    if retention_error is not None:
+        # A successful native terminal cannot turn failed custody into success.
+        raise retention_error
     return result.stdout
 
 

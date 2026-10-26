@@ -59,6 +59,27 @@ def make_session(api, journal):
     return instance
 
 
+class ManualQueryClock:
+    """Clock reads are inert; the observed query and sleep advance time."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def after_queries(self, query, elapsed):
+        durations = iter(elapsed)
+        def observed():
+            result = query()
+            self.now += next(durations)
+            return result
+        return observed
+
+
 class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
     def setUp(self):
         self.events = []
@@ -122,11 +143,16 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
         foreign = fake_foreign()
         api = fake_api(desktops=[fake_desktop([foreign])])
         instance = make_session(api, self.journal)
-        with patch.object(actions.time, "monotonic", side_effect=[0.0, 31.0]), \
-             patch.object(actions.time, "sleep"):
+        clock = ManualQueryClock()
+        with patch.object(actions.time, "monotonic", side_effect=clock.monotonic), \
+             patch.object(actions.time, "sleep", side_effect=clock.sleep) as slept, \
+             patch.object(instance, "tree",
+                          side_effect=clock.after_queries(instance.tree, (31.0,))) as query:
             with self.assertRaisesRegex(actions.GuiUncertain, "import.accessibility-ready"):
                 instance.wait_ready("import")
         api.get_desktop.assert_called_once_with(0)
+        self.assertEqual(query.call_count, 1)
+        self.assertEqual(slept.call_count, 0)
         foreign.get_process_id.assert_called_once_with()
         foreign.get_state_set.assert_not_called()
         diagnostic = self.events[-1]
@@ -144,11 +170,16 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
         foreign = fake_foreign()
         api = fake_api(desktops=[fake_desktop([]), fake_desktop([foreign])])
         instance = make_session(api, self.journal)
-        with patch.object(actions.time, "monotonic", side_effect=[0.0, 0.1, 31.0]), \
-             patch.object(actions.time, "sleep"):
+        clock = ManualQueryClock()
+        with patch.object(actions.time, "monotonic", side_effect=clock.monotonic), \
+             patch.object(actions.time, "sleep", side_effect=clock.sleep) as slept, \
+             patch.object(instance, "tree",
+                          side_effect=clock.after_queries(instance.tree, (0.0, 31.0))) as query:
             with self.assertRaises(actions.GuiUncertain):
                 instance.wait_ready("import")
         self.assertEqual(api.get_desktop.call_count, 2)
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual(slept.call_count, 1)
         diagnostic = self.events[-1]
         self.assertEqual(diagnostic["discovery_count"], 2)
         self.assertEqual(diagnostic["first_discovery"]["desktop_child_count"], 0)
@@ -213,13 +244,18 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
         journal = actions.ActionJournal(emit, Mock())
         api = fake_api(desktops=[fake_desktop([])])
         instance = make_session(api, journal)
-        with patch.object(actions.time, "monotonic", side_effect=[0.0, 31.0]), \
-             patch.object(actions.time, "sleep"):
+        clock = ManualQueryClock()
+        with patch.object(actions.time, "monotonic", side_effect=clock.monotonic), \
+             patch.object(actions.time, "sleep", side_effect=clock.sleep) as slept, \
+             patch.object(instance, "tree",
+                          side_effect=clock.after_queries(instance.tree, (31.0,))) as query:
             with self.assertRaisesRegex(actions.GuiUncertain, "import.accessibility-ready") as caught:
                 instance.wait_ready("import")
         self.assertIn("discovery_diagnostic_recording_failed:OSError", caught.exception.__notes__)
         self.assertTrue(journal.blocked)
         api.get_desktop.assert_called_once_with(0)
+        self.assertEqual(query.call_count, 1)
+        self.assertEqual(slept.call_count, 0)
         self.assertEqual(self.events[-1]["state"], "TIMED_OUT_UNKNOWN")
 
 

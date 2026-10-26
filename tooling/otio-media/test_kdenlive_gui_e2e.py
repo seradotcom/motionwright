@@ -71,22 +71,86 @@ class ActionJournalTests(unittest.TestCase):
         effect.assert_called_once()
 
     def test_rejected_action_blocks_next_effect(self):
-        first, following = Mock(return_value=False), Mock()
-        with self.assertRaises(actions.GuiUncertain):
-            self.journal.perform("save", {}, first)
-        with self.assertRaises(actions.GuiRejected):
-            self.journal.perform("quit", {}, following)
-        first.assert_called_once()
-        following.assert_not_called()
-        self.assertEqual(self.events[-1]["state"], "ERROR_OR_UNKNOWN")
+        cases = (
+            ("action-rejected", None, False),
+            ("intent-before-write", "INTENT", False),
+            ("intent-after-write", "INTENT", True),
+            ("return-before-write", "REQUEST_RETURNED", False),
+            ("return-after-write", "REQUEST_RETURNED", True),
+        )
+        for label, failed_state, partial_write in cases:
+            with self.subTest(case=label):
+                events, attempts = [], []
+                storage_error = OSError("original journal storage failure")
+                def emit(event):
+                    attempts.append(event)
+                    if event["state"] == failed_state:
+                        if partial_write:
+                            events.append(event)
+                        raise storage_error
+                    events.append(event)
+                journal = actions.ActionJournal(emit, Mock())
+                first = Mock(return_value=failed_state is not None)
+                following = Mock()
+                expected = actions.GuiUncertain if failed_state is None else OSError
+                with self.assertRaises(expected) as caught:
+                    journal.perform("save", {}, first)
+                self.assertTrue(journal.blocked)
+                with self.assertRaises(actions.GuiRejected):
+                    journal.perform("quit", {}, following)
+                following.assert_not_called()
+                if failed_state == "INTENT":
+                    first.assert_not_called()
+                    self.assertEqual([event["state"] for event in attempts], ["INTENT"])
+                else:
+                    first.assert_called_once()
+                    self.assertEqual([event["state"] for event in attempts], [
+                        "INTENT", failed_state or "ERROR_OR_UNKNOWN"])
+                if failed_state is None:
+                    self.assertIsInstance(caught.exception.__cause__, actions.GuiRejected)
+                    self.assertEqual(events[-1]["state"], "ERROR_OR_UNKNOWN")
+                else:
+                    self.assertIs(caught.exception, storage_error)
+                    if failed_state == "REQUEST_RETURNED":
+                        self.assertFalse(attempts[-1]["semantic_effect_verified_here"])
 
     def test_effect_exception_retains_original_error_without_retry(self):
-        effect = Mock(side_effect=RuntimeError("original-native-unknown"))
-        with self.assertRaises(actions.GuiUncertain):
-            self.journal.perform("export", {}, effect)
-        self.assertEqual(self.events[-1]["error"], "original-native-unknown")
-        self.assertFalse(self.events[-1]["replayed"])
-        effect.assert_called_once()
+        for error_type in (RuntimeError, KeyboardInterrupt):
+            for failed_record in (False, True):
+                with self.subTest(error_type=error_type.__name__,
+                                  failed_record=failed_record):
+                    events, attempts = [], []
+                    original = error_type("original-native-unknown")
+                    def emit(event):
+                        attempts.append(event)
+                        if failed_record and event["state"] == "ERROR_OR_UNKNOWN":
+                            raise OSError("unknown terminal storage failure")
+                        events.append(event)
+                    journal = actions.ActionJournal(emit, Mock())
+                    effect = Mock(side_effect=original)
+                    expected = (actions.GuiUncertain
+                                if isinstance(original, Exception) else error_type)
+                    with self.assertRaises(expected) as caught:
+                        journal.perform("export", {}, effect)
+                    if isinstance(original, Exception):
+                        self.assertIs(caught.exception.__cause__, original)
+                    else:
+                        self.assertIs(caught.exception, original)
+                    self.assertEqual(attempts[-1]["state"], "ERROR_OR_UNKNOWN")
+                    self.assertEqual(attempts[-1]["error"], "original-native-unknown")
+                    self.assertFalse(attempts[-1]["replayed"])
+                    if failed_record:
+                        self.assertIn("native_gui_journal_recording_failed:OSError",
+                                      original.__notes__)
+                        self.assertEqual([e["state"] for e in events], ["INTENT"])
+                    else:
+                        self.assertEqual(events[-1]["error"], "original-native-unknown")
+                    self.assertTrue(journal.blocked)
+                    effect.assert_called_once()
+                    following = Mock()
+                    with self.assertRaises(actions.GuiRejected):
+                        journal.perform("following", {}, following)
+                    following.assert_not_called()
 
     def test_changed_pid_after_action_blocks_following_effect(self):
         self.guard.side_effect = [None, ValueError("PID changed")]
@@ -100,27 +164,115 @@ class ActionJournalTests(unittest.TestCase):
         self.guard.assert_called_once()
 
     def test_read_only_wait_can_observe_later_without_repeating_effect(self):
-        query = Mock(side_effect=[None, {"ready": True}])
-        with patch.object(actions.time, "sleep"):
-            result = self.journal.wait("ready", query)
-        self.assertEqual(result, {"ready": True})
-        self.assertEqual(self.events, [])
+        with self.subTest(case="later-read-only-observation"):
+            query = Mock(side_effect=[None, {"ready": True}])
+            with patch.object(actions.time, "sleep"):
+                result = self.journal.wait("ready", query)
+            self.assertEqual(result, {"ready": True})
+            self.assertEqual(query.call_count, 2)
+            self.assertEqual(self.events, [])
+            self.assertFalse(self.journal.blocked)
+        with self.subTest(case="truthy-result-before-deadline"):
+            now = [0.0]
+            original = {"ready": True}
+            def observe():
+                now[0] = 0.999
+                return original
+            query = Mock(side_effect=observe)
+            journal = actions.ActionJournal(self.events.append, Mock())
+            with patch.object(actions.time, "monotonic", side_effect=lambda: now[0]), \
+                 patch.object(actions.time, "sleep") as sleep:
+                result = journal.wait("ready", query, timeout=1)
+            self.assertIs(result, original)
+            query.assert_called_once()
+            sleep.assert_not_called()
+            self.assertFalse(journal.blocked)
+            self.assertEqual(self.events, [])
 
     def test_timeout_blocks_all_further_effects(self):
-        effect = Mock()
-        with patch.object(actions.time, "monotonic", side_effect=[0.0, 2.0]):
-            with self.assertRaises(actions.GuiUncertain):
-                self.journal.wait("exported", lambda: None, timeout=1)
-        with self.assertRaises(actions.GuiRejected):
-            self.journal.perform("retry", {}, effect)
-        effect.assert_not_called()
-        self.assertEqual(self.events[-1]["state"], "TIMED_OUT_UNKNOWN")
+        cases = (
+            ("guard-exhausted-deadline", 1.0, None, True, False, 0),
+            ("late-false-query", None, 1.1, False, False, 1),
+            ("truthy-query-at-deadline", None, 1.0, True, False, 1),
+            ("truthy-query-after-deadline", None, 1.1, True, False, 1),
+            ("sleep-exhausted-deadline", None, None, False, True, 1),
+        )
+        for label, guard_time, query_time, ready, expires_in_sleep, expected_queries in cases:
+            for failed_record in (False, True):
+                with self.subTest(case=label, failed_record=failed_record):
+                    now, attempts = [0.0], []
+                    def guard():
+                        if guard_time is not None:
+                            now[0] = guard_time
+                    def observe():
+                        if query_time is not None:
+                            now[0] = query_time
+                        return {"ready": True} if ready else None
+                    def sleep(_):
+                        self.assertTrue(expires_in_sleep)
+                        now[0] = 1.0
+                    def emit(event):
+                        attempts.append(event)
+                        if failed_record:
+                            raise OSError("timeout journal storage failure")
+                    query = Mock(side_effect=observe)
+                    guarded = Mock(side_effect=guard)
+                    journal = actions.ActionJournal(emit, guarded)
+                    with patch.object(actions.time, "monotonic", side_effect=lambda: now[0]), \
+                         patch.object(actions.time, "sleep", side_effect=sleep) as slept, \
+                         self.assertRaises(actions.GuiUncertain) as caught:
+                        journal.wait("exported", query, timeout=1)
+                    self.assertEqual(str(caught.exception), "exported")
+                    self.assertTrue(journal.blocked)
+                    self.assertEqual(query.call_count, expected_queries)
+                    guarded.assert_called_once()
+                    self.assertEqual(slept.call_count, int(expires_in_sleep))
+                    self.assertEqual([event["state"] for event in attempts],
+                                     ["TIMED_OUT_UNKNOWN"])
+                    self.assertFalse(attempts[0]["replayed"])
+                    if failed_record:
+                        self.assertIn("native_gui_journal_recording_failed:OSError",
+                                      caught.exception.__notes__)
+                    following = Mock()
+                    with self.assertRaises(actions.GuiRejected):
+                        journal.perform("following", {}, following)
+                    following.assert_not_called()
 
     def test_observation_exception_blocks_following_effect(self):
-        with self.assertRaisesRegex(ValueError, "original-read-error"):
-            self.journal.wait("state", Mock(side_effect=ValueError("original-read-error")))
-        self.assertTrue(self.journal.blocked)
-        self.assertEqual(self.events[-1]["state"], "OBSERVATION_ERROR_OR_UNKNOWN")
+        for error_type in (ValueError, KeyboardInterrupt):
+            for late_error in (False, True):
+                for failed_record in (False, True):
+                    with self.subTest(error_type=error_type.__name__,
+                                      late_error=late_error, failed_record=failed_record):
+                        now, attempts = [0.0], []
+                        original = error_type("original-read-error")
+                        def observe():
+                            if late_error:
+                                now[0] = 2.0
+                            raise original
+                        def emit(event):
+                            attempts.append(event)
+                            if failed_record:
+                                raise OSError("observation journal storage failure")
+                        query = Mock(side_effect=observe)
+                        journal = actions.ActionJournal(emit, Mock())
+                        with patch.object(actions.time, "monotonic", side_effect=lambda: now[0]), \
+                             self.assertRaises(error_type) as caught:
+                            journal.wait("state", query, timeout=1)
+                        self.assertIs(caught.exception, original)
+                        self.assertTrue(journal.blocked)
+                        self.assertEqual([event["state"] for event in attempts],
+                                         ["OBSERVATION_ERROR_OR_UNKNOWN"])
+                        self.assertEqual(attempts[0]["error"], "original-read-error")
+                        self.assertFalse(attempts[0]["replayed"])
+                        if failed_record:
+                            self.assertIn("native_gui_journal_recording_failed:OSError",
+                                          original.__notes__)
+                        query.assert_called_once()
+                        following = Mock()
+                        with self.assertRaises(actions.GuiRejected):
+                            journal.perform("following", {}, following)
+                        following.assert_not_called()
 
     def test_initial_guard_failure_never_dispatches(self):
         self.guard.side_effect = ValueError("wrong PID")
@@ -816,18 +968,74 @@ class FirstpartyOriginalRetentionContracts(unittest.TestCase):
             run.assert_not_called()
 
     def test_retention_failure_preserves_original_exception_without_second_call(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            prefix = Path(temporary) / "source"
-            original = OSError("original launch error")
-            with patch.object(runner.fixture, "_new_original",
-                              side_effect=[None, OSError("terminal storage failure")]), \
-                 patch.object(runner.fixture.subprocess, "run", side_effect=original) as run:
-                with self.assertRaises(OSError) as raised:
-                    runner.fixture.run_firstparty_native(["exporter"], evidence_prefix=prefix)
-            self.assertIs(raised.exception, original)
-            self.assertTrue(any("terminal storage failure" in note
-                                for note in raised.exception.__notes__))
-            run.assert_called_once()
+        cases = (
+            ("launch-error", ("terminal",)),
+            ("timeout", ("terminal", "stdout")),
+            ("nonzero", ("terminal", "stdout")),
+            ("stdout-budget", ("terminal", "stdout")),
+            ("stderr-budget", ("terminal", "stdout")),
+            ("successful-terminal", ("terminal", "stdout")),
+        )
+        for label, failed_members in cases:
+            for failed_member in failed_members:
+                with self.subTest(case=label, failed_member=failed_member), \
+                     tempfile.TemporaryDirectory() as temporary:
+                    prefix = Path(temporary) / "source"
+                    original = None
+                    if label == "launch-error":
+                        original = OSError("original launch error")
+                    elif label == "timeout":
+                        original = subprocess.TimeoutExpired(
+                            ["exporter"], 90, output=b"partial\x00", stderr=b"original warning")
+                    result = SimpleNamespace(
+                        returncode=2 if label == "nonzero" else 0,
+                        stdout=(b"x" * (runner.fixture.MAX_RUST_STDOUT + 1)
+                                if label == "stdout-budget" else b"original stdout"),
+                        stderr=(b"x" * (32 * 1024 + 1)
+                                if label == "stderr-budget" else b"original stderr"))
+                    storage_error = OSError(failed_member + " storage failure")
+                    writes = []
+                    def retain(path, raw):
+                        writes.append((path, raw))
+                        suffix = ".terminal.json" if failed_member == "terminal" else ".stdout.bin"
+                        if path.name.endswith(suffix):
+                            raise storage_error
+                    run = Mock(side_effect=original) if original is not None else Mock(return_value=result)
+                    expected = (type(original) if original is not None
+                                else OSError if label == "successful-terminal"
+                                else runner.fixture.KdenliveCompleteFixtureRefused)
+                    with patch.object(runner.fixture, "_new_original", side_effect=retain), \
+                         patch.object(runner.fixture.subprocess, "run", run), \
+                         self.assertRaises(expected) as caught:
+                        runner.fixture.run_firstparty_native(
+                            ["exporter"], timeout=90, evidence_prefix=prefix)
+                    if original is not None:
+                        self.assertIs(caught.exception, original)
+                    elif label == "successful-terminal":
+                        self.assertIs(caught.exception, storage_error)
+                    else:
+                        self.assertEqual(
+                            str(caught.exception),
+                            "original_Kdenlive_G2_source_generator_or_video_failed")
+                    if label != "successful-terminal":
+                        self.assertTrue(any(
+                            failed_member + " storage failure" in note
+                            for note in caught.exception.__notes__))
+                    run.assert_called_once_with(
+                        ["exporter"], capture_output=True, check=False, timeout=90,
+                        stdin=subprocess.DEVNULL)
+                    expected_names = ["source.intent.json", "source.terminal.json"]
+                    if failed_member == "stdout":
+                        expected_names.append("source.stdout.bin")
+                    self.assertEqual([path.name for path, _ in writes], expected_names)
+                    terminal = json.loads(writes[1][1])
+                    self.assertFalse(terminal["invocation_retried"])
+                    if original is not None:
+                        self.assertEqual(terminal["state"], "ERROR_OR_UNKNOWN")
+                        self.assertIsNone(terminal["returncode"])
+                    else:
+                        self.assertEqual(terminal["state"], "TERMINAL_OBSERVED")
+                        self.assertEqual(terminal["returncode"], result.returncode)
 
     def generated_reply(self, media_sha):
         asset = "asset-source"

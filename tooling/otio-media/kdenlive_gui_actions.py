@@ -88,6 +88,20 @@ class ActionJournal:
         self.used: set[str] = set()
         self.blocked = False
 
+    def _record_failure(self, step: str, state: str,
+                        original: BaseException) -> None:
+        # Custody failure cannot replace the observation or effect failure.
+        self.blocked = True
+        try:
+            event = {"step": step, "state": state, "replayed": False,
+                     "monotonic_ns": time.monotonic_ns()}
+            if state != "TIMED_OUT_UNKNOWN":
+                event.update(error_type=type(original).__name__, error=str(original))
+            self.emit(event)
+        except BaseException as recording_error:
+            original.add_note("native_gui_journal_recording_failed:" +
+                              type(recording_error).__name__)
+
     def perform(self, step: str, target: dict, effect: Callable[[], object],
                 *, guard_after: bool = True):
         require(not self.blocked, "native_gui_previous_action_uncertain")
@@ -95,24 +109,27 @@ class ActionJournal:
                 "native_gui_action_replay_refused")
         self.guard()
         self.used.add(step)
+        # Only a successfully retained intent permits the first effect.
+        self.blocked = True
         self.emit({"step": step, "state": "INTENT", "target": target,
                    "monotonic_ns": time.monotonic_ns()})
+        self.blocked = False
         try:
             result = effect()
             require(result is not False, "native_gui_action_rejected_or_unknown")
             if guard_after:
                 self.guard()
-        except BaseException as exc:
-            self.blocked = True
-            self.emit({"step": step, "state": "ERROR_OR_UNKNOWN",
-                       "error_type": type(exc).__name__, "error": str(exc),
-                       "monotonic_ns": time.monotonic_ns(), "replayed": False})
-            if not isinstance(exc, Exception):
+        except BaseException as original:
+            self._record_failure(step, "ERROR_OR_UNKNOWN", original)
+            if not isinstance(original, Exception):
                 raise
-            raise GuiUncertain(step) from exc
+            raise GuiUncertain(step) from original
+        # A returned effect without a retained terminal must block later actions.
+        self.blocked = True
         self.emit({"step": step, "state": "REQUEST_RETURNED",
                    "monotonic_ns": time.monotonic_ns(),
                    "semantic_effect_verified_here": False})
+        self.blocked = False
         return result
 
     def wait(self, step: str, query: Callable[[], object],
@@ -120,23 +137,28 @@ class ActionJournal:
         require(not self.blocked, "native_gui_previous_action_uncertain")
         require(0 < timeout <= WAIT_SECONDS, "native_gui_wait_budget_invalid")
         deadline = time.monotonic() + timeout
+
+        def timed_out() -> None:
+            original = GuiUncertain(step)
+            self._record_failure(step, "TIMED_OUT_UNKNOWN", original)
+            raise original
+
         while True:
+            if time.monotonic() >= deadline:
+                timed_out()
             try:
                 self.guard()
-                result = query()
-            except BaseException as error:
-                self.blocked = True
-                self.emit({"step": step, "state": "OBSERVATION_ERROR_OR_UNKNOWN",
-                           "error_type": type(error).__name__, "error": str(error),
-                           "replayed": False, "monotonic_ns": time.monotonic_ns()})
+                # A slow guard must not start another query after the deadline.
+                expired_before_query = time.monotonic() >= deadline
+                result = None if expired_before_query else query()
+            except BaseException as original:
+                self._record_failure(step, "OBSERVATION_ERROR_OR_UNKNOWN", original)
                 raise
+            # This rejects a late result; it does not cancel synchronous AT-SPI.
+            if expired_before_query or time.monotonic() >= deadline:
+                timed_out()
             if result:
                 return result
-            if time.monotonic() >= deadline:
-                self.blocked = True
-                self.emit({"step": step, "state": "TIMED_OUT_UNKNOWN",
-                           "replayed": False, "monotonic_ns": time.monotonic_ns()})
-                raise GuiUncertain(step)
             time.sleep(0.1)
 
 
