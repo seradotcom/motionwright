@@ -144,7 +144,12 @@ jobs:
             | sha256sum --check >"$MW_G0_ROOT/actionlint/check.stdout.original"
           tar -xzf "$archive" -C "$MW_G0_ROOT/actionlint" actionlint
           status=0
-          "$MW_G0_ROOT/actionlint/actionlint" -shellcheck= -pyflakes= .github/workflows/sdk-daemon-stdin-custody.yml \
+          # actionlint 1.7.12 predates the hosted Ubuntu 26.04 GA label.
+          # Extend only that published label; keep all existing lint checks.
+          printf '%s\n' 'self-hosted-runner:' '  labels: [ubuntu-26.04]' \
+            >"$MW_G0_ROOT/actionlint/runner-labels.yml"
+          "$MW_G0_ROOT/actionlint/actionlint" -config-file "$MW_G0_ROOT/actionlint/runner-labels.yml" \
+            -shellcheck= -pyflakes= .github/workflows/sdk-daemon-stdin-custody.yml \
             >"$MW_G0_ROOT/actionlint/stdout.original" 2>"$MW_G0_ROOT/actionlint/stderr.original" || status=$?
           printf '%s\n' "$status" >"$MW_G0_ROOT/actionlint/exit-code.original"
           exit "$status"
@@ -184,7 +189,7 @@ jobs:
   linux-real-host-g2:
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux-real-host-g2'
     needs: source-controls
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 150
     env:
       RUSTUP_TOOLCHAIN: "1.98.1"
