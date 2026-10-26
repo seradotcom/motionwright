@@ -115,6 +115,83 @@ def validate_archive_member(path, artifact):
         raise ValueError("archive member cannot be verified") from error
 
 
+def _evidence_stat(path):
+    """Detect swapped or edited evidence during one bounded index assessment."""
+    stat_result = path.stat()
+    return (
+        stat_result.st_dev, stat_result.st_ino, stat_result.st_mode,
+        stat_result.st_size, stat_result.st_mtime_ns, stat_result.st_ctime_ns,
+    )
+
+
+def _evidence_digest(path):
+    """Hash physical evidence in bounded chunks, without changing byte semantics."""
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+class _BoundedEvidenceSnapshot:
+    """Verify each unique artifact/member once, then rehash every file at exit.
+
+    Cached ZIP-member assertions are safe only while the exact containing ZIP
+    retains its checked physical identity. Every reference still passes the
+    original symlink/reparse/path guard and the exact expected SHA-256. This
+    object never outlives its one load_evidence_index() invocation.
+    """
+
+    def __init__(self, root):
+        self.root = root
+        self.files = {}
+        self.members = set()
+
+    def verify(self, artifact):
+        pointer = artifact["path"]
+        expected = artifact["sha256"]
+        path = public_file(self.root, pointer)
+        before = _evidence_stat(path)
+        previous = self.files.get(pointer)
+        if previous is None:
+            if _evidence_digest(path) != expected:
+                raise ValueError("artifact bytes do not match their digest")
+        elif previous != (expected, before):
+            raise ValueError("artifact changed during technical evidence verification")
+
+        # A different expected digest or archive member never uses a cached
+        # earlier success. The original archive parser still checks duplicate
+        # member names, member identity and uncompressed member bytes.
+        has_member = "member" in artifact
+        has_member_digest = "member_sha256" in artifact
+        member = artifact.get("member")
+        member_digest = artifact.get("member_sha256")
+        # Presence is part of the canonical wire contract. In particular,
+        # absent and explicit null are NOT interchangeable: a valid plain
+        # artifact cannot pre-authorize member:null on a later reference.
+        if (has_member or has_member_digest) and not (
+                isinstance(member, str) and isinstance(member_digest, str)):
+            validate_archive_member(path, artifact)
+        key = (pointer, has_member, member, has_member_digest, member_digest)
+        if key not in self.members:
+            validate_archive_member(path, artifact)
+        if _evidence_stat(path) != before:
+            raise ValueError("artifact changed during archive member inspection")
+        self.files[pointer] = (expected, before)
+        self.members.add(key)
+
+    def finish(self):
+        """Full independent end-of-pass byte and path verification, fail closed."""
+        for pointer, (expected, fingerprint) in self.files.items():
+            path = public_file(self.root, pointer)
+            if _evidence_stat(path) != fingerprint:
+                raise ValueError("artifact changed during technical evidence verification")
+            if _evidence_digest(path) != expected:
+                raise ValueError("artifact bytes changed during technical evidence verification")
+            if _evidence_stat(path) != fingerprint:
+                raise ValueError("artifact changed during final evidence verification")
+
+
 def source_digest(path):
     """Hash canonical UTF-8 Git text; runtime media and logs use exact raw bytes."""
     data = Path(path).read_bytes()
@@ -302,6 +379,7 @@ def load_evidence_index(root, descriptor):
         raise ValueError("evidence records must be a list")
     by_id = {}
     stale_records = {}
+    verified_artifacts = _BoundedEvidenceSnapshot(root)
     for record in records:
         _object(record, "evidence record")
         identity = record.get("id")
@@ -371,10 +449,7 @@ def load_evidence_index(root, descriptor):
             pointer = artifact.get("path")
             url = artifact.get("url")
             if pointer is not None:
-                actual = public_file(root, pointer)
-                if hashlib.sha256(actual.read_bytes()).hexdigest() != artifact["sha256"]:
-                    raise ValueError("artifact bytes do not match their digest")
-                validate_archive_member(actual, artifact)
+                verified_artifacts.verify(artifact)
             else:
                 raise ValueError("execution needs retained artifact bytes; a URL alone is not verified evidence")
         by_id[identity] = record
@@ -409,6 +484,9 @@ def load_evidence_index(root, descriptor):
         if hashlib.sha256(proof_path.read_bytes()).hexdigest() != _hex(proof.get("sha256"), DIGEST, "human review record digest"):
             raise ValueError("human review record bytes changed")
     validate_sufficiency_reviews(data, by_id)
+    # Do not return accepted evidence if any artifact was replaced, mutated or
+    # retargeted after its first observation during this index assessment.
+    verified_artifacts.finish()
     return data, by_id
 
 

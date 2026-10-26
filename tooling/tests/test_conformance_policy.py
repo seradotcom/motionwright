@@ -851,5 +851,114 @@ class ConformancePolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "product source digest has an invalid identity"):
             self.load_index()
 
+    def test_repeated_artifact_uses_one_initial_and_one_final_byte_digest(self):
+        existing = self.index["records"][0]["artifacts"][0]
+        self.index["records"][0]["artifacts"] = [copy.deepcopy(existing) for _ in range(6)]
+        self.populate_sufficiency()
+        with patch.object(policy, "_evidence_digest", wraps=policy._evidence_digest) as observed:
+            self.validate()
+        self.assertEqual(observed.call_count, 2)
+
+    def test_repeated_zip_member_does_not_redecode_identical_member(self):
+        self.archive_fixture()
+        existing = self.index["records"][0]["artifacts"][0]
+        self.index["records"][0]["artifacts"] = [copy.deepcopy(existing) for _ in range(5)]
+        self.populate_sufficiency()
+        with patch.object(policy, "validate_archive_member",
+                          wraps=policy.validate_archive_member) as observed:
+            self.validate()
+        self.assertEqual(observed.call_count, 1)
+
+    def test_changed_zip_member_digest_never_reuses_cache(self):
+        self.archive_fixture()
+        existing = self.index["records"][0]["artifacts"][0]
+        changed = {**existing, "member_sha256": "b" * 64}
+        self.index["records"][0]["artifacts"] = [existing, changed]
+        self.populate_sufficiency()
+        with self.assertRaisesRegex(ValueError, "archive member"):
+            self.validate()
+
+    def test_same_size_same_mtime_mutation_is_rejected_at_final_byte_sweep(self):
+        path = self.root / "result.json"
+        original_bytes = path.read_bytes()
+        original_time = path.stat()
+        self.assertEqual(len(original_bytes), len(b'{"observed":5}\n'))
+        original_validator = policy.validate_sufficiency_reviews
+
+        def mutate_after_original_review(data, records):
+            result = original_validator(data, records)
+            path.write_bytes(b'{"observed":5}\n')
+            os.utime(path, ns=(original_time.st_atime_ns, original_time.st_mtime_ns))
+            return result
+
+        with patch.object(policy, "validate_sufficiency_reviews",
+                          side_effect=mutate_after_original_review):
+            with self.assertRaisesRegex(ValueError, "artifact"):
+                self.load_index()
+
+    def test_archive_replacement_during_member_validation_fails_closed(self):
+        self.archive_fixture()
+        original_validator = policy.validate_archive_member
+        archive_file = self.root / "observations.zip"
+
+        def overwrite_after_original_member_check(path, artifact):
+            result = original_validator(path, artifact)
+            if path == archive_file:
+                path.write_bytes(path.read_bytes() + b"modified after validation")
+            return result
+
+        with patch.object(policy, "validate_archive_member",
+                          side_effect=overwrite_after_original_member_check):
+            with self.assertRaisesRegex(ValueError, "artifact changed"):
+                self.load_index()
+
+    def test_artifact_sha_disagreement_on_same_pointer_fails_closed(self):
+        expected = self.index["records"][0]["artifacts"][0]
+        conflict = {**expected, "sha256": "f" * 64}
+        self.index["records"][0]["artifacts"] = [expected, conflict]
+        self.populate_sufficiency()
+        with self.assertRaisesRegex(ValueError, "artifact changed"):
+            self.load_index()
+
+    def test_null_member_cannot_reuse_plain_artifact_cache(self):
+        plain = self.index["records"][0]["artifacts"][0]
+        self.index["records"][0]["artifacts"] = [
+            copy.deepcopy(plain), {**plain, "member": None}]
+        self.populate_sufficiency()
+        with self.assertRaisesRegex(ValueError, "archive member must have"):
+            self.load_index()
+
+    def test_null_member_digest_cannot_reuse_plain_artifact_cache(self):
+        plain = self.index["records"][0]["artifacts"][0]
+        self.index["records"][0]["artifacts"] = [
+            copy.deepcopy(plain), {**plain, "member_sha256": None}]
+        self.populate_sufficiency()
+        with self.assertRaisesRegex(ValueError, "archive member must have"):
+            self.load_index()
+
+    def test_two_null_member_fields_cannot_reuse_plain_artifact_cache(self):
+        plain = self.index["records"][0]["artifacts"][0]
+        self.index["records"][0]["artifacts"] = [
+            copy.deepcopy(plain), {**plain, "member": None, "member_sha256": None}]
+        self.populate_sufficiency()
+        with self.assertRaisesRegex(ValueError, "archive member must have"):
+            self.load_index()
+
+    def test_member_without_digest_cannot_reuse_plain_artifact_cache(self):
+        plain = self.index["records"][0]["artifacts"][0]
+        self.index["records"][0]["artifacts"] = [
+            copy.deepcopy(plain), {**plain, "member": "result.json"}]
+        self.populate_sufficiency()
+        with self.assertRaisesRegex(ValueError, "archive member digest"):
+            self.load_index()
+
+    def test_nonstring_member_never_bypasses_canonical_type_validation(self):
+        plain = self.index["records"][0]["artifacts"][0]
+        self.index["records"][0]["artifacts"] = [
+            copy.deepcopy(plain), {**plain, "member": ["nested"], "member_sha256": "a" * 64}]
+        self.populate_sufficiency()
+        with self.assertRaisesRegex(ValueError, "archive member must have"):
+            self.load_index()
+
 if __name__ == "__main__":
     unittest.main()
