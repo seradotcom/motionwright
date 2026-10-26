@@ -509,6 +509,34 @@ class FoundationCausalTests(unittest.TestCase):
     def test_existing_automatic_workflow_and_default_jobs_are_preserved(self):
         text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text(encoding="utf-8")
         original = text.split("\n  foundation-causal-g0:\n", 1)[0]
+        # Reverse the explicitly reviewed SDK selection additions first. Its
+        # own source controls also bind every legacy body and dispatch guard.
+        branch = "verify/sdk-foundation-candidate-20261026-a6"
+        branches = 'branches: ["main", "feat/**", "' + branch + '"]'
+        self.assertEqual(original.count(branches), 1)
+        original = original.replace(branches, 'branches: ["main", "feat/**"]', 1)
+        helper_path = '      - "tooling/ci_sdk_foundation_candidate.py"\n'
+        self.assertEqual(original.count(helper_path), 2)
+        original = original.replace(helper_path, "", 2)
+        sdk_inputs = (
+            "          - sdk-foundation-source-controls\n"
+            "          - sdk-foundation-linux-two\n"
+            "      sdk_foundation_source_sha:\n"
+            "        description: Exact reviewed SDK source (source profile is not execution authority)\n"
+            "        required: false\n"
+            "        type: string\n"
+            '        default: ""\n'
+            "      sdk_foundation_authority:\n"
+            "        description: Reviewed original-dispatch authority identifier\n"
+            "        required: false\n"
+            "        type: string\n"
+            '        default: ""\n'
+        )
+        self.assertEqual(original.count(sdk_inputs), 1)
+        original = original.replace(sdk_inputs, "", 1)
+        dependency_guard = "    if: github.event_name == 'pull_request' && github.head_ref != '" + branch + "'\n"
+        self.assertEqual(original.count(dependency_guard), 1)
+        original = original.replace(dependency_guard, "    if: github.event_name == 'pull_request'\n", 1)
         # Reverse only this gate's additions; all current jobs, source-admission
         # scopes and triggers must recover the exact integrated workflow bytes.
         for scope in gate.SELECTIONS:
@@ -516,6 +544,15 @@ class FoundationCausalTests(unittest.TestCase):
             self.assertEqual(original.count(choice), 1)
             original = original.replace(choice, "", 1)
         guard = "    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current')\n"
+        sdk_guard = (
+            "    if: (github.event_name == 'workflow_dispatch' || (github.ref != 'refs/heads/" + branch
+            + "' && github.head_ref != '" + branch + "')) && ("
+            + guard.removeprefix("    if: ").removesuffix("\n")[:-1]
+            + " && inputs.verification_scope != 'sdk-foundation-source-controls'"
+            + " && inputs.verification_scope != 'sdk-foundation-linux-two'))\n"
+        )
+        self.assertEqual(original.count(sdk_guard), 1)
+        original = original.replace(sdk_guard, guard, 1)
         self.assertEqual(original.count(guard), 1)
         original = original.replace(guard, "    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'source-admission-contracts'\n", 1)
         self.assertEqual(hashlib.sha256(original.encode()).hexdigest(),

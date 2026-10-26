@@ -2,13 +2,14 @@ name: Security and Delivery
 
 on:
   push:
-    branches: ["main", "feat/**"]
+    branches: ["main", "feat/**", "verify/sdk-foundation-candidate-20261026-a6"]
     paths:
       - "apps/desktop/src-tauri/**"
       - "apps/studio/src/**"
       - "crates/storage/**"
       - "crates/service/**"
       - "tooling/source_policy.py"
+      - "tooling/ci_sdk_foundation_candidate.py"
       - "tooling/release_manifest.py"
       - "tooling/v01_release_readiness.py"
       - "docs/v01-release-readiness.md"
@@ -38,6 +39,7 @@ on:
       - "crates/storage/**"
       - "crates/service/**"
       - "tooling/source_policy.py"
+      - "tooling/ci_sdk_foundation_candidate.py"
       - "tooling/release_manifest.py"
       - "tooling/v01_release_readiness.py"
       - "docs/v01-release-readiness.md"
@@ -76,6 +78,18 @@ on:
           - foundation-projection-diagnostic
           - foundation-composed-current
           - foundation-coherent-current
+          - sdk-foundation-source-controls
+          - sdk-foundation-linux-two
+      sdk_foundation_source_sha:
+        description: Exact reviewed SDK source (source profile is not execution authority)
+        required: false
+        type: string
+        default: ""
+      sdk_foundation_authority:
+        description: Reviewed original-dispatch authority identifier
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -86,7 +100,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current')
+    if: (github.event_name == 'workflow_dispatch' || (github.ref != 'refs/heads/verify/sdk-foundation-candidate-20261026-a6' && github.head_ref != 'verify/sdk-foundation-candidate-20261026-a6')) && (github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'sdk-foundation-source-controls' && inputs.verification_scope != 'sdk-foundation-linux-two'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -220,7 +234,7 @@ jobs:
         run: cargo clippy -p motionwright-desktop --all-targets -- -D warnings
 
   dependency-review:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.head_ref != 'verify/sdk-foundation-candidate-20261026-a6'
     permissions:
       contents: read
       pull-requests: read
@@ -879,5 +893,143 @@ jobs:
         with:
           name: foundation-causal-originals-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ (inputs.verification_scope == 'foundation-composed-current' || inputs.verification_scope == 'foundation-coherent-current') && 'verification' || 'verification/foundation-causal' }}
+          include-hidden-files: true
+          if-no-files-found: error
+
+  sdk-foundation-g0:
+    if: ((github.event_name == 'push' || github.event_name == 'pull_request') && (github.ref == 'refs/heads/verify/sdk-foundation-candidate-20261026-a6' || github.head_ref == 'verify/sdk-foundation-candidate-20261026-a6')) || (github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'sdk-foundation-source-controls' || inputs.verification_scope == 'sdk-foundation-linux-two'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: gate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Gate policies for the exact gate checkout
+        working-directory: gate
+        run: |
+          python tooling/source_policy.py
+          python tooling/public_surface_policy.py
+          python tooling/acceptance_policy.py
+          python tooling/creative_status_policy.py
+      - name: Selection, custody and orchestration controls in both entry points
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/verification/sdk-foundation-g0"
+          python gate/tooling/ci_test_runner.py --repo gate \
+            --pattern test_ci_sdk_foundation_candidate.py \
+            --pattern test_ci_foundation_causal.py \
+            --pattern test_ci_storage_apply_recovery.py \
+            --mode both --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$GITHUB_WORKSPACE/verification/sdk-foundation-g0/receipt.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sdk-foundation-g0-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/sdk-foundation-g0
+          if-no-files-found: error
+
+  sdk-foundation-linux-two:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'sdk-foundation-linux-two'
+    needs: sdk-foundation-g0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+      SDK_FOUNDATION_SCOPE: ${{ inputs.verification_scope }}
+      SDK_FOUNDATION_SOURCE: ${{ inputs.sdk_foundation_source_sha }}
+      SDK_FOUNDATION_AUTHORITY: ${{ inputs.sdk_foundation_authority }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: gate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Admit reviewed original dispatch before any SDK retrieval
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/verification/sdk-foundation-admission"
+          /usr/bin/python3 -I -B gate/tooling/ci_sdk_foundation_candidate.py \
+            --mode linux-g2 --source-sha "$SDK_FOUNDATION_SOURCE" \
+            --authority "$SDK_FOUNDATION_AUTHORITY" --admit-only \
+            > "$GITHUB_WORKSPACE/verification/sdk-foundation-admission/stdout.log" \
+            2> "$GITHUB_WORKSPACE/verification/sdk-foundation-admission/stderr.log"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ inputs.sdk_foundation_source_sha }}
+          path: sdk
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+      - name: Prepare owned toolchain and provisioning roots
+        run: |
+          set -euo pipefail
+          MW_SDK_FOUNDATION_TOOLS="$GITHUB_WORKSPACE/verification/sdk-foundation-tools"
+          mkdir -m 700 -p "$MW_SDK_FOUNDATION_TOOLS/cargo" "$MW_SDK_FOUNDATION_TOOLS/rustup" "$MW_SDK_FOUNDATION_TOOLS/tmp"
+          printf 'CARGO_HOME=%s\nRUSTUP_HOME=%s\nTMPDIR=%s\n' "$MW_SDK_FOUNDATION_TOOLS/cargo" "$MW_SDK_FOUNDATION_TOOLS/rustup" "$MW_SDK_FOUNDATION_TOOLS/tmp" >> "$GITHUB_ENV"
+      - name: Observe declared Linux build and SDK source-check prerequisites
+        run: |
+          /usr/bin/python3 -I -B - <<'PY'
+          import os, pathlib, sys
+          gate_root = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "gate"
+          sys.path.insert(0, str(gate_root))
+          from tooling import ci_sdk_foundation_candidate as gate
+          context = gate.request_context(os.environ, "linux-g2", os.environ["SDK_FOUNDATION_SOURCE"], os.environ["SDK_FOUNDATION_AUTHORITY"])
+          output = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "verification/sdk-foundation-provisioning"
+          output.mkdir(mode=0o700)
+          packages = ("libpipewire-0.3-dev", "pkg-config", "clang", "bubblewrap", "python3-jsonschema", "python3-yaml")
+          rows = []
+          budget = gate.Budget(600)
+          status = "FAIL"
+          try:
+              for label, argv in (
+                  ("apt-update", ["sudo", "apt-get", "update"]),
+                  ("apt-install", ["sudo", "apt-get", "install", "--yes", "--no-install-recommends", *packages]),
+                  ("packages", ["dpkg-query", "--show", "--showformat=${Package}\t${Version}\n", *packages]),
+                  ("pipewire", ["pkg-config", "--atleast-version=0.3.65", "libpipewire-0.3"]),
+                  ("clang", ["clang", "--version"]),
+                  ("bwrap", ["bwrap", "--version"]),
+              ):
+                  row = gate.observer.command(argv, gate_root, dict(os.environ), output, label, budget.remaining(600), context, (output, rows))
+                  gate.require(type(row["exit_code"]) is int and row["exit_code"] == 0, "prerequisite command failed: " + label)
+              gate.producer.verify_commands(output, rows)
+              status = "OBSERVED_PREREQUISITES"
+          except (gate.observer.UnknownExecution, gate.custody.UnknownObservation) as error:
+              status = "UNKNOWN_NO_RETRY"
+              gate.custody.write_new(output / "unknown.json", {"error": str(error), "command": error.command})
+          finally:
+              gate.custody.write_new(output / "receipt.json", {"status": status, "context": context, "commands": rows, "product_cases": "NOT_RUN"})
+          raise SystemExit(0 if status == "OBSERVED_PREREQUISITES" else 1)
+          PY
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: "1.98.1"
+          components: rustfmt, clippy
+      - name: Execute SDK focal G0 and the two existing Linux runtime methods
+        run: |
+          /usr/bin/python3 -I -B gate/tooling/ci_sdk_foundation_candidate.py \
+            --mode linux-g2 --source-sha "$SDK_FOUNDATION_SOURCE" \
+            --authority "$SDK_FOUNDATION_AUTHORITY" --sdk "$GITHUB_WORKSPACE/sdk" \
+            --run-root "$GITHUB_WORKSPACE/verification/sdk-foundation-execution" --execute
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sdk-foundation-linux-two-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            verification/sdk-foundation-admission
+            verification/sdk-foundation-provisioning
+            verification/sdk-foundation-execution/evidence
           include-hidden-files: true
           if-no-files-found: error

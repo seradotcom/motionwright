@@ -1,0 +1,598 @@
+"""Source-only controls for SDK selection, authority, originals and ordering."""
+from __future__ import annotations
+
+import copy
+import ast
+import hashlib
+import json
+from pathlib import Path
+import re
+import tempfile
+import unittest
+from unittest.mock import Mock, patch
+
+from tooling import ci_sdk_foundation_candidate as gate
+
+
+class SDKFoundationCandidateTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="sdk-foundation-controls-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.repo = self.root / "sdk"; self.repo.mkdir()
+        self.logs = self.root / "logs"; self.logs.mkdir()
+        self.target = self.root / "target"; self.target.mkdir()
+        self.context = {"mode": "windows-g1", "github": {}, "executed_source_sha": gate.FIXED["sha"],
+                        "executed_tree_sha": gate.FIXED["tree"]}
+        self.binary_path = self.target / "binary"; self.binary_path.write_bytes(b"sealed binary")
+        self.binary = {"absolute_path": str(self.binary_path), **gate.custody.fingerprint(self.binary_path, self.target)}
+
+    def local_authority(self):
+        return {"kind": "local-lease", "mode": "windows-g1", "source_sha": gate.FIXED["sha"],
+                "review_sha256": "a" * 64, "max_total_seconds": 600, "binding": {"lease_sha256": "b" * 64}}
+
+    def remote_environment(self):
+        return {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64",
+                "GITHUB_EVENT_NAME": "workflow_dispatch", "SDK_FOUNDATION_SCOPE": gate.SCOPES[1],
+                "GITHUB_JOB": "sdk-foundation-linux-two", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": "123",
+                "GITHUB_SHA": "c" * 40, "GITHUB_WORKFLOW_SHA": "c" * 40,
+                "GITHUB_REPOSITORY": "example/repo",
+                "GITHUB_WORKFLOW_REF": "example/repo/" + gate.WORKFLOW + "@refs/heads/review"}
+
+    def lease(self):
+        return {"schema": "motionwright.sdk-foundation-slot/1", "issuer": "release-integrator", "holder": "ci-verification",
+                "status": "EXCLUSIVE_GRANTED", "mode": "windows-g1",
+                "source_shas": sorted([gate.FIXED["sha"], *(p["sha"] for p in gate.CAUSALS)]),
+                "run_root": str(self.root / "run"), "not_before_unix_ns": 100,
+                "expires_unix_ns": 700_000_000_000, "max_total_seconds": 600, "event_id": "owned-slot-1",
+                "process_boundary": "DIRECT_PROCESS_ONLY", "continuous_resource_watchdog": False}
+
+    def g0_snapshot(self):
+        names = ("scripts/verify-oss-hygiene.py", "scripts/verify-source.py", "scripts/sync-contracts.py",
+                 "Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
+        return {"sha": gate.FIXED["sha"], "tree": gate.FIXED["tree"], "files": {n: {} for n in names}}
+
+    def g0_tools(self):
+        return {n: {"absolute_path": str(self.root / n)} for n in ("python", "cargo-fmt", "cargo")}
+
+    def g0_fixture(self, failure=None, unknown=None, source_report=None):
+        calls = []
+        report = {"source_validation": "PASS", "rust_compiled": False, "counts": {"json": 3}}
+        if source_report is not None:
+            report = source_report
+        def call(argv, cwd, env, output, label, timeout, context):
+            calls.append((label, argv, context))
+            if label == unknown:
+                raise gate.observer.UnknownExecution("original uncertainty", {"label": label, "observation": "UNKNOWN_TIMEOUT_NO_RETRY"})
+            return {"exit_code": 1 if label == failure else 0, "label": label, "argv": argv, "context": context}
+        def stream(output, row, channel):
+            if channel == "stderr":
+                return b"original stderr\n"
+            if row["label"] == "g0-source":
+                return ("source synchronization checked\n" + json.dumps(report, indent=2) + "\n").replace("\n", "\r\n").encode()
+            return b"original stdout\n"
+        return calls, call, stream
+
+    def group_fixture(self):
+        names = tuple("operation_permits::tests::case_" + s for s in "abc")
+        group = gate.GROUPS[0]
+        listed = gate.group_roster((*names, "elsewhere::other"), group)
+        argv = gate.group_argv(self.binary, group)
+        row = {"observation": "DIRECT_PROCESS_EXIT_OBSERVED", "log_custody": "VERIFIED_SNAPSHOT",
+               "exit_code": 0, "argv": argv, "context": self.context}
+        raw = ("running 3 tests\n" + "".join("test " + n + " ... ok\n" for n in names)
+               + "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s\n").encode()
+        return raw, row, listed, argv
+
+    def admit(self, raw=None, row=None, after=None):
+        original, observed, listed, argv = self.group_fixture()
+        return gate.admit_group(original if raw is None else raw, observed if row is None else row,
+                                self.binary, self.binary if after is None else after, listed, argv, self.context)
+
+    def test_empty_authority_stops_before_paths_or_product_commands(self):
+        self.assertEqual(dict(gate.REVIEWED_AUTHORITIES), {})
+        with patch.object(gate.observer, "command") as command, self.assertRaisesRegex(ValueError, "authority"):
+            gate.run("windows-g1", gate.FIXED["sha"], "self-issued", self.repo, {}, self.root / "new", environment={})
+        command.assert_not_called()
+        self.assertFalse((self.root / "new").exists())
+
+    def test_local_context_is_truthful_and_requires_the_reviewed_mode(self):
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"slot": self.local_authority()}):
+            result = gate.request_context({}, "windows-g1", gate.FIXED["sha"], "slot", "win32")
+            self.assertEqual(result["execution_kind"], "LOCAL_WINDOWS")
+            self.assertFalse(any(result["github"].values()))
+            self.assertEqual(result["escaped_descendants"], "NOT_OBSERVED")
+            for env, platform in (({"GITHUB_ACTIONS": "true"}, "win32"), ({"GITHUB_SHA": "a" * 40}, "win32"), ({}, "linux")):
+                with self.subTest(env=env, platform=platform), self.assertRaises(ValueError):
+                    gate.request_context(env, "windows-g1", gate.FIXED["sha"], "slot", platform)
+
+    def test_remote_original_attempt_and_exact_context_are_required(self):
+        env = self.remote_environment()
+        auth = {**self.local_authority(), "kind": "github-dispatch", "mode": "linux-g2",
+                "binding": {"repository": env["GITHUB_REPOSITORY"], "workflow_ref": env["GITHUB_WORKFLOW_REF"]}}
+        with patch.object(gate, "REVIEWED_AUTHORITIES", {"remote": auth}):
+            self.assertEqual(gate.request_context(env, "linux-g2", gate.FIXED["sha"], "remote", "linux")["github"],
+                             {k: env[k] for k in gate.request_context(env, "linux-g2", gate.FIXED["sha"], "remote", "linux")["github"]})
+            for name, value in (("GITHUB_RUN_ATTEMPT", "2"), ("GITHUB_EVENT_NAME", "push"), ("GITHUB_JOB", "other"),
+                                ("GITHUB_WORKFLOW_SHA", "d" * 40), ("GITHUB_WORKFLOW_REF", "other"), ("RUNNER_OS", "Windows")):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    gate.request_context({**env, name: value}, "linux-g2", gate.FIXED["sha"], "remote", "linux")
+
+    def test_typed_pinned_lease_accepts_only_the_exact_scope_and_window(self):
+        value = self.lease()
+        self.assertEqual(gate.validate_lease(value, "a" * 64, "a" * 64, self.root / "run", 1000, 600), value)
+        for key, changed in (("issuer", "ci-verification"), ("holder", "release-integrator"), ("source_shas", [gate.FIXED["sha"]]),
+                             ("expires_unix_ns", 100), ("not_before_unix_ns", 2000), ("max_total_seconds", True),
+                             ("run_root", str(self.root / "other")), ("continuous_resource_watchdog", True)):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                gate.validate_lease({**value, key: changed}, "a" * 64, "a" * 64, self.root / "run", 1000, 600)
+        with self.assertRaisesRegex(ValueError, "reviewed authority"):
+            gate.validate_lease(value, "a" * 64, "b" * 64, self.root / "run", 1000, 600)
+
+    def test_original_budget_caps_each_call_without_reopening_time(self):
+        now = [0]
+        budget = gate.Budget(60, lambda: now[0])
+        now[0] = 50_000_000_000
+        command = Mock(return_value={"exit_code": 0})
+        budget.call(command, ["tool"], self.repo, {}, self.logs, "one", 900, {})
+        self.assertEqual(command.call_args.args[5], 10.0)
+        now[0] = 60_000_000_000
+        with self.assertRaisesRegex(ValueError, "global budget"):
+            budget.call(command, ["tool"], self.repo, {}, self.logs, "two", 900, {})
+        self.assertEqual(command.call_count, 1)
+        for seconds in (True, float("inf"), 0, 7201):
+            with self.subTest(seconds=seconds), self.assertRaises(ValueError):
+                gate.Budget(seconds)
+
+    def test_inherited_compiler_formatter_loader_product_and_git_overrides_reject(self):
+        for key in ("RUSTFLAGS", "RUSTC_WRAPPER", "RUSTFMT", "RUSTC", "RUSTDOC", "CARGO", "LD_AUDIT",
+                    "SEMWRIGHT_TEST_OWNER_PERMIT_DRIVER", "SEMWRIGHT_BROKER", "PYTHONPATH", "GIT_DIR",
+                    "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_NAMESPACE", "CARGO_TARGET_X_LINKER", "NODE_OPTIONS"):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "inherited"):
+                gate.clean_environment({key: "injected"}, self.root, self.target, self.root / "tmp")
+        env = gate.clean_environment({"GITHUB_SHA": "a" * 40}, self.root, self.target, self.root / "tmp")
+        self.assertEqual(env["GITHUB_SHA"], "a" * 40)
+        self.assertEqual(env["CARGO_BUILD_JOBS"], "1")
+        self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(env["CARGO_HOME"], str(self.root / "cargo-home"))
+
+    def test_sdk_g0_is_focal_uses_sdk_paths_and_retains_actual_context(self):
+        calls, call, stream = self.g0_fixture()
+        with patch.object(gate, "source_unchanged", return_value="EXACT_SDK_SOURCE_UNCHANGED"), \
+             patch.object(gate, "verify_tools"), patch.object(gate.observer, "original_stream", side_effect=stream):
+            result = gate.sdk_g0(self.repo, self.g0_snapshot(), self.g0_tools(), {}, self.logs, self.context, call)
+        self.assertEqual([r[0] for r in calls], ["g0-prerequisites", "g0-hygiene", "g0-source", "g0-format"])
+        self.assertIn(str(self.repo / "scripts/verify-source.py"), calls[2][1])
+        self.assertEqual(calls[-1][1], [str(self.root / "cargo-fmt"), "fmt", "--all", "--", "--check"])
+        self.assertEqual(result["status"], "PASS_G0_SDK_FOCAL")
+        self.assertFalse(result["rust_compiled"])
+        self.assertEqual(set(result["remaining_sdk_ci"].values()), {"NOT_RUN"})
+        self.assertEqual(json.loads((self.logs / "sdk-g0.json").read_text())["executed_source_sha"], gate.FIXED["sha"])
+
+    def test_real_source_failure_stops_format_and_preserves_the_incomplete_stage(self):
+        calls, call, stream = self.g0_fixture(failure="g0-source")
+        stage = {}
+        with patch.object(gate, "source_unchanged"), patch.object(gate, "verify_tools"), \
+             patch.object(gate.observer, "original_stream", side_effect=stream), self.assertRaisesRegex(ValueError, "g0-source"):
+            gate.sdk_g0(self.repo, self.g0_snapshot(), self.g0_tools(), {}, self.logs, self.context, call, stage)
+        self.assertEqual([r[0] for r in calls], ["g0-prerequisites", "g0-hygiene", "g0-source"])
+        self.assertEqual(stage["status"], "NOT_COMPLETED")
+        self.assertEqual(stage["steps"][-1]["exit_code"], 1)
+
+    def test_unknown_sdk_g0_is_not_retried_or_promoted(self):
+        calls, call, stream = self.g0_fixture(unknown="g0-source")
+        with patch.object(gate, "source_unchanged"), patch.object(gate, "verify_tools"), \
+             patch.object(gate.observer, "original_stream", side_effect=stream), self.assertRaises(gate.observer.UnknownExecution) as caught:
+            gate.sdk_g0(self.repo, self.g0_snapshot(), self.g0_tools(), {}, self.logs, self.context, call)
+        self.assertEqual(caught.exception.command["label"], "g0-source")
+        self.assertEqual(sum(label == "g0-source" for label, *_ in calls), 1)
+        self.assertNotIn("g0-format", [x[0] for x in calls])
+
+    def test_foreign_sdk_g0_context_and_noninteger_report_counts_reject(self):
+        calls, call, stream = self.g0_fixture(source_report={"source_validation": "PASS", "rust_compiled": False, "counts": {"json": True}})
+        with self.assertRaisesRegex(ValueError, "another source"):
+            gate.sdk_g0(self.repo, self.g0_snapshot(), self.g0_tools(), {}, self.logs,
+                        {**self.context, "executed_source_sha": "e" * 40}, call)
+        self.assertFalse(calls)
+        with patch.object(gate, "source_unchanged"), patch.object(gate, "verify_tools"), \
+             patch.object(gate.observer, "original_stream", side_effect=stream), self.assertRaisesRegex(ValueError, "source report"):
+            gate.sdk_g0(self.repo, self.g0_snapshot(), self.g0_tools(), {}, self.logs, self.context, call)
+
+    def test_changed_sdk_source_or_formatter_prevents_a_g0_pass(self):
+        calls, call, stream = self.g0_fixture()
+        with patch.object(gate, "source_unchanged", side_effect=[None, ValueError("source changed")]), \
+             patch.object(gate, "verify_tools"), patch.object(gate.observer, "original_stream", side_effect=stream), \
+             self.assertRaisesRegex(ValueError, "source changed"):
+            gate.sdk_g0(self.repo, self.g0_snapshot(), self.g0_tools(), {}, self.logs, self.context, call)
+        tools = {"rustfmt": {"absolute_path": str(self.binary_path), "fingerprint": gate.custody.fingerprint(self.binary_path, self.binary_path.parent)}}
+        self.binary_path.write_bytes(b"modified formatter")
+        with self.assertRaisesRegex(ValueError, "tool changed"):
+            gate.verify_tools(tools)
+
+    def test_full_snapshot_includes_sdk_docs_scripts_and_schemas_not_motionwright_roots(self):
+        names = ["docs/commands.md", "scripts/verify-source.py", "schemas/commands.json", "Cargo.lock"]
+        raw = b"".join(("100644 blob " + "a" * 40 + "\t" + name + "\0").encode() for name in names)
+        profile = {"sha": "a" * 40, "tree": "b" * 40, "pins": {"Cargo.lock": "c" * 64}}
+        observed = {"files": {"Cargo.lock": {"sha256": "c" * 64}}}
+        with patch.object(gate.custody, "git", return_value=raw), patch.object(gate.custody, "source_snapshot", return_value=observed) as snapshot:
+            self.assertEqual(gate.full_snapshot(self.repo, profile), observed)
+        self.assertEqual(snapshot.call_args.args[2], tuple(sorted(names)))
+        with patch.object(gate.custody, "git", return_value=raw.replace(b"100644", b"120000", 1)), self.assertRaisesRegex(ValueError, "regular blob"):
+            gate.full_snapshot(self.repo, profile)
+
+    def test_source_postcheck_detects_changed_bytes_even_with_clean_git_claim(self):
+        p = self.repo / "source.rs"; p.write_bytes(b"old")
+        snapshot = {"sha": "a" * 40, "files": {"source.rs": gate.custody.fingerprint(p, self.repo)}}
+        p.write_bytes(b"new")
+        with patch.object(gate.custody, "git", side_effect=[b"a" * 40 + b"\n", b""]), self.assertRaisesRegex(ValueError, "input changed"):
+            gate.source_unchanged(self.repo, snapshot)
+
+    def test_seven_producers_keep_nine_configurations_and_both_daemon_features(self):
+        plan = gate.producer_plan("windows-g1", "cargo-exact")
+        self.assertEqual(len(plan), 7)
+        self.assertEqual(sum(len(row[2]) for row in plan), 9)
+        self.assertTrue(all("--locked" in row[1] and "--no-run" in row[1] for row in plan))
+        private, plain = plan[-2:]
+        self.assertIn("private-host-stdin-custody", private[1])
+        self.assertIn("--no-default-features", plain[1])
+        self.assertNotEqual(private[0], plain[0])
+        self.assertEqual(gate.validate_catalogue()["windows_positive_observations"], 134)
+
+    def test_all_five_sdk_g0_checks_precede_the_first_producer(self):
+        states = [{"id": "fixed"}, *({"id": p["id"], "causal": p} for p in gate.CAUSALS)]
+        for state in states:
+            state.update(repo=self.repo, source={}, env={}, logs=self.logs, context={})
+        trace = []
+        def g0(*args):
+            trace.append("g0")
+        def producer(*args):
+            trace.append("producer")
+            raise ValueError("stop at first producer")
+        report = {"sdk_g0": {}}
+        with patch.object(gate, "sdk_g0", side_effect=g0), patch.object(gate, "prepare_role", side_effect=producer), \
+             self.assertRaisesRegex(ValueError, "first producer"):
+            gate.execute_selection(states, "windows-g1", {"cargo": {"absolute_path": "cargo"}}, {}, self.root,
+                                   Mock(), Mock(), report)
+        self.assertEqual(trace, ["g0"] * 5 + ["producer"])
+
+    def test_any_sdk_g0_failure_prevents_every_producer(self):
+        states = [{"id": str(i), "repo": self.repo, "source": {}, "env": {}, "logs": self.logs, "context": {}} for i in range(5)]
+        with patch.object(gate, "sdk_g0", side_effect=[None, None, ValueError("source verification failed")]), \
+             patch.object(gate, "prepare_role") as prepare, self.assertRaisesRegex(ValueError, "source verification"):
+            gate.execute_selection(states, "windows-g1", {}, {}, self.root, Mock(), Mock(), {"sdk_g0": {}})
+        prepare.assert_not_called()
+
+    def test_unknown_first_producer_stops_later_producers_and_observations(self):
+        state = {"repo": self.repo, "target": self.target, "env": {}, "logs": self.logs, "context": self.context}
+        unknown = gate.observer.UnknownExecution("original timeout", {"observation": "UNKNOWN_TIMEOUT_NO_RETRY"})
+        command = Mock(side_effect=unknown)
+        with self.assertRaises(gate.observer.UnknownExecution) as caught:
+            gate.prepare_role(state, "windows-g1", "cargo", command)
+        self.assertIs(caught.exception, unknown)
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[5], 900)
+
+    def test_filter_groups_require_observing_phase_even_without_exact_flag(self):
+        command = Mock()
+        barrier = gate.producer.ProducerBarrier(command, "cargo")
+        with self.assertRaisesRegex(ValueError, "after sealing"):
+            gate.observe_fixed_groups({}, barrier, [])
+        command.assert_not_called()
+
+    def test_compiled_roster_rejects_duplicates_foreign_output_and_missing_namespace(self):
+        raw = b"namespace::one: test\nnamespace::two: test\n"
+        self.assertEqual(gate.parse_roster(raw, 0), ("namespace::one", "namespace::two"))
+        for invalid in (raw + raw, raw + b"error: not a list\n", b"", raw.replace(b": test", b": benchmark")):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                gate.parse_roster(invalid, 0)
+        group = gate.GROUPS[10]
+        names = tuple("effects_readback::target_linux_preparation_tests::case_" + s for s in "abc")
+        self.assertEqual(gate.group_roster(names, group)["selected"], names)
+        with self.assertRaisesRegex(ValueError, "namespace"):
+            gate.group_roster(tuple("alien::target_linux_preparation_tests::case_" + s for s in "abc"), group)
+
+    def test_group_admits_exact_named_roster_and_preserves_binary_identity(self):
+        result = self.admit()
+        self.assertEqual(len(result["ids"]), 3)
+        self.assertEqual(result["binary_sha256"], self.binary["sha256"])
+        self.assertEqual(result["status"], "PASS_EXACT_COMPILED_GROUP")
+
+    def test_counts_cannot_hide_changed_omitted_duplicate_or_extra_ids(self):
+        raw, *_ = self.group_fixture()
+        for changed in (raw.replace(b"case_b", b"case_z"), raw.replace(b"test operation_permits::tests::case_b ... ok\n", b""),
+                        raw.replace(b"case_b", b"case_a"), raw + b"test alien::extra ... ok\n"):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "named case"):
+                self.admit(raw=changed)
+
+    def test_group_rejects_ignored_wrong_filtered_panic_and_noninteger_exit(self):
+        raw, row, *_ = self.group_fixture()
+        for changed in (raw.replace(b"case_a ... ok", b"case_a ... ignored"), raw.replace(b"1 filtered", b"0 filtered"),
+                        raw + b"\nthread 'unjoined-child' panicked at child.rs:10:4:\nactual child failure\n"):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                self.admit(raw=changed)
+        with self.assertRaises(ValueError):
+            self.admit(row={**row, "exit_code": False})
+        with self.assertRaisesRegex(ValueError, "binary changed"):
+            self.admit(after={**self.binary, "sha256": "f" * 64})
+
+    def test_compiler_json_requires_real_target_source_and_requested_features(self):
+        spec = gate.TARGETS["daemon"]
+        self.assertEqual(spec["source"], "crates/daemon/src/semwrightd.rs")
+        artifact = {"reason": "compiler-artifact", "manifest_path": str(self.repo / "crates/daemon/Cargo.toml"),
+                    "profile": {"test": True}, "executable": str(self.binary_path), "features": ["private-host-stdin-custody"],
+                    "target": {"name": spec["name"], "kind": ["bin"], "src_path": str(self.repo / "crates/daemon/src/semwrightd.rs")}}
+        def raw(row):
+            return (json.dumps(row) + "\n" + json.dumps({"reason": "build-finished", "success": True}) + "\n").encode()
+        argv = ["cargo", "test", "--features", "private-host-stdin-custody"]
+        self.assertEqual(gate.compiled_paths(raw(artifact), 0, self.repo, self.target, (spec,), True, argv), {spec["name"]: str(self.binary_path)})
+        for changed in ({**artifact, "features": []},
+                        {**artifact, "target": {**artifact["target"], "src_path": str(self.repo / "foreign.rs")}},
+                        {**artifact, "target": {**artifact["target"], "src_path": str(self.repo / "crates/daemon/src/main.rs")}}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                gate.compiled_paths(raw(changed), 0, self.repo, self.target, (spec,), True, argv)
+        with self.assertRaisesRegex(ValueError, "no-default"):
+            gate.compiled_paths(raw(artifact), 0, self.repo, self.target, (spec,), True, ["cargo", "test", "--no-default-features"])
+        with self.assertRaisesRegex(ValueError, "not causal RED"):
+            gate.compiled_paths(raw(artifact), 101, self.repo, self.target, (spec,), True, argv)
+
+    def test_causal_result_requires_named_failure_at_frozen_site_and_original_cause(self):
+        causal = gate.CAUSALS[2]
+        name, failure = causal["test"], causal["failure"]
+        pair = {"id": causal["id"], "baseline": {"targets": {"unit": [name]}}, "repair": {"targets": {}}, "failures": {name: failure}}
+        row = {"observation": "DIRECT_PROCESS_EXIT_OBSERVED", "log_custody": "VERIFIED_SNAPSHOT", "exit_code": 101,
+               "argv": gate.observer.case_argv(self.binary, pair, "baseline", name), "context": self.context}
+        raw = ("test " + name + " ... FAILED\nthread '" + name + "' panicked at " + failure["source"] + ":717:9:\n"
+               + failure["markers"][0] + "\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out;\n").encode()
+        def admit(data, command=row):
+            return gate.observer.admit_case(pair, "baseline", name, data, command, self.binary, self.binary,
+                                            {"all": (name,), "selected": (name,)}, self.context)
+        self.assertEqual(admit(raw)["status"], "EXPECTED_CAUSAL_RED")
+        for changed in (raw.replace(b":717:9", b":719:9"), raw.replace(failure["markers"][0].encode(), b"unrelated assertion"),
+                        raw.replace(("thread '" + name + "'").encode(), b"thread 'other'")):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                admit(changed)
+        with self.assertRaises(ValueError):
+            admit(b"compiler failed", {**row, "exit_code": 1})
+
+    def test_linux_selection_has_three_producers_and_two_exact_ignored_methods(self):
+        plan = gate.producer_plan("linux-g2", "cargo")
+        self.assertEqual(len(plan), 3)
+        self.assertEqual([row[3] for row in plan], [False, False, True])
+        self.assertEqual(len(gate.G2_CASES), 2)
+        self.assertTrue(all(n.startswith("owner_operation_process_tests::") for n in gate.G2_CASES))
+        self.assertNotIn("private-host-stdin-custody", json.dumps(plan))
+
+    def test_original_resource_thresholds_and_compiler_slot_are_not_counts_only(self):
+        values = {"physical": 4 * 1024**3, "virtual": 8 * 1024**3, "disk": 14 * 1024**3, "compilers": []}
+        result = gate.resource_values(values, "windows-g1", True)
+        self.assertFalse(result["continuous_monitoring"])
+        for key, value in (("physical", values["physical"] - 1), ("virtual", values["virtual"] - 1),
+                           ("disk", values["disk"] - 1), ("compilers", [{"Id": 42}]), ("physical", True)):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                gate.resource_values({**values, key: value}, "windows-g1", True)
+
+    def test_missing_retained_fixture_root_never_receives_original_credit(self):
+        temp = self.root / "owned-temp"; temp.mkdir()
+        (self.logs / "linux-native-0.stderr.log").write_bytes(("RETAINED_OWNER_PERMIT_FIXTURE_ROOT=" + str(temp / "missing") + "\n").encode())
+        with self.assertRaises(FileNotFoundError):
+            gate.retained_failure_roots({"logs": self.logs, "temporary": temp}, self.root)
+
+    def test_existing_failed_fixture_bytes_are_retained_without_wire_or_success_credit(self):
+        temp = self.root / "owned-temp"; temp.mkdir()
+        fixture = temp / "fixture"; fixture.mkdir(); (fixture / "original.json").write_bytes(b'{"actual":true}\n')
+        (self.logs / "linux-native-0.stderr.log").write_bytes(("RETAINED_OWNER_PERMIT_FIXTURE_ROOT=" + str(fixture) + "\n").encode())
+        result = gate.retained_failure_roots({"logs": self.logs, "temporary": temp}, self.root)
+        self.assertEqual(result[0]["status"], "FILES_RETAINED")
+        self.assertFalse(result[0]["raw_wire_capture"])
+        retained = self.root / result[0]["files"]["original.json"]["path"]
+        self.assertEqual(retained.read_bytes(), b'{"actual":true}\n')
+
+
+    def gate_receipt_fixture(self):
+        folder = self.root / "gate-originals"; folder.mkdir()
+        path = folder / "gate-unittest.json"
+        files = {p: {"sha256": "a" * 64} for p in (
+            "tooling/ci_test_runner.py", *("tooling/tests/" + p for p in gate.GATE_PATTERNS),
+            "Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json")}
+        snapshot = {"sha": "b" * 40, "tree": "c" * 40, "files": files}
+        python = {"absolute_path": str(self.root / "python"), "fingerprint": {"sha256": "d" * 64}}
+        entries = []
+        for pattern in gate.GATE_PATTERNS:
+            entries.append(("discovery:" + pattern, pattern[:-3], [python["absolute_path"], "-B", "-E", "-s", "-m", "unittest", "discover", "-s", "tooling/tests", "-p", pattern, "-v"]))
+        for pattern in sorted(gate.GATE_PATTERNS):
+            module = "tooling.tests." + pattern[:-3]
+            entries.append(("dotted:" + module, pattern[:-3], [python["absolute_path"], "-B", "-E", "-s", "-m", "unittest", module, "-v"]))
+        steps = []
+        for index, (label, module, argv) in enumerate(entries):
+            stderr = ("test_one (" + module + ".Fixture.test_one) ... ok\n"
+                      "test_two (" + module + ".Fixture.test_two) ... ok\n\nRan 2 tests in 0.001s\n\nOK\n").encode()
+            step = {"entry_point": label, "command": argv, "status": "PASS", "exit_code": 0,
+                    "counts": gate.fast_runner.parse_unittest_summary(stderr.decode())}
+            for stream, raw in (("stdout", b""), ("stderr", stderr)):
+                name = path.stem + "-" + str(index).zfill(2) + "-" + stream + ".log"
+                (folder / name).write_bytes(raw)
+                step[stream] = {"file": name, "sha256": hashlib.sha256(raw).hexdigest()}
+            steps.append(step)
+        receipt = {"schema": "motionwright.unittest-execution/1", "executed_source_sha": snapshot["sha"],
+                   "tree_sha": snapshot["tree"], "status": "PASS", "exit_code": 0, "require_complete": True,
+                   "runner_sha256": files["tooling/ci_test_runner.py"]["sha256"],
+                   "python_executable_sha256": python["fingerprint"]["sha256"],
+                   "test_definition_sha256": {"tooling/tests/" + p: files["tooling/tests/" + p]["sha256"] for p in gate.GATE_PATTERNS},
+                   "source_locks": {p: files[p]["sha256"] for p in ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json")},
+                   "github": {k: "" for k in ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")},
+                   "steps": steps}
+        path.write_text(json.dumps(receipt))
+        return path, snapshot, python, receipt
+
+    def test_gate_controls_admit_real_runner_filename_contract_and_both_rosters(self):
+        path, snapshot, python, _ = self.gate_receipt_fixture()
+        result = gate.admit_gate_controls(path, snapshot, python, self.context)
+        self.assertEqual(result["status"], "PASS_EXACT_GATE_CONTRACTS")
+        self.assertEqual(result["source_sha"], snapshot["sha"])
+        self.assertEqual(len(result["rosters"]), 6)
+        self.assertTrue(all(p["path"].startswith("gate-unittest") for p in result["originals"]))
+
+    def test_gate_controls_reject_foreign_source_omissions_and_boolean_counts(self):
+        path, snapshot, python, receipt = self.gate_receipt_fixture()
+        mutations = []
+        foreign = copy.deepcopy(receipt); foreign["executed_source_sha"] = gate.FIXED["sha"]; mutations.append(foreign)
+        omission = copy.deepcopy(receipt); omission["steps"].pop(); mutations.append(omission)
+        boolean = copy.deepcopy(receipt); boolean["steps"][0]["counts"]["failures"] = False; mutations.append(boolean)
+        skipped = copy.deepcopy(receipt); skipped["steps"][0]["status"] = "PASS_WITH_OMISSIONS"; mutations.append(skipped)
+        for changed in mutations:
+            path.write_text(json.dumps(changed))
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                gate.admit_gate_controls(path, snapshot, python, self.context)
+
+    def test_gate_controls_reject_duplicate_ids_even_with_matching_log_hash(self):
+        path, snapshot, python, receipt = self.gate_receipt_fixture()
+        stream = receipt["steps"][0]["stderr"]
+        original = path.parent / stream["file"]
+        raw = original.read_bytes().replace(b"test_two", b"test_one")
+        original.write_bytes(raw); stream["sha256"] = hashlib.sha256(raw).hexdigest()
+        path.write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(ValueError, "roster"):
+            gate.admit_gate_controls(path, snapshot, python, self.context)
+
+    def test_local_gate_nonzero_then_unknown_receipt_stays_unknown(self):
+        path, snapshot, python, receipt = self.gate_receipt_fixture()
+        receipt.update(status="UNKNOWN", exit_code=1)
+        path.write_text(json.dumps(receipt))
+        calls = []
+        def call(argv, cwd, env, output, label, timeout, context):
+            calls.append(label)
+            return {"exit_code": 1 if label == "gate-contracts" else 0, "argv": argv, "context": context}
+        with self.assertRaises(gate.observer.UnknownExecution) as caught:
+            gate.local_gate_g0(self.repo, snapshot, {"python": python}, {}, path.parent, self.context, call)
+        self.assertEqual(caught.exception.command["runner_receipt"]["status"], "UNKNOWN")
+        self.assertEqual(calls, ["gate-" + p for p in gate.GATE_POLICIES] + ["gate-contracts"])
+
+    def test_nonzero_local_gate_policy_cannot_borrow_passing_contracts(self):
+        path, snapshot, python, _ = self.gate_receipt_fixture()
+        def call(argv, cwd, env, output, label, timeout, context):
+            return {"exit_code": 1 if label == "gate-source_policy" else 0, "argv": argv, "context": context}
+        with self.assertRaisesRegex(ValueError, "gate policy failed"):
+            gate.local_gate_g0(self.repo, snapshot, {"python": python}, {}, path.parent, self.context, call)
+
+    def test_local_gate_g0_positive_remains_separate_from_sdk_credit(self):
+        path, snapshot, python, _ = self.gate_receipt_fixture()
+        def call(argv, cwd, env, output, label, timeout, context):
+            return {"exit_code": 0, "argv": argv, "context": context}
+        with patch.object(gate, "source_unchanged"), patch.object(gate, "verify_tools"):
+            result = gate.local_gate_g0(self.repo, snapshot, {"python": python}, {}, path.parent, self.context, call)
+        self.assertEqual(result["status"], "PASS_EXACT_LOCAL_GATE_G0")
+        self.assertEqual(result["executed_source_sha"], snapshot["sha"])
+        self.assertEqual(result["sdk_g0_credit"], "NONE")
+
+    def test_noncanonical_output_parent_is_rejected_before_creation(self):
+        run_root = self.root / "future-output"
+        self.assertEqual(gate.canonical_run_root(run_root), run_root)
+        with patch.object(Path, "resolve", return_value=self.root / "foreign"), self.assertRaisesRegex(ValueError, "parent"):
+            gate.canonical_run_root(run_root)
+        self.assertFalse(run_root.exists())
+
+
+def workflow_jobs(text):
+    body = text.split("\njobs:\n", 1)[1]
+    matches = list(re.finditer(r"(?m)^  ([a-z0-9-]+):\n", body))
+    return {m.group(1): body[m.end():matches[i + 1].start() if i + 1 < len(matches) else len(body)]
+            for i, m in enumerate(matches)}
+
+
+def source_condition(expression, values):
+    """Evaluate only the string comparisons/booleans in these source guards."""
+    text = re.sub(r"(?:github|inputs)\.[a-z_]+", lambda m: repr(values.get(m.group(0), "")), expression)
+    parsed = ast.parse(text.replace("&&", "and").replace("||", "or"), mode="eval")
+    def value(node):
+        if isinstance(node, ast.Constant) and type(node.value) is str:
+            return node.value
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            parts = [value(n) for n in node.values]
+            return all(parts) if isinstance(node.op, ast.And) else any(parts)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+            equal = value(node.left) == value(node.comparators[0])
+            return equal if isinstance(node.ops[0], ast.Eq) else not equal
+        raise ValueError("unexpected guard expression; this is not a general Actions interpreter")
+    return value(parsed.body)
+
+
+LEGACY_BODY_DIGESTS = {'source-boundary': 'e50122f664f404d040457df904767fa36c56c5b7936bbd12b9b9f0dd4a35c998',
+ 'dependency-advisories': '89509a72b361c9a7b07a63e2551e933900a0790dddab0473430c325bbf61e1fa',
+ 'controlled-imports': '4ad8a401a889fb257cf1702cfd231c1200922a0a9e3b1b6c7e7d0b5b58e28330',
+ 'desktop-boundary': '6c6ad78ca1ee49c88a8c252eb91752eebdb5378a34bbdff9435eb5660db10a23',
+ 'dependency-review': '586f5822bcef9121fa9e2189c564a5143ff80fa6692ae2b83136d489dbc26e15',
+ 'v01-private-ntfs-evidence': 'c9eb6762cd1d8cdd670de3eb9cd3a3c0dade27280a1001a7e29482f82f8c7481',
+ 'source-admission-linux': '2da53b82a219e8a2bb570af09be0bd2f2db3c305f9d5a153e859d4df85d70b9b',
+ 'source-admission-ntfs': 'f86cd2dba566800b75ba3df7360829792b04ed0a65744d90972e87a4552837a7',
+ 'foundation-causal-g0': '4e15925fe7cf094fb730ddacfa2a7c91b7c1c72518f1f52ff4476bb6ff0c8148',
+ 'foundation-causal': 'fd062fd535bb1add7499c0612bb2a0ed732fb69a8033def780ae61f0efef5ade'}
+
+
+class SDKFoundationWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.text = (Path(gate.__file__).resolve().parents[1] / gate.WORKFLOW).read_text()
+        self.jobs = workflow_jobs(self.text)
+
+    def condition(self, job, event, scope="full", review=True):
+        branch = gate.REVIEW_BRANCH if review else "main"
+        values = {"github.event_name": event, "inputs.verification_scope": scope,
+                  "github.ref": "refs/heads/" + branch if event != "pull_request" else "refs/pull/1/merge",
+                  "github.head_ref": branch if event == "pull_request" else ""}
+        expression = re.search(r"(?m)^    if: (.+)$", self.jobs[job]).group(1)
+        return source_condition(expression, values)
+
+    def test_legacy_job_bodies_remain_byte_exact_after_only_review_guards(self):
+        self.assertEqual(set(self.jobs), set(LEGACY_BODY_DIGESTS) | {"sdk-foundation-g0", "sdk-foundation-linux-two"})
+        for name, digest in LEGACY_BODY_DIGESTS.items():
+            body = self.jobs[name]
+            if name in {"source-boundary", "dependency-review"}:
+                body = re.sub(r"(?m)^    if: .+\n", "", body, count=1)
+            with self.subTest(name=name):
+                self.assertEqual(hashlib.sha256(body.rstrip().encode()).hexdigest(), digest)
+
+    def test_review_push_and_pull_request_select_only_new_source_job(self):
+        for event in ("push", "pull_request"):
+            with self.subTest(event=event):
+                self.assertTrue(self.condition("sdk-foundation-g0", event))
+                self.assertFalse(self.condition("source-boundary", event))
+                self.assertFalse(self.condition("sdk-foundation-linux-two", event))
+                self.assertFalse(self.condition("dependency-review", event))
+
+    def test_manual_full_and_legacy_foundation_preserve_behavior_on_review_branch(self):
+        for review in (False, True):
+            with self.subTest(review=review):
+                self.assertTrue(self.condition("source-boundary", "workflow_dispatch", "full", review))
+                self.assertFalse(self.condition("sdk-foundation-g0", "workflow_dispatch", "full", review))
+                self.assertFalse(self.condition("source-boundary", "workflow_dispatch", "foundation-causal", review))
+                self.assertTrue(self.condition("foundation-causal-g0", "workflow_dispatch", "foundation-causal", review))
+                self.assertTrue(self.condition("foundation-causal", "workflow_dispatch", "foundation-causal", review))
+                self.assertFalse(self.condition("sdk-foundation-g0", "workflow_dispatch", "foundation-causal", review))
+
+    def test_new_manual_scope_does_not_fall_through_legacy_or_other_native_jobs(self):
+        for scope in gate.SCOPES:
+            with self.subTest(scope=scope):
+                self.assertFalse(self.condition("source-boundary", "workflow_dispatch", scope))
+                self.assertFalse(self.condition("foundation-causal", "workflow_dispatch", scope))
+                self.assertFalse(self.condition("source-admission-linux", "workflow_dispatch", scope))
+                self.assertFalse(self.condition("source-admission-ntfs", "workflow_dispatch", scope))
+                self.assertTrue(self.condition("sdk-foundation-g0", "workflow_dispatch", scope))
+                self.assertEqual(self.condition("sdk-foundation-linux-two", "workflow_dispatch", scope), scope == gate.SCOPES[1])
+        self.assertEqual(re.findall(r"(?m)^    needs: (.+)$", self.jobs["sdk-foundation-linux-two"]), ["sdk-foundation-g0"])
+        self.assertIn("        default: full\n", self.text)
+
+    def test_remote_admission_precedes_source_checkout_and_no_windows_workflow_is_added(self):
+        job = self.jobs["sdk-foundation-linux-two"]
+        self.assertLess(job.index("--admit-only"), job.index("repository: seradotcom/semwright"))
+        self.assertLess(job.index("--admit-only"), job.index("apt-get"))
+        self.assertIn("/usr/bin/python3 -I -B gate/tooling/ci_sdk_foundation_candidate.py", job)
+        self.assertIn("python3-jsonschema", job)
+        self.assertIn("python3-yaml", job)
+        self.assertIn('node-version: "22"', job)
+        self.assertNotIn("sysctl", job)
+        self.assertNotIn("apparmor", job)
+        self.assertNotIn("windows-g1", job)
+        self.assertIn("--expected-source \"$GITHUB_SHA\"", self.jobs["sdk-foundation-g0"])
+
+
+if __name__ == "__main__":
+    unittest.main()
