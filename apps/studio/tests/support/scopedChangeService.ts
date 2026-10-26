@@ -547,9 +547,10 @@ export class ScopedChangeService {
     return this.invoke<PortableBundlePlan>("inspect_project_bundle", { request: { path } });
   }
 
-  async importBundle(path: string): Promise<Project> {
+  /** Use a caller's explicit inspection; never re-inspect inside an import. */
+  async importBundle(path: string, fingerprint: string): Promise<Project> {
     const grant = await this.grant("import_local", null, path);
-    return this.invoke<Project>("import_project_bundle", { request: { path, effect_grant: grant.token } });
+    return this.invoke<Project>("import_project_bundle", { request: { path, fingerprint, effect_grant: grant.token } });
   }
 
   /** An independent process and grant registry, sharing only the SQLite/CAS. */

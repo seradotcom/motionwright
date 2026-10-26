@@ -1086,12 +1086,36 @@ pub(super) fn validate_schema(conn: &Connection, version: u32) -> Result<()> {
     if foreign_keys != 0 {
         return Err(invalid("import outcome markers must not cascade"));
     }
-    let triggers: u64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_schema WHERE type='trigger' AND tbl_name IN ('cas_store_identity','cas_import_commits')", [], |row| row.get(0),
-    )?;
-    if triggers != 0 {
+    // Before schema6 these owner-control tables must have no triggers.
+    // Schema6 adds exactly three registered-writer fences to each table.
+    // Cardinality alone is insufficient: a foreign or rewritten trigger
+    // could alter the CAS store identity or import history.
+    let observed_triggers: Vec<(String, String, Option<String>)> = {
+        let mut statement = conn.prepare(
+            "SELECT tbl_name,name,sql FROM sqlite_schema
+             WHERE type='trigger' AND tbl_name IN ('cas_store_identity','cas_import_commits')
+             ORDER BY tbl_name,name",
+        )?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        rows
+    };
+    if version < 6 {
+        if !observed_triggers.is_empty() {
+            return Err(invalid(
+                "CAS control tables must not have mutating triggers",
+            ));
+        }
+    } else if observed_triggers.len() != 6
+        || observed_triggers.iter().any(|(table, name, sql)| {
+            !sql.as_deref().is_some_and(|body| {
+                super::root_operation_budget::is_canonical_writer_fence(name, table, body)
+            })
+        })
+    {
         return Err(invalid(
-            "CAS control tables must not have mutating triggers",
+            "CAS writer fences are missing, foreign or modified",
         ));
     }
     load_store_id(conn)?;

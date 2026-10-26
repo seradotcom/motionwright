@@ -1,14 +1,15 @@
 import { sameProjectRevision } from "./projectMutation";
-import { defaultHeroConfig, planContentDigest, realizeProductHero, sameValue, validateProductionPlan } from "./creativeProduction";
-import type { HeroConfig, ProductHeroInstance, ProductionPlan } from "./creativeProduction";
+import { applyProductionDesignChange, defaultHeroConfig, planContentDigest, realizeProductHero, sameValue, validateProductionPlan } from "./creativeProduction";
+import type { HeroConfig, NativeCapsule, ProductHeroInstance, ProductionPlan } from "./creativeProduction";
 import type { CanvasNode, Change, Project, ProjectEvent } from "./types";
 
-export type ProductionTarget = { kind: "hero"; sceneId: string | null } | { kind: "plan" };
+export type ProductionTarget = { kind: "hero"; sceneId: string | null } | { kind: "plan" } | { kind: "source"; sceneId: string | null };
 export type ProductionInput = { kind: "hero"; config: HeroConfig }
-  | { kind: "plan"; plan: ProductionPlan; reviewer: string; note: string };
-export type ProductionValue = ProductHeroInstance | ProductionPlan | null;
+  | { kind: "plan"; plan: ProductionPlan; reviewer: string; note: string }
+  | { kind: "source"; assetId: string; renderer: string; version: string };
+export type ProductionValue = ProductHeroInstance | ProductionPlan | NativeCapsule | null;
 export type ProductionOperation = "save" | "approve" | "detach";
-export type ProductionChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" }>;
+export type ProductionChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "upsert_native_capsule" }>;
 export interface ProductionPending {
   /** Local comparison snapshot, never a service request, grant, or replay token. */
   id: string; revision: number; sequence: number; operation: ProductionOperation;
@@ -30,12 +31,14 @@ export const MAX_PRODUCTION_RECOVERY_BYTES = 4 * 1024 * 1024;
 export const MAX_PRODUCTION_COPIES = 64;
 export const MAX_PRODUCTION_HISTORY = 2048;
 export const MAX_PRODUCTION_ORIGINS = 16;
+const SOURCE_LOSS = "Source preserved as an opaque attachment. Parameter editing and renderer execution are not admitted.";
+const SOURCE_EDITOR_HINT = "Open with the original application's trusted environment";
 export const productionScope = (project: Project, target: ProductionTarget) => JSON.stringify([
-  project.id, project.generation, project.active_branch, target.kind, target.kind === "hero" ? target.sceneId : null,
+  project.id, project.generation, project.active_branch, target.kind, target.kind === "plan" ? null : target.sceneId,
 ]);
 export const productionCopyKey = (scope: string, writer: string) => PRODUCTION_RECOVERY_PREFIX + encodeURIComponent(scope) + ":" + writer;
 export const productionPointerKey = (scope: string) => PRODUCTION_POINTER_PREFIX + encodeURIComponent(scope);
-export const productionLabel = (target: ProductionTarget) => target.kind === "hero" ? "Component" : "Production plan";
+export const productionLabel = (target: ProductionTarget) => target.kind === "hero" ? "Component" : target.kind === "source" ? "Source attachment" : "Production plan";
 export const productionHasInput = (draft: ProductionDraft) => draft.intent;
 export const productionHasWork = (draft: ProductionDraft) => draft.intent || draft.pending !== null;
 export const productionUnconfirmed = (draft: ProductionDraft) => draft.pending?.outcome === "UNKNOWN";
@@ -54,6 +57,9 @@ export function defaultProductionPlan(project: Project): ProductionPlan {
     clock: { kind: "timeline" }, approval: null };
 }
 export function productionValue(project: Project, target: ProductionTarget): ProductionValue {
+  // This editor creates one attachment per explicit intent; no existing capsule
+  // is chosen implicitly as its base, even when the scene already has sources.
+  if (target.kind === "source") return null;
   if (target.kind === "plan") return clone(project.production_design?.plan ?? null);
   if (target.sceneId !== null && project.scenes.filter(scene => scene.id === target.sceneId).length !== 1)
     throw new Error("The component scene is unavailable or ambiguous in the current project.");
@@ -62,6 +68,7 @@ export function productionValue(project: Project, target: ProductionTarget): Pro
   return clone(matches[0] ?? null);
 }
 function inputFromSaved(project: Project, target: ProductionTarget): ProductionInput {
+  if (target.kind === "source") return { kind: "source", assetId: "", renderer: "hyperframes", version: "unverified" };
   const value = productionValue(project, target);
   return target.kind === "hero" ? { kind: "hero", config: clone((value as ProductHeroInstance | null)?.config ?? defaultHeroConfig()) }
     : { kind: "plan", plan: { ...clone((value as ProductionPlan | null) ?? defaultProductionPlan(project)), approval: null }, reviewer: "", note: "" };
@@ -85,7 +92,7 @@ export function readProductionRecoveryPointer(storage: Pick<Storage, "getItem">,
   prior: ProductionPointerObservation): ProductionPointerObservation {
   const identity: unknown = JSON.parse(scope);
   if (!Array.isArray(identity) || identity.length !== 5 || identity.slice(0, 3).some(value => typeof value !== "string" || !value)
-    || !["hero", "plan"].includes(identity[3]) || (identity[3] === "plan" ? identity[4] !== null : identity[4] !== null && (typeof identity[4] !== "string" || !identity[4])))
+    || !["hero", "plan", "source"].includes(identity[3]) || (identity[3] === "plan" ? identity[4] !== null : identity[4] !== null && (typeof identity[4] !== "string" || !identity[4])))
     throw new Error("The Production recovery owner is invalid.");
   const pointer = storage.getItem(productionPointerKey(scope));
   if (prior.observed && pointer !== prior.expectedPointer) throw new Error("The earlier Production recovery pointer changed.");
@@ -148,7 +155,7 @@ export async function prepareProductionSubmission(draft: ProductionDraft, projec
   if (!uuid(id) || productionUnconfirmed(draft)) throw new Error("Review the unconfirmed Production attempt before a separate save.");
   if (productionConflict(draft, project)) throw new Error("Review the current Production revision before saving this draft.");
   const input = clone(draft.input), target = draft.target;
-  const resource = target.kind === "hero" && target.sceneId ? "scene:" + target.sceneId : null;
+  const resource = target.kind !== "plan" && target.sceneId ? "scene:" + target.sceneId : null;
   const lockKinds = target.kind === "hero" && operation !== "detach" ? ["content", "position", "style", "timing", "renderer"] : ["content"];
   if (project.locks.some(lock => (lock.resource === "project:" + project.id || lock.resource === resource) && lockKinds.includes(lock.kind)))
     throw new Error("This Production scope is locked. Your input remains editable.");
@@ -168,6 +175,25 @@ export async function prepareProductionSubmission(draft: ProductionDraft, projec
       value = { id: instanceId, scene_id: scene.id, component_version: 1, config, baseline };
       change = { type: "upsert_product_hero", instance_id: instanceId, scene_id: scene.id, config: clone(config) };
     }
+  } else if (target.kind === "source" && input.kind === "source") {
+    if (operation !== "save") throw new Error("A source attachment only supports an explicit save.");
+    if (!draft.intent) throw new Error("Edit the source input to create an explicit new attachment intent.");
+    const scenes = project.scenes.filter(scene => scene.id === target.sceneId);
+    const assets = project.assets.filter(asset => asset.id === input.assetId);
+    if (scenes.length !== 1) throw new Error("Select one existing scene for this source attachment.");
+    if (assets.length !== 1 || !assets[0].content_sha256 || !/^[0-9a-f]{64}$/.test(assets[0].content_sha256))
+      throw new Error("Select one existing source asset with its valid SHA-256 digest.");
+    if (project.production_design?.capsules.some(capsule => capsule.id === id))
+      throw new Error("This attachment identity already exists. Start a separate explicit intent.");
+    const capsule: NativeCapsule = { id, scene_id: scenes[0].id, source_asset_id: assets[0].id,
+      source_sha256: assets[0].content_sha256, label: assets[0].name,
+      fidelity: { renderer: input.renderer, renderer_version: input.version, visual: "unavailable", temporal: "unavailable",
+        structural: "native", editable: "unavailable", losses: [SOURCE_LOSS], evidence_sha256: null },
+      editable_parameters: [], native_editor_hint: SOURCE_EDITOR_HINT };
+    change = { type: "upsert_native_capsule", capsule }; value = clone(capsule);
+    // Reuse the existing validation on a temporary copy. This is neither a
+    // service result nor renderer/native admission, and never updates the UI.
+    await applyProductionDesignChange(clone(project), change);
   } else if (target.kind === "plan" && input.kind === "plan") {
     if (operation === "detach") throw new Error("A Production plan is not a detachable component.");
     const plan = cleanProductionPlan(input.plan);
@@ -182,7 +208,8 @@ export function productionPreparationMatches(source: ProductionDraft, preparedFr
   return source.scope === current.scope && source.sequence === current.sequence && sameValue(source.input, current.input)
     && sameValue(source.pending, current.pending) && sameProjectRevision(preparedFrom, project)
     && productionScope(project, source.target) === source.scope
-    && sameValue(productionValue(preparedFrom, source.target), productionValue(project, source.target));
+    && (source.target.kind === "source" ? sameValue(preparedFrom, project)
+      : sameValue(productionValue(preparedFrom, source.target), productionValue(project, source.target)));
 }
 export function retainProductionFailure(draft: ProductionDraft, id: string, diagnostic: string, notSent = false): ProductionDraft {
   return draft.pending?.id === id ? { ...draft, pending: { ...draft.pending, outcome: notSent ? "NOT_SENT" : "UNKNOWN", diagnostic } } : draft;
@@ -193,7 +220,11 @@ export function acknowledgeProductionDraft(draft: ProductionDraft, id: string, r
   if (!pending || pending.id !== id) return draft;
   checkScope(draft, receipt);
   const saved = productionValue(receipt, draft.target);
-  const matches = draft.target.kind === "hero" && pending.operation === "save"
+  const sourceMatches = draft.target.kind === "source" ? receipt.production_design?.capsules.filter(capsule => capsule.id === pending.id) ?? [] : [];
+  const matches = draft.target.kind === "source"
+    ? pending.operation === "save" && sourceMatches.length === 1 && sourceMatches[0].scene_id === draft.target.sceneId
+      && sameValue(sourceMatches[0], pending.value)
+    : draft.target.kind === "hero" && pending.operation === "save"
     ? saved !== null && pending.value !== null && "config" in saved && "config" in pending.value
       && saved.id === pending.value.id && saved.scene_id === pending.value.scene_id
       && saved.component_version === pending.value.component_version && sameValue(saved.config, pending.value.config)
@@ -218,7 +249,7 @@ export interface ProductionOutcomeTransport {
 }
 export interface ProductionOutcomeReview { scope: string; pending: ProductionPending; project: Project; events: ProjectEvent[]; matchingValueRevisions: number[] }
 const sameObserved = (left: Project, right: Project, target: ProductionTarget) => sameProjectRevision(left, right)
-  && sameValue(productionValue(left, target), productionValue(right, target));
+  && (target.kind === "source" ? sameValue(left, right) : sameValue(productionValue(left, target), productionValue(right, target)));
 export function productionOutcomeMatches(draft: ProductionDraft, project: Project, review: ProductionOutcomeReview | null): boolean {
   return !!review && productionUnconfirmed(draft) && review.scope === draft.scope && productionScope(project, draft.target) === draft.scope
     && sameValue(draft.pending, review.pending) && sameObserved(project, review.project, draft.target);
@@ -247,6 +278,8 @@ export async function inspectProductionOutcome(draft: ProductionDraft, selected:
   return { scope: draft.scope, pending, project: observed, events,
     matchingValueRevisions: events.filter(event => {
       if (draft.target.kind === "plan") return event.change.type === "set_production_plan" && sameValue(event.change.plan, pending.value);
+      if (draft.target.kind === "source") return event.change.type === "upsert_native_capsule" && record(event.change.capsule)
+        && event.change.capsule.id === pending.id && sameValue(event.change.capsule, pending.value);
       if (pending.operation === "detach") return event.change.type === "detach_product_hero"
         && event.change.instance_id === (draft.base as ProductHeroInstance | null)?.id;
       const expected = pending.value as ProductHeroInstance;
@@ -256,6 +289,8 @@ export async function inspectProductionOutcome(draft: ProductionDraft, selected:
 }
 export function releaseProductionOutcome(draft: ProductionDraft, project: Project, review: ProductionOutcomeReview): ProductionDraft {
   if (!productionOutcomeMatches(draft, project, review)) throw new Error("Read the current saved project and full history before starting a separate Production intent.");
+  if (project.revision <= draft.pending!.revision)
+    throw new Error("The unconfirmed Production attempt could still commit at this revision. Keep its original copy until the saved project advances.");
   return { ...draft, base: productionValue(project, draft.target), baseRevision: project.revision, intent: true, pending: null };
 }
 
@@ -266,6 +301,8 @@ export interface ProductionRecoveryEntry { key: string; writerId: string; raw: s
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(part => typeof part === "string");
 function inputShape(value: unknown): value is ProductionInput {
   if (!record(value)) return false;
+  if (value.kind === "source") return exact(value, ["kind", "assetId", "renderer", "version"])
+    && ["assetId", "renderer", "version"].every(key => typeof value[key] === "string");
   if (value.kind === "hero") {
     const config = value.config;
     return exact(value, ["kind", "config"]) && record(config) && exact(config, ["eyebrow", "headline", "body", "wordmark", "foreground", "accent", "motion"], ["layout"])
@@ -303,6 +340,20 @@ function nodesShape(value: unknown): boolean {
 function valueShape(value: unknown, kind: ProductionTarget["kind"]): boolean {
   if (value === null) return true;
   if (!record(value)) return false;
+  if (kind === "source") {
+    const fidelity = value.fidelity;
+    const text = (item: unknown, maximum: number) => typeof item === "string" && !!item.trim()
+      && bytes(item) <= maximum && !/[\u0000-\u0009\u000b-\u001f\u007f]/u.test(item);
+    return exact(value, ["id", "scene_id", "source_asset_id", "source_sha256", "label", "fidelity", "editable_parameters", "native_editor_hint"])
+      && uuid(value.id) && typeof value.scene_id === "string" && !!value.scene_id
+      && typeof value.source_asset_id === "string" && !!value.source_asset_id
+      && typeof value.source_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.source_sha256) && text(value.label, 256)
+      && Array.isArray(value.editable_parameters) && value.editable_parameters.length === 0 && value.native_editor_hint === SOURCE_EDITOR_HINT
+      && record(fidelity) && exact(fidelity, ["renderer", "renderer_version", "visual", "temporal", "structural", "editable", "losses", "evidence_sha256"])
+      && text(fidelity.renderer, 128) && text(fidelity.renderer_version, 128)
+      && fidelity.visual === "unavailable" && fidelity.temporal === "unavailable" && fidelity.structural === "native" && fidelity.editable === "unavailable"
+      && sameValue(fidelity.losses, [SOURCE_LOSS]) && fidelity.evidence_sha256 === null;
+  }
   if (kind === "hero") return exact(value, ["id", "scene_id", "component_version", "config", "baseline"])
     && typeof value.id === "string" && typeof value.scene_id === "string" && integer(value.component_version)
     && inputShape({ kind: "hero", config: value.config }) && nodesShape(value.baseline);
@@ -317,15 +368,15 @@ function cleanDraft(value: unknown, scope: string, originDepth = 0): ProductionD
     || !integer(value.baseRevision) || !integer(value.sequence) || typeof value.intent !== "boolean" || !inputShape(value.input))
     throw new Error("This Production recovery has an unsupported shape.");
   const target = value.target, identity: unknown = JSON.parse(scope);
-  if ((target.kind !== "hero" && target.kind !== "plan") || value.input.kind !== target.kind
-    || !exact(target, target.kind === "hero" ? ["kind", "sceneId"] : ["kind"])
-    || (target.kind === "hero" && target.sceneId !== null && (typeof target.sceneId !== "string" || !target.sceneId))
+  if ((target.kind !== "hero" && target.kind !== "plan" && target.kind !== "source") || value.input.kind !== target.kind
+    || !exact(target, target.kind === "plan" ? ["kind"] : ["kind", "sceneId"])
+    || (target.kind !== "plan" && target.sceneId !== null && (typeof target.sceneId !== "string" || !target.sceneId))
     || !Array.isArray(identity) || identity.length !== 5 || identity.slice(0, 3).some(item => typeof item !== "string" || !item)
-    || identity[3] !== target.kind || identity[4] !== (target.kind === "hero" ? target.sceneId : null))
+    || identity[3] !== target.kind || identity[4] !== (target.kind === "plan" ? null : target.sceneId))
     throw new Error("This Production recovery belongs to another editor identity.");
   // Closed shapes keep grants and execution authority out of portable copies.
   // Saved values are comparison data only; they never enter a Project mutation.
-  if (!valueShape(value.base, target.kind)) throw new Error("Unreadable Production base snapshot.");
+  if (!valueShape(value.base, target.kind) || (target.kind === "source" && value.base !== null)) throw new Error("Unreadable Production base snapshot.");
   let pending: ProductionPending | null = null;
   if (value.pending !== null) {
     const sent = value.pending;
@@ -337,6 +388,13 @@ function cleanDraft(value: unknown, scope: string, originDepth = 0): ProductionD
       || (sent.operation === "detach" ? sent.value !== null || sent.nodesBefore === null : sent.value === null || sent.nodesBefore !== null)
       || !["UNKNOWN", "NOT_SENT"].includes(String(sent.outcome)) || (sent.diagnostic !== undefined && typeof sent.diagnostic !== "string"))
       throw new Error("Unreadable Production pending comparison snapshot.");
+    if (target.kind === "source") {
+      const capsule = sent.value;
+      if (sent.revision !== value.baseRevision || sent.operation !== "save" || sent.input.kind !== "source" || !record(capsule)
+        || capsule.id !== sent.id || capsule.scene_id !== target.sceneId || capsule.source_asset_id !== sent.input.assetId
+        || !record(capsule.fidelity) || capsule.fidelity.renderer !== sent.input.renderer || capsule.fidelity.renderer_version !== sent.input.version)
+        throw new Error("The source attachment snapshot does not match its exact creation intent.");
+    }
     // A recovered NOT_SENT is never permission to replay or authorize a call.
     pending = { ...clone(sent), outcome: "UNKNOWN" } as unknown as ProductionPending;
   }
@@ -420,11 +478,16 @@ export function writeProductionCopy(storage: ProductionStorage, session: Pick<St
     if (storage.getItem(key) !== custody.expectedRaw) throw new Error("The Production copy changed in another window. Earlier bytes were kept.");
   };
   check();
-  const raw = encodeProductionCopy({ schema: "motionwright.production-recovery/1", scope: draft.scope,
+  let raw = encodeProductionCopy({ schema: "motionwright.production-recovery/1", scope: draft.scope,
     writerId: custody.writerId, updatedAt: Date.now(), draft });
   if (custody.expectedRaw !== null) {
     const old = decodeProductionCopy(custody.expectedRaw, draft.scope, custody.writerId).draft;
     if (!productionHasWork(old) && !sameValue(old, draft)) throw new Error("A clean Production checkpoint is immutable. Use a separate writer.");
+    // Compare stored fields before recovery changes NOT_SENT into UNKNOWN. Only
+    // the already-optional, empty origins field may be absent in a legacy v1.
+    const retained = JSON.parse(custody.expectedRaw).draft, candidate = JSON.parse(raw).draft;
+    if (!Object.hasOwn(retained, "origins") && Array.isArray(candidate.origins) && candidate.origins.length === 0) delete candidate.origins;
+    if (sameValue(retained, candidate)) raw = custody.expectedRaw;
   }
   let total = bytes(key) + bytes(raw), count = 1;
   for (let index = 0; index < storage.length; index++) {
@@ -434,9 +497,10 @@ export function writeProductionCopy(storage: ProductionStorage, session: Pick<St
   }
   if (total > MAX_PRODUCTION_RECOVERY_BYTES || count > MAX_PRODUCTION_COPIES) throw new Error("Production recovery is full (64 copies / 4 MiB). Discard only copies you no longer need.");
   check(); // Storage enumeration can interleave with another tab's writes.
-  storage.setItem(key, raw);
+  if (raw !== custody.expectedRaw) storage.setItem(key, raw);
   if (storage.getItem(key) !== raw) throw new Error("The Production recovery data write was not confirmed.");
   custody.expectedRaw = raw;
+  check(); // A peer may publish a pointer while the data write is confirmed.
   session.setItem(pointerKey, custody.writerId);
   if (session.getItem(pointerKey) !== custody.writerId) throw new Error("The Production writer pointer was not confirmed.");
   if (storage.getItem(key) !== raw) throw new Error("The Production copy changed while its writer pointer was published.");

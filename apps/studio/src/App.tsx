@@ -690,7 +690,7 @@ function DeliverView({
   commit: (change: Change) => Promise<void>;
   commitRecipe: (change: Change) => Promise<Project>;
   desktopMode: boolean;
-  onImportBundle: (path: string) => Promise<Project>;
+  onImportBundle: (path: string, fingerprint: string) => Promise<Project>;
   onOpenAudio: () => void;
   currentProjectState: () => DeliveryProjectState;
   renderEvidence: MotionCanvasRenderEvidence | null;
@@ -702,21 +702,28 @@ function DeliverView({
 }) {
   const [exportPath, setExportPath] = useState("");
   const [importPath, setImportPath] = useState("");
-  const [bundlePlan, setBundlePlan] = useState<PortableBundlePlan | null>(null);
+  const [bundleInspection, setBundleInspection] = useState<{
+    path: string;
+    plan: PortableBundlePlan;
+  } | null>(null);
+  const bundlePlan = bundleInspection && bundleInspection.path === importPath.trim()
+    ? bundleInspection.plan : null;
   const [portableBusy, setPortableBusy] = useState<"export" | "inspect" | "import" | null>(null);
   const [portableStatus, setPortableStatus] = useState<string | null>(null);
   const [portableError, setPortableError] = useState<string | null>(null);
 
   const inspectBundle = async () => {
-    if (!desktopMode || !importPath.trim()) return;
+    const path = importPath.trim();
+    if (!desktopMode || !path) return;
     setPortableBusy("inspect");
+    setBundleInspection(null);
     setPortableStatus(null);
     setPortableError(null);
     try {
-      const plan = await inspectProjectBundle(importPath.trim());
-      setBundlePlan(plan);
+      const plan = await inspectProjectBundle(path);
+      setBundleInspection({ path, plan });
     } catch (reason) {
-      setBundlePlan(null);
+      setBundleInspection(null);
       setPortableError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setPortableBusy(null);
@@ -742,17 +749,18 @@ function DeliverView({
   };
 
   const importBundle = async () => {
-    if (!desktopMode || !bundlePlan || !importPath.trim()) return;
+    const inspected = bundleInspection;
+    if (!desktopMode || !inspected || inspected.path !== importPath.trim()) return;
     setPortableBusy("import");
     setPortableStatus(null);
     setPortableError(null);
     try {
-      const imported = await onImportBundle(importPath.trim());
+      const imported = await onImportBundle(inspected.path, inspected.plan.fingerprint);
       setPortableStatus(
         "Imported " + imported.title + " at revision " + imported.revision +
         " with a fresh execution generation.",
       );
-      setBundlePlan(null);
+      setBundleInspection(null);
     } catch (reason) {
       setPortableError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -827,7 +835,7 @@ function DeliverView({
               placeholder="/absolute/path/project.motionwright"
               onChange={(event) => {
                 setImportPath(event.target.value);
-                setBundlePlan(null);
+                setBundleInspection(null);
                 setPortableStatus(null);
               }}
             />
@@ -2004,14 +2012,14 @@ export default function App() {
     return found;
   }, [transactProject, cleanConfirmedFileImport]);
 
-  const importPortableBundle = useCallback(async (path: string): Promise<Project> => {
+  const importPortableBundle = useCallback(async (path: string, fingerprint: string): Promise<Project> => {
     const source = boot?.project;
     if (!source) throw new Error("Project is not ready.");
     const saved = readProjectSelection();
     const imported = await mutationGate.current.run(
       source,
       () => bootRef.current?.project ?? null,
-      () => importProjectBundle(path),
+      () => importProjectBundle(path, fingerprint),
       imported => {
         const current = bootRef.current;
         if (!current) throw new Error("The current project is unavailable. Reopen to reconcile the import.");

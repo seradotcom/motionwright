@@ -30,6 +30,7 @@ mod production;
 mod project_creation;
 mod project_projection;
 mod render_window_cache;
+mod root_operation_budget;
 pub use apply_receipt_binding::{
     APPLY_REQUEST_ENCODING_V1, ApplyReceiptInvalid, ApplyReceiptObservation,
     MAX_APPLY_BINDING_BYTES, VerifiedApplyReceiptV1,
@@ -53,6 +54,10 @@ pub use project_projection::{
 };
 pub use render_window_cache::{
     RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
+};
+pub use root_operation_budget::{
+    RootBudgetUnits, RootDispatchBudgetInput, RootDispatchBudgetOutcome, RootOperationBudget,
+    RootOperationBudgetInput,
 };
 
 #[derive(Debug, Error)]
@@ -103,7 +108,7 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 5;
+pub const STORAGE_SCHEMA_VERSION: u32 = 6;
 pub const PROJECT_BACKUP_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_BUNDLE_FORMAT_VERSION: u32 = 1;
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
@@ -658,7 +663,8 @@ fn validate_existing_project_store_layout(conn: &Connection, version: u32) -> Re
     }
     validate_production_receipt_order_layout(conn, version)?;
     apply_receipt_binding::validate_schema(conn, version)?;
-    cas_retention::validate_schema(conn, version)
+    cas_retention::validate_schema(conn, version)?;
+    root_operation_budget::validate_schema(conn, version)
 }
 
 /// A SQLite schema is not proof that the caller owns the path to it.
@@ -789,6 +795,10 @@ impl Store {
         let sqlite_path = path.clone();
         let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
         let mut conn = Connection::open_with_flags(&sqlite_path, flags)?;
+        // Register the schema6 connection fence before any transactional writer.
+        // Earlier binaries have no such per-connection function, including
+        // when their SQLite connection was opened prior to this migration.
+        root_operation_budget::register_writer_fence(&conn)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         // Keep the pre-WAL source check on one read snapshot: a concurrent
         // migration must not pair an old version with newly committed objects.
@@ -926,6 +936,7 @@ impl Store {
         migrate_production_receipt_order(&schema_tx, locked_schema)?;
         apply_receipt_binding::migrate_schema(&schema_tx, locked_schema)?;
         cas_retention::migrate_schema(&schema_tx, locked_schema)?;
+        root_operation_budget::migrate_schema(&schema_tx, locked_schema)?;
         if locked_schema < STORAGE_SCHEMA_VERSION {
             schema_tx.pragma_update(None, "user_version", i64::from(STORAGE_SCHEMA_VERSION))?;
         }

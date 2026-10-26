@@ -822,7 +822,13 @@ test("portable export and verified import preserve both recipes and CAS while is
   expect(recipeFor(imported, b)).toEqual(recipeFor(donor, b));
   expect(outsideRecipes(imported)).toEqual(outsideRecipes({ ...donor, generation: imported.generation }));
   expect(await source.project(donor.id)).toEqual(donor);
-  await expect(target.importBundle(bundlePath)).rejects.toThrow(/exists|already/i);
+  const originalImportRequests = requests(target, "import_project_bundle");
+  expect(originalImportRequests).toHaveLength(1);
+  const originalFingerprint = originalImportRequests[0].fingerprint;
+  if (typeof originalFingerprint !== "string") {
+    throw new Error("The original portable import did not retain its inspection fingerprint");
+  }
+  await expect(target.importBundle(bundlePath, originalFingerprint)).rejects.toThrow(/exists|already/i);
   expect(await target.project(imported.id)).toEqual(imported);
   await reopenExact(target, imported);
   await targetPage.reload(); await mix(targetPage, a);

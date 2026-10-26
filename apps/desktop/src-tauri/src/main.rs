@@ -53,9 +53,9 @@ use motionwright_native::{
     },
 };
 use motionwright_service::{
-    AssetIntegrityPage, MltCleanupInventory, ModelRequestDraft, ModelRequestPreflight,
-    ProductionJobProjection, ProjectCreationIntent, ProjectCreationOutcome, ProjectEvent,
-    StudioService, WaveformPage,
+    AssetIntegrityPage, BundleFingerprint, MltCleanupInventory, ModelRequestDraft,
+    ModelRequestPreflight, ProductionJobProjection, ProjectCreationIntent, ProjectCreationOutcome,
+    ProjectEvent, StudioService, WaveformPage,
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use project_export::{
@@ -387,6 +387,7 @@ struct BundlePathRequest {
 #[derive(Debug, Deserialize)]
 struct ImportBundleRequest {
     path: String,
+    fingerprint: BundleFingerprint,
     effect_grant: Uuid,
 }
 
@@ -408,6 +409,7 @@ struct BundlePlanResponse {
     blob_count: usize,
     total_blob_bytes: String,
     rotates_generation: bool,
+    fingerprint: BundleFingerprint,
 }
 
 #[tauri::command]
@@ -2389,10 +2391,11 @@ fn inspect_project_bundle(
     request: BundlePathRequest,
 ) -> Result<BundlePlanResponse, String> {
     let source = absolute_bundle_path(&request.path)?;
-    let plan = state
+    let inspected = state
         .service
-        .inspect_project_bundle(&source)
+        .inspect_project_bundle_with_fingerprint(&source)
         .map_err(sanitized)?;
+    let plan = inspected.plan;
     Ok(BundlePlanResponse {
         project_id: plan.project.project_id,
         title: plan.project.title,
@@ -2402,6 +2405,7 @@ fn inspect_project_bundle(
         blob_count: plan.blob_count,
         total_blob_bytes: plan.total_blob_bytes.to_string(),
         rotates_generation: plan.project.rotates_generation,
+        fingerprint: inspected.fingerprint,
     })
 }
 
@@ -2419,7 +2423,7 @@ fn import_project_bundle(
     let source = absolute_bundle_path(&request.path)?;
     state
         .service
-        .import_project_bundle(&source)
+        .import_project_bundle_inspected(&source, &request.fingerprint)
         .map_err(sanitized)
 }
 
@@ -2614,5 +2618,43 @@ mod v01_first_owner_runtime_probe_contracts {
             "effect_grant": "forged"
         });
         assert!(serde_json::from_value::<ProductionRuntimeStatusRequest>(invalid).is_err());
+    }
+}
+
+#[cfg(test)]
+mod portable_bundle_contract_tests {
+    use super::ImportBundleRequest;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn import_requires_the_original_canonical_fingerprint() {
+        let token = Uuid::new_v4();
+        let base = json!({
+            "path": "/synthetic-fixture/inspected.motionwright",
+            "effect_grant": token,
+        });
+        // The invoke boundary must reject absence before its handler can
+        // consume a grant or import. It never silently inspects on behalf of
+        // an import that omitted its original inspected input.
+        assert!(serde_json::from_value::<ImportBundleRequest>(base.clone()).is_err());
+        for fingerprint in [
+            json!(null),
+            json!(17),
+            json!("a".repeat(63)),
+            json!("A".repeat(64)),
+            json!(format!("{}\n", "a".repeat(64))),
+        ] {
+            let mut invalid = base.clone();
+            invalid["fingerprint"] = fingerprint;
+            assert!(serde_json::from_value::<ImportBundleRequest>(invalid).is_err());
+        }
+        let original = "b".repeat(64);
+        let mut valid = base;
+        valid["fingerprint"] = json!(original);
+        let decoded: ImportBundleRequest = serde_json::from_value(valid).unwrap();
+        assert_eq!(decoded.path, "/synthetic-fixture/inspected.motionwright");
+        assert_eq!(decoded.effect_grant, token);
+        assert_eq!(decoded.fingerprint.as_str(), original);
     }
 }

@@ -199,6 +199,7 @@ test("a pending portable restore cannot race source edits or publish into anothe
     const host = window as unknown as {
       __RESTORE_FIXTURE__: typeof state;
       __TAURI_INTERNALS__: { invoke: (command: string, args?: {request?: {
+        path?: string; fingerprint?: string;
         revision?: number; change?: { type: string; title?: string };
       }}) => Promise<unknown> };
     };
@@ -212,10 +213,14 @@ test("a pending portable restore cannot race source edits or publish into anothe
         project_id: "01900000-0000-7000-8000-000000000021",
         title: "Portable restored project", source_generation: "old-import-generation",
         revision: "9", event_count: 9, blob_count: 1,
-        total_blob_bytes: "1024", rotates_generation: true,
+        total_blob_bytes: "1024", rotates_generation: true, fingerprint: "a".repeat(64),
       };
       if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
       if (command === "import_project_bundle") {
+        if (args?.request?.path !== "/synthetic-fixture/portable.motionwright"
+          || args.request.fingerprint !== "a".repeat(64)) {
+          throw new Error("Synthetic restore did not preserve its original inspection");
+        }
         return new Promise(resolve => { resolveRestore = resolve; });
       }
       if (command === "apply_change") {
@@ -823,6 +828,143 @@ test("a delayed initial project read cannot roll back a project already publishe
 // bundle, revision and journal result crosses the real StudioService JSONL
 // process. The opt-in desktop-invoke routing is a browser test seam, never an
 // installed Tauri/native-renderer or creative-quality certification.
+// These cases exercise the UI contract only. They do not certify files,
+// Store admission, native rendering, installed Tauri or a real effect grant.
+for (const invalid of [
+  { label: "missing", fingerprint: null },
+  { label: "uppercase", fingerprint: "A".repeat(64) },
+  { label: "line-terminated", fingerprint: "a".repeat(64) + "\n" },
+] as const) {
+  test("portable inspection rejects " + invalid.label + " fingerprints before any import grant", async ({ page }) => {
+    const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+    await seedSyntheticProjectSelection(page, initial.project.id);
+    await page.addInitScript(({ boot, fingerprint }) => {
+      const state = { evidenceScope: "synthetic_ui_contract_only", calls: [] as string[] };
+      const host = window as unknown as {
+        __BUNDLE_INVALID_INSPECTION__: typeof state;
+        __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+      };
+      host.__BUNDLE_INVALID_INSPECTION__ = state;
+      host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        state.calls.push(command);
+        if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+          return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
+        }
+        if (command === "inspect_project_bundle") return {
+          project_id: "01900000-0000-7000-8000-000000000051",
+          title: "Synthetic incomplete inspection", source_generation: "synthetic-old-generation",
+          revision: "0", event_count: 0, blob_count: 0, total_blob_bytes: "0", rotates_generation: true,
+          ...(fingerprint === null ? {} : { fingerprint }),
+        };
+        throw new Error("Unexpected synthetic inspection command: " + command);
+      } };
+    }, { boot: initial, fingerprint: invalid.fingerprint });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Deliver", exact: true }).click();
+    await page.getByLabel("Portable import path").fill("/synthetic-fixture/incomplete.motionwright");
+    await page.getByRole("button", { name: "Inspect bundle", exact: true }).click();
+    await expect(page.locator(".portable-project .portable-message.error")).toContainText("inspection is incomplete");
+    await expect(page.getByRole("button", { name: "Import verified bundle", exact: true })).toBeDisabled();
+    await expect(page.getByLabel("Portable bundle preflight")).toHaveCount(0);
+    const calls = await page.evaluate(() => (window as unknown as {
+      __BUNDLE_INVALID_INSPECTION__: { calls: string[] };
+    }).__BUNDLE_INVALID_INSPECTION__.calls);
+    expect(calls.filter(command => command === "inspect_project_bundle")).toHaveLength(1);
+    expect(calls).not.toContain("issue_effect_grant");
+    expect(calls).not.toContain("import_project_bundle");
+  });
+}
+
+test("a late portable inspection cannot replace the new view's inspected path and fingerprint", async ({ page }) => {
+  const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+  await seedSyntheticProjectSelection(page, initial.project.id);
+  await page.addInitScript(boot => {
+    const pathA = "/synthetic-fixture/first.motionwright";
+    const pathB = "/synthetic-fixture/second.motionwright";
+    const fingerprintA = "a".repeat(64), fingerprintB = "b".repeat(64);
+    let completeFirst: ((value: unknown) => void) | null = null;
+    const plan = (title: string, fingerprint: string) => ({
+      project_id: "01900000-0000-7000-8000-000000000061", title,
+      source_generation: "synthetic-original-generation", revision: "0",
+      event_count: 0, blob_count: 0, total_blob_bytes: "0", rotates_generation: true, fingerprint,
+    });
+    const state = {
+      evidenceScope: "synthetic_ui_contract_only",
+      calls: [] as string[],
+      imports: [] as Array<{ path: string; fingerprint: string }>,
+      firstPending: () => completeFirst !== null,
+      completeFirst: () => {
+        if (!completeFirst) throw new Error("The first synthetic inspection is not pending");
+        completeFirst(plan("First inspected bundle", fingerprintA));
+        completeFirst = null;
+      },
+    };
+    const host = window as unknown as {
+      __BUNDLE_LATE_INSPECTION__: typeof state;
+      __TAURI_INTERNALS__: { invoke: (command: string, args?: { request?: {
+        path?: string; fingerprint?: string;
+      } }) => Promise<unknown> };
+    };
+    host.__BUNDLE_LATE_INSPECTION__ = state;
+    host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+      state.calls.push(command);
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
+      }
+      if (command === "inspect_project_bundle") {
+        if (args?.request?.path === pathA) return new Promise(resolve => { completeFirst = resolve; });
+        if (args?.request?.path === pathB) return plan("Second inspected bundle", fingerprintB);
+        throw new Error("Unexpected synthetic bundle path");
+      }
+      if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
+      if (command === "import_project_bundle") {
+        if (args?.request?.path !== pathB || args.request.fingerprint !== fingerprintB) {
+          throw new Error("The second view lost its own inspected input");
+        }
+        state.imports.push({ path: args.request.path, fingerprint: args.request.fingerprint });
+        return { ...structuredClone(boot.project),
+          id: "01900000-0000-7000-8000-000000000061",
+          generation: "01900000-0000-7000-8000-000000000062", revision: 0,
+          title: "Second inspected bundle" };
+      }
+      throw new Error("Unexpected synthetic inspection command: " + command);
+    } };
+  }, initial);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+  await page.getByLabel("Portable import path").fill("/synthetic-fixture/first.motionwright");
+  await page.getByRole("button", { name: "Inspect bundle", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as {
+    __BUNDLE_LATE_INSPECTION__: { firstPending: () => boolean };
+  }).__BUNDLE_LATE_INSPECTION__.firstPending())).toBe(true);
+  // The existing pending-input guard remains in force. Navigation creates a
+  // new Deliver view; no test code removes a disabled attribute to force a race.
+  await expect(page.getByLabel("Portable import path")).toBeDisabled();
+  await page.getByRole("button", { name: "Brief", exact: true }).click();
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+  await expect(page.getByLabel("Portable import path")).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Import verified bundle", exact: true })).toBeDisabled();
+  await page.getByLabel("Portable import path").fill("/synthetic-fixture/second.motionwright");
+  await page.getByRole("button", { name: "Inspect bundle", exact: true }).click();
+  await expect(page.getByLabel("Portable bundle preflight")).toContainText("Second inspected bundle");
+  await page.evaluate(() => (window as unknown as {
+    __BUNDLE_LATE_INSPECTION__: { completeFirst: () => void };
+  }).__BUNDLE_LATE_INSPECTION__.completeFirst());
+  await expect(page.getByLabel("Portable import path")).toHaveValue("/synthetic-fixture/second.motionwright");
+  await expect(page.getByLabel("Portable bundle preflight")).toContainText("Second inspected bundle");
+  await page.getByRole("button", { name: "Import verified bundle", exact: true }).click();
+  await expect(page.locator(".brand-copy")).toContainText("Second inspected bundle");
+  const observed = await page.evaluate(() => {
+    const state = (window as unknown as { __BUNDLE_LATE_INSPECTION__: {
+      calls: string[]; imports: Array<{ path: string; fingerprint: string }>;
+    } }).__BUNDLE_LATE_INSPECTION__;
+    return { calls: state.calls, imports: state.imports };
+  });
+  expect(observed.imports).toEqual([{ path: "/synthetic-fixture/second.motionwright", fingerprint: "b".repeat(64) }]);
+  expect(observed.calls.filter(command => command === "inspect_project_bundle")).toHaveLength(2);
+  expect(observed.calls.filter(command => command === "import_project_bundle")).toHaveLength(1);
+});
+
 test.describe("real service imports and portable restore", () => {
   test.skip(!process.env.MOTIONWRIGHT_SERVICE_TEST_BIN,
     "Build studio_review_session and set MOTIONWRIGHT_SERVICE_TEST_BIN; no simulated service fallback.");
@@ -1176,6 +1318,105 @@ test.describe("real service imports and portable restore", () => {
     }
   });
 
+  test("real portable restore rejects replaced manifest bytes before publication and requires explicit reinspection", async ({}, testInfo) => {
+    const source = await ScopedChangeService.create({
+      databasePath: testInfo.outputPath("source-service", "studio.sqlite3"), desktopInvokeFixture: true,
+    });
+    let target: ScopedChangeService | undefined;
+    const observations: Record<string, unknown> = {};
+    try {
+      target = await ScopedChangeService.create({
+        databasePath: testInfo.outputPath("target-service", "studio.sqlite3"), desktopInvokeFixture: true,
+      });
+      const sourceFile = testInfo.outputPath("inspected-source.svg");
+      const uniqueSvg = Buffer.from(svgBytes.toString("utf8").replace(
+        "Synthetic local import file", "Inspected bundle substitution source",
+      ));
+      await writeFile(sourceFile, uniqueSvg);
+      let donorA = (await source.fixtureBootstrap()).project;
+      donorA = await source.importAsset(donorA, sourceFile, "Inspected original source");
+      donorA = await source.apply(donorA, { type: "rename_project", title: "Inspected manifest A" });
+      const original = (await target.fixtureBootstrap()).project;
+      const originalOracle = await target.observeStoredProject(original);
+      observations.targetOriginalOracle = originalOracle;
+      const bundlePath = testInfo.outputPath("inspected.motionwright");
+      const replacementPath = testInfo.outputPath("replacement.motionwright");
+      await source.exportBundle(donorA, bundlePath);
+      const manifestA = await readFile(join(bundlePath, "manifest.json"));
+      const planA = await target.inspectBundle(bundlePath);
+      expect(planA.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(planA).toMatchObject({ project_id: donorA.id, title: donorA.title, revision: String(donorA.revision) });
+      await testInfo.attach("inspected-original-manifest-a", { body: manifestA, contentType: "application/json" });
+      const expectedAsset = hash(uniqueSvg);
+      expect(donorA.assets.at(-1)?.content_sha256).toBe(expectedAsset);
+      const targetBlob = join(target.directory, "blobs", "sha256", expectedAsset.slice(0, 2), expectedAsset);
+      const assertUnpublished = async (store: ScopedChangeService) => {
+        expect(await store.project(original.id)).toEqual(originalOracle.project);
+        expect(await store.history(original.id, 0, 256)).toEqual(originalOracle.journal);
+        const index = await store.invoke<{ items: { id: string }[]; truncated: boolean }>(
+          "list_projects", { request: { cursor: null, limit: 2 } },
+        );
+        expect(index.truncated).toBe(false);
+        expect(index.items.map(item => item.id)).toEqual([original.id]);
+        await expect(readFile(targetBlob)).rejects.toThrow("ENOENT");
+      };
+      await assertUnpublished(target);
+
+      // B is another valid bundle from the same real Service, with a newer
+      // committed title/revision and its exact journal. It is not corrupt input.
+      const donorB = await source.apply(donorA, { type: "rename_project", title: "Replacement manifest B" });
+      await source.exportBundle(donorB, replacementPath);
+      const manifestB = await readFile(join(replacementPath, "manifest.json"));
+      expect(hash(manifestB)).not.toBe(hash(manifestA));
+      await cp(replacementPath, bundlePath, { recursive: true, force: true });
+      expect(await readFile(join(bundlePath, "manifest.json"))).toEqual(manifestB);
+      await expect(target.importBundle(bundlePath, planA.fingerprint))
+        .rejects.toThrow("bundle manifest changed after inspection");
+      await assertUnpublished(target);
+      await testInfo.attach("replacement-original-manifest-b", { body: manifestB, contentType: "application/json" });
+
+      // Reinspection is an explicit read after the known rejection. The next
+      // substitution keeps the same parsed content but changes original bytes.
+      const planB = await target.inspectBundle(bundlePath);
+      expect(planB).toMatchObject({ project_id: donorB.id, title: donorB.title, revision: String(donorB.revision) });
+      expect(planB.fingerprint).not.toBe(planA.fingerprint);
+      const manifestC = Buffer.concat([Buffer.from(" "), manifestB]);
+      expect(JSON.parse(manifestC.toString("utf8"))).toEqual(JSON.parse(manifestB.toString("utf8")));
+      await writeFile(join(bundlePath, "manifest.json"), manifestC);
+      await expect(target.importBundle(bundlePath, planB.fingerprint))
+        .rejects.toThrow("bundle manifest changed after inspection");
+      await assertUnpublished(target);
+      await testInfo.attach("replacement-original-manifest-c", { body: manifestC, contentType: "application/json" });
+
+      const planC = await target.inspectBundle(bundlePath);
+      expect(planC.fingerprint).not.toBe(planB.fingerprint);
+      expect({ ...planC, fingerprint: planB.fingerprint }).toEqual(planB);
+      const restored = await target.importBundle(bundlePath, planC.fingerprint);
+      expect(restored.generation).not.toBe(donorB.generation);
+      expect(restored).toEqual({ ...donorB, generation: restored.generation, updated_at: restored.updated_at });
+      expect(await target.history(restored.id, 0, 256)).toEqual(await source.history(donorB.id, 0, 256));
+      expect(await readFile(targetBlob)).toEqual(uniqueSvg);
+      expect(await target.project(original.id)).toEqual(originalOracle.project);
+      expect(await target.history(original.id, 0, 256)).toEqual(originalOracle.journal);
+      expect(requests(target, "inspect_project_bundle")).toHaveLength(3);
+      expect(requests(target, "import_project_bundle").map(request => ({
+        path: request.path, fingerprint: request.fingerprint,
+      }))).toEqual([
+        { path: bundlePath, fingerprint: planA.fingerprint },
+        { path: bundlePath, fingerprint: planB.fingerprint },
+        { path: bundlePath, fingerprint: planC.fingerprint },
+      ]);
+      observations.originalInputs = [
+        { sha256: hash(manifestA), bytes: manifestA.length, fingerprint: planA.fingerprint },
+        { sha256: hash(manifestB), bytes: manifestB.length, fingerprint: planB.fingerprint },
+        { sha256: hash(manifestC), bytes: manifestC.length, fingerprint: planC.fingerprint },
+      ];
+      observations.reopen = await reopenExact(target, restored);
+    } finally {
+      await finishRealEvidence(testInfo, target ? [source, target] : [source], observations);
+    }
+  });
+
   test("real portable export and verified restore rotate generation, preserve CAS and serialize the next Brief edit", async ({ page, browser }, testInfo) => {
     const source = await ScopedChangeService.create({
       databasePath: testInfo.outputPath("source-service", "studio.sqlite3"), desktopInvokeFixture: true,
@@ -1247,8 +1488,11 @@ test.describe("real service imports and portable restore", () => {
       const plan = await target.inspectBundle(bundlePath);
       expect(plan).toMatchObject({ project_id: donor.id, source_generation: donor.generation,
         revision: String(donor.revision), event_count: donorHistory.length, blob_count: donor.assets.length, rotates_generation: true });
+      expect(plan.fingerprint).toMatch(/^[0-9a-f]{64}$/);
       const wronglyScoped = await target.grant("import_local", original, bundlePath);
-      await expect(target.invoke("import_project_bundle", { request: { path: bundlePath, effect_grant: wronglyScoped.token } })).rejects.toThrow("Effect grant");
+      await expect(target.invoke("import_project_bundle", { request: {
+        path: bundlePath, fingerprint: plan.fingerprint, effect_grant: wronglyScoped.token,
+      } })).rejects.toThrow("Effect grant");
       expect(await target.project(original.id)).toEqual(original);
 
       held = holdRealReply(target, "import_project_bundle");
@@ -1256,6 +1500,9 @@ test.describe("real service imports and portable restore", () => {
       const result = await held.observed;
       if ("error" in result) throw result.error;
       const restored = result.project;
+      expect(requests(target, "import_project_bundle").at(-1)).toMatchObject({
+        path: bundlePath, fingerprint: plan.fingerprint,
+      });
       observations.restored = restored;
       expect(restored.id).toBe(donor.id);
       expect(restored.generation).not.toBe(donor.generation);
@@ -1285,7 +1532,7 @@ test.describe("real service imports and portable restore", () => {
         change: { type: "rename_project", title: final.title },
       })]);
       expect(await target.project(original.id)).toEqual(original);
-      await expect(target.importBundle(bundlePath)).rejects.toThrow("project already exists");
+      await expect(target.importBundle(bundlePath, plan.fingerprint)).rejects.toThrow("project already exists");
       expect(await target.project(restored.id)).toEqual(final);
       await rm(sourceFile);
       await source.close();

@@ -459,22 +459,33 @@ export async function exportProjectBundle(
   });
 }
 
+function requireBundleFingerprint(value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.length !== 64 || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error("The bundle inspection is incomplete. Inspect it again before importing.");
+  }
+}
+
 export async function inspectProjectBundle(path: string): Promise<PortableBundlePlan> {
   if (!isTauri()) {
     throw new Error("Portable project bundles require the Motionwright desktop runtime.");
   }
-  return invoke<PortableBundlePlan>("inspect_project_bundle", {
+  const plan = await invoke<PortableBundlePlan>("inspect_project_bundle", {
     request: { path },
   });
+  requireBundleFingerprint(plan?.fingerprint);
+  return plan;
 }
 
-export async function importProjectBundle(path: string): Promise<Project> {
+export async function importProjectBundle(path: string, fingerprint: string): Promise<Project> {
   if (!isTauri()) {
     throw new Error("Portable project bundles require the Motionwright desktop runtime.");
   }
+  // Keep the original inspection input. Neither this call nor a failed import
+  // refreshes it, and the existing one-time grant is still required.
+  requireBundleFingerprint(fingerprint);
   const grant = await issueEffectGrant("import_local", null, path);
   return invoke<Project>("import_project_bundle", {
-    request: { path, effect_grant: grant.token },
+    request: { path, fingerprint, effect_grant: grant.token },
   });
 }
 

@@ -54,7 +54,7 @@ fn bounded_token(value: &str, max: usize, label: &str) -> Result<()> {
 // A request key has one immutable identity even when observations arrive out of
 // order. Check every prior binding so older inconsistent histories fail closed
 // instead of choosing authority from a receipt UUID or the latest observation.
-fn validate_original_production_binding(
+pub(super) fn validate_original_production_binding(
     conn: &rusqlite::Connection,
     input: &ProductionReceiptInput,
 ) -> Result<bool> {
@@ -167,7 +167,7 @@ fn query_receipts(
     Ok(result)
 }
 
-fn request_history(
+pub(super) fn request_history(
     conn: &rusqlite::Connection,
     project_id: Uuid,
     request_id: &str,
@@ -343,17 +343,18 @@ fn receipt_history_fingerprint(
     })
 }
 
-fn append_record(
+pub(super) fn append_record(
     conn: &rusqlite::Transaction<'_>,
     input: ProductionReceiptInput,
     current_project: &Project,
+    reserved_id: Option<Uuid>,
 ) -> Result<ProductionReceipt> {
     // Initial claims and post-effect observations share one policy. A rejected
     // terminal leaves the already durable claim unresolved; it grants no replay.
     super::ensure_secret_free_bytes(&serde_json::to_vec(&input)?, "production receipt")?;
     let before = receipt_history_fingerprint(conn, input.project_id, None)?;
     let receipt = ProductionReceipt {
-        id: Uuid::now_v7(),
+        id: reserved_id.unwrap_or_else(Uuid::now_v7),
         project_id: input.project_id,
         generation: input.generation,
         revision: input.revision,
@@ -527,7 +528,7 @@ impl Store {
             ))
         })?;
         data.insert("attempt".into(), serde_json::json!(attempt));
-        let receipt = append_record(&tx, input, &current)?;
+        let receipt = append_record(&tx, input, &current, None)?;
         tx.commit()?;
         Ok(receipt)
     }
@@ -587,7 +588,7 @@ impl Store {
                 return Err(StorageError::RequestReuse);
             }
         }
-        let receipt = append_record(&tx, input, &current)?;
+        let receipt = append_record(&tx, input, &current, None)?;
         tx.commit()?;
         Ok(receipt)
     }

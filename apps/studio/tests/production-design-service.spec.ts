@@ -551,3 +551,227 @@ for (const target of ["component", "plan"] as const) {
     finally { service.invoke = originalInvoke; await finish(page, info, service, [], final, observations, [], primary); }
   });
 }
+
+type AttachmentFields = { assetId: string; renderer: string; version: string };
+type AttachmentCapsule = Extract<Change, { type: "upsert_native_capsule" }>["capsule"];
+const attachmentAsset = (page: Page) => page.getByRole("combobox", { name: "Imported source asset", exact: true });
+const attachmentRenderer = (page: Page) => page.getByRole("textbox", { name: "Native renderer", exact: true });
+const attachmentVersion = (page: Page) => page.getByRole("textbox", { name: "Source renderer version", exact: true });
+async function openAttachments(page: Page, sceneId: string) {
+  await button(page, "Production").click(); await button(page, "Native sources").click();
+  await page.getByLabel("Production working scene").selectOption(sceneId); await expect(attachmentRenderer(page)).toBeVisible();
+}
+async function attachSources(page: Page, service: ScopedChangeService, project: Project, sceneId: string) {
+  await service.attachFixturePage(page, project.id); await page.goto("/"); await openAttachments(page, sceneId);
+}
+function attachmentFields(project: Project): AttachmentFields {
+  const asset = project.assets.find(value => value.content_sha256);
+  if (!asset) throw new Error("The real service fixture needs an existing digest-bound asset for opaque attachment.");
+  return { assetId: asset.id, renderer: "  Authored opaque renderer  ", version: "  Authored version 24.5  " };
+}
+async function fillAttachment(page: Page, fields: AttachmentFields) {
+  await attachmentAsset(page).selectOption(fields.assetId); await attachmentRenderer(page).fill(fields.renderer); await attachmentVersion(page).fill(fields.version);
+}
+async function expectAttachment(page: Page, fields: AttachmentFields) {
+  await expect(attachmentAsset(page)).toHaveValue(fields.assetId);
+  await expect(attachmentRenderer(page)).toHaveValue(fields.renderer); await expect(attachmentVersion(page)).toHaveValue(fields.version);
+}
+function attachmentFrom(request: ApplyArgs): AttachmentCapsule {
+  if (request.request.change.type !== "upsert_native_capsule") throw new Error("Expected the existing opaque-capsule mutation.");
+  return request.request.change.capsule;
+}
+function expectOnlyAttachments(before: Project, after: Project, added: AttachmentCapsule[]) {
+  expect(unrelated(after)).toEqual(unrelated(before)); expect(after.scenes).toEqual(before.scenes);
+  expect(after.production_design).toEqual({ ...before.production_design, capsules: [...(before.production_design?.capsules ?? []), ...added] });
+  for (const capsule of added) {
+    expect(capsule.fidelity).toMatchObject({ visual: "unavailable", temporal: "unavailable", structural: "native", editable: "unavailable", evidence_sha256: null });
+    expect(capsule.editable_parameters).toEqual([]); expect(capsule.fidelity.losses.length).toBeGreaterThan(0);
+  }
+}
+async function expectStoredCopies(page: Page, copies: { key: string; raw: string }[]) {
+  expect(await page.evaluate(copies => copies.map(copy => ({ key: copy.key, raw: localStorage.getItem(copy.key) })), copies)).toEqual(copies);
+}
+
+test("opaque source attachment raw input and a silent pointer failure preserve the existing asset before one explicit SQLite attachment", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = {};
+  let final: Project | undefined, primary: Failure | undefined;
+  try {
+    const initial = await unlocked(service), sceneId = initial.scenes[0].id, raw = attachmentFields(initial);
+    observations.initial = initial; await attachSources(page, service, initial, sceneId);
+    const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+    await fillAttachment(page, raw); await button(page, "Timeline").click(); await openAttachments(page, sceneId); await expectAttachment(page, raw);
+    await page.reload(); await openAttachments(page, sceneId); await expectAttachment(page, raw);
+    expect(await service.project(initial.id)).toEqual(initial); expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    await page.evaluate(() => {
+      const set = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (this === sessionStorage && key.startsWith("motionwright.production-writer.v1:")) return;
+        return set.call(this, key, value);
+      };
+      (window as unknown as { __RESTORE_ATTACHMENT_STORAGE__: () => void }).__RESTORE_ATTACHMENT_STORAGE__ = () => { Storage.prototype.setItem = set; };
+    });
+    // A fresh writer is required after the recovered copy; its pointer cannot
+    // be silently treated as confirmed just because the earlier input survived.
+    const later = { ...raw, renderer: "  Later renderer through a failed pointer  " };
+    await attachmentRenderer(page).fill(later.renderer);
+    await expect(page.getByRole("alert", { name: "Source attachment backup warning", exact: true })).toBeVisible();
+    await expect(button(page, "Attach source to scene")).toBeDisabled();
+    await button(page, "Timeline").click(); await openAttachments(page, sceneId); await expectAttachment(page, later);
+    expect(await service.project(initial.id)).toEqual(initial); expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    await page.evaluate(() => (window as unknown as { __RESTORE_ATTACHMENT_STORAGE__: () => void }).__RESTORE_ATTACHMENT_STORAGE__());
+    await button(page, "Retry Source attachment backup").click();
+    await attachmentAsset(page).selectOption(""); await expect(button(page, "Attach source to scene")).toBeDisabled();
+    await expectAttachment(page, { ...later, assetId: "" }); expect(applies(service)).toHaveLength(writes);
+    await attachmentAsset(page).selectOption(later.assetId); await button(page, "Attach source to scene").click(); await revision(page, initial.revision + 1);
+    await expect(page.getByRole("region", { name: "Unconfirmed Source attachment", exact: true })).toHaveCount(0);
+    await expect(button(page, "Attach source to scene")).toBeDisabled(); await expectAttachment(page, later);
+    const sent = applies(service).slice(writes); expect(sent).toHaveLength(1); const capsule = attachmentFrom(sent[0]);
+    const asset = initial.assets.find(value => value.id === later.assetId)!;
+    expect(capsule).toMatchObject({ scene_id: sceneId, source_asset_id: asset.id, source_sha256: asset.content_sha256, label: asset.name,
+      fidelity: { renderer: later.renderer, renderer_version: later.version } });
+    final = await service.project(initial.id); expectOnlyAttachments(initial, final, [capsule]);
+    expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1); expect(requests(service, "prepare_file_import")).toHaveLength(0);
+    const oracle = await service.observeStoredProject(final);
+    expect(oracle.journal.filter(event => event.revision > initial.revision).map(event => event.change)).toEqual([sent[0].request.change]);
+    await service.close(); await service.start(); expect(await service.project(initial.id)).toEqual(final); expect(await service.history(initial.id, 0)).toEqual(oracle.journal);
+    await page.reload(); await openAttachments(page, sceneId); await expectAttachment(page, later); await expect(button(page, "Attach source to scene")).toBeDisabled();
+    Object.assign(observations, { raw, later, sent, oracle, additionalMutations: 1, additionalGrants: 1 });
+    await page.screenshot({ path: info.outputPath("opaque-source-attachment-persisted.png"), fullPage: true });
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, [], final, observations, [], primary); }
+});
+
+test("opaque source attachment late real ACK retains two scene drafts and permits only a separate explicit later attachment", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = {};
+  let final: Project | undefined, primary: Failure | undefined, hold: ReturnType<typeof holdReply> | undefined;
+  try {
+    const initial = await unlocked(service); expect(initial.scenes.length).toBeGreaterThan(1);
+    const sceneA = initial.scenes[0].id, sceneB = initial.scenes[1].id, raw = attachmentFields(initial);
+    const later = { ...raw, renderer: "  Later renderer for scene A  ", version: "  Later A version  " };
+    const other = { ...raw, renderer: "  Independent renderer B  ", version: "  Independent B version  " };
+    observations.initial = initial; await attachSources(page, service, initial, sceneA);
+    const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+    await fillAttachment(page, raw); hold = holdReply(service, "upsert_native_capsule"); await button(page, "Attach source to scene").click();
+    const savedOriginal = await hold.observed, first = attachmentFrom(applies(service)[writes]);
+    expect(savedOriginal.revision).toBe(initial.revision + 1); expectOnlyAttachments(initial, savedOriginal, [first]);
+    const armed = await activePlanCopy(page, productionScope(initial, { kind: "source", sceneId: sceneA }));
+    expect(armed.draft.pending?.id).toBe(first.id); expect(armed.draft.pending?.value).toEqual(first);
+    await fillAttachment(page, later); await page.getByLabel("Production working scene").selectOption(sceneB);
+    await expectAttachment(page, { assetId: "", renderer: "hyperframes", version: "unverified" }); await fillAttachment(page, other);
+    hold.release(); await hold.dispose(); await revision(page, initial.revision + 1); await expectAttachment(page, other);
+    await button(page, "Timeline").click(); await openAttachments(page, sceneA); await expectAttachment(page, later);
+    await expect(page.getByRole("region", { name: "Unconfirmed Source attachment", exact: true })).toHaveCount(0);
+    expect(applies(service)).toHaveLength(writes + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+    await button(page, "Attach source to scene").click(); await revision(page, initial.revision + 2);
+    const sent = applies(service).slice(writes); expect(sent).toHaveLength(2); const second = attachmentFrom(sent[1]);
+    expect(second.id).not.toBe(first.id); expect(first.scene_id).toBe(sceneA); expect(second.scene_id).toBe(sceneA);
+    expect(first.fidelity).toMatchObject({ renderer: raw.renderer, renderer_version: raw.version });
+    expect(second.fidelity).toMatchObject({ renderer: later.renderer, renderer_version: later.version });
+    expect(sent[1].request.revision).toBe(initial.revision + 1); expect(sent[1].request.request_id).not.toBe(sent[0].request.request_id);
+    expect(sent[1].request.effect_grant).not.toBe(sent[0].request.effect_grant); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 2);
+    final = await service.project(initial.id); expectOnlyAttachments(initial, final, [first, second]);
+    await page.getByLabel("Production working scene").selectOption(sceneB); await expectAttachment(page, other);
+    const oracle = await service.observeStoredProject(final);
+    expect(oracle.journal.filter(event => event.revision > initial.revision).map(event => event.change)).toEqual(sent.map(value => value.request.change));
+    await service.close(); await service.start(); expect(await service.project(initial.id)).toEqual(final); expect(await service.history(initial.id, 0)).toEqual(oracle.journal);
+    await page.reload(); await openAttachments(page, sceneB); await expectAttachment(page, other); expect(applies(service)).toHaveLength(writes + 2);
+    Object.assign(observations, { raw, later, other, armed, savedOriginal, sent, oracle, additionalMutations: 2, additionalGrants: 2 });
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, [], final, observations, hold ? [() => hold!.dispose()] : [], primary); }
+});
+
+test("opaque source attachment lost committed service reply preserves the exact submitted capsule and later cleared input without replay", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = {};
+  const original = service.invoke.bind(service); let final: Project | undefined, primary: Failure | undefined;
+  try {
+    const initial = await unlocked(service), sceneId = initial.scenes[0].id, raw = attachmentFields(initial), scope = productionScope(initial, { kind: "source", sceneId });
+    observations.initial = initial; await attachSources(page, service, initial, sceneId);
+    const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+    let armed = true;
+    service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const request = args.request as ApplyArgs["request"] | undefined;
+      if (!armed || command !== "apply_change" || request?.change.type !== "upsert_native_capsule") return original<T>(command, args);
+      armed = false; await original<Project>(command, args);
+      throw new Error("The real opaque attachment committed; original reply delivery was lost.");
+    };
+    await fillAttachment(page, raw); await button(page, "Attach source to scene").click();
+    const unknown = page.getByRole("region", { name: "Unconfirmed Source attachment", exact: true });
+    await expect(unknown).toBeVisible(); await expect(page.getByRole("alert").filter({ hasText: "original reply delivery was lost" })).toBeVisible(); service.invoke = original;
+    const submitted = attachmentFrom(applies(service)[writes]), later = { assetId: "", renderer: "", version: "  Later unfinished attachment version  " };
+    await fillAttachment(page, later);
+    const first = await activePlanCopy(page, scope); expect(first.draft.pending?.id).toBe(submitted.id); expect(first.draft.pending?.value).toEqual(submitted);
+    final = await service.project(initial.id); expect(final.revision).toBe(initial.revision + 1); expectOnlyAttachments(initial, final, [submitted]);
+    const oracle = await service.observeStoredProject(final), originals = [{ key: first.key, raw: first.raw }];
+    await page.reload(); await openAttachments(page, sceneId); await expectAttachment(page, later); await expect(unknown).toBeVisible();
+    await expect(button(page, "Attach source to scene")).toBeDisabled(); await expectStoredCopies(page, originals);
+    expect(applies(service)).toHaveLength(writes + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+    await button(page, "Read saved Source attachment and history").click();
+    const review = page.getByLabel("Source attachment outcome review", { exact: true });
+    await expect(review).toContainText("1 contain matching values"); await review.locator("summary").click();
+    const snapshot = JSON.parse((await review.locator("pre").textContent())!); expect(snapshot.submitted).toEqual(submitted); expect(snapshot.saved).toEqual([submitted]);
+    await button(page, "Keep earlier Source attachment attempt and continue editing").click(); await expect(unknown).toHaveCount(0);
+    await expectAttachment(page, later); await expect(button(page, "Attach source to scene")).toBeDisabled(); await expectStoredCopies(page, originals);
+    expect(applies(service)).toHaveLength(writes + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+    expect(await service.project(initial.id)).toEqual(final); expect(await service.history(initial.id, 0)).toEqual(oracle.journal);
+    await service.close(); await service.start(); expect(await service.project(initial.id)).toEqual(final); expect(await service.history(initial.id, 0)).toEqual(oracle.journal);
+    await page.reload(); await openAttachments(page, sceneId); await expectAttachment(page, later); await expectStoredCopies(page, originals);
+    Object.assign(observations, { submitted, later, first, oracle, additionalMutations: 1, additionalGrants: 1, replayedOriginal: false });
+  } catch (reason) { primary = { reason }; }
+  finally { service.invoke = original; await finish(page, info, service, [], final, observations, [], primary); }
+});
+
+test("opaque source attachment pre-dispatch delivery interruption stays UNKNOWN on N until a real peer advances SQLite, with no original replay", async ({ page }, info) => {
+  const service = await setup(info), peers: ScopedChangeService[] = [], observations: Record<string, unknown> = {};
+  const original = service.invoke.bind(service); let final: Project | undefined, primary: Failure | undefined;
+  try {
+    const initial = await unlocked(service), sceneId = initial.scenes[0].id, raw = attachmentFields(initial), scope = productionScope(initial, { kind: "source", sceneId });
+    observations.initial = initial; await attachSources(page, service, initial, sceneId);
+    const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+    const attempts: ApplyArgs["request"][] = [];
+    // This injected transport fault occurs before service dispatch. It is not a
+    // fabricated StudioService rejection or proof that an arbitrary UNKNOWN did not commit.
+    service.invoke = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const request = args.request as ApplyArgs["request"] | undefined;
+      if (attempts.length || command !== "apply_change" || request?.change.type !== "upsert_native_capsule") return original<T>(command, args);
+      attempts.push(structuredClone(request));
+      throw new Error("Injected pre-dispatch transport interruption; original apply_change was not sent by this test.");
+    };
+    await fillAttachment(page, raw); await button(page, "Attach source to scene").click();
+    const unknown = page.getByRole("region", { name: "Unconfirmed Source attachment", exact: true });
+    await expect(unknown).toBeVisible(); await expect(page.getByRole("alert").filter({ hasText: "Injected pre-dispatch transport interruption" })).toBeVisible(); service.invoke = original;
+    expect(attempts).toHaveLength(1); const attempted = attempts[0]; expect(attempted.change.type).toBe("upsert_native_capsule");
+    const later = { ...raw, renderer: "  Later attachment kept through UNKNOWN  " }; await attachmentRenderer(page).fill(later.renderer);
+    const first = await activePlanCopy(page, scope), originals = [{ key: first.key, raw: first.raw }];
+    expect(first.draft.pending?.outcome).toBe("UNKNOWN");
+    const submitted = attachmentFrom({ request: attempted });
+    expect(first.draft.pending?.id).toBe(submitted.id); expect(first.draft.pending?.value).toEqual(submitted);
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+    expect(await service.project(initial.id)).toEqual(initial); expect(await service.history(initial.id, initial.revision)).toEqual([]);
+    await button(page, "Read saved Source attachment and history").click();
+    const review = page.getByLabel("Source attachment outcome review", { exact: true });
+    await expect(review).toContainText("Read saved r" + initial.revision + " and 0 consecutive history records");
+    await expect(review).toContainText("could still commit"); await expect(button(page, "Keep earlier Source attachment attempt and continue editing")).toBeDisabled();
+    await page.reload(); await openAttachments(page, sceneId); await expectAttachment(page, later); await expect(unknown).toBeVisible();
+    await button(page, "Read saved Source attachment and history").click();
+    await expect(button(page, "Keep earlier Source attachment attempt and continue editing")).toBeDisabled(); await expectStoredCopies(page, originals);
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+    const peer = await service.peer(); peers.push(peer);
+    final = await peer.apply(await peer.project(initial.id), { type: "rename_project", title: initial.title + " / independent attachment review" });
+    expect(final.revision).toBe(initial.revision + 1); expect(final.branches.find(branch => branch.id === final!.active_branch)?.head_revision).toBe(final.revision);
+    expect(final.production_design?.capsules).toEqual(initial.production_design?.capsules);
+    expect((final.production_design?.capsules ?? []).some(capsule => capsule.id === submitted.id)).toBe(false);
+    await page.reload(); await openAttachments(page, sceneId); await expectAttachment(page, later);
+    await button(page, "Read saved Source attachment and history").click();
+    await expect(review).toContainText("Read saved r" + final.revision + " and 1 consecutive history records");
+    await expect(button(page, "Keep earlier Source attachment attempt and continue editing")).toBeEnabled();
+    await button(page, "Keep earlier Source attachment attempt and continue editing").click(); await expect(unknown).toHaveCount(0);
+    await expectAttachment(page, later); await expect(button(page, "Attach source to scene")).toBeEnabled(); await expectStoredCopies(page, originals);
+    expect(applies(service)).toHaveLength(writes); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+    const oracle = await service.observeStoredProject(final);
+    expect(oracle.journal.filter(event => event.revision > initial.revision).map(event => event.change.type)).toEqual(["rename_project"]);
+    expect(await service.project(initial.id)).toEqual(final); await peer.close(); await service.close(); await service.start();
+    expect(await service.project(initial.id)).toEqual(final); expect(await service.history(initial.id, 0)).toEqual(oracle.journal);
+    Object.assign(observations, { attemptedBeforeDispatch: attempted, first, later, oracle, additionalEditorMutations: 0, additionalEditorGrants: 1, replayedOriginal: false });
+  } catch (reason) { primary = { reason }; }
+  finally { service.invoke = original; await finish(page, info, service, peers, final, observations, [], primary); }
+});

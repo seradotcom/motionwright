@@ -15,7 +15,7 @@ uuid.workspace = true
 chrono.workspace = true
 sha2.workspace = true
 hex.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["functions"] }
 
 [dev-dependencies]
 tempfile.workspace = true

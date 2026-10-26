@@ -19,7 +19,7 @@ import {
   resolveProductionDraft, retainProductionFailure, retainProductionOrigin, retainReviewedProductionIntent, writeProductionCopy,
 } from "./productionDesignDraft";
 import type { ProductionCustody, ProductionDraft, ProductionInput, ProductionOperation, ProductionOutcomeReview, ProductionRecoveryEntry, ProductionTarget } from "./productionDesignDraft";
-import type { HeroConfig, ProductionPlan, NarrativeEvidenceKind, NativeCapsule } from "./creativeProduction";
+import type { HeroConfig, ProductionPlan, NarrativeEvidenceKind } from "./creativeProduction";
 import PaidGenerationWorkspace from "./PaidGenerationWorkspace";
 import CreativePatchWorkbench from "./CreativePatchWorkbench";
 import ProceduralFieldWorkbench from "./ProceduralFieldWorkbench";
@@ -223,7 +223,8 @@ function useProductionEditor(project: Project, target: ProductionTarget, commit:
       if (!backupProduction(session)) return;
       const next = resolveProductionDraft(session.draft, current.current, choice);
       forkProductionWriter(session); session.error = null;
-      session.notice = "The earlier input remains in a separate copy. " + (choice === "saved" ? "Using saved values." : "Keep editing and save this draft explicitly.");
+      session.notice = "The earlier input remains in a separate copy. " + (choice === "saved"
+        ? (target.kind === "source" ? "Using new attachment defaults." : "Using saved values.") : "Keep editing and save this draft explicitly.");
       replaceProduction(session, next); setReview(null);
     } catch (reason) { session.error = message(reason); notifyProduction(session); }
   }
@@ -352,7 +353,8 @@ type ProductionEditor = ReturnType<typeof useProductionEditor>;
 function ProductionDraftFeedback({ editor, project }: { editor: ProductionEditor; project: Project }) {
   const { session, draft, busy, conflict, review } = editor, label = productionLabel(draft.target);
   const copies = session.copies.filter(copy => copy.writerId !== session.custody.writerId);
-  return <section aria-label={label + " draft recovery"}>
+  const sourceSceneId = draft.target.kind === "source" ? draft.target.sceneId : null;
+  return <section className="production-diff-details" style={{ minWidth: 0 }} aria-label={label + " draft recovery"}>
     {session.notice && <p className="production-notice" role="status">{session.notice}</p>}
     {session.error && <p className="production-error" role="alert">{session.error}</p>}
     {session.backupError && <div className="production-notice" role="alert" aria-label={label + " backup warning"}>
@@ -366,26 +368,35 @@ function ProductionDraftFeedback({ editor, project }: { editor: ProductionEditor
       <p>The original response is unconfirmed. Submitted parameters and later input are retained. Observing matching values cannot acknowledge or replay that request.</p>
       <button className="secondary-button" disabled={busy || editor.reviewing} onClick={() => window.location.reload()}>Reload saved {label}</button>
       <button className="secondary-button" disabled={busy || editor.reviewing} onClick={() => void editor.readOutcome()}>Read saved {label} and history</button>
-      {review && <div aria-label={label + " outcome review"}>
+      {review && <div style={{ minWidth: 0 }} aria-label={label + " outcome review"}>
         <p>Read saved r{review.project.revision} and {review.events.length} consecutive history records. {review.matchingValueRevisions.length} contain matching values; this does not identify the original request.</p>
-        <details><summary>Submitted and saved parameters</summary><pre>{JSON.stringify({ submitted: draft.pending.value, saved: productionValue(review.project, draft.target) }, null, 2)}</pre></details>
-        <button className="secondary-button" disabled={busy || editor.reviewing || !productionOutcomeMatches(draft, project, review)} onClick={editor.continueEditing}>Keep earlier {label} attempt and continue editing</button>
+        <details><summary>Submitted and saved parameters</summary><pre tabIndex={0} role="region" aria-label={label + " submitted and saved parameters"}>{JSON.stringify({ submitted: draft.pending.value,
+          saved: draft.target.kind === "source" ? (review.project.production_design?.capsules.filter(capsule => capsule.id === draft.pending?.id) ?? [])
+            : productionValue(review.project, draft.target) }, null, 2)}</pre></details>
+        {productionUnconfirmed(draft) && review.project.revision <= review.pending.revision && <p role="status">
+          The original request could still commit on r{review.pending.revision}. Reading the same revision does not resolve UNKNOWN. Keep its original copy; continue only after a newer saved revision has been read.
+        </p>}
+        <button className="secondary-button" disabled={busy || editor.reviewing || !productionOutcomeMatches(draft, project, review)
+          || (productionUnconfirmed(draft) && review.project.revision <= review.pending.revision)} onClick={editor.continueEditing}>Keep earlier {label} attempt and continue editing</button>
       </div>}
     </section>}
     {conflict && !productionUnconfirmed(draft) && <section className="production-notice" role="region" aria-label={label + " conflict"}>
       <strong>Review the current saved revision before applying this draft.</strong><p>Your input started at r{draft.baseRevision}; the current project is r{project.revision}.</p>
-      <details><summary>Compare saved and authored parameters</summary><pre>{JSON.stringify({ base: draft.base, saved: productionValue(project, draft.target), input: draft.input }, null, 2)}</pre></details>
+      <details style={{ minWidth: 0 }}><summary>Compare saved and authored parameters</summary><pre tabIndex={0} role="region" aria-label={label + " saved and authored parameters"}>{JSON.stringify(draft.target.kind === "source"
+        ? { baseRevision: draft.baseRevision, savedRevision: project.revision, input: draft.input,
+          savedCapsules: project.production_design?.capsules.filter(capsule => capsule.scene_id === sourceSceneId) ?? [] }
+        : { base: draft.base, saved: productionValue(project, draft.target), input: draft.input }, null, 2)}</pre></details>
       <button className="secondary-button" disabled={busy} onClick={() => editor.choose("draft")}>Keep my {label} input</button>
-      <button className="secondary-button" disabled={busy} onClick={() => editor.choose("saved")}>Use saved {label} values</button>
+      <button className="secondary-button" disabled={busy} onClick={() => editor.choose("saved")}>{draft.target.kind === "source" ? "Reset Source attachment input" : "Use saved " + label + " values"}</button>
     </section>}
-    {productionHasInput(draft) && !conflict && !productionUnconfirmed(draft) && <button className="text-button" disabled={busy} onClick={() => editor.choose("saved")}>Use saved {label} values</button>}
+    {productionHasInput(draft) && !conflict && !productionUnconfirmed(draft) && <button className="text-button" disabled={busy} onClick={() => editor.choose("saved")}>{draft.target.kind === "source" ? "Reset Source attachment input" : "Use saved " + label + " values"}</button>}
     <button className="text-button" type="button" onClick={() => editor.download()}>Download {label} draft</button>
     {(copies.length > 0 || session.limited) && <details role="region" aria-label={label + " recovery copies"}>
       <summary>Local {label} recovery copies</summary><p>Copies are scoped to this project generation, branch, and editor target. Restoring never writes a Project.</p>
       {session.limited && <p>Only the first 64 copies were inspected. No copy was removed automatically.</p>}
       {copies.map((copy, index) => <div role="group" aria-label={label + " recovery copy " + (index + 1)} key={copy.key}>
         <p>{copy.value ? new Date(copy.value.updatedAt).toLocaleString() + (productionUnconfirmed(copy.value.draft) ? " · Unconfirmed attempt" : " · Local input") : "Unreadable copy; original bytes were preserved."}</p>
-        {copy.value && <details><summary>Inspect copied input</summary><pre>{JSON.stringify(copy.value.draft.input, null, 2)}</pre></details>}
+        {copy.value && <details><summary>Inspect copied input</summary><pre tabIndex={0} role="region" aria-label={label + " copied input " + (index + 1)}>{JSON.stringify(copy.value.draft.input, null, 2)}</pre></details>}
         {copy.value && <button className="secondary-button" disabled={busy || session.recoveryProblem !== null || productionUnconfirmed(draft)} onClick={() => editor.restore(copy)}>Restore {label} copy {index + 1}</button>}
         <button className="text-button" type="button" onClick={() => editor.download(copy.raw)}>Download {label} copy {index + 1}</button>
         <button className="text-button" disabled={busy || session.firstRead?.key === copy.key || draft.origins?.some(origin => origin.key === copy.key)} onClick={() => editor.discard(copy)}>Discard {label} copy {index + 1}</button>
@@ -532,23 +543,31 @@ function PlanWorkbench({project,commit,commitCamera,busy,onSeek}:{project:Projec
   </div>;
 }
 
-function SourcesWorkbench({project,scene,commit,busy,sourceServices}:{project:Project;scene:Scene|null;commit:Commit;busy:boolean;sourceServices:NativeSourceServices}) {
-  const [assetId,setAssetId]=useState(""); const [renderer,setRenderer]=useState("hyperframes"); const [version,setVersion]=useState("unverified");
-  const asset = project.assets.find(a=>a.id===assetId);
-  const capsules = project.production_design?.capsules ?? [];
-  const attach = () => {
-    if (!scene || !asset?.content_sha256) return;
-    const capsule:NativeCapsule={id:crypto.randomUUID(),scene_id:scene.id,source_asset_id:asset.id,source_sha256:asset.content_sha256,label:asset.name,
-      fidelity:{renderer,renderer_version:version,visual:"unavailable",temporal:"unavailable",structural:"native",editable:"unavailable",losses:["Source preserved as an opaque attachment. Parameter editing and renderer execution are not admitted."],evidence_sha256:null},editable_parameters:[],native_editor_hint:"Open with the original application's trusted environment"};
-    return commit({type:"upsert_native_capsule",capsule});
-  };
-  return <div className="production-sources"><div className="production-section-title"><FileBox size={18}/><div><h2>Native source capsules</h2><p>Attach first. Preserve source bytes before considering translation or baking.</p></div></div>
-    <NativeSourceWorkbench project={project} scene={scene} busy={busy} {...sourceServices}/>
+function SourceAttachmentEditor({project,scene,commitCamera,busy}:{project:Project;scene:Scene|null;commitCamera:ProductionCommit;busy:boolean}) {
+  const editor = useProductionEditor(project, { kind: "source", sceneId: scene?.id ?? null }, commitCamera, busy);
+  const draft = editor.draft.input as Extract<ProductionInput, { kind: "source" }>;
+  const patch = (value: Partial<Omit<typeof draft, "kind">>) => editor.edit({ ...draft, ...value });
+  const sourceAssets = project.assets.filter(asset => asset.content_sha256);
+  const matchingAssets = sourceAssets.filter(asset => asset.id === draft.assetId);
+  const asset = matchingAssets.length === 1 ? matchingAssets[0] : null;
+  return <>
     <h3>Attach an existing source asset</h3>
     <p className="production-help">Select an already imported source asset. This operation preserves its digest and attachment identity; it does not install a runtime, execute source code or claim editable interoperability.</p>
-    <div className="production-plan-grid"><label className="production-field"><span>Imported source asset</span><select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Choose a digest-bound asset</option>{project.assets.filter(a=>a.content_sha256).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-      <label className="production-field"><span>Native renderer</span><input value={renderer} onChange={e=>setRenderer(e.target.value)}/></label><label className="production-field"><span>Source renderer version</span><input value={version} onChange={e=>setVersion(e.target.value)}/></label></div>
-    <button className="primary-button" disabled={busy || !scene || !asset?.content_sha256 || !renderer.trim() || !version.trim()} onClick={attach}><Plus size={14}/> Attach source to scene</button>
+    <p className="production-help">This form prepares a new source attachment. Saved capsules remain listed below; keeping or resetting this input does not update them.</p>
+    <div className="production-plan-grid"><label className="production-field"><span>Imported source asset</span><select value={draft.assetId} onChange={e=>patch({assetId:e.target.value})}><option value="">Choose a digest-bound asset</option>
+      {draft.assetId && !asset && <option value={draft.assetId}>Earlier source asset unavailable</option>}
+      {sourceAssets.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+      <label className="production-field"><span>Native renderer</span><input value={draft.renderer} onChange={e=>patch({renderer:e.target.value})}/></label><label className="production-field"><span>Source renderer version</span><input value={draft.version} onChange={e=>patch({version:e.target.value})}/></label></div>
+    <ProductionDraftFeedback editor={editor} project={project}/>
+    <button className="primary-button" disabled={editor.blocked || !productionHasInput(editor.draft) || !scene || !asset?.content_sha256 || !draft.renderer.trim() || !draft.version.trim()} onClick={() => void editor.send()}><Plus size={14}/> Attach source to scene</button>
+  </>;
+}
+
+function SourcesWorkbench({project,scene,commit,commitCamera,busy,sourceServices}:{project:Project;scene:Scene|null;commit:Commit;commitCamera:ProductionCommit;busy:boolean;sourceServices:NativeSourceServices}) {
+  const capsules = project.production_design?.capsules ?? [];
+  return <div className="production-sources"><div className="production-section-title"><FileBox size={18}/><div><h2>Native source capsules</h2><p>Attach first. Preserve source bytes before considering translation or baking.</p></div></div>
+    <NativeSourceWorkbench project={project} scene={scene} busy={busy} {...sourceServices}/>
+    <SourceAttachmentEditor key={productionScope(project,{kind:"source",sceneId:scene?.id ?? null})} project={project} scene={scene} commitCamera={commitCamera} busy={busy}/>
     <div className="production-capsule-list">{capsules.map(c=><article key={c.id}><header><strong>{c.label}</strong><span>{c.fidelity.renderer} / {c.fidelity.renderer_version}</span></header>
       <p className="mono">sha256:{c.source_sha256}</p><dl>{(["visual","temporal","structural","editable"] as const).map(d=><div key={d}><dt>{d}</dt><dd>{c.fidelity[d]}</dd></div>)}</dl>
       {c.fidelity.losses.map(loss=><p key={loss}>{loss}</p>)}<small>Declared support metadata, not an independently verified renderer receipt.</small></article>)}</div>

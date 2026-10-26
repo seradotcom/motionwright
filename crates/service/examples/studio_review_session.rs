@@ -39,7 +39,7 @@ use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, HeroConfig, NodeStyle,
     Project, RevisionStamp, hero_node_id,
 };
-use motionwright_service::StudioService;
+use motionwright_service::{BundleFingerprint, StudioService};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
@@ -142,6 +142,7 @@ struct BundlePathRequest {
 #[serde(deny_unknown_fields)]
 struct ImportBundleRequest {
     path: String,
+    fingerprint: BundleFingerprint,
     effect_grant: Uuid,
 }
 
@@ -601,10 +602,11 @@ impl Session {
             "inspect_project_bundle" => {
                 let request: BundlePathRequest = request(args)?;
                 let source = absolute_bundle_path(&request.path)?;
-                let plan = self
+                let inspected = self
                     .service
-                    .inspect_project_bundle(&source)
+                    .inspect_project_bundle_with_fingerprint(&source)
                     .map_err(|error| error.to_string())?;
+                let plan = inspected.plan;
                 Ok(json!({
                     "project_id": plan.project.project_id,
                     "title": plan.project.title,
@@ -614,6 +616,7 @@ impl Session {
                     "blob_count": plan.blob_count,
                     "total_blob_bytes": plan.total_blob_bytes.to_string(),
                     "rotates_generation": plan.project.rotates_generation,
+                    "fingerprint": inspected.fingerprint,
                 }))
             }
             "import_project_bundle" => {
@@ -627,7 +630,7 @@ impl Session {
                 let source = absolute_bundle_path(&request.path)?;
                 encoded(
                     self.service
-                        .import_project_bundle(&source)
+                        .import_project_bundle_inspected(&source, &request.fingerprint)
                         .map_err(|error| error.to_string())?,
                 )
             }

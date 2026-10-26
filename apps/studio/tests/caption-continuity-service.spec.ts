@@ -181,7 +181,8 @@ test("fourteen authored revisions retain multi-frame caption spans, output varia
     expect(await source.project(project.id)).toEqual(project);
     const bundlePath = info.outputPath("portable-caption-project"); await source.exportBundle(project, bundlePath);
     const target = await ScopedChangeService.create({ databasePath: info.outputPath("reimported", "studio.sqlite3"), seedFixture: false, desktopInvokeFixture: true }); services.push(target);
-    const imported = await target.importBundle(bundlePath);
+    const inspectedBundle = await target.inspectBundle(bundlePath);
+    const imported = await target.importBundle(bundlePath, inspectedBundle.fingerprint);
     expect(imported.id).toBe(project.id); expect(imported.generation).not.toBe(project.generation); expect(imported.revision).toBe(14);
     expect(imported.audio).toEqual(project.audio); expect(imported.deliverables).toEqual(project.deliverables); expect(imported.scenes).toEqual(project.scenes);
     const casPath = join(target.directory, "blobs", "sha256", track.source_sha256.slice(0, 2), track.source_sha256);

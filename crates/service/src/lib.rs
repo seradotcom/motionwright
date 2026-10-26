@@ -61,6 +61,8 @@ pub use motionwright_storage::{
     ProductionReceiptWatermark, ProjectBackup, ProjectBundleManifest, ProjectCreationIntent,
     ProjectCreationOutcome, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
     RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
+    RootBudgetUnits, RootDispatchBudgetInput, RootDispatchBudgetOutcome, RootOperationBudget,
+    RootOperationBudgetInput,
 };
 use parking_lot::Mutex;
 use std::{
@@ -1006,6 +1008,30 @@ impl StudioService {
         input: ProductionReceiptInput,
     ) -> StorageResult<ProductionReceipt> {
         self.store.lock().claim_recovery_stage(input)
+    }
+
+    /// New durable root; this does not convey a Broker permission or native grant.
+    pub fn create_root_operation_budget(
+        &self,
+        input: RootOperationBudgetInput,
+    ) -> StorageResult<RootOperationBudget> {
+        self.store.lock().create_root_operation_budget(input)
+    }
+
+    pub fn root_operation_budget(
+        &self,
+        project_id: Uuid,
+        root_id: Uuid,
+    ) -> StorageResult<RootOperationBudget> {
+        self.store.lock().root_operation_budget(project_id, root_id)
+    }
+
+    /// Transactionally retain debit and original dispatching intent before effect.
+    pub fn admit_root_operation_dispatch(
+        &self,
+        input: RootDispatchBudgetInput,
+    ) -> StorageResult<RootDispatchBudgetOutcome> {
+        self.store.lock().admit_root_operation_dispatch(input)
     }
 
     pub fn append_production_receipt(

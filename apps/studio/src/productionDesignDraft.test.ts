@@ -1,31 +1,51 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyChange } from "./api";
 import { fixtureProject } from "./fixture";
 import { planContentDigest } from "./creativeProduction";
+import type { NativeCapsule } from "./creativeProduction";
 import type { Change, Project, ProjectEvent } from "./types";
 import {
   acknowledgeProductionDraft, assertProductionOrigins, cleanProductionPlan, createProductionDraft, decodeProductionCopy, editProductionDraft,
   encodeProductionCopy, encodeProductionFile, inspectProductionOutcome, prepareProductionSubmission, productionConflict,
-  productionCopyKey, productionOutcomeMatches, productionPointerKey, productionPreparationMatches, productionScope,
+  productionCopyKey, productionHasInput, productionHasWork, productionLabel, productionOutcomeMatches, productionPointerKey, productionPreparationMatches, productionScope, productionValue,
   productionUnconfirmed, readProductionCopies, readProductionRecoveryPointer, recoverProductionAfterReadFailure, reconcileProductionDraft, releaseProductionOutcome, resolveProductionDraft,
-  retainProductionFailure, retainProductionOrigin, retainReviewedProductionIntent, writeProductionCopy, PRODUCTION_RECOVERY_PREFIX,
+  retainProductionFailure, retainProductionOrigin, retainReviewedProductionIntent, writeProductionCopy, PRODUCTION_RECOVERY_PREFIX, MAX_PRODUCTION_COPY_BYTES, MAX_PRODUCTION_RECOVERY_BYTES,
 } from "./productionDesignDraft";
 import type { ProductionCustody, ProductionDraft, ProductionInput, ProductionStorage, ProductionTarget } from "./productionDesignDraft";
 
 const id = "00000000-0000-4000-8000-000000000001", writer = "00000000-0000-4000-8000-000000000002", fork = "00000000-0000-4000-8000-000000000003";
+type SourceInput = { kind: "source"; assetId: string; renderer: string; version: string };
+// The proposed target is passed through the existing API so this test patch
+// can compile against the old helper and fail on behavior before product edits.
+const sourceTarget = (project: Project, sceneId: string | null = project.scenes[0].id): ProductionTarget =>
+  ({ kind: "source", sceneId } as unknown as ProductionTarget);
+const sourceInput = (project: Project): SourceInput => ({ kind: "source", assetId: project.assets[2].id,
+  renderer: "  hyperframes  ", version: "  unverified  " });
 function source(): Project {
   const project = structuredClone(fixtureProject); project.locks = []; project.branch_workspaces = [];
   project.production_design = { plan: null, heroes: [], capsules: [] }; return project;
 }
 function target(project: Project, kind: "hero" | "plan"): ProductionTarget { return kind === "plan" ? { kind } : { kind, sceneId: project.scenes[0].id }; }
 function edit(draft: ProductionDraft, text: string): ProductionDraft {
-  const input = draft.input;
+  const input = draft.input as ProductionInput | SourceInput;
   return editProductionDraft(draft, input.kind === "hero" ? { ...input, config: { ...input.config, headline: text } }
-    : { ...input, plan: { ...input.plan, concept: text } });
+    : input.kind === "plan" ? { ...input, plan: { ...input.plan, concept: text } }
+      : { ...input, renderer: text } as unknown as ProductionInput);
 }
 async function armed(kind: "hero" | "plan" = "plan") {
   const project = source(), draft = edit(createProductionDraft(project, target(project, kind)), "Author direction");
   return { project, source: draft, prepared: await prepareProductionSubmission(draft, project, id) };
+}
+function authoredSource(project = source(), input = sourceInput(project), sceneId: string | null = project.scenes[0].id) {
+  return editProductionDraft(createProductionDraft(project, sourceTarget(project, sceneId)), input as unknown as ProductionInput);
+}
+async function armedSource() {
+  const project = source(), draft = authoredSource(project);
+  return { project, source: draft, prepared: await prepareProductionSubmission(draft, project, id) };
+}
+function sourceCapsule(change: Change): NativeCapsule {
+  if (change.type !== "upsert_native_capsule") throw new Error("Expected the existing source attachment Change.");
+  return change.capsule;
 }
 class MemoryStorage implements ProductionStorage {
   values = new Map<string, string>();
@@ -352,5 +372,298 @@ describe("Production recovery after an initially unreadable pointer or copy", ()
     expect(() => decodeProductionCopy(malformed, prepared.draft.scope, fork)).toThrow("origins");
     expect(readProductionCopies(store, prepared.draft.scope).entries).toEqual([{ key, writerId: fork, raw: malformed, value: null }]);
     expect(store.getItem(key)).toBe(malformed); expect(JSON.parse(encodeProductionFile(decoded.draft)).draft.pending.id).toBe(id);
+  });
+});
+
+describe("legacy source attachment uses durable Production intent without native admission", () => {
+  it("starts an explicitly scoped creation with no selected asset or existing capsule base", () => {
+    const project = source(), selected = sourceTarget(project), draft = createProductionDraft(project, selected);
+    expect(draft.input).toEqual({ kind: "source", assetId: "", renderer: "hyperframes", version: "unverified" });
+    expect(draft.base).toBeNull(); expect(productionValue(project, selected)).toBeNull(); expect(productionHasWork(draft)).toBe(false);
+    expect(productionLabel(selected)).toBe("Source attachment");
+    expect(draft.scope).toBe(JSON.stringify([project.id, project.generation, project.active_branch, "source", project.scenes[0].id]));
+    expect(productionScope(project, sourceTarget(project, project.scenes[1].id))).not.toBe(draft.scope);
+    expect(productionScope(project, sourceTarget(project, null))).not.toBe(draft.scope);
+    for (const field of ["id", "generation", "active_branch"] as const)
+      expect(productionScope({ ...project, [field]: fork }, selected)).not.toBe(draft.scope);
+  });
+  it("prepares the exact eight-field opaque capsule using the pending UUID and raw renderer/version", async () => {
+    const project = source(), draft = authoredSource(project), before = structuredClone(project), input = sourceInput(project);
+    const random = vi.spyOn(crypto, "randomUUID").mockImplementation(() => { throw new Error("No second attachment identity is allowed during preparation"); });
+    try {
+      const prepared = await prepareProductionSubmission(draft, project, id), repeated = await prepareProductionSubmission(draft, project, id);
+      const capsule = sourceCapsule(prepared.change);
+      expect(capsule).toEqual({ id, scene_id: project.scenes[0].id, source_asset_id: input.assetId,
+        source_sha256: project.assets[2].content_sha256, label: project.assets[2].name,
+        fidelity: { renderer: input.renderer, renderer_version: input.version, visual: "unavailable", temporal: "unavailable",
+          structural: "native", editable: "unavailable", losses: ["Source preserved as an opaque attachment. Parameter editing and renderer execution are not admitted."], evidence_sha256: null },
+        editable_parameters: [], native_editor_hint: "Open with the original application's trusted environment" });
+      expect(Object.keys(capsule).sort()).toEqual(["id", "scene_id", "source_asset_id", "source_sha256", "label", "fidelity", "editable_parameters", "native_editor_hint"].sort());
+      expect(prepared.change).toEqual(repeated.change); expect(prepared.draft.pending?.id).toBe(capsule.id);
+      expect(prepared.draft.pending?.value).toEqual(capsule); expect(prepared.draft.pending?.input).toEqual(input);
+      expect(prepared.draft.base).toBeNull(); expect(prepared.draft.input).toEqual(input); expect(project).toEqual(before);
+    } finally { random.mockRestore(); }
+  });
+  it.each(["missing", "ambiguous", "none"] as const)("a %s scene prevents preparation and retains the raw source input", async mode => {
+    const project = source(), draft = authoredSource(project, sourceInput(project), mode === "none" ? null : project.scenes[0].id);
+    if (mode === "missing") project.scenes.shift();
+    if (mode === "ambiguous") project.scenes.push(structuredClone(project.scenes[0]));
+    const raw = structuredClone(draft.input), before = structuredClone(project);
+    await expect(prepareProductionSubmission(draft, project, id)).rejects.toThrow(/scene/i);
+    expect(draft.input).toEqual(raw); expect(draft.pending).toBeNull(); expect(project).toEqual(before);
+  });
+  it.each(["empty", "missing", "ambiguous", "no digest", "malformed digest", "uppercase digest"] as const)("a source asset with %s cannot become an attachment", async mode => {
+    const project = source(), input = sourceInput(project);
+    if (mode === "empty") input.assetId = "";
+    if (mode === "missing") input.assetId = fork;
+    if (mode === "ambiguous") project.assets.push(structuredClone(project.assets[2]));
+    if (mode === "no digest") project.assets[2].content_sha256 = null;
+    if (mode === "malformed digest") project.assets[2].content_sha256 = "not a digest";
+    if (mode === "uppercase digest") project.assets[2].content_sha256 = "AB".repeat(32);
+    const draft = authoredSource(project, input), before = structuredClone(project);
+    await expect(prepareProductionSubmission(draft, project, id)).rejects.toThrow(/asset/i);
+    expect(draft.input).toEqual(input); expect(project).toEqual(before);
+  });
+  it.each([
+    ["renderer", ""], ["renderer", "  \t"], ["renderer", "🙂".repeat(33)], ["renderer", "value\u0000"],
+    ["version", ""], ["version", "  "], ["version", "🙂".repeat(33)], ["version", "value\u0000"],
+  ] as const)("invalid %s metadata stays raw and fails before a Change can be sent", async (field, value) => {
+    const project = source(), input = { ...sourceInput(project), [field]: value }, draft = authoredSource(project, input);
+    await expect(prepareProductionSubmission(draft, project, id)).rejects.toThrow(/renderer/i);
+    const raw = encodeProductionCopy({ schema: "motionwright.production-recovery/1", scope: draft.scope, writerId: writer, updatedAt: 1, draft });
+    expect(decodeProductionCopy(raw, draft.scope, writer).draft.input).toEqual(input); expect(draft.pending).toBeNull();
+  });
+  it.each(["project", "scene"] as const)("a %s content lock prevents source preparation without replacing input", async scope => {
+    const project = source(), draft = authoredSource(project);
+    project.locks.push({ id: writer, resource: scope + ":" + (scope === "project" ? project.id : project.scenes[0].id), kind: "content", note: "Keep authored source" });
+    const before = structuredClone(project);
+    await expect(prepareProductionSubmission(draft, project, id)).rejects.toThrow(/locked/i);
+    expect(project).toEqual(before); expect(draft.pending).toBeNull();
+  });
+  it.each(["approve", "detach"] as const)("source creation cannot perform %s", async operation => {
+    const project = source(), draft = authoredSource(project);
+    await expect(prepareProductionSubmission(draft, project, id, operation)).rejects.toThrow(/attachment|source/i);
+    expect(draft.pending).toBeNull();
+  });
+  it("refuses an existing capsule UUID and the existing capsule budget without updating any capsule", async () => {
+    const { project, source: draft, prepared } = await armedSource(), capsule = sourceCapsule(prepared.change);
+    project.production_design!.capsules = [structuredClone(capsule)];
+    const collision = structuredClone(project);
+    await expect(prepareProductionSubmission(draft, project, id)).rejects.toThrow(/identity|already|exists/i);
+    expect(project).toEqual(collision);
+    project.production_design!.capsules = Array.from({ length: 256 }, (_, index) => ({ ...structuredClone(capsule),
+      id: "30000000-0000-4000-8000-" + String(index).padStart(12, "0") }));
+    const full = structuredClone(project);
+    await expect(prepareProductionSubmission(draft, project, fork)).rejects.toThrow(/budget/i);
+    expect(project).toEqual(full);
+  });
+  it("a matching original source ACK makes the form clean; another attachment requires an explicit new edit", async () => {
+    const { project, prepared } = await armedSource(), saved = await applyChange(project, prepared.change);
+    const next = acknowledgeProductionDraft(prepared.draft, id, saved);
+    expect(next.pending).toBeNull(); expect(next.base).toBeNull(); expect(next.input).toEqual(prepared.draft.input);
+    expect(productionHasInput(next)).toBe(false); expect(productionHasWork(next)).toBe(false);
+    expect(saved.assets).toEqual(project.assets); expect(saved.scenes).toEqual(project.scenes);
+    await expect(prepareProductionSubmission(next, saved, fork)).rejects.toThrow(/explicit/i);
+    const authored = editProductionDraft(next, next.input), separate = await prepareProductionSubmission(authored, saved, fork);
+    expect(sourceCapsule(separate.change).id).toBe(fork); expect(sourceCapsule(separate.change).id).not.toBe(id);
+    const twice = await applyChange(saved, separate.change);
+    expect(twice.production_design!.capsules.map(value => value.id)).toEqual([id, fork]);
+    expect(twice.production_design!.capsules.find(value => value.id === id)).toEqual(sourceCapsule(prepared.change));
+    expect(twice.assets).toEqual(project.assets); expect(twice.scenes).toEqual(project.scenes);
+  });
+  it.each(["asset clear", "renderer", "version", "ABA"] as const)("a later %s survives the original attachment ACK", async mode => {
+    const { project, prepared } = await armedSource(), original = prepared.draft.input as unknown as SourceInput;
+    const input = mode === "asset clear" ? { ...original, assetId: "" }
+      : mode === "version" ? { ...original, version: "  later version  " } : { ...original, renderer: "  Later renderer  " };
+    let later = editProductionDraft(prepared.draft, input as unknown as ProductionInput);
+    if (mode === "ABA") later = editProductionDraft(later, original as unknown as ProductionInput);
+    const next = acknowledgeProductionDraft(later, id, await applyChange(project, prepared.change));
+    expect(next.input).toEqual(later.input); expect(next.intent).toBe(true); expect(next.pending).toBeNull(); expect(next.base).toBeNull();
+  });
+  it.each(["id", "generation", "active_branch", "revision", "capsule id", "capsule value", "missing", "duplicate"] as const)("a wrong %s source ACK cannot clear the original intent", async field => {
+    const { project, prepared } = await armedSource(), receipt = await applyChange(project, prepared.change);
+    const capsules = receipt.production_design!.capsules;
+    if (field === "id" || field === "generation" || field === "active_branch") receipt[field] = fork;
+    if (field === "revision") receipt.revision++;
+    if (field === "capsule id") capsules[0].id = fork;
+    if (field === "capsule value") capsules[0].fidelity.renderer += " changed";
+    if (field === "missing") capsules.length = 0;
+    if (field === "duplicate") capsules.push(structuredClone(capsules[0]));
+    const before = structuredClone(prepared.draft);
+    expect(() => acknowledgeProductionDraft(prepared.draft, id, receipt)).toThrow();
+    expect(prepared.draft).toEqual(before); expect(productionUnconfirmed(prepared.draft)).toBe(true);
+  });
+  it.each(["asset digest", "asset name", "asset removal", "scene", "locks", "capsules"] as const)("same-stamp %s changes invalidate source preparation despite a null base", async field => {
+    const { project, source: draft, prepared } = await armedSource(), changed = structuredClone(project);
+    if (field === "asset digest") changed.assets[2].content_sha256 = "ef".repeat(32);
+    if (field === "asset name") changed.assets[2].name = "A different source label";
+    if (field === "asset removal") changed.assets.pop();
+    if (field === "scene") changed.scenes[0].objective = "Another scene context";
+    if (field === "locks") changed.locks.push({ id: fork, resource: "scene:" + changed.scenes[0].id, kind: "content", note: "Later lock" });
+    if (field === "capsules") changed.production_design!.capsules.push({ ...sourceCapsule(prepared.change), id: fork });
+    expect(changed.revision).toBe(project.revision);
+    expect(productionPreparationMatches(draft, project, draft, project)).toBe(true);
+    expect(productionPreparationMatches(draft, project, draft, changed)).toBe(false);
+  });
+  it("same-stamp source changes invalidate the two outcome reads and a previously accepted review", async () => {
+    const { project, prepared } = await armedSource(), saved = await applyChange(project, prepared.change);
+    const changed = structuredClone(saved); changed.assets[2].name = "Changed under the same stamp";
+    let reads = 0;
+    await expect(inspectProductionOutcome(prepared.draft, saved, { readProject: async () => ++reads === 1 ? saved : changed,
+      readHistory: async () => journal(saved, prepared.change) })).rejects.toThrow(/changed/i);
+    const review = await inspectProductionOutcome(prepared.draft, saved, { readProject: async () => saved, readHistory: async () => journal(saved, prepared.change) });
+    expect(productionOutcomeMatches(prepared.draft, changed, review)).toBe(false);
+    expect(reconcileProductionDraft(prepared.draft, saved)).toBe(prepared.draft);
+    expect(acknowledgeProductionDraft(prepared.draft, fork, saved)).toBe(prepared.draft);
+  });
+  it("an equivalent peer capsule with another ID is not a matching original attachment", async () => {
+    const { project, prepared } = await armedSource(), peerChange: Change = { type: "upsert_native_capsule", capsule: { ...sourceCapsule(prepared.change), id: fork } };
+    const peer = await applyChange(project, peerChange);
+    const review = await inspectProductionOutcome(prepared.draft, peer, { readProject: async () => peer, readHistory: async () => journal(peer, peerChange) });
+    expect(review.matchingValueRevisions).toEqual([]); expect(productionUnconfirmed(prepared.draft)).toBe(true);
+    expect(() => acknowledgeProductionDraft(prepared.draft, id, peer)).toThrow(/exact|confirm/i);
+  });
+  it("Continue after an observed source result preserves the original intent and creates no capsule until a separate Attach", async () => {
+    const { project, prepared } = await armedSource(), saved = await applyChange(project, prepared.change);
+    const review = await inspectProductionOutcome(prepared.draft, saved, { readProject: async () => saved,
+      readHistory: async () => journal(saved, prepared.change) });
+    const store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody();
+    writeProductionCopy(store, pointers, prepared.draft, owner);
+    const original = owner.expectedRaw!, key = productionCopyKey(prepared.draft.scope, writer), before = structuredClone(saved);
+    const random = vi.spyOn(crypto, "randomUUID").mockImplementation(() => { throw new Error("Continue cannot generate an attachment identity"); });
+    try {
+      const next = releaseProductionOutcome(prepared.draft, saved, review);
+      retainReviewedProductionIntent(store, pointers, prepared.draft, next, owner, fork);
+      expect(next.pending).toBeNull(); expect(next.intent).toBe(true); expect(next.input).toEqual(prepared.draft.input);
+      expect(saved).toEqual(before); expect(saved.production_design!.capsules).toEqual([sourceCapsule(prepared.change)]);
+      expect(store.getItem(key)).toBe(original); expect(decodeProductionCopy(original, next.scope, writer).draft.pending).toEqual(prepared.draft.pending);
+      const separate = await prepareProductionSubmission(next, saved, fork);
+      expect(sourceCapsule(separate.change).id).toBe(fork); expect(sourceCapsule(separate.change).id).not.toBe(id);
+      expect(separate.draft.pending?.input).toEqual(prepared.draft.input); expect(saved).toEqual(before);
+      expect(store.getItem(key)).toBe(original); expect(prepared.draft.pending?.id).toBe(id);
+      expect(random).not.toHaveBeenCalled();
+    } finally { random.mockRestore(); }
+  });
+  it.each(["native authority", "fidelity", "editable", "disclosure", "identity", "scene", "asset", "renderer", "base"] as const)("rejects a source copy with changed %s without expanding the eight-field contract", async field => {
+    const { prepared } = await armedSource();
+    const raw = encodeProductionCopy({ schema: "motionwright.production-recovery/1", scope: prepared.draft.scope, writerId: writer, updatedAt: 1, draft: prepared.draft });
+    const value = JSON.parse(raw), pending = value.draft.pending, capsule = pending.value;
+    if (field === "native authority") capsule.property_fidelity = [];
+    if (field === "fidelity") capsule.fidelity.visual = "native";
+    if (field === "editable") capsule.editable_parameters = ["arbitrary execution parameter"];
+    if (field === "disclosure") capsule.fidelity.losses = [];
+    if (field === "identity") capsule.id = fork;
+    if (field === "scene") capsule.scene_id = fork;
+    if (field === "asset") capsule.source_asset_id = fork;
+    if (field === "renderer") capsule.fidelity.renderer += " new authority";
+    if (field === "base") value.draft.base = structuredClone(capsule);
+    expect(() => decodeProductionCopy(JSON.stringify(value), prepared.draft.scope, writer)).toThrow();
+    expect(decodeProductionCopy(raw, prepared.draft.scope, writer).draft.pending?.value).toEqual(sourceCapsule(prepared.change));
+  });
+});
+
+describe("Production UNKNOWN base authority across component, plan and source", () => {
+  for (const kind of ["hero", "plan", "source"] as const) {
+    const preparedCase = () => kind === "source" ? armedSource() : armed(kind);
+    it(`${kind} keeps UNKNOWN on the same saved revision with an empty journal`, async () => {
+      const { project, prepared } = await preparedCase();
+      const review = await inspectProductionOutcome(prepared.draft, project, { readProject: async () => project, readHistory: async () => [] });
+      expect(review.events).toEqual([]); expect(productionOutcomeMatches(prepared.draft, project, review)).toBe(true);
+      const before = structuredClone(prepared.draft);
+      expect(() => releaseProductionOutcome(prepared.draft, project, review)).toThrow(/could still commit/i);
+      await expect(prepareProductionSubmission(prepared.draft, project, fork)).rejects.toThrow(/unconfirmed/i);
+      expect(prepared.draft).toEqual(before);
+    });
+    it(`${kind} permits the live NOT_SENT caller to continue explicitly on the same base while recovery remains UNKNOWN`, async () => {
+      const { project, prepared } = await preparedCase(), known = retainProductionFailure(prepared.draft, id, "Local backup failed before dispatch", true);
+      const live = resolveProductionDraft(known, project, "draft"), next = await prepareProductionSubmission(live, project, fork);
+      expect(next.draft.pending?.id).toBe(fork); expect(next.draft.pending?.revision).toBe(project.revision);
+      const raw = encodeProductionCopy({ schema: "motionwright.production-recovery/1", scope: known.scope, writerId: writer, updatedAt: 1, draft: known });
+      const recovered = decodeProductionCopy(raw, known.scope, writer).draft;
+      expect(recovered.pending?.outcome).toBe("UNKNOWN"); expect(JSON.parse(raw).draft.pending.outcome).toBe("NOT_SENT");
+      const review = await inspectProductionOutcome(recovered, project, { readProject: async () => project, readHistory: async () => [] });
+      expect(() => releaseProductionOutcome(recovered, project, review)).toThrow(/could still commit/i);
+      expect(() => resolveProductionDraft(recovered, project, "draft")).toThrow(/unconfirmed/i);
+    });
+    it(`${kind} retains later input and exact original bytes after an independent peer advances the base`, async () => {
+      const { project, prepared } = await preparedCase(), later = edit(prepared.draft, "  Separate later intent  ");
+      const change: Change = { type: "rename_project", title: "Independent peer closes the Production base" }, peer = await applyChange(project, change);
+      const review = await inspectProductionOutcome(later, peer, { readProject: async () => peer, readHistory: async () => journal(peer, change) });
+      expect(review.matchingValueRevisions).toEqual([]);
+      const store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody(), clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+      try {
+        writeProductionCopy(store, pointers, later, owner); const original = owner.expectedRaw!, key = productionCopyKey(later.scope, writer);
+        clock.mockReturnValue(2000); writeProductionCopy(store, pointers, later, owner);
+        expect(owner.expectedRaw).toBe(original);
+        const next = releaseProductionOutcome(later, peer, review), successor = retainReviewedProductionIntent(store, pointers, later, next, owner, fork);
+        expect(next.pending).toBeNull(); expect(next.input).toEqual(later.input); expect(next.intent).toBe(true);
+        expect(next.baseRevision).toBe(peer.revision); expect(store.getItem(key)).toBe(original);
+        expect(decodeProductionCopy(successor.expectedRaw!, next.scope, fork).draft.input).toEqual(later.input);
+        expect(decodeProductionCopy(original, later.scope, writer).draft.pending).toEqual(prepared.draft.pending);
+      } finally { clock.mockRestore(); }
+    });
+  }
+});
+
+describe("Production confirmation preserves actual raw bytes and full custody checks", () => {
+  it("retains whitespace, timestamp and absent legacy origins when confirming unchanged decoded input", async () => {
+    const { prepared } = await armed(), value = { schema: "motionwright.production-recovery/1", scope: prepared.draft.scope, writerId: writer, updatedAt: 1, draft: structuredClone(prepared.draft) };
+    delete value.draft.origins;
+    const raw = " \n" + JSON.stringify(value, null, 2) + "\n ", draft = decodeProductionCopy(raw, value.scope, writer).draft;
+    const store = new MemoryStorage(), pointers = new MemoryStorage(), key = productionCopyKey(draft.scope, writer), pointer = productionPointerKey(draft.scope);
+    store.setItem(key, raw); pointers.setItem(pointer, writer);
+    const owner: ProductionCustody = { writerId: writer, expectedRaw: raw, expectedPointer: writer };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2000), writes = vi.spyOn(store, "setItem");
+    try {
+      writeProductionCopy(store, pointers, draft, owner);
+      expect(writes).not.toHaveBeenCalled(); expect(owner.expectedRaw).toBe(raw); expect(store.getItem(key)).toBe(raw);
+      expect(pointers.getItem(pointer)).toBe(writer); expect(Object.hasOwn(JSON.parse(raw).draft, "origins")).toBe(false);
+    } finally { writes.mockRestore(); clock.mockRestore(); }
+  });
+  it("unchanged live NOT_SENT bytes stay exact while a recovered UNKNOWN is published into a separate writer", async () => {
+    const { prepared } = await armedSource(), known = retainProductionFailure(prepared.draft, id, "No dispatch occurred in this live caller", true);
+    const store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody(), clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      writeProductionCopy(store, pointers, known, owner); const raw = owner.expectedRaw!, key = productionCopyKey(known.scope, writer);
+      clock.mockReturnValue(2000); writeProductionCopy(store, pointers, known, owner);
+      expect(owner.expectedRaw).toBe(raw); expect(JSON.parse(raw).draft.pending.outcome).toBe("NOT_SENT");
+      const recovered = decodeProductionCopy(raw, known.scope, writer).draft, other: ProductionCustody = { writerId: fork, expectedRaw: null, expectedPointer: writer };
+      writeProductionCopy(store, pointers, recovered, other);
+      expect(store.getItem(key)).toBe(raw); expect(JSON.parse(other.expectedRaw!).draft.pending.outcome).toBe("UNKNOWN");
+    } finally { clock.mockRestore(); }
+  });
+  it("counts the exact retained legacy bytes before confirming the global recovery quota", async () => {
+    const { prepared } = await armed(), draft = prepared.draft, key = productionCopyKey(draft.scope, writer), pointer = productionPointerKey(draft.scope);
+    const value = { schema: "motionwright.production-recovery/1", scope: draft.scope, writerId: writer, updatedAt: 2000, draft };
+    const compact = JSON.stringify(value), raw = JSON.stringify({ ...value, updatedAt: 1 }, null, 2) + " ".repeat(1024);
+    const size = (text: string) => new TextEncoder().encode(text).length, store = new MemoryStorage(), pointers = new MemoryStorage();
+    store.setItem(key, raw); pointers.setItem(pointer, writer);
+    let remaining = MAX_PRODUCTION_RECOVERY_BYTES - size(key) - size(compact), index = 0;
+    while (remaining > 0) {
+      const filler = PRODUCTION_RECOVERY_PREFIX + "retained-budget-" + index++, amount = Math.min(MAX_PRODUCTION_COPY_BYTES, remaining - size(filler));
+      expect(amount).toBeGreaterThan(0); store.setItem(filler, "x".repeat(amount)); remaining -= size(filler) + amount;
+    }
+    expect(size(raw)).toBeGreaterThan(size(compact));
+    const before = [...store.values], owner: ProductionCustody = { writerId: writer, expectedRaw: raw, expectedPointer: writer };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2000);
+    try {
+      expect(() => writeProductionCopy(store, pointers, draft, owner)).toThrow(/full/i);
+      expect([...store.values]).toEqual(before); expect(owner.expectedRaw).toBe(raw); expect(pointers.getItem(pointer)).toBe(writer);
+    } finally { clock.mockRestore(); }
+  });
+  it("does not overwrite a peer pointer installed during data publication", async () => {
+    const { prepared } = await armed(), store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody();
+    writeProductionCopy(store, pointers, prepared.draft, owner);
+    const pointer = productionPointerKey(prepared.draft.scope), set = store.setItem.bind(store);
+    store.setItem = (key, raw) => { set(key, raw); pointers.setItem(pointer, fork); };
+    expect(() => writeProductionCopy(store, pointers, edit(prepared.draft, "Later local input"), owner)).toThrow(/pointer/i);
+    expect(pointers.getItem(pointer)).toBe(fork);
+  });
+  it("an unchanged-byte confirmation still rejects a removed pointer", async () => {
+    const { prepared } = await armed(), store = new MemoryStorage(), pointers = new MemoryStorage(), owner = custody();
+    writeProductionCopy(store, pointers, prepared.draft, owner); const raw = owner.expectedRaw!;
+    pointers.removeItem(productionPointerKey(prepared.draft.scope));
+    expect(() => writeProductionCopy(store, pointers, prepared.draft, owner)).toThrow(/pointer/i);
+    expect(store.getItem(productionCopyKey(prepared.draft.scope, writer))).toBe(raw);
   });
 });
