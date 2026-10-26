@@ -1691,3 +1691,141 @@ test("saved localized profile text overrides the editorial SVG across two revisi
     await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
   }
 });
+
+
+test("saved Canvas font drives the read-only Delivery choice through real SQLite restart and rejects a mixed-font source", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true,
+  });
+  const evidence: ScenarioEvidence = { checkpoints: [], observations: [] };
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    evidence.initial = initial; evidence.final = initial;
+    const scene = sceneNamed(initial, "Independent synthetic scene"), target = scene.nodes[0];
+    const profile = initial.deliverables[0];
+    expect(scene.renderer).toBe("motion-canvas");
+    expect(scene.nodes.filter(node => node.kind === "text").map(node => node.id)).toEqual([target.id]);
+    expect(target.kind).toBe("text");
+    const initialJournal = (await service.observeStoredProject(initial)).journal;
+    const initialApplyCount = applyRequests(service).length;
+    // This fixture arrangement crosses the real service and SQLite. The font
+    // itself is authored only through the Canvas controls below.
+    const scopedProfile = { ...profile, included_scene_ids: [scene.id] };
+    const arranged = await service.apply(initial, { type: "upsert_deliverable", profile: scopedProfile });
+    evidence.final = arranged;
+    evidence.checkpoints.push({ label: "real delivery profile includes only the target scene", project: arranged });
+    expect(arranged.revision).toBe(initial.revision + 1);
+    expect(arranged.scenes).toEqual(initial.scenes);
+    expect(arranged.deliverables).toEqual(initial.deliverables.map(item => item.id === profile.id ? scopedProfile : item));
+    const nativeCommands = new Set([
+      "motion_canvas_preflight", "render_motion_canvas", "render_motion_canvas_window",
+      "preflight_multi_segment_mlt_readiness", "assemble_av_master", "assemble_multisegment_av_master",
+    ]);
+    const nativeRequests = () => service.transcript.flatMap(entry => entry.direction === "request"
+      && "command" in entry.payload && nativeCommands.has(entry.payload.command) ? [entry.payload.command] : []);
+    const openDelivery = async () => {
+      await button(page, "Deliver").click();
+      await page.getByRole("list", { name: "Delivery profile index", exact: true })
+        .getByText(profile.name, { exact: true }).click();
+      await expect(page.getByLabel("Profile name", { exact: true })).toHaveValue(profile.name);
+      await expect(page.getByRole("region", { name: "Native Motion Canvas production", exact: true })).toBeVisible();
+    };
+    const primary = page.getByLabel("Primary font", { exact: true });
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await openCanvas(page, scene.name, target.name);
+    await page.getByLabel("Canvas font family", { exact: true }).fill("IBM Plex Mono");
+    await page.getByLabel("Canvas font weight", { exact: true }).fill("400");
+    await expect(button(page, "Commit style")).toBeEnabled();
+    expect(await service.project(initial.id)).toEqual(arranged);
+    await button(page, "Commit style").click();
+    const saved = await checkpoint(service, page, evidence, initial.id, arranged.revision + 1,
+      "Canvas controls save IBM Plex Mono weight 400");
+    const savedNode = { ...target, style: { ...target.style, font_family: "IBM Plex Mono", font_weight: 400 } };
+    expect(storedNode(saved, scene.id, target.id)).toEqual(savedNode);
+    expect(saved.scenes).toEqual(arranged.scenes.map(item => item.id !== scene.id ? item
+      : { ...item, nodes: item.nodes.map(node => node.id === target.id ? savedNode : node) }));
+    expect(saved.deliverables).toEqual(arranged.deliverables);
+    expect(saved.assets).toEqual(arranged.assets);
+    expect(saved.production_design).toEqual(arranged.production_design);
+    expect([saved.id, saved.generation, saved.active_branch]).toEqual([initial.id, initial.generation, initial.active_branch]);
+    expect(applyRequests(service).slice(initialApplyCount).map(item => item.request.change)).toEqual([
+      { type: "upsert_deliverable", profile: scopedProfile },
+      { type: "update_canvas_style", scene_id: scene.id, node_id: target.id, style: savedNode.style },
+    ]);
+    await openDelivery();
+    await expect(primary).toHaveValue("IBM Plex Mono");
+    await expect(primary).toHaveAttribute("aria-readonly", "true");
+    await expect(primary).toHaveJSProperty("readOnly", true);
+    await expect(primary).toHaveAttribute("aria-invalid", "false");
+    await expect(primary).not.toBeEditable();
+    expect(nativeRequests()).toEqual([]);
+    const savedOracle = await service.observeStoredProject(saved);
+    expect(savedOracle.journal.slice(0, initialJournal.length)).toEqual(initialJournal);
+    expect(savedOracle.journal.slice(initialJournal.length).map(item => item.change.type)).toEqual([
+      "upsert_deliverable", "update_canvas_style",
+    ]);
+    const savedApplyCount = applyRequests(service).length;
+    expect(savedApplyCount - initialApplyCount).toBe(2);
+
+    await service.close(); await service.start(); await page.reload();
+    await revision(page, saved.revision);
+    await openCanvas(page, scene.name, target.name);
+    await expect(page.getByLabel("Canvas font family", { exact: true })).toHaveValue("IBM Plex Mono");
+    await expect(page.getByLabel("Canvas font weight", { exact: true })).toHaveValue("400");
+    const reopened = await service.observeStoredProject(saved);
+    expect(reopened.project).toEqual(savedOracle.project);
+    expect(reopened.journal).toEqual(savedOracle.journal);
+    await openDelivery();
+    await expect(primary).toHaveValue("IBM Plex Mono");
+    await expect(primary).toHaveAttribute("aria-readonly", "true");
+    await expect(primary).toHaveJSProperty("readOnly", true);
+    await expect(primary).toHaveAttribute("aria-invalid", "false");
+    expect(applyRequests(service)).toHaveLength(savedApplyCount);
+    expect(nativeRequests()).toEqual([]);
+
+    // A second ordinary Canvas text has its own default family. It must not
+    // silently inherit IBM Plex Mono or be rewritten to fit a Film request.
+    await openCanvas(page, scene.name, target.name);
+    await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
+    const mixed = await checkpoint(service, page, evidence, initial.id, saved.revision + 1,
+      "second saved Canvas text exposes mixed primary fonts");
+    const oldScene = sceneNamed(saved, scene.name), mixedScene = sceneNamed(mixed, scene.name);
+    const added = mixedScene.nodes.filter(node => !oldScene.nodes.some(previous => previous.id === node.id));
+    expect(added).toHaveLength(1);
+    expect(added[0].kind).toBe("text");
+    expect(added[0].style.font_family).toBe("Instrument Sans Variable");
+    expect(mixedScene.nodes.filter(node => node.id !== added[0].id)).toEqual(oldScene.nodes);
+    expect(storedNode(mixed, scene.id, target.id)).toEqual(savedNode);
+    expect(mixed.scenes.filter(item => item.id !== scene.id)).toEqual(saved.scenes.filter(item => item.id !== scene.id));
+    expect(mixed.deliverables).toEqual(saved.deliverables);
+    await openDelivery();
+    await expect(primary).toHaveValue("");
+    await expect(primary).toHaveAttribute("aria-readonly", "true");
+    await expect(primary).toHaveAttribute("aria-invalid", "true");
+    await expect(primary).toHaveAttribute("aria-describedby", "film-font-error-" + profile.id);
+    await expect(page.getByRole("region", { name: "Native Motion Canvas production", exact: true })
+      .getByRole("alert").filter({ hasText: "more than one saved primary font" })).toHaveText(
+        "The included Motion Canvas text uses more than one saved primary font. Review those text styles before checking or rendering Film.");
+    // Other source/runtime gates can also be incomplete; this case proves the
+    // specific font diagnostic and no dispatch, not that a render was ready.
+    await expect(button(page, "Check Film projection")).toBeDisabled();
+    await expect(button(page, "Render native segments")).toBeDisabled();
+    await paint(page);
+    expect(nativeRequests()).toEqual([]);
+    const mixedOracle = await service.observeStoredProject(mixed);
+    expect(mixedOracle.journal.slice(0, savedOracle.journal.length)).toEqual(savedOracle.journal);
+    expect(mixedOracle.journal.slice(savedOracle.journal.length).map(item => item.change.type)).toEqual(["add_canvas_node"]);
+    expect(applyRequests(service)).toHaveLength(savedApplyCount + 1);
+    evidence.observations.push({ label: "canvas_saved_font_drives_delivery_after_sqlite_restart_without_native_claim",
+      sceneId: scene.id, nodeId: target.id, profileId: profile.id, savedStyle: savedNode.style,
+      savedRevision: saved.revision, reopenedRevision: reopened.project.revision,
+      initialJournalCount: initialJournal.length, savedJournalCount: savedOracle.journal.length,
+      fullProjectAndJournalEqualAfterRestart: true, readOnlyPrimaryFont: "IBM Plex Mono",
+      mixedRevision: mixed.revision, addedTextId: added[0].id, mixedDefaultFamily: added[0].style.font_family,
+      finalJournalCount: mixedOracle.journal.length, originalNodePreserved: true,
+      fixtureServiceChanges: 1, authoredUiChanges: 2, nativeCommandsObserved: nativeRequests(),
+      readOnlyRuntimeDiscoveryIsNotNativeExecution: true, nativeRealization: "NOT_REQUESTED_OR_VERIFIED" });
+  } finally {
+    await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
+  }
+});
