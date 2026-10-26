@@ -1280,12 +1280,14 @@ class AudioSourceSelectionTests(unittest.TestCase):
                       mlt.AUDIO_SOURCE_ROSTERS["semwright_mlt_video"])
         self.assertEqual(len(mlt.audio_source_normal_specs()),4)
         self.assertEqual((mlt.AUDIO_SOURCE_SHA, mlt.AUDIO_SOURCE_TREE, mlt.AUDIO_SOURCE_PARENT),
-                         ("ccc813e22f4b2d8ae112eb10a88abb8339a54d80", "4d2e8799a716f0d494677135a49a3a7c23a635e1",
-                          "7a31aab1419b803c93e6527bb4abb2bd59222bf2"))
+                         ("f73e95313b5e5ee2d9f9ab9983c0c48571248d75", "15be4312b6585cec25857eac0cbcf356c01c3311",
+                          "ccc813e22f4b2d8ae112eb10a88abb8339a54d80"))
         self.assertEqual(mlt.AUDIO_SOURCE_PINS["crates/driver-host/src/lib.rs"],
                          "da69223ac6f7e1b2a4421349ac77fb9b4c85526889c0722631b030cd3ef65821")
         self.assertEqual(mlt.AUDIO_SOURCE_PINS["crates/driver-mlt-video/src/runtime.rs"],
                          "78c627fa1aa60430fa80fabd00fd8b3912517d99e40eb17af96fdf82aca554e7")
+        self.assertEqual(mlt.AUDIO_SOURCE_PINS["crates/driver-mlt-video/tests/live.rs"],
+                         "1a8f0dfc4dcf909cbf2816eec37789358e5844a6aff0ff53c5d3d2c574409cb3")
 
     def test_audio_pretty_lists_admit_all_targets_and_separate_physical_ignore(self):
         for target,names in mlt.AUDIO_SOURCE_ROSTERS.items():
@@ -1351,6 +1353,7 @@ class AudioSourceSelectionTests(unittest.TestCase):
         for key,value in (("MW_EXPECTED_SDK_SHA","b"*40),
                           ("MW_EXPECTED_SDK_SHA","b4a71f0c10d3e1d49e71212de7cb5de02b72a9c6"),
                           ("MW_EXPECTED_SDK_SHA","7a31aab1419b803c93e6527bb4abb2bd59222bf2"),
+                          ("MW_EXPECTED_SDK_SHA","ccc813e22f4b2d8ae112eb10a88abb8339a54d80"),
                           ("GITHUB_RUN_ATTEMPT","2"),
                           ("GITHUB_SHA","c"*40),("RUNNER_OS","Windows"),
                           ("GITHUB_JOB","native-mlt-sequence"),("MW_MLT_SCOPE","normal")):

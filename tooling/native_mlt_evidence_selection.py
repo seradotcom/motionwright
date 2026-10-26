@@ -1656,9 +1656,10 @@ def verify_sealed_selection(envelope,private_key,public,*,expected_diagnostic_ad
     return result
 
 # Exact SDK source selection; these names are not execution evidence.
-AUDIO_SOURCE_SHA = "ccc813e22f4b2d8ae112eb10a88abb8339a54d80"
-AUDIO_SOURCE_TREE = "4d2e8799a716f0d494677135a49a3a7c23a635e1"
-AUDIO_SOURCE_PARENT = "7a31aab1419b803c93e6527bb4abb2bd59222bf2"
+# The ccc813 selection and its gate receipts remain historical, not successor PASS.
+AUDIO_SOURCE_SHA = "f73e95313b5e5ee2d9f9ab9983c0c48571248d75"
+AUDIO_SOURCE_TREE = "15be4312b6585cec25857eac0cbcf356c01c3311"
+AUDIO_SOURCE_PARENT = "ccc813e22f4b2d8ae112eb10a88abb8339a54d80"
 AUDIO_SOURCE_SCOPE = "audio-source-g1"
 AUDIO_SOURCE_G0 = "audio-source-g0"
 AUDIO_PHYSICAL_CASE = 'real_mlt_video_driver_runs_inside_sandbox'
@@ -1683,7 +1684,7 @@ AUDIO_SOURCE_PINS = {'Cargo.lock': 'ec7f3946d36a3e9e0a6054173220553bd652904cfa48
  'crates/driver-mlt-video/src/sync.rs': '901580d6414d8e2f445b943a08478d21742bdc2060172b61c5316058f9e56bae',
  'crates/driver-mlt-video/tests/conformance.rs': 'd804740747d3551ff9592ccd1d3f2a5f5070d7884cf6c7fa7a39ffd2dae72985',
  'crates/driver-mlt-video/tests/domain_contract.rs': '97027c9a732cd27cac9685c8f7c5efc9522220848c3045141f1bfbb72b878d50',
- 'crates/driver-mlt-video/tests/live.rs': 'ce888e7ee5310fb7ddd58cd9e8e2035977e46590ac0f664daba41f063a83fc9b',
+ 'crates/driver-mlt-video/tests/live.rs': '1a8f0dfc4dcf909cbf2816eec37789358e5844a6aff0ff53c5d3d2c574409cb3',
  'crates/driver-mlt-video/tests/process.rs': '3a72edccc4f3c88bd126fc31275f35ae18ddf2429604d51e1954ae1bac4d348b',
  'crates/driver-mlt-video/tests/runtime_runner.rs': '00c989cd71bf7bf70413cfb491749893e066f2c6d48c46f519f980255faefebd'}
 AUDIO_SOURCE_ROSTERS = {'semwright_mlt_video': ('app::audio_derivative_contract_tests::byte_layout_and_integral_clock_are_checked_without_a_runtime',

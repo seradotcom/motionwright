@@ -3424,7 +3424,7 @@ jobs:
               ;;
             workflow_dispatch:audio-source-g1)
               test "$MW_EXPECTED_GATE_SHA" = "$GITHUB_SHA"
-              test "$MW_EXPECTED_SDK_SHA" = ccc813e22f4b2d8ae112eb10a88abb8339a54d80
+              test "$MW_EXPECTED_SDK_SHA" = f73e95313b5e5ee2d9f9ab9983c0c48571248d75
               ;;
             *) exit 2 ;;
           esac
@@ -3474,7 +3474,7 @@ jobs:
         if: ${{ success() && inputs.verification_scope == 'audio-source-g1' }}
         with:
           repository: seradotcom/semwright
-          ref: ccc813e22f4b2d8ae112eb10a88abb8339a54d80
+          ref: f73e95313b5e5ee2d9f9ab9983c0c48571248d75
           path: sdk
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
