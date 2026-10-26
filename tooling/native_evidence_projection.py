@@ -33,6 +33,18 @@ MAX_FILE = 256 * 1024 * 1024
 MAX_TOTAL = 512 * 1024 * 1024
 MAX_FILES = 4096
 MAX_JSON = 8 * 1024 * 1024
+# These four /2 snapshots are JSON data, not process streams or terminals.
+# Their source-owned Object envelopes remain closed. Only their explicit leaf
+# rules may retain escaped text or a receipt payload without projecting it.
+JSON_SNAPSHOT_DEPTH = 32
+JSON_SNAPSHOT_NODES = 65536
+JSON_SNAPSHOT_STRING_BYTES = MAX_JSON
+JSON_SNAPSHOT_POLICIES = {
+    "hyperframes-original-render-failure": ("original", "original-render.failure.json"),
+    "hyperframes-original-render-failure-custody": ("original", "original-render.failure-custody.json"),
+    "hyperframes-edited-render-failure": ("edited", "edited-render.failure.json"),
+    "hyperframes-edited-render-failure-custody": ("edited", "edited-render.failure-custody.json"),
+}
 STATES = frozenset(("INCLUDED", "EXCLUDED_BY_SCOPE", "REQUIRED_MISSING",
                     "CAPTURE_FAILED", "CHANGED"))
 LAYERS = frozenset(("readback", "persistence", "attempt-custody", "origin"))
@@ -136,6 +148,16 @@ class Nullable:
 class Literal:
     value: object
 
+@dataclass(frozen=True)
+class JsonText:
+    """Escaped JSON text, only inside one of the four scoped snapshots."""
+    maximum: int = MAX_JSON
+
+@dataclass(frozen=True)
+class JsonValue:
+    """A bounded receipt payload; never an open envelope or an authority."""
+    pass
+
 def project(value, rule, *, exact=False, depth=0):
     """Closed fields only. No wildcard object keys or arbitrary JSON leaves."""
     require(depth < 64, "projection-depth")
@@ -179,6 +201,178 @@ def project(value, rule, *, exact=False, depth=0):
         require(rule.maximum is None or value <= rule.maximum, "projection-number-max")
         return value
     raise SelectionError("unregistered-projection-rule")
+
+def _json_leaf_rules(rule, *, field=None, depth=0):
+    """Inspect the source policy; a payload wildcard cannot replace a struct."""
+    require(depth < 64, "json-snapshot-policy-depth")
+    if isinstance(rule, JsonText):
+        require(type(rule.maximum) is int and 0 <= rule.maximum <= MAX_JSON,
+                "json-snapshot-text-policy")
+        return True
+    if isinstance(rule, JsonValue):
+        require(field == "payload", "json-snapshot-value-field")
+        return True
+    if isinstance(rule, Object):
+        require(all(type(k) is str and isinstance(v, Field)
+                    for k, v in rule.fields.items()), "policy-fields")
+        # Do not short-circuit: every leaf in the closed policy is checked.
+        found = [_json_leaf_rules(v.rule, field=k, depth=depth+1)
+                 for k, v in rule.fields.items()]
+        return any(found)
+    if isinstance(rule, Array):
+        return _json_leaf_rules(rule.item, depth=depth+1)
+    if isinstance(rule, Nullable):
+        return _json_leaf_rules(rule.item, field=field, depth=depth+1)
+    return False
+
+def _json_snapshot_member(item, *, legacy):
+    """Bind opt-in rules to one exact file, phase, root, kind and schema."""
+    policy = item.get("policy")
+    named = type(policy) is str and policy in JSON_SNAPSHOT_POLICIES
+    located = item.get("root") == "records" and any(
+        item.get("relative_path") == pair[1] for pair in JSON_SNAPSHOT_POLICIES.values())
+    if not named and not located:
+        return False
+    require(named and legacy, "json-snapshot-policy-scope")
+    phase, path = JSON_SNAPSHOT_POLICIES[policy]
+    role = "render-failure-custody" if path.endswith(".failure-custody.json") else "render-failure"
+    require(item.get("root") == "records" and item.get("relative_path") == path
+            and item.get("phase") == phase and item.get("layer") == "attempt-custody"
+            and item.get("role") == role and item.get("required") is False
+            and item.get("kind") == "json-original", "json-snapshot-member-scope")
+    return True
+
+def _checked_json_policy(item, rule, *, legacy):
+    scoped = _json_snapshot_member(item, legacy=legacy)
+    leaves = _json_leaf_rules(rule)
+    require(not leaves or scoped, "json-snapshot-leaf-not-opted-in")
+    require(not scoped or isinstance(rule, Object), "json-snapshot-closed-envelope")
+    return scoped
+
+def _bounded_json_snapshot(value):
+    """One budget for the complete file, shared across all payloads and text.
+
+    Nodes include object keys and values. UTF-8 bytes include every key/string;
+    recursion uses at most the fixed document depth, never an input-sized stack.
+    """
+    nodes, string_bytes = 0, 0
+    def visit(current, depth):
+        nonlocal nodes, string_bytes
+        nodes += 1
+        require(depth <= JSON_SNAPSHOT_DEPTH and nodes <= JSON_SNAPSHOT_NODES,
+                "json-snapshot-structure-budget")
+        if type(current) is str:
+            try:
+                string_bytes += len(current.encode("utf-8", "strict"))
+            except UnicodeError as error:
+                raise SelectionError("json-snapshot-text-encoding") from error
+            require(string_bytes <= JSON_SNAPSHOT_STRING_BYTES,
+                    "json-snapshot-string-budget")
+        elif type(current) is dict:
+            for key, child in current.items():
+                require(type(key) is str, "json-snapshot-key")
+                visit(key, depth+1)
+                visit(child, depth+1)
+        elif type(current) is list:
+            for child in current:
+                visit(child, depth+1)
+        elif type(current) is float:
+            require(math.isfinite(current), "json-snapshot-nonfinite")
+        else:
+            require(current is None or type(current) in (bool, int), "json-snapshot-value")
+    visit(value, 0)
+
+def _json_snapshot_tokens(raw):
+    """Bound depth and JSON nodes before the decoder allocates an object tree.
+
+    This constant-state UTF-8 lexer is a resource guard, not a second decoder.
+    The unchanged strict decoder still rejects malformed grammar/duplicates;
+    the subsequent whole-file walk checks decoded strings and finite values.
+    """
+    require(type(raw) is bytes and 0 < len(raw) <= MAX_JSON, "json-budget")
+    try:
+        raw.decode("utf-8", "strict")
+    except UnicodeError as error:
+        raise SelectionError("json-snapshot-text-encoding") from error
+    depth, nodes = 0, 0
+    quoted, escaped, primitive = False, False, False
+    # json.loads(bytes) permits a UTF-8 BOM. Preserve it without counting a
+    # false scalar node; UTF-16/32 NULs are rejected as lexical controls below.
+    start = 3 if raw.startswith(b"\xef\xbb\xbf") else 0
+    primitive_bytes = b"-+.0123456789eEtruefalsn"
+    for byte in memoryview(raw)[start:]:
+        if quoted:
+            require(byte >= 32, "json-snapshot-lexical-control")
+            if escaped:
+                escaped = False
+            elif byte == 92:
+                escaped = True
+            elif byte == 34:
+                quoted = False
+            continue
+        if byte in b" \t\r\n,:":
+            primitive = False
+            continue
+        if byte in b"}]":
+            require(depth > 0, "json-snapshot-lexical-depth")
+            depth -= 1
+            primitive = False
+            continue
+        if primitive and byte not in b'"{[':
+            require(byte in primitive_bytes, "json-snapshot-lexical-token")
+            continue
+        require(depth <= JSON_SNAPSHOT_DEPTH, "json-snapshot-structure-budget")
+        nodes += 1
+        require(nodes <= JSON_SNAPSHOT_NODES, "json-snapshot-structure-budget")
+        primitive = False
+        if byte == 34:
+            quoted = True
+        elif byte in b"{[":
+            depth += 1
+        else:
+            require(byte in b"-0123456789tfn", "json-snapshot-lexical-token")
+            primitive = True
+    require(not quoted and not escaped and depth == 0, "json-snapshot-lexical-incomplete")
+
+def _validate_json_snapshot(value, rule, *, field=None, depth=0):
+    """Validate closed typed envelopes; return no rewritten representation."""
+    require(depth < 64, "projection-depth")
+    if isinstance(rule, JsonText):
+        require(type(value) is str and len(value.encode("utf-8")) <= rule.maximum,
+                "json-snapshot-text")
+    elif isinstance(rule, JsonValue):
+        require(field == "payload", "json-snapshot-value-field")
+        # The single whole-file walk has already enforced finite JSON budgets.
+    elif isinstance(rule, Object):
+        require(type(value) is dict, "projection-object")
+        require(set(value) <= set(rule.fields), "original-json-extra-field")
+        for key, spec in rule.fields.items():
+            if key not in value:
+                require(not spec.required, "projection-required-field")
+                continue
+            _validate_json_snapshot(value[key], spec.rule, field=key, depth=depth+1)
+    elif isinstance(rule, Array):
+        require(type(value) is list and rule.minimum <= len(value) <= rule.maximum,
+                "projection-array")
+        for child in value:
+            _validate_json_snapshot(child, rule.item, depth=depth+1)
+    elif isinstance(rule, Nullable):
+        if value is not None:
+            _validate_json_snapshot(value, rule.item, field=field, depth=depth+1)
+    else:
+        project(value, rule, exact=True, depth=depth)
+
+def _project_selected_json(value, item, rule, *, legacy, exact):
+    if _checked_json_policy(item, rule, legacy=legacy):
+        _bounded_json_snapshot(value)
+        _validate_json_snapshot(value, rule)
+        return value
+    return project(value, rule, exact=exact)
+
+def _decode_selected_json(raw, item, rule, *, legacy, exact):
+    if _checked_json_policy(item, rule, legacy=legacy):
+        _json_snapshot_tokens(raw)
+    return _project_selected_json(strict(raw), item, rule, legacy=legacy, exact=exact)
 
 def member_path(raw):
     require(type(raw) is str and 0 < len(raw) <= 1024 and "\\" not in raw,
@@ -286,7 +480,8 @@ class RootHandles:
             require(stat.S_ISREG(before_name.st_mode) and before_name.st_nlink == 1,
                     "member-regular-single-link")
             require(0 <= before_name.st_size <= maximum, "member-byte-budget")
-            fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parents[-1][0])
+            fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=parents[-1][0])
             before = os.fstat(fd)
             require(identity(before_name) == identity(before), "member-changed-before-open")
             data = bytearray()
@@ -444,6 +639,7 @@ def _checked_spec(spec, policies, role_contract, diagnostic_contract=None):
     require(type(role_contract) is dict and role_contract
             and any(v[0] > 0 for v in role_contract.values()), "role-contract-required")
     seen, destinations, role_counts = set(), set(), {}
+    json_snapshots = set()
     member_keys = {"root", "relative_path", "role", "layer", "phase", "kind",
                    "required", "expected_sha256", "bytes", "policy"}
     for item in members:
@@ -461,6 +657,9 @@ def _checked_spec(spec, policies, role_contract, diagnostic_contract=None):
         require(type(item["kind"]) is str and
                 (item["kind"] in ("original", "json-original", "json-projection")
                  or diagnostic), "member-kind")
+        if _json_snapshot_member(item, legacy=not v3):
+            require(item["policy"] not in json_snapshots, "json-snapshot-duplicate-policy")
+            json_snapshots.add(item["policy"])
         unobserved = item["expected_sha256"] is None and item["bytes"] is None
         require(unobserved or (type(item["expected_sha256"]) is str
                 and SHA.fullmatch(item["expected_sha256"])), "member-expected-digest")
@@ -480,6 +679,7 @@ def _checked_spec(spec, policies, role_contract, diagnostic_contract=None):
         else:
             require(type(item["policy"]) is str and item["policy"] in policies,
                     "unregistered-json-policy")
+            _checked_json_policy(item, policies[item["policy"]], legacy=not v3)
         require(not excluded(parts), "required-role-in-excluded-scope")
         role_counts[contract_key] = role_counts.get(contract_key, 0) + 1
     for key, bounds in role_contract.items():
@@ -649,16 +849,17 @@ def capture_selected_originals(spec, *, policies, role_contract, diagnostic_cont
                 rows.append(row)
                 continue
             try:
+                maximum = MAX_JSON if _json_snapshot_member(item, legacy=not v3) else MAX_FILE
                 raw, observed = handles.read(item["root"], member_path(item["relative_path"]),
-                                             min(MAX_FILE, item["bytes"]))
+                                             min(maximum, item["bytes"]))
                 require(observed == mark, "selected-object-changed")
                 require(len(raw) == item["bytes"] and sha(raw) == item["expected_sha256"],
                         "selected-digest-or-size-changed")
                 data = raw
                 if item["kind"] not in ("original", "diagnostic-original"):
-                    value = strict(raw)
-                    projected = project(value, policies[item["policy"]],
-                                        exact=item["kind"] in ("json-original", "diagnostic-json-original"))
+                    projected = _decode_selected_json(raw, item, policies[item["policy"]],
+                        legacy=not v3,
+                        exact=item["kind"] in ("json-original", "diagnostic-json-original"))
                     if item["kind"] == "json-projection":
                         data = canonical({"schema": PROJECTION_SCHEMA, "policy": item["policy"],
                             "source_sha256": sha(raw), "source_bytes": len(raw),
@@ -827,6 +1028,7 @@ def validate_selected_manifest(manifest, *, expected_context, role_contract,
     rows = manifest.get("members")
     require(type(rows) is list and 1 <= len(rows) <= MAX_FILES, "selected-member-list")
     counts, names = {}, set()
+    json_snapshots = set()
     for row in rows:
         require(type(row) is dict and type(row.get("state")) is str
                 and row["state"] in STATES, "selected-member-state")
@@ -847,6 +1049,13 @@ def validate_selected_manifest(manifest, *, expected_context, role_contract,
         require(not excluded(member_path(row.get("relative_path"))), "selected-excluded-member")
         require(type(row.get("root")) is str and LABEL.fullmatch(row["root"])
                 and row["root"] != "source", "selected-member-root")
+        if _json_snapshot_member(row, legacy=not v3):
+            require(row["policy"] not in json_snapshots, "json-snapshot-duplicate-policy")
+            json_snapshots.add(row["policy"])
+            if row["state"] == "INCLUDED":
+                require(type(row.get("bytes")) is int and 0 < row["bytes"] <= MAX_JSON
+                        and type(row.get("retained_bytes")) is int
+                        and 0 < row["retained_bytes"] <= MAX_JSON, "json-snapshot-file-budget")
         if not require_complete and row["state"] != "INCLUDED":
             require(row["state"] in ("REQUIRED_MISSING", "CAPTURE_FAILED", "CHANGED"),
                     "selected-partial-member-state")
@@ -1017,14 +1226,16 @@ def inspect_selected_tar(raw, *, expected_context, role_contract, policies,
                         "selected-original-identity")
             if row["kind"] in ("json-original", "diagnostic-json-original"):
                 require(row["policy"] in policies, "selected-policy-missing")
-                project(strict(data), policies[row["policy"]], exact=True)
+                _decode_selected_json(data, row, policies[row["policy"]],
+                    legacy=manifest["schema"] == MANIFEST_SCHEMA, exact=True)
             if row["kind"] == "json-projection":
                 p = strict(data)
                 require(set(p) == {"schema", "policy", "source_sha256", "source_bytes",
                          "context", "phase", "role", "original_bytes_retained_locally",
                          "full_original_json_claimed", "value"}, "selected-projection-fields")
                 require(row["policy"] in policies, "selected-policy-missing")
-                project(p.get("value"), policies[row["policy"]], exact=True)
+                _project_selected_json(p.get("value"), row, policies[row["policy"]],
+                    legacy=manifest["schema"] == MANIFEST_SCHEMA, exact=True)
                 require(p.get("schema") == PROJECTION_SCHEMA
                         and p.get("source_sha256") == row["expected_sha256"]
                         and p.get("source_bytes") == row["bytes"]
