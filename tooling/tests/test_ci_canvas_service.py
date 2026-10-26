@@ -895,10 +895,10 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         self.assertEqual(len(declared_options), 1)
         choices = [item.strip() for item in declared_options[0].split(",")]
         self.assertEqual(len(choices), len(set(choices)))
-        self.assertEqual(set(choices), {"all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
-        service_job = workflow.split("  real-service:\n", 1)[1]
+        self.assertEqual(set(choices), {gate.STUDIO68_SCOPE, "all", *gate.SELECTION_GROUPS, *(row[0] for row in gate.SELECTIONS), *gate.BROWSER_SCOPES})
+        service_job = workflow.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         conditions = re.findall(r"^    if: (.+)$", service_job, re.MULTILINE)
-        self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch'"])
+        self.assertEqual(conditions, ["github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'"])
         self.assertIn("--selection \"$REQUESTED_SELECTION\"", service_job)
 
     def source_fixture(self, repo):
@@ -1650,9 +1650,9 @@ class BrowserContractSelectionTests(unittest.TestCase):
         self.assertEqual(choices.count("browser-contracts"), 1)
         self.assertIn("default: authoring-drafts", workflow)
         self.assertIn("branches: ['verify/studio-service-*']", workflow)
-        job = workflow.split("  real-service:\n", 1)[1]
+        job = workflow.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         self.assertEqual(re.findall(r"^    if: (.+)$", job, re.MULTILINE),
-                         ["github.event_name == 'workflow_dispatch'"])
+                         ["github.event_name == 'workflow_dispatch' && inputs.selection != 'studio-service-68'"])
         self.assertGreaterEqual(job.count("!contains(fromJSON('[\"browser-contracts\",\"creative-production-browser\",\"review-browser\",\"workflow-preview-browser\"]'), matrix.selection)"), 2)
         self.assertIn("matrix.selection == 'browser-contracts' && 240", job)
         self.assertIn('tooling/ci_canvas_service.py archive --repo . --evidence ../v', job)
@@ -2195,13 +2195,13 @@ class CreativeProductionScopeTests(unittest.TestCase):
         for label, _, titles in EXPECTED_CREATIVE_BROWSER:
             self.assertGreater(gate.BROWSER_SELECTION_TIMEOUTS[label], len(titles) * 30 + 120)
         workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text()
-        service = workflow.split("  real-service:\n", 1)[1]
+        service = workflow.split("  real-service:\n", 1)[1].split("  studio-service-68:\n", 1)[0]
         self.assertIn("fail-fast: false", service)
         self.assertIn("inputs.selection == 'all' && '[\"project-authoring\",\"creative-production\",\"branch-claim\"]'", service)
         self.assertIn('REQUESTED_SELECTION: ${{ matrix.selection }}', service)
         self.assertIn('studio-service-${{ matrix.selection }}-${{ github.sha }}-', service)
         self.assertIn('studio-service-unsealed-${{ matrix.selection }}-${{ github.sha }}-', service)
-        self.assertEqual(workflow.count('ref: ${{ github.sha }}'), 3)
+        self.assertEqual(workflow.split('  studio-service-68:\n', 1)[0].count('ref: ${{ github.sha }}'), 3)
         unit = workflow.split("  creative-unit-build:\n", 1)[1].split("  real-service:\n", 1)[0]
         self.assertNotIn("matrix:", unit)
         self.assertEqual(workflow.count('ci_canvas_service.py unit-build --repo . --output ../v/unit-build'), 1)
@@ -2896,7 +2896,7 @@ class ReviewScopeTests(unittest.TestCase):
 
     def test_review_workflow_is_source_bound_and_preserves_existing_execution_budgets(self):
         workflow = (PATH.parents[1] / ".github/workflows/studio-service-verification.yml").read_text()
-        self.assertEqual(workflow.count("ref: ${{ github.sha }}"), 3)
+        self.assertEqual(workflow.split('  studio-service-68:\n', 1)[0].count("ref: ${{ github.sha }}"), 3)
         self.assertIn("default: authoring-drafts", workflow)
         self.assertIn("branches: ['verify/studio-service-*']", workflow)
         self.assertIn("""inputs.selection == 'review' && '["review-browser","review"]'""", workflow)
@@ -3374,7 +3374,7 @@ class BranchClaimScopeTests(unittest.TestCase):
         self.assertIn("inputs.selection == 'branch-claim' && 105", workflow)
         self.assertIn('ci_canvas_service.py claim-source-contracts --repo . --output ../v/claim-contracts', workflow)
         self.assertIn('claim-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}', workflow)
-        self.assertEqual(workflow.count('ref: ${{ github.sha }}'), 3)
+        self.assertEqual(workflow.split('  studio-service-68:\n', 1)[0].count('ref: ${{ github.sha }}'), 3)
         self.assertGreater(120 * 60, 1200 + sum(gate.SELECTION_TIMEOUTS[row[0]] for row in gate.BRANCH_CLAIM_SELECTIONS) + 1200)
         for label, _, titles in gate.BRANCH_CLAIM_SELECTIONS:
             self.assertEqual(gate.SELECTION_TIMEOUTS[label], len(titles) * 120 + 180)
@@ -3382,6 +3382,611 @@ class BranchClaimScopeTests(unittest.TestCase):
         self.assertIn("needs: g0", unit)
         self.assertIn("github.event_name == 'workflow_dispatch'", unit)
         self.assertNotIn("npm test", unit)
+
+
+
+def studio68_environment_fixture():
+    return {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REPOSITORY": "seradotcom/motionwright", "GITHUB_JOB": gate.STUDIO68_SCOPE,
+            "GITHUB_SHA": "1" * 40, "GITHUB_WORKFLOW_SHA": "1" * 40,
+            "GITHUB_WORKFLOW_REF": "seradotcom/motionwright/" + gate.STUDIO68_WORKFLOW + "@refs/heads/verify/studio-service-fixture",
+            "GITHUB_RUN_ID": "12345", "GITHUB_RUN_ATTEMPT": "1", "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"}
+
+
+def studio68_report_fixture(*, executed=False):
+    value = {"errors": [], "config": {"workers": 1, "shard": None, "globalSetup": None,
+        "globalTeardown": None, "fullyParallel": False, "forbidOnly": True,
+        "grep": {}, "grepInvert": None,
+        "projects": [{"id": "chromium", "name": "chromium", "retries": 0, "repeatEach": 1}]},
+        "stats": {"expected": 68 if executed else 0, "unexpected": 0, "flaky": 0,
+                  "skipped": 0 if executed else 68}, "suites": [{"specs": []}]}
+    for file, title, line, column, identifier in gate.STUDIO68_CASES:
+        value["suites"][0]["specs"].append({"file": file, "title": title, "line": line,
+            "column": column, "id": identifier, "ok": True,
+            "tests": [{"projectId": "chromium", "projectName": "chromium", "expectedStatus": "passed",
+                       "timeout": 120000, "annotations": [], "status": "expected" if executed else "skipped",
+                       "results": [{"status": "passed", "retry": 0, "errors": []}] if executed else []}]})
+    return value
+
+
+def studio68_command_fixture():
+    return {**synthetic_process_fields(), "diagnostic_custody": "DIRECT_PROCESS_EXIT_OBSERVED", "exit_code": 0}
+
+
+class Studio68SourceContracts(unittest.TestCase):
+    """Source controls; these synthetic records never establish a service run."""
+
+    def test_gate_context_is_preserved_separately_from_exact_product_F(self):
+        env = studio68_environment_fixture()
+        actual = gate.studio68_context(env, gate.STUDIO68_SOURCE, platform="linux")
+        self.assertEqual(actual["gate_source_sha"], env["GITHUB_SHA"])
+        self.assertEqual(actual["executed_product_source_sha"], gate.STUDIO68_SOURCE)
+        self.assertEqual(actual["github"]["GITHUB_SHA"], "1" * 40)
+        self.assertEqual(env, studio68_environment_fixture())
+
+    def test_foreign_product_context_attempt_or_job_is_rejected_before_commands(self):
+        env = studio68_environment_fixture()
+        bad = ({"GITHUB_SHA": gate.STUDIO68_SOURCE, "GITHUB_WORKFLOW_SHA": gate.STUDIO68_SOURCE},
+               {"GITHUB_RUN_ATTEMPT": "2"}, {"GITHUB_JOB": "real-service"},
+               {"GITHUB_WORKFLOW_SHA": "2" * 40}, {"GITHUB_EVENT_NAME": "push"},
+               {"RUNNER_ARCH": "ARM64"}, {"GITHUB_WORKFLOW_REF": "foreign/workflow@main"})
+        with mock.patch.object(gate, "execute") as launch:
+            for change in bad:
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    gate.studio68_context({**env, **change}, gate.STUDIO68_SOURCE, platform="linux")
+            with self.assertRaises(ValueError):
+                gate.studio68_context(env, "2" * 40, platform="linux")
+            launch.assert_not_called()
+
+    def test_environment_rejects_execution_overrides_without_stripping_GitHub_identity(self):
+        env = studio68_environment_fixture()
+        for key in ("LD_AUDIT", "LD_LIBRARY_PATH", "LD_PRELOAD", "GIT_DIR", "GIT_INDEX_FILE", "NODE_OPTIONS",
+                    "RUSTC_WRAPPER", "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "MOTIONWRIGHT_SERVICE_TEST_BIN",
+                    "CARGO_ALIAS_CLIPPY"):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "override"):
+                gate.studio68_environment({**env, key: "foreign"}, Path("/owned"))
+        actual = gate.studio68_environment(env, Path("/owned"))
+        self.assertEqual(actual["GITHUB_SHA"], env["GITHUB_SHA"])
+        self.assertEqual(actual["CARGO_HOME"], str(Path("/owned/cargo")))
+        self.assertEqual(env, studio68_environment_fixture())
+
+    def test_fixed_clock_and_phase_never_renew_deadline_or_accept_future_origin(self):
+        now = [2_000_000_000]
+        with mock.patch("time.monotonic_ns", side_effect=lambda: now[0]):
+            with self.assertRaises(ValueError):
+                gate.Studio68Clock(True)
+            with self.assertRaises(ValueError):
+                gate.Studio68Clock(now[0] + 1)
+            clock = gate.Studio68Clock(now[0])
+            phase = clock.phase(120)
+            original = clock.deadline_ns
+            now[0] += 100_000_000_000
+            self.assertEqual(phase.remaining(120), 20)
+            now[0] += 20_000_000_000
+            with self.assertRaisesRegex(ValueError, "phase deadline"):
+                phase.remaining(120)
+            self.assertEqual(clock.deadline_ns, original)
+            now[0] = original
+            with self.assertRaisesRegex(ValueError, "original deadline"):
+                clock.remaining(1)
+
+    def test_caps_preserve_every_original_case_and_leave_an_explicit_custody_reserve(self):
+        self.assertEqual(len(gate.STUDIO68_CASES), 68)
+        self.assertEqual(68 * 120, 8160)
+        self.assertEqual(gate.STUDIO68_PHASE_SECONDS["execution"], 8460)
+        self.assertEqual(gate.STUDIO68_PHASE_SECONDS["readback"], 5400)
+        self.assertEqual(sum(gate.STUDIO68_PHASE_SECONDS.values()), 18660)
+        self.assertEqual(gate.STUDIO68_SECONDS, 19800)
+        self.assertEqual(gate.STUDIO68_SECONDS - sum(gate.STUDIO68_PHASE_SECONDS.values()), 1140)
+        self.assertEqual(gate.STUDIO68_PREPARATION_SECONDS, 300)
+        self.assertLess(gate.STUDIO68_PREPARATION_SECONDS + gate.STUDIO68_CLEANUP_RESERVE, 1140)
+
+    def test_work_cannot_consume_the_retention_reserve_or_restart_its_original_clock(self):
+        now = [2_000_000_000]
+        with mock.patch("time.monotonic_ns", side_effect=lambda: now[0]):
+            clock = gate.Studio68Clock(now[0])
+            deadline = clock.deadline_ns
+            now[0] = deadline - 511_000_000_000
+            self.assertEqual(clock.remaining(600), 1)
+            now[0] += 1_000_000_000
+            with self.assertRaisesRegex(ValueError, "original deadline"):
+                clock.remaining(1)
+            phase = clock.phase(480, retention=True)
+            self.assertEqual(phase.remaining(480), 480)
+            self.assertEqual(clock.deadline_ns, deadline)
+            with self.assertRaisesRegex(ValueError, "single terminal"):
+                clock.phase(480, retention=True)
+            with self.assertRaisesRegex(ValueError, "single terminal"):
+                clock.phase(120)
+
+    def test_original_open_requires_nonblocking_before_any_possible_fifo_read(self):
+        class BeforeRead(Exception):
+            pass
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "original"
+            path.write_bytes(b"owned")
+            with mock.patch.object(gate.os, "O_NONBLOCK", 2048, create=True), \
+                 mock.patch.object(gate.os, "open", side_effect=BeforeRead) as opened, \
+                 mock.patch.object(gate.os, "fdopen") as reader:
+                with self.assertRaises(BeforeRead):
+                    gate.studio68_original(path, 128)
+                self.assertEqual(opened.call_count, 1)
+                self.assertEqual(opened.call_args.args[1] & 2048, 2048)
+                reader.assert_not_called()
+
+    def test_unknown_command_stops_before_original_reads_and_cannot_be_replayed(self):
+        unknown = {"observation": "UNKNOWN_TIMEOUT_NO_RETRY", "exit_code": None}
+        clock = mock.Mock()
+        clock.remaining.return_value = 5
+        records = []
+        with mock.patch.object(gate, "execute", return_value=unknown) as launch, \
+             mock.patch.object(gate, "studio68_original") as read:
+            with self.assertRaises(gate.UnknownObservation):
+                gate.studio68_command(["tool"], Path("/p"), {}, Path("/e"), "case", 5, clock, records)
+            with self.assertRaisesRegex(ValueError, "already attempted"):
+                gate.studio68_command(["tool"], Path("/p"), {}, Path("/e"), "case", 5, clock, records)
+            self.assertEqual(launch.call_count, 1)
+            read.assert_not_called()
+        self.assertEqual(records[0]["status"], "UNKNOWN_NO_RETRY")
+
+    def test_report_success_cannot_replace_nonzero_original_exit(self):
+        clock = mock.Mock()
+        clock.remaining.return_value = 5
+        command = {**studio68_command_fixture(), "exit_code": 9}
+        with mock.patch.object(gate, "execute", return_value=command), \
+             mock.patch.object(gate, "studio68_original") as read:
+            with self.assertRaisesRegex(ValueError, "command failed"):
+                gate.studio68_command(["tool"], Path("/p"), {}, Path("/e"), "case", 5, clock, [])
+            read.assert_not_called()
+
+    def test_inner_product_unknown_with_original_exit_one_stops_before_format_and_build(self):
+        import hashlib
+        raw_runner = (PATH.parent / "ci_test_runner.py").read_bytes()
+        self.assertEqual(hashlib.sha256(raw_runner).hexdigest(), gate.STUDIO68_RUNNER_SHA256)
+        report = {"schema": "motionwright.unittest-execution/1", "status": "UNKNOWN", "exit_code": 1,
+                  "steps": [{"entry_point": "discovery:test_ci_canvas_service.py", "status": "FAIL", "exit_code": 1},
+                            {"entry_point": "dotted:tooling.tests.test_ci_canvas_service", "status": "UNKNOWN", "exit_code": 124}]}
+        raw_report = json.dumps(report).encode()
+        command = {**studio68_command_fixture(), "exit_code": 1}
+        labels = []
+        def observed(argv, cwd, environment, output, label, cap, clock, commands, **options):
+            labels.append(label)
+            if label == "product-contracts":
+                self.assertIs(options["defer_exit_status"], True)
+                return command, {"stdout": b"", "stderr": b"original failed runner"}
+            self.assertIn(label, ["product-" + name[:-3] for name in gate.STUDIO68_POLICIES])
+            return studio68_command_fixture(), {"stdout": b"", "stderr": b""}
+        def original(path, limit):
+            path = Path(path)
+            if path.name == "ci_test_runner.py": value = raw_runner
+            elif path.name == "receipt.json": value = raw_report
+            elif path.name == "observed-python": value = b"original python"
+            else: self.fail("No source/build may follow inner uncertainty: " + str(path))
+            return value, {"bytes": len(value), "sha256": hashlib.sha256(value).hexdigest()}
+        with mock.patch.object(gate, "studio68_command", side_effect=observed), \
+             mock.patch.object(gate, "studio68_original", side_effect=original), \
+             mock.patch.object(gate, "studio68_snapshot") as snapshot:
+            with self.assertRaises(gate.UnknownObservation) as caught:
+                gate.studio68_product_g0(Path("/product"), {}, {}, {"python": "/observed-python"}, {},
+                                         Path("/evidence"), mock.Mock(), [], mock.Mock())
+            snapshot.assert_not_called()
+        self.assertEqual(labels[-1], "product-contracts")
+        self.assertEqual(caught.exception.command["outer_command"]["exit_code"], 1)
+        self.assertEqual(caught.exception.command["inner_receipt"]["sha256"], hashlib.sha256(raw_report).hexdigest())
+        self.assertIn("runner_status_UNKNOWN", caught.exception.command["uncertainty"])
+
+    def test_readback_uncertain_transport_is_not_downgraded_by_observed_reader_exit(self):
+        identity = {"bytes": 1, "sha256": "a" * 64}
+        for close in (None, {"returnCode": None, "taints": [], "errors": []},
+                      {"returnCode": 0, "taints": ["request_timeout"], "errors": []},
+                      {"returnCode": 0, "taints": [], "errors": ["capture thread did not finish"]}):
+            receipt = {"status": "FAILED", "cases": [{"case": "observed-case", "readback": {
+                "transportAttempted": True, "transportExecuted": True, "close": close}}]}
+            command = {**studio68_command_fixture(), "exit_code": 1}
+            with self.subTest(close=close), self.assertRaises(gate.UnknownObservation) as caught:
+                gate.studio68_inner_terminal(command, receipt, identity, "readback")
+            self.assertEqual(caught.exception.command["outer_command"]["exit_code"], 1)
+        with self.assertRaisesRegex(ValueError, "nonzero original exit"):
+            gate.studio68_inner_terminal(command, {"status": "PASS", "steps": []}, identity, "product-g0")
+
+    def test_git_snapshot_checks_working_bytes_and_rejects_extra_checkout_inputs(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            path = root / "owned.txt"
+            raw = b"original source\n"
+            path.write_bytes(raw)
+            oid = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+            extra = [b""]
+            def git(repo, *args):
+                self.assertEqual(repo, root)
+                if args == ("rev-parse", "HEAD"):
+                    return b"a" * 40 + b"\n"
+                if args == ("rev-parse", "HEAD^{tree}"):
+                    return b"b" * 40 + b"\n"
+                if args[0] == "ls-tree":
+                    return ("100644 blob " + oid + "\towned.txt\0").encode()
+                if args[0] == "ls-files":
+                    return extra[0]
+                if args[0] == "diff":
+                    return b""
+                self.fail(args)
+            observed = gate.studio68_snapshot(root, "a" * 40, git, expected_tree="b" * 40)
+            self.assertEqual(observed["files"]["owned.txt"]["sha256"], hashlib.sha256(raw).hexdigest())
+            path.write_bytes(b"changed\n")
+            with self.assertRaisesRegex(ValueError, "Git blob"):
+                gate.studio68_snapshot(root, "a" * 40, git)
+            path.write_bytes(raw)
+            extra[0] = b"foreign.py\0"
+            with self.assertRaisesRegex(ValueError, "unbound checkout"):
+                gate.studio68_snapshot(root, "a" * 40, git, allow_node_modules=True)
+            extra[0] = b"apps/studio/node_modules/package/index.js\0"
+            self.assertEqual(gate.studio68_snapshot(root, "a" * 40, git, allow_node_modules=True), observed)
+
+    def test_product_pin_guard_does_not_accept_only_a_claimed_F_SHA(self):
+        snapshot = {"sha": gate.STUDIO68_SOURCE, "tree": gate.STUDIO68_TREE,
+                    "files": {k: {"sha256": v} for k, v in gate.STUDIO68_PRODUCT_PINS.items()}}
+        self.assertEqual(gate.studio68_product_identity(snapshot)["sha"], gate.STUDIO68_SOURCE)
+        for key in ("Cargo.lock", "apps/studio/tests/review-service.spec.ts"):
+            changed = copy.deepcopy(snapshot)
+            changed["files"][key]["sha256"] = "0" * 64
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "pin"):
+                gate.studio68_product_identity(changed)
+
+    def test_exact_68_roster_is_list_only_until_each_original_result_exists(self):
+        selected = gate.studio68_roster(studio68_report_fixture())
+        complete = gate.studio68_roster(studio68_report_fixture(executed=True), executed=True)
+        self.assertEqual(selected["ids"], complete["ids"])
+        self.assertEqual(selected["mode"], "enumeration")
+        self.assertEqual(complete["physical_service_evidence"], "REQUIRES_CLOSED_STORE_READBACK")
+        counts = {p: sum(x[0] == p for x in gate.STUDIO68_CASES) for p in gate.STUDIO68_FILES}
+        self.assertEqual(counts, {"branch-authoring-service.spec.ts": 18, "brand-authoring-service.spec.ts": 8,
+            "component-distillation-service.spec.ts": 12, "review-service.spec.ts": 11,
+            "production-design-service.spec.ts": 19})
+
+    def test_missing_duplicate_foreign_case_id_title_file_and_location_are_rejected(self):
+        for mutation in ("missing", "duplicate", "id", "title", "file", "line", "boolean-line"):
+            doc = studio68_report_fixture()
+            rows = doc["suites"][0]["specs"]
+            if mutation == "missing":
+                rows.pop()
+            elif mutation == "duplicate":
+                rows[-1] = copy.deepcopy(rows[0])
+            elif mutation == "boolean-line":
+                rows[0]["line"] = True
+            else:
+                rows[0][mutation] = 999 if mutation == "line" else "foreign"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.studio68_roster(doc)
+
+    def test_skipped_retried_expected_failure_and_reduced_timeout_never_pass(self):
+        for mutation in ("skip", "retry", "failed", "timeout", "error", "duplicate-result", "bool-count"):
+            doc = studio68_report_fixture(executed=True)
+            case = doc["suites"][0]["specs"][0]["tests"][0]
+            if mutation == "skip":
+                case["expectedStatus"] = "skipped"
+            elif mutation == "retry":
+                case["results"][0]["retry"] = 1
+            elif mutation == "failed":
+                case["results"][0]["status"] = "failed"
+            elif mutation == "timeout":
+                case["timeout"] = 60000
+            elif mutation == "error":
+                case["results"][0]["errors"] = [{"message": "actual failure"}]
+            elif mutation == "duplicate-result":
+                case["results"].append(copy.deepcopy(case["results"][0]))
+            else:
+                doc["stats"]["flaky"] = False
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.studio68_roster(doc, executed=True)
+
+    def test_changed_project_shard_workers_and_filter_fail_before_execution(self):
+        for mutation in ("workers", "bool-workers", "shard", "grep", "retry", "repeat", "second-project"):
+            doc = studio68_report_fixture()
+            config = doc["config"]
+            if mutation == "workers": config["workers"] = 2
+            elif mutation == "bool-workers": config["workers"] = True
+            elif mutation == "shard": config["shard"] = {"current": 1, "total": 2}
+            elif mutation == "grep": config["grep"] = {"source": "one case"}
+            elif mutation == "retry": config["projects"][0]["retries"] = 1
+            elif mutation == "repeat": config["projects"][0]["repeatEach"] = 2
+            else: config["projects"].append(copy.deepcopy(config["projects"][0]))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.studio68_roster(doc)
+
+    def test_playwright_list_and_execution_use_the_same_five_files_without_timeout_override(self):
+        actual = gate.studio68_playwright_argv("node", Path("/cli.js"), Path("/results"))
+        listing = gate.studio68_playwright_argv("node", Path("/cli.js"), Path("/results"), listing=True)
+        self.assertEqual(listing, actual + ["--list"])
+        self.assertEqual(actual[3:8], ["tests/" + x for x in gate.STUDIO68_FILES])
+        for option in ("--workers=1", "--retries=0", "--repeat-each=1", "--forbid-only"):
+            self.assertEqual(actual.count(option), 1)
+        self.assertFalse(any(x.startswith(("--grep", "--timeout", "--shard")) for x in actual))
+
+    def g0_fixture(self):
+        import ast
+        import hashlib
+        raw = (PATH.parent / "ci_test_runner.py").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), gate.STUDIO68_RUNNER_SHA256)
+        function = next(x for x in ast.parse(raw).body if isinstance(x, ast.FunctionDef) and x.name == "parse_unittest_summary")
+        namespace = {"re": re}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "verified_common_parser", "exec"), namespace)
+        ids = ["tooling.tests.test_ci_canvas_service.Fixture.test_one", "tooling.tests.test_ci_canvas_service.Fixture.test_two"]
+        context = gate.studio68_context(studio68_environment_fixture(), gate.STUDIO68_SOURCE, platform="linux")
+        expected = {"definition": "a" * 64, "ids": ids, "python": "/observed/python", "python_sha256": "c" * 64,
+                    "locks": {p: "b" * 64 for p in ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json")}}
+        receipt = {"schema": "motionwright.unittest-execution/1", "executed_source_sha": gate.STUDIO68_SOURCE,
+            "tree_sha": gate.STUDIO68_TREE, "runner_sha256": gate.STUDIO68_RUNNER_SHA256,
+            "require_complete": True, "exit_code": 0, "status": "PASS", "python_executable_sha256": "c" * 64,
+            "test_definition_sha256": {"tooling/tests/test_ci_canvas_service.py": expected["definition"]},
+            "source_locks": expected["locks"], "github": {k: context["github"][k] for k in
+                ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}, "steps": []}
+        logs = {}
+        for index, label in enumerate(("discovery:test_ci_canvas_service.py", "dotted:tooling.tests.test_ci_canvas_service")):
+            stderr = ("test_one (" + ids[0] + ") ... ok\n" + "test_two (" + ids[1] + ") ... ok\n"
+                      + "\n----------------------------------------------------------------------\nRan 2 tests in 0.1s\n\nOK\n").encode()
+            suffix = (["discover", "-s", "tooling/tests", "-p", "test_ci_canvas_service.py", "-v"]
+                      if index == 0 else ["tooling.tests.test_ci_canvas_service", "-v"])
+            step = {"entry_point": label, "status": "PASS", "exit_code": 0,
+                    "command": [expected["python"], "-B", "-E", "-s", "-m", "unittest", *suffix],
+                    "counts": namespace["parse_unittest_summary"](stderr.decode())}
+            for stream, value in (("stdout", b""), ("stderr", stderr)):
+                name = "receipt-" + str(index).zfill(2) + "-" + stream + ".log"
+                logs[name] = value
+                step[stream] = {"file": name, "sha256": hashlib.sha256(value).hexdigest()}
+            receipt["steps"].append(step)
+        return receipt, expected, context, logs, namespace["parse_unittest_summary"]
+
+    def test_product_g0_admits_actual_F_receipt_with_G_provenance_and_observed_child_commands(self):
+        receipt, expected, context, logs, parser = self.g0_fixture()
+        result = gate.studio68_g0_receipt(receipt, expected, context, logs.__getitem__, parser)
+        self.assertEqual(result["status"], "PASS_PRODUCT_CONTRACTS_ONLY")
+        self.assertEqual(result["methods_per_entry"], 2)
+        self.assertEqual(result["executed_product_source_sha"], gate.STUDIO68_SOURCE)
+
+    def test_gate_G0_cannot_substitute_F_or_relabel_its_real_GitHub_context(self):
+        for mutation in ("source", "tree", "github", "definition", "locks", "entrypoint", "boolean-count", "unknown",
+                         "python-hash", "python-argv", "command-filter"):
+            receipt, expected, context, logs, parser = self.g0_fixture()
+            if mutation == "source": receipt["executed_source_sha"] = context["gate_source_sha"]
+            elif mutation == "tree": receipt["tree_sha"] = "e" * 40
+            elif mutation == "github": receipt["github"]["GITHUB_SHA"] = gate.STUDIO68_SOURCE
+            elif mutation == "definition": receipt["test_definition_sha256"] = {}
+            elif mutation == "locks": receipt["source_locks"] = {}
+            elif mutation == "entrypoint": receipt["steps"].pop()
+            elif mutation == "boolean-count": receipt["steps"][0]["counts"]["errors"] = False
+            elif mutation == "unknown": receipt["steps"][0]["status"] = "UNKNOWN"
+            elif mutation == "python-hash": receipt["python_executable_sha256"] = "d" * 64
+            elif mutation == "python-argv": receipt["steps"][0]["command"][0] = "/foreign/python"
+            else: receipt["steps"][0]["command"] += ["-k", "one"]
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.studio68_g0_receipt(receipt, expected, context, logs.__getitem__, parser)
+
+    def test_forged_G0_log_hash_footer_or_repeated_original_ID_is_rejected(self):
+        import hashlib
+        for mutation in ("bytes", "footer", "duplicate-id", "skipped", "failed", "description", "missing-terminal"):
+            receipt, expected, context, logs, parser = self.g0_fixture()
+            name = receipt["steps"][0]["stderr"]["file"]
+            if mutation == "bytes": logs[name] += b"changed\n"
+            elif mutation == "footer":
+                logs[name] = logs[name].replace(b"Ran 2 tests", b"Ran 1 test")
+                receipt["steps"][0]["stderr"]["sha256"] = hashlib.sha256(logs[name]).hexdigest()
+            elif mutation == "duplicate-id":
+                logs[name] = logs[name].replace(expected["ids"][1].encode(), expected["ids"][0].encode())
+                receipt["steps"][0]["stderr"]["sha256"] = hashlib.sha256(logs[name]).hexdigest()
+            else:
+                replacement = {"skipped": b" ... skipped 'forged'", "failed": b" ... FAIL",
+                               "description": b"\nUnbound synthetic description ... ok", "missing-terminal": b""}[mutation]
+                logs[name] = logs[name].replace(b" ... ok", replacement, 1)
+                receipt["steps"][0]["stderr"]["sha256"] = hashlib.sha256(logs[name]).hexdigest()
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.studio68_g0_receipt(receipt, expected, context, logs.__getitem__, parser)
+
+    def test_build_uses_single_offline_locked_example_with_real_Cargo_JSON_selector(self):
+        args = gate.studio68_build_argv("/cargo")
+        self.assertEqual(args, ["/cargo", "build", "--locked", "--offline", "--jobs", "1", "-p",
+            "motionwright-service", "--example", "studio_review_session", "--message-format=json"])
+        self.assertEqual(gate.studio68_binary_spec(), ({"package": "motionwright-service", "crate": "service",
+            "name": "studio_review_session", "kind": "example", "source": "crates/service/examples/studio_review_session.rs"},))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / "target").mkdir()
+            (root / "evidence").mkdir()
+            original = root / "target/observed-artifact"
+            original.write_bytes(b"actual fixture binary bytes")
+            identity = gate.studio68_original(original, 1024)[1]
+            sdk = mock.Mock()
+            sdk.select_binaries.return_value = {"studio_review_session": {"absolute_path": str(original), **identity}}
+            result = gate.studio68_seal_binary(b"cargo-original", 0, root / "product", root, sdk)
+            sdk.select_binaries.assert_called_once_with(b"cargo-original", 0, root / "product", root / "target",
+                                                        gate.studio68_binary_spec(), testing=False)
+            self.assertEqual(Path(result["retained"]["path"]).read_bytes(), original.read_bytes())
+            self.assertNotIn("target/debug", result["retained"]["path"])
+            sdk.verify_binaries.assert_called_once()
+
+    def test_actual_product_policy_failure_stops_main_before_any_Cargo_producer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            product, repository, root = parent / "product", parent / "gate", parent / "evidence-root"
+            product.mkdir()
+            (repository / "tooling").mkdir(parents=True)
+            helper = repository / "tooling/ci_canvas_service.py"
+            helper.write_bytes(b"source fixture")
+            env = {**studio68_environment_fixture(), "RUNNER_TEMP": str(parent)}
+            gate_snapshot = {"sha": env["GITHUB_SHA"], "tree": "2" * 40,
+                "files": {k: {"sha256": v} for k, v in gate.STUDIO68_READER_PINS.items()}}
+            product_snapshot = {"sha": gate.STUDIO68_SOURCE, "tree": gate.STUDIO68_TREE,
+                "files": {k: {"sha256": v} for k, v in gate.STUDIO68_PRODUCT_PINS.items()}}
+            tools = {k: str(parent / k) for k in ("cargo", "rustc", "rustdoc", "rustfmt", "cc", "ar", "node")}
+            sdk = mock.Mock()
+            with mock.patch.dict(gate.os.environ, env, clear=True), mock.patch.object(gate.sys, "platform", "linux"), \
+                 mock.patch.object(gate, "__file__", str(helper)), \
+                 mock.patch.object(gate, "studio68_load_helpers", return_value=sdk), \
+                 mock.patch.object(gate, "studio68_snapshot", side_effect=[gate_snapshot, product_snapshot]), \
+                 mock.patch.object(gate, "studio68_tools", return_value=(tools, {})), \
+                 mock.patch.object(gate, "studio68_product_g0", side_effect=ValueError("actual F source lock is stale")), \
+                 mock.patch.object(gate, "execute") as launch:
+                code = gate.studio68_main(["--gate-repo", str(repository), "--product-repo", str(product),
+                    "--product-source", gate.STUDIO68_SOURCE, "--root", str(root)])
+                self.assertEqual(code, 1)
+                launch.assert_not_called()
+                sdk.ProducerBarrier.assert_not_called()
+            receipt = json.loads((root / "evidence/STUDIO68_RESULT.json").read_bytes())
+            self.assertIn("source lock is stale", receipt["error"])
+            self.assertEqual(receipt["commands"], [])
+            self.assertEqual(receipt["service_cases"], "NOT_RUN")
+
+    def test_NPM_package_identity_does_not_promote_generated_Vite_cache_to_input(self):
+        sdk = mock.Mock()
+        package = {"sha256": "a" * 64, "bytes": 10}
+        sdk.dependency_inventory.return_value = {"vite/dist/index.js": package,
+            ".vite/deps/_metadata.json": {"sha256": "b" * 64}, ".vite-temp/generated.mjs": {"sha256": "c" * 64}}
+        result = gate.studio68_npm_inventory(Path("/owned/node_modules"), sdk)
+        self.assertEqual(result["files"], {"vite/dist/index.js": package})
+        sdk.dependency_inventory.return_value["vite/dist/index.js"] = {"sha256": "d" * 64, "bytes": 10}
+        self.assertNotEqual(gate.studio68_npm_inventory(Path("/owned/node_modules"), sdk), result)
+
+    def test_changed_compiled_binary_is_rejected_before_retained_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            original = root / "observed-artifact"
+            original.write_bytes(b"changed")
+            sdk = mock.Mock()
+            sdk.select_binaries.return_value = {"studio_review_session": {"absolute_path": str(original), "bytes": 7, "sha256": "0" * 64}}
+            with self.assertRaisesRegex(ValueError, "changed before retention"):
+                gate.studio68_seal_binary(b"cargo-original", 0, root / "product", root, sdk)
+            self.assertFalse((root / "evidence/tools/studio_review_session").exists())
+
+    def readback_fixture(self):
+        binary = {"path": "/owned/service", "sha256": "a" * 64}
+        report = {"status": "READBACK_VERIFIED", "errors": [], "expectedCases": 68,
+            "backendSourceShaAssertedByCaller": gate.STUDIO68_SOURCE, "playwrightExitCodeReportedByCaller": 0,
+            "transportAttempted": True, "transportExecuted": True,
+            "binary": binary, "receipt": {"status": "WRITTEN"},
+            "observationJournal": {"status": "CLOSED", "recordsAttempted": 206, "recordsConfirmed": 206}, "cases": []}
+        ids = [r[4] for r in gate.STUDIO68_CASES]
+        for index, identifier in enumerate(ids):
+            report["cases"].append({"case": "owned-case-" + str(index), "captureStatus": "VERIFIED", "errors": [],
+                "readback": {"status": "VERIFIED", "errors": [], "transportAttempted": True, "transportExecuted": True,
+                             "processId": index + 100, "rpcCount": 5, "primaryFailure": None,
+                             "projectEqual": True, "journalEqual": True, "receipt": {"status": "WRITTEN"},
+                             "close": {"clean": True, "errors": [], "taints": [], "returnCode": 0,
+                                       "processId": index + 100, "rpcCount": 5}},
+                "playwrightIdentity": {"projectId": "chromium", "playwrightId": identifier}})
+        return report, binary, ids
+
+    def test_closed_readback_requires_same_68_IDs_and_original_reader_exit(self):
+        report, binary, ids = self.readback_fixture()
+        result = gate.studio68_readback_admission(report, studio68_command_fixture(), binary, ids)
+        self.assertEqual(result["cases"], 68)
+        self.assertEqual(result["human_acceptance"], "NOT_GRANTED")
+        for command in ({**studio68_command_fixture(), "exit_code": 7},
+                        {**studio68_command_fixture(), "observation": "UNKNOWN_TIMEOUT_NO_RETRY"}):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                gate.studio68_readback_admission(report, command, binary, ids)
+
+    def test_missing_duplicate_store_pending_journal_foreign_binary_or_F_does_not_close(self):
+        for mutation in ("missing", "duplicate", "id", "capture", "readback", "journal", "binary", "source", "boolean-exit"):
+            report, binary, ids = self.readback_fixture()
+            report = copy.deepcopy(report)
+            if mutation == "missing": report["cases"].pop()
+            elif mutation == "duplicate": report["cases"][-1] = copy.deepcopy(report["cases"][0])
+            elif mutation == "id": report["cases"][0]["playwrightIdentity"]["playwrightId"] = "foreign"
+            elif mutation == "capture": report["cases"][0]["captureStatus"] = "FAILED"
+            elif mutation == "readback": report["cases"][0]["readback"]["status"] = "UNKNOWN"
+            elif mutation == "journal": report["observationJournal"]["recordsConfirmed"] = 139
+            elif mutation == "binary": report["binary"]["sha256"] = "b" * 64
+            elif mutation == "source": report["backendSourceShaAssertedByCaller"] = "b" * 40
+            else: report["playwrightExitCodeReportedByCaller"] = False
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.studio68_readback_admission(report, studio68_command_fixture(), binary, ids)
+
+    def test_reader_invocation_preserves_owner_bytes_and_binds_three_original_digests(self):
+        root = Path("/owned")
+        original = {k: {"sha256": c * 64} for k, c in (("execution", "a"), ("list", "b"), ("provenance", "c"))}
+        args = gate.studio68_reader_argv("python", Path("/reader.py"), root, original, {"sha256": "d" * 64})
+        for option, value in (("--expected-cases", "68"), ("--backend-source-sha", gate.STUDIO68_SOURCE),
+                              ("--expected-playwright-sha256", "a" * 64), ("--expected-roster-sha256", "b" * 64),
+                              ("--expected-provenance-sha256", "c" * 64), ("--expected-binary-sha256", "d" * 64)):
+            self.assertEqual(args[args.index(option) + 1], value)
+        self.assertIn("--execute-readback", args)
+        self.assertEqual([item for item in args if item.endswith("-reviewed")], ["--provenance-reviewed"])
+        for name, expected in gate.STUDIO68_READER_PINS.items():
+            self.assertEqual(gate.digest(PATH.parents[1] / name)["sha256"], expected)
+
+    def test_R3_original_journal_binds_each_terminal_and_preserves_sequence(self):
+        report, _, _ = self.readback_fixture()
+        rows = [{"schema": "motionwright.readback-observation/1", "kind": "run_before_transport", "case": None}]
+        for case in report["cases"]:
+            observation = copy.deepcopy(case["readback"])
+            observation["receipt"]["status"] = "PENDING"
+            for kind in ("launch_intent", "transport_observed", "case_closed"):
+                rows.append({"schema": "motionwright.readback-observation/1", "kind": kind,
+                             "case": case["case"], "observation": copy.deepcopy(observation)})
+        rows.append({"schema": "motionwright.readback-observation/1", "kind": "run_before_receipt", "case": None,
+                     "observation": {"cases": report["cases"]}})
+        for index, row in enumerate(rows, 1): row["sequence"] = index
+        def encoded(value): return b"".join((json.dumps(x) + "\n").encode() for x in value)
+        raw = encoded(rows)
+        self.assertEqual(gate.studio68_readback_journal(raw, report)["records"], 206)
+        for mutation in ("missing", "sequence", "case", "terminal", "truncated"):
+            changed = copy.deepcopy(rows)
+            if mutation == "missing": changed.pop(3)
+            elif mutation == "sequence": changed[3]["sequence"] = True
+            elif mutation == "case": changed[3]["case"] = "foreign"
+            elif mutation == "terminal": changed[3]["observation"]["close"]["returnCode"] = 3
+            altered = encoded(changed)
+            if mutation == "truncated": altered = altered[:-1]
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.studio68_readback_journal(altered, report)
+
+    def test_new_manual_profile_keeps_old_defaults_matrix_and_distinct_G_F_checkouts(self):
+        workflow = (PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_text(encoding="utf-8")
+        legacy, selected = workflow.split("  studio-service-68:\n", 1)
+        self.assertIn("default: authoring-drafts", legacy)
+        self.assertIn("inputs.selection == 'all' && '[\"project-authoring\",\"creative-production\",\"branch-claim\"]'", legacy)
+        self.assertIn("inputs.selection != 'studio-service-68'", legacy)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.selection == 'studio-service-68'", selected)
+        self.assertIn("needs: g0", selected)
+        self.assertEqual(selected.count("ref: ${{ github.sha }}"), 1)
+        self.assertEqual(selected.count("ref: '" + gate.STUDIO68_SOURCE + "'"), 1)
+        self.assertIn("timeout-minutes: 360", selected)
+        self.assertIn("timeout-minutes: 335", selected)
+        self.assertIn("if: always()", selected)
+        self.assertIn("env -u LD_PRELOAD -u LD_LIBRARY_PATH -u LD_AUDIT", selected)
+        self.assertNotIn("GITHUB_SHA:", selected)
+        self.assertNotIn("strategy:", selected)
+        self.assertIn("--test-directory tooling/service_readback --pattern test_readback_r3.py", legacy)
+        self.assertIn("--mode discovery", legacy)
+
+
+@unittest.skipUnless(gate.sys.platform == "linux" and hasattr(gate.os, "mkfifo"), "requires a real Linux FIFO")
+class Studio68LinuxOriginals(unittest.TestCase):
+    def test_regular_original_replaced_by_fifo_is_rejected_before_a_blocking_read(self):
+        import time
+        started = time.monotonic()
+        actual_open = gate.os.open
+        opened = []
+        with tempfile.TemporaryDirectory() as temporary:
+            original = Path(temporary).resolve() / "owned-original"
+            original.write_bytes(b"retained original")
+            def replace_before_open(path, flags, *args, **kwargs):
+                self.assertEqual(Path(path), original)
+                # The preimage is stopped before its unsafe syscall; no writer
+                # or subprocess is needed to demonstrate the real FIFO race.
+                self.assertTrue(flags & gate.os.O_NONBLOCK)
+                original.unlink()
+                gate.os.mkfifo(original)
+                fd = actual_open(path, flags, *args, **kwargs)
+                opened.append(fd)
+                return fd
+            with mock.patch.object(gate.os, "open", side_effect=replace_before_open):
+                with self.assertRaisesRegex(ValueError, "changed before open"):
+                    gate.studio68_original(original, 1024)
+            self.assertEqual(len(opened), 1)
+            with self.assertRaises(OSError):
+                gate.os.fstat(opened[0])
+        self.assertLess(time.monotonic() - started, 2)
 
 if __name__ == "__main__":
     unittest.main()
