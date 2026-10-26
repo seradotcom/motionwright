@@ -641,10 +641,10 @@ mod graph_probe_custody {
                 .saturating_sub(kept.len())
                 .min(length);
             let retained = &chunk[..available];
-            if custody_error.is_none() {
-                if let Err(error) = original.file.write_all(retained) {
-                    custody_error = Some(error.to_string());
-                }
+            if custody_error.is_none()
+                && let Err(error) = original.file.write_all(retained)
+            {
+                custody_error = Some(error.to_string());
             }
             kept.extend_from_slice(retained);
             // Drain excess bytes without retaining unbounded data or closing the
@@ -902,8 +902,8 @@ mod graph_probe_custody {
             let status = child
                 .wait()
                 .map_err(|_| format!("{label} could not be launched"));
-            if let Ok(status) = &status {
-                if let Err(error) = root.write_json(
+            if let Ok(status) = &status
+                && let Err(error) = root.write_json(
                     &mut exit_file,
                     &json!({
                         "schema":"motionwright.manim.fixed-graph-probe-exit/1",
@@ -911,9 +911,9 @@ mod graph_probe_custody {
                         "unix_wait_status":status.into_raw(),
                         "stream_eof_not_implied":true,
                     }),
-                ) {
-                    custody_errors.push(error);
-                }
+                )
+            {
+                custody_errors.push(error);
             }
             // Preserve both reader outcomes beside status; neither join may
             // return early and discard the already observed process exit.

@@ -706,7 +706,7 @@ fn missing_or_additional_terminal_records_do_not_complete_the_observation() {
     let rows = files["frames.jsonl"]
         .split(|b| *b == b'\n')
         .take(100)
-        .flat_map(|raw| raw.iter().copied().chain([b'\n']))
+        .flat_map(|raw| raw.iter().copied().chain(*b"\n"))
         .collect();
     files.insert("frames.jsonl".into(), rows);
     rejected(&plan, &files, "graph_observation_closed_json");
