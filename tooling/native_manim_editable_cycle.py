@@ -459,3 +459,90 @@ def run_source_cycle(args, *, run_phase, validate_phase):
     }
     private_json(evidence_root / "cycle-result.json", result)
     return result
+
+
+def _outer_inputs(root):
+    return {
+        "cycle-intent": root / "cycle-intent.json",
+        "cycle-result": root / "cycle-result.json",
+        **{phase + "-custody": root / phase / "editable-custody.json" for phase in PHASES},
+        "wrapper-stdout": root.parent / "manim-editable-cycle-wrapper.log",
+    }
+
+
+def seal_outer_cycle(root, sealed, recipient, current):
+    import ci_private_evidence as engine
+    engine.public_key(recipient)
+    engine.validate_context(current)
+    temporary = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+    require(current["run_attempt"] == "1"
+            and root == temporary / ("manim-editable-private-" + current["source_sha"])
+            and sealed == temporary / ("manim-editable-sealed-" + current["source_sha"]),
+            "editable_outer_original_scope")
+    for path in (root, sealed):
+        require(not path.is_symlink() and path.resolve() == path,
+                "editable_outer_canonical_scope")
+    sealed.mkdir(mode=0o700, exist_ok=True)
+    cipher_path = sealed / "cycle-outer.mwseal"
+    receipt_path = sealed / "cycle-outer.public.json"
+    require(not any(p.exists() or p.is_symlink() for p in (cipher_path, receipt_path)),
+            "editable_outer_no_overwrite")
+    stage = temporary / ("manim-editable-outer-" + current["source_sha"])
+    stage.mkdir(mode=0o700, exist_ok=False)
+    roots, selected, failed = {}, {}, []
+    for label, source in _outer_inputs(root).items():
+        folder = roots[label] = stage / label
+        try:
+            raw = engine.regular(source, 4 * 1024 * 1024)[0]
+            folder.mkdir(mode=0o700, exist_ok=False)
+            engine.new_bytes(folder / "original", raw)
+            selected[label] = {"bytes": len(raw), "sha256": sha(raw)}
+        except Exception:
+            failed.append(label)
+            if folder.exists() or folder.is_symlink():
+                roots[label + "-partial"] = folder
+            roots[label] = stage / (label + "-unavailable")
+    snapshot, complete = engine.gather_snapshot(roots, preserve_partial=True)
+    ciphertext = engine.encrypt_snapshot(snapshot, recipient, current)
+    engine.new_bytes(cipher_path, ciphertext)
+    receipt = {
+        "schema": "motionwright.manim.editable.outer-custody-public/1",
+        "context": current, "recipient_sha256": recipient["sha256"],
+        "ciphertext_sha256": sha(ciphertext), "ciphertext_bytes": len(ciphertext),
+        "selected_originals_complete": complete and not failed and len(selected) == len(roots),
+        "original_files": selected, "failed_labels": failed,
+        "native_effect_invocations": 0, "automatic_retry": False,
+    }
+    engine.new_json(receipt_path, receipt)
+    return receipt
+
+
+def verified_outer_cycle(root, sealed, current, recipient_sha256):
+    value = read_object(sealed / "cycle-outer.public.json")
+    require(set(value) == {
+        "schema", "context", "recipient_sha256", "ciphertext_sha256", "ciphertext_bytes",
+        "selected_originals_complete", "original_files", "failed_labels",
+        "native_effect_invocations", "automatic_retry",
+    }, "editable_outer_public_fields")
+    require(value["schema"] == "motionwright.manim.editable.outer-custody-public/1"
+            and value["context"] == current and value["recipient_sha256"] == recipient_sha256
+            and value["selected_originals_complete"] is True and value["failed_labels"] == []
+            and type(value["native_effect_invocations"]) is int
+            and value["native_effect_invocations"] == 0 and value["automatic_retry"] is False,
+            "editable_outer_complete_original_context")
+    inputs = _outer_inputs(root)
+    require(type(value["original_files"]) is dict and set(value["original_files"]) == set(inputs),
+            "editable_outer_closed_selection")
+    for label, source in inputs.items():
+        raw = read(source, 4 * 1024 * 1024)
+        row = value["original_files"][label]
+        require(type(row) is dict and type(row.get("bytes")) is int
+                and row == {"bytes": len(raw), "sha256": sha(raw)},
+                "editable_outer_original_changed")
+    ciphertext = read(sealed / "cycle-outer.mwseal", 64 * 1024 * 1024)
+    require(ciphertext.startswith(b"MWCISEAL1\n")
+            and type(value["ciphertext_bytes"]) is int
+            and len(ciphertext) == value["ciphertext_bytes"]
+            and sha(ciphertext) == value["ciphertext_sha256"],
+            "editable_outer_ciphertext_changed")
+    return value

@@ -34,6 +34,7 @@ on:
       - 'tooling/native_manim_editable_pixels.py'
       - 'tooling/test_native_manim_editable_cycle.py'
       - 'tooling/test_native_manim_editable_pixels.py'
+      - 'tooling/test_native_manim_editable_outer_custody.py'
       - 'tooling/tests/test_native_manim_editable_workflow.py'
       - 'tooling/native_manim_camera_evidence.py'
       - 'tooling/native_manim_camera_cycle.py'
@@ -279,12 +280,13 @@ jobs:
           ))
           PY
 
-      - name: Require 12 editable-cycle and 10 original-pixel source contracts
+      - name: Require 12 editable-cycle, 10 original-pixel, and 8 outer-custody source contracts
         run: |
           "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
             --test-directory tooling \
             --pattern test_native_manim_editable_cycle.py \
             --pattern test_native_manim_editable_pixels.py \
+            --pattern test_native_manim_editable_outer_custody.py \
             --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
             --report "$RUNNER_TEMP/manim-editable-cycle-g0/report.json"
           python3 - <<'PY'
@@ -295,7 +297,8 @@ jobs:
           assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
           assert value["require_complete"] is True and "source_postcheck_error" not in value
           expected = {"discovery:test_native_manim_editable_cycle.py": 12,
-                      "discovery:test_native_manim_editable_pixels.py": 10}
+                      "discovery:test_native_manim_editable_pixels.py": 10,
+                      "discovery:test_native_manim_editable_outer_custody.py": 8}
           assert len(value["steps"]) == len(expected)
           assert {step["entry_point"] for step in value["steps"]} == set(expected)
           for step in value["steps"]:
@@ -307,7 +310,7 @@ jobs:
                   "errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
           PY
 
-      - name: Require 6 original editable-workflow publication controls
+      - name: Require 9 original editable-workflow publication controls
         run: |
           "$RUNNER_TEMP/manim-custody-venv/bin/python" -B tooling/ci_test_runner.py \
             --pattern test_native_manim_editable_workflow.py \
@@ -325,7 +328,7 @@ jobs:
           assert step["entry_point"] == "discovery:test_native_manim_editable_workflow.py"
           assert step["status"] == "PASS" and step["exit_code"] == 0
           counts = step["counts"]
-          assert counts["terminal_status"] == "OK" and counts["tests_run"] == counts["passed"] == 6
+          assert counts["terminal_status"] == "OK" and counts["tests_run"] == counts["passed"] == 9
           assert all(counts[key] == 0 for key in (
               "errors", "failures", "skipped", "expected_failures", "unexpected_successes"))
           PY
@@ -337,7 +340,7 @@ jobs:
             --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
             --report "$RUNNER_TEMP/manim-scene-publication-g0/report.json"
 
-      - name: Admit the closed 239 Python source contracts and original streams
+      - name: Admit the closed 250 Python source contracts and original streams
         run: |
           python3 -B - <<'PY'
           import ast
@@ -352,8 +355,8 @@ jobs:
           import subprocess
           import sys
 
-          # Replaced by the materializer with the reviewed 12 closed source rosters.
-          SUITES = [('crates/driver-manim-community/tests/test_native_color_writer.py', 'manim-n3-g0', 13, 'system', '2a2d0b95b89597f1e96d6d91308229a35cc50ad421edc0d885c6eed9406af404'), ('crates/driver-manim-community/tests/test_native_video_observer.py', 'manim-n3-g0', 32, 'system', 'e683cb00e1fb542a15e3f73b59c848b79d79c5e0173797f50b7d8d7c075c87b0'), ('tooling/tests/test_native_manim_runtime_receipt.py', 'manim-runtime-receipt-g0', 16, 'system', 'c5bd64a581e06366f054c711e84366b7eee04685ad815178f7d26ecf8a5052eb'), ('tooling/tests/test_native_manim_camera_pixels.py', 'manim-camera-pixel-g0', 24, 'system', 'b97699ede776bd27b3caa910cbaa3c0240fc290bd17ce76de6f833fe77470a4a'), ('tooling/tests/test_native_manim_camera_evidence.py', 'manim-camera-custody-g0', 30, 'custody', '6b0a140d1c6ad05182f56c661fbc8c8035a108e16b29ad0ddb75118a65060061'), ('tooling/tests/test_native_manim_camera_cycle.py', 'manim-camera-cycle-g0', 35, 'custody', '373ce2df1cdebce3862568e8db6ed5577f7ed6ae4c390a843efe2244e2ce85c6'), ('tooling/tests/test_native_manim_camera_cycle_publication.py', 'manim-camera-cycle-publication-g0', 8, 'custody', 'a2aaef843216e8c237c1fcb1d0b517d3b5ed127ed4e6b6336780ee5f1d313724'), ('tooling/tests/test_native_manim_static_custody.py', 'manim-static-custody-g0', 29, 'custody', 'ed3ff504746851d9efa0712b1807f9c29c7328734ed6b34376a9c5ce0ac8bd80'), ('tooling/test_native_manim_editable_cycle.py', 'manim-editable-cycle-g0', 12, 'custody', '188a66131e17ca1f34ed43ec74833e7c22c2bac2c22687ce32a89893282ca5b3'), ('tooling/test_native_manim_editable_pixels.py', 'manim-editable-cycle-g0', 10, 'custody', '1c1d11e4d9ecdb206dc818c11136980b6bb9480f735adfbd56b980a8e7bb4ee0'), ('tooling/tests/test_native_manim_editable_workflow.py', 'manim-editable-workflow-g0', 6, 'custody', '05b30217b62050b8ecba0f7aae492c5f309d7b8825ae7fdb1f16c353fe0232da'), ('tooling/tests/test_native_scene_public_artifact.py', 'manim-scene-publication-g0', 24, 'custody', '9320b244e95e794b4422066053933ed457290830088751e18e9dca2c656fc9a2')]
+          # Replaced by the materializer with the reviewed 13 closed source rosters.
+          SUITES = [('crates/driver-manim-community/tests/test_native_color_writer.py', 'manim-n3-g0', 13, 'system', '2a2d0b95b89597f1e96d6d91308229a35cc50ad421edc0d885c6eed9406af404'), ('crates/driver-manim-community/tests/test_native_video_observer.py', 'manim-n3-g0', 32, 'system', 'e683cb00e1fb542a15e3f73b59c848b79d79c5e0173797f50b7d8d7c075c87b0'), ('tooling/tests/test_native_manim_runtime_receipt.py', 'manim-runtime-receipt-g0', 16, 'system', 'c5bd64a581e06366f054c711e84366b7eee04685ad815178f7d26ecf8a5052eb'), ('tooling/tests/test_native_manim_camera_pixels.py', 'manim-camera-pixel-g0', 24, 'system', 'b97699ede776bd27b3caa910cbaa3c0240fc290bd17ce76de6f833fe77470a4a'), ('tooling/tests/test_native_manim_camera_evidence.py', 'manim-camera-custody-g0', 30, 'custody', '6b0a140d1c6ad05182f56c661fbc8c8035a108e16b29ad0ddb75118a65060061'), ('tooling/tests/test_native_manim_camera_cycle.py', 'manim-camera-cycle-g0', 35, 'custody', '373ce2df1cdebce3862568e8db6ed5577f7ed6ae4c390a843efe2244e2ce85c6'), ('tooling/tests/test_native_manim_camera_cycle_publication.py', 'manim-camera-cycle-publication-g0', 8, 'custody', 'a2aaef843216e8c237c1fcb1d0b517d3b5ed127ed4e6b6336780ee5f1d313724'), ('tooling/tests/test_native_manim_static_custody.py', 'manim-static-custody-g0', 29, 'custody', 'ed3ff504746851d9efa0712b1807f9c29c7328734ed6b34376a9c5ce0ac8bd80'), ('tooling/test_native_manim_editable_cycle.py', 'manim-editable-cycle-g0', 12, 'custody', '188a66131e17ca1f34ed43ec74833e7c22c2bac2c22687ce32a89893282ca5b3'), ('tooling/test_native_manim_editable_pixels.py', 'manim-editable-cycle-g0', 10, 'custody', '1c1d11e4d9ecdb206dc818c11136980b6bb9480f735adfbd56b980a8e7bb4ee0'), ('tooling/test_native_manim_editable_outer_custody.py', 'manim-editable-cycle-g0', 8, 'custody', 'fe9c40b77df97c83e1d9034f109a60e41434d08882d0333348e1a0b42abd343a'), ('tooling/tests/test_native_manim_editable_workflow.py', 'manim-editable-workflow-g0', 9, 'custody', '50c0a209c076c25737b4196c113eb44e044f03356fd33f8ac321e91ad7513b30'), ('tooling/tests/test_native_scene_public_artifact.py', 'manim-scene-publication-g0', 24, 'custody', '9320b244e95e794b4422066053933ed457290830088751e18e9dca2c656fc9a2')]
 
           REVIEWED_DIAGNOSTICS = {
               "test_native_manim_camera_evidence.CameraOriginalCustodyTests.test_late_receipt_write_failure_keeps_result_and_ciphertext": ("Manim camera original custody is incomplete; no replay.",),
@@ -491,12 +494,12 @@ jobs:
                    "Receipt completion precedes start")
 
 
-          def admit_source239():
+          def admit_source250():
               root, temporary = Path.cwd(), Path(os.environ["RUNNER_TEMP"])
-              output = temporary / "manim-source239-admission"
+              output = temporary / "manim-source250-admission"
               output.mkdir(exist_ok=False)
-              record = {"schema": "motionwright.manim.source239-admission/1", "status": "FAIL_SOURCE_CONTRACTS",
-                        "scope": "239 unique Python source contracts in 12 discovery suites; no Rust/native/render/release acceptance",
+              record = {"schema": "motionwright.manim.source250-admission/1", "status": "FAIL_SOURCE_CONTRACTS",
+                        "scope": "250 unique Python source contracts in 13 discovery suites; no Rust/native/render/release acceptance",
                         "new_test_executions": 0, "formal_acceptance": False, "reports": []}
               def source_state():
                   def git(*args):
@@ -526,7 +529,7 @@ jobs:
                   all_ids, grouped = [], {}
                   for row in SUITES:
                       grouped.setdefault(row[1], []).append(row)
-                  need(len(SUITES) == 12 and len(grouped) == 10, "Reviewed suite/report closure differs")
+                  need(len(SUITES) == 13 and len(grouped) == 10, "Reviewed suite/report closure differs")
                   for directory, rows in grouped.items():
                       folder = temporary / directory
                       expected_files = {"report.json"} | {f"report-{i:02d}-{stream}.log" for i in range(len(rows)) for stream in ("stdout", "stderr")}
@@ -551,10 +554,10 @@ jobs:
                       all_ids.extend(admitted)
                       record["reports"].append({"directory": directory, "original_receipt_sha256": digest(report_raw),
                                                 "nominal_ids": admitted, "status": "PASS_SOURCE_CONTRACTS"})
-                  need(len(all_ids) == len(set(all_ids)) == 239, "Source239 contains omissions/duplicates")
+                  need(len(all_ids) == len(set(all_ids)) == 250, "Source250 contains omissions/duplicates")
                   need(source_state() == source and all(digest(original_bytes(Path(path))) == pin for path, pin in watched.items()),
                        "Source or originals changed during admission")
-                  record.update(status="PASS_SOURCE_CONTRACTS", unique_tests=239, discovery_suites=12,
+                  record.update(status="PASS_SOURCE_CONTRACTS", unique_tests=250, discovery_suites=13,
                                 original_bytes_sha256=watched)
               except BaseException as exc:
                   record["error"] = str(exc)
@@ -565,7 +568,7 @@ jobs:
                       handle.write("\n")
 
 
-          admit_source239()
+          admit_source250()
           PY
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
@@ -804,7 +807,7 @@ jobs:
             ${{ runner.temp }}/manim-editable-cycle-g0/
             ${{ runner.temp }}/manim-editable-workflow-g0/
             ${{ runner.temp }}/manim-scene-publication-g0/
-            ${{ runner.temp }}/manim-source239-admission/
+            ${{ runner.temp }}/manim-source250-admission/
             ${{ runner.temp }}/manim-rust-source-contracts/
           if-no-files-found: error
           retention-days: 14
@@ -1304,6 +1307,7 @@ jobs:
           retention-days: 14
 
       - name: Realize application-owned scene through real Broker and Manim Driver Host
+        id: manim_native
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ github.workspace }}/_semwright/target/debug/semwright-sandbox
@@ -1342,6 +1346,34 @@ jobs:
             exit 2
           fi
 
+      - name: Seal existing editable cycle outer receipts without replay
+        if: >-
+          ${{ always() && inputs.scenario == 'editable-source-cycle' &&
+              (steps.manim_native.outcome == 'success' ||
+               steps.manim_native.outcome == 'failure') }}
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          "$RUNNER_TEMP/manim-custody-venv/bin/python" -B - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, "tooling")
+          from native_manim_editable_cycle import seal_outer_cycle
+          current = {
+              "source_sha": os.environ["GITHUB_SHA"],
+              "semwright_sha": json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"],
+              "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+          }
+          temporary = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          seal_outer_cycle(
+              temporary / ("manim-editable-private-" + current["source_sha"]),
+              temporary / ("manim-editable-sealed-" + current["source_sha"]),
+              {"spki_der_base64": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SPKI"],
+               "sha256": os.environ["PRIVATE_EVIDENCE_RECIPIENT_SHA256"]}, current,
+          )
+          PY
+
       - name: Reject unsafe public Blender and Manim scene media
         run: |
           "$RUNNER_TEMP/manim-custody-venv/bin/python" -B -m unittest discover -s tooling/tests -p 'test_native_scene_public_artifact.py' -v
@@ -1376,9 +1408,14 @@ jobs:
 
           def verified_editable_cycle_summary(evidence_root, sealed_root, current, recipient_sha256):
               """Read the original cycle and seals; never dispatch or decode native video."""
+              import base64
               import re
+              from ci_private_evidence import (
+                  HEX, MAGIC, MAX_FILES, MAX_TOTAL, SEAL_SCHEMA, json_bytes, regular, strict,
+              )
               from native_manim_camera_evidence import read, read_object, require, sha
               from native_manim_editable_cycle import PHASES, EVIDENCE_NAME, verify_phase
+              from native_manim_editable_cycle import verified_outer_cycle
 
               require(set(current) == {"source_sha", "semwright_sha", "run_id", "run_attempt"}
                       and all(type(current[key]) is str and re.fullmatch(r"[0-9a-f]{40}", current[key])
@@ -1484,8 +1521,39 @@ jobs:
                       and negative.get("rejection") == "editable_text_change_unobserved"
                       and negative.get("synthetic_pixels_used") is False,
                       "editable_public_causal_original_negative")
+              outer = verified_outer_cycle(evidence_root, sealed_root, current, recipient_sha256)
+              # Reuse the static custody header contract for public structure/context
+              # binding. This does not decrypt originals or authenticate the producer.
+              envelope, _ = regular(sealed_root / "cycle-outer.mwseal", 64 * 1024 * 1024)
+              require(sha(envelope) == outer["ciphertext_sha256"]
+                      and len(envelope) == outer["ciphertext_bytes"]
+                      and envelope.startswith(MAGIC), "editable_public_outer_ciphertext_binding")
+              offset = len(MAGIC)
+              length = int.from_bytes(envelope[offset:offset + 4], "big")
+              require(0 < length <= 8192, "editable_public_outer_seal_header_size")
+              aad = envelope[offset + 4:offset + 4 + length]
+              header = strict(aad)
+              require(set(header) == {
+                          "schema", "algorithm", "recipient_spki_sha256", "context",
+                          "nonce", "wrapped_key", "plaintext_sha256", "plaintext_bytes",
+                      } and json_bytes(header) == aad
+                      and header["schema"] == SEAL_SCHEMA
+                      and header["algorithm"] == "RSA-OAEP-SHA256+AES-256-GCM"
+                      and header["context"] == current
+                      and header["recipient_spki_sha256"] == recipient_sha256
+                      and type(header["plaintext_bytes"]) is int
+                      and 0 < header["plaintext_bytes"] <= MAX_TOTAL + MAX_FILES * 4096
+                      and type(header["plaintext_sha256"]) is str
+                      and HEX.fullmatch(header["plaintext_sha256"]) is not None
+                      and len(envelope) == offset + 4 + length + header["plaintext_bytes"] + 16,
+                      "editable_public_outer_seal_header_binding")
+              for key, size in (("nonce", 12), ("wrapped_key", 384)):
+                  raw = base64.b64decode(header[key], validate=True)
+                  require(len(raw) == size and base64.b64encode(raw).decode() == header[key],
+                          "editable_public_outer_seal_header_encoding")
               return {
-                  "schema": "motionwright.manim.editable.source-cycle-public/1",
+                  "schema": "motionwright.manim.editable.source-cycle-public/2",
+                  "outer_custody": outer,
                   "status": "VERIFIED_SCOPED_EDITABLE_SOURCE_CYCLE",
                   "motionwright_sha": current["source_sha"], "semwright_sha": current["semwright_sha"],
                   "profile": "editable-source-cycle", "native_effect_invocations": 4,
@@ -1962,5 +2030,7 @@ jobs:
             ${{ runner.temp }}/manim-editable-sealed-${{ github.sha }}/reopen-original.mwseal
             ${{ runner.temp }}/manim-editable-sealed-${{ github.sha }}/edited.mwseal
             ${{ runner.temp }}/manim-editable-sealed-${{ github.sha }}/reopen-edited.mwseal
+            ${{ runner.temp }}/manim-editable-sealed-${{ github.sha }}/cycle-outer.mwseal
+            ${{ runner.temp }}/manim-editable-sealed-${{ github.sha }}/cycle-outer.public.json
           if-no-files-found: error
           retention-days: 14
