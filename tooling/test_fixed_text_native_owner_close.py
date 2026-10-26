@@ -3,8 +3,11 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import native_film180_original_g2 as runner
 
 
