@@ -453,7 +453,7 @@ def run(gate, sdk, output):
         report["fixture"] = verify_fixture(raw_fixture, fixture, binaries, evidence)
         test_env = {**env, **{k: report["fixture"]["configuration"][k] for k in FIXTURE_VARIABLES}}
         binary = binaries["semwrightd"]
-        row = barrier([binary["absolute_path"], "--list", "--format", "terse"], sdk, env, logs,
+        row = barrier([binary["absolute_path"], "--list", "--format", "pretty"], sdk, env, logs,
                       "compiled-roster", 45, context)
         listed = compiled_roster(observer.original_stream(logs, row, "stdout"), row["exit_code"])
         report["roster"] = listed

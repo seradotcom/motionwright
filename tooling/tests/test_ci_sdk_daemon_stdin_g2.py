@@ -245,6 +245,75 @@ class CompilerAndRosterControls(unittest.TestCase):
                 gate.compiled_roster(raw, 0)
         with self.assertRaises(gate.custody.VerificationError): gate.compiled_roster(roster_bytes(gate.CASES), True)
 
+    def test_original_terse_listing_cannot_omit_the_summary(self):
+        # Original Linux libtest --list --format terse output: no footer.
+        raw = (
+            b'host_stdin_custody::bridge_tests::linux_genuine_capture_late_reserved_permit_is_counted_not_false_eof: test\n'
+            b'host_stdin_custody::bridge_tests::linux_genuine_capture_stop_during_consumer_terminal_wait_stays_incomplete: test\n'
+            b'host_stdin_custody::bridge_tests::linux_real_host_metadata_collision_preserves_partial_bytes_and_native_job: test\n'
+            b'host_stdin_custody::bridge_tests::linux_real_host_nonempty_capture_drains_to_bound_original_and_terminal: test\n'
+            b'host_stdin_custody::tests::custody_directory_is_denied_to_overlapping_filesystem_grants: test\n'
+            b'host_stdin_custody::tests::default_off_and_partial_options_never_enable_custody: test\n'
+            b'host_stdin_custody::tests::original_pipe_terminals_are_distinct_and_never_imply_consumption: test\n'
+            b'host_stdin_custody::tests::private_directory_refuses_reuse_links_and_nonprivate_parent: test\n'
+            b'host_stdin_custody::tests::quota_and_encoded_metadata_reject_before_reserving_output: test\n'
+            b'host_stdin_custody::tests::retained_directory_never_follows_a_replacement_path: test\n'
+            b'host_stdin_custody::tests::retained_manifest_and_drop_do_not_fabricate_native_terminals: test\n'
+            b'host_stdin_custody::tests::selection_requires_exact_existing_unique_provider_and_v7_tool: test\n'
+            b'host_stdin_custody::tests::setup_sanitization_preserves_known_and_unknown_without_private_details: test\n'
+            b'stdin_custody_cli_tests::diagnostic_binary_requires_explicit_cli_selection: test\n'
+            b'stdin_custody_cli_tests::ordinary_cli_does_not_enable_custody: test\n'
+        )
+        self.assertEqual(len(raw), 1436)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         "a640af1efee6b60e6f5d49976fdf287d65010b8a81e08145a4f0e756d0db1577")
+        names = gate.observer.selected_roster(raw, 0, {"prefixes": (gate.CASE_PREFIX,)}, gate.CASES, "repair")
+        self.assertEqual(len(names["all"]), 15)
+        self.assertEqual(names["selected"], gate.CASES)
+        self.assertEqual(len(names["not_selected"]), 11)
+        self.assertEqual(names["not_selected_credit"], "NONE")
+        with self.assertRaisesRegex(gate.custody.VerificationError,
+                                    "enumeration summary does not match its own IDs"):
+            gate.compiled_roster(raw, 0)
+
+    def test_real_listing_call_requests_pretty_and_keeps_observation_contract(self):
+        # Actual Rust 1.98.1 --list outputs from one inert compiled fixture.
+        # Only the two enumeration statements run here, with process/log seams.
+        listings = {"terse": b'list_only_fixture: test\n', "pretty": b'list_only_fixture: test\n\n1 test, 0 benchmarks\n'}
+        self.assertEqual(hashlib.sha256(listings["terse"]).hexdigest(),
+                         "5c81185603de099f5390153fe094b172620c9c84ca159b83c5ff444290503d10")
+        self.assertEqual(hashlib.sha256(listings["pretty"]).hexdigest(),
+                         "62356216f8ecf2ca59c9e7fd557adff9e16260c47fa48930b55fb7273bd9cd41")
+        module = ast.parse(Path(gate.__file__).read_bytes())
+        function = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "run")
+        body = next(node for node in function.body if isinstance(node, ast.Try)).body
+        indices = [index for index, node in enumerate(body)
+                   if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                   and isinstance(node.value.func, ast.Name) and node.value.func.id == "barrier"
+                   and len(node.value.args) == 7 and isinstance(node.value.args[4], ast.Constant)
+                   and node.value.args[4].value == "compiled-roster"]
+        self.assertEqual(len(indices), 1)
+        index = indices[0]
+        self.assertIsInstance(body[index + 1], ast.Assign)
+        self.assertEqual(body[index + 1].value.func.id, "compiled_roster")
+        command = mock.Mock(side_effect=lambda argv, *_args: {"argv": argv, "exit_code": 0})
+        read = mock.Mock(side_effect=lambda _logs, row, _stream: listings[row["argv"][-1]])
+        binary, env, logs, context = identity(), {"scope": "list-only-fixture"}, Path("logs"), {"source": "fixture"}
+        namespace = {"__builtins__": {}, "barrier": command, "binary": binary, "sdk": self.repo,
+                     "env": env, "logs": logs, "context": context,
+                     "observer": SimpleNamespace(original_stream=read), "compiled_roster": gate.compiled_roster}
+        statements = ast.Module(body=deepcopy(body[index:index + 2]), type_ignores=[])
+        with mock.patch.object(gate, "CASE_PREFIX", "list_only_fixture"), \
+                mock.patch.object(gate, "CASES", ("list_only_fixture",)):
+            exec(compile(statements, "actual-compiled-roster-statements", "exec"), namespace)
+        command.assert_called_once_with([binary["absolute_path"], "--list", "--format", "pretty"],
+                                        self.repo, env, logs, "compiled-roster", 45, context)
+        read.assert_called_once_with(logs, namespace["row"], "stdout")
+        self.assertEqual(namespace["listed"]["all"], ("list_only_fixture",))
+        self.assertEqual(namespace["listed"]["selected"], ("list_only_fixture",))
+        self.assertEqual(namespace["listed"]["not_selected"], ())
+        self.assertEqual(namespace["listed"]["not_selected_credit"], "NONE")
+
     def test_producer_barrier_forbids_build_after_first_observation(self):
         delegate = mock.Mock()
         barrier = gate.sdk_gate.ProducerBarrier(delegate, "cargo-exact")
