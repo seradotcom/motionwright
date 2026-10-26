@@ -2,6 +2,7 @@ import { CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { readNativePreviewFrame } from "./api";
 import type { NativeFrameSelection } from "./nativeFrameSelection";
+import type { NativeWindowReceipt } from "./nativeWindowPreview";
 import {
   NativePreviewByteCache, planNativePreviewRead,
   previewTier, requireBoundedNativePng,
@@ -25,15 +26,18 @@ function imageUrl(bytes: Uint8Array): string {
  * An old verified frame can be held but must never be labeled current.
  */
 export default function NativeFrameStage({
-  project,selection,editorialPlaying,onDecoded,
+  project,selection,editorialPlaying,onDecoded,windowReceipt,
 }:{
   project:Project;
   selection:NativeFrameSelection;
   editorialPlaying:boolean;
   onDecoded?:(frame:DecodedPreviewFrame)=>void;
+  windowReceipt?:NativeWindowReceipt;
 }) {
   const scope=[
     project.id,project.generation,project.active_branch,project.revision,selection.token,selection.segmentId,
+    windowReceipt ? JSON.stringify(["window",windowReceipt.response.window.source_window,
+      windowReceipt.response.window.segment_window,windowReceipt.response.window.original_prefix]) : "full",
   ].join(":");
   const activeScope=useRef(scope);
   activeScope.current=scope;
@@ -155,16 +159,22 @@ export default function NativeFrameStage({
   const ready=presented?.scope===scope?presented:null;
   const exact=ready?.frameIndex===selection.frameIndex;
   const visibleFailure=failure?.frameIndex===selection.frameIndex?failure:null;
-  const requested="Frame "+(selection.frameIndex+1)+" / "+selection.frameCount;
-  const actual=ready?"Frame "+(ready.frameIndex+1)+" / "+selection.frameCount:null;
-  return <div className="native-frame-stage" role="region" aria-label="Verified native PNG frame preview">
+  const describeFrame=(index:number)=>windowReceipt
+    ?"Local PNG "+index+" · "+selection.frameCount+" selected"
+    :"Frame "+(index+1)+" / "+selection.frameCount;
+  const requested=describeFrame(selection.frameIndex);
+  const actual=ready?describeFrame(ready.frameIndex):null;
+  return <div className="native-frame-stage" role="region" aria-label={windowReceipt?"Native window PNG frame preview":"Verified native PNG frame preview"}>
     {ready&&<img className="native-frame-image" src={ready.url}
-      alt={"Verified native rendered PNG · "+actual}
+      alt={(windowReceipt?"Native window PNG · ":"Verified native rendered PNG · ")+actual}
       draggable={false}
       onLoad={event=>{
         if(activeScope.current!==ready.scope||latestFrame.current?.url!==ready.url)return;
         const image=event.currentTarget;
         if(image.naturalWidth<1||image.naturalHeight<1)return;
+        // Recovery v1 has no Window origin/range. Never give it Window pixels
+        // or reinterpret this session handle as Full/master authority.
+        if(windowReceipt)return;
         decodedCallback.current?.({bytes:new Uint8Array(ready.bytes),frameIndex:ready.frameIndex,
           frameCount:selection.frameCount,pixelWidth:image.naturalWidth,pixelHeight:image.naturalHeight});
       }}
@@ -199,6 +209,9 @@ export default function NativeFrameStage({
     </div>}
     <div className="native-frame-caption">
       <span>{exact?actual??requested:requested} · source r{project.revision}</span>
+      {windowReceipt&&<span>Source frame {windowReceipt.response.window.source_window.start+(ready?.frameIndex??selection.frameIndex)};
+        segment frame {windowReceipt.response.window.segment_window.start+(ready?.frameIndex??selection.frameIndex)};
+        {" "+windowReceipt.response.window.validation.verdict+" · preview only · not a master"}</span>}
       <span>{previewTier(editorialPlaying)==="sampled_scrub"
         ?"Sampled source PNG during scrub · up to 4 reads/s"
         :"Settled exact source PNG · no synthesized frames"}

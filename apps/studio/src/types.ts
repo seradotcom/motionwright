@@ -469,6 +469,45 @@ export interface MotionCanvasRenderEvidence {
   preview?: NativePreviewGrant[];
 }
 
+/** Original source-frame coordinates. All ranges are half-open. */
+export interface SourceFrameWindow { start: number; end: number; }
+export interface MotionCanvasWindowSummary {
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  source_scene_id: string;
+  source_window: SourceFrameWindow;
+  segment_window: SourceFrameWindow;
+  original_prefix: SourceFrameWindow;
+  frame_rate: { num: number; den: number };
+  preview_only: true;
+  master_eligible: false;
+  validation: {
+    verdict: "PASS" | "UNKNOWN";
+    native_frame_coverage: "PASS" | "UNKNOWN";
+    pass_checks: number;
+    unknown_checks: number;
+    unknown_findings: number;
+  };
+  cost: {
+    operation: "native_prefix" | "explicit_original_reuse";
+    original_prefix_pngs: number;
+    selected_pngs: number;
+    reused_original_pngs: number;
+    start_calls_observed: number;
+    cached_png_bytes_returned: number;
+    cache_payload_bytes_admitted: number;
+    cache_micros: number;
+    internal_simulation_steps: null;
+    internal_simulation_observation: "not_observed";
+  };
+}
+/** Session-only Window result. This is deliberately not Full render evidence. */
+export interface NativeWindowRenderResponse {
+  window: MotionCanvasWindowSummary;
+  preview: NativePreviewGrant;
+}
+
 /** Read-only, session-authorized native multi-segment manifest/Film check.
  * It is not a completed MLT render and intentionally contains no paths.
  */

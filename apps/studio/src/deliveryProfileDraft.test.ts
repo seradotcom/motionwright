@@ -1382,3 +1382,175 @@ describe("explicit saved profile and journal inspection", () => {
     expect(JSON.stringify(legacy)).toBe(raw);
   });
 });
+
+
+/** Source-only saved-font admission. These fixtures observe IPC arguments and
+ * blocked calls; they establish no font rights, provider support or native pixels.
+ */
+describe("saved Film font source selection at the existing API boundary", () => {
+  const windowRequestId = "abcdef00-0000-4000-8000-000000000555";
+  function fontSource() {
+    const sample = source();
+    sample.project.schema_version = 2;
+    sample.project.branches.find(branch => branch.id === sample.project.active_branch)!.head_revision = sample.project.revision;
+    const scene = sample.project.scenes[0];
+    sample.project.deliverables[0].included_scene_ids = [scene.id];
+    sample.options.scene_intents = sample.options.scene_intents.filter(intent => intent.scene_id === scene.id);
+    return sample;
+  }
+  function firstText(sample: Sample) {
+    return sample.project.scenes[0].nodes.find(node => node.kind === "text")!;
+  }
+  function twoTextFamilies(sample: Sample, left: string | null, right: string | null) {
+    const scene = sample.project.scenes[0], text = firstText(sample);
+    text.style = { ...text.style, font_family: left, font_weight: 400 };
+    const otherId = scene.nodes.find(node => node.id !== text.id)!.id;
+    scene.nodes = [text, { ...structuredClone(text), id: otherId,
+      style: { ...text.style, font_family: right } }];
+  }
+  async function windowIntent(sample: Sample, options = sample.options) {
+    const { createNativeWindowIntent } = await import("./nativeWindowPreview");
+    return createNativeWindowIntent(sample.project, sample.project.scenes[0], sample.project.deliverables[0],
+      { start: 0, end: 2 }, options, windowRequestId);
+  }
+
+  it("forwards an explicitly saved IBM 400 style to preflight, Full and Window without changing the source or grant barriers", async () => {
+    const sample = fontSource(), original = JSON.stringify(sample.project);
+    const scene = sample.project.scenes[0], text = firstText(sample);
+    const savedStyle = { ...text.style, font_family: "IBM Plex Mono", font_weight: 400 };
+    // Existing browser simulator applies the real authoring change shape. This
+    // is a local source fixture, not a StudioService/SQLite save receipt.
+    vi.stubGlobal("window", {});
+    const saved = await api.applyChange(sample.project, {
+      type: "update_canvas_style", scene_id: scene.id, node_id: text.id, style: savedStyle,
+    });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    expect(JSON.stringify(sample.project)).toBe(original);
+    expect(saved.revision).toBe(sample.project.revision + 1);
+    expect(saved.branches.find(branch => branch.id === saved.active_branch)!.head_revision).toBe(saved.revision);
+    expect(saved.scenes[0].nodes.find(node => node.id === text.id)!.style).toEqual(savedStyle);
+    const updated = { ...sample, project: saved, options: { ...sample.options, font_family: "IBM Plex Mono" } };
+    const savedRaw = JSON.stringify(saved);
+    const projection = { fixture: "preflight forwarding only, no native projection verdict" };
+    const full = { fixture: "Full forwarding only, no native render receipt" };
+    const windowStop = new Error("Synthetic transport stopped after observing the Window request; no native response.");
+    invokeFixture.mockImplementation((command: string) => {
+      if (command === "motion_canvas_preflight") return Promise.resolve(projection);
+      if (command === "issue_effect_grant") return Promise.resolve({ token: grantToken });
+      if (command === "render_motion_canvas") return Promise.resolve(full);
+      if (command === "render_motion_canvas_window") return Promise.reject(windowStop);
+      throw new Error("Unexpected font fixture command.");
+    });
+    const fullBarrier = vi.fn(), windowBarrier = vi.fn(), dispatched = vi.fn();
+    await expect(api.preflightMotionCanvas(saved, sample.profileId, updated.options)).resolves.toBe(projection);
+    await expect(api.renderMotionCanvas(saved, sample.profileId, updated.options, fullBarrier)).resolves.toBe(full);
+    const intent = await windowIntent(updated);
+    await expect(api.renderMotionCanvasWindow(saved, intent, windowBarrier, dispatched)).rejects.toBe(windowStop);
+    expect(invokeFixture.mock.calls.map(call => call[0])).toEqual([
+      "motion_canvas_preflight", "issue_effect_grant", "render_motion_canvas",
+      "issue_effect_grant", "render_motion_canvas_window",
+    ]);
+    for (const index of [0, 2]) expect(invokeFixture.mock.calls[index][1].request.options).toEqual(updated.options);
+    expect(invokeFixture.mock.calls[4][1].request.window.options).toEqual(updated.options);
+    for (const index of [1, 3]) expect(invokeFixture.mock.calls[index][1].request).toEqual({
+      effect: "render_local", project_id: saved.id, generation: saved.generation,
+      revision: saved.revision, subject: index === 1 ? requestId : windowRequestId,
+    });
+    expect(fullBarrier).toHaveBeenCalledTimes(2);
+    expect(windowBarrier).toHaveBeenCalledTimes(2);
+    expect(dispatched).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(saved)).toBe(savedRaw);
+  });
+
+  it("uses only included Motion Canvas text and ignores excluded text, another renderer and non-text font metadata", async () => {
+    const sample = fontSource(), text = firstText(sample), scenes = sample.project.scenes;
+    text.style = { ...text.style, font_family: "IBM Plex Mono", font_weight: 400 };
+    scenes[0].nodes.find(node => node.kind !== "text")!.style.font_family = "Unrelated shape metadata";
+    // The second scene is excluded even though it is Motion Canvas text.
+    scenes[1].nodes[0] = { ...scenes[1].nodes[0], kind: "text", text: "Excluded source",
+      style: { ...text.style, font_family: "Excluded Family" } };
+    // This included scene belongs to another renderer, not this Film font.
+    scenes[2].renderer = "blender";
+    scenes[2].nodes[0] = { ...scenes[2].nodes[0], kind: "text", text: "Other renderer source",
+      style: { ...text.style, font_family: "Other Renderer Family" } };
+    sample.project.deliverables[0].included_scene_ids = [scenes[0].id, scenes[2].id];
+    const options = { ...sample.options, font_family: "IBM Plex Mono" };
+    const raw = JSON.stringify(sample.project), observed = { fixture: "read-only forwarding" };
+    invokeFixture.mockResolvedValue(observed);
+    await expect(api.preflightMotionCanvas(sample.project, sample.profileId, options)).resolves.toBe(observed);
+    expect(invokeFixture.mock.calls).toHaveLength(1);
+    expect(invokeFixture.mock.calls[0][0]).toBe("motion_canvas_preflight");
+    expect(invokeFixture.mock.calls[0][1].request.options).toEqual(options);
+    expect(JSON.stringify(sample.project)).toBe(raw);
+  });
+
+  it.each([
+    { name: "two explicit families", left: "Instrument Sans Variable", right: "IBM Plex Mono" },
+    { name: "null following an explicit nondefault family", left: "IBM Plex Mono", right: null },
+    { name: "null preceding an explicit nondefault family", left: null, right: "IBM Plex Mono" },
+    { name: "case-distinct family names", left: "IBM Plex Mono", right: "ibm plex mono" },
+    { name: "an empty explicit family", left: "", right: "Instrument Sans Variable" },
+    { name: "a whitespace-only explicit family", left: " \t ", right: null },
+  ])("rejects $name before any preflight invoke, render grant or Window custody callback", async ({ left, right }) => {
+    const sample = fontSource();
+    twoTextFamilies(sample, left, right);
+    const raw = JSON.stringify(sample.project), barrier = vi.fn(), dispatched = vi.fn();
+    const intent = await windowIntent(sample);
+    await expect(api.preflightMotionCanvas(sample.project, sample.profileId, sample.options)).rejects.toThrow(/saved (primary )?font/);
+    await expect(api.renderMotionCanvas(sample.project, sample.profileId, sample.options, barrier)).rejects.toThrow(/saved (primary )?font/);
+    await expect(api.renderMotionCanvasWindow(sample.project, intent, barrier, dispatched)).rejects.toThrow(/saved (primary )?font/);
+    expect(invokeFixture).not.toHaveBeenCalled();
+    expect(barrier).not.toHaveBeenCalled();
+    expect(dispatched).not.toHaveBeenCalled();
+    expect(JSON.stringify(sample.project)).toBe(raw);
+  });
+
+  it.each(["no-text", "null-only", "null-with-explicit-default"] as const)(
+    "retains the existing default for %s without inheriting a non-text node's font", async (mode) => {
+      const sample = fontSource(), scene = sample.project.scenes[0];
+      if (mode === "no-text") {
+        for (const node of scene.nodes) { node.kind = "shape"; node.style.font_family = "IBM Plex Mono"; }
+      } else if (mode === "null-only") {
+        firstText(sample).style.font_family = null;
+        scene.nodes.find(node => node.kind !== "text")!.style.font_family = "IBM Plex Mono";
+      } else {
+        twoTextFamilies(sample, null, "Instrument Sans Variable");
+      }
+      const raw = JSON.stringify(sample.project), observed = { fixture: "default forwarding only" };
+      invokeFixture.mockResolvedValue(observed);
+      await expect(api.preflightMotionCanvas(sample.project, sample.profileId, sample.options)).resolves.toBe(observed);
+      expect(invokeFixture.mock.calls).toHaveLength(1);
+      expect(invokeFixture.mock.calls[0][1].request.options).toEqual(sample.options);
+      expect(JSON.stringify(sample.project)).toBe(raw);
+    },
+  );
+
+  it("forwards a uniform exact saved family spelling without trimming or claiming native rights or weight support", async () => {
+    const sample = fontSource();
+    firstText(sample).style.font_family = "  Brand Exact  ";
+    // A request-shape control only: backend font rights/face/weight checks remain required.
+    expect(firstText(sample).style.font_weight).toBe(700);
+    const options = { ...sample.options, font_family: "  Brand Exact  " };
+    const raw = JSON.stringify(sample.project), observed = { fixture: "exact string forwarding only" };
+    invokeFixture.mockResolvedValue(observed);
+    await expect(api.preflightMotionCanvas(sample.project, sample.profileId, options)).resolves.toBe(observed);
+    expect(invokeFixture.mock.calls[0][1].request.options.font_family).toBe("  Brand Exact  ");
+    expect(invokeFixture.mock.calls[0][1].request.options.mono_font_family).toBe("IBM Plex Mono");
+    expect(JSON.stringify(sample.project)).toBe(raw);
+  });
+
+  it("rejects stale proposed fonts before any call even when the saved uniform text now names another family", async () => {
+    const sample = fontSource();
+    firstText(sample).style.font_family = "IBM Plex Mono";
+    const raw = JSON.stringify(sample.project), barrier = vi.fn(), dispatched = vi.fn();
+    const originalOptions = structuredClone(sample.options), intent = await windowIntent(sample, originalOptions);
+    await expect(api.preflightMotionCanvas(sample.project, sample.profileId, originalOptions)).rejects.toThrow("Film options differ");
+    await expect(api.renderMotionCanvas(sample.project, sample.profileId, originalOptions, barrier)).rejects.toThrow("Film options differ");
+    await expect(api.renderMotionCanvasWindow(sample.project, intent, barrier, dispatched)).rejects.toThrow("Film options differ");
+    expect(invokeFixture).not.toHaveBeenCalled();
+    expect(barrier).not.toHaveBeenCalled();
+    expect(dispatched).not.toHaveBeenCalled();
+    expect(JSON.stringify(sample.project)).toBe(raw);
+    expect(sample.options).toEqual(originalOptions);
+  });
+});

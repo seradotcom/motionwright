@@ -72,6 +72,8 @@ import {
   importVoiceFile,
   recoverOriginalFileImport,
   inspectProjectBundle,
+  renderMotionCanvasWindow,
+  savedNativeWindowFilmOptions,
 } from "./api";
 import AudioWorkspace from "./AudioWorkspace";
 import CanvasWorkspace from "./CanvasWorkspace";
@@ -87,6 +89,13 @@ import RetainedPreviewFrame from "./RetainedPreviewFrame";
 import { previewRecoveryScope } from "./previewRecovery";
 import { usePreviewRecovery } from "./usePreviewRecovery";
 import { nativeFrameAtPlayhead } from "./nativeFrameSelection";
+import {
+  clearConfirmedNativeWindow, createNativeWindowIntent, markNativeWindowUncertain,
+  nativeWindowCutRange, nativeWindowFrameAtPlayhead, nativeWindowIntentMatches,
+  nativeWindowReuseToken, nativeWindowSceneBounds, parseNativeWindowRange, readNativeWindowUncertainties,
+  NATIVE_WINDOW_UNCERTAINTY_PREFIX,
+  type NativeWindowIntent, type NativeWindowReceipt, type NativeWindowUncertaintyClaim,
+} from "./nativeWindowPreview";
 import { editorialTimeForMasterMedia, programMasterAtPlayhead } from "./programMaster";
 import { resolveSceneRenderReceipt } from "./renderReceipt";
 import WorkflowWorkspace from "./WorkflowWorkspace";
@@ -98,6 +107,7 @@ import type {
   Change,
   PortableBundlePlan,
   MotionCanvasRenderEvidence,
+  MotionCanvasFilmOptions,
   MltAvMasterEvidence,
   MasterExportReceipt,
   Project,
@@ -106,6 +116,7 @@ import type {
   ReviewAnchor,
   RendererKind,
   Scene,
+  SourceFrameWindow,
 } from "./types";
 import { rationalSeconds, seconds } from "./types";
 import {
@@ -224,6 +235,16 @@ function IconButton({
   );
 }
 
+interface NativeWindowEditorState {
+  startRaw: string;
+  endRaw: string;
+  receipt: NativeWindowReceipt | null;
+  pending: NativeWindowIntent | null;
+  error: string | null;
+}
+type NativeWindowEditors = Record<string, NativeWindowEditorState>;
+type UpdateNativeWindowEditors = (update: (current: NativeWindowEditors) => NativeWindowEditors) => void;
+
 export function PreviewSurface({
   scene,
   project,
@@ -237,6 +258,10 @@ export function PreviewSurface({
   onSeek,
   onPauseEditorial,
   editorialPlaying,
+  desktopMode = false,
+  windowEditors,
+  onWindowEditors,
+  onInspectWindow,
 }: {
   scene: Scene | null;
   project: Project;
@@ -250,10 +275,128 @@ export function PreviewSurface({
   onSeek: (seconds: number) => void;
   onPauseEditorial: () => void;
   editorialPlaying: boolean;
+  desktopMode?: boolean;
+  windowEditors?: NativeWindowEditors;
+  onWindowEditors?: UpdateNativeWindowEditors;
+  onInspectWindow?: () => void;
 }) {
   const receipt = resolveSceneRenderReceipt(project, scene, profile, renderEvidence);
   const nativeFrame = nativeFrameAtPlayhead(project, scene, profile, renderEvidence, playhead);
   const nativeAv = programMasterAtPlayhead(project, scene, profile, renderEvidence, avEvidence, playhead);
+  const windowDraftKey = JSON.stringify([project.id, project.generation, project.active_branch, scene?.id, profile?.id]);
+  let defaultBounds = { start: "", end: "" };
+  let windowInputIssue: string | null = null;
+  let windowOptions: MotionCanvasFilmOptions | null = null;
+  let windowRange: SourceFrameWindow | null = null;
+  let cutRange: { start: RationalTime; end: RationalTime } | null = null;
+  if (scene && profile) {
+    try {
+      const fps = { num: Number(profile.frame_rate.num), den: Number(profile.frame_rate.den) };
+      const bounds = nativeWindowSceneBounds(scene, fps);
+      defaultBounds = { start: String(bounds.start), end: String(Math.min(bounds.end, bounds.start + 30, 1_080_000)) };
+    } catch (reason) { windowInputIssue = reason instanceof Error ? reason.message : "The saved source window is unavailable."; }
+  }
+  const windowEditor = windowEditors?.[windowDraftKey] ?? { startRaw: defaultBounds.start, endRaw: defaultBounds.end, receipt: null, pending: null, error: null };
+  if (scene && profile && !windowInputIssue) {
+    try {
+      windowOptions = savedNativeWindowFilmOptions(project, profile.id);
+      windowRange = parseNativeWindowRange(scene, windowOptions.frame_rate, windowEditor.startRaw, windowEditor.endRaw);
+      cutRange = nativeWindowCutRange(project, scene, profile, windowRange, windowOptions.frame_rate);
+    } catch (reason) { windowInputIssue = reason instanceof Error ? reason.message : "The saved window intent is incomplete."; }
+  }
+  const [windowStorageVersion, setWindowStorageVersion] = useState(0);
+  useEffect(() => {
+    if (!desktopMode || !onWindowEditors) return;
+    const changed = (event: StorageEvent) => {
+      if (event.key === null || event.key.startsWith(NATIVE_WINDOW_UNCERTAINTY_PREFIX)) setWindowStorageVersion(value => value + 1);
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [desktopMode, onWindowEditors]);
+  const { unresolvedWindows, windowCopyIssue } = useMemo(() => {
+    try { return { unresolvedWindows: desktopMode && onWindowEditors ? readNativeWindowUncertainties(window.localStorage, project) : [], windowCopyIssue: null }; }
+    catch (reason) { return { unresolvedWindows: [], windowCopyIssue: reason instanceof Error ? reason.message : "The original window outcome copy is unavailable." }; }
+  }, [desktopMode, onWindowEditors, project, windowEditors, windowStorageVersion]);
+  const currentWindowReceipt = scene && profile && windowRange && windowOptions && windowEditor.receipt
+    && nativeWindowIntentMatches(windowEditor.receipt.intent, project, scene, profile, windowRange, windowOptions)
+    ? windowEditor.receipt : null;
+  const windowFrame = nativeWindowFrameAtPlayhead(project, scene, profile, currentWindowReceipt, playhead);
+  const windowAuthorityKey = JSON.stringify(["window", project.id, project.generation, project.active_branch,
+    project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions,
+    currentWindowReceipt?.response.preview.token]);
+  const windowDispatchContext = JSON.stringify([project.id, project.generation, project.active_branch,
+    project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions]);
+  const windowCurrent = useRef({ context: windowDispatchContext, epoch: 0, project, scene, profile, range: windowRange, options: windowOptions });
+  if (windowCurrent.current.context !== windowDispatchContext) {
+    windowCurrent.current = { context: windowDispatchContext, epoch: windowCurrent.current.epoch + 1,
+      project, scene, profile, range: windowRange, options: windowOptions };
+  } else {
+    windowCurrent.current = { ...windowCurrent.current, project, scene, profile, range: windowRange, options: windowOptions };
+  }
+  const windowMounted = useRef(false);
+  const windowDispatchBusy = useRef(false);
+  useEffect(() => {
+    windowMounted.current = true;
+    return () => { windowMounted.current = false; windowCurrent.current.epoch++; };
+  }, []);
+  const anyWindowPending = Object.values(windowEditors ?? {}).some(value => value.pending?.project_id === project.id
+    && value.pending.generation === project.generation && value.pending.revision === project.revision);
+  const updateWindow = (key: string, initial: NativeWindowEditorState, update: (current: NativeWindowEditorState) => NativeWindowEditorState) => {
+    onWindowEditors?.(current => ({ ...current, [key]: update(current[key] ?? initial) }));
+  };
+  const captureWindow = async (reuse: boolean) => {
+    if (!desktopMode || !onWindowEditors || !scene || !profile || !windowRange || !windowOptions
+        || anyWindowPending || windowDispatchBusy.current || (!reuse && (unresolvedWindows.length > 0 || windowCopyIssue))) return;
+    const initial = windowEditor, key = windowDraftKey;
+    const originalEpoch = windowCurrent.current.epoch;
+    const originalContext = windowCurrent.current.context;
+    let intent: NativeWindowIntent;
+    try { intent = createNativeWindowIntent(project, scene, profile, windowRange, windowOptions, crypto.randomUUID()); }
+    catch (reason) {
+      updateWindow(key, initial, value => ({ ...value, error: reason instanceof Error ? reason.message : "The saved window intent is invalid." }));
+      return;
+    }
+    const token = reuse ? nativeWindowReuseToken(intent, currentWindowReceipt) : null;
+    if (reuse && !token) return;
+    intent = { ...intent, reuse_token: token };
+    let dispatched = false;
+    let claim: NativeWindowUncertaintyClaim | null = null;
+    const fresh = () => {
+      const now = windowCurrent.current;
+      return windowMounted.current && now.epoch === originalEpoch && now.context === originalContext
+        && now.scene !== null && now.profile !== null && now.range !== null && now.options !== null
+        && nativeWindowIntentMatches(intent, now.project, now.scene, now.profile, now.range, now.options);
+    };
+    const beforeDispatch = () => {
+      if (!fresh()) throw new Error("Window selection changed while preparing its grant; no native command was dispatched.");
+      if (!reuse && readNativeWindowUncertainties(window.localStorage, project).length > 0) {
+        throw new Error("An original window outcome is unresolved; this saved revision remains blocked.");
+      }
+    };
+    windowDispatchBusy.current = true;
+    updateWindow(key, initial, value => ({ ...value, pending: intent, error: null }));
+    try {
+      const result = await renderMotionCanvasWindow(project, intent, beforeDispatch, () => {
+        if (!fresh()) throw new Error("The selected window changed before native dispatch.");
+        if (!reuse) claim = markNativeWindowUncertain(window.localStorage, intent);
+        dispatched = true;
+      });
+      let copyWarning: string | null = null;
+      if (claim) {
+        try { clearConfirmedNativeWindow(window.localStorage, claim); }
+        catch (reason) { copyWarning = reason instanceof Error ? reason.message : "The completed window marker remains retained."; }
+      }
+      const canPublish = fresh();
+      updateWindow(key, initial, value => value.pending?.request_id !== intent.request_id ? value : ({ ...value, pending: null,
+        receipt: canPublish ? result : value.receipt,
+        error: canPublish ? copyWarning : "The original window completed for an earlier selection. Its pixels were not published; inspect the original operation in Jobs." }));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "The native window request did not return a verified response.";
+      updateWindow(key, initial, value => value.pending?.request_id !== intent.request_id ? value : ({ ...value, pending: null, error: !reuse && dispatched
+        ? "Capture outcome UNKNOWN for original request " + intent.request_id + ". The intent is retained and this saved revision remains blocked. Jobs inspection does not clear the marker or recover a preview token. " + message
+        : reuse ? "Original window reuse failed; no fallback capture was dispatched. " + message : message }));
+    } finally { windowDispatchBusy.current = false; }
+  };
   const authorityKey = JSON.stringify([project.id, project.generation, project.active_branch,
     project.revision, scene?.id, profile?.id, nativeFrame?.token, nativeAv?.exportToken]);
   // AV belongs to the whole admitted master, so its explicit choice must
@@ -263,34 +406,36 @@ export function PreviewSurface({
   // Revisions preserve decoded pixels, while native reads still require an
   // explicit opt-in tied to the exact current authority. A restored local copy
   // is always historical, even when its source revision matches the project.
-  const [choice, setChoice] = useState<{ source: "design" | "frames" | "av" | "recovery"; authority: string }>(
+  const [choice, setChoice] = useState<{ source: "design" | "frames" | "window" | "av" | "recovery"; authority: string }>(
     { source: "recovery", authority: "" },
   );
   const selectPreviewSource = (source: typeof choice.source) => setChoice({
-    source, authority: source === "av" ? avAuthorityKey : authorityKey,
+    source, authority: source === "av" ? avAuthorityKey : source === "window" ? windowAuthorityKey : authorityKey,
   });
   // A real authority change consumes the previous opt-in. Returning A -> B -> A
   // cannot resurrect it; moving between scenes of the same master can retain it.
   useEffect(() => {
-    setChoice(previous => previous.authority === (previous.source === "av" ? avAuthorityKey : authorityKey)
+    setChoice(previous => previous.authority === (previous.source === "av" ? avAuthorityKey : previous.source === "window" ? windowAuthorityKey : authorityKey)
       ? previous : { source: "recovery", authority: authorityKey });
-  }, [avAuthorityKey, authorityKey]);
+  }, [avAuthorityKey, authorityKey, windowAuthorityKey]);
   const recovery = usePreviewRecovery(previewRecoveryScope(project, scene, profile), project.revision, authorityKey);
   const showingNative = choice.source === "frames" && choice.authority === authorityKey && nativeFrame !== null;
   const showingAv = choice.source === "av" && choice.authority === avAuthorityKey && nativeAv !== null;
-  const showingHistorical = recovery.frame !== null && !showingNative && !showingAv && choice.source !== "design";
+  const showingWindow = choice.source === "window" && choice.authority === windowAuthorityKey && windowFrame !== null;
+  const showingHistorical = recovery.frame !== null && !showingNative && !showingWindow && !showingAv && choice.source !== "design";
   const relative = scene ? Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start))) : 0;
   const hasProgramDesign = hasEditableProgramDesign(scene);
 
   return (
-    <section className="preview-wrap" aria-label="Program preview">
-      <div className="preview-toolbar">
+    <section className="preview-wrap" aria-label="Program preview" style={onWindowEditors ? { gridTemplateRows: "auto minmax(0, 1fr) auto" } : undefined}>
+      <div className="preview-toolbar" style={onWindowEditors ? { flexWrap: "wrap", minHeight: 36 } : undefined}>
         <div className="preview-mode">
           <span className="preview-dot" />
           Program
           <span className="toolbar-divider" />
           <span className="muted">
             {showingAv ? "Verified H.264/AAC master · decoded review" :
+              showingWindow ? "Native window PNG · preview only · " + currentWindowReceipt!.response.window.validation.verdict :
               showingNative ? "Verified native PNG · sampled frames" :
               showingHistorical ? "Retained historical preview · not current" : "Design representation"}
           </span>
@@ -327,7 +472,62 @@ export function PreviewSurface({
             {showingAv ? "Show design" : "Review final AV"}
           </button>
         )}
+        {currentWindowReceipt && <button type="button" className={"button compact native-frame-toggle " + (showingWindow ? "selected" : "")}
+          disabled={!showingWindow && windowFrame === null}
+          title={windowFrame === null ? "The source playhead is outside this half-open window. No boundary frame will be substituted."
+            : "Read original window PNGs. Partial coverage remains preview-only and cannot supply a master."}
+          onClick={() => selectPreviewSource(showingWindow ? "design" : "window")}>
+          {showingWindow ? "Show design" : "Show window frames"}
+        </button>}
         <div className="timecode">{formatTime(playhead, rate, mode)}</div>
+        {onWindowEditors && <details style={{ flex: "1 1 100%", minWidth: 0, paddingBottom: 6 }}>
+          <summary>Native window preview</summary>
+          <div role="region" aria-label="Native window controls" style={{ display: "grid", gap: 6, minWidth: 0, overflowWrap: "anywhere", paddingTop: 7 }}>
+            <p style={{ margin: 0 }}>Preview a selected range from the saved source scene. This capture remains preview-only.</p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "end", minWidth: 0 }}>
+              <label style={{ display: "grid", gap: 3, minWidth: 0 }}>Source window start frame
+                <input aria-label="Source window start frame" type="text" inputMode="numeric" autoComplete="off" spellCheck={false}
+                  style={{ width: "12ch", maxWidth: "100%" }} value={windowEditor.startRaw}
+                  onChange={event => { const raw = event.target.value; updateWindow(windowDraftKey, windowEditor, value => ({ ...value, startRaw: raw, error: null })); }} />
+              </label>
+              <label style={{ display: "grid", gap: 3, minWidth: 0 }}>Source window end frame (exclusive)
+                <input aria-label="Source window end frame (exclusive)" type="text" inputMode="numeric" autoComplete="off" spellCheck={false}
+                  style={{ width: "12ch", maxWidth: "100%" }} value={windowEditor.endRaw}
+                  onChange={event => { const raw = event.target.value; updateWindow(windowDraftKey, windowEditor, value => ({ ...value, endRaw: raw, error: null })); }} />
+              </label>
+              <button type="button" className="button compact" disabled={!desktopMode || !scene || !profile || !windowRange || !windowOptions
+                || anyWindowPending || unresolvedWindows.length > 0 || windowCopyIssue !== null}
+                onClick={() => { void captureWindow(false); }}>Capture native window</button>
+              <button type="button" className="button compact" disabled={!desktopMode || !currentWindowReceipt || anyWindowPending}
+                onClick={() => { void captureWindow(true); }}>Reuse original window</button>
+              <button type="button" className="button compact" onClick={onInspectRender}>Inspect saved Film</button>
+              {onInspectWindow && <button type="button" className="button compact" onClick={onInspectWindow}>Inspect original jobs</button>}
+            </div>
+            {!desktopMode && <p role="status" style={{ margin: 0 }}>Native window capture requires the installed desktop runtime.</p>}
+            {windowInputIssue && <p role="status" style={{ margin: 0 }}>{windowInputIssue}</p>}
+            {cutRange && windowRange && <p style={{ margin: 0 }} aria-label="Selected native window coordinates">
+              Source frames {windowRange.start} to {windowRange.end} (end excluded); selected cut {formatTime(seconds(cutRange.start), rate, mode)} to {formatTime(seconds(cutRange.end), rate, mode)}.
+            </p>}
+            {anyWindowPending && <p role="status" style={{ margin: 0 }}>Waiting for the original window request. No native request will be retried.</p>}
+            {(windowCopyIssue || (unresolvedWindows.length > 0 && !anyWindowPending)) && <p role="alert" style={{ margin: 0 }}>
+              {windowCopyIssue ?? "Capture outcome UNKNOWN for retained original request(s) " + unresolvedWindows.map(intent => intent.request_id).join(", ")
+                + ". This saved revision remains blocked. Jobs can inspect original operations; it does not clear these markers or recover preview tokens."}
+            </p>}
+            {windowEditor.error && <p role="alert" style={{ margin: 0 }}>{windowEditor.error}</p>}
+            {currentWindowReceipt && <div role="status" aria-label="Native window evidence" style={{ minWidth: 0 }}>
+              <strong>WINDOW · {currentWindowReceipt.response.window.validation.verdict} · PREVIEW ONLY · NOT A MASTER</strong>
+              <p style={{ margin: "4px 0 0" }}>Source frames {currentWindowReceipt.response.window.source_window.start} to {currentWindowReceipt.response.window.source_window.end} (end excluded). Coverage {currentWindowReceipt.response.window.validation.native_frame_coverage}.</p>
+              <details style={{ marginTop: 4, minWidth: 0 }}>
+                <summary>Capture details</summary>
+                {cutRange && <p style={{ margin: "4px 0 0" }}>Exact selected-cut seconds [{cutRange.start.num}/{cutRange.start.den}, {cutRange.end.num}/{cutRange.end.den}).</p>}
+                <p style={{ margin: "4px 0 0" }}>Source [{currentWindowReceipt.response.window.source_window.start}, {currentWindowReceipt.response.window.source_window.end}); segment [{currentWindowReceipt.response.window.segment_window.start}, {currentWindowReceipt.response.window.segment_window.end}); original prefix [0, {currentWindowReceipt.response.window.original_prefix.end}); local PNG [0, {currentWindowReceipt.response.preview.frame_count}).</p>
+                <p style={{ margin: "4px 0 0" }}>{currentWindowReceipt.response.window.cost.original_prefix_pngs} original prefix PNGs; {currentWindowReceipt.response.window.cost.selected_pngs} selected; {currentWindowReceipt.response.window.cost.reused_original_pngs} reused; {currentWindowReceipt.response.window.cost.start_calls_observed} fresh authenticated start calls. Internal simulation: not observed.</p>
+                <p style={{ margin: "4px 0 0" }}>{currentWindowReceipt.response.window.cost.cached_png_bytes_returned} cached PNG bytes returned; {currentWindowReceipt.response.window.cost.cache_payload_bytes_admitted} cache payload bytes admitted. These are not physical disk-I/O counters.</p>
+              </details>
+              {!windowFrame && <p style={{ margin: "4px 0 0" }}>The source playhead is outside this window. No frame is current and no edge frame is substituted.</p>}
+            </div>}
+          </div>
+        </details>}
       </div>
       <div className="preview-stage">
         <div className="safe-frame">
@@ -351,7 +551,7 @@ export function PreviewSurface({
                 <div className="semantic-node accent">{rendererLabels[scene.renderer]}</div>
               </div>
               </>}
-              {hasProgramDesign && !showingNative && !showingAv && !showingHistorical &&
+              {hasProgramDesign && !showingNative && !showingWindow && !showingAv && !showingHistorical &&
                 <ProgramDesignStudy project={project} scene={scene} time={relative} profile={profile}/>}
               <div className="preview-progress" aria-hidden="true">
                 <span
@@ -374,6 +574,11 @@ export function PreviewSurface({
             <NativeFrameStage key={authorityKey}
               project={project} selection={nativeFrame} editorialPlaying={editorialPlaying}
               onDecoded={decoded => recovery.remember(decoded, authorityKey, scene?.name ?? "Scene")} />
+          )}
+          {showingWindow && windowFrame && currentWindowReceipt && (
+            <NativeFrameStage key={windowAuthorityKey}
+              project={project} selection={windowFrame} editorialPlaying={editorialPlaying}
+              windowReceipt={currentWindowReceipt} />
           )}
           {showingAv && nativeAv && (
             <NativeAvReview
@@ -412,7 +617,7 @@ export function PreviewSurface({
               Receipt for {receipt.profileName} · different display profile
             </>
           ) : (
-            <><CircleDashed size={13} aria-hidden="true" /> No render evidence attached</>
+            <><CircleDashed size={13} aria-hidden="true" /> No {currentWindowReceipt ? "full " : ""}render evidence attached</>
           )}
         </span>
         {(receipt || showingHistorical) && (
@@ -1503,6 +1708,7 @@ export default function App() {
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [nativeRenderReceipt, setNativeRenderReceipt] = useState<MotionCanvasRenderEvidence | null>(null);
+  const [nativeWindowEditors, setNativeWindowEditors] = useState<NativeWindowEditors>({});
   const [nativeAvReceipt, setNativeAvReceipt] = useState<MltAvMasterEvidence | null>(null);
   const [nativeExportReceipt, setNativeExportReceipt] = useState<MasterExportReceipt | null>(null);
   const [timebaseProfileId, setTimebaseProfileId] = useState<string | null>(null);
@@ -2146,7 +2352,9 @@ export default function App() {
           renderEvidence={nativeRenderReceipt} avEvidence={nativeAvReceipt}
           onInspectRender={() => setWorkspace("Deliver")}
           onSeek={seekTo} onPauseEditorial={() => setPlaying(false)}
-          editorialPlaying={playing} />;
+          editorialPlaying={playing} desktopMode={boot.native_sdk.mode === "tauri"}
+          windowEditors={nativeWindowEditors} onWindowEditors={setNativeWindowEditors}
+          onInspectWindow={() => setWorkspace("Jobs")} />;
       case "Jobs":
         return (
           <ProductionJobsWorkspace

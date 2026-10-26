@@ -9,6 +9,7 @@ import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateCraftDisclosures, validateMetricSourceNoticesOnEdit } from "./creativeProduction";
 import { savedDeliveryRecipe, validateDeliveryRecipe } from "./deliveryRecipe";
+import { acceptNativeWindowReceipt, createNativeWindowIntent, type NativeWindowIntent, type NativeWindowReceipt } from "./nativeWindowPreview";
 import { validateBrandGovernance } from "./brandGovernance";
 import { upsertSfxCue, validateSfxProject } from "./semanticSfx";
 import { applyEvaluatorChange, validateEvaluatorState } from "./creativeEvaluator";
@@ -44,6 +45,7 @@ import type {
   ModelRequestPreflight,
   MotionCanvasFilmOptions,
   MotionCanvasRenderEvidence,
+  NativeWindowRenderResponse,
   MotionCanvasProjectionPreflight,
   MultiSegmentReadinessReport,
   MltAvMasterEvidence,
@@ -739,8 +741,35 @@ export async function productionJobsHistory(
   });
 }
 
-/** Derive the dispatch snapshot from saved intent before any async boundary. */
-function savedFilmOptions(project: Project, deliverableId: string, proposed: MotionCanvasFilmOptions): MotionCanvasFilmOptions {
+/** Read only the saved primary-font choice for this profile's Motion Canvas text.
+ * A null family keeps the existing default for that node; it never inherits a
+ * different node's family. Backend rights, font bytes and provider checks remain mandatory.
+ */
+export function savedNativeFilmFontFamily(project: Project, deliverableId: string): string {
+  const profile = project.deliverables.find(item => item.id === deliverableId);
+  if (!profile) throw new Error("Select a saved delivery profile before checking its text fonts.");
+  const included = new Set(profile.included_scene_ids);
+  const defaultFamily = "Instrument Sans Variable";
+  let selectedFamily: string | null = null;
+  for (const scene of project.scenes) {
+    if (scene.renderer !== "motion-canvas" || (included.size > 0 && !included.has(scene.id))) continue;
+    for (const node of scene.nodes) {
+      if (node.kind !== "text") continue;
+      const family = node.style.font_family === null ? defaultFamily : node.style.font_family;
+      if (typeof family !== "string" || !family.trim()) {
+        throw new Error("An included Motion Canvas text node has an empty saved font family. Review its text style before checking or rendering Film.");
+      }
+      if (selectedFamily !== null && selectedFamily !== family) {
+        throw new Error("The included Motion Canvas text uses more than one saved primary font. Review those text styles before checking or rendering Film.");
+      }
+      selectedFamily = family;
+    }
+  }
+  return selectedFamily ?? defaultFamily;
+}
+
+/** The same saved Film source used by Full production and Window requests. */
+export function savedNativeWindowFilmOptions(project: Project, deliverableId: string): MotionCanvasFilmOptions {
   const profile = project.deliverables.find(item => item.id === deliverableId);
   const recipe = savedDeliveryRecipe(project, deliverableId);
   if (!profile || !recipe) throw new Error("Save scene intent for this delivery profile before checking or rendering Film.");
@@ -754,7 +783,14 @@ function savedFilmOptions(project: Project, deliverableId: string, proposed: Mot
     if (!intent?.role || !intent.archetype) throw new Error("Every included Motion Canvas scene needs a saved role and archetype.");
     return { scene_id:scene.id, role:intent.role, archetype:intent.archetype };
   });
-  const options: MotionCanvasFilmOptions = { frame_rate, font_family:"Instrument Sans Variable", mono_font_family:"IBM Plex Mono", scene_intents };
+  const options: MotionCanvasFilmOptions = { frame_rate, font_family:savedNativeFilmFontFamily(project, deliverableId), mono_font_family:"IBM Plex Mono", scene_intents };
+  return options;
+}
+
+/** Derive the dispatch snapshot from saved intent before any async boundary. */
+function savedFilmOptions(project: Project, deliverableId: string, proposed: MotionCanvasFilmOptions): MotionCanvasFilmOptions {
+  const options = savedNativeWindowFilmOptions(project, deliverableId);
+  const { frame_rate, scene_intents } = options;
   const supplied = proposed?.scene_intents;
   if (!proposed || Object.keys(proposed).length !== 4 || !proposed.frame_rate || Object.keys(proposed.frame_rate).length !== 2
       || proposed.frame_rate.num !== frame_rate.num || proposed.frame_rate.den !== frame_rate.den
@@ -762,7 +798,7 @@ function savedFilmOptions(project: Project, deliverableId: string, proposed: Mot
       || !Array.isArray(supplied) || supplied.length !== scene_intents.length
       || new Set(supplied.map(intent => intent.scene_id)).size !== scene_intents.length
       || supplied.some(intent => Object.keys(intent).length !== 3 || !scene_intents.some(saved => saved.scene_id === intent.scene_id && saved.role === intent.role && saved.archetype === intent.archetype))) {
-    throw new Error("Film options differ from this profile's saved scene intent, frame rate or supported font policy. Save or refresh the project before retrying.");
+    throw new Error("Film options differ from this profile's saved scene intent, frame rate or text font selection. Save or refresh the project before retrying.");
   }
   return options;
 }
@@ -813,6 +849,37 @@ export async function renderMotionCanvas(
       options: savedOptions,
     },
   });
+}
+
+/** One original Window call. Warm reuse never falls back to native capture.
+ * The caller owns the request identity and the post-grant dispatch barrier.
+ */
+export async function renderMotionCanvasWindow(
+  project: Project,
+  intent: NativeWindowIntent,
+  beforeDispatch?: NativeDeliveryDispatchCheck,
+  onDispatched?: NativeDeliveryDispatchCheck,
+): Promise<NativeWindowReceipt> {
+  if (!isTauri()) throw new Error("Native window capture requires the Motionwright desktop runtime.");
+  const scene = project.scenes.find(value => value.id === intent.window.source_scene_id);
+  const profile = project.deliverables.find(value => value.id === intent.window.deliverable_id);
+  if (!scene || !profile || intent.project_id !== project.id || intent.generation !== project.generation
+      || intent.revision !== project.revision || intent.branch_id !== project.active_branch) {
+    throw new Error("Native window intent belongs to another saved source.");
+  }
+  const options = savedFilmOptions(project, profile.id, intent.window.options);
+  const submitted = createNativeWindowIntent(project, scene, profile, intent.window.source_window, options, intent.request_id, intent.reuse_token);
+  beforeDispatch?.();
+  const grant = await issueEffectGrant("render_local", project, submitted.request_id);
+  beforeDispatch?.();
+  // A synchronous caller barrier may preserve an UNKNOWN marker here. If it
+  // fails or source selection changed, the native command is never invoked.
+  onDispatched?.();
+  const response = await invoke<NativeWindowRenderResponse>("render_motion_canvas_window", {
+    request: { project_id: submitted.project_id, generation: submitted.generation, revision: submitted.revision,
+      request_id: submitted.request_id, effect_grant: grant.token, window: submitted.window, reuse_token: submitted.reuse_token },
+  });
+  return acceptNativeWindowReceipt(submitted, response);
 }
 
 /** Check manifest-source readiness of a multi-segment native cut.

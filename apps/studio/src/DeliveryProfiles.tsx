@@ -24,6 +24,7 @@ import {
   exportVerifiedNativeMaster,
   verifyPortableMediaReceipt,
   preflightMotionCanvas,
+  savedNativeFilmFontFamily,
   preflightMultiSegmentReadiness,
   renderMotionCanvas,
   productionRuntimeCompatibility,
@@ -429,7 +430,16 @@ export default function DeliveryProfiles({
   const [, refreshRetainedReviews] = useState(0);
   useEffect(() => retainedNativeAvReviewSelections.subscribe(() => refreshRetainedReviews(value => value + 1)), []);
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
-  const fontFamily = "Instrument Sans Variable";
+  const savedFont = useMemo(() => {
+    if (!selected) return { family: null, error: null };
+    try {
+      return { family: savedNativeFilmFontFamily(project, selected.id), error: null };
+    } catch (failure) {
+      return { family: null, error: failure instanceof Error ? failure.message : "The saved Film font could not be checked." };
+    }
+  }, [project, selected?.id]);
+  const fontFamily = savedFont.family;
+  const fontError = savedFont.error;
   const monoFontFamily = "IBM Plex Mono";
   const filmDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "film", commitRecipe);
   const targetsDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "targets", commitRecipe);
@@ -548,8 +558,9 @@ export default function DeliveryProfiles({
     !recipeDraftBlocked &&
     renderIntentsComplete &&
     nativePaletteReady &&
-    fontFamily.trim() &&
-    monoFontFamily.trim(),
+    fontFamily !== null &&
+    !fontError &&
+    monoFontFamily,
   );
 
   const selectedVoice = project.audio.voice_tracks.find((track) =>
@@ -657,9 +668,10 @@ export default function DeliveryProfiles({
     motionScenes.map((scene) => scene.id),
     filmDraft.savedValues,
     fontFamily,
+    fontError,
     monoFontFamily,
   ]);
-  const currentPreflight = !recipeDraftBlocked && preflight?.key === preflightKey ? preflight.report : null;
+  const currentPreflight = !fontError && !recipeDraftBlocked && preflight?.key === preflightKey ? preflight.report : null;
   const liveFilm = useRef({ key: preflightKey, ready: renderReady, mounted: true });
   liveFilm.current.key = preflightKey;
   liveFilm.current.ready = renderReady;
@@ -730,8 +742,8 @@ export default function DeliveryProfiles({
     }
     return {
       frame_rate: { num, den },
-      font_family: fontFamily.trim(),
-      mono_font_family: monoFontFamily.trim(),
+      font_family: savedNativeFilmFontFamily(project, selected.id),
+      mono_font_family: monoFontFamily,
       scene_intents: motionScenes.map((scene) => {
         const role = narrativeRoles.find(option => option.value === filmDraft.savedValues[scene.id + ":role"])?.value;
         const archetype = motionArchetypes.find(option => option.value === filmDraft.savedValues[scene.id + ":archetype"])?.value;
@@ -1395,13 +1407,18 @@ export default function DeliveryProfiles({
                 </label>
                 <label>
                   <span className="field-label">Primary font</span>
-                  <input value={fontFamily} readOnly aria-readonly="true" />
+                  <input value={fontFamily ?? ""} readOnly aria-readonly="true"
+                    aria-invalid={Boolean(fontError)}
+                    aria-describedby={fontError ? "film-font-error-" + selected.id : undefined} />
                 </label>
                 <label>
                   <span className="field-label">Mono font</span>
                   <input value={monoFontFamily} readOnly aria-readonly="true" />
                 </label>
               </div>
+
+              {fontError && <p id={"film-font-error-" + selected.id}
+                className="delivery-truth-note warning" role="alert">{fontError}</p>}
 
               <div className="portable-project">
                 <header className="portable-heading">
