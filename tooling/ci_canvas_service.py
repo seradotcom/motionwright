@@ -3662,7 +3662,1265 @@ def claim_source_main(arguments):
     args = parser.parse_args(arguments)
     return run_claim_source_contracts(args.repo, args.output)
 
+
+
+# This closed profile is additive; historical selectors retain their own scope.
+STUDIO68_SOURCE = "278f6777b999275e1d7c69e46e91a6439c172e90"
+STUDIO68_TREE = "c6a1eea4ae15e6b041b18e1880dbec97975d0c08"
+STUDIO68_SDK = "01d4a99a8473273fda5c61b7220d6da1bee94786"
+STUDIO68_SCOPE = "studio-service-68"
+STUDIO68_WORKFLOW = ".github/workflows/studio-service-verification.yml"
+# The eight admitted phase caps total 18660 seconds. Preparation and transition
+# custody consume the remaining 1140 seconds of the same original deadline.
+STUDIO68_PHASE_SECONDS = {"product_g0": 1200, "dependencies": 900, "clippy": 900,
+                          "build": 1200, "list": 120, "execution": 8460,
+                          "readback": 5400, "retention": 480}
+STUDIO68_SECONDS = 19800
+STUDIO68_PREPARATION_SECONDS = 300
+STUDIO68_CLEANUP_RESERVE = 30
+STUDIO68_FILES = ("branch-authoring-service.spec.ts", "brand-authoring-service.spec.ts",
+                  "component-distillation-service.spec.ts", "review-service.spec.ts",
+                  "production-design-service.spec.ts")
+STUDIO68_CASES = (('branch-authoring-service.spec.ts',
+  'causal: a rejected branch creation preserves the exact authored name',
+  104,
+  1,
+  '90d81b47503d2bbf2302-03dd744d82a4d188a156'),
+ ('branch-authoring-service.spec.ts',
+  'causal: a late original branch reply preserves a later name',
+  132,
+  1,
+  '90d81b47503d2bbf2302-69a8ce3e7f07f59c290a'),
+ ('branch-authoring-service.spec.ts',
+  'causal: an unsaved branch name survives App navigation and reload without a mutation',
+  144,
+  1,
+  '90d81b47503d2bbf2302-837b206a282f92967e52'),
+ ('branch-authoring-service.spec.ts',
+  'one explicit name creates one editable branch through SQLite and a new service process',
+  156,
+  1,
+  '90d81b47503d2bbf2302-7fcc1b9afdac0ec5f3cd'),
+ ('branch-authoring-service.spec.ts',
+  'UTF-8 branch limit keeps invalid input without sending it',
+  178,
+  1,
+  '90d81b47503d2bbf2302-07269cc82a6392981ee0'),
+ ('branch-authoring-service.spec.ts',
+  'silent branch recovery bytes loss blocks creation until exact readback',
+  189,
+  3,
+  '90d81b47503d2bbf2302-9183ca5389583e9959f2'),
+ ('branch-authoring-service.spec.ts',
+  'silent branch recovery pointer loss blocks creation until exact readback',
+  189,
+  3,
+  '90d81b47503d2bbf2302-7b9660954a25d7d77b16'),
+ ('branch-authoring-service.spec.ts',
+  'a committed but lost branch reply survives reopen and explicit inspection without replay',
+  212,
+  1,
+  '90d81b47503d2bbf2302-3c96405ee60004b548fc'),
+ ('branch-authoring-service.spec.ts',
+  'a later A-to-B-to-A branch name stays editable after its original reply and reload',
+  252,
+  1,
+  '90d81b47503d2bbf2302-e8acd27fe1e6e8050909'),
+ ('branch-authoring-service.spec.ts',
+  'restoring an unconfirmed branch preserves both copies after silent pointer failure',
+  268,
+  3,
+  '90d81b47503d2bbf2302-395b85b46216f36d0b14'),
+ ('branch-authoring-service.spec.ts',
+  'restoring an unconfirmed branch preserves both copies after throw pointer failure',
+  268,
+  3,
+  '90d81b47503d2bbf2302-a997a89b17615cfe9218'),
+ ('branch-authoring-service.spec.ts',
+  'restoring an unconfirmed branch preserves both copies after write-then-throw pointer failure',
+  268,
+  3,
+  '90d81b47503d2bbf2302-477df73200843765aae1'),
+ ('branch-authoring-service.spec.ts',
+  'an ordinary branch name survives a failed first pointer read before one explicit creation',
+  432,
+  3,
+  '90d81b47503d2bbf2302-f9d90bc2f8a9a17f4812'),
+ ('branch-authoring-service.spec.ts',
+  'an UNKNOWN branch and a deliberately cleared name survive failed first pointer read without replay',
+  475,
+  3,
+  '90d81b47503d2bbf2302-455f5cb85b33c39db7c0'),
+ ('branch-authoring-service.spec.ts',
+  'an ordinary branch name survives a failed first copy read before one explicit creation',
+  432,
+  3,
+  '90d81b47503d2bbf2302-32dcb94264ce18bc3d5c'),
+ ('branch-authoring-service.spec.ts',
+  'an UNKNOWN branch and a deliberately cleared name survive failed first copy read without replay',
+  475,
+  3,
+  '90d81b47503d2bbf2302-9e3d078d772fde68ad7d'),
+ ('branch-authoring-service.spec.ts',
+  'a failed initial pointer read can recover an empty session without discarding newly typed input',
+  534,
+  1,
+  '90d81b47503d2bbf2302-74b8225d18c9fbf996b5'),
+ ('branch-authoring-service.spec.ts',
+  'an unchanged SQLite branch base stays UNKNOWN until a real peer advances it, preserving later input without replay',
+  573,
+  1,
+  '90d81b47503d2bbf2302-47a82a0a62a6289bc25e'),
+ ('brand-authoring-service.spec.ts',
+  'Brand policy, taste and decision saves preserve other raw fields through actual App navigation and SQLite restart',
+  255,
+  1,
+  '06cc3d3c07c1041c9a27-51f7b6f623b36767da68'),
+ ('brand-authoring-service.spec.ts',
+  'a real taste commit with a lost original reply stays UNKNOWN through later typing, reload and saved-history '
+  'inspection',
+  324,
+  1,
+  '06cc3d3c07c1041c9a27-9465e47deb86aa6a2397'),
+ ('brand-authoring-service.spec.ts',
+  'a silently dropped pending brand copy issues zero grants and Retry only confirms bytes before a separate Save',
+  391,
+  1,
+  '06cc3d3c07c1041c9a27-849b356225084e762e2b'),
+ ('brand-authoring-service.spec.ts',
+  'a failed original UNKNOWN recovery read cannot be escaped by restoring a different ordinary copy',
+  441,
+  1,
+  '06cc3d3c07c1041c9a27-a68edfe56d68f13b33ef'),
+ ('brand-authoring-service.spec.ts',
+  'a reviewed selected campaign changes the real semantic Hero while preserving other scenes and proposal bytes '
+  'through SQLite restart',
+  515,
+  1,
+  '06cc3d3c07c1041c9a27-e1c75d2eccd5f3dd37b8'),
+ ('brand-authoring-service.spec.ts',
+  'Brand governance retains its first observed UNKNOWN bytes when a failed recovery read is followed by a same-writer '
+  'replacement',
+  610,
+  3,
+  '06cc3d3c07c1041c9a27-6d676bb999dd2eed0f61'),
+ ('brand-authoring-service.spec.ts',
+  'Brand campaign retains its first observed UNKNOWN bytes when a failed recovery read is followed by a same-writer '
+  'replacement',
+  610,
+  3,
+  '06cc3d3c07c1041c9a27-53c2351f2f0d5225d6b3'),
+ ('brand-authoring-service.spec.ts',
+  'an explicitly cleared brand rule issues zero grants and remains empty after a real SQLite restart',
+  724,
+  1,
+  '06cc3d3c07c1041c9a27-bd6593450d22b9821a8a'),
+ ('component-distillation-service.spec.ts',
+  'Distillation actual App restores author input after its first pointer read fails and commits frozen samples plus '
+  'independent review through SQLite restart',
+  227,
+  1,
+  '980e3c140a1ad4daf80a-a0a5921a0ff77decc2e8'),
+ ('component-distillation-service.spec.ts',
+  'Distillation actual original proposal receipt preserves later author text through App remount',
+  273,
+  1,
+  '980e3c140a1ad4daf80a-609b0fd344367726b15c'),
+ ('component-distillation-service.spec.ts',
+  "Distillation actual review receipt cannot erase another proposal's authoring buffer",
+  290,
+  1,
+  '980e3c140a1ad4daf80a-c3beec29dbc70240706f'),
+ ('component-distillation-service.spec.ts',
+  'Distillation later rationale survives its actual immutable review receipt and cannot rewrite the saved review',
+  308,
+  1,
+  '980e3c140a1ad4daf80a-d39e7c6c2f37f6583a1b'),
+ ('component-distillation-service.spec.ts',
+  'Distillation author actual reply loss retains UNKNOWN and later cleared input after a first pointer read failure, '
+  'reload and current-history review',
+  326,
+  3,
+  '980e3c140a1ad4daf80a-b4e89ac7373d28743f60'),
+ ('component-distillation-service.spec.ts',
+  'Distillation review actual reply loss retains UNKNOWN and later cleared input after a first pointer read failure, '
+  'reload and current-history review',
+  326,
+  3,
+  '980e3c140a1ad4daf80a-0ab52fca11b2408cb9bc'),
+ ('component-distillation-service.spec.ts',
+  'Distillation author pre-dispatch transport interruption keeps UNKNOWN at the saved base until a real peer advances '
+  'it, without replay',
+  381,
+  3,
+  '980e3c140a1ad4daf80a-9d4ab473013aa402ad0d'),
+ ('component-distillation-service.spec.ts',
+  'Distillation review pre-dispatch transport interruption keeps UNKNOWN at the saved base until a real peer advances '
+  'it, without replay',
+  381,
+  3,
+  '980e3c140a1ad4daf80a-720931aa5dc13550890a'),
+ ('component-distillation-service.spec.ts',
+  'Distillation data recovery failure sends no actual grant or write; healthy explicit retry retains source choices',
+  479,
+  3,
+  '980e3c140a1ad4daf80a-91ce109d25991c55fec6'),
+ ('component-distillation-service.spec.ts',
+  'Distillation pointer recovery failure sends no actual grant or write; healthy explicit retry retains source choices',
+  479,
+  3,
+  '980e3c140a1ad4daf80a-2c027117de6f56c1004b'),
+ ('component-distillation-service.spec.ts',
+  'Distillation author retains its first observed UNKNOWN bytes when a failed recovery read is followed by a '
+  'same-writer replacement',
+  507,
+  3,
+  '980e3c140a1ad4daf80a-bb0947a50f156b5ef4bc'),
+ ('component-distillation-service.spec.ts',
+  'Distillation review retains its first observed UNKNOWN bytes when a failed recovery read is followed by a '
+  'same-writer replacement',
+  507,
+  3,
+  '980e3c140a1ad4daf80a-14367a4c72c616cf5762'),
+ ('production-design-service.spec.ts',
+  'Production plan raw drafts, claim references and content-bound approval survive actual App navigation and SQLite '
+  'restart',
+  132,
+  1,
+  '67037f4586e4a2ca8702-8ad929248f0fd87ebc6d'),
+ ('production-design-service.spec.ts',
+  'Production Hero updates retain editable node identities and a human override; detach preserves objects across '
+  'SQLite restart',
+  172,
+  1,
+  '67037f4586e4a2ca8702-4ed7cb9d8f75baba6f1c'),
+ ('production-design-service.spec.ts',
+  'a held original Production component receipt preserves later typing across actual App remount and a separate save',
+  206,
+  3,
+  '67037f4586e4a2ca8702-a34558b890b00165d4b3'),
+ ('production-design-service.spec.ts',
+  'a held original Production plan receipt preserves later typing across actual App remount and a separate save',
+  206,
+  3,
+  '67037f4586e4a2ca8702-5fc397580d6aa396fb9d'),
+ ('production-design-service.spec.ts',
+  'an unknown Production plan committed result survives reload without replay and needs a fresh history review',
+  239,
+  3,
+  '67037f4586e4a2ca8702-1f3efa40f9876dca293f'),
+ ('production-design-service.spec.ts',
+  'an unknown Production plan matching-peer result survives reload without replay and needs a fresh history review',
+  239,
+  3,
+  '67037f4586e4a2ca8702-9c2e3445611ec4a8fba7'),
+ ('production-design-service.spec.ts',
+  'Production data recovery failure sends no real service grant or change; explicit healthy retry persists the '
+  'retained draft',
+  277,
+  3,
+  '67037f4586e4a2ca8702-a0802d6a3dfe9da72ff3'),
+ ('production-design-service.spec.ts',
+  'Production pointer recovery failure sends no real service grant or change; explicit healthy retry persists the '
+  'retained draft',
+  277,
+  3,
+  '67037f4586e4a2ca8702-8c9ecdfab5d436769aca'),
+ ('production-design-service.spec.ts',
+  'Production retries an initial pointer read for ordinary input without replacing raw intent or replaying a real '
+  'operation',
+  344,
+  3,
+  '67037f4586e4a2ca8702-394bae365fdaaf21214f'),
+ ('production-design-service.spec.ts',
+  'Production retries an initial pointer read for UNKNOWN input without replacing raw intent or replaying a real '
+  'operation',
+  344,
+  3,
+  '67037f4586e4a2ca8702-ebd4aded24cc5d685a18'),
+ ('production-design-service.spec.ts',
+  'Production retries an initial copy read for ordinary input without replacing raw intent or replaying a real '
+  'operation',
+  344,
+  3,
+  '67037f4586e4a2ca8702-90b4754b9666091fb1d0'),
+ ('production-design-service.spec.ts',
+  'Production retries an initial copy read for UNKNOWN input without replacing raw intent or replaying a real '
+  'operation',
+  344,
+  3,
+  '67037f4586e4a2ca8702-0be19c85e2f6ba251fb7'),
+ ('production-design-service.spec.ts',
+  'Production confirms an empty pointer after an initial read failure while retaining the input typed during the '
+  'blocker',
+  445,
+  1,
+  '67037f4586e4a2ca8702-f03a03c37c7e24a57882'),
+ ('production-design-service.spec.ts',
+  'Production component retains its first observed UNKNOWN bytes when a failed recovery read is followed by a '
+  'same-writer replacement',
+  476,
+  3,
+  '67037f4586e4a2ca8702-9fce096231ad683cfeb6'),
+ ('production-design-service.spec.ts',
+  'Production plan retains its first observed UNKNOWN bytes when a failed recovery read is followed by a same-writer '
+  'replacement',
+  476,
+  3,
+  '67037f4586e4a2ca8702-ff2419213ef0ab7dd644'),
+ ('production-design-service.spec.ts',
+  'opaque source attachment raw input and a silent pointer failure preserve the existing asset before one explicit '
+  'SQLite attachment',
+  595,
+  1,
+  '67037f4586e4a2ca8702-39d8e0f11784333f76cb'),
+ ('production-design-service.spec.ts',
+  'opaque source attachment late real ACK retains two scene drafts and permits only a separate explicit later '
+  'attachment',
+  644,
+  1,
+  '67037f4586e4a2ca8702-de940abf33c28468485b'),
+ ('production-design-service.spec.ts',
+  'opaque source attachment lost committed service reply preserves the exact submitted capsule and later cleared input '
+  'without replay',
+  683,
+  1,
+  '67037f4586e4a2ca8702-565026398cb1219ce997'),
+ ('production-design-service.spec.ts',
+  'opaque source attachment pre-dispatch delivery interruption stays UNKNOWN on N until a real peer advances SQLite, '
+  'with no original replay',
+  723,
+  1,
+  '67037f4586e4a2ca8702-dd1595820641a3998c40'),
+ ('review-service.spec.ts',
+  'review raw range survives actual App navigation and reload before one exact SQLite commit and restart',
+  132,
+  1,
+  '0f11b70400fd2e6eaf8a-d7a91be5cd90ec57d924'),
+ ('review-service.spec.ts',
+  'a held original review reply preserves later input before a distinct granted save',
+  162,
+  1,
+  '0f11b70400fd2e6eaf8a-dda45573a1af59fa6501'),
+ ('review-service.spec.ts',
+  'a committed but lost review reply remains UNKNOWN through explicit saved-history inspection and a separate intent',
+  181,
+  1,
+  '0f11b70400fd2e6eaf8a-cdad8227f658df285515'),
+ ('review-service.spec.ts',
+  'ABA author input survives lost review reply, inspection, separate save and SQLite restart',
+  217,
+  1,
+  '0f11b70400fd2e6eaf8a-01f395dac753f606e235'),
+ ('review-service.spec.ts',
+  'denied review custody prevents any SQLite mutation until a confirmed copy and explicit save',
+  257,
+  1,
+  '0f11b70400fd2e6eaf8a-5b269e07dc56c2b6213f'),
+ ('review-service.spec.ts',
+  'an original resolution keeps a later raw reason through actual reopen and new SQLite acknowledgement',
+  280,
+  1,
+  '0f11b70400fd2e6eaf8a-b230662f6c6cc8a4565a'),
+ ('review-service.spec.ts',
+  'an actual saved alternative retains raw rationale and records only an open manual review',
+  300,
+  1,
+  '0f11b70400fd2e6eaf8a-82a1d62736a84b080146'),
+ ('review-service.spec.ts',
+  'selected review deliverable, language and rational range persist through actual App reload and SQLite restart',
+  326,
+  1,
+  '0f11b70400fd2e6eaf8a-058b23f0cb72848d5459'),
+ ('review-service.spec.ts',
+  'later explicit empty review profile survives a held original reply and saves separately to SQLite',
+  366,
+  1,
+  '0f11b70400fd2e6eaf8a-488c23f83c87d066b732'),
+ ('review-service.spec.ts',
+  'lost reply keeps original selected review profile UNKNOWN while a later empty selection survives actual SQLite '
+  'recovery',
+  393,
+  1,
+  '0f11b70400fd2e6eaf8a-05217b4a6100f079e08a'),
+ ('review-service.spec.ts',
+  'pre-dispatch review transport interruption keeps the saved base UNKNOWN until an independent SQLite peer advances '
+  'it without replay',
+  440,
+  1,
+  '0f11b70400fd2e6eaf8a-ee41ca09d4b06f0c2fd7'))
+STUDIO68_PRODUCT_PINS = {'Cargo.lock': '0c6a330de85c99f0913f4fc9e1b2af794d8cae239085952dd6400a017c67205b',
+ 'Cargo.toml': '8c63f973bcbc43f45c26f074259f36aa8b3a46595657d34eecf86093cddca2c9',
+ 'SOURCE_LOCK.json': 'aeb60e60036d29ad96abec0dc7acbcf3302a4411c16a7ea37c4b3c58c36e0b4f',
+ 'apps/studio/package-lock.json': 'bf7e12b36faff3d553033f903560070974774700f404ff6704ed0942094bc994',
+ 'apps/studio/package.json': '428526cf98577d3c960a1f13731cf89a1c1c19cb7a4e653a420d1e832c75c9b4',
+ 'apps/studio/playwright.config.ts': 'facf22ed7a17d6150f0bf78a9eeb4e86daed7bd746b7de59dfb1b84ea057d38c',
+ 'apps/studio/tests/branch-authoring-service.spec.ts': '17646fc6324af8a9da0560fe7f71cc21c4a8b56f270c6c30498a585011f4838d',
+ 'apps/studio/tests/brand-authoring-service.spec.ts': '0917b454baba213fd75525fc2d6d36ec39288f7e0fa81ad8ae1031fe7baa52b7',
+ 'apps/studio/tests/component-distillation-service.spec.ts': '64c7f67179644ccd91480e4bdfd77e260e6a0c6ec8f295803aa16e04f0872d51',
+ 'apps/studio/tests/production-design-service.spec.ts': '019cc59f2fc2ada5a14f85f45525677715528ae32d8c465aec0967e41d9ecdcb',
+ 'apps/studio/tests/review-service.spec.ts': 'b8c1597384c7bf9de4c3d8f38c6b7839ee3ed30c4fd52e2d4583f34ca2d6b168',
+ 'apps/studio/tests/support/scopedChangeService.ts': '2fba83ace30c032e11f3c108203c0d7a0e98821d79d081717281194108138f1d',
+ 'apps/studio/vite.config.ts': '6743b496e0276b2e7197330d8c78c3782fb1eaa769d55d8b59c98ef24255294a',
+ 'crates/service/Cargo.toml': '029581d64961e5add8afe5ca83bb197dcee15968f6abe2e8a9e3f6ed3b316333',
+ 'crates/service/examples/studio_review_session.rs': '35cc60ab2bf1c3bbe4dc1399ad59a7d7117ea2061ca6bf9f4b6b74a9cd363c98',
+ 'rust-toolchain.toml': '887f9be066a15585a2c583578e84b0fcb541126d81546276bad3d2ff00d61167'}
+STUDIO68_HELPER_PINS = {
+    "ci_storage_apply_recovery": "9aea9a41d365a36fd1abae86ec5a0974236d62d9781a372eace0578ef2da1520",
+    "ci_foundation_causal": "1d31c58aa7d63c927ceb2518282a433e0f728fc125da8978fb635b18cff354c2",
+    "ci_sdk_native_source": "65bcda73f16423ebb644a0979bca3a7927f8e7337c124702874bce51adcf8127",
+}
+STUDIO68_READER_PINS = {
+    "tooling/service_readback/service_archive_readback_r3.py": "71319a62dab38779fd29a96d7b88c7e32ddb24a770a771e8db14bee6f30f73c3",
+    "tooling/service_readback/test_readback_r3.py": "b457817f1e05821ef84b1c7c78cca0a3b825264c6cab470747bbd9b73188e855",
+}
+STUDIO68_POLICIES = ("source_policy.py", "public_surface_policy.py",
+                     "acceptance_policy.py", "creative_status_policy.py")
+STUDIO68_RUNNER_SHA256 = "b7d39ad4c94be70abcac75880f92d00cf3c8d49eb0198b404a962ce5ab1a712f"
+
+def studio68_context(environment, product_source, platform=None):
+    platform = sys.platform if platform is None else platform
+    require(platform == "linux" and environment.get("RUNNER_OS") == "Linux"
+            and environment.get("RUNNER_ARCH") == "X64", "Studio68 requires Linux x64")
+    require(environment.get("GITHUB_ACTIONS") == "true"
+            and environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and environment.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
+            and environment.get("GITHUB_JOB") == STUDIO68_SCOPE,
+            "Studio68 requires its explicit workflow job")
+    require(product_source == STUDIO68_SOURCE, "Studio68 product source is not reviewed")
+    require(all(re.fullmatch(r"[0-9a-f]{40}", environment.get(k, ""))
+                for k in ("GITHUB_SHA", "GITHUB_WORKFLOW_SHA"))
+            and environment["GITHUB_SHA"] == environment["GITHUB_WORKFLOW_SHA"]
+            and environment["GITHUB_SHA"] != product_source,
+            "Studio68 gate and product must have separate exact source identities")
+    require(environment.get("GITHUB_RUN_ATTEMPT") == "1"
+            and re.fullmatch(r"[1-9][0-9]*", environment.get("GITHUB_RUN_ID", "")),
+            "Studio68 permits the first observed attempt only; no replay")
+    require(environment.get("GITHUB_WORKFLOW_REF", "").startswith(
+        "seradotcom/motionwright/" + STUDIO68_WORKFLOW + "@"), "Studio68 workflow identity")
+    keys = ("GITHUB_SHA", "GITHUB_WORKFLOW_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_REPOSITORY",
+            "GITHUB_JOB", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RUNNER_OS", "RUNNER_ARCH")
+    return {"gate_source_sha": environment["GITHUB_SHA"],
+            "executed_product_source_sha": product_source, "github": {k: environment[k] for k in keys}}
+
+
+def studio68_environment(environment, root):
+    forbidden = {"RUSTC", "RUSTDOC", "RUSTFMT", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+                 "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTDOCFLAGS", "CARGO_ENCODED_RUSTDOCFLAGS",
+                 "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "NODE_OPTIONS", "NODE_PATH",
+                 "TS_NODE_PROJECT", "NPM_CONFIG_USERCONFIG", "npm_config_userconfig",
+                 "CC", "CXX", "AR", "CFLAGS", "CXXFLAGS", "LDFLAGS"}
+    bad = [k for k, v in environment.items() if v and (k in forbidden or k.startswith(
+        ("GIT_", "SEMWRIGHT_", "MOTIONWRIGHT_", "CARGO_TARGET_", "CARGO_PROFILE_", "CARGO_ALIAS_")))]
+    require(not bad, "Studio68 inherited execution override: " + ",".join(sorted(bad)))
+    value = dict(environment)
+    for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT"):
+        value.pop(key, None)
+    value.update(PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1", CARGO_BUILD_JOBS="1",
+                 CARGO_HOME=str(root / "cargo"), CARGO_TARGET_DIR=str(root / "target"),
+                 NPM_CONFIG_CACHE=str(root / "npm"), PLAYWRIGHT_BROWSERS_PATH=str(root / "browsers"),
+                 TMP=str(root / "tmp"), TEMP=str(root / "tmp"), TMPDIR=str(root / "tmp"),
+                 XDG_CACHE_HOME=str(root / "xdg"), CI="true")
+    return value
+
+
+class Studio68Clock:
+    def __init__(self, started_ns):
+        import time
+        now = time.monotonic_ns()
+        require(type(started_ns) is int and 0 < started_ns <= now, "Studio68 original clock")
+        self.started_ns, self.last_ns = started_ns, now
+        self.deadline_ns = started_ns + STUDIO68_SECONDS * 1_000_000_000
+        self.retention_started = False
+
+    def remaining(self, cap, *, reserve=None):
+        import time
+        if reserve is None:
+            reserve = STUDIO68_CLEANUP_RESERVE + (0 if self.retention_started else STUDIO68_PHASE_SECONDS["retention"])
+        require(type(cap) is int and 0 < cap <= STUDIO68_SECONDS
+                and type(reserve) is int and 0 <= reserve <= STUDIO68_CLEANUP_RESERVE + STUDIO68_PHASE_SECONDS["retention"],
+                "Studio68 finite phase budget")
+        now = time.monotonic_ns()
+        require(now >= self.last_ns, "Studio68 clock regressed")
+        self.last_ns = now
+        remaining = (self.deadline_ns - now) / 1_000_000_000 - reserve
+        require(remaining > 0, "Studio68 original deadline exhausted")
+        return min(cap, remaining)
+
+    def phase(self, seconds, *, retention=False):
+        require(type(retention) is bool and not self.retention_started
+                and (not retention or seconds == STUDIO68_PHASE_SECONDS["retention"]),
+                "Studio68 retention is a single terminal phase")
+        if retention:
+            self.retention_started = True
+        return Studio68Phase(self, seconds)
+
+
+class Studio68Phase:
+    def __init__(self, clock, seconds):
+        import time
+        self.clock = clock
+        self.deadline_ns = time.monotonic_ns() + int(clock.remaining(seconds) * 1_000_000_000)
+
+    def remaining(self, cap):
+        import time
+        remaining = (self.deadline_ns - time.monotonic_ns()) / 1_000_000_000
+        require(remaining > 0, "Studio68 phase deadline exhausted")
+        return min(remaining, self.clock.remaining(cap))
+
+
+def studio68_original(path, limit):
+    path = Path(path)
+    archive_ancestors(path)
+    before = archive_stat(path)
+    require(stat.S_ISREG(before.st_mode) and before.st_size <= limit, "Studio68 original byte bound")
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+             | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        require(archive_identity(os.fstat(stream.fileno())) == archive_identity(before),
+                "Studio68 original changed before open")
+        raw = stream.read(limit + 1)
+        require(len(raw) == before.st_size and len(raw) <= limit
+                and archive_identity(os.fstat(stream.fileno())) == archive_identity(before),
+                "Studio68 original changed during read")
+    require(archive_identity(archive_stat(path)) == archive_identity(before),
+            "Studio68 original changed after read")
+    return raw, {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def studio68_load_helpers(repo):
+    import importlib.util
+    import types
+    package = sys.modules.get("tooling")
+    require(package is None or list(getattr(package, "__path__", ())) == [str(repo / "tooling")],
+            "Studio68 foreign tooling package already loaded")
+    if package is None:
+        package = types.ModuleType("tooling")
+        package.__path__ = [str(repo / "tooling")]
+        sys.modules["tooling"] = package
+    for name, expected in STUDIO68_HELPER_PINS.items():
+        path = repo / "tooling" / (name + ".py")
+        raw, identity = studio68_original(path, 2 * 1024 * 1024)
+        require(identity["sha256"] == expected, "Studio68 shared helper source changed: " + name)
+        qualified = "tooling." + name
+        require(qualified not in sys.modules, "Studio68 shared helper was preloaded")
+        spec = importlib.util.spec_from_file_location(qualified, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[qualified] = module
+        setattr(package, name, module)
+        exec(compile(raw, str(path), "exec"), module.__dict__)
+    return sys.modules["tooling.ci_sdk_native_source"]
+
+
+def studio68_snapshot(repo, source, git, *, expected_tree=None, allow_node_modules=False, cargo_marker=False):
+    require(re.fullmatch(r"[0-9a-f]{40}", source), "Studio68 full source SHA")
+    require(git(repo, "rev-parse", "HEAD").decode().strip() == source, "Studio68 checkout SHA changed")
+    tree = git(repo, "rev-parse", "HEAD^{tree}").decode().strip()
+    require(expected_tree is None or tree == expected_tree, "Studio68 source tree changed")
+    require(not git(repo, "diff", "--name-only", "HEAD", "--"), "Studio68 tracked source is dirty")
+    generated = []
+    for options in (("--others", "--exclude-standard"), ("--others", "--ignored", "--exclude-standard")):
+        generated.extend(x.decode("utf-8") for x in git(repo, "ls-files", "-z", *options).split(b"\0") if x)
+    require(all((allow_node_modules and x.startswith("apps/studio/node_modules/"))
+                or (cargo_marker and x == ".cargo-ok") for x in generated),
+            "Studio68 unbound checkout input outside the declared npm tree")
+    listing = git(repo, "ls-tree", "-r", "-z", source)
+    files, folded, total = {}, set(), 0
+    for record in listing.split(b"\0"):
+        if not record:
+            continue
+        header, encoded = record.split(b"\t", 1)
+        mode, kind, oid = header.decode("ascii").split()
+        name = encoded.decode("utf-8")
+        require(mode in ("100644", "100755") and kind == "blob"
+                and re.fullmatch(r"[0-9a-f]{40}", oid)
+                and name and not name.startswith("/") and "\\" not in name
+                and all(x not in ("", ".", "..", ".git") for x in name.split("/"))
+                and name.casefold() not in folded and len(files) < 30000,
+                "Studio68 source manifest contains an unsupported member")
+        raw, identity = studio68_original(repo / name, 256 * 1024 * 1024)
+        require(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() == oid,
+                "Studio68 working bytes differ from the exact Git blob: " + name)
+        total += len(raw)
+        require(total <= 1024 * 1024 * 1024, "Studio68 source closure byte bound")
+        folded.add(name.casefold())
+        files[name] = {"blob": oid, "mode": mode, **identity}
+    require(files, "Studio68 source closure is empty")
+    return {"sha": source, "tree": tree, "files": files, "bytes": total,
+            "listing_sha256": hashlib.sha256(listing).hexdigest()}
+
+
+def studio68_product_identity(snapshot):
+    require(snapshot.get("sha") == STUDIO68_SOURCE and snapshot.get("tree") == STUDIO68_TREE,
+            "Studio68 product identity differs")
+    require(all(snapshot.get("files", {}).get(path, {}).get("sha256") == value
+                for path, value in STUDIO68_PRODUCT_PINS.items()), "Studio68 product input pin differs")
+    return {"sha": snapshot["sha"], "tree": snapshot["tree"], "sdk_lock_sha": STUDIO68_SDK}
+
+
+def studio68_command(argv, cwd, environment, output, label, cap, clock, commands, *, defer_exit_status=False):
+    require(type(defer_exit_status) is bool and (not defer_exit_status or label in
+            ("product-contracts", "independent-readback")), "Studio68 deferred exit has no bound inner receipt")
+    require(label not in {x["label"] for x in commands}, "Studio68 command label was already attempted")
+    record = {"label": label, "argv": list(argv), "status": "STARTED"}
+    commands.append(record)
+    try:
+        result = execute(argv, cwd, environment, output, label, clock.remaining(cap))
+        record.update(result)
+        require_observed_command(result)
+        require(defer_exit_status or result["exit_code"] == 0, "Studio68 command failed: " + label)
+        clock.remaining(1)
+        streams = {}
+        for stream in ("stdout", "stderr"):
+            path = output / (label + "." + stream + ".log")
+            raw, identity = studio68_original(path, ARCHIVE_LIMITS["file_bytes"])
+            require(identity == result[stream], "Studio68 command original changed")
+            streams[stream] = raw
+        record["status"] = "PASS_OBSERVED_COMMAND_ONLY" if result["exit_code"] == 0 else "OBSERVED_NONZERO_EXIT"
+        return result, streams
+    except UnknownObservation as error:
+        record.update(status="UNKNOWN_NO_RETRY", retained_command=error.command)
+        raise
+    except BaseException:
+        record["status"] = "FAIL_OR_PREPARATION_REJECTED"
+        raise
+
+
+def studio68_inner_terminal(command, receipt, identity, kind):
+    """Preserve inner uncertainty even when the original observer exited nonzero."""
+    require_observed_command(command)
+    require(type(receipt) is dict and kind in ("product-g0", "readback"), "Studio68 inner receipt type")
+    uncertain = []
+    if kind == "product-g0":
+        if receipt.get("status") == "UNKNOWN":
+            uncertain.append("runner_status_UNKNOWN")
+        for step in receipt.get("steps", ()):
+            if type(step) is dict and step.get("status") == "UNKNOWN":
+                uncertain.append("entrypoint_UNKNOWN:" + str(step.get("entry_point")))
+    else:
+        for case in receipt.get("cases", ()):
+            observed = case.get("readback") if type(case) is dict else None
+            if type(observed) is not dict or observed.get("transportAttempted") is not True:
+                continue
+            close = observed.get("close")
+            if (observed.get("transportExecuted") is not True or type(close) is not dict
+                    or type(close.get("returnCode")) is not int or close.get("taints") or close.get("errors")):
+                uncertain.append("transport_or_capture_not_closed:" + str(case.get("case")))
+    if uncertain:
+        raise UnknownObservation("Studio68 inner receipt retains uncertainty; no further command or retry",
+                                 {"outer_command": command, "inner_receipt": identity,
+                                  "inner_kind": kind, "uncertainty": uncertain})
+    require(type(command.get("exit_code")) is int and command["exit_code"] == 0,
+            "Studio68 inner receipt cannot replace nonzero original exit")
+
+
+def studio68_test_roster(raw, prefix):
+    import ast
+    module = ast.parse(raw)
+    names = []
+    for cls in module.body:
+        if isinstance(cls, ast.ClassDef):
+            for method in cls.body:
+                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name.startswith("test_"):
+                    require(ast.get_docstring(method) is None,
+                            "Studio68 fixed product G0 source unexpectedly has a multiline test description")
+                    names.append(prefix + "." + cls.name + "." + method.name)
+    require(names and len(names) == len(set(names)), "Studio68 source test roster is empty or duplicated")
+    return tuple(sorted(names))
+
+
+def studio68_g0_receipt(receipt, expected, context, original_reader, summary_parser):
+    require(receipt.get("schema") == "motionwright.unittest-execution/1"
+            and receipt.get("executed_source_sha") == STUDIO68_SOURCE
+            and receipt.get("tree_sha") == STUDIO68_TREE
+            and receipt.get("runner_sha256") == STUDIO68_RUNNER_SHA256
+            and receipt.get("require_complete") is True
+            and type(receipt.get("exit_code")) is int and receipt["exit_code"] == 0
+            and receipt.get("status") == "PASS" and not receipt.get("source_postcheck_error"),
+            "Studio68 product G0 receipt is not an exact successful execution")
+    require(receipt.get("python_executable_sha256") == expected["python_sha256"],
+            "Studio68 G0 child Python differs from the observed executable")
+    require(receipt.get("github") == {key: context["github"][key] for key in
+            ("GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")},
+            "Studio68 product receipt relabelled the actual gate context")
+    path = "tooling/tests/test_ci_canvas_service.py"
+    require(receipt.get("test_definition_sha256") == {path: expected["definition"]},
+            "Studio68 G0 test definition differs from F")
+    require(receipt.get("source_locks") == expected["locks"], "Studio68 G0 source locks differ")
+    labels = ("discovery:test_ci_canvas_service.py", "dotted:tooling.tests.test_ci_canvas_service")
+    steps = receipt.get("steps")
+    require(type(steps) is list and len(steps) == 2 and tuple(x.get("entry_point") for x in steps) == labels,
+            "Studio68 G0 entrypoint roster changed")
+    for index, step in enumerate(steps):
+        suffix = (["discover", "-s", "tooling/tests", "-p", "test_ci_canvas_service.py", "-v"]
+                  if index == 0 else ["tooling.tests.test_ci_canvas_service", "-v"])
+        require(step.get("command") == [expected["python"], "-B", "-E", "-s", "-m", "unittest", *suffix],
+                "Studio68 G0 original child argv changed")
+        require(step.get("status") == "PASS" and type(step.get("exit_code")) is int and step["exit_code"] == 0,
+                "Studio68 incomplete or uncertain G0 step")
+        streams = {}
+        for stream in ("stdout", "stderr"):
+            row = step.get(stream, {})
+            name = "receipt-" + str(index).zfill(2) + "-" + stream + ".log"
+            require(row.get("file") == name and re.fullmatch(r"[0-9a-f]{64}", row.get("sha256", "")),
+                    "Studio68 G0 original locator changed")
+            raw = original_reader(name)
+            require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == row["sha256"],
+                    "Studio68 G0 original hash changed")
+            streams[stream] = raw
+        parsed = summary_parser(streams["stderr"].decode("utf-8", "strict"))
+        counts = step.get("counts")
+        require(type(counts) is dict and counts == parsed
+                and all(type(counts.get(k)) is int for k in (
+                    "tests_run", "passed", "failures", "errors", "skipped", "expected_failures", "unexpected_successes"))
+                and counts["tests_run"] == counts["passed"] == len(expected["ids"])
+                and counts["terminal_status"] == "OK"
+                and not any(counts[k] for k in ("failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
+                "Studio68 G0 footer/count/omission mismatch")
+        text = streams["stderr"].decode("utf-8", "strict").replace("\r\n", "\n")
+        lines = [line for line in text.splitlines() if line.startswith("test_")]
+        matches = [re.fullmatch(r"(test_[A-Za-z_0-9]+) \(([^\r\n)]+)\) \.\.\. ok", line) for line in lines]
+        require(matches and all(match and match.group(2).rsplit(".", 1)[-1] == match.group(1)
+                                for match in matches), "Studio68 G0 original individual terminal is not ok")
+        observed = [match.group(2) for match in matches]
+        normalized = [x if x.startswith("tooling.tests.") else "tooling.tests." + x for x in observed]
+        require(len(normalized) == len(set(normalized)) == len(expected["ids"])
+                and set(normalized) == set(expected["ids"]), "Studio68 G0 original IDs differ")
+    return {"status": "PASS_PRODUCT_CONTRACTS_ONLY", "methods_per_entry": len(expected["ids"]),
+            "entrypoints": list(labels), "executed_product_source_sha": STUDIO68_SOURCE}
+
+
+def studio68_roster(document, *, executed=False):
+    require(type(document) is dict and document.get("errors") == [], "Studio68 reporter errors")
+    config = document.get("config", {})
+    require(type(config.get("workers")) is int and config["workers"] == 1 and config.get("shard") is None
+            and config.get("globalSetup") is None and config.get("globalTeardown") is None
+            and config.get("fullyParallel") is False and config.get("forbidOnly") is True
+            and config.get("grep") == {} and config.get("grepInvert") is None,
+            "Studio68 reporter execution configuration changed")
+    projects = config.get("projects")
+    require(type(projects) is list and len(projects) == 1, "Studio68 exactly one Chromium project")
+    project = projects[0]
+    require(project.get("id") == project.get("name") == "chromium"
+            and type(project.get("retries")) is int and project["retries"] == 0
+            and type(project.get("repeatEach")) is int and project["repeatEach"] == 1,
+            "Studio68 project selection/repetition changed")
+    stats = document.get("stats", {})
+    require(all(type(stats.get(k)) is int for k in ("expected", "unexpected", "flaky", "skipped"))
+            and {k: stats[k] for k in ("expected", "unexpected", "flaky", "skipped")} ==
+            ({"expected": 68, "unexpected": 0, "flaky": 0, "skipped": 0} if executed else
+             {"expected": 0, "unexpected": 0, "flaky": 0, "skipped": 68}),
+            "Studio68 reporter counts/omissions changed")
+    rows = []
+    def visit(suite):
+        require(type(suite) is dict, "Studio68 malformed reporter suite")
+        for spec in suite.get("specs", []):
+            tests = spec.get("tests")
+            require(type(tests) is list and len(tests) == 1, "Studio68 duplicate project case")
+            test = tests[0]
+            require(test.get("projectId") == test.get("projectName") == "chromium"
+                    and test.get("expectedStatus") == "passed"
+                    and type(test.get("timeout")) is int and test["timeout"] == 120000
+                    and test.get("annotations", []) == [], "Studio68 case timeout/skip policy changed")
+            identity = (spec.get("file"), spec.get("title"), spec.get("line"), spec.get("column"), spec.get("id"))
+            require(type(identity[2]) is int and type(identity[3]) is int, "Studio68 case location type")
+            if executed:
+                results = test.get("results")
+                require(spec.get("ok") is True and test.get("status") == "expected"
+                        and type(results) is list and len(results) == 1
+                        and results[0].get("status") == "passed"
+                        and type(results[0].get("retry")) is int and results[0]["retry"] == 0
+                        and results[0].get("errors") == [], "Studio68 result is incomplete or retried")
+            else:
+                require(test.get("results") == [], "Studio68 enumeration contains execution results")
+            rows.append(identity)
+        for nested in suite.get("suites", []):
+            visit(nested)
+    for suite in document.get("suites", []):
+        visit(suite)
+    require(len(rows) == 68 and len(set(rows)) == 68
+            and len({row[4] for row in rows}) == 68 and set(rows) == set(STUDIO68_CASES),
+            "Studio68 exact named roster changed")
+    return {"scope": STUDIO68_SCOPE, "mode": "execution" if executed else "enumeration",
+            "ids": sorted(row[4] for row in rows), "unique_cases": 68,
+            "physical_service_evidence": "REQUIRES_CLOSED_STORE_READBACK"}
+
+
+def studio68_playwright_argv(node, cli, results, *, listing=False):
+    argv = [node, str(cli), "test", *("tests/" + name for name in STUDIO68_FILES), "--project=chromium", "--workers=1",
+            "--retries=0", "--repeat-each=1", "--forbid-only", "--reporter=json", "--output=" + str(results)]
+    return argv + (["--list"] if listing else [])
+
+
+def studio68_build_argv(cargo):
+    return [cargo, "build", "--locked", "--offline", "--jobs", "1", "-p", "motionwright-service",
+            "--example", "studio_review_session", "--message-format=json"]
+
+
+def studio68_binary_spec():
+    return ({"package": "motionwright-service", "crate": "service", "name": "studio_review_session",
+             "kind": "example", "source": "crates/service/examples/studio_review_session.rs"},)
+
+
+def studio68_readback_admission(report, command, expected_binary, expected_ids):
+    require_observed_command(command)
+    require(type(command.get("exit_code")) is int and command["exit_code"] == 0,
+            "Studio68 independent reader process failed")
+    require(report.get("status") == "READBACK_VERIFIED" and report.get("errors") == []
+            and type(report.get("expectedCases")) is int and report["expectedCases"] == 68
+            and report.get("backendSourceShaAssertedByCaller") == STUDIO68_SOURCE
+            and type(report.get("playwrightExitCodeReportedByCaller")) is int
+            and report["playwrightExitCodeReportedByCaller"] == 0
+            and report.get("binary") == expected_binary
+            and report.get("receipt", {}).get("status") == "WRITTEN"
+            and report.get("observationJournal", {}).get("status") == "CLOSED"
+            and report.get("transportAttempted") is True and report.get("transportExecuted") is True,
+            "Studio68 independent reader receipt is incomplete")
+    journal = report["observationJournal"]
+    require(type(journal.get("recordsAttempted")) is int and journal["recordsAttempted"] > 0
+            and type(journal.get("recordsConfirmed")) is int
+            and journal["recordsConfirmed"] == journal["recordsAttempted"],
+            "Studio68 independent reader journal is incomplete")
+    cases = report.get("cases")
+    require(type(cases) is list and len(cases) == 68 and len({x.get("case") for x in cases}) == 68,
+            "Studio68 independent store roster changed")
+    ids = []
+    for case in cases:
+        require(case.get("captureStatus") == "VERIFIED" and case.get("errors") == []
+                and case.get("readback", {}).get("status") == "VERIFIED"
+                and case["readback"].get("errors") == [], "Studio68 closed store/readback failed")
+        observed = case["readback"]
+        close = observed.get("close", {})
+        require(observed.get("transportAttempted") is True and observed.get("transportExecuted") is True
+                and type(observed.get("processId")) is int and observed["processId"] > 0
+                and type(observed.get("rpcCount")) is int and observed["rpcCount"] >= 5
+                and observed.get("primaryFailure") is None
+                and observed.get("projectEqual") is True and observed.get("journalEqual") is True
+                and observed.get("receipt", {}).get("status") == "WRITTEN"
+                and close.get("clean") is True and close.get("errors") == [] and close.get("taints") == []
+                and type(close.get("returnCode")) is int and close["returnCode"] == 0
+                and close.get("processId") == observed["processId"]
+                and close.get("rpcCount") == observed["rpcCount"], "Studio68 original readback transport is incomplete")
+        item = case.get("playwrightIdentity", {})
+        require(item.get("projectId") == "chromium", "Studio68 readback project changed")
+        ids.append(item.get("playwrightId"))
+    require(len(set(ids)) == 68 and set(ids) == set(expected_ids), "Studio68 readback IDs are not the executed cohort")
+    return {"status": "PASS_REAL_SERVICE_AND_CLOSED_STORE_READBACK", "cases": 68,
+            "product_source": STUDIO68_SOURCE, "human_acceptance": "NOT_GRANTED",
+            "native_rendering": "NOT_RUN", "escaped_descendants": "NOT_OBSERVED"}
+
+
+def studio68_readback_journal(raw, report):
+    require(type(raw) is bytes and raw.endswith(b"\n"), "Studio68 readback journal is truncated")
+    rows = [json.loads(line) for line in raw.splitlines()]
+    require(len(rows) == 206 == report["observationJournal"]["recordsConfirmed"]
+            and all(type(row) is dict and row.get("schema") == "motionwright.readback-observation/1"
+                    and type(row.get("sequence")) is int and row["sequence"] == index
+                    for index, row in enumerate(rows, 1)), "Studio68 readback journal sequence/record count")
+    require(rows[0].get("kind") == "run_before_transport" and rows[0].get("case") is None
+            and rows[-1].get("kind") == "run_before_receipt" and rows[-1].get("case") is None
+            and rows[-1].get("observation", {}).get("cases") == report["cases"],
+            "Studio68 readback journal boundaries differ")
+    for index, case in enumerate(report["cases"]):
+        group = rows[1 + index * 3:4 + index * 3]
+        require([row.get("kind") for row in group] == ["launch_intent", "transport_observed", "case_closed"]
+                and all(row.get("case") == case["case"] for row in group),
+                "Studio68 readback journal case order changed")
+        observed = dict(group[-1].get("observation", {}))
+        current = dict(case["readback"])
+        observed_receipt = dict(observed.pop("receipt", {}))
+        current_receipt = dict(current.pop("receipt", {}))
+        require(observed_receipt.pop("status", None) == "PENDING"
+                and current_receipt.pop("status", None) == "WRITTEN"
+                and observed_receipt == current_receipt and observed == current,
+                "Studio68 case terminal differs from its original journal")
+    return {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "records": len(rows)}
+
+def studio68_tools(product, environment, output, clock, commands, *, phase=None):
+    phase = clock.phase(STUDIO68_PREPARATION_SECONDS) if phase is None else phase
+    tools, identities = {}, {}
+    for name in ("node", "npm", "rustup", "cc", "ar", "git"):
+        found = shutil.which(name, path=environment.get("PATH"))
+        require(found, "Studio68 tool unavailable: " + name)
+        path = Path(found).resolve(strict=True)
+        require(path.is_absolute(), "Studio68 tool must be absolute")
+        tools[name] = str(path)
+        identities[name] = {"path": str(path), **studio68_original(path, 256 * 1024 * 1024)[1]}
+    tools["python"] = str(Path(sys.executable).resolve(strict=True))
+    identities["python"] = {"path": tools["python"], **studio68_original(Path(tools["python"]), 256 * 1024 * 1024)[1]}
+    def run(argv, label):
+        return studio68_command(argv, product, environment, output, label, 30, phase, commands)[1]["stdout"].decode("utf-8", "strict").strip()
+    node_version = run([tools["node"], "--version"], "node-version")
+    require(re.fullmatch(r"v22\.[0-9]+\.[0-9]+", node_version), "Studio68 requires observed Node22")
+    run([tools["node"], tools["npm"], "--version"], "npm-version")
+    run([tools["python"], "-I", "-B", "-X", "utf8", "--version"], "python-version")
+    run([tools["rustup"], "--version"], "rustup-version")
+    run([tools["cc"], "--version"], "cc-version")
+    run([tools["ar"], "--version"], "ar-version")
+    run([tools["git"], "--version"], "git-version")
+    rust_tools = ("cargo", "rustc", "rustdoc", "cargo-fmt", "rustfmt", "cargo-clippy", "clippy-driver")
+    for name in rust_tools:
+        raw = run([tools["rustup"], "which", "--toolchain", "1.98.1", name], "which-" + name)
+        require("\n" not in raw and Path(raw).is_absolute(), "Studio68 ambiguous Rust tool")
+        path = Path(raw).resolve(strict=True)
+        tools[name] = str(path)
+        identities[name] = {"path": str(path), **studio68_original(path, 256 * 1024 * 1024)[1]}
+    require(len({str(Path(tools[k]).parent) for k in rust_tools}) == 1,
+            "Studio68 mixed Rust tool roots")
+    rustc = run([tools["rustc"], "-Vv"], "rustc-version")
+    require("release: 1.98.1" in rustc.splitlines() and "host: x86_64-unknown-linux-gnu" in rustc.splitlines(),
+            "Studio68 compiler release/host mismatch")
+    for name in ("cargo", "rustdoc", "cargo-fmt", "rustfmt", "cargo-clippy", "clippy-driver"):
+        require(run([tools[name], "--version"], name + "-version"), "Studio68 unobserved tool version")
+    return tools, identities
+
+
+def studio68_verify_tools(identities):
+    for name, row in identities.items():
+        require(studio68_original(Path(row["path"]), 256 * 1024 * 1024)[1] ==
+                {k: row[k] for k in ("bytes", "sha256")}, "Studio68 tool changed: " + name)
+
+
+def studio68_product_g0(product, snapshot, context, tools, environment, output, clock, commands, git):
+    import ast
+    phase = clock.phase(STUDIO68_PHASE_SECONDS["product_g0"])
+    python = tools["python"]
+    bootstrap = ("import runpy,sys; from pathlib import Path; p=Path(sys.argv[1]); "
+                 "sys.path.insert(0,str(p.parent)); sys.argv=sys.argv[1:]; runpy.run_path(str(p),run_name='__main__')")
+    for name in STUDIO68_POLICIES:
+        studio68_command([python, "-I", "-B", "-X", "utf8", "-c", bootstrap, str(product / "tooling" / name)],
+                         product, environment, output, "product-" + name[:-3], 600, phase, commands)
+    runner_path = product / "tooling/ci_test_runner.py"
+    runner_raw, runner_identity = studio68_original(runner_path, 1024 * 1024)
+    require(runner_identity["sha256"] == STUDIO68_RUNNER_SHA256, "Studio68 product G0 runner source changed")
+    # Execute the verified parser bytes, never an unrelated cached .pyc.
+    parser_node = next(n for n in ast.parse(runner_raw).body
+                       if isinstance(n, ast.FunctionDef) and n.name == "parse_unittest_summary")
+    namespace = {"re": re}
+    exec(compile(ast.Module(body=[parser_node], type_ignores=[]), str(runner_path), "exec"), namespace)
+    report = output / "product-g0" / "receipt.json"
+    python_identity = studio68_original(Path(python), 256 * 1024 * 1024)[1]
+    command, _ = studio68_command([python, "-I", "-B", "-X", "utf8", str(runner_path), "--repo", str(product),
+        "--mode", "both", "--pattern", "test_ci_canvas_service.py", "--expected-source", STUDIO68_SOURCE,
+        "--report", str(report), "--require-complete", "--timeout", "300"],
+        product, environment, output, "product-contracts", 660, phase, commands, defer_exit_status=True)
+    raw, report_identity = studio68_original(report, 4 * 1024 * 1024)
+    inner = json.loads(raw)
+    studio68_inner_terminal(command, inner, report_identity, "product-g0")
+    test_raw, test_identity = studio68_original(product / "tooling/tests/test_ci_canvas_service.py", 2 * 1024 * 1024)
+    expected = {"definition": test_identity["sha256"],
+                "ids": studio68_test_roster(test_raw, "tooling.tests.test_ci_canvas_service"),
+                "python": python, "python_sha256": python_identity["sha256"],
+                "locks": {p: snapshot["files"][p]["sha256"] for p in
+                          ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json")}}
+    contracts = studio68_g0_receipt(inner, expected, context,
+        lambda name: studio68_original(report.parent / name, 32 * 1024 * 1024)[0], namespace["parse_unittest_summary"])
+    studio68_command([tools["cargo-fmt"], "fmt", "--all", "--", "--check"], product, environment,
+                     output, "product-format", 120, phase, commands)
+    require(studio68_snapshot(product, STUDIO68_SOURCE, git, expected_tree=STUDIO68_TREE) == snapshot,
+            "Studio68 product source changed during its own G0")
+    return {"status": "PASS_PRODUCT_G0_FOCAL", "product": STUDIO68_SOURCE,
+            "policies": list(STUDIO68_POLICIES), "contracts": contracts, "receipt": report_identity,
+            "format": "OBSERVED_CARGO_FMT_WITH_OBSERVED_RUSTFMT", "gate_credit_transferred": False}
+
+
+def studio68_dependency_closure(metadata, product, root, sdk, lock_raw):
+    import tomllib
+    require(type(metadata) is dict and metadata.get("version") == 1
+            and Path(metadata.get("workspace_root", "")).resolve(strict=True) == product,
+            "Studio68 Cargo metadata belongs to another checkout")
+    packages = metadata.get("packages")
+    require(type(packages) is list and len(packages) <= 2000, "Studio68 package roster bound")
+    indexed = {p["id"]: p for p in packages}
+    require(len(indexed) == len(packages), "Studio68 duplicate Cargo package")
+    roots = [p["id"] for p in packages if p.get("name") == "motionwright-service"
+             and Path(p.get("manifest_path", "")).absolute() == product / "crates/service/Cargo.toml"]
+    require(len(roots) == 1, "Studio68 selected service package missing or ambiguous")
+    nodes = {p["id"]: p for p in metadata.get("resolve", {}).get("nodes", [])}
+    require(set(nodes) <= set(indexed), "Studio68 resolved package is unbound")
+    selected, pending = set(), list(roots)
+    while pending:
+        package = pending.pop()
+        if package in selected:
+            continue
+        require(package in nodes and len(selected) < 2000, "Studio68 unresolved dependency")
+        selected.add(package)
+        pending.extend(nodes[package].get("dependencies", []))
+    lock = tomllib.loads(lock_raw.decode("utf-8"))
+    locked = {(p["name"], p["version"], p.get("source")): p for p in lock["package"]}
+    sources, sdk_snapshot = {}, None
+    for package_id in sorted(selected):
+        item = indexed[package_id]
+        folder = Path(item["manifest_path"]).resolve(strict=True).parent
+        source = item.get("source")
+        key = (item["name"], item["version"], source)
+        require(key in locked, "Studio68 dependency differs from Cargo.lock")
+        if source is None:
+            require(folder.is_relative_to(product), "Studio68 unbound local path dependency")
+            continue
+        require(folder.is_relative_to(root / "cargo"), "Studio68 dependency escaped the owned Cargo home")
+        if source.startswith("git+"):
+            require(source.startswith("git+https://github.com/seradotcom/semwright?")
+                    and source.endswith("#" + STUDIO68_SDK)
+                    and "rev=" + STUDIO68_SDK in source, "Studio68 unexpected Git dependency")
+            sdk_root = Path(sdk.custody.git(folder, "rev-parse", "--show-toplevel").decode().strip()).resolve(strict=True)
+            if sdk_snapshot is None:
+                sdk_snapshot = studio68_snapshot(sdk_root, STUDIO68_SDK, sdk.custody.git, cargo_marker=True)
+                sources["sdk"] = {"root": str(sdk_root), "snapshot": sdk_snapshot}
+            require(folder.is_relative_to(Path(sources["sdk"]["root"])), "Studio68 split SDK checkout")
+        else:
+            require(source == "registry+https://github.com/rust-lang/crates.io-index",
+                    "Studio68 noncanonical registry dependency")
+            raw, checksum_identity = studio68_original(folder / ".cargo-checksum.json", 4 * 1024 * 1024)
+            checksum = json.loads(raw)
+            require(checksum.get("package") == locked[key].get("checksum")
+                    and re.fullmatch(r"[0-9a-f]{64}", checksum.get("package", "")),
+                    "Studio68 registry archive checksum differs from lock")
+            inventory = sdk.dependency_inventory(folder)
+            require(type(checksum.get("files")) is dict and checksum["files"], "Studio68 registry file roster missing")
+            for name, expected in checksum["files"].items():
+                require(name in inventory and inventory[name].get("sha256") == expected,
+                        "Studio68 registry source checksum differs: " + name)
+            require(set(inventory) <= set(checksum["files"]) | {".cargo-checksum.json", ".cargo-ok"},
+                    "Studio68 unbound registry source input")
+            sources[package_id] = {"root": str(folder), "inventory": inventory,
+                                   "archive_checksum": checksum["package"], "checksum_original": checksum_identity}
+    require(sdk_snapshot is not None, "Studio68 actual resolved SDK checkout was not observed")
+    return {"root_package": roots[0], "resolved_package_ids": sorted(selected), "sources": sources,
+            "scope": "Resolved source closure; not a claim that every package target executed"}
+
+
+def studio68_verify_dependencies(closure, sdk):
+    for key, value in closure["sources"].items():
+        folder = Path(value["root"])
+        actual = (studio68_snapshot(folder, STUDIO68_SDK, sdk.custody.git, cargo_marker=True)
+                  if key == "sdk" else sdk.dependency_inventory(folder))
+        require(actual == value["snapshot" if key == "sdk" else "inventory"],
+                "Studio68 dependency changed after compilation: " + key)
+
+
+def studio68_npm_inventory(root, sdk):
+    inventory = sdk.dependency_inventory(root)
+    # The pinned Vite configuration uses its documented node_modules caches.
+    # Cache output is retained separately; it never becomes immutable package input.
+    generated = (".vite/", ".vite-temp/")
+    return {"files": {k: v for k, v in inventory.items() if not k.startswith(generated)},
+            "generated_cache_roots": [".vite", ".vite-temp"]}
+
+
+def studio68_seal_binary(raw, code, product, root, sdk):
+    binaries = sdk.select_binaries(raw, code, product, root / "target", studio68_binary_spec(), testing=False)
+    observed = binaries["studio_review_session"]
+    original = Path(observed["absolute_path"])
+    retained = root / "evidence/tools/studio_review_session"
+    retained.parent.mkdir(parents=True, exist_ok=False)
+    data, identity = studio68_original(original, 256 * 1024 * 1024)
+    require(identity == {k: observed[k] for k in ("bytes", "sha256")}, "Studio68 compiled binary changed before retention")
+    with retained.open("xb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    retained.chmod(0o500)
+    require(studio68_original(retained, 256 * 1024 * 1024)[1] == identity,
+            "Studio68 retained executable readback differs")
+    sdk.verify_binaries(binaries, root / "target")
+    return {"producer_original": observed, "retained": {"path": str(retained), **identity},
+            "executed_product_source_sha": STUDIO68_SOURCE, "executable_target": studio68_binary_spec()[0]}
+
+
+def studio68_reader_argv(python, reader, root, original, binary):
+    return [python, "-I", "-B", "-X", "utf8", str(reader),
+            "--results-root", str(root / "results"), "--output", str(root / "readback"),
+            "--expected-cases", "68", "--playwright-exit-code", "0",
+            "--playwright-json", str(root / "playwright-execution.json"),
+            "--expected-playwright-sha256", original["execution"]["sha256"],
+            "--expected-roster-json", str(root / "playwright-list.json"),
+            "--expected-roster-sha256", original["list"]["sha256"],
+            "--provenance-receipt", str(root / "source-build-binary.json"),
+            "--expected-provenance-sha256", original["provenance"]["sha256"],
+            "--provenance-reviewed", "--execute-readback", "--expected-binary-sha256", binary["sha256"],
+            "--backend-source-sha", STUDIO68_SOURCE, "--rpc-timeout-seconds", "10"]
+
+
+def studio68_main(arguments):
+    import time
+    started_ns = time.monotonic_ns()  # One origin before any controlled IO.
+    parser = argparse.ArgumentParser(description="One exact 68-case Studio service cohort with independent closed-store readback")
+    parser.add_argument("--gate-repo", required=True, type=Path)
+    parser.add_argument("--product-repo", required=True, type=Path)
+    parser.add_argument("--product-source", required=True)
+    parser.add_argument("--root", required=True, type=Path)
+    args = parser.parse_args(arguments)
+    context = studio68_context(os.environ, args.product_source)
+    clock = Studio68Clock(started_ns)
+    gate, product = args.gate_repo.resolve(strict=True), args.product_repo.resolve(strict=True)
+    root = args.root.absolute()
+    require(root.is_absolute() and not root.exists() and root.parent.resolve(strict=True) == root.parent
+            and root.parent == Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+            and gate != product and not gate.is_relative_to(product) and not product.is_relative_to(gate)
+            and not root.is_relative_to(gate) and not root.is_relative_to(product), "Studio68 isolated owned namespaces")
+    environment = studio68_environment(os.environ, root)
+    root.mkdir()
+    output = root / "evidence"
+    output.mkdir()
+    for name in ("cargo", "target", "npm", "browsers", "tmp", "xdg"):
+        (root / name).mkdir()
+    commands = []
+    receipt = {"schema": "motionwright.studio68-execution/1", "context": context,
+               "started_mono_ns": started_ns, "deadline_mono_ns": clock.deadline_ns,
+               "commands": commands, "status": "PREPARING", "service_cases": "NOT_RUN",
+               "retry_authorized": False, "human_acceptance": "NOT_GRANTED",
+               "process_boundary": "OWNED_POSIX_SESSION_GROUP", "escaped_descendants": "NOT_OBSERVED"}
+    exit_code = 1
+    try:
+        preparation = clock.phase(STUDIO68_PREPARATION_SECONDS)
+        sdk = studio68_load_helpers(gate)
+        git = sdk.custody.git
+        gate_before = studio68_snapshot(gate, context["gate_source_sha"], git)
+        product_before = studio68_snapshot(product, STUDIO68_SOURCE, git, expected_tree=STUDIO68_TREE)
+        studio68_product_identity(product_before)
+        require(Path(__file__).resolve(strict=True) == gate / "tooling/ci_canvas_service.py", "Studio68 helper came from another checkout")
+        for path, expected in STUDIO68_READER_PINS.items():
+            require(gate_before["files"].get(path, {}).get("sha256") == expected, "Studio68 independent reader pin differs")
+        write_new(output / "gate-source-before.json", gate_before)
+        write_new(output / "product-source-before.json", product_before)
+        preparation.remaining(1)
+        receipt["gate_tree_sha"], receipt["executed_product_tree_sha"] = gate_before["tree"], product_before["tree"]
+        tools, tool_identities = studio68_tools(product, environment, output, clock, commands, phase=preparation)
+        environment.update(CARGO=tools["cargo"], RUSTC=tools["rustc"], RUSTDOC=tools["rustdoc"], RUSTFMT=tools["rustfmt"],
+                           CC=tools["cc"], AR=tools["ar"], CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=tools["cc"],
+                           RUSTUP_TOOLCHAIN="1.98.1", PATH=os.pathsep.join(
+                               (str(Path(tools["node"]).parent), str(Path(tools["cargo"]).parent), environment.get("PATH", ""))))
+        receipt["tools"] = tool_identities
+        receipt["product_g0"] = studio68_product_g0(product, product_before, context, tools, environment, output, clock, commands, git)
+        require(shutil.disk_usage(root).free >= 18 * 1024**3, "Studio68 compiler disk reserve unavailable")
+        memory = Path("/proc/meminfo").read_text(encoding="ascii")
+        available = re.search(r"(?m)^MemAvailable:\s+([0-9]+) kB$", memory)
+        require(available and int(available.group(1)) * 1024 >= 4 * 1024**3, "Studio68 compiler memory reserve unavailable")
+        phase = clock.phase(STUDIO68_PHASE_SECONDS["dependencies"])
+        def run(argv, label, cap, selected_phase, *, cwd=product, env=environment, defer_exit_status=False):
+            return studio68_command(argv, cwd, env, output, label, cap, selected_phase, commands,
+                                    defer_exit_status=defer_exit_status)
+        barrier = sdk.ProducerBarrier(lambda argv, label, cap, selected_phase, cwd=product, env=environment:
+                                      run(argv, label, cap, selected_phase, cwd=cwd, env=env), tools["cargo"])
+        barrier([tools["cargo"], "fetch", "--locked"], "locked-fetch", 600, phase)
+        _, metadata = barrier([tools["cargo"], "metadata", "--locked", "--offline", "--format-version", "1"],
+                              "resolved-dependencies", 120, phase)
+        closure = studio68_dependency_closure(json.loads(metadata["stdout"]), product, root, sdk,
+                                              studio68_original(product / "Cargo.lock", 16 * 1024 * 1024)[0])
+        write_new(output / "compiled-source-dependencies.json", closure)
+        studio = product / "apps/studio"
+        run([tools["node"], tools["npm"], "ci", "--no-audit", "--no-fund"], "npm-ci", 600, phase, cwd=studio)
+        cli = studio / "node_modules/@playwright/test/cli.js"
+        require(cli.resolve(strict=True).is_relative_to(studio / "node_modules"), "Studio68 Playwright CLI escaped dependency tree")
+        run([tools["node"], str(cli), "install", "--with-deps", "chromium"], "chromium-install", 600, phase, cwd=studio)
+        npm = studio68_npm_inventory(studio / "node_modules", sdk)
+        write_new(output / "npm-source-before.json", npm)
+        barrier([tools["cargo"], "clippy", "--locked", "--offline", "--jobs", "1", "-p", "motionwright-service",
+                 "--example", "studio_review_session", "--", "-D", "warnings"], "selected-clippy", 900,
+                clock.phase(STUDIO68_PHASE_SECONDS["clippy"]))
+        build_phase = clock.phase(STUDIO68_PHASE_SECONDS["build"])
+        built, streams = barrier(studio68_build_argv(tools["cargo"]), "service-example-build", 1200, build_phase)
+        barrier.begin_sealing()
+        binary = studio68_seal_binary(streams["stdout"], built["exit_code"], product, root, sdk)
+        studio68_verify_dependencies(closure, sdk)
+        require(studio68_snapshot(product, STUDIO68_SOURCE, git, expected_tree=STUDIO68_TREE, allow_node_modules=True) == product_before,
+                "Studio68 product source changed before observation")
+        studio68_verify_tools(tool_identities)
+        provenance = {"schema": "motionwright.studio68-source-build-binary/1", "context": context,
+                      "product_g0": receipt["product_g0"], "product_source": STUDIO68_SOURCE, "product_tree": STUDIO68_TREE,
+                      "gate_source": context["gate_source_sha"], "gate_tree": gate_before["tree"],
+                      "binary": binary, "build_command": built, "tools": tool_identities,
+                      "sdk_source": STUDIO68_SDK, "sdk_tree": closure["sources"]["sdk"]["snapshot"]["tree"],
+                      "retry_authorized": False, "formal_acceptance": "NOT_GRANTED"}
+        write_new(output / "source-build-binary.json", provenance)
+        receipt["binary"] = binary
+        barrier.begin_observation()
+        pw_env = dict(environment, MOTIONWRIGHT_SERVICE_TEST_BIN=binary["retained"]["path"],
+                      MOTIONWRIGHT_SERVICE_TEST_TMPDIR=str(root / "tmp"), MOTIONWRIGHT_PLAYWRIGHT_PORT="14361")
+        originals = {"provenance": studio68_original(output / "source-build-binary.json", 8 * 1024 * 1024)[1]}
+        build_phase.remaining(1)
+        for listing, label in ((True, "list"), (False, "execution")):
+            cap = STUDIO68_PHASE_SECONDS[label]
+            reporter = output / ("playwright-" + label + ".json")
+            current_env = dict(pw_env, PLAYWRIGHT_JSON_OUTPUT_FILE=str(reporter))
+            args_pw = studio68_playwright_argv(tools["node"], cli, output / "results", listing=listing)
+            # No Cargo producer remains reachable through this barrier phase.
+            result, _ = barrier(args_pw, "playwright-" + label, cap, clock.phase(cap), studio, current_env)
+            raw, originals[label] = studio68_original(reporter, 64 * 1024 * 1024)
+            document = json.loads(raw)
+            require(document.get("config", {}).get("argv") == args_pw, "Studio68 reporter argv differs from observed launch")
+            require(Path(document["config"].get("rootDir", "")).resolve(strict=True) == studio / "tests"
+                    and Path(document["config"].get("configFile", "")).resolve(strict=True) == studio / "playwright.config.ts",
+                    "Studio68 reporter source roots changed")
+            receipt[label] = studio68_roster(document, executed=not listing)
+            require(studio68_original(Path(binary["retained"]["path"]), 256 * 1024 * 1024)[1] ==
+                    {k: binary["retained"][k] for k in ("bytes", "sha256")}, "Studio68 executed service binary changed")
+        require(receipt["list"]["ids"] == receipt["execution"]["ids"], "Studio68 list/execution IDs differ")
+        require(studio68_npm_inventory(studio / "node_modules", sdk) == npm, "Studio68 installed package sources changed")
+        require(studio68_snapshot(product, STUDIO68_SOURCE, git, expected_tree=STUDIO68_TREE, allow_node_modules=True) == product_before,
+                "Studio68 source changed before independent readback")
+        require(json.loads(studio68_original(output / "source-build-binary.json", 8 * 1024 * 1024)[0]) == provenance,
+                "Studio68 independent source receipt changed")
+        reader = gate / "tooling/service_readback/service_archive_readback_r3.py"
+        require(studio68_original(reader, 2 * 1024 * 1024)[1]["sha256"] == STUDIO68_READER_PINS[reader.relative_to(gate).as_posix()],
+                "Studio68 independent reader changed before execution")
+        read_command, _ = run(studio68_reader_argv(tools["python"], reader, output, originals, binary["retained"]),
+                             "independent-readback", 5400, clock.phase(STUDIO68_PHASE_SECONDS["readback"]),
+                             env=pw_env, defer_exit_status=True)
+        retention_phase = clock.phase(STUDIO68_PHASE_SECONDS["retention"], retention=True)
+        read_raw, read_identity = studio68_original(output / "readback/readback-report.json", 32 * 1024 * 1024)
+        read_report = json.loads(read_raw)
+        studio68_inner_terminal(read_command, read_report, read_identity, "readback")
+        receipt["readback"] = studio68_readback_admission(read_report, read_command,
+            {k: binary["retained"][k] for k in ("path", "sha256")}, receipt["execution"]["ids"])
+        receipt["readback_original"] = read_identity
+        journal_raw, _ = studio68_original(output / "readback/execution-observations.jsonl", 128 * 1024 * 1024)
+        receipt["readback_journal_original"] = studio68_readback_journal(journal_raw, read_report)
+        sealed = output / "readback/sealed-playwright-results.zip"
+        require(read_report.get("archive", {}).get("archive") == str(sealed), "Studio68 readback archive locator changed")
+        sealed_identity = archive_file_digest(sealed, ARCHIVE_LIMITS["total_bytes"])
+        require(sealed_identity["sha256"] == read_report["archive"].get("archiveSha256"), "Studio68 sealed ZIP changed")
+        seal_raw, seal_identity = studio68_original(output / "readback/seal-manifest.json", 32 * 1024 * 1024)
+        seal = json.loads(seal_raw)
+        require(seal.get("schema") == "motionwright.playwright-results-seal/1"
+                and {k: seal.get(k) for k in ("archive", "archiveSha256", "treeSha256")} == read_report["archive"]
+                and seal.get("sourceDirectory") == str(output / "results"), "Studio68 sealed original manifest differs")
+        receipt["sealed_originals"] = {"archive": {"path": str(sealed), **sealed_identity}, "manifest": seal_identity}
+        require(studio68_snapshot(product, STUDIO68_SOURCE, git, expected_tree=STUDIO68_TREE, allow_node_modules=True) == product_before
+                and studio68_snapshot(gate, context["gate_source_sha"], git) == gate_before,
+                "Studio68 final source readback differs")
+        studio68_verify_dependencies(closure, sdk)
+        studio68_verify_tools(tool_identities)
+        sdk.verify_binaries({"studio_review_session": binary["producer_original"]}, root / "target")
+        require(studio68_original(Path(binary["retained"]["path"]), 256 * 1024 * 1024)[1] ==
+                {k: binary["retained"][k] for k in ("bytes", "sha256")}, "Studio68 retained executable changed after readback")
+        require(studio68_npm_inventory(studio / "node_modules", sdk) == npm, "Studio68 package sources changed after readback")
+        for row in commands:
+            require(row.get("status") == "PASS_OBSERVED_COMMAND_ONLY", "Studio68 a command is not admitted")
+            for stream in ("stdout", "stderr"):
+                require(studio68_original(output / (row["label"] + "." + stream + ".log"), ARCHIVE_LIMITS["file_bytes"])[1] == row[stream],
+                        "Studio68 final original stream readback differs")
+        retention_phase.remaining(1)
+        clock.remaining(1, reserve=0)
+        receipt.update(status="PASS_STUDIO68_REAL_SERVICE_CLOSED_READBACK", service_cases=68,
+                       scope="Five exact F278 service specs and closed Project/journal readback; no installed/native/human acceptance")
+        exit_code = 0
+    except UnknownObservation as error:
+        receipt.update(status="UNKNOWN_NO_RETRY", error=str(error), uncertain_command=error.command)
+        exit_code = 124
+    except BaseException as error:
+        receipt.update(status="FAIL_OR_PREPARATION_REJECTED", error=type(error).__name__ + ": " + str(error))
+    receipt["finished_mono_ns"] = time.monotonic_ns()
+    receipt["exit_code"] = exit_code
+    write_new(output / "STUDIO68_RESULT.json", receipt)
+    print(json.dumps({"status": receipt["status"], "gate": context["gate_source_sha"], "product": STUDIO68_SOURCE,
+                      "receipt": str(output / "STUDIO68_RESULT.json"), "service_cases": receipt["service_cases"]}), flush=True)
+    return exit_code
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["studio68"]:
+        raise SystemExit(studio68_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "claim-source-contracts":
         raise SystemExit(claim_source_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "workflow-route":

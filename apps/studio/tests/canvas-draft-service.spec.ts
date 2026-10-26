@@ -1462,6 +1462,11 @@ test("saved parented Canvas text stays visible in real editorial study after ser
     let project = (await service.fixtureBootstrap()).project;
     const scene = sceneNamed(project, "Independent synthetic scene"), child = scene.nodes[0];
     evidence.initial = project; evidence.final = project;
+    const initialJournal = await service.history(project.id, 0);
+    const initialApplyCount = applyRequests(service).length;
+    expect(child.coordinate_space).toBe("project_pixels");
+    expect(child.parent_id).toBeNull();
+    expect(child.keyframes).toEqual([]);
     await service.attachFixturePage(page, project.id); await page.goto("/");
     await openCanvas(page, scene.name, child.name);
     // Author the parent object through real Studio/SQLite rather than
@@ -1469,18 +1474,34 @@ test("saved parented Canvas text stays visible in real editorial study after ser
     await page.locator(".canvas-create-row").getByRole("button", { name: "text", exact: true }).click();
     project = await checkpoint(service, page, evidence, project.id, project.revision + 1, "real second Canvas text parent");
     const parent = sceneNamed(project, scene.name).nodes[1];
+    const childGeometry: CanvasTransform = {
+      x: 316.25, y: 247.5, width: 484, height: 132, rotation_deg: 11, opacity: 0.8,
+    };
+    const firstParentGeometry: CanvasTransform = {
+      x: 80, y: 60, width: 640, height: 240, rotation_deg: 30, opacity: 0.65,
+    };
+    const secondParentGeometry: CanvasTransform = {
+      x: 1020, y: 540, width: 720, height: 200, rotation_deg: -25, opacity: 0.4,
+    };
+    const transformInputs = [["X", "x"], ["Y", "y"], ["W", "width"], ["H", "height"],
+      ["Rotation", "rotation_deg"], ["Opacity", "opacity"] as const;
+    const authorTransform = async (node: CanvasNode, geometry: CanvasTransform, label: string) => {
+      await openCanvas(page, scene.name, node.name);
+      for (const [label, field] of transformInputs) await input(page, label).fill(String(geometry[field]));
+      await button(page, "Commit transform").click();
+      project = await checkpoint(service, page, evidence, project.id, project.revision + 1, label);
+      expect(storedNode(project, scene.id, node.id)).toEqual({ ...node, ...geometry });
+    };
+    await authorTransform(child, childGeometry, "explicit project-pixel child geometry saved before reparent");
+    await authorTransform(parent, firstParentGeometry, "translated resized and rotated parent saved before reparent");
     await selectNode(page, child.name);
     await page.getByLabel("Canvas parent", { exact: true }).selectOption({ value: parent.id });
     await page.getByLabel("Canvas z order", { exact: true }).fill("8");
     await button(page, "Commit hierarchy").click();
-    const saved = await checkpoint(service, page, evidence, project.id, project.revision + 1, "parented original text saved");
-    expect(storedNode(saved, scene.id, child.id)).toMatchObject({
-      id: child.id, parent_id: parent.id, z_index: 8, text: child.text, style: child.style,
-    });
-    const savedJournal = await service.history(project.id, project.revision);
-    expect(savedJournal.map(item => item.change.type)).toEqual(["reparent_canvas_node"]);
-    const applyCount = applyRequests(service).length;
-    const inspect = async () => {
+    project = await checkpoint(service, page, evidence, project.id, project.revision + 1, "parented original text and project-pixel geometry saved");
+    const parentedChild = storedNode(project, scene.id, child.id);
+    expect(parentedChild).toEqual({ ...child, ...childGeometry, parent_id: parent.id, z_index: 8 });
+    const inspect = async (parentGeometry: CanvasTransform, parentRotation: string) => {
       await button(page, "Production").click();
       await page.getByLabel("Production working scene", { exact: true })
         .selectOption({ value: scene.id });
@@ -1488,21 +1509,78 @@ test("saved parented Canvas text stays visible in real editorial study after ser
       const study = page.getByRole("img", { name: "Before scoped changes", exact: true });
       await expect(study).toBeVisible();
       const childSVG = study.locator('[data-canvas-node-id="' + child.id + '"]');
+      const parentSVG = study.locator('[data-canvas-node-id="' + parent.id + '"]');
       await expect(childSVG).toHaveAttribute("data-parent-id", parent.id);
+      await expect(childSVG).toBeVisible();
+      await expect(childSVG.locator("text")).toBeVisible();
+      // These are the child's own saved project coordinates, not an affine
+      // composition with the parent or a claim about native Film geometry.
+      await expect(childSVG).toHaveAttribute("transform", "rotate(11 558.25 313.5)");
+      await expect(childSVG).toHaveAttribute("opacity", "0.8");
+      await expect(childSVG.locator("text")).toHaveAttribute("x", "316.25");
+      await expect(childSVG.locator("text")).toHaveAttribute("y", String(247.5 + (child.style.font_size ?? 30) * 0.88));
       await expect(childSVG.locator("text")).toContainText(child.text ?? "");
+      await expect(parentSVG).toHaveAttribute("transform", parentRotation);
+      await expect(parentSVG).toHaveAttribute("opacity", String(parentGeometry.opacity));
+      await expect(parentSVG.locator("text")).toHaveAttribute("x", String(parentGeometry.x));
+      expect(await study.locator(":scope > g[data-canvas-node-id]").evaluateAll(nodes =>
+        nodes.map(node => node.getAttribute("data-canvas-node-id")))).toEqual([parent.id, child.id]);
       await expect(study).toContainText("Native Film");
+      return childSVG.evaluate(group => {
+        const text = group.querySelector("text");
+        if (!text) throw new Error("The saved editable child lost its editorial text element");
+        return {
+          group: ["data-canvas-node-id", "data-parent-id", "transform", "opacity"]
+            .map(name => [name, group.getAttribute(name)]),
+          text: text.textContent,
+          typographyAndPosition: ["x", "y", "fill", "font-family", "font-size", "font-weight"]
+            .map(name => [name, text.getAttribute(name)]),
+          lines: Array.from(text.querySelectorAll("tspan"), line => ({
+            text: line.textContent, x: line.getAttribute("x"), dy: line.getAttribute("dy"),
+          })),
+        };
+      });
     };
-    await inspect();
+    const beforeParentChange = await inspect(firstParentGeometry, "rotate(30 400 180)");
+    await authorTransform(storedNode(project, scene.id, parent.id), secondParentGeometry,
+      "parent geometry changed without moving the project-pixel child");
+    const saved = project;
+    expect(storedNode(saved, scene.id, child.id)).toEqual(parentedChild);
+    const afterParentChange = await inspect(secondParentGeometry, "rotate(-25 1380 640)");
+    expect(afterParentChange).toEqual(beforeParentChange);
+    const savedJournal = await service.history(saved.id, 0);
+    expect(savedJournal.slice(0, initialJournal.length)).toEqual(initialJournal);
+    expect(savedJournal.map(item => item.revision)).toEqual(
+      Array.from({ length: saved.revision }, (_, index) => index + 1));
+    expect(savedJournal.slice(initialJournal.length).map(item => item.change.type)).toEqual([
+      "add_canvas_node", "transform_canvas_node", "transform_canvas_node", "reparent_canvas_node", "transform_canvas_node",
+    ]);
+    const applyCount = applyRequests(service).length;
+    expect(applyCount - initialApplyCount).toBe(5);
+    expect(applyRequests(service).slice(-4).map(item => item.request.change)).toEqual([
+      { type: "transform_canvas_node", scene_id: scene.id, node_id: child.id, transform: childGeometry },
+      { type: "transform_canvas_node", scene_id: scene.id, node_id: parent.id, transform: firstParentGeometry },
+      { type: "reparent_canvas_node", scene_id: scene.id, node_id: child.id, parent_id: parent.id, z_index: 8 },
+      { type: "transform_canvas_node", scene_id: scene.id, node_id: parent.id, transform: secondParentGeometry },
+    ]);
     await service.close(); await service.start(); await page.reload();
     await revision(page, saved.revision);
-    await inspect();
+    const afterReopen = await inspect(secondParentGeometry, "rotate(-25 1380 640)");
+    expect(afterReopen).toEqual(beforeParentChange);
+    await openCanvas(page, scene.name, child.name);
+    for (const [label, field] of transformInputs) await expect(input(page, label)).toHaveValue(String(childGeometry[field]));
+    await expect(page.getByLabel("Canvas parent", { exact: true })).toHaveValue(parent.id);
+    await expect(page.getByLabel("Canvas z order", { exact: true })).toHaveValue("8");
+    await expect(input(page, "text")).toHaveValue(child.text ?? "");
     expect(await service.project(saved.id)).toEqual(saved);
-    expect(await service.history(saved.id, project.revision)).toEqual(savedJournal);
+    expect(await service.history(saved.id, 0)).toEqual(savedJournal);
     expect(applyRequests(service)).toHaveLength(applyCount);
-    evidence.observations.push({ label: "parented_subject_remains_visible_in_editorial_svg_after_sqlite_reopen",
+    evidence.observations.push({ label: "parented_subject_keeps_project_pixel_geometry_after_parent_transform_and_sqlite_reopen",
       childId: child.id, parentId: parent.id, savedRevision: saved.revision,
-      expectedSvgLayerZ: 8, exactStoredProjectAndJournal: true,
-      nativeParentFidelity: "NOT_VERIFIED" });
+      coordinateSpace: "project_pixels", savedChild: parentedChild,
+      firstParentGeometry, secondParentGeometry, beforeParentChange, afterParentChange, afterReopen,
+      expectedSvgLayerZ: 8, exactStoredProjectAndFullJournal: true, appliedUiChanges: 5,
+      nativeParentFidelity: "NOT_VERIFIED", localWorldConversion: "NOT_REQUESTED_OR_INFERRED" });
   } finally {
     await retainEvidence(testInfo, [service], evidence, [() => page.close()]);
   }
