@@ -79,6 +79,30 @@ jobs:
               "run_id": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "sdk_cases_executed": 0, "installed_application": "NOT_RUN"})
           PY
+      - name: Verify the clean loader environment before any SDK producer
+        if: ${{ !cancelled() && steps.admission.outcome == 'success' }}
+        env:
+          LD_LIBRARY_PATH: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          env -u LD_LIBRARY_PATH -u LD_PRELOAD -u LD_AUDIT python -I -B - \
+            >"$MW_G0_ROOT/clean-interpreter.stdout.original" \
+            2>"$MW_G0_ROOT/clean-interpreter.stderr.original" <<'PYTHON' || status=$?
+          import json, os, sys
+          forbidden = ("LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT")
+          assert not any(name in os.environ for name in forbidden)
+          print(json.dumps({"source_sha": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "python_executable": sys.executable, "python_version": sys.version,
+              "loader_keys_absent": list(forbidden), "sdk_producers_executed": 0,
+              "sdk_cases_executed": 0}))
+          PYTHON
+          printf '%s\n' "$status" >"$MW_G0_ROOT/clean-interpreter.exit-code.original"
+          exit "$status"
       - name: Run quick source and conformance policies with originals
         if: ${{ !cancelled() && steps.admission.outcome == 'success' }}
         shell: bash
@@ -259,10 +283,16 @@ jobs:
           components: clippy
       - name: Observe the four exact real Host cases without replay
         working-directory: gate
+        env:
+          LD_LIBRARY_PATH: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
         shell: bash
         run: |
           set -euo pipefail
-          python -B tooling/ci_sdk_daemon_stdin_g2.py --gate "$GITHUB_WORKSPACE/gate" \
+          # setup-python adds LD_LIBRARY_PATH. Clear it before the interpreter
+          # loads; keep the verifier's inherited-override rejection unchanged.
+          env -u LD_LIBRARY_PATH -u LD_PRELOAD -u LD_AUDIT python -B tooling/ci_sdk_daemon_stdin_g2.py --gate "$GITHUB_WORKSPACE/gate" \
             --sdk "$GITHUB_WORKSPACE/sdk" --output "$MW_DAEMON_ROOT/execution"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
