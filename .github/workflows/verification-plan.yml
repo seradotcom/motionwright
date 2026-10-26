@@ -35,7 +35,7 @@ jobs:
   plan-and-contracts:
     name: Source-bound plan and conformance guardrails (shadow)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 60
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       MW_SOURCE_SHA: ${{ github.sha }}
@@ -67,7 +67,7 @@ jobs:
             --pattern test_acceptance_cross_checkout.py \
             --mode both --expected-source "$MW_SOURCE_SHA" \
             --report "$RUNNER_TEMP/verification/g0-receipt.json" \
-            --require-complete
+            --require-complete --timeout 600
       - name: Verify selected-originals Core source on Linux in both entrypoints
         if: ${{ !cancelled() }}
         timeout-minutes: 3

@@ -2,6 +2,18 @@ name: Native reader contracts
 
 on:
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Existing reader contracts or complete source modules containing Linux path regressions
+        type: choice
+        required: true
+        default: reader-contracts
+        options: [reader-contracts, linux-path-source]
+      expected_source_sha:
+        description: Exact full source commit for linux-path-source, independently bound from this gate
+        type: string
+        required: false
+        default: ''
   pull_request:
     paths:
       - '.github/workflows/native-reader-contracts.yml'
@@ -37,6 +49,7 @@ env:
 
 jobs:
   native-reader-contracts:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'linux-path-source'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -184,5 +197,327 @@ jobs:
         with:
           name: native-reader-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/native-reader-evidence/${{ github.sha }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-path-source:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux-path-source'
+    runs-on: ubuntu-24.04
+    # Child limits total 600 s; reserve 300 s for setup, admission and custody.
+    timeout-minutes: 15
+    env:
+      PRODUCT_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+      LINUX_PATH_EVIDENCE: ${{ runner.temp }}/linux-path-source-${{ github.run_id }}-${{ github.run_attempt }}
+      LINUX_PATH_VENV: ${{ runner.temp }}/linux-path-venv-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: gate
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind the workflow gate and admit a full immutable product source
+        working-directory: gate
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess, sys
+          root = pathlib.Path(os.environ['LINUX_PATH_EVIDENCE'])
+          root.mkdir(exist_ok=False)
+          (root / 'tmp').mkdir()
+          expected = os.environ['PRODUCT_SOURCE_SHA']
+          gate_sha = os.environ['GITHUB_SHA']
+          workflow_sha = os.environ['GITHUB_WORKFLOW_SHA']
+          assert re.fullmatch(r'[0-9a-f]{40}', expected), 'Product source must be a full lowercase SHA'
+          assert gate_sha == workflow_sha, 'Dispatch source must equal the actual workflow source'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == gate_sha
+          assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no']).strip()
+          workflow = pathlib.Path('.github/workflows/native-reader-contracts.yml')
+          assert workflow.is_file() and not workflow.is_symlink(), 'Gate workflow must be a regular source member'
+          workflow_blob = subprocess.check_output(['git', 'show', gate_sha + ':' + workflow.as_posix()])
+          assert workflow.read_bytes() == workflow_blob, 'Gate workflow bytes differ from the dispatched commit'
+          context = {key: os.environ[key] for key in (
+              'GITHUB_WORKFLOW_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB')}
+          value = {
+              'schema': 'motionwright.linux-path-source-admission/1',
+              'gate_source_sha': gate_sha, 'workflow_source_sha': workflow_sha,
+              'gate_tree_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+              'workflow_sha256': hashlib.sha256(workflow_blob).hexdigest(),
+              'expected_product_source_sha': expected, 'github': context,
+              'python': sys.version, 'scope': 'Complete source modules; no native or human acceptance',
+          }
+          (root / 'gate-admission.json').write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              stream.write('TMPDIR=' + str(root / 'tmp') + '\n')
+          PY
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+          ref: ${{ inputs.expected_source_sha }}
+          persist-credentials: false
+
+      - name: Verify the distinct product checkout and retain original source identities
+        id: source_binding
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['LINUX_PATH_EVIDENCE'])
+          admission = json.loads((root / 'gate-admission.json').read_text())
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == admission['expected_product_source_sha'] == os.environ['PRODUCT_SOURCE_SHA']
+          assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no']).strip()
+          paths = ['SOURCE_LOCK.json', 'tooling/ci_test_runner.py',
+                   'tooling/source_policy.py', 'tooling/acceptance_policy.py',
+                   'tooling/creative_status_policy.py', 'tooling/public_surface_policy.py',
+                   'tooling/otio-media/test_bridge.py', 'tooling/otio-media/bridge.py',
+                   'tooling/otio-media/alab_readonly.py', 'tooling/manim_native_readback.py',
+                   'tooling/ci_private_evidence.py', 'tooling/mlt_official_runtime_intake.py',
+                   'tooling/requirements/mlt-g2-custody.txt',
+                   'tooling/tests/test_native_mlt_public_artifact.py',
+                   'tooling/native_mlt_public_artifact.py', 'tooling/cross_app_public_artifact.py',
+                   '.github/workflows/native-mlt-sequence-e2e.yml']
+          files = {}
+          for name in paths:
+              path = pathlib.Path(name)
+              assert path.is_file() and not path.is_symlink(), 'Source member is absent or aliased: ' + name
+              blob = subprocess.check_output(['git', 'show', 'HEAD:' + name])
+              assert path.read_bytes() == blob, 'Working bytes differ from source: ' + name
+              files[name] = hashlib.sha256(blob).hexdigest()
+          assert files['tooling/requirements/mlt-g2-custody.txt'] == '0592c2fd72e472e097f14b2a20cad1a2ffab109fe3dbfe34ae394b96d32baf5a'
+          value = {'schema': 'motionwright.linux-path-source-checkout/1',
+                   'executed_source_sha': actual, 'runner_source_sha': actual,
+                   'tree_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+                   'gate_source_sha': admission['gate_source_sha'],
+                   'gate_tree_sha': admission['gate_tree_sha'],
+                   'workflow_source_sha': admission['workflow_source_sha'],
+                   'workflow_sha256': admission['workflow_sha256'],
+                   'github': admission['github'], 'source_sha256': files,
+                   'expected_module_counts': {'test_bridge.py': 144, 'test_native_mlt_public_artifact.py': 21}}
+          (root / 'source-before.json').write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Retain source policy G0 before dependency provisioning or module execution
+        id: source_g0
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys, time
+          root = pathlib.Path(os.environ['LINUX_PATH_EVIDENCE'])
+          before = json.loads((root / 'source-before.json').read_text())
+          receipt = dict(before, schema='motionwright.linux-path-source-g0/1', status='FAIL', commands=[])
+          deadline = time.monotonic() + 120
+          try:
+              for name in ('source_policy', 'acceptance_policy', 'creative_status_policy', 'public_surface_policy'):
+                  argv = [sys.executable, '-B', 'tooling/' + name + '.py']
+                  try:
+                      run = subprocess.run(argv, capture_output=True, timeout=max(0.01, deadline - time.monotonic()))
+                      stdout, stderr, code = run.stdout, run.stderr, run.returncode
+                  except subprocess.TimeoutExpired as error:
+                      stdout, stderr, code = error.stdout or b'', error.stderr or b'', 124
+                  row = {'command': argv, 'exit_code': code}
+                  for label, raw in (('stdout', stdout), ('stderr', stderr)):
+                      path = root / (name + '.' + label + '.original')
+                      with path.open('xb') as stream:
+                          stream.write(raw)
+                      row[label] = {'file': path.name, 'sha256': hashlib.sha256(raw).hexdigest()}
+                  receipt['commands'].append(row)
+                  if code != 0:
+                      break
+              if len(receipt['commands']) == 4 and all(row['exit_code'] == 0 for row in receipt['commands']):
+                  receipt['status'] = 'PASS'
+          finally:
+              (root / 'source-g0.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+          raise SystemExit(0 if receipt['status'] == 'PASS' else 1)
+          PY
+
+      - name: Install only the existing hash-locked source-test wheels in an isolated environment
+        id: locked_dependencies
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys, time
+          root = pathlib.Path(os.environ['LINUX_PATH_EVIDENCE'])
+          venv = pathlib.Path(os.environ['LINUX_PATH_VENV'])
+          before = json.loads((root / 'source-before.json').read_text())
+          assert not venv.exists(), 'Dependency environment must be new'
+          for source in (pathlib.Path.cwd(), pathlib.Path.cwd().parent / 'gate', root):
+              assert not venv.resolve().is_relative_to(source.resolve())
+              assert not source.resolve().is_relative_to(venv.resolve())
+          python = str(venv / 'bin/python')
+          lock = 'tooling/requirements/mlt-g2-custody.txt'
+          assert hashlib.sha256(pathlib.Path(lock).read_bytes()).hexdigest() == before['source_sha256'][lock]
+          version_code = (
+              'import importlib.metadata as m,json,sys; '
+              'expected={"cryptography":"50.0.2","cffi":"2.1.1","pycparser":"2.23"}; '
+              'actual={name:m.version(name) for name in expected}; '
+              'print(json.dumps({"python":sys.version,"versions":actual},sort_keys=True)); '
+              'assert actual==expected')
+          commands = (
+              ('venv', [sys.executable, '-B', '-m', 'venv', str(venv)]),
+              ('pip-install', [python, '-B', '-m', 'pip', 'install', '--disable-pip-version-check',
+                               '--no-cache-dir', '--only-binary=:all:', '--require-hashes', '--no-deps',
+                               '-r', lock]),
+              ('pip-check', [python, '-B', '-m', 'pip', 'check']),
+              ('dependency-versions', [python, '-B', '-c', version_code]),
+          )
+          receipt = dict(before, schema='motionwright.linux-path-source-dependencies/1',
+                         status='FAIL', environment_path=str(venv), commands=[])
+          deadline = time.monotonic() + 120
+          try:
+              for name, argv in commands:
+                  try:
+                      run = subprocess.run(argv, capture_output=True, timeout=max(0.01, deadline - time.monotonic()))
+                      stdout, stderr, code = run.stdout, run.stderr, run.returncode
+                  except subprocess.TimeoutExpired as error:
+                      stdout, stderr, code = error.stdout or b'', error.stderr or b'', 124
+                  row = {'command': argv, 'exit_code': code}
+                  for label, raw in (('stdout', stdout), ('stderr', stderr)):
+                      path = root / (name + '.' + label + '.original')
+                      with path.open('xb') as stream:
+                          stream.write(raw)
+                      row[label] = {'file': path.name, 'sha256': hashlib.sha256(raw).hexdigest()}
+                  receipt['commands'].append(row)
+                  if code != 0:
+                      break
+              if len(receipt['commands']) == len(commands) and all(row['exit_code'] == 0 for row in receipt['commands']):
+                  receipt['status'] = 'PASS'
+          finally:
+              (root / 'dependencies.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+          raise SystemExit(0 if receipt['status'] == 'PASS' else 1)
+          PY
+
+      - name: Execute the complete original bridge source module
+        id: bridge
+        if: ${{ !cancelled() && steps.source_binding.outcome == 'success' && steps.source_g0.outcome == 'success' && steps.locked_dependencies.outcome == 'success' }}
+        working-directory: source
+        run: |
+          set -euo pipefail
+          "$LINUX_PATH_VENV/bin/python" -B tooling/ci_test_runner.py \
+            --repo "$PWD" --expected-source "$PRODUCT_SOURCE_SHA" \
+            --test-directory tooling/otio-media --mode discovery --require-complete \
+            --pattern test_bridge.py --timeout 180 \
+            --report "$LINUX_PATH_EVIDENCE/bridge/result.json"
+
+      - name: Execute the complete original MLT publication source module
+        id: mlt_public
+        if: ${{ !cancelled() && steps.source_binding.outcome == 'success' && steps.source_g0.outcome == 'success' && steps.locked_dependencies.outcome == 'success' }}
+        working-directory: source
+        run: |
+          set -euo pipefail
+          "$LINUX_PATH_VENV/bin/python" -B tooling/ci_test_runner.py \
+            --repo "$PWD" --expected-source "$PRODUCT_SOURCE_SHA" \
+            --test-directory tooling/tests --mode discovery --require-complete \
+            --pattern test_native_mlt_public_artifact.py --timeout 180 \
+            --report "$LINUX_PATH_EVIDENCE/mlt-public/result.json"
+
+      - name: Close both complete modules and the three actual Linux path cases
+        if: ${{ always() && steps.source_binding.outcome == 'success' }}
+        working-directory: source
+        env:
+          BRIDGE_OUTCOME: ${{ steps.bridge.outcome }}
+          MLT_PUBLIC_OUTCOME: ${{ steps.mlt_public.outcome }}
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          root = pathlib.Path(os.environ['LINUX_PATH_EVIDENCE'])
+          before = json.loads((root / 'source-before.json').read_text())
+          closure = dict(before, schema='motionwright.linux-path-source-closure/1',
+                         status='FAIL', reports={}, required_cases={}, error=None,
+                         native_execution=False, human_acceptance=False, release_authorized=False)
+          required = {
+              'bridge': ('test_bridge.py', (
+                  'test_bridge.BoundedKdenliveCutTests.test_protocol_traversal_and_symlink_targets_do_not_gain_scope',
+                  'test_bridge.PortableOtioTests.test_symlinked_media_is_never_admitted')),
+              'mlt-public': ('test_native_mlt_public_artifact.py', (
+                  'test_native_mlt_public_artifact.MltPublicTests.test_real_retained_source_symlink_prevents_publication',)),
+          }
+          try:
+              assert os.environ['BRIDGE_OUTCOME'] == os.environ['MLT_PUBLIC_OUTCOME'] == 'success'
+              for name in ('source-g0.json', 'dependencies.json'):
+                  raw = (root / name).read_bytes()
+                  prerequisite = json.loads(raw)
+                  assert prerequisite['status'] == 'PASS'
+                  assert prerequisite['executed_source_sha'] == before['executed_source_sha']
+                  assert prerequisite['gate_source_sha'] == before['gate_source_sha']
+                  assert prerequisite['github'] == before['github']
+                  closure[name] = {'sha256': hashlib.sha256(raw).hexdigest()}
+              assert os.environ['GITHUB_SHA'] == os.environ['GITHUB_WORKFLOW_SHA'] == before['gate_source_sha']
+              gate = pathlib.Path.cwd().parent / 'gate'
+              gate_head = subprocess.check_output(['git', '-C', str(gate), 'rev-parse', 'HEAD'], text=True).strip()
+              gate_tree = subprocess.check_output(['git', '-C', str(gate), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+              assert gate_head == before['gate_source_sha']
+              assert gate_tree == before['gate_tree_sha']
+              assert not subprocess.check_output(['git', '-C', str(gate), 'status', '--porcelain', '--untracked-files=no']).strip()
+              workflow_relative = '.github/workflows/native-reader-contracts.yml'
+              workflow = gate / workflow_relative
+              assert workflow.is_file() and not workflow.is_symlink(), 'Gate workflow was removed or aliased'
+              workflow_blob = subprocess.check_output(['git', '-C', str(gate), 'show', gate_head + ':' + workflow_relative])
+              assert workflow.read_bytes() == workflow_blob, 'Gate workflow changed during verification'
+              workflow_digest = hashlib.sha256(workflow_blob).hexdigest()
+              assert workflow_digest == before['workflow_sha256']
+              closure['gate_after'] = {'source_sha': gate_head, 'tree_sha': gate_tree,
+                                       'workflow_sha256': workflow_digest, 'clean_tracked_checkout': True}
+              assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == before['executed_source_sha']
+              assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no']).strip()
+              for name, expected in before['source_sha256'].items():
+                  assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == expected
+              for label, (module, ids) in required.items():
+                  report_path = root / label / 'result.json'
+                  raw = report_path.read_bytes()
+                  report = json.loads(raw)
+                  assert report['status'] == 'PASS' and report['exit_code'] == 0
+                  assert report['executed_source_sha'] == before['executed_source_sha']
+                  assert report['github']['GITHUB_SHA'] == before['gate_source_sha']
+                  assert report['runner_sha256'] == before['source_sha256']['tooling/ci_test_runner.py']
+                  definition = ('tooling/otio-media/' if label == 'bridge' else 'tooling/tests/') + module
+                  assert report['test_definition_sha256'] == {definition: before['source_sha256'][definition]}
+                  assert report['require_complete'] is True
+                  for key, expected in before['github'].items():
+                      assert report['github'][key] == expected
+                  assert len(report['steps']) == 1
+                  step = report['steps'][0]
+                  assert step['entry_point'] == 'discovery:' + module
+                  assert step['status'] == 'PASS' and step['exit_code'] == 0
+                  counts = step['counts']
+                  assert counts['terminal_status'] == 'OK'
+                  assert counts['tests_run'] == counts['passed'] == before['expected_module_counts'][module]
+                  assert all(counts[key] == 0 for key in (
+                      'errors', 'failures', 'skipped', 'expected_failures', 'unexpected_successes'))
+                  stderr = root / label / step['stderr']['file']
+                  assert stderr.resolve().is_relative_to((root / label).resolve())
+                  original = stderr.read_bytes()
+                  assert hashlib.sha256(original).hexdigest() == step['stderr']['sha256']
+                  text = original.decode('utf-8', errors='replace').replace('\r\n', '\n')
+                  text = re.sub(r'\x1b\[[0-9;]*m', '', text)
+                  for case in ids:
+                      pattern = r'(?m)^' + re.escape(case.rsplit('.', 1)[1]) + r'\s+\(' + re.escape(case) + r'\) \.\.\. ok$'
+                      assert len(re.findall(pattern, text)) == 1, 'Required Linux case did not pass exactly once: ' + case
+                  closure['required_cases'][label] = list(ids)
+                  closure['reports'][label] = {'sha256': hashlib.sha256(raw).hexdigest(), 'counts': counts}
+              closure['status'] = 'PASS'
+          except Exception as error:
+              closure['error'] = type(error).__name__ + ': ' + str(error)
+          finally:
+              (root / 'closure.json').write_text(json.dumps(closure, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(closure, sort_keys=True))
+          raise SystemExit(0 if closure['status'] == 'PASS' else 1)
+          PY
+
+      - name: Preserve gate, source and both original source-module attempts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-path-source-gate-${{ github.sha }}-product-${{ inputs.expected_source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/linux-path-source-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: error
           retention-days: 14
