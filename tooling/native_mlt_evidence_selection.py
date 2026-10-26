@@ -1654,3 +1654,317 @@ def verify_sealed_selection(envelope,private_key,public,*,expected_diagnostic_ad
     require(all(public.get(k) is False for k in ("native_operation_retried","packet_PTS_and_AAC_priming_verified",
         "physical_AV_master_acceptance","human_acceptance","release_authorized")),"native-public-scope-escalation")
     return result
+
+# Exact SDK source selection; these names are not execution evidence.
+AUDIO_SOURCE_SHA = "b4a71f0c10d3e1d49e71212de7cb5de02b72a9c6"
+AUDIO_SOURCE_TREE = "17c9b6e84b18bfe4d3816bbc65cd005c68bdb5fb"
+AUDIO_SOURCE_PARENT = "01d4a99a8473273fda5c61b7220d6da1bee94786"
+AUDIO_SOURCE_SCOPE = "audio-source-g1"
+AUDIO_SOURCE_G0 = "audio-source-g0"
+AUDIO_PHYSICAL_CASE = 'real_mlt_video_driver_runs_inside_sandbox'
+AUDIO_SOURCE_PINS = {'Cargo.lock': 'ec7f3946d36a3e9e0a6054173220553bd652904cfa48a17daec66ce2e549a18c',
+ 'crates/driver-mlt-video/Cargo.toml': '3cdb4d26892d2335d8111b845d72980a69b3bf1e647230fa4f582c8cc701c501',
+ 'crates/driver-mlt-video/fixtures/SHA256SUMS.json': '00c8369bf4536477a30b496ab879f5df6627cab58239569a1ab3c79b6929bb6a',
+ 'crates/driver-mlt-video/fixtures/expected/capabilities.json': '9efa18cb207381988ef6e5e7601cd0c25f9266e487765cfa589a0ccd860d4168',
+ 'crates/driver-mlt-video/fixtures/expected/catalog-wire.json': '9be1a19f4026b77ba672bc0fe9ac4952779c08ba469ffddd404f9d1d780b821b',
+ 'crates/driver-mlt-video/fixtures/expected/digests.json': '715798294f5c34436cde21adc1ff37bdd5f18f434c781c8202b0ac4770efd6bf',
+ 'crates/driver-mlt-video/src/app.rs': '8ea9da224efc147e1a08dcaf200dbae230f7782d246dc9946a1a6041b5ee614c',
+ 'crates/driver-mlt-video/src/bin/fake_ffprobe.rs': '98908c9710946fa2a85d62c2218adea06658c93d1da6ff3cae244351515923b8',
+ 'crates/driver-mlt-video/src/bin/fake_melt.rs': '456ab47c8a7f59f68e0dd064e60f0fae0da5dec9cd7789d2d0f8d15c88ad0840',
+ 'crates/driver-mlt-video/src/bin/runtime_runner.rs': '18f5fd482f791e4025450cf80b06711ad208f441240594aed8adbacdccbfe035',
+ 'crates/driver-mlt-video/src/caption_pixels.rs': 'ee82f4125d6a3f57e0931a45c37758619141d24509c863e03c88f9372e95def1',
+ 'crates/driver-mlt-video/src/catalog.json': '9efa18cb207381988ef6e5e7601cd0c25f9266e487765cfa589a0ccd860d4168',
+ 'crates/driver-mlt-video/src/color.rs': '57c6f7cd31ded0a7a76b532dedcbfd7ecbc7736019367e89224921d6d413a1a6',
+ 'crates/driver-mlt-video/src/jobs.rs': '45e9b5dbebeeaa5b0dbcf1a11f0be40df213c3e72f7a3a8b6bd70bbe5bc5ed66',
+ 'crates/driver-mlt-video/src/lib.rs': '4662f2aa8e93a78ce2105b668e5f8d2fc0f82b986ca497f89d53d9624c0af2b2',
+ 'crates/driver-mlt-video/src/main.rs': '8f7f8163a6ac767dfdacaebdabb635c6d92b35aeb755ae9d14d663a42a263c62',
+ 'crates/driver-mlt-video/src/runtime.rs': '3c3c6a32a3ecc7dbedcbad1b151dd674707a58ce6c7b0e754c180f61ad3d11b7',
+ 'crates/driver-mlt-video/src/sync.rs': '901580d6414d8e2f445b943a08478d21742bdc2060172b61c5316058f9e56bae',
+ 'crates/driver-mlt-video/tests/conformance.rs': 'd804740747d3551ff9592ccd1d3f2a5f5070d7884cf6c7fa7a39ffd2dae72985',
+ 'crates/driver-mlt-video/tests/domain_contract.rs': '97027c9a732cd27cac9685c8f7c5efc9522220848c3045141f1bfbb72b878d50',
+ 'crates/driver-mlt-video/tests/live.rs': 'ce888e7ee5310fb7ddd58cd9e8e2035977e46590ac0f664daba41f063a83fc9b',
+ 'crates/driver-mlt-video/tests/process.rs': '3a72edccc4f3c88bd126fc31275f35ae18ddf2429604d51e1954ae1bac4d348b',
+ 'crates/driver-mlt-video/tests/runtime_runner.rs': '00c989cd71bf7bf70413cfb491749893e066f2c6d48c46f519f980255faefebd'}
+AUDIO_SOURCE_ROSTERS = {'semwright_mlt_video': ('app::audio_derivative_contract_tests::byte_layout_and_integral_clock_are_checked_without_a_runtime',
+                         'app::audio_derivative_contract_tests::descriptor_is_closed_mutating_and_not_a_read_only_audio_observation',
+                         'app::audio_derivative_contract_tests::empty_streams_require_real_empty_hash_and_complete_closed_roster',
+                         'app::audio_derivative_contract_tests::input_identity_is_checked_before_runtime_or_any_output_publication',
+                         'app::audio_derivative_contract_tests::occupied_original_or_target_is_never_replaced_during_preflight',
+                         'app::audio_derivative_contract_tests::response_binding_rejects_forged_clock_masks_recipe_and_original_sha',
+                         'caption_pixels::tests::cadence_admission_rejects_ambiguous_borders_and_overlap',
+                         'caption_pixels::tests::proof_requires_real_source_glyphs_and_retained_lossy_mask',
+                         'color::png_completion_tests::png_completion_rejects_bytes_after_iend',
+                         'color::png_completion_tests::png_completion_rejects_corrupt_iend_crc',
+                         'color::png_completion_tests::png_completion_rejects_missing_iend',
+                         'color::tests::a_single_exact_pts_cannot_hide_quantized_duration_or_endpoint',
+                         'color::tests::every_observed_frame_color_is_required',
+                         'color::tests::exact_pts_are_read_and_quantized_matroska_is_not_rewritten',
+                         'color::tests::explicit_srgb_requires_opaque_and_rejects_p3_or_missing',
+                         'color::tests::film180_bound_fits_proposed_two_gib_without_raising_existing_limits',
+                         'color::tests::geometry_and_duration_must_be_observed_not_defaulted',
+                         'color::tests::missing_duplicate_pts_and_incomplete_frames_fail',
+                         'color::tests::portable_observation_limits_match_runtime_and_decoder',
+                         'color::tests::present_side_data_must_be_an_empty_array',
+                         'color::tests::rgba_digest_is_explicit_roster_not_raw_concatenation',
+                         'color::tests::stream_audio_and_side_data_cannot_hide',
+                         'jobs::native_memory_tests::decoder_bound_keeps_audio_and720_profiles_and_source_clock',
+                         'jobs::native_memory_tests::every_base_and_clone_avformat_decoder_is_single_threaded',
+                         'jobs::native_memory_tests::explicit_bound_replaces_auto_once_and_is_idempotent',
+                         'jobs::native_memory_tests::generators_images_filters_and_consumer_settings_stay_exact',
+                         'jobs::native_memory_tests::missing_staged_asset_and_sequence_still_fail_closed',
+                         'jobs::native_memory_tests::native_stage_preserves_saved_project_all_entries_and1437_clock',
+                         'jobs::native_staging_closure_tests::replaced_staged_media_is_rejected_with_identical_xml',
+                         'jobs::native_staging_closure_tests::unchanged_staging_reaches_the_native_process',
+                         'runtime::audio_derivative_tests::an_open_descendant_pipe_can_stop_without_a_blocking_join_or_fake_eof',
+                         'runtime::audio_derivative_tests::audio_capture_child_fixture',
+                         'runtime::audio_derivative_tests::channel_masks_are_observed_instead_of_inferred_from_channel_count',
+                         'runtime::audio_derivative_tests::custody_failure_keeps_the_original_error_object_and_unknown_flag',
+                         'runtime::audio_derivative_tests::custody_roster_is_audio_specific_closed_and_disjoint_from_ffv1',
+                         'runtime::audio_derivative_tests::derived_dual_mono_checks_both_samples_and_exact_target_count',
+                         'runtime::audio_derivative_tests::empty_eof_and_a_truncated_prefix_have_different_observations',
+                         'runtime::audio_derivative_tests::empty_original_stream_is_published_and_never_overwritten',
+                         'runtime::audio_derivative_tests::known_terminal_remains_separate_from_a_later_drain_stop',
+                         'runtime::audio_derivative_tests::nonzero_terminal_stays_primary_for_reader_error_panic_or_missing_pipe',
+                         'runtime::audio_derivative_tests::original_prefix_survives_read_error_without_fabricating_eof',
+                         'runtime::audio_derivative_tests::original_prefix_survives_reader_panic_without_becoming_an_empty_pipe',
+                         'runtime::audio_derivative_tests::recipes_are_fixed_and_do_not_trim_pad_or_normalize_original_samples',
+                         'runtime::audio_derivative_tests::same_supervisor_retains_real_nonzero_exit_and_complete_original_pipes',
+                         'runtime::audio_derivative_tests::source_clock_boundaries_are_integral_and_profiles_are_closed',
+                         'runtime::audio_derivative_tests::successful_exit_with_incomplete_capture_is_unknown_instead_of_a_derivative',
+                         'runtime::audio_derivative_tests::wave_reader_accepts_original_pcm_chunks_and_observes_every_frame',
+                         'runtime::audio_derivative_tests::well_formed_float_and_pcm24_sources_do_not_enter_the_pcm16_profile',
+                         'runtime::ffv1_original_custody_tests::ffv1_binary_originals_precede_native_nonzero_classification',
+                         'runtime::ffv1_original_custody_tests::ffv1_cancel_timeout_and_overflow_keep_their_original_cause',
+                         'runtime::ffv1_original_custody_tests::ffv1_custody_conflict_does_not_replace_original_error_or_original_file',
+                         'runtime::ffv1_original_custody_tests::ffv1_empty_original_uses_existing_atomic_root_api',
+                         'runtime::ffv1_original_custody_tests::ffv1_existing_sidecar_refuses_preflight_without_overwrite',
+                         'runtime::ffv1_original_custody_tests::ffv1_missing_process_result_never_fabricates_exit_or_empty_stream',
+                         'runtime::ffv1_original_custody_tests::ffv1_prefix_is_explicit_and_never_claims_upstream_eof',
+                         'runtime::ffv1_original_custody_tests::ffv1_probe_bytes_are_retained_before_a_later_parser_error',
+                         'runtime::ffv1_original_custody_tests::ffv1_six_closed_stages_preserve_exact_returned_buffers_without_execution',
+                         'runtime::ffv1_original_custody_tests::ffv1_success_does_not_hide_incomplete_custody',
+                         'runtime::native_closure_tests::final_readback_preserves_changed_artifact_rejection',
+                         'runtime::native_closure_tests::final_readback_preserves_unchanged_artifact_roster',
+                         'runtime::native_closure_tests::final_readback_rejects_cancellation_arriving_at_hash_eof',
+                         'runtime::native_closure_tests::final_readback_rejects_deadline_expiring_at_hash_eof',
+                         'runtime::native_closure_tests::output_probe_cannot_complete_past_the_shared_deadline',
+                         'runtime::native_closure_tests::probe_fixture_completion_is_observable_with_its_own_budget',
+                         'runtime::native_diagnostic_tests::diagnostic_argv_and_xml_caps_fail_closed',
+                         'runtime::native_diagnostic_tests::failure_filename_requires_scoped_output_and_exact_job',
+                         'runtime::native_diagnostic_tests::local_receipt_write_is_single_link_0600_and_never_replaces',
+                         'runtime::native_diagnostic_tests::logs_are_lossless_hex_and_bounded_local_receipt',
+                         'runtime::native_diagnostic_tests::raw_probe_envelope_streams_and_scalars_are_bounded',
+                         'runtime::native_diagnostic_tests::raw_probe_selects_video_and_preserves_clock_without_audio_packet_confusion',
+                         'runtime::tool_owner_tests::decoded_frame_counter_requires_exact_bounded_ffv1_observation',
+                         'runtime::tool_owner_tests::h264_profile_uses_bounded_fast_high_quality_encoding',
+                         'runtime::tool_owner_tests::h264_uses_synchronous_mlt_but_other_profiles_keep_certified_async_mode',
+                         'runtime::tool_owner_tests::owner_policy_allows_only_explicit_trust_cases',
+                         'runtime::tool_owner_tests::strict_video_only_receipts_refuse_pcm_and_forged_profiles',
+                         'runtime::tool_owner_tests::video_only_profile_is_opt_in_and_preserves_legacy_audio_profiles',
+                         'sync::equal_peak_tests::equal_peak_prefers_earliest_presentation_timestamp',
+                         'sync::tests::audio_impulse_requires_level_and_contrast',
+                         'sync::tests::bright_flash_is_detected_with_frame_uncertainty',
+                         'sync::tests::cue_ids_are_strict_data_not_filter_syntax',
+                         'sync::tests::full_scan_dataset_resolves_each_cue_inside_its_own_window',
+                         'sync::tests::ordinary_frames_do_not_become_markers'),
+ 'semwright-mlt-video-driver': ('audio_derivative_host_tests::absent_host_result_stays_absent_and_keeps_the_original_unknown_error',
+                                'audio_derivative_host_tests::actual_sdk_catalog_keeps_audio_derivation_mutating_and_non_idempotent',
+                                'audio_derivative_host_tests::audio_host_preserves_binary_pipes_and_nonzero_before_any_json_parse',
+                                'audio_derivative_host_tests::audio_host_retains_the_same_request_and_has_no_ffv1_namespace',
+                                'audio_derivative_host_tests::failed_terminal_publication_does_not_replace_original_unknown_or_overwrite',
+                                'ffv1_host_original_tests::ffv1_discover_keeps_actual_empty_input_and_binary_buffers_before_parse',
+                                'ffv1_host_original_tests::ffv1_host_original_parser_error_is_not_replaced_by_custody',
+                                'ffv1_host_original_tests::ffv1_host_original_unknown_is_primary_when_custody_also_fails',
+                                'ffv1_host_original_tests::ffv1_host_success_with_unretained_originals_is_uncertain',
+                                'ffv1_host_original_tests::ffv1_unobserved_host_failure_does_not_invent_empty_streams_or_exit',
+                                'host_native_observation_tests::complete_report_cannot_replace_actual_png_decoding',
+                                'host_native_observation_tests::host_binder_accepts_the_exact_complete_report_and_original_sources',
+                                'host_native_observation_tests::host_binder_rejects_self_consistent_report_from_other_source',
+                                'host_native_observation_tests::host_binder_rejects_swapped_terminal_report_payload',
+                                'host_native_observation_tests::host_copy_cancellation_is_not_an_interrupted_retry_loop',
+                                'host_native_observation_tests::host_custody_failure_preserves_original_native_terminal',
+                                'host_native_observation_tests::host_custody_is_absent_from_other_profiles',
+                                'host_native_observation_tests::host_custody_keeps_partial_publication_and_requires_new_destination',
+                                'host_native_observation_tests::host_custody_never_replaces_existing_originals',
+                                'host_native_observation_tests::host_custody_rejects_substituted_request_or_terminal_before_writes',
+                                'host_native_observation_tests::host_custody_retains_exact_original_request_and_terminal',
+                                'host_native_observation_tests::host_original_request_rejects_xml_media_and_request_substitution',
+                                'host_native_observation_tests::host_terminal_receipt_requires_the_original_request_and_closed_descriptor',
+                                'host_native_observation_tests::unknown_publication_precedes_cancellation_state',
+                                'tests::host_av_failure_preserves_stale_without_promoting_effect_outcome',
+                                'tests::host_catalog_parser_is_strict_and_bounded',
+                                'tests::host_runner_failure_is_strict_and_bounded',
+                                'tests::sdk_catalog_declares_generic_artifact_ports'),
+ 'semwright-mlt-runtime-runner': ('audio_derivative_runner_tests::audio_derivative_uses_the_existing_closed_av_operation_selection',
+                                  'audio_derivative_runner_tests::audio_selection_never_accepts_a_shell_alias_or_caller_named_operation',
+                                  'host_observation_deadline_tests::complete_observation_does_not_reset_the_native_deadline'),
+ 'domain_contract': ('generated_mlt_exposes_complete_safe_semantic_contract',
+                     'kdenlive_contract_reuses_native_support_source_of_truth',
+                     'native_warnings_are_not_hidden_inside_portable_project_only',
+                     'opaque_native_state_is_structured_as_read_only_projection_loss'),
+ 'live': ('audio_live_source_tests::audio_live_candidate_original_is_observed_even_when_no_success_value_exists',
+          'audio_live_source_tests::audio_live_catalog_absence_is_bound_to_the_original_call_without_inventing_cache_history',
+          'audio_live_source_tests::audio_live_catalog_call_binding_rejects_foreign_request_and_descriptor',
+          'audio_live_source_tests::audio_live_catalog_caps_use_existing_sdk_limits_without_truncating_originals',
+          'audio_live_source_tests::audio_live_catalog_changed_observation_and_custody_failure_preserve_native_unknown',
+          'audio_live_source_tests::audio_live_catalog_complete_originals_bind_the_same_output_and_returned_buffers',
+          'audio_live_source_tests::audio_live_catalog_partial_roster_and_missing_empty_stdin_are_rejected',
+          'audio_live_source_tests::audio_live_catalog_terminal_cannot_promote_nonzero_unknown_or_foreign_scope',
+          'audio_live_source_tests::audio_live_catalog_valid_json_prefix_does_not_hide_truncation_or_delivery_mismatch',
+          'audio_live_source_tests::audio_live_custody_failure_preserves_the_same_complete_unknown_error',
+          'audio_live_source_tests::audio_live_expected_rejection_cannot_consume_unknown_as_a_known_negative',
+          'audio_live_source_tests::audio_live_missing_selector_and_nonempty_root_fail_before_setup',
+          'audio_live_source_tests::audio_live_oracles_reject_silenced_control_and_unequal_dual_mono',
+          'audio_live_source_tests::audio_live_request_and_complete_error_are_originals_before_interpretation',
+          'audio_live_source_tests::audio_live_result_collision_retains_prefix_and_never_replaces_unknown',
+          'audio_live_source_tests::audio_live_retains_eight_subroots_and_detects_substitution',
+          'audio_live_source_tests::audio_live_root_requires_fresh_private_owner_paths_outside_the_checkout',
+          'audio_live_source_tests::audio_live_sources_have_the_original_pcm_clocks_before_any_provider',
+          'audio_live_source_tests::audio_live_tool_file_prefix_never_claims_eof_or_truncates_original'),
+ 'conformance': ('av_mux_schema_is_closed_and_declares_only_certified_audio_profile',
+                 'capability_namespace_unique_and_bounded',
+                 'doctor_satisfies_actual_output_schema',
+                 'driver_frame_big_endian_roundtrip',
+                 'driver_frame_eof',
+                 'driver_frame_oversize_denied',
+                 'driver_frame_truncated_header',
+                 'driver_frame_zero_denied',
+                 'hello_identity_and_executable_pin',
+                 'hello_unknown_fields_denied',
+                 'lifecycle_hello_catalog_health_shutdown',
+                 'mutation_catalog_does_not_claim_transport_dry_run',
+                 'native_caption_glyph_observer_is_read_only_and_closed_world',
+                 'schema_pages_bounded',
+                 'schemas_reject_unknown_arguments',
+                 'static_descriptor_golden_is_checked',
+                 'wrong_descriptor_digest_rejected_before_execution'),
+ 'process': ('media_probe_observes_audio_rate_and_channels',
+             'media_probe_rational_duration',
+             'native_project_cannot_reach_render_runtime',
+             'native_render_profiles_project_to_semantic_contract',
+             'probe_duration_capacity_is_rational_not_nominal_fps',
+             'probe_without_duration_is_not_a_source_handle_guarantee',
+             'process_address_space_budget_is_bounded',
+             'process_argv_is_literal',
+             'process_cancel_before_spawn',
+             'process_cancel_running',
+             'process_cancellation_kills_same_group_descendant',
+             'process_cwd_is_private',
+             'process_environment_is_explicit',
+             'process_failed_partial_not_success',
+             'process_nonzero_not_success',
+             'process_relative_executable_denied',
+             'process_stderr_flood_is_bounded',
+             'process_stdout_flood_is_bounded',
+             'process_success_exit_code',
+             'process_wall_timeout',
+             'profile_unavailable_without_codec_probe',
+             'service_discovery_excludes_untrusted_tokens'),
+ 'runtime_runner': ('runtime_runner_discovers_bounded_catalog_from_explicit_dependency',
+                    'runtime_runner_probe_rejects_scratch_traversal',
+                    'runtime_runner_probes_one_confined_scratch_file_with_sealed_ffprobe',
+                    'runtime_runner_rejects_bundle_entrypoint_that_does_not_match_sealed_tool',
+                    'runtime_runner_rejects_entrypoint_symlink_that_escapes_runtime_root',
+                    'runtime_runner_rejects_unknown_operations',
+                    'runtime_runner_rejects_unknown_render_profile',
+                    'runtime_runner_rejects_unmaterialized_relative_dependencies',
+                    'runtime_runner_renders_one_curated_profile_inside_scratch')}
+
+
+def audio_source_context(env, platform):
+    """Bind the gate and SDK separately; a manual request cannot pick a new SDK."""
+    require(platform == "linux" and env.get("RUNNER_OS") == "Linux"
+            and env.get("RUNNER_ARCH") == "X64"
+            and env.get("GITHUB_ACTIONS") == "true" and env.get("CI") == "true"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("GITHUB_RUN_ATTEMPT") == "1"
+            and env.get("GITHUB_JOB") == "audio-source"
+            and env.get("MW_MLT_SCOPE") == AUDIO_SOURCE_SCOPE,
+            "audio-source-first-manual-linux-selection-required")
+    gate = env.get("GITHUB_SHA", "")
+    require(re.fullmatch(r"[0-9a-f]{40}", gate) is not None
+            and env.get("GITHUB_WORKFLOW_SHA") == gate
+            and env.get("MW_EXPECTED_GATE_SHA") == gate
+            and env.get("MW_EXPECTED_SDK_SHA") == AUDIO_SOURCE_SHA
+            and env.get("GITHUB_REPOSITORY") == "seradotcom/motionwright"
+            and env.get("GITHUB_WORKFLOW_REF", "").startswith(
+                "seradotcom/motionwright/.github/workflows/native-mlt-sequence-e2e.yml@")
+            and re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ID", "")) is not None,
+            "audio-source-exact-gate-sdk-context-required")
+    return {key: env.get(key, "") for key in (
+        "GITHUB_SHA", "GITHUB_WORKFLOW_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_REPOSITORY",
+        "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "RUNNER_OS", "RUNNER_ARCH")} | {
+        "product_source_sha": AUDIO_SOURCE_SHA, "product_source_tree": AUDIO_SOURCE_TREE,
+        "verification_scope": AUDIO_SOURCE_SCOPE}
+
+
+def audio_source_specs():
+    sources = {"semwright_mlt_video": ("lib", "src/lib.rs"),
+               "semwright-mlt-video-driver": ("bin", "src/main.rs"),
+               "semwright-mlt-runtime-runner": ("bin", "src/bin/runtime_runner.rs")}
+    return tuple({"name": name, "kind": sources.get(name, ("test", ""))[0],
+                  "source": "crates/driver-mlt-video/" + sources.get(name, ("test", "tests/" + name + ".rs"))[1],
+                  "crate": "driver-mlt-video", "package": "semwright-mlt-video-driver",
+                  "prefixes": None, "allow_empty": False,
+                  "closed_roster": (*names, AUDIO_PHYSICAL_CASE) if name == "live" else names}
+                 for name, names in AUDIO_SOURCE_ROSTERS.items())
+
+
+def audio_source_normal_specs():
+    return tuple({"name": name, "kind": "bin", "source": "crates/driver-mlt-video/" + source,
+                  "crate": "driver-mlt-video", "package": "semwright-mlt-video-driver",
+                  "prefixes": None, "allow_empty": True}
+                 for name, source in (("semwright-mlt-video-driver", "src/main.rs"),
+                    ("semwright-mlt-runtime-runner", "src/bin/runtime_runner.rs"),
+                    ("fake-melt", "src/bin/fake_melt.rs"),
+                    ("fake-ffprobe", "src/bin/fake_ffprobe.rs")))
+
+
+def audio_source_producers(cargo):
+    selection = ["--lib", "--bin", "semwright-mlt-video-driver", "--bin", "semwright-mlt-runtime-runner"]
+    for name in ("domain_contract", "live", "conformance", "process", "runtime_runner"):
+        selection.extend(("--test", name))
+    common = ["--locked", "-p", "semwright-mlt-video-driver", "--features", "test-tools"]
+    return (
+        ("strict-clippy", [cargo, "clippy", *common, *selection, "--", "-D", "warnings"]),
+        ("normal-tools-build", [cargo, "build", *common, "--bins", "--message-format=json"]),
+        ("affected-test-build", [cargo, "test", *common, *selection, "--no-run", "--message-format=json"]),
+    )
+
+
+def audio_source_list(raw, exit_code, target, *, ignored_only=False):
+    require(type(exit_code) is int and exit_code == 0 and target in AUDIO_SOURCE_ROSTERS
+            and type(ignored_only) is bool and (not ignored_only or target == "live"),
+            "audio-source-list-target-or-exit")
+    text = raw.decode("utf-8").replace("\r\n", "\n")
+    names = tuple(re.findall(r"(?m)^([A-Za-z_][A-Za-z_0-9:]*): test$", text))
+    expected = ((AUDIO_PHYSICAL_CASE,) if ignored_only else
+                (*AUDIO_SOURCE_ROSTERS[target], AUDIO_PHYSICAL_CASE) if target == "live" else
+                AUDIO_SOURCE_ROSTERS[target])
+    require(len(names) == len(set(names)) == len(expected) and set(names) == set(expected),
+            "audio-source-list-missing-duplicate-extra")
+    count = len(expected)
+    footer = str(count) + (" test" if count == 1 else " tests") + ", 0 benchmarks"
+    remainder = re.sub(r"(?m)^[A-Za-z_][A-Za-z_0-9:]*: test\n?", "", text)
+    require(remainder.strip() == footer, "audio-source-list-pretty-footer-or-noise")
+    return {"all": names, "selected": () if ignored_only else AUDIO_SOURCE_ROSTERS[target],
+            "not_selected": (AUDIO_PHYSICAL_CASE,) if target == "live" else (),
+            "not_selected_credit": "NONE", "ignored_only": ignored_only,
+            "footer": footer}
+
+
+def audio_source_complete(results, rosters):
+    expected = {(target, name) for target, names in AUDIO_SOURCE_ROSTERS.items() for name in names}
+    observed = [(item.get("target"), item.get("name")) for item in results]
+    require(set(rosters) == set(AUDIO_SOURCE_ROSTERS) and len(results) == len(expected) == 184
+            and len(set(observed)) == len(observed) and set(observed) == expected
+            and all(item.get("status") == "PASS" for item in results),
+            "audio-source-incomplete-or-relabelled-cases")
+    for target, roster in rosters.items():
+        require(tuple(roster.get("selected", ())) == AUDIO_SOURCE_ROSTERS[target]
+                and len(roster.get("all", ())) == len(AUDIO_SOURCE_ROSTERS[target]) + (target == "live")
+                and roster.get("not_selected_credit") == "NONE",
+                "audio-source-roster-changed-after-enumeration")
+    return {"unique_selected_tests": 184, "selected_omissions": 0,
+            "physical_ignored_tests_not_selected": [AUDIO_PHYSICAL_CASE],
+            "physical_audio": "NOT_RUN", "full_sdk_g1": "NOT_RUN", "release_authorized": False}

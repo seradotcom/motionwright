@@ -1195,15 +1195,296 @@ def seal(env, job_status):
     return public
 
 
+
+# The additive source profile uses the existing process observer and Cargo
+# producer barrier. It does not admit or invoke either physical MLT profile.
+AUDIO_PHASE_SECONDS = {"source-g0": 900, "strict-clippy": 1800,
+                       "normal-tools-build": 1800, "affected-test-build": 1800,
+                       "enumeration": 300, "cases": 3000, "retention": 600}
+AUDIO_TOTAL_SECONDS = sum(AUDIO_PHASE_SECONDS.values())
+
+
+def audio_clock(started_ns, now_ns):
+    require(type(started_ns) is int and type(now_ns) is int and 0 < started_ns <= now_ns,
+            "audio-source-original-monotonic-clock")
+    deadline = started_ns + AUDIO_TOTAL_SECONDS * 1_000_000_000
+    require(now_ns < deadline, "audio-source-clock-already-expired")
+    return {"started_ns": started_ns, "deadline_ns": deadline,
+            "work_deadline_ns": deadline - AUDIO_PHASE_SECONDS["retention"] * 1_000_000_000}
+
+
+def audio_environment(original, root):
+    forbidden = [key for key, value in original.items() if value and (
+        key in {"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "RUSTFLAGS",
+                "CARGO_ENCODED_RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+                "RUSTDOC", "RUSTFMT", "CARGO_BUILD_TARGET", "CARGO_BUILD_RUSTC"}
+        or key.startswith(("CARGO_ALIAS_", "RUST_TEST_", "SEMWRIGHT_")))]
+    require(not forbidden, "audio-source-inherited-execution-override:" + ",".join(sorted(forbidden)))
+    result = {key: original[key] for key in ("PATH", "LANG", "LC_ALL", "SSL_CERT_FILE",
+              "SSL_CERT_DIR", "SYSTEMROOT") if key in original}
+    result.update(HOME=str(root / "home"), CARGO_HOME=str(root / "cargo-home"),
+        RUSTUP_HOME=str(root / "rustup-home"), RUSTUP_TOOLCHAIN="1.98.1",
+        CARGO_TARGET_DIR=str(root / "target"), TMP=str(root / "tmp"), TEMP=str(root / "tmp"),
+        TMPDIR=str(root / "tmp"), CARGO_BUILD_JOBS="2", CARGO_INCREMENTAL="0",
+        CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0", CARGO_TERM_COLOR="never",
+        RUST_BACKTRACE="0", PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1",
+        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+        GIT_GRAFT_FILE=os.devnull, GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1",
+        GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1")
+    return result
+
+
+def audio_resource_preflight(root):
+    import shutil
+    available = shutil.disk_usage(root).free
+    memory = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    require(available >= 18 * 1024**3 and memory >= 4 * 1024**3,
+            "audio-source-runner-resource-floor")
+    return {"disk_free_bytes": available, "physical_memory_available_bytes": memory,
+            "disk_floor_bytes": 18 * 1024**3, "memory_floor_bytes": 4 * 1024**3,
+            "physical_quota_enforced": False}
+
+
+def audio_input_paths(store, repo, source):
+    names = tuple(x.decode("utf-8") for x in store.git(
+        repo, "ls-tree", "-r", "--name-only", "-z", source).split(b"\0") if x)
+    require(names and len(names) == len(set(names)) and len(names) <= 4096
+            and all(not p.startswith("/") and ".." not in p.split("/") and "\\" not in p for p in names),
+            "audio-source-closed-tracked-inventory")
+    return names
+
+
+def audio_prepare_producers(sdk_gate, call, cargo, work, env, logs, ctx, target, phase):
+    prepared = {"collections": {}, "steps": [], "clippy": "NOT_RUN"}
+    for label, argv in selected.audio_source_producers(cargo):
+        phase(label)
+        row = call(argv, work, env, logs, label, 1800, ctx)
+        require(type(row["exit_code"]) is int and row["exit_code"] == 0,
+                "audio-source-producer-failed:" + label)
+        prepared["steps"].append(label)
+        if label == "strict-clippy":
+            prepared["clippy"] = "PASS"
+            continue
+        raw = sdk_gate.observer.original_stream(logs, row, "stdout")
+        normal = selected.audio_source_normal_specs()
+        if label == "normal-tools-build":
+            paths = sdk_gate.select_binary_paths(raw, row["exit_code"], work, target, normal, testing=False)
+            # The two source consumers derive the sibling debug/ paths from
+            # their actual test binary. Prebuild in that same target, not a
+            # separately cached producer or late Cargo command.
+            require(all(Path(paths[name]) == target / "debug" / name for name in paths),
+                    "audio-source-normal-tools-not-in-same-target")
+            prepared["normal_prebuild"] = paths
+        else:
+            tests = selected.audio_source_specs()
+            paths = sdk_gate.select_binary_paths(raw, row["exit_code"], work, target, tests, testing=True)
+            require(all(Path(path).parent == target / "debug/deps" for path in paths.values()),
+                    "audio-source-test-target-not-sibling-of-fake-tools")
+            final_normal = sdk_gate.select_binary_paths(raw, row["exit_code"], work, target, normal, testing=False)
+            require(final_normal == prepared["normal_prebuild"], "audio-source-final-normal-target-changed")
+            prepared["collections"]["tests"] = {"label": label, "command": row,
+                "specs": tests, "testing": True}
+            prepared["collections"]["normal"] = {"label": label, "command": row,
+                "specs": normal, "testing": False}
+    require(prepared["clippy"] == "PASS" and set(prepared["collections"]) == {"tests", "normal"},
+            "audio-source-producer-set-incomplete")
+    return prepared
+
+
+def audio_source_run(gate, sdk, output, *, env=None):
+    import shutil
+    import time
+    import ci_sdk_native_source as sdk_gate
+    observer, store = sdk_gate.observer, sdk_gate.custody
+    started = time.monotonic_ns()
+    original_env = dict(os.environ if env is None else env)
+    current = selected.audio_source_context(original_env, sys.platform)
+    clock = audio_clock(started, time.monotonic_ns())
+    gate, sdk, output = (Path(p).absolute() for p in (gate, sdk, output))
+    temp_root = Path(original_env.get("RUNNER_TEMP", ""))
+    require(temp_root.is_absolute() and temp_root.resolve(strict=True) == temp_root
+            and output == temp_root / ("mw-audio-source-" + current["GITHUB_RUN_ID"] + "-1")
+            and not output.exists() and gate != sdk
+            and gate.resolve(strict=True) == gate and sdk.resolve(strict=True) == sdk
+            and not output.is_relative_to(gate) and not output.is_relative_to(sdk),
+            "audio-source-owned-path-or-existing-attempt")
+    audio_resource_preflight(temp_root)
+    output.mkdir(mode=0o700)
+    evidence = output / "evidence"; evidence.mkdir(mode=0o700)
+    logs = evidence / "commands"; logs.mkdir(mode=0o700)
+    for name in ("target", "home", "cargo-home", "rustup-home", "tmp"):
+        (output / name).mkdir(mode=0o700)
+    observations, results, rosters = [], [], {}
+    report = {"schema": "motionwright.native.audio-source-g1/1", "status": "INCOMPLETE",
+        "context": current, "clock": clock, "phase_caps_seconds": dict(AUDIO_PHASE_SECONDS),
+        "automatic_retry": False, "results": results, "rosters": rosters,
+        "physical_audio": "NOT_RUN", "full_sdk_g1": "NOT_RUN", "release_authorized": False,
+        "escaped_descendants": "NOT_OBSERVED", "filesystem_calls": "COOPERATIVE_BOUNDS",
+        "retained_sdk_internal_tempdirs": False, "commands": observations}
+    phase_state = {}
+    phases = []
+    def phase(name):
+        require(name in AUDIO_PHASE_SECONDS and name not in phases, "audio-source-phase-repeat")
+        now = time.monotonic_ns()
+        upper = clock["deadline_ns"] if name == "retention" else clock["work_deadline_ns"]
+        require(now < upper, "audio-source-phase-not-started-budget-exhausted")
+        phase_state.update(name=name, deadline_ns=min(upper, now + AUDIO_PHASE_SECONDS[name] * 1_000_000_000))
+        phases.append(name)
+    def observed(argv, cwd, environment, folder, label, timeout, ctx):
+        now = time.monotonic_ns()
+        remaining = (phase_state["deadline_ns"] - now) // 1_000_000_000
+        require(remaining > 0, "audio-source-command-not-started-budget-exhausted:" + label)
+        row = observer.command(argv, cwd, environment, folder, label, min(timeout, remaining), ctx,
+                               (evidence, observations))
+        if time.monotonic_ns() >= phase_state["deadline_ns"]:
+            raise observer.UnknownExecution("audio-source-returned-after-original-phase-deadline", row)
+        return row
+    def checked(argv, label, timeout=180):
+        row = observed(argv, sdk, environment, logs, label, timeout, current)
+        require(type(row["exit_code"]) is int and row["exit_code"] == 0,
+                "audio-source-prerequisite-failed:" + label)
+        return row
+    try:
+        phase("source-g0")
+        environment = audio_environment(original_env, output)
+        require(Path(__file__).resolve() == gate / "tooling/native_mlt_g2_custody.py"
+                and Path(selected.__file__).resolve() == gate / "tooling/native_mlt_evidence_selection.py"
+                and Path(sdk_gate.__file__).resolve() == gate / "tooling/ci_sdk_native_source.py"
+                and Path(observer.__file__).resolve() == gate / "tooling/ci_foundation_causal.py"
+                and Path(store.__file__).resolve() == gate / "tooling/ci_storage_apply_recovery.py",
+                "audio-source-observer-module-origin")
+        gate_paths = tuple(p for p in audio_input_paths(store, gate, current["GITHUB_SHA"])
+                           if p.startswith("tooling/") or p in ("SOURCE_LOCK.json",
+                           ".github/workflows/native-mlt-sequence-e2e.yml"))
+        report["gate_before"] = store.source_snapshot(gate, current["GITHUB_SHA"], gate_paths)
+        require(all(report["gate_before"]["files"][p]["sha256"] == h for p,h in sdk_gate.GATE_PINS.items()),
+                "audio-source-shared-observer-pin-changed")
+        paths = audio_input_paths(store, sdk, selected.AUDIO_SOURCE_SHA)
+        before = store.source_snapshot(sdk, selected.AUDIO_SOURCE_SHA, paths, selected.AUDIO_SOURCE_TREE)
+        require(before["parents"] == [selected.AUDIO_SOURCE_PARENT]
+                and all(before["files"][p]["sha256"] == h for p,h in selected.AUDIO_SOURCE_PINS.items()),
+                "audio-source-product-pin-changed")
+        report["source_before"] = before
+        report["retained_sources"] = observer.retain_source(sdk, before, evidence)
+        report["retained_gate_sources"] = observer.retain_source(gate, report["gate_before"], evidence)
+        python = str(Path(sys.executable).resolve(strict=True))
+        checked([python, "-I", "-B", "-X", "utf8", "-c",
+                 "import sys,tomllib,jsonschema,yaml; assert sys.version_info >= (3,12); print('SDK_SOURCE_PREREQUISITES')"],
+                "sdk-prerequisites", 45)
+        rustup = Path(shutil.which("rustup", path=environment["PATH"]) or "").absolute()
+        require(rustup.is_file(), "audio-source-rustup-not-found")
+        report["rustup"] = {"absolute_path": str(rustup), **store.fingerprint(rustup, rustup.parent)}
+        checked([str(rustup), "toolchain", "install", "1.98.1", "--profile", "minimal",
+                 "--component", "rustfmt", "--component", "clippy", "--no-self-update"], "owned-toolchain", 600)
+        tools = {}
+        for name in ("cargo", "rustc", "rustdoc", "cargo-fmt", "rustfmt", "cargo-clippy", "clippy-driver"):
+            found = checked([str(rustup), "which", "--toolchain", "1.98.1", name], name + "-path", 45)
+            path = Path(observer.original_stream(logs, found, "stdout").decode().strip())
+            require(path.is_absolute() and path.resolve(strict=True) == path
+                    and path.is_relative_to(output / "rustup-home"), "audio-source-tool-outside-owned-toolchain")
+            stamp = store.fingerprint(path, output)
+            version = checked([str(path), "-Vv" if name == "rustc" else "--version"], name + "-version", 45)
+            text = observer.original_stream(logs, version, "stdout").decode()
+            require(text.strip() and (name != "rustc" or
+                    "release: 1.98.1\n" in text and "host: x86_64-unknown-linux-gnu\n" in text),
+                    "audio-source-tool-version")
+            tools[name] = {"absolute_path": str(path), **stamp, "version": text}
+        for name in ("git", "node", "bash"):
+            path = Path(shutil.which(name, path=environment["PATH"]) or "").resolve(strict=True)
+            stamp = store.fingerprint(path, path.parent)
+            version = checked([str(path), "--version"], name + "-version", 45)
+            text = observer.original_stream(logs, version, "stdout").decode()
+            require(text.strip() and (name != "node" or text.startswith("v22.")), "audio-source-tool-version")
+            tools[name] = {"absolute_path": str(path), **stamp, "version": text}
+        report["tools"] = tools
+        environment.update(RUSTC=tools["rustc"]["absolute_path"], RUSTDOC=tools["rustdoc"]["absolute_path"],
+                           RUSTFMT=tools["rustfmt"]["absolute_path"])
+        environment["PATH"] = str(Path(tools["cargo"]["absolute_path"]).parent) + os.pathsep + environment["PATH"]
+        checked([python, "-I", "-B", "-X", "utf8", str(sdk / "scripts/verify-oss-hygiene.py")], "sdk-hygiene", 180)
+        checked([python, "-I", "-B", "-X", "utf8", str(sdk / "scripts/verify-source.py")], "sdk-source-policy", 300)
+        checked([tools["cargo-fmt"]["absolute_path"], "fmt", "--all", "--", "--check"], "sdk-format", 180)
+        report["sdk_g0"] = "PASS_HYGIENE_SOURCE_FORMAT"
+        report["resource_preproducer"] = audio_resource_preflight(output)
+        barrier = sdk_gate.ProducerBarrier(observed, tools["cargo"]["absolute_path"])
+        prepared = audio_prepare_producers(sdk_gate, barrier, tools["cargo"]["absolute_path"], sdk,
+                                          environment, logs, current, output / "target", phase)
+        barrier.begin_sealing()
+        sealed = sdk_gate.seal_compiled_role(prepared, sdk, output / "target", logs, evidence, barrier)
+        report["binaries"] = sealed
+        report["producers"] = prepared
+        barrier.begin_observation()
+        phase("enumeration")
+        for spec in selected.audio_source_specs():
+            name = spec["name"]; binary = sealed["tests"][name]
+            row = barrier([binary["absolute_path"], "--list", "--format", "pretty"], sdk,
+                          environment, logs, "list-" + name, 30, current)
+            rosters[name] = selected.audio_source_list(observer.original_stream(logs, row, "stdout"), row["exit_code"], name)
+            require(not observer.original_stream(logs, row, "stderr"), "audio-source-list-stderr")
+        live = sealed["tests"]["live"]
+        row = barrier([live["absolute_path"], "--list", "--ignored", "--format", "pretty"], sdk,
+                      environment, logs, "list-ignored-live", 30, current)
+        report["ignored_physical_roster"] = selected.audio_source_list(
+            observer.original_stream(logs, row, "stdout"), row["exit_code"], "live", ignored_only=True)
+        require(not observer.original_stream(logs, row, "stderr"), "audio-source-ignored-list-stderr")
+        # No execution until all eight complete rosters and the ignored boundary
+        # have been admitted. No Cargo command is permitted after sealing.
+        phase("cases")
+        pair = {"id": "sdk-audio-source", "failures": {}, "repair": {
+            "sha": selected.AUDIO_SOURCE_SHA, "tree": selected.AUDIO_SOURCE_TREE,
+            "targets": dict(selected.AUDIO_SOURCE_ROSTERS)}}
+        for target, cases in selected.AUDIO_SOURCE_ROSTERS.items():
+            binary = sealed["tests"][target]
+            for name in cases:
+                sdk_gate.verify_binaries({target: binary}, output / "target")
+                sdk_gate.verify_binaries(sealed["normal"], output / "target")
+                row = barrier(observer.case_argv(binary, pair, "repair", name), sdk, environment, logs,
+                              "case-" + str(len(results)).zfill(3), 180, current)
+                after = {"absolute_path": binary["absolute_path"], **store.fingerprint(Path(binary["absolute_path"]), output / "target")}
+                raw = observer.original_stream(logs, row, "stdout") + b"\n" + observer.original_stream(logs, row, "stderr")
+                admitted = observer.admit_case(pair, "repair", name, raw, row, binary, after, rosters[target], current)
+                results.append({"target": target, **admitted})
+        report["selection"] = selected.audio_source_complete(results, rosters)
+        phase("retention")
+        report["source_after"] = store.source_snapshot(sdk, selected.AUDIO_SOURCE_SHA, paths, selected.AUDIO_SOURCE_TREE)
+        report["gate_after"] = store.source_snapshot(gate, current["GITHUB_SHA"], gate_paths)
+        require(report["source_after"] == before and report["gate_after"] == report["gate_before"],
+                "audio-source-source-changed")
+        for collection in sealed.values(): sdk_gate.verify_binaries(collection, output / "target")
+        for tool in tools.values():
+            path = Path(tool["absolute_path"])
+            root = output if path.is_relative_to(output) else path.parent
+            require(store.fingerprint(path, root) == {k:tool[k] for k in ("path", "bytes", "sha256", "identity")},
+                    "audio-source-tool-changed")
+        sdk_gate.verify_commands(evidence, observations)
+        require(time.monotonic_ns() < phase_state["deadline_ns"], "audio-source-retention-deadline")
+        report["status"] = "PASS_EXACT_AUDIO_SOURCE_G1"
+    except (observer.UnknownExecution, store.UnknownObservation) as error:
+        report.update(status="UNKNOWN_NO_RETRY", error=str(error), uncertain_command=error.command)
+    except Exception as error:
+        report.update(status="FAIL_OR_PREPARATION_REJECTED", error=type(error).__name__ + ": " + str(error))
+    report.update(ended_monotonic_ns=time.monotonic_ns(), phases_started=phases)
+    store.write_new(evidence / "receipt.json", report)
+    # This status has meaning only with the original receipt, streams and binary
+    # custody. Job SUCCESS is never a substitute for their independent readback.
+    return report
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "guard", "handoff", "inputs", "begin", "exit", "seal"))
+    parser.add_argument("action", choices=("prepare", "guard", "handoff", "inputs", "begin", "exit", "seal", "audio-source-g1"))
     parser.add_argument("--uid", type=int)
     parser.add_argument("--gid", type=int)
     parser.add_argument("--exit-code", type=int)
     parser.add_argument("--job-status")
+    parser.add_argument("--gate", type=Path)
+    parser.add_argument("--sdk", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     env = os.environ
+    if args.action == "audio-source-g1":
+        require(args.gate is not None and args.sdk is not None and args.output is not None, "audio-source-paths-required")
+        result = audio_source_run(args.gate, args.sdk, args.output)
+        print(json.dumps({"status": result["status"], "actual_cases": len(result["results"])}))
+        return 0 if result["status"] == "PASS_EXACT_AUDIO_SOURCE_G1" else 2
     if args.action == "prepare":
         prepare(env)
     elif args.action == "guard":

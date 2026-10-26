@@ -17,6 +17,7 @@ import warnings
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import native_evidence_projection as selection_core
 import native_mlt_evidence_selection as selection
 from cryptography.exceptions import InvalidTag
@@ -1333,6 +1334,92 @@ class Ffv1PreflightBridgeTests(unittest.TestCase):
             self.assertIs(caught.exception,primary)
             write.assert_not_called();intake.assert_not_called()
 
+
+
+class AudioSourceCustodyTests(unittest.TestCase):
+    def test_audio_environment_rejects_loader_compiler_and_physical_overrides(self):
+        root=Path(tempfile.gettempdir()).absolute()/"owned-audio"
+        for key in ("LD_PRELOAD","LD_LIBRARY_PATH","LD_AUDIT","RUSTC_WRAPPER",
+                    "CARGO_ALIAS_CLIPPY","SEMWRIGHT_TEST_MLT_VIDEO","SEMWRIGHT_AUDIO_CAPTURE_FIXTURE"):
+            with self.subTest(key=key),self.assertRaises(custody.CustodyRejected):
+                custody.audio_environment({"PATH":"tools",key:"untrusted"},root)
+        result=custody.audio_environment({"PATH":"tools","GITHUB_TOKEN":"secret","RANDOM_SECRET":"secret","GIT_NO_REPLACE_OBJECTS":"0"},root)
+        self.assertNotIn("GITHUB_TOKEN",result);self.assertNotIn("RANDOM_SECRET",result)
+        self.assertEqual(result["CARGO_TARGET_DIR"],str(root/"target"))
+        self.assertEqual(result["TMPDIR"],str(root/"tmp"))
+        self.assertEqual(result["GIT_NO_REPLACE_OBJECTS"],"1")
+
+    def test_audio_original_clock_has_fixed_aggregate_and_retention_reserve(self):
+        value=custody.audio_clock(10,20)
+        self.assertEqual(value["deadline_ns"],10+10200*10**9)
+        self.assertEqual(value["work_deadline_ns"],10+9600*10**9)
+        for start,now in ((True,20),(30,20),(0,20),(10,10+10200*10**9)):
+            with self.subTest(start=start,now=now),self.assertRaises(custody.CustodyRejected):
+                custody.audio_clock(start,now)
+
+    def producer_fixture(self, *, wrong_normal=False, failed_label=None):
+        work=Path(tempfile.gettempdir()).absolute()/"audio-sdk"
+        target=Path(tempfile.gettempdir()).absolute()/"audio-target"
+        calls=[];phases=[]
+        def call(argv,cwd,env,logs,label,timeout,context):
+            calls.append((label,argv))
+            return {"exit_code":1 if label==failed_label else 0,"label":label}
+        def paths(raw,exit_code,repo,root,specs,*,testing):
+            self.assertEqual(repo,work);self.assertEqual(root,target)
+            if testing:return {s["name"]:str(target/"debug/deps"/(s["name"]+"-hash")) for s in specs}
+            return {s["name"]:str(target/("foreign" if wrong_normal else "debug")/s["name"]) for s in specs}
+        adapter=types.SimpleNamespace(observer=types.SimpleNamespace(original_stream=lambda logs,row,key:b"Cargo JSON"),
+                                      select_binary_paths=paths)
+        def run():return custody.audio_prepare_producers(adapter,call,"/owned/cargo",work,{},work,{"id":1},target,phases.append)
+        return run,calls,phases
+
+    def test_audio_same_target_fake_producers_precede_final_test_sealing(self):
+        run,calls,phases=self.producer_fixture()
+        value=run()
+        self.assertEqual(phases,["strict-clippy","normal-tools-build","affected-test-build"])
+        self.assertEqual([x[0] for x in calls],phases)
+        self.assertEqual(set(value["collections"]),{"tests","normal"})
+        self.assertEqual(value["collections"]["normal"]["label"],"affected-test-build")
+        self.assertEqual(value["clippy"],"PASS")
+
+    def test_audio_foreign_target_stops_before_final_test_producer(self):
+        run,calls,phases=self.producer_fixture(wrong_normal=True)
+        with self.assertRaisesRegex(custody.CustodyRejected,"same-target"):run()
+        self.assertEqual([x[0] for x in calls],["strict-clippy","normal-tools-build"])
+
+    def test_audio_failed_producer_never_reaches_a_later_producer(self):
+        run,calls,phases=self.producer_fixture(failed_label="strict-clippy")
+        with self.assertRaisesRegex(custody.CustodyRejected,"producer-failed"):run()
+        self.assertEqual(len(calls),1)
+
+    def test_audio_unknown_producer_is_not_retried_or_relabelled(self):
+        failure=RuntimeError("UNKNOWN_ORIGINAL_NO_RETRY")
+        calls=[]
+        def unknown(*args):calls.append(args);raise failure
+        with self.assertRaisesRegex(RuntimeError,"UNKNOWN_ORIGINAL_NO_RETRY"):
+            custody.audio_prepare_producers(types.SimpleNamespace(),unknown,"cargo",Path("sdk"),{},
+                                           Path("logs"),{},Path("target"),lambda name:None)
+        self.assertEqual(len(calls),1)
+
+    def test_audio_workflow_source_profiles_cannot_enter_physical_matrix(self):
+        workflow=(Path(__file__).resolve().parents[2]/".github/workflows/native-mlt-sequence-e2e.yml").read_text()
+        self.assertIn("options: [normal, source, repaired-g2, film180-g2, audio-source-g0, audio-source-g1]",workflow)
+        guard="inputs.verification_scope == 'normal' || inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2'"
+        physical=workflow.split("  native-mlt-sequence:\n",1)[1].split("    runs-on:",1)[0]
+        self.assertIn(guard,physical)
+        audio=workflow.split("  audio-source:\n",1)[1]
+        self.assertIn("--mode both --require-complete --expected-source",audio)
+        self.assertIn("--pattern test_native_mlt_g2_custody.py --pattern test_native_mlt_evidence_selection.py",audio)
+        self.assertIn("if: always()",audio)
+        self.assertIn("ref: "+selection.AUDIO_SOURCE_SHA,audio)
+        self.assertNotIn("--ignored --nocapture",audio)
+        import re
+        caps=[int(value) for value in re.findall(r"^        timeout-minutes: (\d+)$",audio,re.M)]
+        self.assertEqual(caps,[2,2,6,5,16,3,3,172,5])
+        self.assertEqual(sum(caps),214)
+        self.assertIn("    timeout-minutes: 220\n",audio)
+        self.assertGreater(16*60,3*2*150)
+        self.assertGreater(172*60,sum(custody.AUDIO_PHASE_SECONDS.values()))
 
 if __name__ == "__main__":
     unittest.main()

@@ -1260,4 +1260,91 @@ class Ffv1SeedCustodyTests(unittest.TestCase):
                 mlt.read_ffv1_admission(roots=world.roots,current=CURRENT,source_bindings=world.bindings)
 
 
+
+class AudioSourceSelectionTests(unittest.TestCase):
+    def pretty(self, target, *, ignored=False):
+        names = ((mlt.AUDIO_PHYSICAL_CASE,) if ignored else
+                 (*mlt.AUDIO_SOURCE_ROSTERS[target], mlt.AUDIO_PHYSICAL_CASE) if target == "live" else
+                 mlt.AUDIO_SOURCE_ROSTERS[target])
+        footer = str(len(names)) + (" test" if len(names) == 1 else " tests") + ", 0 benchmarks\n"
+        return ("".join(name + ": test\n" for name in sorted(names)) + "\n" + footer).encode()
+
+    def test_audio_eight_targets_preserve_declared136_and_three_real_consumers48(self):
+        self.assertEqual({key:len(value) for key,value in mlt.AUDIO_SOURCE_ROSTERS.items()}, {
+            "semwright_mlt_video":82, "semwright-mlt-video-driver":28,
+            "semwright-mlt-runtime-runner":3, "domain_contract":4, "live":19,
+            "conformance":17, "process":22, "runtime_runner":9})
+        self.assertEqual(sum(map(len,mlt.AUDIO_SOURCE_ROSTERS.values())),184)
+        self.assertNotIn(mlt.AUDIO_PHYSICAL_CASE, mlt.AUDIO_SOURCE_ROSTERS["live"])
+        self.assertIn("runtime::audio_derivative_tests::audio_capture_child_fixture",
+                      mlt.AUDIO_SOURCE_ROSTERS["semwright_mlt_video"])
+        self.assertEqual(len(mlt.audio_source_normal_specs()),4)
+
+    def test_audio_pretty_lists_admit_all_targets_and_separate_physical_ignore(self):
+        for target,names in mlt.AUDIO_SOURCE_ROSTERS.items():
+            with self.subTest(target=target):
+                value=mlt.audio_source_list(self.pretty(target),0,target)
+                self.assertEqual(value["selected"],names)
+                self.assertEqual(value["not_selected_credit"],"NONE")
+        ignored=mlt.audio_source_list(self.pretty("live",ignored=True),0,"live",ignored_only=True)
+        self.assertEqual(ignored["all"],(mlt.AUDIO_PHYSICAL_CASE,))
+        self.assertEqual(ignored["selected"],())
+
+    def test_audio_list_rejects_missing_duplicate_extra_footer_noise_and_bad_exit(self):
+        raw=self.pretty("domain_contract"); first=raw.splitlines()[0]+b"\n"
+        for changed in (raw.replace(first,b"",1), first+raw,
+                        b"foreign::test: test\n"+raw, raw.replace(b"4 tests, 0 benchmarks",b""),
+                        raw.replace(b"4 tests, 0 benchmarks",b"4 test, 0 benchmarks"),raw+b"late text\n"):
+            with self.subTest(changed=changed), self.assertRaises(core.SelectionError):
+                mlt.audio_source_list(changed,0,"domain_contract")
+        for code in (False,True,1,None):
+            with self.subTest(code=code),self.assertRaises(core.SelectionError):
+                mlt.audio_source_list(raw,code,"domain_contract")
+
+    def test_audio_ignored_boundary_rejects_another_case_or_unselected_target(self):
+        raw=self.pretty("live",ignored=True)
+        for changed in (raw.replace(mlt.AUDIO_PHYSICAL_CASE.encode(),b"foreign_test"),
+                        raw.replace(b"1 test, 0 benchmarks",b"1 tests, 0 benchmarks")):
+            with self.assertRaises(core.SelectionError): mlt.audio_source_list(changed,0,"live",ignored_only=True)
+        with self.assertRaises(core.SelectionError):
+            mlt.audio_source_list(self.pretty("domain_contract"),0,"domain_contract",ignored_only=True)
+
+    def test_audio_compile_selection_is_closed_and_has_no_live_execution(self):
+        plans=mlt.audio_source_producers("/owned/cargo")
+        self.assertEqual([row[0] for row in plans],["strict-clippy","normal-tools-build","affected-test-build"])
+        self.assertIn("--bins",plans[1][1])
+        self.assertIn("--no-run",plans[2][1])
+        self.assertNotIn("--all-targets",plans[0][1])
+        self.assertNotIn("--all-features",plans[2][1])
+        self.assertEqual(plans[2][1].count("--test"),5)
+        self.assertEqual(plans[2][1].count("--bin"),2)
+        self.assertEqual(len(mlt.audio_source_specs()),8)
+
+    def test_audio_completion_requires_every_original_target_name_pair_once(self):
+        rosters={name:mlt.audio_source_list(self.pretty(name),0,name) for name in mlt.AUDIO_SOURCE_ROSTERS}
+        results=[{"target":target,"name":name,"status":"PASS"}
+                 for target,names in mlt.AUDIO_SOURCE_ROSTERS.items() for name in names]
+        self.assertEqual(mlt.audio_source_complete(results,rosters)["unique_selected_tests"],184)
+        variants=(results[:-1],results+[results[0]],
+                  [{**results[0],"status":"UNKNOWN"},*results[1:]],
+                  [{**results[0],"name":mlt.AUDIO_PHYSICAL_CASE},*results[1:]])
+        for changed in variants:
+            with self.subTest(length=len(changed)),self.assertRaises(core.SelectionError):
+                mlt.audio_source_complete(changed,rosters)
+
+    def test_audio_context_rejects_other_sha_attempt_os_job_and_physical_scope(self):
+        env={"RUNNER_OS":"Linux","RUNNER_ARCH":"X64","CI":"true","GITHUB_ACTIONS":"true",
+             "GITHUB_EVENT_NAME":"workflow_dispatch","GITHUB_RUN_ATTEMPT":"1",
+             "GITHUB_JOB":"audio-source","MW_MLT_SCOPE":"audio-source-g1",
+             "GITHUB_SHA":"a"*40,"GITHUB_WORKFLOW_SHA":"a"*40,"MW_EXPECTED_GATE_SHA":"a"*40,
+             "MW_EXPECTED_SDK_SHA":mlt.AUDIO_SOURCE_SHA,"GITHUB_REPOSITORY":"seradotcom/motionwright",
+             "GITHUB_WORKFLOW_REF":"seradotcom/motionwright/.github/workflows/native-mlt-sequence-e2e.yml@refs/heads/source",
+             "GITHUB_RUN_ID":"123"}
+        self.assertEqual(mlt.audio_source_context(env,"linux")["product_source_sha"],mlt.AUDIO_SOURCE_SHA)
+        for key,value in (("MW_EXPECTED_SDK_SHA","b"*40),("GITHUB_RUN_ATTEMPT","2"),
+                          ("GITHUB_SHA","c"*40),("RUNNER_OS","Windows"),
+                          ("GITHUB_JOB","native-mlt-sequence"),("MW_MLT_SCOPE","normal")):
+            with self.subTest(key=key),self.assertRaises(core.SelectionError):
+                mlt.audio_source_context({**env,key:value},"linux")
+
 if __name__=="__main__":unittest.main()

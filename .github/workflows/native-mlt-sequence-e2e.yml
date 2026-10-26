@@ -6,11 +6,15 @@ on:
       verification_scope:
         description: Native verification selection
         type: choice
-        options: [normal, source, repaired-g2, film180-g2]
+        options: [normal, source, repaired-g2, film180-g2, audio-source-g0, audio-source-g1]
         default: normal
         required: true
       expected_source_sha:
         description: "Exact Motionwright commit for the source-only gate"
+        type: string
+        required: false
+      expected_sdk_sha:
+        description: "Exact SDK source for the additive audio source G1"
         type: string
         required: false
       g2_admission:
@@ -18,6 +22,14 @@ on:
         type: string
         default: ''
         required: false
+  push:
+    branches: ["verify/audio-derive-source-*"]
+    paths:
+      - '.github/workflows/native-mlt-sequence-e2e.yml'
+      - 'tooling/native_mlt_g2_custody.py'
+      - 'tooling/native_mlt_evidence_selection.py'
+      - 'tooling/tests/test_native_mlt_g2_custody.py'
+      - 'tooling/tests/test_native_mlt_evidence_selection.py'
   pull_request:
     paths:
       - 'SOURCE_LOCK.json'
@@ -1527,7 +1539,7 @@ jobs:
         retention-days: 14
 
   native-mlt-sequence:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope != 'source' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'normal' || inputs.verification_scope == 'repaired-g2' || inputs.verification_scope == 'film180-g2') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 65
     strategy:
@@ -3370,5 +3382,137 @@ jobs:
             ${{ runner.temp }}/mw-mlt-g2-contracts-${{ github.run_id }}-${{ github.run_attempt }}
             ${{ runner.temp }}/mw-film180-contracts-${{ github.run_id }}-${{ github.run_attempt }}
             ${{ runner.temp }}/mw-mlt-workflow-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+
+  audio-source:
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'audio-source-g0' || inputs.verification_scope == 'audio-source-g1')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MW_MLT_SCOPE: ${{ github.event_name == 'push' && 'audio-source-g0' || inputs.verification_scope }}
+      MW_EXPECTED_GATE_SHA: ${{ inputs.expected_source_sha }}
+      MW_EXPECTED_SDK_SHA: ${{ inputs.expected_sdk_sha }}
+      LD_PRELOAD: ''
+      LD_LIBRARY_PATH: ''
+      LD_AUDIT: ''
+      SEMWRIGHT_CHECKOUT: ''
+    # Finite step caps sum to 214 minutes; the job retains six minutes of overhead.
+    # The SDK observer keeps its original 170-minute clock inside its 172-minute step.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          path: gate
+          persist-credentials: false
+      - name: Admit the exact source-only selection
+        timeout-minutes: 2
+        env:
+          G2_ADMISSION: ${{ inputs.g2_admission }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$GITHUB_WORKFLOW_SHA"
+          test "$(git -C gate rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$G2_ADMISSION"
+          case "$GITHUB_EVENT_NAME:$MW_MLT_SCOPE" in
+            push:audio-source-g0) test -z "$MW_EXPECTED_GATE_SHA"; test -z "$MW_EXPECTED_SDK_SHA" ;;
+            workflow_dispatch:audio-source-g0)
+              test "$MW_EXPECTED_GATE_SHA" = "$GITHUB_SHA"
+              test -z "$MW_EXPECTED_SDK_SHA"
+              ;;
+            workflow_dispatch:audio-source-g1)
+              test "$MW_EXPECTED_GATE_SHA" = "$GITHUB_SHA"
+              test "$MW_EXPECTED_SDK_SHA" = b4a71f0c10d3e1d49e71212de7cb5de02b72a9c6
+              ;;
+            *) exit 2 ;;
+          esac
+          controls="$RUNNER_TEMP/mw-audio-source-controls-$GITHUB_RUN_ID-1"
+          test ! -e "$controls"
+          mkdir -m 700 "$controls"
+          echo "MW_AUDIO_CONTROLS=$controls" >> "$GITHUB_ENV"
+          echo "MW_AUDIO_ORIGINALS=$RUNNER_TEMP/mw-audio-source-$GITHUB_RUN_ID-1/evidence" >> "$GITHUB_ENV"
+      - name: Prepare the existing custody interpreter and SDK source-check dependencies
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          sudo apt-get update > "$MW_AUDIO_CONTROLS/apt-update.stdout" 2> "$MW_AUDIO_CONTROLS/apt-update.stderr"
+          sudo apt-get install --no-install-recommends -y python3.12-venv python3-jsonschema python3-yaml \
+            > "$MW_AUDIO_CONTROLS/apt-install.stdout" 2> "$MW_AUDIO_CONTROLS/apt-install.stderr"
+          dpkg-query -W python3.12-venv python3-jsonschema python3-yaml > "$MW_AUDIO_CONTROLS/dependency-versions.txt"
+          python3.12 -m venv --system-site-packages "$MW_AUDIO_CONTROLS/python"
+          "$MW_AUDIO_CONTROLS/python/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir \
+            --only-binary=:all: --require-hashes -r gate/tooling/requirements/mlt-g2-custody.txt \
+            > "$MW_AUDIO_CONTROLS/pip.stdout" 2> "$MW_AUDIO_CONTROLS/pip.stderr"
+          "$MW_AUDIO_CONTROLS/python/bin/python" -m pip check > "$MW_AUDIO_CONTROLS/pip-check.txt"
+          echo "MW_AUDIO_PYTHON=$MW_AUDIO_CONTROLS/python/bin/python" >> "$GITHUB_ENV"
+      - name: Source policy and public surface on the actual gate
+        timeout-minutes: 5
+        working-directory: gate
+        run: |
+          set -euo pipefail
+          "$MW_AUDIO_PYTHON" -B -E -s tooling/source_policy.py \
+            > "$MW_AUDIO_CONTROLS/source-policy.stdout" 2> "$MW_AUDIO_CONTROLS/source-policy.stderr"
+          "$MW_AUDIO_PYTHON" -B -E -s tooling/public_surface_policy.py \
+            > "$MW_AUDIO_CONTROLS/public-surface.stdout" 2> "$MW_AUDIO_CONTROLS/public-surface.stderr"
+          git diff --check
+      - name: All existing and additive MLT selection and custody controls
+        if: ${{ !cancelled() && env.MW_AUDIO_PYTHON != '' }}
+        timeout-minutes: 16
+        working-directory: gate
+        run: |
+          set -euo pipefail
+          "$MW_AUDIO_PYTHON" -B -E -s tooling/ci_test_runner.py --repo "$PWD" \
+            --mode both --require-complete --expected-source "$GITHUB_SHA" --timeout 150 \
+            --pattern test_native_mlt_g2_custody.py --pattern test_native_mlt_evidence_selection.py \
+            --pattern test_native_mlt_workflow_preflight.py \
+            --report "$MW_AUDIO_CONTROLS/contracts.json" \
+            > "$MW_AUDIO_CONTROLS/runner.stdout" 2> "$MW_AUDIO_CONTROLS/runner.stderr"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 3
+        if: ${{ success() && inputs.verification_scope == 'audio-source-g1' }}
+        with:
+          repository: seradotcom/semwright
+          ref: b4a71f0c10d3e1d49e71212de7cb5de02b72a9c6
+          path: sdk
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        timeout-minutes: 3
+        if: ${{ success() && inputs.verification_scope == 'audio-source-g1' }}
+        with:
+          node-version: '22'
+      - name: Observe SDK G0, exact producers, lists and 184 affected source cases
+        if: ${{ success() && inputs.verification_scope == 'audio-source-g1' }}
+        timeout-minutes: 172
+        run: |
+          set -euo pipefail
+          set +e
+          "$MW_AUDIO_PYTHON" -B -E -s gate/tooling/native_mlt_g2_custody.py audio-source-g1 \
+            --gate "$GITHUB_WORKSPACE/gate" --sdk "$GITHUB_WORKSPACE/sdk" \
+            --output "$RUNNER_TEMP/mw-audio-source-$GITHUB_RUN_ID-1" \
+            > "$MW_AUDIO_CONTROLS/outer.stdout" 2> "$MW_AUDIO_CONTROLS/outer.stderr"
+          result=$?
+          set -e
+          "$MW_AUDIO_PYTHON" -B -I -X utf8 - "$MW_AUDIO_CONTROLS/outer-exit.json" "$result" <<'PY'
+          import json,sys
+          with open(sys.argv[1],"x",encoding="utf-8",newline="\n") as handle:
+              json.dump({"exit_code":int(sys.argv[2]),"automatic_retry":False},handle,sort_keys=True)
+              handle.write("\n")
+          PY
+          exit "$result"
+      - name: Retain source originals for this exact attempt
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: audio-source-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.MW_AUDIO_CONTROLS }}/*.json
+            ${{ env.MW_AUDIO_CONTROLS }}/*.log
+            ${{ env.MW_AUDIO_CONTROLS }}/*.stdout
+            ${{ env.MW_AUDIO_CONTROLS }}/*.stderr
+            ${{ env.MW_AUDIO_CONTROLS }}/*.txt
+            ${{ env.MW_AUDIO_ORIGINALS }}
           if-no-files-found: error
           retention-days: 14
